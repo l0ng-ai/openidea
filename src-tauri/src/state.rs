@@ -1,4 +1,4 @@
-use crate::events::TauriSink;
+use crate::events::{TauriSink, coalescing_sink};
 use ide_core::{EventSink, IdeEvent, IdeResult, SharedSink};
 use ide_language::{LanguageRegistry, Syntax};
 use ide_workspace::RecentProjects;
@@ -83,9 +83,11 @@ impl AppState {
             tracing::info!("invalidated caches: {removed:?}");
         }
         ide_host::data_dirs::migrate(&data_dir, &local_data_dir);
-        let global_sink: SharedSink = Arc::new(TauriSink { app: app.clone(), window: None });
+        let runtime = tauri::async_runtime::handle().inner().clone();
+        let global_sink = coalescing_sink(Arc::new(TauriSink { app: app.clone(), window: None }), runtime.clone());
         let languages = Arc::new(LanguageRegistry::load(Some(&config_dir.join("languages")))?);
         let sink_app = app.clone();
+        let sink_runtime = runtime.clone();
         let host = Arc::new(Host::new(ide_host::HostConfig {
             config_dir: config_dir.clone(),
             data_dir: data_dir.clone(),
@@ -93,10 +95,13 @@ impl AppState {
             languages: languages.clone(),
             syntax,
             sink_for: Box::new(move |window| {
-                Arc::new(TauriSink { app: sink_app.clone(), window: Some(window.to_owned()) })
+                coalescing_sink(
+                    Arc::new(TauriSink { app: sink_app.clone(), window: Some(window.to_owned()) }),
+                    sink_runtime.clone(),
+                )
             }),
             owner: Self::owner_window,
-            runtime: tauri::async_runtime::handle().inner().clone(),
+            runtime,
             project_environment: false,
         }));
         let announce = global_sink.clone();

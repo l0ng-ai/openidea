@@ -1,10 +1,12 @@
-import { useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { HighlightedText, Icon, List, Popup, SearchField, fileIconName, listNavigate, T } from "@/ui";
 import { chooserRows, type LanguageRow, type ScratchLanguage } from "./model";
 import { closeChooser, rememberLanguage, useScratch } from "./store";
 import { createScratch } from "./scratches";
 import styles from "./ScratchChooser.module.css";
+
+const isDivider = (row: LanguageRow | null) => row === null;
 
 /** Overlay: IDEA's "New Scratch File" popup — searchable languages, recent first. */
 export function ScratchChooserHost() {
@@ -17,13 +19,22 @@ export function ScratchChooserHost() {
 function ScratchChooser({ languages }: { languages: readonly ScratchLanguage[] }) {
   const recent = useScratch((s) => s.recent);
   const inputRef = useRef<HTMLInputElement>(null);
+  const listId = useId();
   const [filter, setFilter] = useState("");
   const [active, setActive] = useState(0);
-  const rows = useMemo(() => chooserRows(languages, recent, filter), [languages, recent, filter]);
+  const rows = useMemo(() => {
+    const options = chooserRows(languages, recent, filter);
+    if (filter.trim()) return options;
+    const firstOther = options.findIndex(({ lang }) => !recent.includes(lang.id));
+    return firstOther > 0 ? [...options.slice(0, firstOther), null, ...options.slice(firstOther)] : options;
+  }, [languages, recent, filter]);
   const current = Math.min(active, rows.length - 1);
-  const anchor = useMemo(() => ({ x: Math.max(16, window.innerWidth / 2 - 140), y: window.innerHeight / 5 }), []);
+  const anchor = useMemo(
+    () => ({ getBoundingClientRect: () => new DOMRect(window.innerWidth / 2, window.innerHeight / 5, 0, 0) }),
+    [],
+  );
 
-  const pick = (row: LanguageRow | undefined) => {
+  const pick = (row: LanguageRow | null | undefined) => {
     if (!row) return;
     closeChooser();
     rememberLanguage(row.lang.id);
@@ -35,6 +46,7 @@ function ScratchChooser({ languages }: { languages: readonly ScratchLanguage[] }
     const next = listNavigate(e.key === "Home" || e.key === "End" ? "" : e.key, {
       items: rows,
       active: current,
+      isSection: isDivider,
       wrap: true,
     });
     if (next !== null) {
@@ -50,7 +62,7 @@ function ScratchChooser({ languages }: { languages: readonly ScratchLanguage[] }
     <Popup
       open
       anchor={anchor}
-      placement="bottom-start"
+      placement="bottom"
       onClose={closeChooser}
       role="dialog"
       aria-label="New Scratch File"
@@ -58,9 +70,7 @@ function ScratchChooser({ languages }: { languages: readonly ScratchLanguage[] }
     >
       <div className={styles.body}>
         <div className={styles.header}>
-          <span className={styles.title}>
-            <T>New Scratch File</T>
-          </span>
+          <T>New Scratch File</T>
         </div>
         <SearchField
           ref={inputRef}
@@ -69,6 +79,8 @@ function ScratchChooser({ languages }: { languages: readonly ScratchLanguage[] }
           value={filter}
           placeholder="Filter languages"
           aria-label="Filter languages"
+          aria-controls={listId}
+          aria-activedescendant={rows[current] ? `${listId}-${current}` : undefined}
           className={styles.search}
           onChange={(value) => {
             setFilter(value);
@@ -78,11 +90,15 @@ function ScratchChooser({ languages }: { languages: readonly ScratchLanguage[] }
           onKeyDown={onKeyDown}
         />
         <List
+          id={listId}
           items={rows}
-          getKey={(r) => r.lang.id}
+          getKey={(r) => (r ? `language:${r.lang.id}` : "recent-divider")}
           activeIndex={current}
           onActiveChange={setActive}
-          onActivate={(r) => pick(r)}
+          onActivate={pick}
+          isSection={isDivider}
+          sectionHeight={8}
+          renderSection={() => <span role="separator" className={styles.divider} />}
           focusable={false}
           hoverSelects
           className={styles.list}
@@ -92,14 +108,16 @@ function ScratchChooser({ languages }: { languages: readonly ScratchLanguage[] }
               <T>No matching languages</T>
             </div>
           }
-          renderItem={(r, state) => (
-            <div className={clsx(styles.row, state.active && styles.active)} data-language={r.lang.id}>
-              <Icon name={fileIconName(`scratch.${r.lang.ext}`)} size={16} />
-              <span className={styles.label}>
-                <HighlightedText text={r.lang.name} indices={r.matches ?? undefined} />
-              </span>
-            </div>
-          )}
+          renderItem={(r, state) =>
+            r && (
+              <div className={clsx(styles.row, state.active && styles.active)} data-language={r.lang.id}>
+                <Icon name={fileIconName(`scratch.${r.lang.ext}`)} size={16} className={styles.icon} />
+                <span className={styles.label} title={r.lang.name}>
+                  <HighlightedText text={r.lang.name} indices={r.matches ?? undefined} />
+                </span>
+              </div>
+            )
+          }
         />
       </div>
     </Popup>

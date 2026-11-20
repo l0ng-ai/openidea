@@ -224,6 +224,22 @@ it("omits a reset inserted cell from Submit instead of writing SQL NULL", async 
 });
 
 describe("table editor view state", () => {
+  it("restores the grid's horizontal scroll position when its tab mounts again (#4775)", async () => {
+    const input = tableInput("source", "default", "users");
+    let view!: ReturnType<typeof render>;
+    await act(async () => {
+      view = render(<TableEditor input={input} />);
+    });
+    const grid = await screen.findByRole("grid");
+    grid.scrollLeft = 180;
+    fireEvent.scroll(grid);
+    view.unmount();
+    await act(async () => {
+      render(<TableEditor input={input} />);
+    });
+    expect((await screen.findByRole("grid")).scrollLeft).toBe(180);
+  });
+
   it("queries with the sort it had when its tab mounts again", async () => {
     const input = tableInput("source", "default", "users");
     let view!: ReturnType<typeof render>;

@@ -112,6 +112,7 @@ const TEMPLATE_CONTEXT_KEY = "openideaTemplateContexts";
 
 import { formatElapsed } from "./resultView";
 import { SQL_LANGUAGE } from "./sqlLanguage";
+import { jdbcDialect } from "./vendors";
 export { SQL_LANGUAGE };
 const ROW_LIMITS = ["100", "500", "1000", "5000", "50000"];
 
@@ -1069,6 +1070,9 @@ export function completionSource(path: string, sql: SqlText = WHOLE_FILE): Compl
     const current = id ? databaseRequest(id) : projectRequest();
     const source = sourceById(id);
     const driver: DbDriver = source?.driver ?? "sqlite";
+    // A custom JDBC source (`driver: "jdbc"`) says nothing about how its server folds
+    // identifiers; its URL does (`jdbc:oracle:thin:@…`). Quoting follows that dialect.
+    const dialect = driver === "jdbc" ? jdbcDialect(source?.url) : null;
     const model = id ? (useDatabase.getState().completion[id] ?? null) : null;
     if (id && !model) void loadCompletion(id);
     // Unqualified names resolve in the console's active schema (IDEA's schema dropdown).
@@ -1091,6 +1095,7 @@ export function completionSource(path: string, sql: SqlText = WHOLE_FILE): Compl
       model: scoped,
       analysis,
       driver,
+      dialect,
       sourceName: source?.name ?? undefined,
       catalog: cataloged ? catalogOf(id) : undefined,
     });

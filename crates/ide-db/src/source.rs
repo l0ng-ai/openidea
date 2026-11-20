@@ -124,6 +124,45 @@ impl Default for DbIntrospection {
     }
 }
 
+impl DbIntrospection {
+    /// Whether the tree shows this schema: every one with `all_schemas`, otherwise it has to
+    /// match one of the `schemas` patterns. The completion model uses the same test, so it
+    /// offers exactly the tables the tree lists (and does not read the ones it never shows).
+    pub fn shows_schema(&self, name: &str) -> bool {
+        self.all_schemas
+            || self.schemas.iter().map(|p| p.trim()).filter(|p| !p.is_empty()).any(|p| schema_matches(p, name))
+    }
+}
+
+/// `*` matches any run of characters, `?` a single one; a pattern without wildcards matches the
+/// name as typed (the dialog fills names from the list the server returned, so case is settled).
+fn schema_matches(pattern: &str, name: &str) -> bool {
+    if !pattern.contains('*') && !pattern.contains('?') {
+        return pattern == name;
+    }
+    let p: Vec<char> = pattern.chars().collect();
+    let n: Vec<char> = name.chars().collect();
+    let (mut pi, mut ni) = (0, 0);
+    // Position of the last `*` and how much of the name it has already swallowed.
+    let mut star: Option<(usize, usize)> = None;
+    while ni < n.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == n[ni]) {
+            pi += 1;
+            ni += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some((pi, ni));
+            pi += 1;
+        } else if let Some((at, taken)) = star {
+            pi = at + 1;
+            ni = taken + 1;
+            star = Some((at, taken + 1));
+        } else {
+            return false;
+        }
+    }
+    p[pi..].iter().all(|&c| c == '*')
+}
+
 /// Advanced tab: a driver property. PostgreSQL: run-time parameters (and
 /// `application_name`); MySQL: session variables (and `charset`, `collation`);
 /// SQLite: pragmas. See [`crate::conn`].
@@ -764,5 +803,25 @@ mod tests {
         assert_eq!(r.database, "DB");
         assert_eq!(r.snowflake().auth, DbSnowflakeAuth::Browser);
         assert_eq!(scheme_driver("snowflake"), Some(DbDriver::Snowflake));
+    }
+
+    #[test]
+    fn introspection_shows_only_the_picked_schemas() {
+        let mut i = DbIntrospection::default();
+        assert!(i.shows_schema("SYS"), "the default reads every schema");
+
+        i.all_schemas = false;
+        assert!(!i.shows_schema("SYS"), "nothing picked: the tree lists nothing either");
+
+        i.schemas = vec!["XMCB".into(), " APP_* ".into()];
+        assert!(i.shows_schema("XMCB"));
+        assert!(i.shows_schema("APP_INFO"));
+        assert!(!i.shows_schema("APP"), "`*` needs the text that follows it");
+        assert!(!i.shows_schema("SYS"));
+        assert!(!i.shows_schema("xmcb"), "patterns match the names the server returned");
+
+        i.schemas = vec!["?".into()];
+        assert!(i.shows_schema("A"));
+        assert!(!i.shows_schema("AB"));
     }
 }
