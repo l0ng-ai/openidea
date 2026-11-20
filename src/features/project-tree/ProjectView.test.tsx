@@ -392,6 +392,22 @@ describe("ProjectView", () => {
     expect(ghost()).toBeNull();
   });
 
+  it("keeps the tree from scrolling sideways during a drag", async () => {
+    const { tree, row, rows } = setup();
+    await waitFor(() => expect(rows()).toContain("README.md"));
+    document.elementFromPoint = () => null;
+    fireEvent(
+      row("README.md").querySelector("[data-project-path]")!,
+      new MouseEvent("pointerdown", { bubbles: true, button: 0 }),
+    );
+    act(() => void window.dispatchEvent(new MouseEvent("pointermove", { buttons: 1, clientX: 40, clientY: 0 })));
+    // WebKit's autoscroll toward a pointer right of the tree.
+    tree.scrollLeft = 600;
+    fireEvent.scroll(tree);
+    expect(tree.scrollLeft).toBe(0);
+    act(() => void window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true })));
+  });
+
   it("cancels a new file when its name field loses focus", async () => {
     const { rows } = setup();
     await waitFor(() => expect(rows()).toContain("README.md"));
