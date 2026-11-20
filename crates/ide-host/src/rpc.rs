@@ -32,6 +32,13 @@ pub const PROTOCOL_VERSION: u32 = 3;
 pub const SESSION_REPLACED: &str = "session_replaced";
 pub const SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 
+/// Advertised only by a persistent backend with an editable idle timeout.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteIdlePolicy {
+    pub override_seconds: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerInfo {
@@ -40,6 +47,8 @@ pub struct ServerInfo {
     pub os: String,
     pub arch: String,
     pub home: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_policy: Option<RemoteIdlePolicy>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -219,7 +228,7 @@ where
     P: PeerHandle,
 {
     let slot: Arc<dyn PeerHandle> = peer;
-    let handler = Arc::new(ServerHandler { host: host.clone(), dispatcher, peer: slot.clone(), shutdown: None });
+    let handler = Arc::new(ServerHandler { host: host.clone(), dispatcher, peer: slot.clone(), daemon: None });
     let p = Peer::connect(reader, writer, handler);
     let (generation, previous) = slot.install(p.clone());
     if let Some(old) = previous {
@@ -241,6 +250,7 @@ pub(crate) fn connect_persistent<R, W>(
     dispatcher: Dispatcher,
     peer: Arc<PeerSlot>,
     shutdown: ide_core::CancellationToken,
+    idle_policy: RemoteIdlePolicy,
     reader: R,
     writer: W,
 ) -> Peer
@@ -250,7 +260,8 @@ where
 {
     // Streaming ids belong to the calling connection, not the next window to attach.
     let connection = Arc::new(OnceLock::new());
-    let handler = Arc::new(ServerHandler { host, dispatcher, peer: connection.clone(), shutdown: Some(shutdown) });
+    let handler =
+        Arc::new(ServerHandler { host, dispatcher, peer: connection.clone(), daemon: Some((shutdown, idle_policy)) });
     let p = Peer::connect(reader, writer, handler);
     let _ = connection.set(p.clone());
     let (_, previous) = peer.install(p.clone());
@@ -326,16 +337,17 @@ struct ServerHandler {
     host: Arc<Host>,
     dispatcher: Dispatcher,
     peer: Arc<dyn PeerHandle>,
-    shutdown: Option<ide_core::CancellationToken>,
+    daemon: Option<(ide_core::CancellationToken, RemoteIdlePolicy)>,
 }
 
-pub fn server_info() -> ServerInfo {
+fn server_info(idle_policy: Option<RemoteIdlePolicy>) -> ServerInfo {
     ServerInfo {
         version: env!("CARGO_PKG_VERSION").into(),
         protocol: PROTOCOL_VERSION,
         os: std::env::consts::OS.into(),
         arch: std::env::consts::ARCH.into(),
         home: dirs::home_dir().map(|h| h.to_string_lossy().into_owned()).unwrap_or_default(),
+        idle_policy,
     }
 }
 
@@ -343,12 +355,14 @@ impl Handler for ServerHandler {
     fn on_notification(&self, _method: &str, _params: Value) {}
 
     fn on_request(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
-        if self.shutdown.as_ref().is_some_and(|s| s.is_cancelled()) {
+        if self.daemon.as_ref().is_some_and(|(shutdown, _)| shutdown.is_cancelled()) {
             return Err((codes::INTERNAL_ERROR, "remote backend is stopping".into()));
         }
         let internal = |e: serde_json::Error| (codes::INTERNAL_ERROR, e.to_string());
         match method {
-            "initialize" => serde_json::to_value(server_info()).map_err(internal),
+            "initialize" => {
+                serde_json::to_value(server_info(self.daemon.as_ref().map(|(_, policy)| *policy))).map_err(internal)
+            }
             "commands" => serde_json::to_value(self.dispatcher.commands()).map_err(internal),
             "shutdown" => Ok(Value::Null),
             "invoke" => {
@@ -368,7 +382,7 @@ impl Handler for ServerHandler {
 
     fn after_response(&self, method: &str) {
         if method == "shutdown"
-            && let Some(shutdown) = &self.shutdown
+            && let Some((shutdown, _)) = &self.daemon
         {
             shutdown.cancel();
         }

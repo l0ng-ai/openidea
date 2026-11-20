@@ -8,7 +8,7 @@ use crate::state::AppState;
 use ide_command::desktop_command;
 use ide_core::{EventSink, IdeError, IdeResult};
 use ide_host::catalogue::TrustClass;
-use ide_host::rpc::{ChannelMessage, EventMessage, Invoke, ServerInfo};
+use ide_host::rpc::{ChannelMessage, EventMessage, Invoke, RemoteIdlePolicy, ServerInfo};
 use ide_jsonrpc::{Handler, Peer};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -69,6 +69,8 @@ pub(crate) const PROBE_MARK: &str = "__OPENIDEA_PROBE__";
 pub struct Connection {
     peer: Peer,
     stopping: AtomicBool,
+    taken_over: Arc<AtomicBool>,
+    idle_policy: Option<RemoteIdlePolicy>,
     pub target: RemoteTarget,
     pub root: String,
     pub host: String,
@@ -126,6 +128,18 @@ pub struct Connections {
 }
 
 impl Connection {
+    pub(crate) fn snapshot(&self) -> RemoteSession {
+        RemoteSession {
+            target: self.target.clone(),
+            root: self.root.clone(),
+            host: self.host.clone(),
+            os: self.os.clone(),
+            commands: self.commands.clone(),
+            idle_policy: self.idle_policy,
+            taken_over: self.taken_over.load(Ordering::Acquire),
+        }
+    }
+
     /// Commands of a remote window that run on this machine follow this machine's decision about the
     /// remote project, never the server's: the server only answers for what runs there. A remote
     /// window always has a project, so only `Always` runs before it is trusted.
@@ -344,6 +358,8 @@ pub struct RemoteProject {
     pub host: String,
     pub server_version: String,
     pub os: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_policy: Option<RemoteIdlePolicy>,
     /// Commands routed to the server (the rest run locally).
     pub commands: Vec<String>,
     pub project: ide_host::ops::project::ProjectInfo,
@@ -751,6 +767,8 @@ pub async fn remote_connect(
     let connection = Arc::new(Connection {
         peer,
         stopping: AtomicBool::new(false),
+        taken_over: taken_over.clone(),
+        idle_policy: info.idle_policy,
         target: target.clone(),
         root: root.clone(),
         host: host.clone(),
@@ -809,7 +827,16 @@ pub async fn remote_connect(
     if let Err(error) = crate::window_groups::persist(window.app_handle()).await {
         tracing::warn!(%error, "cannot save window session after opening remote project");
     }
-    Ok(RemoteProject { target, root, host, server_version: info.version, os: info.os, commands, project })
+    Ok(RemoteProject {
+        target,
+        root,
+        host,
+        server_version: info.version,
+        os: info.os,
+        idle_policy: info.idle_policy,
+        commands,
+        project,
+    })
 }
 
 /// Sends the desktop's plugin languages, with the programs granted to them, to
@@ -889,6 +916,10 @@ pub struct RemoteSession {
     /// `linux`, `macos` or `windows`: the OS the project's commands run on.
     pub os: String,
     pub commands: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_policy: Option<RemoteIdlePolicy>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub taken_over: bool,
 }
 
 /// The remote session of this window (a settings window: its parent's), if any.
@@ -897,13 +928,7 @@ pub struct RemoteSession {
 #[specta::specta]
 pub fn remote_current(window: Window, state: State<'_, AppState>) -> Option<RemoteSession> {
     let c = state.remote_dev.get(AppState::owner_window(window.label()))?;
-    Some(RemoteSession {
-        target: c.target.clone(),
-        root: c.root.clone(),
-        host: c.host.clone(),
-        os: c.os.clone(),
-        commands: c.commands.clone(),
-    })
+    Some(c.snapshot())
 }
 
 /// This machine's trust decision for the window's remote project (see [`Connection::authorize`]).
@@ -1167,7 +1192,7 @@ pub async fn remote_stop_backend(window: Window, state: State<'_, AppState>) -> 
         c.stopping.store(false, Ordering::Release);
     }
     result?;
-    let mut connections = state.remote_dev.0.lock();
+    let mut connections = state.remote_dev.windows.lock();
     if connections.get(&label).is_some_and(|current| Arc::ptr_eq(current, &c)) {
         connections.remove(&label);
         state.host.mcp_reports.remove_remote(&label);
@@ -1485,6 +1510,8 @@ mod tests {
         Connection {
             peer,
             stopping: AtomicBool::new(false),
+            taken_over: Arc::default(),
+            idle_policy: None,
             target,
             root: root.into(),
             host: "host".into(),

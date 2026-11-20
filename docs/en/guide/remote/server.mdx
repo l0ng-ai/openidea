@@ -22,8 +22,10 @@ per-project daemon over a private Unix socket, and talks to it over stdin and st
   Active Run configurations with a stop command, such as `docker compose down`, run that command first. Stopping the
   IDE backend in a dev container does not stop the dev container itself.
 - A backend shuts down after **three hours** with no connected window, live terminal, run, debug session, or agent
-  work. To override this, set `OPENIDEA_SERVER_IDLE_TIMEOUT_SECONDS` to a positive number of seconds in the server's
-  environment before it starts (for SSH, in the remote login environment). A reconnect resets the idle timer. Save
+  work. In a connected remote window, set **Settings › Tools › Remote Development › Idle timeout** in minutes and
+  choose **Apply**. The timeout is saved for your user on that host, not in the project. Each backend reads it
+  when it next becomes idle; no restart is needed. A positive `OPENIDEA_SERVER_IDLE_TIMEOUT_SECONDS` in the
+  server's startup environment overrides this setting. The page shows that override read-only. A reconnect resets the idle timer. Save
   your edits before leaving a project idle: unsaved buffers retained after a network drop are kept only in memory.
 
 ## Supported hosts

@@ -217,6 +217,7 @@ async fn ssh_disconnect_keeps_terminals_runs_index_and_dirty_docs_until_shutdown
     let (peer1, client1) = ssh_attach(&ssh, "openidea-test-attach").await;
     let info1 = initialize(&peer1).await;
     assert_eq!(info1.protocol, rpc::PROTOCOL_VERSION);
+    assert_eq!(info1.idle_policy.unwrap().override_seconds, Some(10_800));
 
     let opened = invoke(&peer1, "open_project", json!({ "path": project })).await.unwrap();
     assert_eq!(opened["name"], "demo");
@@ -557,6 +558,51 @@ async fn an_idle_open_project_expires_but_an_attached_view_does_not() {
     peer.kill();
     peer.exited().await;
     until("a disconnected, opened project expires", || !guard.0.exists()).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn applying_the_host_timeout_expires_the_running_daemon_without_a_restart() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("h");
+    let base = tmp.path().join("s");
+    let project = home.join("demo");
+    std::fs::create_dir_all(&project).unwrap();
+    let guard = DaemonGuard(ide_host::daemon::paths_for(&base, &home, "~/demo").unwrap().socket);
+    let mut daemon = tokio::process::Command::new(SERVER)
+        .arg("--daemon")
+        .arg(&guard.0)
+        .arg(std::str::from_utf8(test_build()).unwrap())
+        .envs(server_env(&home, &base, 1))
+        .env_remove(IDLE_TIMEOUT)
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    until("daemon bound its socket", || guard.0.exists()).await;
+    let (peer, _) = attach_client(&home, &base, "~/demo", 1);
+    assert_eq!(initialize(&peer).await.idle_policy.unwrap().override_seconds, None);
+    invoke(&peer, "open_project", json!({ "path": project })).await.unwrap();
+    let set = |scope: &str, value: &str| {
+        invoke(
+            &peer,
+            "settings_set",
+            json!({ "scope": scope, "key": "remoteDevelopment.idleTimeoutMinutes", "value": value }),
+        )
+    };
+    let global = invoke(&peer, "settings_get_global", json!({})).await.unwrap();
+    assert_eq!(global["remoteDevelopment"]["idleTimeoutMinutes"], 180);
+    assert!(set("global", "0").await.is_err());
+    assert!(set("project", "1").await.is_err());
+    let updated = set("global", "1").await.unwrap();
+    assert_eq!(updated["remoteDevelopment"]["idleTimeoutMinutes"], 1);
+    assert!(std::fs::read_to_string(base.join("config/settings.toml")).unwrap().contains("idleTimeoutMinutes = 1"));
+    let disconnect = std::time::Instant::now();
+    peer.kill();
+    peer.exited().await;
+    let status =
+        tokio::time::timeout(Duration::from_secs(80), daemon.wait()).await.expect("saved timeout not used").unwrap();
+    assert!(status.success());
+    assert!(disconnect.elapsed() >= Duration::from_secs(60), "daemon stopped before the configured minute");
+    assert!(!guard.0.exists());
 }
 
 async fn looping_terminal(peer: &Peer, project: &Path) -> Value {
