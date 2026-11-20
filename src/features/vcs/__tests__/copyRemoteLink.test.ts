@@ -24,6 +24,9 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
   };
 });
 
+const openUrl = vi.hoisted(() => vi.fn(async (_url: string) => undefined));
+vi.mock("../issueLinks", () => ({ openUrl }));
+
 import { openOnRemoteActions, registerOpenOnRemote } from "../openOnRemote";
 import { useVcs } from "../store";
 
@@ -125,6 +128,24 @@ describe("Copy Path/Reference… › <hosting> Link", () => {
       label: "GitHub Link",
       preview: "https://github.com/acme/app/blob/feature/x/src/main.rs#L10",
     });
+  });
+
+  it("opens the file on its remote at the selected lines from Open In", async () => {
+    await start();
+    const open = (ctx: Parameters<typeof menuGroupItems>[1]) =>
+      menuGroupItems("openIn", ctx).filter((i): i is Item => i.kind !== "separator" && "run" in i)[0]!;
+    open({ paths: ["/p/src/a.ts"], line: 9, endLine: 19 }).run!();
+    await vi.waitFor(() =>
+      expect(openUrl).toHaveBeenLastCalledWith(
+        "https://gitlab.example.com/group/sub/app/-/blob/feature/x/src/a.ts#L10-20",
+      ),
+    );
+    open({ paths: ["/p/src/a.ts"], line: 9 }).run!();
+    await vi.waitFor(() =>
+      expect(openUrl).toHaveBeenLastCalledWith(
+        "https://gitlab.example.com/group/sub/app/-/blob/feature/x/src/a.ts#L10",
+      ),
+    );
   });
 
   it("warns instead of copying when the file has no page on a remote", async () => {

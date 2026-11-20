@@ -125,6 +125,9 @@ pub struct Commit {
     pub log_position: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_total: Option<u32>,
+    /// Newest committer time at or after this row if newer than the row's commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_merge_time_ms: Option<f64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub graph_boundary_parents: Vec<String>,
     /// Reachability from HEAD, computed independently of the visible filters.

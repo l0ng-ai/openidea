@@ -1,7 +1,7 @@
 /**
  * Folding: ranges from the backend (`doc_folding`, tree-sitter based) merged
  * with CodeMirror's syntax folding (`foldNodeProp`) as fallback, IDEA-style
- * chevrons in the gutter (open chevrons only on gutter hover).
+ * chevrons in the gutter (open chevrons can be shown only on hover).
  */
 import {
   EditorSelection,
@@ -23,6 +23,7 @@ import {
   unfoldEffect,
 } from "@codemirror/language";
 import type { FoldRange } from "@/platform/ipc";
+import type { FoldingOutlineVisibility } from "@/bindings";
 import { enclosingCodeBlock } from "./caretCommands";
 import { regionMarkerAt, regionNameAt } from "./regions";
 
@@ -432,9 +433,10 @@ export const expandRecursively = (view: EditorView) =>
     view.state.selection.ranges.flatMap((r) => expandRecursivelyEffects(view.state, r.head)),
   );
 
-function chevron(open: boolean): HTMLElement {
+function chevron(open: boolean, visibility: FoldingOutlineVisibility): HTMLElement {
   const span = document.createElement("span");
   span.className = open ? "cm-openidea-foldOpen" : "cm-openidea-foldClosed";
+  span.classList.toggle("cm-openidea-foldOnHover", open && visibility === "hover");
   span.title = open ? "Collapse" : "Expand";
   const ns = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(ns, "svg");
@@ -477,10 +479,14 @@ export function foldChipWidth(el: HTMLElement): number {
   return Math.round(chip.getBoundingClientRect().width);
 }
 
-export function foldingExtension(showOutline = true): Extension {
+export function foldingExtension(showOutline = true, visibility: FoldingOutlineVisibility = "hover"): Extension {
   return [
     // The chevron column sits right of contributed icon gutters (IDEA new UI).
-    showOutline ? Prec.lowest(foldGutter({ markerDOM: chevron, foldingChanged: backendFoldingChanged })) : [],
+    showOutline
+      ? Prec.lowest(
+          foldGutter({ markerDOM: (open) => chevron(open, visibility), foldingChanged: backendFoldingChanged }),
+        )
+      : [],
     backendFolds,
     backendFoldService,
     codeFolding({

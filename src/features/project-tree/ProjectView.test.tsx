@@ -19,7 +19,7 @@ import { FileRefactorDialogHost } from "./FileRefactorDialogs";
 import { setRefactorBackendForTests } from "./fileRefactor";
 import { ProjectView } from "./ProjectView";
 import { beginNew, canPaste } from "./operations";
-import { initProjectTree, setViewOption, useProjectTree } from "./store";
+import { initProjectTree, selectModel, setSelection, setViewOption, useProjectTree } from "./store";
 import type { OutlineItem } from "@/bindings";
 import { _emitEditorEvent, useEditorRegistry } from "@/editor/api";
 import { ProjectHeaderActions } from "./HeaderActions";
@@ -34,6 +34,12 @@ vi.mock("@/bindings", async (orig) => {
   const real = await orig<typeof import("@/bindings")>();
   return { ...real, commands: { ...real.commands, ...ipc } };
 });
+const dragOut = vi.hoisted(() => ({
+  canDragOut: vi.fn(() => false),
+  dragOut: vi.fn(async (_paths: readonly string[]) => true),
+  isDraggingOut: vi.fn(() => false),
+}));
+vi.mock("@/platform/dragOut", () => dragOut);
 
 const ok = <T,>(data: T) => ({ status: "ok" as const, data });
 const item = (name: string, kind: OutlineItem["kind"], line: number, children: OutlineItem[] = []): OutlineItem => {
@@ -390,6 +396,67 @@ describe("ProjectView", () => {
     expect(ghost()).not.toBeNull();
     release();
     expect(ghost()).toBeNull();
+  });
+
+  it("keeps the tree from scrolling sideways during a drag", async () => {
+    const { tree, row, rows } = setup();
+    await waitFor(() => expect(rows()).toContain("README.md"));
+    document.elementFromPoint = () => null;
+    fireEvent(
+      row("README.md").querySelector("[data-project-path]")!,
+      new MouseEvent("pointerdown", { bubbles: true, button: 0 }),
+    );
+    act(() => void window.dispatchEvent(new MouseEvent("pointermove", { buttons: 1, clientX: 40, clientY: 0 })));
+    // WebKit's autoscroll toward a pointer right of the tree.
+    tree.scrollLeft = 600;
+    fireEvent.scroll(tree);
+    expect(tree.scrollLeft).toBe(0);
+    act(() => void window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true })));
+  });
+
+  it("hands the selected files to an OS drag once the pointer leaves the window", async () => {
+    const { row, rows } = setup();
+    await waitFor(() => expect(rows()).toContain("README.md"));
+    document.elementFromPoint = () => null;
+    const model = selectModel(useProjectTree.getState());
+    const keys = [`${ROOT}/README.md`, `${ROOT}/src`].map((p) => model.keyOfPath.get(p)!);
+    act(() => setSelection(new Set(keys), keys[0]!));
+    const ghost = () => screen.queryByText("2 items");
+    const press = () =>
+      fireEvent(
+        row("README.md").querySelector("[data-project-path]")!,
+        new MouseEvent("pointerdown", { bubbles: true, button: 0 }),
+      );
+    const move = (x: number) =>
+      act(() => {
+        window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, buttons: 1, clientX: x, clientY: 10 }));
+      });
+    const release = () => act(() => void window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true })));
+    try {
+      // Where files can't leave (a remote project, the browser), the drag stays in the window.
+      press();
+      move(40);
+      move(-5);
+      expect(ghost()).not.toBeNull();
+      release();
+      expect(dragOut.dragOut).not.toHaveBeenCalled();
+
+      dragOut.canDragOut.mockReturnValue(true);
+      press();
+      move(40);
+      expect(ghost()).not.toBeNull();
+      expect(dragOut.dragOut).not.toHaveBeenCalled();
+      move(window.innerWidth + 5);
+      expect(dragOut.dragOut).toHaveBeenCalledExactlyOnceWith([`${ROOT}/README.md`, `${ROOT}/src`]);
+      // The OS drag owns the pointer now: the in-window drag is over.
+      expect(ghost()).toBeNull();
+      move(-5);
+      release();
+      expect(dragOut.dragOut).toHaveBeenCalledOnce();
+    } finally {
+      dragOut.canDragOut.mockReturnValue(false);
+      dragOut.dragOut.mockClear();
+    }
   });
 
   it("cancels a new file when its name field loses focus", async () => {

@@ -250,9 +250,13 @@ async fn unresponsive_driver_closes_before_reconnect() -> IdeResult<()> {
     })
     .await
     .expect("driver cancellation must be bounded");
-    assert!(result.unwrap_err().message.contains("Reconnect"));
-    db.disconnect("test").await;
-    assert_eq!(db.execute("test", "after reconnect", 1, &normal).await?.affected, Some(1.0));
+    assert_eq!(
+        result.unwrap_err().message,
+        "Cancellation timed out and the JDBC session was closed. Check the statement's status on the server before running it again. The next query will try to reconnect."
+    );
+    assert!(db.connected().is_empty());
+    assert_eq!(db.execute("test", "after cancellation", 1, &normal).await?.affected, Some(1.0));
+    assert_eq!(db.connected(), ["test"]);
     db.disconnect("test").await;
     Ok(())
 }

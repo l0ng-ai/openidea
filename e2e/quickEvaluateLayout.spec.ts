@@ -82,7 +82,7 @@ test("Quick Evaluate opens an object tree that fits the editor and returns focus
   await expect(hint.getByRole("tree")).toHaveCount(0);
   await expect(hint).toHaveText(/subtotal\s*=\s*42/);
   expect(await ipcCalls(page, "debug_evaluate_in")).toEqual([
-    { session: 91, frameId: 11, expression: "summary", context: "hover" },
-    { session: 91, frameId: 11, expression: "subtotal", context: "hover" },
+    { session: 91, frameId: 11, expression: "summary", context: "watch" },
+    { session: 91, frameId: 11, expression: "subtotal", context: "watch" },
   ]);
 });

@@ -82,3 +82,47 @@
   flex: 1;
   border-top: 1px solid var(--border-popup);
 }
+.actions {
+  display: flex;
+  flex-direction: column;
+  width: 320px;
+  min-width: 0;
+}
+.actions .body {
+  min-height: 0;
+}
+.actions .header {
+  flex: none;
+  padding-inline: 14px;
+  color: var(--fg-strong);
+  font-size: var(--fs-ui);
+  font-weight: 600;
+}
+.actions .title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.actions .list {
+  max-height: none;
+}
+.actions .row {
+  gap: var(--space-2);
+}
+.actions .label {
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: none;
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
+}
+.actions .section {
+  width: 100%;
+  padding: 0;
+}
+.mnemonic {
+  flex: 0 0 var(--space-4);
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+}

@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditorState, Text } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { history, undo } from "@codemirror/commands";
-import type { MessageRequest } from "@/workbench/messages";
+import { render } from "@testing-library/react";
+import type { ConfirmOptions, MessageRequest } from "@/workbench/messages";
 import type { LocalSymbol, Location, Locals, OutlineItem, Pos, Range, StructuralRanges, SyntaxNode } from "@/bindings";
 
 // --- backend fakes ---------------------------------------------------------
@@ -74,13 +75,12 @@ vi.mock("@tauri-apps/api/core", async (orig) => ({
 let answer = "cancel";
 const ask = vi.fn(async (_request: MessageRequest) => ({ button: answer, checked: false }));
 let confirmAnswer: { checked: boolean } | null = { checked: false };
-const confirmChecked = vi.fn(
-  async (_opts: { title: string; message: string; checkbox?: string; checked?: boolean }) => confirmAnswer,
-);
+const confirmChecked = vi.fn(async (_opts: ConfirmOptions) => confirmAnswer);
 vi.mock("@/workbench/messages", () => ({ ask, confirmChecked }));
 
-const { deletionRange, localDeclaration, outlineItemAt, safeDelete, fileUsages, usagesMessage, textOccurrences } =
+const { deletionRange, localDeclaration, outlineItemAt, safeDelete, fileUsages, textOccurrences } =
   await import("./safeDelete");
+const { usagesMessage } = await import("./SafeDeleteUsages");
 const { closePopup, useLspPopup } = await import("@/editor/lsp/popupStore");
 const { lspDoc } = await import("@/editor/lsp/lsp");
 
@@ -294,7 +294,11 @@ describe("safeDelete in the editor", () => {
       await safeDelete(v);
       const request = ask.mock.calls[0]![0];
       expect(request.title).toBe("Usages Detected");
-      expect(request.body).toBe("1 usage found\nFunction 'used' has 1 usage that is not safe to delete.");
+      expect(request.presentation).toBe("form");
+      const summary = render(request.body);
+      expect(summary.getByRole("heading", { name: "1 usage found" })).toBeInTheDocument();
+      expect(summary.getByText("Function 'used' has 1 usage that is not safe to delete.")).toBeInTheDocument();
+      summary.unmount();
       expect(request.buttons.map((b) => b.label)).toEqual(["View Usages", "Delete Anyway"]);
       return v;
     };
@@ -314,6 +318,7 @@ describe("safeDelete in the editor", () => {
     expect(confirmChecked).toHaveBeenCalledTimes(1);
     const opts = confirmChecked.mock.calls[0]![0];
     expect(opts.title).toBe("Safe Delete");
+    expect(opts.presentation).toBe("form");
     expect(opts.message).toBe("Delete Function 'unused'?");
     expect(opts.checkbox).toBe("Search in comments and strings");
     expect(lspReferences).not.toHaveBeenCalled();

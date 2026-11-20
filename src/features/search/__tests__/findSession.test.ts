@@ -219,6 +219,24 @@ describe("result helpers", () => {
     expect(rows[0]).toMatchObject({ text: "let foo = 1", ranges: [[4, 7]], col: 18, endCol: 21, matched: ["foo"] });
   });
 
+  it("matchRows keeps each window of a long line as its own row", () => {
+    const rows = matchRows([
+      {
+        path: "/p/min.js",
+        relPath: "min.js",
+        matches: [
+          { line: 0, text: "x foo x", ranges: [[2, 5]], textOffset: 0 },
+          { line: 0, text: "x foo x", ranges: [[2, 5]], textOffset: 2000 },
+        ],
+      },
+    ]);
+    expect(new Set(rows.map((r) => r.key)).size).toBe(2);
+    expect(rows.flatMap((r) => r.starts)).toEqual([
+      { line: 0, col: 2 },
+      { line: 0, col: 2002 },
+    ]);
+  });
+
   it("previewReplacement supports Rust-style regex groups", () => {
     const re = { pattern: "(\\w+)=(\\d+)", isRegex: true, caseSensitive: true };
     expect(previewReplacement("a=1", re, "${2}:$1")).toBe("1:a");

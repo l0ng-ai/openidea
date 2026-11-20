@@ -236,6 +236,11 @@ pub struct Variable {
     /// > 0 when expandable.
     pub variables_reference: i64,
     pub evaluate_name: Option<String>,
+    /// `value` is not computed yet (DAP `presentationHint.lazy`): the single variable that
+    /// `variables` returns for `variables_reference` holds the value and its children.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[specta(optional)]
+    pub lazy: bool,
 }
 
 /// A completion the adapter offers for an expression (DAP `completions`).
@@ -727,7 +732,44 @@ pub(crate) fn variable_from(v: &Value) -> Variable {
         type_name: s("type").filter(|t| !t.is_empty()),
         variables_reference: v.get("variablesReference").and_then(Value::as_i64).unwrap_or(0),
         evaluate_name: s("evaluateName"),
+        lazy: v.pointer("/presentationHint/lazy").and_then(Value::as_bool).unwrap_or(false),
     }
+}
+
+async fn session_variables(session: &Session, reference: i64) -> IdeResult<Vec<Variable>> {
+    let body =
+        session.conn.request_timeout("variables", json!({ "variablesReference": reference }), REQUEST_TIMEOUT).await?;
+    Ok(body
+        .get("variables")
+        .and_then(Value::as_array)
+        .map(|v| v.iter().map(variable_from).collect())
+        .unwrap_or_default())
+}
+
+async fn resolve_in(session: &Session, variable: Variable) -> IdeResult<Variable> {
+    if !variable.lazy || variable.variables_reference <= 0 {
+        return Ok(variable);
+    }
+    let mut inner = session_variables(session, variable.variables_reference).await?;
+    Ok(match (inner.pop(), inner.is_empty()) {
+        (Some(value), true) => Variable {
+            type_name: value.type_name.or(variable.type_name),
+            evaluate_name: variable.evaluate_name.or(value.evaluate_name),
+            name: variable.name,
+            value: value.value,
+            variables_reference: value.variables_reference,
+            lazy: value.lazy,
+        },
+        _ => variable,
+    })
+}
+
+/// A value that cannot be computed stays lazy, so the row can still be opened by hand.
+async fn resolve_lazy(session: &Session, variable: Variable) -> Variable {
+    if !variable.lazy {
+        return variable;
+    }
+    resolve_in(session, variable.clone()).await.unwrap_or(variable)
 }
 
 impl DebugManager {
@@ -1497,6 +1539,7 @@ impl DebugManager {
             type_name: body.get("type").and_then(Value::as_str).filter(|t| !t.is_empty()).map(str::to_owned),
             variables_reference: body.get("variablesReference").and_then(Value::as_i64).unwrap_or(0),
             evaluate_name: evaluate_name.or(Some(name)),
+            lazy: false,
         })
     }
 
@@ -1567,16 +1610,18 @@ impl DebugManager {
     }
 
     pub async fn variables(&self, s: DebugSessionId, reference: i64) -> IdeResult<Vec<Variable>> {
-        let body = self
-            .session(s)?
-            .conn
-            .request_timeout("variables", json!({ "variablesReference": reference }), REQUEST_TIMEOUT)
-            .await?;
-        Ok(body
-            .get("variables")
-            .and_then(Value::as_array)
-            .map(|v| v.iter().map(variable_from).collect())
-            .unwrap_or_default())
+        let session = self.session(s)?;
+        let vars = session_variables(&session, reference).await?;
+        if !session.spec.resolve_lazy_variables {
+            return Ok(vars);
+        }
+        Ok(join_all(vars.into_iter().map(|v| resolve_lazy(&session, v))).await)
+    }
+
+    /// Computes a lazy variable's value (DAP `presentationHint.lazy`); any other variable, or one
+    /// whose value the adapter does not give as a single variable, comes back unchanged.
+    pub async fn resolve_variable(&self, s: DebugSessionId, variable: Variable) -> IdeResult<Variable> {
+        resolve_in(&*self.session(s)?, variable).await
     }
 
     /// Evaluates in the `repl` context.
@@ -1602,13 +1647,18 @@ impl DebugManager {
             args["frameId"] = f.into();
         }
         let body = session.conn.request_timeout("evaluate", args, REQUEST_TIMEOUT).await?;
-        Ok(Variable {
+        let result = Variable {
             name: expression.clone(),
             value: body.get("result").and_then(Value::as_str).unwrap_or_default().to_owned(),
             type_name: body.get("type").and_then(Value::as_str).filter(|t| !t.is_empty()).map(str::to_owned),
             variables_reference: body.get("variablesReference").and_then(Value::as_i64).unwrap_or(0),
             evaluate_name: Some(expression),
-        })
+            lazy: body.pointer("/presentationHint/lazy").and_then(Value::as_bool).unwrap_or(false),
+        };
+        if !session.spec.resolve_lazy_variables {
+            return Ok(result);
+        }
+        Ok(resolve_lazy(&session, result).await)
     }
 
     /// Completions for `text` at `line` / `column` (0-based, UTF-16) in the frame's scope; none
@@ -1713,7 +1763,7 @@ impl DebugManager {
         // A step runs its thread; other threads stopped by their own events stay stopped.
         session.suspended.resumed(ticket, thread_id, false);
         stream_trace::release_done(&session);
-        session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: true });
+        session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: false });
         Ok(())
     }
 
@@ -1825,7 +1875,7 @@ impl DebugManager {
         step_settled(&session, sent)?;
         session.suspended.resumed(ticket, thread_id, false);
         stream_trace::release_done(&session);
-        session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: true });
+        session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: false });
         Ok(())
     }
 

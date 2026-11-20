@@ -21,11 +21,8 @@ const styled = (attr: string, extra: Pick<DecorationSegment, "text"> & Decoratio
   ...extra,
 });
 
-/** How many files of the working tree changed (staged, unstaged or untracked): nothing when clean. */
-function changedFiles(count: number): DecorationSegment[] {
-  if (count <= 0) return [];
-  return [{ text: String(count), icon: "edit", label: tx`${count} changed files`, color: "var(--vcs-modified)" }];
-}
+/** Tooltip of the working-tree marker. */
+const changedLabel = (count: number) => tx`${count} changed files`;
 
 export function rootSyncSuffix(info: BranchInfo, changed = 0): DecorationSegment[] | null {
   const { head, upstream, ahead, behind } = info;
@@ -39,9 +36,8 @@ export function rootSyncSuffix(info: BranchInfo, changed = 0): DecorationSegment
       : "local-branch";
   const branchColor = `var(--git-${branchAttr}, var(--accent))`;
   const branch: DecorationSegment = styled(branchAttr, { text: head, color: branchColor });
-  if (!upstream) return [branch, ...changedFiles(changed)];
   const counts: DecorationSegment[] = [];
-  if (ahead > 0)
+  if (upstream && ahead > 0)
     counts.push(
       styled("branch-changed", {
         text: String(ahead),
@@ -50,7 +46,7 @@ export function rootSyncSuffix(info: BranchInfo, changed = 0): DecorationSegment
         color: "var(--git-branch-changed, var(--accent))",
       }),
     );
-  if (behind > 0)
+  if (upstream && behind > 0)
     counts.push(
       styled("branch-changed", {
         text: String(behind),
@@ -59,21 +55,17 @@ export function rootSyncSuffix(info: BranchInfo, changed = 0): DecorationSegment
         color: "var(--git-branch-changed, var(--accent))",
       }),
     );
-  if (!counts.length)
-    counts.push(
-      styled("head-tags", {
-        text: "0",
-        strike: true,
-        label: tx`Up to date with ${upstream}`,
-        color: "var(--git-head-tags, var(--accent))",
-      }),
-    );
-  return [
-    branch,
-    styled("head-tags", { text: "/", color: "var(--git-head-tags, var(--accent))" }),
-    ...counts,
-    ...changedFiles(changed),
-  ];
+  const tagsColor = "var(--git-head-tags, var(--accent))";
+  const separator = styled("head-tags", {
+    text: "/",
+    color: tagsColor,
+    ...(upstream && counts.length === 0 ? { label: tx`Up to date with ${upstream}` } : {}),
+  });
+  const workingTree: DecorationSegment =
+    changed > 0
+      ? { text: `${changed} Δ`, label: changedLabel(changed), color: "var(--vcs-modified)" }
+      : styled("head-tags", { text: "∅", label: tx("No local changes"), color: tagsColor });
+  return [branch, ...counts, separator, workingTree];
 }
 
 /** Changed files per repository root (each file counted once, in its innermost repository). */

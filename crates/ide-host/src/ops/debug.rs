@@ -343,6 +343,11 @@ pub async fn debug_variables(host: &Host, session: DebugSessionId, reference: i6
 }
 
 #[command(trust = trusted)]
+pub async fn debug_resolve_variable(host: &Host, session: DebugSessionId, variable: Variable) -> IdeResult<Variable> {
+    host.debugger.resolve_variable(session, variable).await
+}
+
+#[command(trust = trusted)]
 pub async fn debug_evaluate(
     host: &Host,
     session: DebugSessionId,
@@ -834,6 +839,7 @@ ide_command::domain!(
     debug_listen_for_jvm,
     debug_pause,
     debug_redefine_classes,
+    debug_resolve_variable,
     debug_restart_frame,
     debug_resume,
     debug_run_to,

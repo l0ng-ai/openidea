@@ -197,7 +197,8 @@ export function matchRows(files: readonly FileMatches[]): MatchRow[] {
         .filter(([s, e]) => e > s);
       const first = m.ranges[0] ?? [0, 0];
       rows.push({
-        key: `${f.path}:${m.line}`,
+        // A long line comes in several windows: the column tells them apart.
+        key: `${f.path}:${m.line}:${first[0] + m.textOffset}`,
         path: f.path,
         relPath: f.relPath,
         line: m.line,
