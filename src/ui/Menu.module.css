@@ -92,6 +92,15 @@
   color: var(--fg-muted);
   font-size: var(--fs-small);
 }
+.title {
+  display: flex;
+  align-items: center;
+  min-height: var(--h-list-row);
+  margin-bottom: var(--space-1);
+  padding-inline: var(--space-3);
+  color: var(--fg-strong);
+  font-weight: 600;
+}
 
 /* Settings › Appearance › "Display icons in menu items" off: keep the column, drop the icon. */
 :global(:root[data-menu-icons="off"]) .icon[data-menu-icon] > * {
