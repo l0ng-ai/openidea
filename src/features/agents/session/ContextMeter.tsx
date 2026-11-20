@@ -27,7 +27,14 @@ export function ContextMeter({ task, usage }: { task: AgentTask; usage: AgentUsa
   const label = usageLabel(usage);
   const hint = tx("Context window") + " · " + label.short;
   const anchor = useRef<HTMLButtonElement>(null);
-  const [open, setOpen] = useState(false);
+  const [phase, setPhase] = useState<"closed" | "open" | "closing">("closed");
+  const open = phase === "open";
+  const close = () => setPhase(window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "closed" : "closing");
+  useEffect(() => {
+    if (phase !== "closing") return;
+    const timer = window.setTimeout(() => setPhase("closed"), 100);
+    return () => window.clearTimeout(timer);
+  }, [phase]);
   const meter = (
     <>
       <span className={styles.usageBar} aria-hidden>
@@ -52,26 +59,27 @@ export function ContextMeter({ task, usage }: { task: AgentTask; usage: AgentUsa
         aria-haspopup="dialog"
         aria-expanded={open}
         {...tooltipAttrs(open ? undefined : hint, undefined, true)}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => (open ? close() : setPhase("open"))}
       >
         {meter}
       </button>
       <Popup
-        open={open}
-        onClose={() => setOpen(false)}
+        open={phase !== "closed"}
+        onClose={close}
         anchor={anchor}
         placement="top-end"
-        trapFocus
+        trapFocus={open}
+        role={open ? "dialog" : "presentation"}
         aria-label={tx("Context window")}
-        className={styles.contextPopover}
+        className={phase === "closing" ? styles.contextClosing : styles.contextPopover}
       >
-        <ContextDetails task={task} onClose={() => setOpen(false)} />
+        <ContextDetails task={task} onClose={close} closing={!open} />
       </Popup>
     </>
   );
 }
 
-function ContextDetails({ task, onClose }: { task: AgentTask; onClose: () => void }) {
+function ContextDetails({ task, onClose, closing }: { task: AgentTask; onClose: () => void; closing: boolean }) {
   const [report, setReport] = useState<AgentContextUsage | null>(null);
   const [error, setError] = useState("");
   const [sending, setSending] = useState(false);
@@ -103,7 +111,7 @@ function ContextDetails({ task, onClose }: { task: AgentTask; onClose: () => voi
     }
   };
   return (
-    <div className={styles.contextDetails}>
+    <div className={styles.contextDetails} inert={closing}>
       <div className={styles.contextHeading}>
         <strong>
           <T>Context window</T>

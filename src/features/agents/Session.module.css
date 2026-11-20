@@ -2028,6 +2028,28 @@
 .contextPopover {
   max-width: calc(100vw - 24px);
 }
+.contextPopover[data-positioned],
+.contextClosing[data-positioned] {
+  animation: none;
+  transition: opacity 100ms ease;
+}
+.contextClosing {
+  composes: contextPopover;
+  pointer-events: none;
+}
+.contextClosing.contextPopover[data-positioned] {
+  opacity: 0;
+}
+@starting-style {
+  .contextPopover[data-positioned] {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .contextPopover[data-positioned] {
+    transition: none;
+  }
+}
 .contextDetails {
   display: grid;
   gap: var(--space-2);
