@@ -107,6 +107,9 @@ type ResolvedNode = Exclude<MemNode, { kind: "symlink" }>;
 
 const err = (kind: "notFound" | "alreadyExists" | "invalidInput", message: string) => new IpcError({ kind, message });
 
+/** Created once: building a collator costs more than sorting a small folder with it. */
+const naturalOrder = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
 /** The tree's own notion (see `isDirEntry`): a folder, or a link to one. */
 const isFolder = (e: FileEntry) => e.kind === "dir" || (e.kind === "symlink" && e.size === 0);
 
@@ -161,13 +164,14 @@ export class MemoryFs implements ProjectFs {
     const { path, node } = this.resolve(at);
     if (!node) throw err("notFound", `${path} not found`);
     if (node.kind !== "dir") throw err("invalidInput", `${at} is not a directory`);
-    const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+    // A child is excluded when its folder is, or when it is itself an excluded path.
+    const inExcluded = [...this.ignored].some((i) => path === i || isInside(path, i));
     return (
       this.childrenOf(path)
         .map((p) => {
           const c = this.nodes.get(p)!;
           const name = nameOf(p);
-          const excluded = [...this.ignored].some((i) => p === i || isInside(p, i));
+          const excluded = inExcluded || this.ignored.has(p);
           if (c.kind === "symlink") {
             const t = this.resolve(p);
             return {
@@ -195,7 +199,7 @@ export class MemoryFs implements ProjectFs {
           } satisfies FileEntry;
         })
         // Folders first, counting a link to a folder as a folder (the backend's ordering).
-        .sort((a, b) => Number(isFolder(b)) - Number(isFolder(a)) || collator.compare(a.name, b.name))
+        .sort((a, b) => Number(isFolder(b)) - Number(isFolder(a)) || naturalOrder.compare(a.name, b.name))
     );
   }
 
