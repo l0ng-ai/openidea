@@ -76,6 +76,34 @@ test("⌘K commits the checked changes with the typed message", async ({ workben
   await expect(changes.getByRole("checkbox", { name: "Include build.gradle.kts in commit" })).toBeHidden();
 });
 
+test("turning off default inclusion starts Commit with all files unchecked", async ({ workbench: page }) => {
+  await page.keyboard.press("Meta+,");
+  const settings = page.getByRole("dialog", { name: "Settings", exact: true });
+  const label = "Include changes in the commit by default";
+  await settings.getByRole("textbox", { name: "Search settings" }).fill(label);
+  await settings.getByRole("treeitem", { name: "Commit", exact: true }).click();
+  const toggle = settings.getByRole("checkbox", { name: label, exact: true });
+  await expect(toggle).toBeChecked();
+  await toggle.click();
+  await settings.getByRole("button", { name: "OK", exact: true }).click();
+  await expect(settings).not.toBeVisible();
+
+  await stubRepository(page);
+  await page.keyboard.press("Meta+k");
+  const panel = page.getByRole("region", { name: "Commit", exact: true });
+  const changes = panel.getByRole("tree", { name: "Changes" });
+  const tracked = changes.getByRole("checkbox", { name: "Include build.gradle.kts in commit" });
+  await expect(tracked).toHaveAttribute("aria-checked", "false");
+  await expect(changes.getByRole("checkbox", { name: "Include Unversioned Files in commit" })).not.toBeChecked();
+  await tracked.click();
+  await expect(tracked).toBeChecked();
+  await panel.getByRole("textbox", { name: "Commit message" }).fill("Commit the selected file");
+  await panel.getByRole("button", { name: "Commit", exact: true }).click();
+  await expect.poll(() => ipcCalls(page, "vcs_commit")).toHaveLength(1);
+  const [committed] = await ipcCalls(page, "vcs_commit");
+  expect(committed!.options).toMatchObject({ stage: [`${ROOT}/build.gradle.kts`] });
+});
+
 test("commit message history opens above the message without an empty icon column", async ({ workbench: page }) => {
   await stubRepository(page);
   await page.keyboard.press("Meta+k");
