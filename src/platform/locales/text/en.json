@@ -2693,6 +2693,8 @@
   "Cannot move a folder into itself": "Cannot move a folder into itself",
   "Already in this directory": "Already in this directory",
   "Resize left merge pane": "Resize left merge pane",
+  "Resize rebase panes": "Resize rebase panes",
+  "New message for {id}": "New message for {id}",
   "Resize right merge pane": "Resize right merge pane",
   "Database and schema": "Database and schema",
   "Loading…": "Loading…",

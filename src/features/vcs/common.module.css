@@ -441,32 +441,110 @@
   gap: var(--space-2) var(--space-4);
 }
 /* Interactive rebase dialog. */
-.rebaseList {
-  max-height: 360px;
-  overflow: auto;
-  margin: 0 14px;
+.rebaseDialog {
+  height: min(550px, calc(100vh - 48px));
+}
+.rebasePage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 0;
+  height: 100%;
+  padding: var(--space-2) var(--space-3) var(--space-3);
+}
+.rebaseSplit {
+  flex: 1;
   border: 1px solid var(--border);
   border-radius: var(--radius-small);
 }
+.rebaseToolbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+.rebaseList {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-1);
+}
 .rebaseRow {
-  min-height: var(--h-row);
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: 2px 6px;
-  white-space: nowrap;
+  gap: var(--space-1);
+  padding: var(--space-0-5) var(--space-2);
+  border-radius: var(--radius-selection);
 }
 .rebaseRow:hover {
   background: var(--bg-hover);
 }
+.rebaseRow[data-selected] {
+  background: var(--bg-selected);
+}
+.rebaseCommit {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--space-0-5);
+  min-width: 0;
+  min-height: var(--h-row);
+  padding: var(--space-1) 0;
+  border-radius: var(--radius-small);
+  color: var(--fg-strong);
+  text-align: left;
+}
+.rebaseCommit:focus-visible {
+  outline: 1px solid var(--focus-ring);
+}
+.rebaseSubject {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rebaseSubject[data-dropped] {
+  text-decoration: line-through;
+}
 .rebaseAction {
-  width: 120px;
-  flex: none;
+  width: 112px;
+  flex: 0 1 112px;
+}
+.rebaseDetails {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-3);
+}
+.rebaseMetadata {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-0-5) var(--space-2);
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  overflow-wrap: anywhere;
+}
+.rebasePreview {
+  color: var(--fg-strong);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
 }
 .rebaseMessage {
   flex: 1;
-  min-width: 0;
-  min-height: 0;
+  width: 100%;
+  min-height: calc(4 * var(--h-row));
+  resize: none;
+  line-height: 1.5;
 }
 /* Push dialog: the editable target branch. */
 .targetInput {
