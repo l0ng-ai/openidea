@@ -2724,5 +2724,9 @@
   "Leave empty to use the active GitHub CLI account. OpenIDEA resolves the token at launch and never stores it.": "Leave empty to use the active GitHub CLI account. OpenIDEA resolves the token at launch and never stores it.",
   "github-username": "github-username",
   "Find actions": "Find actions",
-  "Resize find preview": "Resize find preview"
+  "Resize find preview": "Resize find preview",
+  "Caret": "Caret",
+  "Code Structure": "Code Structure",
+  "Presentation": "Presentation",
+  "Code Assistance": "Code Assistance"
 }
