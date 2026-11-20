@@ -2,12 +2,14 @@ import { useEffect, useState, type KeyboardEvent } from "react";
 import type { Commit } from "@/bindings";
 import { call, commands, nextRequestId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
-import { Dialog, List, SearchField, Spinner, T, listNavigate } from "@/ui";
+import { Dialog, List, SearchField, Spinner, T, listNavigate, selectableText } from "@/ui";
 import { openDialog } from "./dialogs";
 import { annotateAtRevision } from "./annotateRevision";
 import { openVcsDiff } from "./diffInput";
 import { hasFileHistory } from "./fileRevisions";
+import { useCommitDetails } from "./logDetails";
 import { formatTime } from "./model";
+import type { RepoCommit } from "./multiRoot";
 import { repositoryPath } from "./repositoryPaths";
 import { repoOf } from "./store";
 import styles from "./FileRevisionChooser.module.css";
@@ -57,6 +59,15 @@ export function annotateFileRevision(path: string | null | undefined) {
       }}
     />
   ));
+}
+
+function CommitMessage({ commit }: { commit: RepoCommit }) {
+  const { details } = useCommitDetails(commit, commit.messageTruncated === true);
+  return (
+    <div className={`${styles.message} ${selectableText}`}>
+      {details?.message ?? (commit.message || commit.summary)}
+    </div>
+  );
 }
 
 function FileRevisionChooser({
@@ -109,6 +120,7 @@ function FileRevisionChooser({
     `${c.id} ${formatTime(c.timeMs)} ${c.author} ${c.summary}`.toLocaleLowerCase().includes(q),
   );
   const idx = Math.min(active, items.length - 1);
+  const selected = items[idx];
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Enter") {
       e.preventDefault();
@@ -122,7 +134,16 @@ function FileRevisionChooser({
     }
   };
   return (
-    <Dialog open title={title ?? "Compare with Revision…"} onClose={onClose} width={720} position="top">
+    <Dialog
+      open
+      title={title ?? "Compare with Revision…"}
+      onClose={onClose}
+      resizable="both"
+      initialSize={{ w: 600, h: 412 }}
+      minWidth={320}
+      minHeight={280}
+      className={styles.dialog}
+    >
       <div className={styles.search}>
         <SearchField
           data-autofocus
@@ -137,7 +158,7 @@ function FileRevisionChooser({
           variant="bare"
         />
       </div>
-      <div className={styles.body}>
+      <div className={styles.revisions}>
         {error ? (
           <div className={styles.error} role="alert">
             {error}
@@ -153,7 +174,6 @@ function FileRevisionChooser({
             onActivate={onChoose}
             focusable={false}
             hoverSelects
-            rowHeight={28}
             aria-label="File revisions"
             empty={<T>No commits</T>}
             className={styles.list}
@@ -162,12 +182,22 @@ function FileRevisionChooser({
                 <span className={styles.hash}>{c.shortId}</span>
                 <span className={styles.date}>{formatTime(c.timeMs)}</span>
                 <span className={styles.author}>{c.author}</span>
-                <span className={styles.subject}>{c.summary}</span>
               </span>
             )}
           />
         )}
       </div>
+      <section
+        key={selected?.id}
+        className={styles.details}
+        aria-label={tx("Commit message")}
+        tabIndex={selected ? 0 : undefined}
+      >
+        <div className={styles.caption} aria-hidden="true">
+          <T>Commit message</T>
+        </div>
+        {selected && <CommitMessage commit={{ ...selected, repo }} />}
+      </section>
     </Dialog>
   );
 }

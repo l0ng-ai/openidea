@@ -458,6 +458,7 @@
   "Show File at Revision": "Show File at Revision",
   "Search file revisions": "Search file revisions",
   "File revisions": "File revisions",
+  "Commit message": "Commit message",
   "The current line has no committed revision": "The current line has no committed revision",
   "JAR Application": "JAR Application",
   "Run an executable JAR": "Run an executable JAR",
