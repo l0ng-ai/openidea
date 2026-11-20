@@ -63,9 +63,15 @@ async function remoteInvoke(cmd: string, args?: InvokeArgs, options?: InvokeOpti
   const { json, channels } = encodeArgs(args);
   if (cmd === "db_execute_stream") {
     // These callbacks are reached through onChannel; their own Tauri registrations are unused.
-    const runtime = (window as Window & { __TAURI_INTERNALS__: { unregisterCallback(id: number): void } })
-      .__TAURI_INTERNALS__;
-    for (const channel of channels.values()) runtime.unregisterCallback(channel.id);
+    const runtime = "__TAURI_INTERNALS__" in window ? window.__TAURI_INTERNALS__ : undefined;
+    if (
+      runtime &&
+      typeof runtime === "object" &&
+      "unregisterCallback" in runtime &&
+      typeof runtime.unregisterCallback === "function"
+    ) {
+      for (const channel of channels.values()) runtime.unregisterCallback(channel.id);
+    }
   }
   const onChannel = new Channel<ChannelFrame>();
   onChannel.onmessage = (frame) => channels.get(frame.id)?.onmessage(JSON.parse(frame.data));
