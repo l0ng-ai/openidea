@@ -463,6 +463,20 @@ export function backendFoldingChanged(update: ViewUpdate): boolean {
   return update.startState.field(backendFolds, false) !== update.state.field(backendFolds, false);
 }
 
+/**
+ * The folded chip is an in-flow widget drawn at the fold start, which for header-line folds is
+ * the same position as the zero-width anchors of the line-end annotations (`codeLens.ts`, inline
+ * blame, plugin messages). Their absolutely positioned boxes park a fixed offset past those
+ * anchors, so a chip drawn after them paints under (over) the hint. Each consumer measures the
+ * chip and steps past it, but only when the chip follows its anchor in the DOM — a chip earlier
+ * in the line (mid-line import folds) already sits before the anchor and cannot overlap.
+ */
+export function foldChipWidth(el: HTMLElement): number {
+  const chip = el.closest(".cm-line")?.querySelector(".cm-foldPlaceholder");
+  if (!chip || !(el.compareDocumentPosition(chip) & Node.DOCUMENT_POSITION_FOLLOWING)) return 0;
+  return Math.round(chip.getBoundingClientRect().width);
+}
+
 export function foldingExtension(showOutline = true): Extension {
   return [
     // The chevron column sits right of contributed icon gutters (IDEA new UI).
