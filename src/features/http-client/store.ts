@@ -14,6 +14,9 @@ import { writeClipboardText } from "@/platform/clipboard";
 import { editorService, notifications, showServiceView, showStatusInfo } from "@/workbench/contributions";
 
 export const SERVICE_VIEW = "httpClient";
+// Same bound as ide_http::history::MAX_ENTRIES. Only recent rows keep their bodies in the UI.
+const HISTORY_LIMIT = 100;
+const EXCHANGE_LIMIT = 4;
 const ENV_KEY = "openidea.httpClient.environments";
 
 function readEnvChoices(): Record<string, string> {
@@ -41,8 +44,8 @@ interface HttpClientState {
   environments: Record<string, string[]>;
   /** History entries, newest first (this session's runs included). */
   history: HttpHistoryEntry[];
-  /** Loaded exchanges by entry id. */
-  exchanges: Record<string, HttpExchange>;
+  /** Loaded exchanges, most recently viewed first. */
+  exchanges: HttpExchange[];
   selected: string | null;
   running: Running | null;
 }
@@ -51,7 +54,7 @@ export const useHttpClient = create<HttpClientState>(() => ({
   envByFile: readEnvChoices(),
   environments: {},
   history: [],
-  exchanges: {},
+  exchanges: [],
   selected: null,
   running: null,
 }));
@@ -96,6 +99,10 @@ function effectiveEnvironment(path: string | null, selection?: string | null): s
   return null;
 }
 
+function rememberExchange(exchange: HttpExchange, recent: HttpExchange[]) {
+  return [exchange, ...recent.filter((e) => e.entry.id !== exchange.entry.id)].slice(0, EXCHANGE_LIMIT);
+}
+
 export async function refreshHistory() {
   try {
     const history = await call(commands.httpHistory());
@@ -106,12 +113,18 @@ export async function refreshHistory() {
 }
 
 export async function selectEntry(id: string) {
+  const { exchanges } = useHttpClient.getState();
+  const cached = exchanges.find((e) => e.entry.id === id);
+  if (cached) {
+    useHttpClient.setState({ selected: id, exchanges: rememberExchange(cached, exchanges) });
+    return;
+  }
   useHttpClient.setState({ selected: id });
-  if (useHttpClient.getState().exchanges[id]) return;
   try {
     const ex = await call(commands.httpHistoryGet(id));
-    useHttpClient.setState((s) => ({ exchanges: { ...s.exchanges, [id]: ex } }));
+    useHttpClient.setState((s) => (s.selected === id ? { exchanges: rememberExchange(ex, s.exchanges) } : s));
   } catch (e) {
+    if (useHttpClient.getState().selected !== id) return;
     notifications().notify({
       level: "error",
       title: "Cannot open the response",
@@ -122,7 +135,7 @@ export async function selectEntry(id: string) {
 
 export async function clearHistory() {
   await call(commands.httpHistoryClear());
-  useHttpClient.setState({ history: [], exchanges: {}, selected: null });
+  useHttpClient.setState({ history: [], exchanges: [], selected: null });
 }
 
 export function parseRequests(text: string): Promise<HttpRequestBlock[]> {
@@ -159,8 +172,8 @@ export async function runRequest(
     const env = batchEnvironment === undefined ? effectiveEnvironment(path) : batchEnvironment;
     const ex = await call(commands.httpExecute(request, path, text, index, env));
     useHttpClient.setState((s) => ({
-      history: [ex.entry, ...s.history.filter((h) => h.id !== ex.entry.id)],
-      exchanges: { ...s.exchanges, [ex.entry.id]: ex },
+      history: [ex.entry, ...s.history.filter((h) => h.id !== ex.entry.id)].slice(0, HISTORY_LIMIT),
+      exchanges: rememberExchange(ex, s.exchanges),
       selected: ex.entry.id,
     }));
     return true;
@@ -235,5 +248,5 @@ export function cancelRunning() {
 /** The window switched projects: history, responses and environments belong to the previous one. */
 export function resetHttpClient() {
   cancelRunning();
-  useHttpClient.setState({ environments: {}, history: [], exchanges: {}, selected: null, running: null });
+  useHttpClient.setState({ environments: {}, history: [], exchanges: [], selected: null, running: null });
 }
