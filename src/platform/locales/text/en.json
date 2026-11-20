@@ -2770,5 +2770,6 @@
   "Rename branch {name} ({root})": "Rename branch {name} ({root})",
   "rename it back to {name}": "rename it back to {name}",
   "restore {name} and check out the previous branch again": "restore {name} and check out the previous branch again",
-  "Unset upstream of {to} ({root})": "Unset upstream of {to} ({root})"
+  "Unset upstream of {to} ({root})": "Unset upstream of {to} ({root})",
+  "Group by Repository": "Group by Repository"
 }

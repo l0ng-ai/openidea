@@ -1,14 +1,20 @@
 import type { Branch, BranchInfo } from "@/bindings";
 import { isMacHost } from "@/platform/keymap";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const repoData = vi.hoisted(() => ({
+  branches: {} as Record<string, unknown[]>,
+  tags: {} as Record<string, string[]>,
+}));
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
   return {
     ...real,
     commands: {
       ...real.commands,
+      vcsBranches: (root: string) => Promise.resolve({ status: "ok", data: repoData.branches[root] ?? [] }),
+      vcsTags: (root: string) => Promise.resolve({ status: "ok", data: repoData.tags[root] ?? [] }),
       vcsLog: () => Promise.resolve({ status: "ok", data: [] }),
       vcsConfigGet: () => Promise.resolve({ status: "ok", data: null }),
     },
@@ -24,6 +30,7 @@ vi.mock("@/platform/actions", async (importOriginal) => ({
 import { ContextMenuHost } from "@/ui";
 import syncStyles from "../BranchSync.module.css";
 import { BranchesPanel } from "../log/BranchesPanel";
+import { useBranchesPane } from "../logPaneActions";
 import { emptyFilters, useGitLog } from "../logStore";
 import { useVcs } from "../store";
 
@@ -181,5 +188,71 @@ describe("Git Log branches pane", () => {
     fireEvent.keyDown(screen.getByLabelText("Filter branches and tags"), { key: "c", ...cmd() });
     await Promise.resolve();
     expect(writeText).not.toHaveBeenCalled();
+  });
+});
+
+describe("Git Log branches pane with several repositories", () => {
+  const aBranches = [b("main", { current: true }), b("dev"), b("solo")];
+  const bBranches = [b("main"), b("dev", { current: true })];
+  beforeEach(() => {
+    localStorage.removeItem("openidea.vcs.branchesPane.groupByRepository");
+    repoData.branches = { "/p/a": aBranches, "/p/b": bBranches };
+    repoData.tags = {};
+    useVcs.setState({
+      root: "/p",
+      repo: "/p/a",
+      roots: ["/p/a", "/p/b"],
+      heads: { "/p/a": { head: "main", headCommit: "1" }, "/p/b": { head: "dev", headCommit: "2" } },
+      branches: aBranches,
+    });
+  });
+  afterEach(() => useVcs.setState({ roots: [], heads: {} }));
+
+  it("lists branches once, naming the repositories of partial ones", async () => {
+    render(<BranchesPanel />);
+    const solo = await screen.findByText("solo");
+    expect(solo.closest("[data-row]")).toHaveTextContent("(a)");
+    expect(screen.getAllByText("dev")).toHaveLength(1);
+    expect(screen.getByText("dev").closest("[data-row]")).not.toHaveTextContent("(");
+  });
+
+  it("Group by Repository switches to per-repository subtrees and is remembered", async () => {
+    render(<BranchesPanel />);
+    await screen.findByText("solo");
+    fireEvent.click(screen.getByRole("button", { name: "Group by Repository" }));
+    expect(await screen.findAllByText("a")).not.toHaveLength(0);
+    expect(screen.getAllByText("dev")).toHaveLength(2);
+    expect(localStorage.getItem("openidea.vcs.branchesPane.groupByRepository")).toBe("true");
+  });
+
+  it("double click filters the log to the repositories that have the branch", async () => {
+    render(<BranchesPanel />);
+    fireEvent.doubleClick(await screen.findByText("solo"));
+    expect(useGitLog.getState().filters).toMatchObject({ branches: ["solo"], repositories: ["/p/a"] });
+    fireEvent.doubleClick(screen.getByText("dev"));
+    expect(useGitLog.getState().filters).toMatchObject({ branches: ["dev"], repositories: [] });
+  });
+
+  it("a branch in several repositories gets the common menu", async () => {
+    render(
+      <>
+        <BranchesPanel />
+        <ContextMenuHost />
+      </>,
+    );
+    fireEvent.contextMenu(await screen.findByText("dev"));
+    expect(await screen.findByRole("menuitem", { name: "Merge 'dev' into Current" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Rename…" })).toBeInTheDocument();
+  });
+
+  it("selecting a merged branch targets each repository's own branch", async () => {
+    render(<BranchesPanel />);
+    fireEvent.mouseDown(await screen.findByText("dev"));
+    await waitFor(() =>
+      expect(useBranchesPane.getState().selected).toEqual([
+        { ref: "dev", repo: "/p/a", branch: aBranches[1] },
+        { ref: "dev", repo: "/p/b", branch: bBranches[1] },
+      ]),
+    );
   });
 });

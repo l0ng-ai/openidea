@@ -5698,6 +5698,7 @@
   "Show Branches": "显示分支",
   "Update Selected": "更新所选",
   "Navigate Log to Selected Branch": "在日志中导航到所选分支",
+  "Group by Repository": "按仓库分组",
   "Branch or tag": "分支或标签",
   "Filter branches and tags": "过滤分支和标签",
   "Revert Selected Changes": "还原所选更改",

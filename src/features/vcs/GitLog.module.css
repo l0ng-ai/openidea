@@ -65,6 +65,10 @@
   flex: 1;
   min-height: 0;
 }
+.branchRepos {
+  margin-right: var(--space-1-5);
+  color: var(--fg-subtle);
+}
 .branchDetail {
   min-width: 0;
   display: inline-flex;
