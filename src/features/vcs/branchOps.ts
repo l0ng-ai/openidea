@@ -668,12 +668,18 @@ async function resetBack(root: string, before: BranchInfo) {
   if (before.headCommit && after) await call(commands.vcsRestoreHead(root, before.headCommit, after));
 }
 
-/** Checks out `name` (local, or remote: its local namesake) in every repository of `roots`. */
+/**
+ * Checks out `name` (local, or remote: its local namesake) in every repository of `roots`
+ * not already on it (with diverged branches, only the others move).
+ */
 export async function checkoutInRepos(name: string, roots: readonly string[]) {
+  const { heads } = useVcs.getState();
+  const elsewhere = roots.filter((root) => heads[root]?.head !== name);
+  if (!elsewhere.length) return;
   const label = useVcs.getState().branches.some((b) => b.remote && b.name === name) ? shortRemoteName(name) : name;
   const previous = useVcs.getState().branch?.head;
   await eachRepo(
-    roots,
+    elsewhere,
     async (root) => ((await performCheckout(name, () => "", root, true)) ? true : undefined),
     `Checked out ${label}`,
     { undo: tx("check out the previous branch again"), run: (root, _, before) => checkoutBack(root, before) },

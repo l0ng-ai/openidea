@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   ask: vi.fn(),
   merge: vi.fn(),
+  checkout: vi.fn(),
   restore: vi.fn(),
   heads: {} as Record<string, string>,
   ops: {} as Record<string, string | null>,
@@ -29,6 +30,10 @@ vi.mock("@/platform/ipc", async (original) => {
         mocks.heads[root] = `${root}-merged`;
         return ok(null);
       },
+      vcsCheckout: (root: string, rev: string) => {
+        mocks.checkout(root, rev);
+        return ok({ kind: "done" });
+      },
       vcsRestoreHead: (root: string, before: string, after: string) => {
         mocks.restore(root, before, after);
         return ok(null);
@@ -38,7 +43,8 @@ vi.mock("@/platform/ipc", async (original) => {
 });
 vi.mock("@/workbench/messages", () => ({ ask: mocks.ask, showError: vi.fn() }));
 
-import { mergeInRepos } from "../branchOps";
+import { checkoutInRepos, mergeInRepos } from "../branchOps";
+import { useVcs } from "../store";
 import { pendingFixup } from "../commitStore";
 import type { Commit } from "@/bindings";
 
@@ -69,6 +75,26 @@ describe("an operation over several repositories that fails part way (IDEA's rol
     mocks.ops = { "/b": "merge" };
     await mergeInRepos("feature", ["/a", "/b"]);
     expect(mocks.ask).not.toHaveBeenCalled();
+  });
+});
+
+describe("checking out a common branch", () => {
+  const heads = (h: Record<string, string>) =>
+    useVcs.setState({
+      heads: Object.fromEntries(Object.entries(h).map(([root, head]) => [root, { head, headCommit: `${root}1` }])),
+    });
+  beforeEach(() => mocks.checkout.mockReset());
+
+  it("checks out only where it is not the current branch", async () => {
+    heads({ "/a": "feature", "/b": "main" });
+    await checkoutInRepos("feature", ["/a", "/b"]);
+    expect(mocks.checkout.mock.calls).toEqual([["/b", "feature"]]);
+  });
+
+  it("does nothing when every repository is already on it", async () => {
+    heads({ "/a": "feature", "/b": "feature" });
+    await checkoutInRepos("feature", ["/a", "/b"]);
+    expect(mocks.checkout).not.toHaveBeenCalled();
   });
 });
 
