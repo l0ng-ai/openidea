@@ -28,11 +28,17 @@ interface RemoteState {
   session: RemoteSession | null;
   /** The host the connection was lost to (the window's project is unreachable), else null. */
   lost: string | null;
+  takenOver: boolean;
   /** A reconnection to the lost host is in progress. */
   reconnecting: boolean;
 }
 
-export const useRemote = create<RemoteState>(() => ({ session: null, lost: null, reconnecting: false }));
+export const useRemote = create<RemoteState>(() => ({
+  session: null,
+  lost: null,
+  takenOver: false,
+  reconnecting: false,
+}));
 
 let routed = new Set<string>();
 let nextChannel = 1;
@@ -79,7 +85,7 @@ function isRemoteHostOnlySetting(key: string): boolean {
 /**
  * Where a command of a remote window runs. Local always: opening a project (a
  * local folder; leaving the remote one) and closing it (that drops the
- * connection, which ends the server's session). Client UI settings stay local.
+ * connection, not the backend). Client UI settings stay local.
  * Host-specific service settings (`mcpServer.*`) apply to the remote host only;
  * other global tooling settings apply on both sides.
  */
@@ -141,14 +147,14 @@ const route: InvokeRoute = (cmd, args, options) => {
  */
 export function enableRemote(session: RemoteSession) {
   routed = new Set(session.commands);
-  useRemote.setState({ session, lost: null, reconnecting: false });
+  useRemote.setState({ session, lost: null, takenOver: false, reconnecting: false });
   setInvokeRoute(route);
 }
 
 export function disableRemote() {
   routed = new Set();
   setInvokeRoute(null);
-  useRemote.setState({ session: null, lost: null, reconnecting: false });
+  useRemote.setState({ session: null, lost: null, takenOver: false, reconnecting: false });
 }
 
 export function isRemoteWindow(): boolean {
@@ -242,9 +248,7 @@ export async function connectRemote(target: RemoteTarget, path: string) {
 }
 
 /**
- * Connects this window to its remote project again after the connection was lost. The new server
- * has none of the old one's documents, terminals or sessions, so the window opens its project
- * again (editors come back from their saved tabs), as reopening the remote project would.
+ * Opens the project again, reattaching to its existing backend if it is still running.
  */
 export async function reconnectRemote(): Promise<void> {
   const session = useRemote.getState().session;
@@ -269,10 +273,13 @@ export async function disconnectRemote() {
 /** Shuts down the remote `openidea-server` daemon and its processes, then closes the window's project. */
 export async function stopRemoteBackend() {
   if (!isRemoteWindow()) return;
+  await shutdownRemoteBackend();
+  await disconnectRemote();
+}
+
+/** Stops the backend without deciding what to do with the desktop window. */
+export async function shutdownRemoteBackend() {
   await call(commands.remoteStopBackend());
-  await commands.closeProject();
-  disableRemote();
-  useProject.setState({ project: null });
 }
 
 // ---------------------------------------------------------------------------

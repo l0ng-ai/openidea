@@ -93,8 +93,8 @@ After the project opens you are asked whether to trust it, as for a local folder
 - Your keymap, appearance, editor font and colour scheme stay on the desktop. Project and tool settings live on the
   host.
 - Your code plugins are synced to the server and run next to the project.
-- Closing a remote window or choosing **File › Disconnect from Remote Host** disconnects the desktop client while keeping the remote `openidea-server` daemon, background indexing, language servers, terminals, running processes (such as `docker compose`) and active agent sessions running. Reopening the project reattaches to them.
-- **File › Stop Remote Backend** (also in the status bar's remote host context menu) shuts down the remote backend and terminates its running processes.
+- **Keep Backend Running** when closing a remote window, or **File › Disconnect from Remote Host**, leaves the remote IDE backend and its workloads running. Reopen the project to reattach.
+- **Stop Backend** when closing the window, or **File › Stop Remote Backend**, shuts down the backend and its workloads. See [Stopping a remote backend](/en/guide/remote/server#closing-or-stopping-a-remote-backend) for idle timeout and manual cleanup.
 
 ### Forward ports
 

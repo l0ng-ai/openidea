@@ -16,6 +16,8 @@ use serde_json::Value;
 use specta::Type;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State, Window};
 
@@ -66,6 +68,7 @@ pub(crate) const PROBE_MARK: &str = "__OPENIDEA_PROBE__";
 /// One remote window's connection.
 pub struct Connection {
     peer: Peer,
+    stopping: AtomicBool,
     pub target: RemoteTarget,
     pub root: String,
     pub host: String,
@@ -347,6 +350,7 @@ struct ClientHandler {
     window: String,
     channels: Channels,
     connection: Arc<std::sync::OnceLock<std::sync::Weak<Connection>>>,
+    taken_over: Arc<AtomicBool>,
 }
 
 impl Handler for ClientHandler {
@@ -395,6 +399,10 @@ impl Handler for ClientHandler {
             AUTH_REQUEST, AuthRequest, SECRET_REQUEST, SECRET_WRITE, SecretRequest, SecretWrite,
         };
         match method {
+            ide_host::rpc::SESSION_REPLACED => {
+                self.taken_over.store(true, Ordering::Release);
+                Ok(Value::Null)
+            }
             // A remote plugin's request header needs a secret from this machine's keychain.
             SECRET_REQUEST => {
                 let r: SecretRequest =
@@ -641,11 +649,13 @@ pub async fn remote_connect(
     let attempt = state.remote_dev.begin(&label);
     let channels: Channels = Arc::default();
     let connection_slot: Arc<std::sync::OnceLock<std::sync::Weak<Connection>>> = Arc::default();
+    let taken_over = Arc::new(AtomicBool::new(false));
     let handler = Arc::new(ClientHandler {
         app: window.app_handle().clone(),
         window: label.clone(),
         channels: channels.clone(),
         connection: connection_slot.clone(),
+        taken_over: taken_over.clone(),
     });
     let tail = crate::remote_wsl::Tail::default();
     let mut exec = None;
@@ -658,14 +668,20 @@ pub async fn remote_connect(
             let attach_arg = if path.trim().is_empty() { "~" } else { path.trim() };
             let stream = session
                 .exec_stream(&format!(
-                    "{} --attach {}",
+                    "{} --attach {} 2>&1",
                     ide_ssh::shell::tilde_quote(&bin),
                     ide_ssh::shell::quote(attach_arg),
                 ))
                 .await
                 .map_err(|e| IdeError::unavailable(format!("cannot start openidea-server: {e}")))?;
             let (reader, writer) = tokio::io::split(stream);
-            (Peer::connect(reader, writer, handler), Some(session), config.label(), config.label())
+            let output = tail.clone();
+            (
+                Peer::connect_with_output(reader, writer, handler, move |line| output.push(line)),
+                Some(session),
+                config.label(),
+                config.label(),
+            )
         }
         RemoteTarget::Wsl { distro } => {
             let bin = crate::remote_wsl::ensure_server(&state, distro, progress.clone()).await?;
@@ -730,6 +746,7 @@ pub async fn remote_connect(
     let _ = window.set_title(&format!("{} [{title_tag}]", project.display_name));
     let connection = Arc::new(Connection {
         peer,
+        stopping: AtomicBool::new(false),
         target: target.clone(),
         root: root.clone(),
         host: host.clone(),
@@ -762,16 +779,22 @@ pub async fn remote_connect(
     let app = window.app_handle().clone();
     tauri::async_runtime::spawn(async move {
         peer.closed().await;
-        auth_plugins.forget_remote_loopbacks(&auth_window);
+        let current = app.state::<AppState>().remote_dev.get(&auth_window);
+        if current.is_none() {
+            auth_plugins.forget_remote_loopbacks(&auth_window);
+        }
         let Some(connection) = weak.upgrade() else { return };
         connection.forwards.lock().clear();
         // Still the window's connection: not a disconnect or a replacement, so the window learns
         // its project is unreachable instead of failing every command with "connection closed".
-        let current = app.state::<AppState>().remote_dev.get(&auth_window);
         if current.is_some_and(|c| Arc::ptr_eq(&c, &connection)) {
-            tracing::warn!("{}: the connection to openidea-server was lost", connection.host);
-            TauriSink { app, window: Some(auth_window) }
-                .emit(ide_core::IdeEvent::RemoteConnectionLost { host: connection.host.clone() });
+            auth_plugins.forget_remote_loopbacks(&auth_window);
+            if !connection.stopping.load(Ordering::Acquire) || taken_over.load(Ordering::Acquire) {
+                let taken_over = taken_over.load(Ordering::Acquire);
+                tracing::info!(host = connection.host, taken_over, "remote backend disconnected");
+                TauriSink { app, window: Some(auth_window) }
+                    .emit(ide_core::IdeEvent::RemoteConnectionLost { host: connection.host.clone(), taken_over });
+            }
         }
     });
     let plugins = state.plugins.clone();
@@ -1093,16 +1116,29 @@ pub fn remote_disconnect(window: Window, state: State<'_, AppState>) {
 #[specta::specta]
 pub async fn remote_stop_backend(window: Window, state: State<'_, AppState>) -> IdeResult<()> {
     let label = AppState::owner_window(window.label()).to_owned();
-    state.host.mcp_reports.remove_remote(&label);
-    let removed = state.remote_dev.0.lock().remove(&label);
-    if let Some(c) = removed {
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            c.peer.request::<_, Value>("shutdown", Value::Null, None),
-        )
-        .await;
-        c.peer.kill();
-        c.forwards.lock().clear();
+    let c = connection(&window, &state)?;
+    if c.stopping.swap(true, Ordering::AcqRel) {
+        return Err(IdeError::unavailable("The remote backend is already stopping"));
+    }
+    let result: IdeResult<()> = async {
+        tokio::time::timeout(Duration::from_secs(10), c.peer.request::<_, Value>("shutdown", Value::Null, None))
+            .await
+            .map_err(|_| IdeError::unavailable("The remote backend did not respond to the shutdown request"))?
+            .map_err(ide_host::rpc::error_from_reply)?;
+        tokio::time::timeout(ide_host::rpc::SHUTDOWN_TIMEOUT, c.peer.closed())
+            .await
+            .map_err(|_| IdeError::unavailable("Timed out waiting for the remote backend to stop"))?;
+        Ok(())
+    }
+    .await;
+    if result.is_err() {
+        c.stopping.store(false, Ordering::Release);
+    }
+    result?;
+    let mut connections = state.remote_dev.0.lock();
+    if connections.get(&label).is_some_and(|current| Arc::ptr_eq(current, &c)) {
+        connections.remove(&label);
+        state.host.mcp_reports.remove_remote(&label);
     }
     Ok(())
 }
@@ -1382,6 +1418,7 @@ mod tests {
         std::mem::forget(Peer::connect(reader, writer, Arc::new(TrustingServer)));
         Connection {
             peer,
+            stopping: AtomicBool::new(false),
             target,
             root: root.into(),
             host: "host".into(),

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { RemoteSession } from "@/platform/ipc";
 
-const listeners = vi.hoisted(() => new Map<string, (event: { host: string }) => void>());
+const listeners = vi.hoisted(() => new Map<string, (event: { host: string; takenOver: boolean }) => void>());
 const reconnectRemote = vi.hoisted(() => vi.fn<() => Promise<void>>());
 const notify = vi.hoisted(() => vi.fn());
 const dirty = vi.hoisted(() => ({ ids: [] as number[] }));
@@ -9,7 +9,7 @@ const confirm = vi.hoisted(() => vi.fn(async () => true));
 
 vi.mock("@/platform/ipc", async (orig) => ({
   ...(await orig<typeof import("@/platform/ipc")>()),
-  onIdeEvent: (type: string, handler: (event: { host: string }) => void) => {
+  onIdeEvent: (type: string, handler: (event: { host: string; takenOver: boolean }) => void) => {
     listeners.set(type, handler);
     return () => listeners.delete(type);
   },
@@ -43,7 +43,7 @@ let uninstall: () => void;
 beforeEach(() => {
   waits = [];
   dirty.ids = [];
-  useRemote.setState({ session, lost: null, reconnecting: false });
+  useRemote.setState({ session, lost: null, takenOver: false, reconnecting: false });
   uninstall = installReconnect(async (ms) => {
     waits.push(ms);
   });
@@ -54,7 +54,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-const lose = () => listeners.get("remoteConnectionLost")!({ host: "box" });
+const lose = (takenOver = false) => listeners.get("remoteConnectionLost")!({ host: "box", takenOver });
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 it("marks the window lost and reconnects in the background", async () => {
@@ -66,6 +66,20 @@ it("marks the window lost and reconnects in the background", async () => {
   expect(waits).toEqual(RETRY_DELAYS_MS.slice(0, 2));
   expect(reconnectRemote).toHaveBeenCalledTimes(2);
   expect(notify).not.toHaveBeenCalled();
+});
+
+it("reports a takeover without automatically disconnecting the other window in return", async () => {
+  lose(true);
+  await settle();
+  expect(waits).toEqual([]);
+  expect(reconnectRemote).not.toHaveBeenCalled();
+  expect(notify).toHaveBeenCalledWith(
+    expect.objectContaining({ level: "warning", title: "Another window took over this remote session" }),
+  );
+  confirm.mockResolvedValueOnce(false);
+  await reconnectNow();
+  expect(confirm).toHaveBeenCalledOnce();
+  expect(reconnectRemote).not.toHaveBeenCalled();
 });
 
 it("offers Reconnect once every attempt failed", async () => {

@@ -42,7 +42,7 @@ flowchart LR
 openidea-server --stdio | --attach <project-path> | --mcp-stdio [--project <path>] | --connect <host> <port> | --version
 ```
 
-- `--attach <project-path>` 按需启动脱离终端会话的项目级守护进程（`--daemon <socket>`，监听私有 `0700` Unix 套接字）并将 stdin/stdout 桥接到该套接字；关闭远程窗口时守护进程及其 `Host`、终端、运行、语言服务器和智能体会话继续运行，直至收到 `shutdown` 请求。
+- `--attach <project-path>` 将 stdin/stdout 桥接到独立守护进程，套接字权限为 `0600`，目录权限为 `0700`。套接字键不随构建变化；连接前会核对构建，只有在没有连接的窗口、活动任务或未保存的文档时才替换旧后端。空闲退出或主动关闭时会保留套接字，直到清理完成。
 - `--stdio` 直接通过 stdin/stdout 为单个桌面客户端提供服务并在断开时退出。stdout 承载协议，所以日志写到 stderr（用 `OPENIDEA_LOG` 过滤）。
 - 状态保存在 `OPENIDEA_SERVER_HOME`（默认 `~/.openidea`）下的 `config/` 和 `data/` 中。可以在 `config/languages/` 里追加语言定义。
 - SSH exec channel 只给最小的环境变量，所以服务端每次启动都会读取登录 shell 的环境，并把 IDE 托管的工具目录加入 `PATH`。

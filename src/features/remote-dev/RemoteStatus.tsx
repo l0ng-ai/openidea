@@ -19,6 +19,7 @@ export function remoteBadge(session: Pick<RemoteSession, "target" | "host">): st
 export function RemoteStatus() {
   const session = useRemote((s) => s.session);
   const lost = useRemote((s) => s.lost !== null);
+  const takenOver = useRemote((s) => s.takenOver);
   const reconnecting = useRemote((s) => s.reconnecting);
   if (!session) return null;
   const label = remoteBadge(session);
@@ -28,7 +29,9 @@ export function RemoteStatus() {
         tooltip={
           reconnecting
             ? tx`Reconnecting to ${session.host}…`
-            : tx`Lost the connection to ${session.host}. Click to reconnect.`
+            : takenOver
+              ? tx("Another window took over this remote session")
+              : tx`Lost the connection to ${session.host}. Click to reconnect.`
         }
         aria-label={tx`${label} (disconnected)`}
         disabled={reconnecting}

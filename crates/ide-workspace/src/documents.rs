@@ -979,6 +979,10 @@ impl Documents {
         })
     }
 
+    pub fn has_unsaved_changes(&self) -> bool {
+        self.registry.lock().docs.values().any(|entry| entry.slot.lock().dirty)
+    }
+
     /// Saves every dirty document; reports the first failure after trying all.
     pub fn save_all(&self) -> IdeResult<()> {
         let ids: Vec<DocId> = self.registry.lock().docs.keys().copied().collect();

@@ -28,6 +28,8 @@ use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 
 pub const PROTOCOL_VERSION: u32 = 2;
+pub const SESSION_REPLACED: &str = "session_replaced";
+pub const SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -90,8 +92,9 @@ pub struct PeerSlot {
 }
 
 impl PeerSlot {
-    pub fn has_client(&self) -> bool {
-        self.inner.read().is_some()
+    #[cfg(unix)]
+    pub(crate) fn remove(&self) -> Option<Peer> {
+        self.inner.write().take().map(|(_, p)| p)
     }
 }
 
@@ -230,32 +233,28 @@ where
     }
 }
 
-/// Serves one client connection against a persistent daemon `host` without shutting `host`
-/// down on EOF. A `"shutdown"` RPC cancels `shutdown` after replying so the daemon exits cleanly.
-pub async fn serve_persistent<R, W>(
+/// The daemon owns the peer and handles replacement and disconnect serially.
+#[cfg(unix)]
+pub(crate) fn connect_persistent<R, W>(
     host: Arc<Host>,
     dispatcher: Dispatcher,
     peer: Arc<PeerSlot>,
     shutdown: ide_core::CancellationToken,
     reader: R,
     writer: W,
-) where
+) -> Peer
+where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let slot: Arc<dyn PeerHandle> = peer;
-    let handler =
-        Arc::new(ServerHandler { host: host.clone(), dispatcher, peer: slot.clone(), shutdown: Some(shutdown) });
+    // Streaming ids belong to the calling connection, not the next window to attach.
+    let connection = Arc::new(OnceLock::new());
+    let handler = Arc::new(ServerHandler { host, dispatcher, peer: connection.clone(), shutdown: Some(shutdown) });
     let p = Peer::connect(reader, writer, handler);
-    let (generation, previous) = slot.install(p.clone());
-    if let Some(old) = previous {
-        old.kill();
-        host.client_disconnected();
-    }
-    p.closed().await;
-    if slot.clear(generation) {
-        host.client_disconnected();
-    }
+    let _ = connection.set(p.clone());
+    let (_, previous) = peer.install(p.clone());
+    debug_assert!(previous.is_none());
+    p
 }
 
 /// Sends a window's events to the client as `event` notifications.
@@ -343,6 +342,9 @@ impl Handler for ServerHandler {
     fn on_notification(&self, _method: &str, _params: Value) {}
 
     fn on_request(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
+        if self.shutdown.as_ref().is_some_and(|s| s.is_cancelled()) {
+            return Err((codes::INTERNAL_ERROR, "remote backend is stopping".into()));
+        }
         let internal = |e: serde_json::Error| (codes::INTERNAL_ERROR, e.to_string());
         match method {
             "initialize" => serde_json::to_value(server_info()).map_err(internal),

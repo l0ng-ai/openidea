@@ -1,6 +1,6 @@
 //! `openidea-server`: the IDE backend for remote development, either serving one
 //! desktop client over stdin / stdout (`--stdio`) or running as a persistent
-//! per-project daemon (`--attach <project>` / `--daemon <socket>`).
+//! per-project daemon (`--attach <project>`).
 
 use ide_host::catalogue::TrustClass;
 use ide_host::plugins::remote::{RemotePluginLanguages, SYNC_COMMAND};
@@ -14,7 +14,7 @@ use std::sync::{Arc, OnceLock};
 enum Mode {
     Stdio,
     #[cfg(unix)]
-    Daemon(PathBuf),
+    Daemon(PathBuf, ide_host::daemon::BuildId),
 }
 
 fn main() {
@@ -62,7 +62,13 @@ fn main() {
     }
     let mode = match args.as_slice() {
         #[cfg(unix)]
-        [flag, sock] if flag == "--daemon" => Mode::Daemon(PathBuf::from(sock)),
+        [flag, sock, build] if flag == "--daemon" => {
+            let Ok(build) = build.as_bytes().try_into() else {
+                eprintln!("invalid daemon build identifier");
+                std::process::exit(2);
+            };
+            Mode::Daemon(PathBuf::from(sock), build)
+        }
         #[cfg(not(unix))]
         [flag, _] if flag == "--attach" => Mode::Stdio,
         _ if args.iter().any(|a| a == "--stdio") => Mode::Stdio,
@@ -139,7 +145,7 @@ async fn run(base: PathBuf, mode: Mode) -> i32 {
             0
         }
         #[cfg(unix)]
-        Mode::Daemon(socket) => {
+        Mode::Daemon(socket, build) => {
             let peer = Arc::new(rpc::PeerSlot::default());
             let sink_peer = peer.clone();
             let plugins_data = data_dir.clone();
@@ -159,8 +165,15 @@ async fn run(base: PathBuf, mode: Mode) -> i32 {
             inherit_trust(&host);
             tracing::info!("openidea-server {} daemon ready at {}", env!("CARGO_PKG_VERSION"), socket.display());
             let dispatcher = build_dispatcher(&plugins, plugin_languages);
-            let result = ide_host::daemon::serve(&socket, host.clone(), dispatcher, peer).await;
-            shutdown_all(&host, plugins.as_ref()).await;
+            let result = ide_host::daemon::serve(
+                &socket,
+                build,
+                host.clone(),
+                dispatcher,
+                peer,
+                shutdown_all(&host, plugins.as_ref()),
+            )
+            .await;
             match result {
                 Ok(()) => 0,
                 Err(e) => {
@@ -221,8 +234,5 @@ async fn shutdown_all(host: &Host, plugins: Option<&Arc<RemotePlugins>>) {
     if let Some(plugins) = plugins {
         plugins.host().shutdown();
     }
-    // `process::exit` skips destructors: nothing started for the client may outlive it.
-    if tokio::time::timeout(std::time::Duration::from_secs(10), host.shutdown()).await.is_err() {
-        tracing::warn!("language servers did not shut down in time");
-    }
+    host.shutdown().await;
 }
