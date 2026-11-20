@@ -1,5 +1,5 @@
 /** Git menu dialogs: Pull…, Merge…, Rebase…, Manage Remotes… and Worktrees. */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import type { Branch, BranchInfo, MergeOptions, Remote, Worktree } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
@@ -17,6 +17,7 @@ import {
   Select,
   T,
   Tree,
+  listNavigate,
   useSanitizedField,
   type SelectOption,
   type SelectProps,
@@ -36,6 +37,7 @@ import {
   type RepoWorktrees,
 } from "./worktrees";
 import styles from "./common.module.css";
+import remoteStyles from "./GitRemotes.module.css";
 import pullStyles from "./PullDialog.module.css";
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
@@ -530,10 +532,14 @@ function RemotesDialog({ onClose }: { onClose: () => void }) {
       open
       title="Git Remotes"
       onClose={onClose}
-      width={560}
+      width={600}
+      minWidth={360}
+      minHeight={280}
+      resizable="both"
+      className={remoteStyles.dialog}
       buttons={[{ label: "OK", role: "default", autoFocus: true, onClick: onClose }]}
     >
-      <div className={styles.form}>
+      <div className={remoteStyles.content}>
         <RepoPicker repo={repo} onChange={setRepo} />
         {/* Keyed: picking another repository starts a fresh list, so answers for the previous one are dropped. */}
         <RemotesList key={repo} repo={repo} />
@@ -595,35 +601,82 @@ function RemotesList({ repo }: { repo: string | null }) {
   };
   const current = remotes.find((r) => r.name === selected);
 
+  const onRowKey = (event: KeyboardEvent<HTMLTableRowElement>, remote: Remote) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      edit(remote);
+      return;
+    }
+    const row = event.currentTarget;
+    const index = listNavigate(event.key, { items: remotes, active: row.sectionRowIndex });
+    if (index === null) return;
+    event.preventDefault();
+    const target = row.closest("tbody")?.rows.item(index);
+    target?.focus({ preventScroll: true });
+    target?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  };
+
   return (
     <>
-      <div className={styles.manageBar} role="toolbar" aria-label={tx("Remotes")}>
-        <IconButton icon="plus" title="Add Remote…" size="small" onClick={() => edit()} />
-        <IconButton icon="minus" title="Remove Remote" size="small" disabled={!current} onClick={() => void remove()} />
-        <IconButton icon="edit" title="Edit Remote…" size="small" disabled={!current} onClick={() => edit(current)} />
+      <div className={remoteStyles.panel}>
+        <div className={remoteStyles.toolbar} role="toolbar" aria-label={tx("Remotes")}>
+          <IconButton icon="plus" title="Add Remote…" size="small" onClick={() => edit()} />
+          <IconButton
+            icon="minus"
+            title="Remove Remote"
+            size="small"
+            disabled={!current}
+            onClick={() => void remove()}
+          />
+          <IconButton icon="edit" title="Edit Remote…" size="small" disabled={!current} onClick={() => edit(current)} />
+        </div>
+        <div className={remoteStyles.scroller}>
+          <table className={remoteStyles.table} role="grid" aria-label={tx("Remotes")}>
+            <colgroup>
+              <col className={remoteStyles.nameColumn} />
+              <col />
+            </colgroup>
+            <thead>
+              <tr>
+                <th scope="col">
+                  <T>Name</T>
+                </th>
+                <th scope="col">
+                  <T>URL</T>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {!remotes.length && (
+                <tr>
+                  <td colSpan={2} className={styles.empty}>
+                    <T>No remotes</T>
+                  </td>
+                </tr>
+              )}
+              {remotes.map((r) => (
+                <tr
+                  key={r.name}
+                  aria-selected={r.name === selected}
+                  tabIndex={r.name === selected ? 0 : -1}
+                  onFocus={() => setSelected(r.name)}
+                  onClick={(e) => e.currentTarget.focus({ preventScroll: true })}
+                  onDoubleClick={() => edit(r)}
+                  onKeyDown={(e) => onRowKey(e, r)}
+                >
+                  <td title={r.name}>{r.name}</td>
+                  <td title={r.url}>{r.url}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
-      <div className={styles.choiceList} role="listbox" aria-label={tx("Remotes")}>
-        {!remotes.length && (
-          <div className={styles.empty}>
-            <T>No remotes</T>
-          </div>
-        )}
-        {remotes.map((r) => (
-          <button
-            key={r.name}
-            type="button"
-            role="option"
-            aria-selected={r.name === selected}
-            className={clsx(styles.manageRow, r.name === selected && styles.manageRowSelected)}
-            onClick={() => setSelected(r.name)}
-            onDoubleClick={() => edit(r)}
-          >
-            <span className={styles.fileName}>{r.name}</span>
-            <span className={clsx(styles.fileDir, styles.mono)}>{r.url}</span>
-          </button>
-        ))}
-      </div>
-      {error && <div className={styles.error}>{error}</div>}
+      {error && (
+        <div className={clsx(styles.error, remoteStyles.error)} role="alert">
+          {error}
+        </div>
+      )}
     </>
   );
 }
@@ -639,6 +692,8 @@ function RemoteEditDialog({
 }) {
   const [name, setName] = useState(remote?.name ?? (existing.includes("origin") ? "" : "origin"));
   const [url, setUrl] = useState(remote?.url ?? "");
+  const nameId = useId();
+  const urlId = useId();
   const error = validateRemoteName(name, existing) ?? (url.trim() ? null : "Enter the remote URL");
   const submit = () => {
     if (!error) onDone({ name: name.trim(), url: url.trim() });
@@ -655,21 +710,25 @@ function RemoteEditDialog({
       ]}
     >
       <form
-        className={styles.form}
+        className={remoteStyles.editor}
         onSubmit={(e) => {
           e.preventDefault();
           submit();
         }}
       >
-        <label className={styles.fieldLabel}>
+        <label htmlFor={nameId}>
           <T>Name:</T>
         </label>
-        <Input data-autofocus aria-label="Name" value={name} onChange={(e) => setName(e.target.value)} />
-        <label className={styles.fieldLabel}>
+        <Input id={nameId} data-autofocus aria-label="Name" value={name} onChange={(e) => setName(e.target.value)} />
+        <label htmlFor={urlId}>
           <T>URL:</T>
         </label>
-        <Input aria-label="URL" mono value={url} onChange={(e) => setUrl(e.target.value)} />
-        {error && (name || url) && <div className={styles.error}>{error}</div>}
+        <Input id={urlId} aria-label="URL" mono value={url} onChange={(e) => setUrl(e.target.value)} />
+        {error && (name || url) && (
+          <div className={clsx(styles.error, remoteStyles.error)} role="alert">
+            {error}
+          </div>
+        )}
       </form>
     </Dialog>
   );
