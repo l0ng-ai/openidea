@@ -215,6 +215,7 @@ doc_open_untitled                            always             project_host bin
 doc_open_virtual                             always             project_host bindings async
 doc_outline                                  always             project_host bindings async
 doc_python_facts                             always             project_host bindings async
+doc_reload_from_disk                         always             project_host bindings async
 doc_save                                     always             project_host bindings async
 doc_save_all                                 always             project_host bindings async
 doc_save_as                                  always             project_host bindings async
@@ -375,6 +376,7 @@ maven_dependency_completion                  trusted            project_host bin
 maven_dependency_declaration                 trusted            project_host bindings async
 maven_exclude_dependency                     trusted            project_host bindings async
 maven_goto_declaration                       trusted            project_host bindings async
+maven_managed_declarations                   trusted            project_host bindings async
 mcp_agent_run_closed                         trusted            project_host bindings sync
 mcp_background_projects                      always             project_host bindings sync
 mcp_regenerate_token                         outside_restricted project_host bindings sync

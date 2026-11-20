@@ -21,20 +21,36 @@ const target: Location = {
   range: { start: { line: 3, col: 4 }, end: { line: 3, col: 9 } },
 };
 const views: EditorView[] = [];
-function editor(doc = 1, language = "yaml", text = "server:\n  port: 8080\n") {
+function editor(doc = 1, language = "yaml", text = "server:\n  port: 8080\n", path = `/p/${doc}.${language}`) {
   const view = new EditorView({
     state: EditorState.create({
       doc: text,
-      extensions: [
-        lspDoc.of({ doc, path: `/p/${doc}.${language}`, language, uiMode: language, readOnly: false }),
-        navigationExtension(),
-      ],
+      extensions: [lspDoc.of({ doc, path, language, uiMode: language, readOnly: false }), navigationExtension()],
     }),
     parent: document.body,
   });
   views.push(view);
   return view;
 }
+
+it("uses the whole Maven element value for the navigation underline", () => {
+  const text = "    <artifactId>cdf-parent</artifactId>\n    <version>${revision}</version>";
+  const view = editor(1, "xml", text, "/p/pom.xml");
+  const parent = text.indexOf("cdf-parent");
+  for (const offset of [parent, parent + 3, parent + 4, parent + "cdf-parent".length]) {
+    const range = navigationWord(view, offset)!;
+    expect(view.state.sliceDoc(range.from, range.to)).toBe("cdf-parent");
+  }
+  const revision = text.indexOf("${revision}");
+  const range = navigationWord(view, revision + 4)!;
+  expect(view.state.sliceDoc(range.from, range.to)).toBe("${revision}");
+
+  const multiline = "<artifactId>\n    cdf-parent\n  </artifactId>";
+  const multilineView = editor(2, "xml", multiline, "/p/multiline/pom.xml");
+  const multilineRange = navigationWord(multilineView, multiline.indexOf("parent"))!;
+  expect(multilineView.state.sliceDoc(multilineRange.from, multilineRange.to)).toBe("cdf-parent");
+});
+
 let off: () => void;
 beforeEach(() => {
   vi.useFakeTimers();

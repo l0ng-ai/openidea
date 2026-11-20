@@ -90,7 +90,10 @@ async fn duckdb_custom_driver_through_database_manager() -> IdeResult<()> {
     assert!(result.has_more);
     assert_eq!(result.rows, vec![vec![Some("1".into()), None]]);
     assert_eq!(result.columns[1].name, "label");
-    assert_eq!(db.completion("test").await?.default_schema, "main");
+    let completion = db.completion("test").await?;
+    assert_eq!(completion.default_schema, "main");
+    let items = completion.tables.iter().find(|t| t.schema == "main" && t.name == "items").expect("items");
+    assert_eq!(items.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["id", "label"]);
     db.execute("test", "create temporary table session_marker as select 42 as id", 1, &c).await?;
     let stop = CancellationToken::new();
     let (cancelled, ()) =

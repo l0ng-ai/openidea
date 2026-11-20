@@ -69,6 +69,8 @@ export interface CommitSettingsValid {
   agentModel: string;
   /** That model's thinking level for commit messages; empty keeps the agent's. */
   agentEffort: string;
+  /** Show the Generate Commit Message with Agent button above the commit message. */
+  agentButton: boolean;
 }
 
 export interface VcsSettingsValid {
@@ -316,6 +318,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       agent: "",
       agentModel: "",
       agentEffort: "",
+      agentButton: true,
     },
     confirmation: {
       onCreate: "ask",
@@ -488,6 +491,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       agent: text(c.agent, d.commit.agent),
       agentModel: text(c.agentModel, d.commit.agentModel),
       agentEffort: text(c.agentEffort, d.commit.agentEffort),
+      agentButton: bool(c.agentButton, d.commit.agentButton),
     },
     confirmation: {
       onCreate: oneOf(conf.onCreate, confirm, d.confirmation.onCreate),

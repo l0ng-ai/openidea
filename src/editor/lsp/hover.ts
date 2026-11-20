@@ -35,7 +35,7 @@ import { basename } from "@/platform/project";
 import { iconNode } from "@/ui/iconNode";
 import { applyCodeAction, quickFixesAt } from "./intentions";
 import { editorPrefs } from "@/platform/editorSettings";
-import { CONTRIBUTED_HOVER, contributedAt, type ContributedHover } from "@/editor/api";
+import { CONTRIBUTED_HOVER, contributedAtAll, type ContributedHover } from "@/editor/api";
 import { navigationModifierHeld, onNavigationModifier, pointerTarget } from "@/platform/navigationModifier";
 import { languageSemantics } from "./semantic";
 
@@ -47,10 +47,9 @@ function constructAt(state: EditorView["state"], pos: number, language: string |
 }
 
 export async function requestHover(view: EditorView, pos: number): Promise<Hover | null> {
-  const own = contributedAt<ContributedHover>(view.state, CONTRIBUTED_HOVER, pos);
-  if (own) {
+  for (const own of contributedAtAll<ContributedHover>(view.state, CONTRIBUTED_HOVER, pos)) {
     const h = own(view.state, pos);
-    if (!h) return null;
+    if (!h) continue;
     const range = { start: offsetToPos(view.state.doc, h.from), end: offsetToPos(view.state.doc, h.to) };
     return { contents: { kind: "markdown", value: h.markdown }, range };
   }
