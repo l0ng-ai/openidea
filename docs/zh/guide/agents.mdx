@@ -27,6 +27,7 @@ OpenIDEA 本身不带模型或账号：它启动你已安装并登录的 agent�
 | Auggie         | `auggie --acp`              | `auggie login`        |
 | Kiro           | `kiro-cli acp`              | `kiro-cli login`      |
 | Mistral Vibe   | `vibe-acp`                  | `vibe`                |
+| Hermes Agent   | `hermes acp`                | `hermes model`        |
 
 **Claude Code** 和 **Codex** 通过它们自己的协议驱动（Claude Code 的 stream-json 模式和 `codex app-server`）。它们的 ACP 适配器（`claude-acp`、`codex-acp`）不再列出；已经在用它们的任务照常运行，为这两个 id 写一个 [agent 文件](#添加自定义-agent)也会重新列出。agent 需要登录时，任务中会提示该运行哪条命令。
 

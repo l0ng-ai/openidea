@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import clsx from "clsx";
 import { Icon, type IconName } from "./icons";
 import { Popup } from "./Popup";
@@ -19,6 +28,8 @@ export interface SelectOption<V extends string = string> {
   disabled?: boolean;
   /** A non-selectable group heading, independent of disabled options. */
   section?: boolean;
+  /** Tree row: indented by `depth`; `expanded` (when set) draws a disclosure chevron. */
+  tree?: { depth: number; expanded?: boolean };
 }
 
 export interface SelectProps<V extends string = string> {
@@ -38,6 +49,8 @@ export interface SelectProps<V extends string = string> {
   searchable?: boolean;
   /** The option under the pointer or keyboard while the list is open; `null` once it closes. */
   onPreview?: (value: V | null) => void;
+  /** Choosing an option this returns `true` for keeps the popup open (e.g. expanding a tree row). */
+  keepOpen?: (value: V) => boolean;
 }
 
 const TYPE_AHEAD_MS = 800;
@@ -235,6 +248,7 @@ export function SelectListbox<V extends string = string>({
         {options.map((o) => (
           <div key={`${o.section ? "section" : "option"}:${o.value}`} className={styles.sizerRow}>
             <span className={styles.check} />
+            {o.tree && <TreeIndent {...o.tree} />}
             {o.icon && <Icon name={o.icon} size={14} />}
             <span>{labelOf(o)}</span>
             {o.detail && <span className={styles.sizerDetail}>{given(o.detail)}</span>}
@@ -253,7 +267,6 @@ export function SelectListbox<V extends string = string>({
         onActivate={(o) => choose(o)}
         focusable={false}
         hoverSelects
-        rowHeight={24}
         aria-label={given(aria["aria-label"])}
         className={clsx(styles.list, listClassName)}
         renderItem={(o) => {
@@ -264,6 +277,7 @@ export function SelectListbox<V extends string = string>({
               aria-disabled={o.disabled || undefined}
             >
               <span className={styles.check}>{o.value === value && <Icon name="check" size={12} />}</span>
+              {o.tree && <TreeIndent {...o.tree} />}
               {o.icon && <Icon name={o.icon} size={14} />}
               <span className={clsx(styles.optionLabel, o.detail && styles.withDetail)} title={labelOf(o)}>
                 {labelOf(o)}
@@ -290,6 +304,14 @@ export function SelectListbox<V extends string = string>({
   );
 }
 
+function TreeIndent({ depth, expanded }: { depth: number; expanded?: boolean }) {
+  return (
+    <span className={styles.treeIndent} style={{ "--tree-depth": depth } as CSSProperties}>
+      {expanded !== undefined && <Icon name={expanded ? "chevron-down" : "chevron-right"} size={12} />}
+    </span>
+  );
+}
+
 /** Dropdown select with a listbox popup (↑↓ Enter Esc, type-ahead). */
 export function Select<V extends string = string>({
   value,
@@ -302,6 +324,7 @@ export function Select<V extends string = string>({
   renderValue,
   searchable = false,
   onPreview,
+  keepOpen,
   ...aria
 }: SelectProps<V>) {
   const given = useGivenTx();
@@ -381,7 +404,7 @@ export function Select<V extends string = string>({
           aria-label={aria["aria-label"]}
           onChoose={(v) => {
             onChange(v);
-            setOpen(false);
+            if (!keepOpen?.(v)) setOpen(false);
           }}
         />
       </Popup>

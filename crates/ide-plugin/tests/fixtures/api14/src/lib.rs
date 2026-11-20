@@ -1,4 +1,4 @@
-use openidea_plugin::{Error, Event, Invocation, Plugin, StatusItem, host, register_plugin};
+use openidea_plugin::{Error, Event, Invocation, Plugin, StatusItem, StatusMenuEntry, host, register_plugin};
 #[derive(Default)]
 struct Api14;
 impl Plugin for Api14 {
@@ -80,6 +80,17 @@ impl Plugin for Api14 {
                 } else {
                     host::set_window_status_item("state", &item)?;
                 }
+                Ok(None)
+            }
+            "menu-status" | "bad-menu-status" => {
+                let item = StatusItem { text: arg.into(), tooltip: None, command: None };
+                let command = if id == "menu-status" { "events" } else { "undeclared" };
+                let menu = [
+                    StatusMenuEntry::Header("App".into()),
+                    StatusMenuEntry::action("Open", command).with_description("https://app.test").with_argument("web"),
+                    StatusMenuEntry::Separator,
+                ];
+                host::set_status_item_menu("menu", &item, &menu)?;
                 Ok(None)
             }
             "remove-window-status" => {

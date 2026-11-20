@@ -2965,8 +2965,6 @@
   "Run a command, configuration or goal": "명령, 구성 또는 목표 실행",
   "Run Anything entries": "무엇이든 실행 항목",
   "Press Enter to run the command in the project directory": "Enter를 눌러 프로젝트 디렉터리에서 명령을 실행하세요",
-  "Type a command": "명령 입력",
-  "Enter to run, Tab to complete. Other commands run in the project directory.": "Enter로 실행, Tab으로 완성합니다. 그 밖의 명령은 프로젝트 디렉터리에서 실행됩니다.",
   "Recent": "최근",
   "Search types": "유형 검색",
   "Search configuration types": "구성 유형 검색",
@@ -4425,7 +4423,6 @@
   "Edit the deployment servers and options": "배포 서버 및 옵션 편집",
   "Configuration…": "구성…",
   "No deployment server configured": "구성된 배포 서버가 없습니다",
-  "Select files in the Project view or open a file in the editor": "프로젝트 뷰에서 파일을 선택하거나 편집기에서 파일을 여세요",
   "Upload to": "업로드 대상",
   "Download from": "다운로드 위치",
   "Sync with Deployed to": "배포된 항목과 동기화",
@@ -6248,5 +6245,6 @@
   "Empty: where the service mounts the project.": "비워 두면 서비스가 프로젝트를 마운트하는 위치를 사용합니다.",
   "The project is mounted here; paths and the working directory are mapped into it.": "프로젝트가 여기에 마운트되며, 경로와 작업 디렉터리가 이 위치로 매핑됩니다.",
   "Published ports": "게시된 포트",
-  "Run as the image's user, not the project folder's owner (Linux)": "프로젝트 폴더 소유자가 아닌 이미지의 사용자로 실행(Linux)"
+  "Run as the image's user, not the project folder's owner (Linux)": "프로젝트 폴더 소유자가 아닌 이미지의 사용자로 실행(Linux)",
+  "Select files in the Project view, Commit tool window, or open a file in the editor": "프로젝트 뷰나 커밋 도구 창에서 파일을 선택하거나 편집기에서 파일을 여세요"
 }

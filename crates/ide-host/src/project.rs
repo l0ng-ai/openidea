@@ -106,6 +106,9 @@ impl Host {
         {
             return Ok(current);
         }
+        // A window takes the root over from the MCP server's background project, whose
+        // shutdown the wait below sits out; none opens until this open is over.
+        let _claim = (!crate::mcp::BackgroundProjects::is_key(window)).then(|| self.mcp_background.claim(self, &root));
         self.close_project(window);
         self.wait_detached_closes();
         let sink: SharedSink = (self.sink_for)(window);

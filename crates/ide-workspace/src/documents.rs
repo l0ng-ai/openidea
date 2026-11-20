@@ -672,7 +672,7 @@ impl Documents {
     fn set_dirty(&self, doc: DocId, st: &mut DocState, dirty: bool) {
         if st.dirty != dirty {
             st.dirty = dirty;
-            self.sink.emit(IdeEvent::DocDirty { doc, dirty });
+            self.sink.emit(IdeEvent::DocDirty { doc, dirty, version: st.doc.version() });
         }
     }
 

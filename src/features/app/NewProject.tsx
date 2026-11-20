@@ -21,7 +21,20 @@ import {
 } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { useTx, useTxTemplate } from "@/platform/i18n";
-import { Button, Checkbox, Dialog, Icon, Input, Select, type SelectOption, T, hasIcon } from "@/ui";
+import {
+  Checkbox,
+  Dialog,
+  Icon,
+  IconButton,
+  Input,
+  Select,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
+  type SelectOption,
+  T,
+  hasIcon,
+} from "@/ui";
 import { effectiveValues, fieldError, isVisible, type Values } from "./newProjectTemplate";
 import { defaultProjectDirectory, openProjectInWindow } from "./windows";
 import styles from "./newProject.module.css";
@@ -116,6 +129,20 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
   const [requirements, setRequirements] = useState<Requirement[]>([]);
   const [jdks, setJdks] = useState<Sdk[] | null>(null);
   const [job, setJob] = useState<Job | null>(null);
+  const layout = useRef<HTMLDivElement>(null);
+  const [stacked, setStacked] = useState(false);
+  const configuring = job === null;
+
+  useEffect(() => {
+    const el = layout.current;
+    if (!configuring || !el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => {
+      const width = entry?.contentRect.width;
+      if (width) setStacked(width < 580);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [configuring]);
 
   useEffect(() => {
     if (initialLocation()) return;
@@ -265,8 +292,19 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div className={styles.layout}>
-        <div className={styles.sidebar}>
+      <SplitGroup
+        className={styles.layout}
+        elementRef={layout}
+        orientation={stacked ? "vertical" : "horizontal"}
+        storageKey="openidea.newProject.layout"
+      >
+        <SplitPanel
+          id="new-project-generators"
+          defaultSize="25%"
+          minSize={stacked ? "28%" : "148px"}
+          maxSize="45%"
+          className={styles.sidebar}
+        >
           <Input
             className={styles.search}
             value={query}
@@ -286,6 +324,7 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
                     role="option"
                     aria-selected={g.id === selected}
                     className={styles.entry}
+                    title={tx(g.name)}
                     onClick={() => setSelected(g.id)}
                   >
                     <Icon name={hasIcon(g.icon) ? g.icon : "folder"} />
@@ -295,82 +334,95 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
               </div>
             ))}
           </div>
-        </div>
-        <form
-          className={styles.form}
-          onSubmit={(e) => {
-            e.preventDefault();
-            void createProject();
-          }}
-        >
-          {generator?.description && <div className={styles.description}>{tx(generator.description)}</div>}
-          <div className={styles.grid}>
-            <label className={styles.label} htmlFor="np-name">
-              <T>Name:</T>
-            </label>
-            <Input
-              id="np-name"
-              data-autofocus
-              value={name}
-              invalid={!!nameError}
-              onChange={(e) => setName(e.target.value)}
-            />
-            <label className={styles.label} htmlFor="np-location">
-              <T>Location:</T>
-            </label>
-            <div className={styles.inline}>
-              <Input id="np-location" value={location} onChange={(e) => setLocation(e.target.value)} />
-              <Button onClick={() => void browse()} disabled={!isTauri()}>
-                <T>Browse…</T>
-              </Button>
-            </div>
-            <span />
-            <div className={styles.hint}>
-              {nameError ? txTemplate(nameError) : path && txTemplate(`Project will be created in: ${path}`)}
-            </div>
-            {generator?.git && (
-              <>
-                <span />
-                <Checkbox checked={git} onChange={setGit} label="Create Git repository" />
-              </>
-            )}
-            {visibleFields.map((f) => (
-              <FieldRow
-                key={f.id}
-                field={f}
-                value={values[f.id] ?? ""}
-                onChange={(v) => setValue(f.id, v)}
-                jdks={jdks}
+        </SplitPanel>
+        <SplitHandle aria-label={tx("Generators")} />
+        <SplitPanel id="new-project-form" defaultSize="75%">
+          <form
+            className={styles.form}
+            onSubmit={(e) => {
+              e.preventDefault();
+              void createProject();
+            }}
+          >
+            {generator?.description && <div className={styles.description}>{tx(generator.description)}</div>}
+            <div className={styles.grid}>
+              <label className={styles.label} htmlFor="np-name">
+                <T>Name:</T>
+              </label>
+              <Input
+                id="np-name"
+                data-autofocus
+                value={name}
+                invalid={!!nameError}
+                onChange={(e) => setName(e.target.value)}
               />
-            ))}
-            {loadingDynamic && (
-              <>
-                <span />
-                <div className={styles.hint}>
-                  <T>Loading options…</T>
-                </div>
-              </>
-            )}
-            {dynamicError && (
-              <>
-                <span />
-                <div className={styles.error}>{txTemplate(dynamicError)}</div>
-              </>
-            )}
-          </div>
-          {missing.map((r) => (
-            <div key={r.program} className={styles.missing}>
-              <Icon name="warning" />
-              <span>
-                {r.found
-                  ? tx`${r.program} ${r.found} is installed, but this project needs ${r.min ?? ""} or later.`
-                  : tx`${r.program} is not installed.`}{" "}
-                {r.hint && tx(r.hint)}
-              </span>
+              <label className={styles.label} htmlFor="np-location">
+                <T>Location:</T>
+              </label>
+              <div className={styles.location}>
+                <Input
+                  id="np-location"
+                  variant="bare"
+                  className={styles.locationInput}
+                  value={location}
+                  onChange={(e) => setLocation(e.target.value)}
+                />
+                <IconButton
+                  icon="folder-open"
+                  title="Browse…"
+                  size="small"
+                  onClick={() => void browse()}
+                  disabled={!isTauri()}
+                />
+              </div>
+              <span />
+              <div className={styles.hint}>
+                {nameError ? txTemplate(nameError) : path && txTemplate(`Project will be created in: ${path}`)}
+              </div>
+              {generator?.git && (
+                <>
+                  <span />
+                  <Checkbox checked={git} onChange={setGit} label="Create Git repository" />
+                </>
+              )}
+              {visibleFields.map((f) => (
+                <FieldRow
+                  key={f.id}
+                  field={f}
+                  value={values[f.id] ?? ""}
+                  onChange={(v) => setValue(f.id, v)}
+                  jdks={jdks}
+                />
+              ))}
+              {loadingDynamic && (
+                <>
+                  <span />
+                  <div className={styles.hint}>
+                    <T>Loading options…</T>
+                  </div>
+                </>
+              )}
+              {dynamicError && (
+                <>
+                  <span />
+                  <div className={styles.error}>{txTemplate(dynamicError)}</div>
+                </>
+              )}
             </div>
-          ))}
-        </form>
-      </div>
+            {missing.map((r) => (
+              <div key={r.program} className={styles.missing}>
+                <Icon name="warning" />
+                <span>
+                  {r.found
+                    ? tx`${r.program} ${r.found} is installed, but this project needs ${r.min ?? ""} or later.`
+                    : tx`${r.program} is not installed.`}{" "}
+                  {r.hint && tx(r.hint)}
+                </span>
+              </div>
+            ))}
+          </form>
+        </SplitPanel>
+      </SplitGroup>
     </Dialog>
   );
 }
@@ -420,6 +472,7 @@ function FieldRow({
     control = (
       <Select
         id={id}
+        className={styles.fieldSelect}
         value={value}
         options={kind.options.map((o) => ({ value: o.value, label: o.label }))}
         onChange={onChange}
@@ -438,7 +491,16 @@ function FieldRow({
       })),
     ];
     if (value && !options.some((o) => o.value === value)) options.push({ value, label: value, verbatim: true });
-    control = <Select id={id} value={value} options={options} onChange={onChange} aria-label={tx(field.label)} />;
+    control = (
+      <Select
+        id={id}
+        className={styles.fieldSelect}
+        value={value}
+        options={options}
+        onChange={onChange}
+        aria-label={tx(field.label)}
+      />
+    );
   } else if (kind.type === "dependencies")
     control = <DependencyPicker id={id} groups={kind.groups} value={value} onChange={onChange} />;
   else

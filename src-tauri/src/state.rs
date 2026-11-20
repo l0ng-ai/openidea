@@ -99,6 +99,9 @@ impl AppState {
             runtime: tauri::async_runtime::handle().inner().clone(),
             project_environment: false,
         }));
+        let announce = global_sink.clone();
+        host.set_background_projects_observer(Arc::new(move || announce.emit(IdeEvent::McpBackgroundProjectsChanged)));
+        host.start_background_sweeper();
         Ok(Self {
             recent: RecentProjects::load(&config_dir),
             updates: Default::default(),

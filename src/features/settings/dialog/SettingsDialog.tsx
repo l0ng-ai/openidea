@@ -356,7 +356,6 @@ export function SettingsLayout() {
             onSelectionChange={(_sel, node) => node && selectPage(node.key)}
             multiSelect={false}
             speedSearch={false}
-            rowHeight={24}
             empty={
               <div className={styles.noMatch}>
                 <T>No matches</T>

@@ -49,7 +49,7 @@ description: "如何报告漏洞，以及贡献者需要维护的安全模型：
 
 ### 本地服务
 
-- **MCP 服务**（`crates/ide-mcp`）：监听 `127.0.0.1` 的随机端口，要求每次运行随机生成的 bearer token，`Origin` 或 `Host` 不匹配的请求一律拒绝（防 DNS rebinding）。
+- **MCP 服务**（`crates/ide-mcp`）：监听 `127.0.0.1` 的随机端口，要求每次运行随机生成的 bearer token，`Origin` 或 `Host` 不匹配的请求一律拒绝（防 DNS rebinding）。只有后台项目设置和信任库都允许时，它才会打开没有窗口的文件夹，未受信任的文件夹以受限模式打开。
 - **内置 Web 服务**（`crates/ide-web`）：在 `127.0.0.1` 上只读提供项目文件；每个 URL 都以每次运行随机生成的 token 开头，`Host` 不对的请求会被拒绝。
 - **Tauri MCP bridge**（`tauri-plugin-mcp-bridge`）：只编译进 debug 构建，绑定 `127.0.0.1`。
 

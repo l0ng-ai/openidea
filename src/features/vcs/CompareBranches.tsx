@@ -10,6 +10,7 @@ import { showCompareRevisions } from "./operations";
 import { currentRepo, useVcs } from "./store";
 import styles from "./common.module.css";
 import { tx } from "@/platform/i18n";
+import { useRowHeight } from "@/ui/density";
 
 const LIMIT = 2000;
 
@@ -75,6 +76,7 @@ function CommitList({
   error: string | null;
   onClose: () => void;
 }) {
+  const rowHeight = useRowHeight(22);
   return (
     <div className={styles.commitListBody}>
       {error ? (
@@ -89,7 +91,7 @@ function CommitList({
         <List
           items={commits}
           getKey={(c) => c.id}
-          rowHeight={22}
+          rowHeight={rowHeight}
           aria-label="Commits"
           className={styles.grow}
           empty={

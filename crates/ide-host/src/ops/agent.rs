@@ -33,6 +33,16 @@ pub fn agent_providers(host: &Host, window: &str) -> IdeResult<Vec<AgentProvider
     Ok(providers)
 }
 
+/// Hermes Agent profiles on this machine (`default` first); empty without Hermes.
+#[command(trust = trusted)]
+pub async fn agent_hermes_profiles(host: &Host, window: &str) -> IdeResult<Vec<ide_agent::hermes::HermesProfile>> {
+    host.require_trust(window)?;
+    let root = ide_agent::hermes::root(dirs::home_dir().as_deref());
+    tokio::task::spawn_blocking(move || root.map(|r| ide_agent::hermes::labeled_profiles(&r)).unwrap_or_default())
+        .await
+        .map_err(join_err)
+}
+
 /// Refreshes the model catalog; force bypasses freshness, not the cooldown.
 #[command(trust = trusted)]
 pub fn agent_refresh_models(
@@ -1075,6 +1085,7 @@ ide_command::domain!(
     agent_external_sessions,
     agent_fork,
     agent_grouped_changes,
+    agent_hermes_profiles,
     agent_import_session,
     agent_mcp_discover_sources,
     agent_mcp_import,

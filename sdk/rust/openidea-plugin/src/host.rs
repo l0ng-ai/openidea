@@ -129,6 +129,31 @@ mod imp {
     pub fn remove_window_status_item(id: &str) -> Result<(), Error> {
         wit::ui::remove_window_status_item(id).map_err(error)
     }
+    fn wit_status_item(item: &StatusItem) -> wit::ui::StatusItem {
+        wit::ui::StatusItem { text: item.text.clone(), tooltip: item.tooltip.clone(), command: item.command.clone() }
+    }
+    fn wit_status_menu(menu: &[StatusMenuEntry]) -> Vec<wit::ui::StatusMenuEntry> {
+        menu.iter()
+            .map(|entry| match entry {
+                StatusMenuEntry::Action { label, description, command, argument } => {
+                    wit::ui::StatusMenuEntry::Action(wit::ui::StatusMenuAction {
+                        label: label.clone(),
+                        description: description.clone(),
+                        command: command.clone(),
+                        argument: argument.clone(),
+                    })
+                }
+                StatusMenuEntry::Separator => wit::ui::StatusMenuEntry::Separator,
+                StatusMenuEntry::Header(label) => wit::ui::StatusMenuEntry::Header(label.clone()),
+            })
+            .collect()
+    }
+    pub fn set_status_item_menu(id: &str, item: &StatusItem, menu: &[StatusMenuEntry]) -> Result<(), Error> {
+        wit::ui::set_status_item_menu(id, &wit_status_item(item), &wit_status_menu(menu)).map_err(error)
+    }
+    pub fn set_window_status_item_menu(id: &str, item: &StatusItem, menu: &[StatusMenuEntry]) -> Result<(), Error> {
+        wit::ui::set_window_status_item_menu(id, &wit_status_item(item), &wit_status_menu(menu)).map_err(error)
+    }
     pub fn execute_command(id: &str, arg: Option<&str>) -> Result<Option<String>, Error> {
         wit::command_runner::execute(id, arg).map_err(error)
     }
@@ -1462,8 +1487,8 @@ pub struct Child {
 
 impl Child {
     /// What it printed since the last read, up to 1 MiB per stream, or one
-    /// whole character when `max_bytes` is smaller;
-    /// `status` is `Some` once it ended.
+    /// whole character when `max_bytes` is smaller. `status` is `Some` in the
+    /// chunk that holds the last of its output: poll until it is set.
     pub fn poll(&self, max_bytes: u32) -> Result<Chunk, Error> {
         imp::child_poll(&self.inner, max_bytes)
     }
@@ -1484,6 +1509,7 @@ impl Child {
     }
 
     /// Waits up to `timeout_ms` for it to end (0 only checks), then reads it.
+    /// When more is left than one chunk holds, `status` comes with a later [`poll`](Self::poll).
     pub fn wait(&self, timeout_ms: u32) -> Result<Chunk, Error> {
         imp::child_wait(&self.inner, timeout_ms)
     }
@@ -1862,6 +1888,20 @@ pub fn set_window_status_item(id: &str, item: &StatusItem) -> Result<(), Error> 
 /// Removes this window's status override, exposing the global item.
 pub fn remove_window_status_item(id: &str) -> Result<(), Error> {
     imp::remove_window_status_item(id)
+}
+
+/// [`set_status_item`] with a menu (API 1.14): clicking the item opens `menu`
+/// anchored to it instead of running the item's command; choosing an action runs
+/// its command. At most 64 entries; an empty menu is the same as [`set_status_item`].
+/// Fails without changing anything when an action names a command the plugin
+/// doesn't declare.
+pub fn set_status_item_menu(id: &str, item: &StatusItem, menu: &[StatusMenuEntry]) -> Result<(), Error> {
+    imp::set_status_item_menu(id, item, menu)
+}
+
+/// [`set_window_status_item`] with a menu, as [`set_status_item_menu`] (API 1.14).
+pub fn set_window_status_item_menu(id: &str, item: &StatusItem, menu: &[StatusMenuEntry]) -> Result<(), Error> {
+    imp::set_window_status_item_menu(id, item, menu)
 }
 
 /// An approved byte stream on the project machine (the server in remote projects).

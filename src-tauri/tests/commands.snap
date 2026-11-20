@@ -16,6 +16,7 @@ agent_entries                                always             project_host bin
 agent_external_sessions                      trusted            project_host bindings async
 agent_fork                                   trusted            project_host bindings async
 agent_grouped_changes                        trusted            project_host bindings async
+agent_hermes_profiles                        trusted            project_host bindings async
 agent_import_session                         trusted            project_host bindings async
 agent_mcp_discover_sources                   always             project_host bindings async
 agent_mcp_import                             always             project_host bindings sync
@@ -375,6 +376,7 @@ maven_dependency_declaration                 trusted            project_host bin
 maven_exclude_dependency                     trusted            project_host bindings async
 maven_goto_declaration                       trusted            project_host bindings async
 mcp_agent_run_closed                         trusted            project_host bindings sync
+mcp_background_projects                      always             project_host bindings sync
 mcp_regenerate_token                         outside_restricted project_host bindings sync
 mcp_report_problems                          trusted            project_host bindings sync
 mcp_respond                                  trusted            project_host bindings sync
@@ -382,6 +384,7 @@ mcp_server_status                            outside_restricted project_host bin
 mcp_set_focused_editor                       trusted            project_host bindings sync
 mcp_set_open_editors                         trusted            project_host bindings sync
 mcp_ui_ready                                 trusted            project_host bindings sync
+mcp_unload_background_project                always             project_host bindings async
 menu_configure                               always             desktop      bindings sync
 menu_model                                   always             desktop      bindings sync
 menu_refresh                                 always             desktop      bindings sync

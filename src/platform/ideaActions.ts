@@ -99,4 +99,6 @@ export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
   VcsShowNextChangeMarker: "vcs.nextChange",
   VcsShowPrevChangeMarker: "vcs.prevChange",
   "Compare.SameVersion": "vcs.showDiff",
+  "ChangesView.ShelveSilently": "vcs.shelveSilently",
+  "ChangesView.UnshelveSilently": "vcs.unshelveSilently",
 };

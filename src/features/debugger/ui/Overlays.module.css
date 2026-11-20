@@ -88,34 +88,44 @@
 }
 
 /* breakpoints dialog */
-.bpDialog {
-  display: flex;
-  height: 420px;
-  min-height: 0;
-}
-
-.bpListPane {
-  width: 360px;
-  flex: none;
+.bpWindow [data-dialog-body] {
   display: flex;
   flex-direction: column;
-  border-right: 1px solid var(--border-popup);
-  min-height: 0;
+  overflow: hidden;
+}
+
+.bpDialog {
+  flex: 1 1 420px;
 }
 
 .bpListHeader {
-  height: var(--h-header);
+  min-height: var(--h-header);
   flex: none;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: space-between;
   gap: var(--space-1-5);
-  padding: 0 8px 0 12px;
+  padding: var(--space-0-5) var(--space-2);
   border-bottom: 1px solid var(--border-popup);
 }
 
+.bpListActions {
+  display: flex;
+  gap: var(--space-1);
+  margin-inline-start: auto;
+}
+
 .bpList {
-  flex: 1;
+  flex: 1 0 calc(2 * var(--h-list-row));
   min-height: 0;
+}
+
+.bpAuxiliary {
+  flex: 0 1 auto;
+  max-height: 42%;
+  min-height: 0;
+  overflow: auto;
 }
 
 .bpRow,
@@ -133,6 +143,31 @@
   font-family: var(--font-mono);
   font-size: var(--fs-ui);
   color: var(--fg-emphasis);
+}
+
+.bpLocation {
+  display: inline-flex;
+  min-width: 0;
+  align-items: baseline;
+}
+
+.bpRow .bpName,
+.bpLocation .bpName {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-ui);
+}
+
+.bpLine {
+  flex: none;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.bpRow > svg {
+  flex: none;
 }
 
 .bpDir {
@@ -156,14 +191,29 @@
 .bpDetail {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   overflow: auto;
 }
 
 .detail {
-  padding: 12px 14px;
+  padding: var(--space-3);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-2);
+}
+
+.detail .bpTitle {
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+}
+
+.detail :is(.bpFile, .bpLocation) {
+  flex: 1 1 12ch;
+  font-family: var(--font-ui);
+}
+
+.detail .label {
+  font-size: var(--fs-ui);
 }
 
 .statusLine {
@@ -172,31 +222,72 @@
 }
 
 /* evaluate dialog */
+.evalDialog {
+  height: min(440px, 100%);
+}
+
 .evalBody {
   height: 100%;
-  box-sizing: border-box;
-  padding: 12px 14px;
+  padding: var(--space-2) var(--space-3) 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-2);
+}
+
+.evalExpression,
+.evalResult {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: var(--space-1);
+}
+
+/* Long fragments scroll inside the field so the result keeps its own space. */
+.evalExpression {
+  max-height: 50%;
 }
 
 .evalImport {
+  flex: none;
+  max-height: 40%;
+  overflow: auto;
+  padding: var(--space-1);
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  align-content: start;
   gap: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--border);
 }
 
-/* Grows with the dialog when it is resized. */
+.evalImport > button {
+  max-width: 100%;
+  height: auto;
+  min-height: var(--h-control);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .evalResult {
   flex: 1;
-  min-height: 220px;
+}
+
+.evalResultContent {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border-popup);
   border-radius: var(--radius-small);
-  padding: 4px 6px;
+  padding: var(--space-0-5) var(--space-1);
+  overflow: hidden;
+}
+
+.evalHint {
+  padding: var(--space-2);
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  overflow: auto;
 }
 
 .chooser {
@@ -204,9 +295,6 @@
 }
 
 .exceptions {
-  flex: none;
-  max-height: 40%;
-  overflow: auto;
   border-top: 1px solid var(--border-popup);
   padding: 6px 12px 8px;
   display: flex;
@@ -259,33 +347,38 @@
 /* Evaluate: a field that grows with ⇧Enter, like IDEA's expression editor. */
 .evalInputRow {
   display: flex;
-  align-items: flex-start;
-  gap: var(--space-1);
-}
-.evalInput {
-  flex: 1;
-  min-width: 0;
-  min-height: var(--h-field, 28px);
-  padding: 5px 8px;
-  resize: none;
-  appearance: none;
-  border: 0;
+  min-height: 0;
   border-radius: var(--radius-control, 4px);
   background: var(--bg-field, var(--bg-button));
   box-shadow: inset 0 0 0 1px var(--border-button);
-  color: var(--fg-strong);
-  font-family: var(--font-mono);
-  font-size: var(--fs-ui);
-  line-height: 18px;
-  outline: none;
-  -webkit-user-select: text;
-  user-select: text;
 }
-.evalInput:focus {
+.evalInputRow:focus-within {
   box-shadow:
     inset 0 0 0 1px var(--focus-ring),
     0 0 0 1px var(--focus-ring);
 }
+.evalInput {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: var(--space-1) var(--space-2);
+  resize: none;
+  appearance: none;
+  border: 0;
+  background: none;
+  color: var(--fg-strong);
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  font-weight: var(--fw-code);
+  line-height: var(--lh-code);
+  outline: none;
+  -webkit-user-select: text;
+  user-select: text;
+}
 .evalInput::placeholder {
   color: var(--fg-faint);
+}
+.evalHistory {
+  align-self: flex-start;
+  margin: var(--space-1);
 }

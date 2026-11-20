@@ -57,6 +57,8 @@ export const commands = {
 	agentFork: (task: string, turns: number | null) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_fork", { task, turns })),
 	/**  The task's uncommitted changes and the commits made since it started. */
 	agentGroupedChanges: (task: string) => typedError<AgentChanges, IdeError>(__TAURI_INVOKE("agent_grouped_changes", { task })),
+	/**  Hermes Agent profiles on this machine (`default` first); empty without Hermes. */
+	agentHermesProfiles: () => typedError<HermesProfile[], IdeError>(__TAURI_INVOKE("agent_hermes_profiles")),
 	/**  Imports an external session as a task: its first turn loads and replays it. */
 	agentImportSession: (provider: string, sessionId: string) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_import_session", { provider, sessionId })),
 	/**  Discovers external MCP configuration files on disk (CLI user configs + workspace `.mcp.json`). */
@@ -976,6 +978,11 @@ export const commands = {
 	/**  The user closed the Run tool window tab of an agent command (`run_command`). */
 	mcpAgentRunClosed: (name: string) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_agent_run_closed", { name })),
 	/**
+	 *  Settings › Agents › IDE MCP Server › Background projects: the projects this host's server
+	 *  keeps loaded without a window.
+	 */
+	mcpBackgroundProjects: () => typedError<McpBackgroundProject_Serialize[], IdeError>(__TAURI_INVOKE("mcp_background_projects")),
+	/**
 	 *  Settings › Agents › IDE MCP Server › Regenerate Token: forgets the kept token, and restarts the
 	 *  server with a new one. Clients configured with the old token stop working.
 	 */
@@ -991,6 +998,8 @@ export const commands = {
 } | null, focused: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_set_focused_editor", { editor, focused })),
 	mcpSetOpenEditors: (paths: IpcPath[]) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_set_open_editors", { paths })),
 	mcpUiReady: (ready: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_ui_ready", { ready })),
+	/**  Unloads one background project; a root that is not loaded is already unloaded. */
+	mcpUnloadBackgroundProject: (root: IpcPath) => typedError<null, IdeError>(__TAURI_INVOKE("mcp_unload_background_project", { root })),
 	/**
 	 *  Sets the menu's labels / accelerators and updates the menu when the visible
 	 *  items changed. Accelerators of actions that are not on the menu must not call
@@ -1199,7 +1208,7 @@ export const commands = {
 	/**  Writes a package the UI generated (an imported theme); returns the folder for the install page. */
 	pluginStagePackage: (name: string, files: PackageFile[]) => typedError<string, IdeError>(__TAURI_INVOKE("plugin_stage_package", { name, files })),
 	/**  Every plugin status bar item (later changes arrive as `statusItemChanged`). */
-	pluginStatusItems: () => __TAURI_INVOKE<PluginStatusItem[]>("plugin_status_items"),
+	pluginStatusItems: () => __TAURI_INVOKE<PluginStatusItem_Serialize[]>("plugin_status_items"),
 	/**  Routes this window's plugin events to `on_event` (replaces an earlier subscription). */
 	pluginSubscribe: (onEvent: Channel<PluginEvent_Deserialize>) => __TAURI_INVOKE<void>("plugin_subscribe", { onEvent }),
 	/**  Marks a keyed tab closed before ending its process. */
@@ -2260,11 +2269,15 @@ steered?: boolean } | { type: "agent"; text: string } |
 /**  A question that can be answered while the agent keeps working, or after the turn ends. */
 { type: "question"; id: string; title: string; questions: AgentQuestion[]; 
 /**  The submitted answers, or `Skipped`; `None` while unanswered. */
-chosen: string | null } | { type: "thought"; text: string } | { type: "tool"; id: string; title: string; 
+chosen: string | null } | { type: "thought"; text: string; 
+/**  When the reasoning started (ms since the epoch); `None` in tasks saved before. */
+startedMs?: number | null } | { type: "tool"; id: string; title: string; 
 /**  ACP tool kind: `read`, `edit`, `execute`, `search`, `fetch`, `think`… */
 kind: string; status: AgentToolStatus; locations: IpcPath[]; 
 /**  Text the tool reported (command output…), truncated. */
-output: string | null; diffs: AgentToolDiff[] } | { type: "plan"; items: AgentPlanItem[] } | 
+output: string | null; diffs: AgentToolDiff[]; 
+/**  When the call started and ended (ms since the epoch); `None` in tasks saved before. */
+startedMs?: number | null; endedMs?: number | null } | { type: "plan"; items: AgentPlanItem[] } | 
 /**  A subagent the agent started: its own session, whose entries are listed separately. */
 { type: "subagent"; 
 /**  The subagent's session id. */
@@ -2563,6 +2576,13 @@ export type AgentSecuritySettings = {
 	blockedCommands?: string[],
 };
 
+export type AgentSessionStats = {
+	/**  The last turn's tokens (`session/prompt` result `usage`). */
+	tokens?: AgentTokens | null,
+	/**  How many times the agent compressed the conversation (Hermes `compressionDepth`). */
+	compressions?: number,
+};
+
 /**  Settings › Agents: what the conversation shows and how messages are sent. */
 export type AgentSettings = AgentSettings_Serialize | AgentSettings_Deserialize;
 
@@ -2742,6 +2762,8 @@ export type AgentTask_Deserialize = {
 	background?: AgentBackgroundTask[],
 	/**  Per-session MCP server enable/disable overrides (`server_name` -> `enabled`), including `"openidea"`. */
 	mcpOverrides?: { [key in string]: boolean },
+	/**  Token counts of the last turn and context compressions, when the agent reports them. */
+	stats?: AgentSessionStats,
 };
 
 export type AgentTask_Serialize = {
@@ -2790,6 +2812,8 @@ export type AgentTask_Serialize = {
 	background: AgentBackgroundTask[],
 	/**  Per-session MCP server enable/disable overrides (`server_name` -> `enabled`), including `"openidea"`. */
 	mcpOverrides?: { [key in string]: boolean },
+	/**  Token counts of the last turn and context compressions, when the agent reports them. */
+	stats: AgentSessionStats,
 };
 
 /**  Token pricing (Credits per 1M tokens) and context window capacity for one tier. */
@@ -2799,6 +2823,12 @@ export type AgentTokenPricing = {
 	cacheRead?: number | null,
 	cacheWrite?: number | null,
 	contextTokens?: number | null,
+};
+
+export type AgentTokens = {
+	input: number,
+	cached: number,
+	output: number,
 };
 
 export type AgentToolDiff = {
@@ -6753,6 +6783,14 @@ export type HeapSummary = {
 	analysisMs: number,
 };
 
+/**  A profile and the name Hermes shows for it (`hermes profile list`). */
+export type HermesProfile = {
+	/**  What `hermes -p` takes; `default` is the Hermes home itself. */
+	name: string,
+	/**  `display_name` from the profile's `profile.yaml`, else the name. */
+	label: string,
+};
+
 export type HierarchyChoice = {
 	id: string,
 	makeAbstract: boolean,
@@ -6936,6 +6974,8 @@ export type HttpResponse = {
 	version: string,
 	headers: ([string, string])[],
 	contentType: string | null,
+	/**  Followed redirects, first hop first; empty when not redirected. */
+	redirects?: RedirectHop[],
 	/**  Body as text (lossy UTF-8); `None` for binary bodies. */
 	body: string | null,
 	/**  Size in bytes as received (after decompression). */
@@ -6975,6 +7015,8 @@ export type IdeEvent =
 { type: "dbSourcesChanged" } | { type: "mcpRequest"; id: number; request: McpUiRequest } | { type: "mcpRequestClosed"; id: number } | 
 /**  Project window membership or selection changed. */
 { type: "windowGroupsChanged" } | 
+/**  A project was loaded or unloaded for the MCP server without a window of its own. */
+{ type: "mcpBackgroundProjectsChanged" } | 
 /**  A window entered or left full screen, itself or as a member of a full-screen window group. */
 { type: "windowFullscreenChanged" } | 
 /**
@@ -7003,7 +7045,9 @@ ignoreRules?: IpcPath[] } |
 /**  Part of a grouped transaction; the editor must not record a file-local undo. */
 workspaceEdit?: boolean } | 
 /**  A document's dirty flag changed (saved / modified externally). */
-{ type: "docDirty"; doc: DocId; dirty: boolean } | 
+{ type: "docDirty"; doc: DocId; dirty: boolean; 
+/**  Text version when this transition occurred, including when it was saved. */
+version: number } | 
 /**  A complete workspace edit can be undone as one operation. */
 { type: "workspaceEditApplied"; id: number; paths: IpcPath[]; 
 /**
@@ -8432,6 +8476,54 @@ export type MavenSettings = {
 	updateSnapshots?: boolean,
 };
 
+/**  What keeps an idle background project loaded. */
+export type McpBackgroundHold = 
+/**  A tool call is in flight. */
+{ kind: "request" } | 
+/**  A run it started is alive; `name` is the first one's. */
+{ kind: "run"; name: string };
+
+/**  A project served without a window, as the IDE lists it. */
+export type McpBackgroundProject = McpBackgroundProject_Serialize | McpBackgroundProject_Deserialize;
+
+/**  A project served without a window, as the IDE lists it. */
+export type McpBackgroundProject_Deserialize = {
+	root: IpcPath,
+	/**  Seconds since its last tool call began or ended. */
+	idleSeconds: number,
+	/**
+	 *  Seconds until it is unloaded for being idle. Absent while something keeps it open
+	 *  and when idle projects are never unloaded.
+	 */
+	unloadsInSeconds?: number | null,
+	keptOpenBy?: McpBackgroundHold | null,
+};
+
+/**  A project served without a window, as the IDE lists it. */
+export type McpBackgroundProject_Serialize = {
+	root: IpcPath,
+	/**  Seconds since its last tool call began or ended. */
+	idleSeconds: number,
+	/**
+	 *  Seconds until it is unloaded for being idle. Absent while something keeps it open
+	 *  and when idle projects are never unloaded.
+	 */
+	unloadsInSeconds?: number | null,
+	keptOpenBy?: McpBackgroundHold | null,
+};
+
+/**  Which folders without an open window the MCP server still serves tools for. */
+export type McpBackgroundProjects = 
+/**  Only projects open in a window. */
+"off" | 
+/**
+ *  Also folders the user trusts: trusted projects, recent projects and the repositories inside
+ *  trusted locations.
+ */
+"trusted" | 
+/**  Only the folders in [`McpServerSettings::background_project_paths`] (and below them). */
+"listed";
+
 /**  Summary of one server discovered inside an external MCP configuration file. */
 export type McpDiscoveredServer = {
 	name: string,
@@ -8523,7 +8615,10 @@ export type McpServerInput = {
 };
 
 /**  Agents › MCP Server: agents use the IDE's built-in tools. */
-export type McpServerSettings = {
+export type McpServerSettings = McpServerSettings_Serialize | McpServerSettings_Deserialize;
+
+/**  Agents › MCP Server: agents use the IDE's built-in tools. */
+export type McpServerSettings_Deserialize = {
 	/**  Serve the tools on [`Self::address`] while the IDE runs. */
 	enabled?: boolean,
 	/**
@@ -8552,6 +8647,72 @@ export type McpServerSettings = {
 	 *  make a new one each run.
 	 */
 	fixedToken?: boolean,
+	/**
+	 *  Serve tools for folders that have no open window (see [`McpBackgroundProjects`]); the
+	 *  project loads when an agent first asks for it.
+	 */
+	backgroundProjects?: McpBackgroundProjects,
+	/**
+	 *  The folders [`McpBackgroundProjects::Listed`] serves, and the ones `Trusted` serves even
+	 *  when untrusted.
+	 */
+	backgroundProjectPaths?: string[],
+	/**
+	 *  Minutes a background project may go without a tool call before it is unloaded, at most
+	 *  1440; 0 keeps it until the IDE quits.
+	 */
+	backgroundIdleMinutes?: number,
+	/**  Background projects loaded at once, 1 to 32; the least recently used one makes room. */
+	backgroundProjectLimit?: number,
+};
+
+/**  Agents › MCP Server: agents use the IDE's built-in tools. */
+export type McpServerSettings_Serialize = {
+	/**  Serve the tools on [`Self::address`] while the IDE runs. */
+	enabled: boolean,
+	/**
+	 *  Run the tools that change the project or start processes without asking first
+	 *  (IDEA's brave mode). Read from the IDE's own settings only, never a project's.
+	 */
+	runWithoutConfirmation: boolean,
+	/**  Finished agent tabs (`run_command`) the Run tool window shows; older ones are archived. */
+	agentTabLimit: number,
+	/**  Archived agent tabs kept; older ones are closed. */
+	agentArchiveLimit: number,
+	/**
+	 *  The IP address to listen on: `127.0.0.1` (this computer only, the default), another
+	 *  address of this computer, or `0.0.0.0` / `::` for every address.
+	 */
+	address: string,
+	/**
+	 *  Listen on [`Self::port`] in every run, rather than a free port each time, so HTTP clients and
+	 *  port forwards keep working after a restart.
+	 */
+	fixedPort: boolean,
+	/**  The port of [`Self::fixed_port`]. */
+	port: number,
+	/**
+	 *  Keep the bearer token across runs (in the app data, readable by this user only) rather than
+	 *  make a new one each run.
+	 */
+	fixedToken: boolean,
+	/**
+	 *  Serve tools for folders that have no open window (see [`McpBackgroundProjects`]); the
+	 *  project loads when an agent first asks for it.
+	 */
+	backgroundProjects: McpBackgroundProjects,
+	/**
+	 *  The folders [`McpBackgroundProjects::Listed`] serves, and the ones `Trusted` serves even
+	 *  when untrusted.
+	 */
+	backgroundProjectPaths: string[],
+	/**
+	 *  Minutes a background project may go without a tool call before it is unloaded, at most
+	 *  1440; 0 keeps it until the IDE quits.
+	 */
+	backgroundIdleMinutes: number,
+	/**  Background projects loaded at once, 1 to 32; the least recently used one makes room. */
+	backgroundProjectLimit: number,
 };
 
 /**  What Settings › Agents › IDE MCP Server shows. */
@@ -9158,9 +9319,9 @@ export type PluginEvent_Deserialize =
 /**  Buttons running the plugin's own commands (`ui.notify`). */
 actions: NotificationAction[] }) & { arg?: never; args?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  A plugin's status bar item was set (`item`) or removed. */
-({ type: "statusItemChanged"; pluginId: string; id: string; item: StatusItem | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "statusItemChanged"; pluginId: string; id: string; item: StatusItem_Deserialize | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  An override in the receiving window; removal exposes the global item. */
-({ type: "windowStatusItemChanged"; pluginId: string; id: string; item: StatusItem | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "windowStatusItemChanged"; pluginId: string; id: string; item: StatusItem_Deserialize | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**
  *  A plugin's context key was set (`value`: JSON text) or removed, in the
  *  emitted window (every window when the client is `None`).
@@ -9268,9 +9429,9 @@ export type PluginEvent_Serialize =
 /**  Buttons running the plugin's own commands (`ui.notify`). */
 actions: NotificationAction[] }) & { arg?: never; args?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  A plugin's status bar item was set (`item`) or removed. */
-({ type: "statusItemChanged"; pluginId: string; id: string; item: StatusItem | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "statusItemChanged"; pluginId: string; id: string; item: StatusItem_Serialize | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**  An override in the receiving window; removal exposes the global item. */
-({ type: "windowStatusItemChanged"; pluginId: string; id: string; item: StatusItem | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
+({ type: "windowStatusItemChanged"; pluginId: string; id: string; item: StatusItem_Serialize | null }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; requestId?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never } | 
 /**
  *  A plugin's context key was set (`value`: JSON text) or removed, in the
  *  emitted window (every window when the client is `None`).
@@ -9394,6 +9555,10 @@ export type PluginJavaAgent = {
 	fileName: string,
 	/**  The optional argument passed after `=`. */
 	args: string | null,
+	/**  Extra JVM flags from `vmOptions` (API 1.14). */
+	vmOptions: string[],
+	/**  When `Some("jetbrains")`, those VM options apply only on JetBrains Runtime. */
+	jdk: string | null,
 	/**  The jar still has the hash recorded when `java.agent` was granted. */
 	approved: boolean,
 };
@@ -9499,12 +9664,24 @@ export type PluginStatus =
 "blocked";
 
 /**  A plugin's status bar item. */
-export type PluginStatusItem = {
+export type PluginStatusItem = PluginStatusItem_Serialize | PluginStatusItem_Deserialize;
+
+/**  A plugin's status bar item. */
+export type PluginStatusItem_Deserialize = {
 	/**  Whether this item overrides the global item in the requesting window. */
 	window: boolean,
 	pluginId: string,
 	id: string,
-	item: StatusItem,
+	item: StatusItem_Deserialize,
+};
+
+/**  A plugin's status bar item. */
+export type PluginStatusItem_Serialize = {
+	/**  Whether this item overrides the global item in the requesting window. */
+	window: boolean,
+	pluginId: string,
+	id: string,
+	item: StatusItem_Serialize,
 };
 
 /**  A test update, carried by the optional test-results export. */
@@ -10140,6 +10317,13 @@ export type RecentProjectGroup = {
 	/**  Its projects, in the order they were added. */
 	paths: IpcPath[],
 	expanded?: boolean,
+};
+
+/**  One followed redirect: the response and the `Location` it pointed to. */
+export type RedirectHop = {
+	status: number,
+	statusText: string,
+	location: string,
 };
 
 export type RefactoringProblem = {
@@ -11016,7 +11200,7 @@ export type Settings_Deserialize = {
 	/**  Settings › Agents. */
 	agents?: AgentSettings_Deserialize,
 	/**  Agents › MCP Server (global only). */
-	mcpServer?: McpServerSettings,
+	mcpServer?: McpServerSettings_Deserialize,
 	/**  Tools › Agents: Command Execution Policy. */
 	agentSecurity?: AgentSecuritySettings,
 	/**  Appearance & Behavior › Scopes: named file sets other settings refer to. */
@@ -11092,7 +11276,7 @@ export type Settings_Serialize = {
 	/**  Settings › Agents. */
 	agents: AgentSettings_Serialize,
 	/**  Agents › MCP Server (global only). */
-	mcpServer: McpServerSettings,
+	mcpServer: McpServerSettings_Serialize,
 	/**  Tools › Agents: Command Execution Policy. */
 	agentSecurity: AgentSecuritySettings,
 	/**  Appearance & Behavior › Scopes: named file sets other settings refer to. */
@@ -11350,12 +11534,32 @@ export type Stash = {
 };
 
 /**  A plugin's status bar item. */
-export type StatusItem = {
+export type StatusItem = StatusItem_Serialize | StatusItem_Deserialize;
+
+/**  A plugin's status bar item. */
+export type StatusItem_Deserialize = {
 	text: string,
 	tooltip: string | null,
 	/**  One of the plugin's commands, run on click. */
 	command: string | null,
+	/**  Opened on click instead of running `command` when not empty (API 1.14). */
+	menu?: StatusMenuEntry[],
 };
+
+/**  A plugin's status bar item. */
+export type StatusItem_Serialize = {
+	text: string,
+	tooltip: string | null,
+	/**  One of the plugin's commands, run on click. */
+	command: string | null,
+	/**  Opened on click instead of running `command` when not empty (API 1.14). */
+	menu?: StatusMenuEntry[],
+};
+
+/**  An entry of a plugin status bar item's menu (API 1.14, `ui.set-status-item-menu`). */
+export type StatusMenuEntry = 
+/**  Runs one of the plugin's commands with `argument`. */
+{ kind: "action"; label: string; description: string | null; command: string; argument: string | null } | { kind: "separator" } | { kind: "header"; label: string };
 
 /**  A call on the current line that Smart Step Into can enter (`stepInTargets`). */
 export type StepInTarget = {
