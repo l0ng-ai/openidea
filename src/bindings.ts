@@ -2205,6 +2205,8 @@ export type AgentChange = {
 	removed: number,
 	/**  Path before a rename; the left side of its diff reads this path. */
 	oldPath: string | null,
+	/**  The repository the file is in, when the task's project holds nested repositories. */
+	repo: IpcPath | null,
 };
 
 /**  A task's uncommitted files and the commits made since it started. */
