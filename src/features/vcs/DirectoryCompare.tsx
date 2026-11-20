@@ -41,9 +41,9 @@ const STATUS: Record<DirectoryCompareStatus, string> = {
 /** Status filter toggles, in the order of the toolbar. */
 const FILTERS: { status: DirectoryCompareStatus; title: string; icon: IconName }[] = [
   { status: "leftOnly", title: "Show files only on left", icon: "diff-arrow-right" },
-  { status: "rightOnly", title: "Show files only on right", icon: "diff-arrow-left" },
   { status: "different", title: "Show different files", icon: "diff" },
   { status: "equal", title: "Show identical files", icon: "check" },
+  { status: "rightOnly", title: "Show files only on right", icon: "diff-arrow-left" },
 ];
 const MARKER: Partial<Record<DirectoryCompareStatus, IconName>> = {
   leftOnly: "diff-arrow-right",
@@ -128,29 +128,46 @@ export function DirectoryCompareEditor({ input }: { input: EditorInput }) {
   return <DirectoryCompare left={left} right={right} />;
 }
 
+const COLUMNS = {
+  left: ["name", "size", "date"],
+  right: ["date", "size", "name"],
+} as const;
+const COLUMN_LABELS = { name: "Name", size: "Size", date: "Date" };
+
+function SideHeaders({ side }: { side: "left" | "right" }) {
+  return COLUMNS[side].map((column) => (
+    <span key={column} role="columnheader" className={clsx(styles.cell, column !== "name" && styles[column])}>
+      <T>{COLUMN_LABELS[column]}</T>
+    </span>
+  ));
+}
+
 function Side({ entry, side, folder }: { entry: DirectoryCompareEntry; side: "left" | "right"; folder?: boolean }) {
   const kind = side === "left" ? entry.leftKind : entry.rightKind;
   const size = side === "left" ? entry.leftSize : entry.rightSize;
   const modified = side === "left" ? entry.leftModified : entry.rightModified;
   const name = folder ? entry.path : nameOf(entry.path);
-  return (
-    <>
-      <span role="gridcell" className={styles.cell}>
-        {kind && (
-          <>
-            <Icon name={kind === "dir" ? "folder" : fileIconName(name)} size={14} />
-            <span className={styles.text}>{name}</span>
-          </>
-        )}
-      </span>
-      <span role="gridcell" className={clsx(styles.cell, styles.num)}>
-        {size != null ? formatSize(size) : ""}
-      </span>
-      <span role="gridcell" className={clsx(styles.cell, styles.date)}>
-        {kind ? formatTime(modified) : ""}
-      </span>
-    </>
-  );
+  const values = {
+    name: kind && (
+      <>
+        <Icon name={kind === "dir" ? "folder" : fileIconName(name)} size={14} />
+        <span className={styles.text}>{name}</span>
+      </>
+    ),
+    size: size != null ? formatSize(size) : "",
+    date: kind ? formatTime(modified) : "",
+  };
+  const details = kind ? [name, values.size, values.date].filter(Boolean).join(" · ") : undefined;
+  return COLUMNS[side].map((column) => (
+    <span
+      key={column}
+      role="gridcell"
+      className={clsx(styles.cell, column !== "name" && styles[column])}
+      title={column === "name" ? details : undefined}
+    >
+      {values[column]}
+    </span>
+  ));
 }
 
 export function DirectoryCompare({ left, right }: { left: string; right: string }) {
@@ -298,25 +315,9 @@ export function DirectoryCompare({ left, right }: { left: string; right: string 
     <div className={styles.table} role="grid" aria-label={t("Compared files")} aria-rowcount={rows.length + 1}>
       <div role="rowgroup">
         <div className={styles.head} role="row" aria-rowindex={1}>
-          <span role="columnheader" className={styles.headCell}>
-            <T>Name</T>
-          </span>
-          <span role="columnheader" className={clsx(styles.headCell, styles.num)}>
-            <T>Size</T>
-          </span>
-          <span role="columnheader" className={clsx(styles.headCell, styles.date)}>
-            <T>Date</T>
-          </span>
-          <span role="columnheader" className={styles.headCell} aria-label={t("Status")} />
-          <span role="columnheader" className={styles.headCell}>
-            <T>Name</T>
-          </span>
-          <span role="columnheader" className={clsx(styles.headCell, styles.num)}>
-            <T>Size</T>
-          </span>
-          <span role="columnheader" className={clsx(styles.headCell, styles.date)}>
-            <T>Date</T>
-          </span>
+          <SideHeaders side="left" />
+          <span role="columnheader" aria-label={t("Status")} />
+          <SideHeaders side="right" />
         </div>
       </div>
       <List<DirectoryRow>
@@ -375,16 +376,35 @@ export function DirectoryCompare({ left, right }: { left: string; right: string 
 
   return (
     <div className={styles.root}>
-      <div className={styles.paths}>
-        <span className={styles.path} title={left}>
-          {tx`Left: ${displayPath(left)}`}
-        </span>
-        <span />
-        <span className={styles.path} title={right}>
-          {tx`Right: ${displayPath(right)}`}
-        </span>
-      </div>
       <div className={styles.toolbar}>
+        <div className={styles.toolbarGroup}>
+          <IconButton icon="refresh" title="Refresh" size="small" disabled={!idle} onClick={refresh} />
+          {FILTERS.map((f) => (
+            <IconButton
+              key={f.status}
+              icon={f.icon}
+              title={f.title}
+              size="small"
+              pressed={shown.has(f.status)}
+              onClick={() => toggle(f.status)}
+            />
+          ))}
+        </div>
+        <div className={styles.toolbarGroup}>
+          <Button size="small" disabled={!selected?.rightKind || !idle} onClick={() => void operate("left")}>
+            Copy to Left
+          </Button>
+          <Button size="small" disabled={!selected?.leftKind || !idle} onClick={() => void operate("right")}>
+            Copy to Right
+          </Button>
+          <Button
+            size="small"
+            disabled={!selected || !!selected.leftKind === !!selected.rightKind || !idle}
+            onClick={() => void operate("delete")}
+          >
+            Delete
+          </Button>
+        </div>
         <Input
           className={styles.filter}
           aria-label="Filter by name"
@@ -392,31 +412,6 @@ export function DirectoryCompare({ left, right }: { left: string; right: string 
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
         />
-        {FILTERS.map((f) => (
-          <IconButton
-            key={f.status}
-            icon={f.icon}
-            title={f.title}
-            size="small"
-            pressed={shown.has(f.status)}
-            onClick={() => toggle(f.status)}
-          />
-        ))}
-        <span className={styles.separator} />
-        <IconButton icon="refresh" title="Refresh" size="small" disabled={!idle} onClick={refresh} />
-        <Button size="small" disabled={!selected?.rightKind || !idle} onClick={() => void operate("left")}>
-          Copy to Left
-        </Button>
-        <Button size="small" disabled={!selected?.leftKind || !idle} onClick={() => void operate("right")}>
-          Copy to Right
-        </Button>
-        <Button
-          size="small"
-          disabled={!selected || !!selected.leftKind === !!selected.rightKind || !idle}
-          onClick={() => void operate("delete")}
-        >
-          Delete
-        </Button>
         {operating && <Spinner size={14} />}
         {busy && (
           <span className={styles.progress} role="status">
@@ -431,6 +426,16 @@ export function DirectoryCompare({ left, right }: { left: string; right: string 
             </Button>
           </span>
         )}
+      </div>
+      <div className={styles.paths}>
+        <span className={styles.path} title={left}>
+          <Icon name="folder" size={14} />
+          <span className={styles.text}>{tx`Left: ${displayPath(left)}`}</span>
+        </span>
+        <span className={styles.path} title={right}>
+          <Icon name="folder" size={14} />
+          <span className={styles.text}>{tx`Right: ${displayPath(right)}`}</span>
+        </span>
       </div>
       {error && (
         <div className={styles.error} role="alert">
@@ -451,7 +456,7 @@ export function DirectoryCompare({ left, right }: { left: string; right: string 
         <SplitGroup
           orientation="vertical"
           storageKey="openidea.directoryCompare.layout"
-          defaultLayout={{ files: 45, preview: 55 }}
+          defaultLayout={{ files: 40, preview: 60 }}
         >
           <SplitPanel id="files" minSize="15%" className={styles.panel}>
             {table}

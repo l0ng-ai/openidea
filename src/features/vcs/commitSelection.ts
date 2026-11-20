@@ -6,7 +6,7 @@
  */
 import type { CommitOptions, CommitSelection, PartialCommitFile } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
-import { workflowSettings } from "@/platform/workflowSettings";
+import { onWorkflowSettingsChange, workflowSettings } from "@/platform/workflowSettings";
 import {
   maybeEditorService,
   provideCommitService,
@@ -34,6 +34,10 @@ export function installDraftRevision(): () => void {
       revision++;
   });
   const offLists = useChangelists.subscribe(() => void revision++);
+  const offDefault = onWorkflowSettingsChange(
+    (s) => s.vcs.commit.includeChangesByDefault,
+    () => void revision++,
+  );
   const offRepo = useVcs.subscribe((s, p) => {
     // With the staging area the index is the inclusion: a status change may change the commit.
     if (s.root !== p.root || (s.status !== p.status && stagingAreaOn())) revision++;
@@ -41,6 +45,7 @@ export function installDraftRevision(): () => void {
   return () => {
     offCommit();
     offLists();
+    offDefault();
     offRepo();
   };
 }
@@ -49,7 +54,7 @@ export function installDraftRevision(): () => void {
 export function currentPlan(): CommitPlan {
   const { status, root } = useVcs.getState();
   const checks = inclusionChecks(status, root ?? "", useChangelists.getState().state, useCommit.getState().checks);
-  return planCommit(status, checks);
+  return planCommit(status, checks, workflowSettings().vcs.commit.includeChangesByDefault);
 }
 
 /**

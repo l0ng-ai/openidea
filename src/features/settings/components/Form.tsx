@@ -315,6 +315,7 @@ export interface GlobListEditorProps {
   emptyText?: string;
   /** Accessible name of the inline editor. */
   itemLabel?: string;
+  fullWidth?: boolean;
   /** Entries are paths: + opens this chooser (Edit still takes typing). */
   browse?: { directory: boolean; title: string };
 }
@@ -328,6 +329,7 @@ export function GlobListEditor({
   placeholder = "**/pattern",
   emptyText = "No patterns",
   itemLabel = "Pattern",
+  fullWidth,
   browse,
   ...aria
 }: GlobListEditorProps) {
@@ -408,7 +410,7 @@ export function GlobListEditor({
 
   const rows = editing && editing.index >= value.length ? [...value, ""] : value;
   return (
-    <div className={clsx(styles.globEditor, className)}>
+    <div className={clsx(styles.globEditor, !fullWidth && styles.globCompact, className)}>
       <div className={styles.listToolbar} role="toolbar" aria-controls={listId}>
         <IconButton icon="plus" title="Add" size="small" onClick={() => void add()} />
         <IconButton icon="minus" title="Remove" size="small" disabled={selected === null} onClick={remove} />

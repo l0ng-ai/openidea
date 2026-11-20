@@ -49,6 +49,7 @@ export function ToggleNumber({
   min,
   max,
   hint,
+  disableWhenOff,
 }: {
   toggleKey: string;
   numberKey: string;
@@ -57,6 +58,7 @@ export function ToggleNumber({
   min: number;
   max: number;
   hint?: ReactNode;
+  disableWhenOff?: boolean;
 }) {
   const [on, setOn] = useSetting<boolean>(toggleKey);
   const [n, setN] = useSetting<number>(numberKey);
@@ -72,7 +74,15 @@ export function ToggleNumber({
           </>
         }
       />
-      <NumberInput value={n} onChange={setN} min={min} max={max} integer aria-label={label} />
+      <NumberInput
+        value={n}
+        onChange={setN}
+        min={min}
+        max={max}
+        integer
+        disabled={disableWhenOff && !on}
+        aria-label={label}
+      />
       {unit && <span className={clsx(styles.unit, !on && styles.disabled)}>{unit}</span>}
       {hint && <span className={styles.inlineHint}>{hint}</span>}
     </div>
