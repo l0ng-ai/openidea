@@ -5527,7 +5527,6 @@
   "HEAD is detached; check out a branch to push.": "HEAD 处于分离状态；请签出一个分支后再推送。",
   "No shelved changes": "没有已搁置的更改",
   "No recent projects": "没有最近的项目",
-  "Current position {line}:{col}": "当前位置 {line}:{col}",
   "{count} detected folders are unmarked.": "有 {count} 个检测到的文件夹未标记。",
   "Rebase commits of {head} not on:": "变基 {head} 中不在以下分支上的提交：",
   "{head} has no upstream: commits up to {revision} will be pushed as a new branch:": "{head} 没有上游分支：截至 {revision} 的提交将作为新分支推送：",
