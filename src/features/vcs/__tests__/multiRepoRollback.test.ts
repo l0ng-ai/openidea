@@ -4,6 +4,8 @@ const mocks = vi.hoisted(() => ({
   ask: vi.fn(),
   merge: vi.fn(),
   checkout: vi.fn(),
+  rename: vi.fn(),
+  prompt: vi.fn(),
   restore: vi.fn(),
   heads: {} as Record<string, string>,
   ops: {} as Record<string, string | null>,
@@ -30,6 +32,11 @@ vi.mock("@/platform/ipc", async (original) => {
         mocks.heads[root] = `${root}-merged`;
         return ok(null);
       },
+      vcsRenameBranch: (root: string, from: string, to: string, unset: boolean) => {
+        mocks.rename(root, from, to, unset);
+        if (root === "/b" && from === "feature") return fail("a branch named 'feature2' already exists");
+        return ok(null);
+      },
       vcsCheckout: (root: string, rev: string) => {
         mocks.checkout(root, rev);
         return ok({ kind: "done" });
@@ -42,8 +49,12 @@ vi.mock("@/platform/ipc", async (original) => {
   };
 });
 vi.mock("@/workbench/messages", () => ({ ask: mocks.ask, showError: vi.fn() }));
+vi.mock("../dialogs", async (original) => ({
+  ...(await original<typeof import("../dialogs")>()),
+  promptText: mocks.prompt,
+}));
 
-import { checkoutInRepos, mergeInRepos } from "../branchOps";
+import { checkoutInRepos, mergeInRepos, renameInRepos } from "../branchOps";
 import { useVcs } from "../store";
 import { pendingFixup } from "../commitStore";
 import type { Commit } from "@/bindings";
@@ -95,6 +106,41 @@ describe("checking out a common branch", () => {
     heads({ "/a": "feature", "/b": "feature" });
     await checkoutInRepos("feature", ["/a", "/b"]);
     expect(mocks.checkout).not.toHaveBeenCalled();
+  });
+});
+
+describe("renaming a common branch", () => {
+  beforeEach(() => {
+    mocks.ask.mockReset();
+    mocks.rename.mockReset();
+    mocks.prompt.mockReset().mockResolvedValue({ value: "feature2", checked: false });
+    mocks.ops = {};
+  });
+
+  it("renames it in every repository", async () => {
+    await renameInRepos("feature", ["/a", "/c"], false);
+    expect(mocks.rename.mock.calls).toEqual([
+      ["/a", "feature", "feature2", false],
+      ["/c", "feature", "feature2", false],
+    ]);
+  });
+
+  it("renames the first back after a failure in the second, on Rollback", async () => {
+    mocks.ask.mockResolvedValue({ button: "rollback" });
+    await renameInRepos("feature", ["/a", "/b", "/c"], false);
+    expect(mocks.rename.mock.calls).toEqual([
+      ["/a", "feature", "feature2", false],
+      ["/b", "feature", "feature2", false],
+      ["/a", "feature2", "feature", false],
+    ]);
+  });
+
+  it("offers to unset the upstream only when the branch has one", async () => {
+    await renameInRepos("feature", ["/a"], true);
+    expect(mocks.prompt.mock.calls[0]![0].checkbox).toEqual({ label: "Unset upstream branch", initial: false });
+    mocks.prompt.mockClear();
+    await renameInRepos("feature", ["/a"], false);
+    expect(mocks.prompt.mock.calls[0]![0].checkbox).toBeUndefined();
   });
 });
 

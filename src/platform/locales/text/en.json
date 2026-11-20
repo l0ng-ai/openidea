@@ -2766,5 +2766,7 @@
   "Load Changes from Disk": "Load Changes from Disk",
   "Keep Editor Changes": "Keep Editor Changes",
   "Branches have diverged": "Branches have diverged",
-  "Check out the same branch in all repositories to operate on them together.": "Check out the same branch in all repositories to operate on them together."
+  "Check out the same branch in all repositories to operate on them together.": "Check out the same branch in all repositories to operate on them together.",
+  "Rename branch {name} ({root})": "Rename branch {name} ({root})",
+  "rename it back to {name}": "rename it back to {name}"
 }

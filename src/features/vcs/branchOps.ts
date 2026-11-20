@@ -314,12 +314,14 @@ export async function renameBranch(branch: Branch) {
       },
     },
   );
-  if (ok !== undefined) {
-    try {
-      localStorage.setItem(recentKey(), JSON.stringify(recentBranches().map((b) => (b === name ? to : b))));
-    } catch {
-      // Recents are best effort.
-    }
+  if (ok !== undefined) renameRecent(name, to);
+}
+
+function renameRecent(from: string, to: string) {
+  try {
+    localStorage.setItem(recentKey(), JSON.stringify(recentBranches().map((b) => (b === from ? to : b))));
+  } catch {
+    // Recents are best effort.
   }
 }
 
@@ -786,6 +788,35 @@ export async function deleteInRepos(name: string, roots: readonly string[]) {
     `Deleted branch ${name}`,
     { undo: tx`restore branch ${name}`, run: (root, deleted) => call(commands.vcsRestoreBranch(root, deleted)) },
   );
+}
+
+/** Renames local branch `name` in every repository of `roots`; `upstream`: some of them track a remote branch. */
+export async function renameInRepos(name: string, roots: readonly string[], upstream: boolean) {
+  const r = await promptText({
+    title: tx`Rename Branch ${name}`,
+    label: tx`New branch name (in ${roots.length} repositories):`,
+    initial: name,
+    mono: true,
+    okLabel: "Rename",
+    sanitize: cleanUpBranchNameOnTyping,
+    validate: (v) => (v.trim() === name ? "Enter a new name" : validateBranchName(v)),
+    checkbox: upstream ? { label: "Unset upstream branch", initial: false } : undefined,
+  });
+  if (!r) return;
+  const to = r.value.trim();
+  const unset = upstream && r.checked;
+  await eachRepo(
+    roots,
+    (root) =>
+      runOp(
+        tx`Rename branch ${name} (${repoName(root)})`,
+        () => call(commands.vcsRenameBranch(root, name, to, unset)),
+        { refresh: false },
+      ).then((done) => (done === undefined ? undefined : true)),
+    tx`Renamed branch ${name} to ${to}`,
+    { undo: tx`rename it back to ${name}`, run: (root) => call(commands.vcsRenameBranch(root, to, name, false)) },
+  );
+  renameRecent(name, to);
 }
 
 // --- favorites ---------------------------------------------------------------

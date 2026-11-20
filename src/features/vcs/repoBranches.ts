@@ -69,6 +69,8 @@ export interface CommonBranch {
   /** Checked out in every repository. */
   current: boolean;
   favorite: boolean;
+  /** Tracks a remote branch in some repository. */
+  upstream: boolean;
 }
 
 /** Branches present in every repository (by name), local and remote, sorted like the single-repository lists. */
@@ -89,6 +91,7 @@ export function commonBranches(
           remote: b.remote,
           current: b.current && all.every((x) => x!.current),
           favorite: isFavoriteBranch(b, favorites),
+          upstream: !!b.upstream || all.some((x) => !!x!.upstream),
         },
       ];
     });

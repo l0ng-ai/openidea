@@ -123,7 +123,13 @@ describe("commonBranches", () => {
 
   it("is current only when checked out everywhere", () => {
     const common = commonBranches([[b("dev", { current: true })], [b("dev")]]);
-    expect(common.local).toEqual([{ name: "dev", remote: false, current: false, favorite: false }]);
+    expect(common.local).toEqual([{ name: "dev", remote: false, current: false, favorite: false, upstream: false }]);
+  });
+
+  it("marks a common branch with an upstream in any repository", () => {
+    const tracked = commonBranches([[b("dev")], [b("dev", { upstream: "origin/dev" })]]);
+    expect(tracked.local[0]?.upstream).toBe(true);
+    expect(commonBranches([[b("dev")], [b("dev")]]).local[0]?.upstream).toBe(false);
   });
 
   it("does not match a local branch with a remote one of the same name", () => {

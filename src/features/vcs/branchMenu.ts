@@ -19,6 +19,7 @@ import {
   mergeInRepos,
   newBranchInRepos,
   rebaseInRepos,
+  renameInRepos,
   loadFavoriteBranches,
   mergeIntoCurrent,
   newBranch,
@@ -168,12 +169,15 @@ export function commonBranchMenu(b: CommonBranch, roots: readonly string[], done
     icon: "branch",
     run: run(() => newBranchInRepos(roots, b.name)),
   };
+  const rename: MenuItem = { label: "Rename…", run: run(() => renameInRepos(b.name, roots, b.upstream)) };
   if (b.current)
     return [
       newFrom,
       { kind: "separator" },
       { label: "Update", icon: "git-pull", run: run(() => executeAction("vcs.update")) },
       { label: "Push…", icon: "git-push", run: run(() => executeAction("vcs.push")) },
+      { kind: "separator" },
+      rename,
     ];
   const items: MenuItem[] = [
     { label: "Checkout", run: run(() => checkoutInRepos(b.name, roots)) },
@@ -191,6 +195,7 @@ export function commonBranchMenu(b: CommonBranch, roots: readonly string[], done
         run: run(() => updateBranches(roots.map((repo) => ({ repo, branch: b })))),
       },
       { kind: "separator" },
+      rename,
       { label: "Delete", danger: true, icon: "trash", run: run(() => deleteInRepos(b.name, roots)) },
     );
   return items;
