@@ -1296,3 +1296,65 @@ fn language_of_a_closed_file_reads_the_hashbang() {
     docs.apply_edits(doc.id, &[TextEdit { range: all, new_text: "#!/usr/bin/env python3".into() }]).unwrap();
     assert_eq!(language(None), "python", "the open buffer's first line");
 }
+
+fn latin_project(f: &Fixture) {
+    let mut defaults = f.docs.file_defaults();
+    defaults.project_fallback = "iso-8859-15".into();
+    f.docs.set_file_defaults(defaults);
+}
+
+#[test]
+fn ascii_file_in_a_latin_project_saves_new_characters_in_the_project_encoding() {
+    let f = fixture();
+    latin_project(&f);
+    let path = f.root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "iso-8859-15");
+    f.docs.edit(doc.id, doc.version, change(0, 0, "// ação €\n")).unwrap();
+    f.docs.save(doc.id).unwrap();
+
+    assert_eq!(fs::read(&path).unwrap(), b"// a\xe7\xe3o \xa4\nclass A {}\n");
+}
+
+#[test]
+fn ascii_file_stays_utf8_when_no_encoding_is_configured() {
+    let f = fixture();
+    let path = f.root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "utf-8");
+    f.docs.edit(doc.id, doc.version, change(0, 0, "// ç\n")).unwrap();
+    f.docs.save(doc.id).unwrap();
+
+    assert_eq!(fs::read(&path).unwrap(), "// ç\nclass A {}\n".as_bytes());
+}
+
+#[test]
+fn utf8_text_with_accents_keeps_utf8_in_a_latin_project() {
+    let f = fixture();
+    latin_project(&f);
+    let path = f.root.join("A.java");
+    fs::write(&path, "// ação\n").unwrap();
+
+    assert_eq!(f.docs.open(&path).unwrap().encoding, "utf-8");
+}
+
+#[test]
+fn a_character_the_project_encoding_lacks_fails_the_save_of_a_promoted_ascii_file() {
+    let f = fixture();
+    latin_project(&f);
+    let path = f.root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+    let doc = f.docs.open(&path).unwrap();
+    f.docs.edit(doc.id, doc.version, change(0, 0, "// 漢\n")).unwrap();
+
+    let before = f.events.lock().len();
+    let err = f.docs.save(doc.id).expect_err("ISO-8859-15 cannot encode the edit");
+
+    assert_eq!(err.kind, ErrorKind::InvalidInput, "{err}");
+    assert_failed_save_preserves_edit(&f, doc.id, "// 漢\nclass A {}\n", before);
+    assert_eq!(fs::read(&path).unwrap(), b"class A {}\n");
+}

@@ -518,3 +518,43 @@ fn rule_changes_notify_the_affected_subtree() {
         drop(watcher);
     }
 }
+
+#[test]
+fn ascii_text_takes_the_configured_encoding() {
+    let (_tmp, root) = root();
+    let path = root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+    let fallback = Some("iso-8859-15");
+
+    let loaded = load_text_with_fallback(&path, fallback).unwrap();
+    assert_eq!((loaded.text.as_str(), loaded.encoding.as_str()), ("class A {}\n", "iso-8859-15"));
+    let bounded = load_text_bounded(&path, fallback, 1024).unwrap();
+    assert_eq!((bounded.text.as_str(), bounded.encoding.as_str()), ("class A {}\n", "iso-8859-15"));
+    assert_eq!(detect_encoding(b"class A {}\n", fallback), encoding_rs::ISO_8859_15);
+    assert_eq!(decode_text(b"class A {}\n", fallback).as_deref(), Some("class A {}\n"));
+}
+
+#[test]
+fn only_plain_ascii_is_relabelled() {
+    let (_tmp, root) = root();
+    let file = |name: &str, bytes: &[u8]| {
+        let path = root.join(name);
+        fs::write(&path, bytes).unwrap();
+        path
+    };
+    let label = |path: &Path, fallback| load_text_with_fallback(path, fallback).unwrap().encoding;
+    let ascii = file("ascii.txt", b"abc\n");
+    let accented = file("accented.txt", "ação\n".as_bytes());
+    let bom = file("bom.txt", b"\xef\xbb\xbfabc\n");
+    let utf16 = file("utf16.txt", b"\xff\xfea\x00b\x00");
+    let latin = file("latin.txt", b"a\xe7\xe3o \xa4\n");
+
+    assert_eq!(label(&ascii, None), "utf-8");
+    assert_eq!(label(&ascii, Some("utf-16le")), "utf-8", "UTF-16 does not read ASCII bytes as ASCII");
+    assert_eq!(label(&accented, Some("iso-8859-15")), "utf-8");
+    assert_eq!(label(&bom, Some("iso-8859-15")), "utf-8");
+    assert_eq!(label(&utf16, Some("iso-8859-15")), "utf-16le");
+    let latin = load_text_with_fallback(&latin, Some("iso-8859-15")).unwrap();
+    assert_eq!((latin.text.as_str(), latin.encoding.as_str()), ("ação €\n", "iso-8859-15"));
+    assert_eq!(detect_encoding("ação".as_bytes(), Some("iso-8859-15")), encoding_rs::UTF_8);
+}
