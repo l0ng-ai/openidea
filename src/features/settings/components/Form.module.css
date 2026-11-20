@@ -148,6 +148,26 @@
   }
 }
 
+@container settings-content (max-width: 440px) {
+  .stackFields > .row:not(.toggleRow) {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: var(--space-1-5);
+  }
+
+  .stackFields > .row:not(.toggleRow) > .label {
+    padding-top: 0;
+  }
+
+  .stackFields > .row:not(.toggleRow) > .label::after {
+    content: none;
+  }
+
+  .stackFields > .row:not(.toggleRow) > .hint {
+    grid-column: 1;
+    margin-top: 0;
+  }
+}
+
 .swatches {
   display: flex;
   align-items: center;

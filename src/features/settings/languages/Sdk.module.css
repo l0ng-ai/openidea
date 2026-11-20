@@ -18,6 +18,15 @@
   min-width: 0;
 }
 
+.mavenSettings .sdkField {
+  min-width: 0;
+  max-width: none;
+}
+
+.mavenThreads {
+  width: 100px;
+}
+
 .interpreterRow {
   display: flex;
   flex-wrap: wrap;

@@ -587,36 +587,43 @@ export function MavenPage() {
   const [activeProfiles, setActiveProfiles] = useSetting<string>("languages.java.maven.activeProfiles");
   const id = useId();
   return (
-    <div className={styles.page}>
+    <div className={styles.mavenSettings}>
       <Section>
-        <Toggle
-          label="Delegate IDE build/run actions to Maven"
-          checked={delegateBuild}
-          onChange={setDelegateBuild}
-          hint="Run and Debug build Maven modules with Maven (the project's javac) instead of the Java language server. Editor problems still come from the language server."
-        />
-        <Toggle
-          label="Automatically download sources"
-          checked={downloadSources}
-          onChange={setDownloadSources}
-          hint="The Java language server downloads the sources of all dependencies when it imports the project. When off, a library class opens decompiled and its Download Sources banner fetches the sources of that library only."
-        />
         <Toggle
           label="Always update snapshots"
           checked={updateSnapshots}
           onChange={setUpdateSnapshots}
           hint="Checks remote repositories for newer SNAPSHOT dependencies on every sync, build and run (-U)."
         />
-        <SdkRow
-          k="languages.java.maven.runnerJre"
-          label="JRE"
-          kind="jdk"
-          emptyLabel="Use Project JDK"
-          directory
-          browseTitle="Select JDK Home Directory"
-          aria-label="JRE"
-          hint="JDK used for Maven sync, builds, goals and tests. An explicit JAVA_HOME in a run configuration takes precedence."
-        />
+        <Row
+          label="Thread count"
+          htmlFor={id}
+          hint={
+            threadsInvalid ? (
+              <span className={styles.error} role="alert">
+                <T>
+                  Not a thread count Maven accepts, so builds run serially. Use a number (4) or a core multiplier (2C,
+                  2.5C).
+                </T>
+              </span>
+            ) : (
+              "Passed as -T to Maven builds and run configurations: a thread count (4) or a core multiplier (2C, 2.5C) for parallel builds of multi-module projects. Empty runs Maven serially."
+            )
+          }
+        >
+          <Input
+            id={id}
+            mono
+            invalid={threadsInvalid}
+            className={styles.mavenThreads}
+            value={threads}
+            placeholder="4, 2C"
+            onChange={(e) => setThreads(e.target.value.trim())}
+            aria-label="Thread count"
+          />
+        </Row>
+      </Section>
+      <Section title="Environment" stackFields>
         <SdkRow
           k="languages.java.maven.home"
           label="Maven home path"
@@ -637,6 +644,13 @@ export function MavenPage() {
           hint="Passed as -s (mirrors, servers, proxies)."
         />
         <PathInput
+          k="languages.java.maven.localRepository"
+          label="Local repository"
+          placeholder="From settings.xml, else ~/.m2/repository"
+          title="Select Local Repository"
+          hint="Passed as -Dmaven.repo.local."
+        />
+        <PathInput
           k="languages.java.maven.toolchains"
           label="Toolchains file"
           placeholder="~/.m2/toolchains.xml"
@@ -644,12 +658,31 @@ export function MavenPage() {
           file
           hint="Passed as -t; selects the JDKs Maven compiles with."
         />
-        <PathInput
-          k="languages.java.maven.localRepository"
-          label="Local repository"
-          placeholder="From settings.xml, else ~/.m2/repository"
-          title="Select Local Repository"
-          hint="Passed as -Dmaven.repo.local."
+      </Section>
+      <Section title="Importing">
+        <Toggle
+          label="Automatically download sources"
+          checked={downloadSources}
+          onChange={setDownloadSources}
+          hint="The Java language server downloads the sources of all dependencies when it imports the project. When off, a library class opens decompiled and its Download Sources banner fetches the sources of that library only."
+        />
+      </Section>
+      <Section title="Runner" stackFields>
+        <Toggle
+          label="Delegate IDE build/run actions to Maven"
+          checked={delegateBuild}
+          onChange={setDelegateBuild}
+          hint="Run and Debug build Maven modules with Maven (the project's javac) instead of the Java language server. Editor problems still come from the language server."
+        />
+        <SdkRow
+          k="languages.java.maven.runnerJre"
+          label="JRE"
+          kind="jdk"
+          emptyLabel="Use Project JDK"
+          directory
+          browseTitle="Select JDK Home Directory"
+          aria-label="JRE"
+          hint="JDK used for Maven sync, builds, goals and tests. An explicit JAVA_HOME in a run configuration takes precedence."
         />
         <Row
           label="Active profiles"
@@ -666,35 +699,8 @@ export function MavenPage() {
             aria-label="Active profiles"
           />
         </Row>
-        <Row
-          label="Thread count"
-          htmlFor={id}
-          hint={
-            threadsInvalid ? (
-              <span className={styles.error} role="alert">
-                <T>
-                  Not a thread count Maven accepts, so builds run serially. Use a number (4) or a core multiplier (2C,
-                  2.5C).
-                </T>
-              </span>
-            ) : (
-              "Passed as -T to Maven builds and run configurations: a thread count (4) or a core multiplier (2C, 2.5C) for parallel builds of multi-module projects. Empty runs Maven serially."
-            )
-          }
-        >
-          <span className={styles.pathRow}>
-            <Input
-              id={id}
-              mono
-              invalid={threadsInvalid}
-              className={styles.pathInput}
-              value={threads}
-              placeholder="4, 2C"
-              onChange={(e) => setThreads(e.target.value.trim())}
-              aria-label="Thread count"
-            />
-          </span>
-        </Row>
+      </Section>
+      <Section>
         <Toggle
           label="Use Maven Daemon (mvnd)"
           checked={daemon}

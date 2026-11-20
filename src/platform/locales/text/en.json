@@ -2745,6 +2745,8 @@
   "Reset to Default": "Reset to Default",
   "Always update snapshots": "Always update snapshots",
   "Checks remote repositories for newer SNAPSHOT dependencies on every sync, build and run (-U).": "Checks remote repositories for newer SNAPSHOT dependencies on every sync, build and run (-U).",
+  "Importing": "Importing",
+  "Runner": "Runner",
   "Automatic (the agent of the latest task)": "Automatic (the agent of the latest task)",
   "The agent's current model": "The agent's current model",
   "The agent's default": "The agent's default",
