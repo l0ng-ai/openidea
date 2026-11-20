@@ -349,6 +349,32 @@
   align-items: center;
 }
 
+.encodingPopup {
+  width: 264px;
+  padding-block: var(--space-1);
+}
+.encodingHeading {
+  padding: var(--space-1) var(--space-3) 0;
+  color: var(--fg-strong);
+  font-size: var(--fs-ui);
+  font-weight: 600;
+}
+.encodingCommands {
+  display: flex;
+  flex-direction: column;
+  margin-top: var(--space-1);
+  padding: var(--space-1) var(--space-1-5) 0;
+  border-top: 1px solid var(--border-popup);
+}
+.encodingCommands button {
+  justify-content: flex-start;
+  height: auto;
+  min-height: var(--h-list-row);
+  padding-block: var(--space-1);
+  text-align: left;
+  white-space: normal;
+}
+
 /* tab drag & drop target on the editor */
 .dropZone {
   position: absolute;
