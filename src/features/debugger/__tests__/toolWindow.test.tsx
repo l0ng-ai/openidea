@@ -292,7 +292,7 @@ describe("debug tool window", () => {
     expect(screen.getByRole("tab", { name: /main/ })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Threads & Variables" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Console" })).toBeTruthy();
-    expect(screen.getByText(", main.py:12")).toBeTruthy();
+    expect(screen.getByRole("option", { selected: true })).toHaveTextContent("main:12, main.py");
     expect(screen.getByPlaceholderText("Evaluate expression (↩) or add a watch (⇧⌘↩)")).toBeTruthy();
     expect(await screen.findByText("{int}")).toBeTruthy();
     expect(screen.getByText("'hi'")).toBeTruthy();
