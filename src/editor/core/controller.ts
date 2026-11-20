@@ -466,6 +466,8 @@ export class EditorController implements SlotHost {
     if (prevRoot) this.projectTransition = this.restoreSession(prevRoot);
     if (this.manager.backend.onFsChanged)
       this.disposers.push(this.manager.backend.onFsChanged((e) => this.onFilesRemoved(e.removed)));
+    if (this.manager.backend.onDiskConflict)
+      this.disposers.push(this.manager.backend.onDiskConflict((e) => this.onDiskConflict(e.path)));
     const onWindowBlur = () => {
       if (this.autoSave() && !this.closeSession) {
         void this.manager.saveAll("auto");
@@ -1765,6 +1767,39 @@ export class EditorController implements SlotHost {
     });
   }
   /** Reload from Disk: re-reads the open, unmodified documents of `paths`. */
+  /**
+   * A file changed on disk while its buffer had unsaved changes: the buffer keeps them (autosave
+   * leaves the file alone) until the user loads the disk version or saves over it.
+   */
+  private onDiskConflict(path: string) {
+    const key = `disk-conflict:${path}`;
+    notifications().notify({
+      level: "warning",
+      key,
+      sticky: true,
+      title: tx`${basename(path)} changed on disk`,
+      body: tx(
+        "The file was changed outside the IDE while it has unsaved changes in the editor. Saving keeps the editor's version and overwrites the file.",
+      ),
+      actions: [
+        {
+          label: tx("Load Changes from Disk"),
+          run: () => {
+            const doc = this.manager.get(path)?.getMeta().doc;
+            if (doc === undefined || !this.manager.backend.reloadDiscarding) return;
+            this.manager.backend.reloadDiscarding(doc).catch((e: unknown) =>
+              notifications().notify({
+                level: "error",
+                title: tx("Cannot reload from disk"),
+                body: e instanceof Error ? e.message : String(e),
+              }),
+            );
+          },
+        },
+        { label: tx("Keep Editor Changes"), run: () => {} },
+      ],
+    });
+  }
   async reloadFromDisk(paths: string[]) {
     for (const path of paths) {
       const model = this.manager.get(path);

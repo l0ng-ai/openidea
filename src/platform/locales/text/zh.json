@@ -1153,6 +1153,9 @@
   "Copy Path": "复制路径",
   "Copy Path from Project Root": "复制项目根目录起的路径",
   "Copy Path/Reference…": "复制路径/引用…",
+  "Copy directory '{sourceName}'": "复制目录“{sourceName}”",
+  "Copy file '{sourceName}'": "复制文件“{sourceName}”",
+  "Copy {count} items": "复制 {count} 项",
   "Copy Problem Description": "复制问题描述",
   "Copy Reference": "复制引用",
   "Copy Revision Number": "复制修订号",
@@ -5538,7 +5541,6 @@
   "HEAD is detached; check out a branch to push.": "HEAD 处于分离状态；请签出一个分支后再推送。",
   "No shelved changes": "没有已搁置的更改",
   "No recent projects": "没有最近的项目",
-  "Current position {line}:{col}": "当前位置 {line}:{col}",
   "{count} detected folders are unmarked.": "有 {count} 个检测到的文件夹未标记。",
   "Rebase commits of {head} not on:": "变基 {head} 中不在以下分支上的提交：",
   "{head} has no upstream: commits up to {revision} will be pushed as a new branch:": "{head} 没有上游分支：截至 {revision} 的提交将作为新分支推送：",
@@ -9098,6 +9100,14 @@
   "GitHub account": "GitHub 账号",
   "Leave empty to use the active GitHub CLI account. OpenIDEA resolves the token at launch and never stores it.": "留空则使用 GitHub CLI 当前登录的账号。OpenIDEA 在启动时获取令牌，不会保存它。",
   "github-username": "GitHub 用户名",
+  "Change File Encoding": "更改文件编码",
+  "Convert": "转换",
+  "Use {label} for this file?": "对此文件使用 {label} 编码？",
+  "Reload reads the file again. Convert keeps the current text and changes its encoding on save.": "重新加载会用所选编码重新读取文件。转换会保留当前文本，并在保存时使用所选编码。",
   "Managed version {version} in {location}": "版本 {version} 由 {location} 管理",
-  "Managed in {location}": "由 {location} 管理"
+  "Managed in {location}": "由 {location} 管理",
+  "{name} changed on disk": "{name} 已在磁盘上更改",
+  "The file was changed outside the IDE while it has unsaved changes in the editor. Saving keeps the editor's version and overwrites the file.": "该文件在 IDE 外被修改，而编辑器中还有未保存的更改。保存会保留编辑器中的版本并覆盖该文件。",
+  "Load Changes from Disk": "从磁盘加载更改",
+  "Keep Editor Changes": "保留编辑器中的更改"
 }

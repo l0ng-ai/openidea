@@ -4577,7 +4577,6 @@
   "HEAD is detached; check out a branch to push.": "Wskaźnik HEAD jest odłączony; przełącz się na gałąź, aby wykonać push.",
   "No shelved changes": "Brak odłożonych zmian (shelved)",
   "No recent projects": "Brak ostatnich projektów",
-  "Current position {line}:{col}": "Bieżąca pozycja: {line}:{col}",
   "{count} detected folders are unmarked.": "Wykryte foldery w liczbie {count} nie zostały zaznaczone.",
   "Rebase commits of {head} not on:": "Wykonaj rebase zatwierdzeń {head} nieobecnych w:",
   "{head} has no upstream: commits up to {revision} will be pushed as a new branch:": "Gałąź {head} nie ma ustawionego repozytorium nadrzędnego (upstream): zatwierdzenia do wersji {revision} zostaną wysłane jako nowa gałąź:",

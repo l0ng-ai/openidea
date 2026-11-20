@@ -484,6 +484,7 @@ export async function deleteSelection(nodes: ProjectNode[] = selectedNodes()) {
   const answer = await confirmChecked({
     title: "Delete",
     ok: "Delete",
+    presentation: searchable ? "form" : undefined,
     checkbox: searchable ? "Safe delete (with usage search)" : undefined,
     checked: searchable && safeDeleteEnabled(),
     message: createElement(
