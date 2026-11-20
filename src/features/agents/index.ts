@@ -1,7 +1,7 @@
 /**
  * Coding agents (Claude Code, Codex, Gemini CLI over ACP, run by `ide-agent`): the
  * Agents tool window lists tasks by what they need from the user, a task opens as an
- * editor tab (conversation + changed files), and New Task is an editor page.
+ * main-area view (conversation + changed files), and New Task is a page there.
  */
 import { createElement } from "react";
 import { registerActions } from "@/platform/actions";
@@ -17,6 +17,7 @@ import {
   registerAgentContextSource,
   registerEditorDropHandler,
   registerEditorKind,
+  registerEditorAreaWrapper,
   registerMenuGroup,
   registerMenuSlotItem,
   registerOverlay,
@@ -76,6 +77,12 @@ export function activate(): () => void {
   sync(useProject.getState().project?.root);
   const disposers = [
     activateTaskWindows(),
+    !auxiliaryWindow()
+      ? registerEditorAreaWrapper({
+          id: "agents.chatPane",
+          component: lazyComponent(() => import("./ChatLayout").then((m) => m.ChatLayout)),
+        })
+      : () => {},
     trackPromptHistory(),
     activateSettingsPages(),
     trackEditorCopies(),
@@ -137,6 +144,7 @@ export function activate(): () => void {
     }),
     registerEditorKind({
       kind: SESSION_KIND,
+      tabless: !auxiliaryWindow(),
       component: lazyComponent(() => import("./SessionEditor").then((m) => m.SessionEditor)),
       title: (input) => {
         const data = input.data as { task: string; title?: string };
@@ -166,6 +174,7 @@ export function activate(): () => void {
     }),
     registerEditorKind({
       kind: HOME_KIND,
+      tabless: !auxiliaryWindow(),
       component: lazyComponent(() => import("./HomeEditor").then((m) => m.HomeEditor)),
       title: () => "New Agent Task",
       icon: (input) => {
@@ -277,7 +286,7 @@ export function activate(): () => void {
           if (typeof arg === "string") return refreshTaskModels(arg);
           if (arg === null) return refreshModels(); // Explicitly invoked by the New Task picker.
           const { sessionLocation, docked, homeOpen } = useAgents.getState();
-          if (sessionLocation === "toolWindow" && (homeOpen || docked) && toolWindowService().isVisible(TOOL_WINDOW)) {
+          if (sessionLocation !== "editor" && (homeOpen || docked)) {
             return !homeOpen && docked ? refreshTaskModels(docked) : refreshModels();
           }
           const active = maybeEditorService()?.activeInput?.();
@@ -293,7 +302,7 @@ export function activate(): () => void {
       {
         id: "agents.closeTask",
         title: "Close Agent Task",
-        description: "Closes the agent task tab in the editor; the task keeps running in the Agents tool window.",
+        description: "Closes the conversation in the main area; the task keeps running in Agents.",
         category: "Agents",
         when: "projectOpen",
         keywords: ["agent", "tab"],
@@ -304,7 +313,7 @@ export function activate(): () => void {
       {
         id: "agents.closeAndNewTask",
         title: "Close and New Agent Task",
-        description: "Closes the agent task tab in the editor, then opens the New Task page.",
+        description: "Closes the conversation in the main area, then opens the New Task page.",
         category: "Agents",
         when: "projectOpen",
         keywords: ["agent", "tab"],

@@ -89,7 +89,8 @@ export interface Draft {
 /** Composer key of the New Task page; sessions use their task id. */
 export const HOME = "home";
 
-export type SessionLocation = "editor" | "toolWindow";
+export type SessionLocation = "editor" | "toolWindow" | "pane";
+export type ChatSide = "left" | "right" | "top" | "bottom";
 
 interface AgentsState {
   loaded: boolean;
@@ -137,9 +138,10 @@ interface AgentsState {
   importing: ReadonlySet<string>;
   /** The composer asked to take focus (`seq` tells repeated requests apart). */
   focus: { key: string; seq: number } | null;
-  /** Task shown inside the Agents tool window instead of an editor tab. */
+  /** Task shown in the separate conversation pane beside the file/editor area. */
   docked: string | null;
   sessionLocation: SessionLocation;
+  chatSide: ChatSide;
   lastTask: string | null;
   homeOpen: boolean;
   pinnedModels: string[];
@@ -151,6 +153,7 @@ const DRAFT_KEY = "openidea.agents.draft.v2";
 const HISTORY_KEY = "openidea.agents.history.v1";
 const HISTORY_SIZE = 50;
 const SESSION_LOCATION_KEY = "openidea.agents.sessionLocation.v1";
+const CHAT_SIDE_KEY = "openidea.agents.chatSide.v1";
 const PINNED_MODELS_KEY = "openidea.agents.pinnedModels.v1";
 const IDE_CONTEXT_KEY = "openidea.agents.ideContext.v1";
 
@@ -215,13 +218,35 @@ export const useAgents = create<AgentsState>(() => ({
   importing: new Set(),
   focus: null,
   docked: null,
-  sessionLocation: load<unknown>(SESSION_LOCATION_KEY, null) === "toolWindow" ? "toolWindow" : "editor",
+  sessionLocation: loadSessionLocation(),
+  chatSide: loadChatSide(),
   lastTask: null,
   homeOpen: false,
   pinnedModels: load<string[]>(PINNED_MODELS_KEY, []),
   ideContext: load<boolean>(IDE_CONTEXT_KEY, true),
   scrollPositions: new Map(),
 }));
+
+function loadSessionLocation(): SessionLocation {
+  const saved = load<unknown>(SESSION_LOCATION_KEY, "editor");
+  return saved === "toolWindow" || saved === "pane" ? saved : "editor";
+}
+
+function loadChatSide(): ChatSide {
+  const saved = load<unknown>(CHAT_SIDE_KEY, "right");
+  return saved === "left" || saved === "top" || saved === "bottom" ? saved : "right";
+}
+
+export function setChatSide(side: ChatSide) {
+  useAgents.setState({ chatSide: side });
+  save(CHAT_SIDE_KEY, side);
+}
+
+export function closeChatPane() {
+  const previous = useAgents.getState().docked;
+  useAgents.setState({ docked: null, homeOpen: false });
+  if (previous) releaseClosedTaskCache(previous);
+}
 
 export function togglePinnedModel(modelValue: string) {
   const current = useAgents.getState().pinnedModels;
@@ -1059,7 +1084,7 @@ export function useAgentCommands(
 export function openTask(task: string) {
   if (routeToWindow(task)) return;
   forgetClosed(task);
-  if (useAgents.getState().sessionLocation === "toolWindow") {
+  if (useAgents.getState().sessionLocation !== "editor") {
     showDockedTask(task);
     return;
   }
@@ -1082,14 +1107,15 @@ function showDockedTask(task: string) {
     lastComposer: task,
   });
   if (previousDocked && previousDocked !== task) releaseClosedTaskCache(previousDocked);
-  toolWindowService().show(TOOL_WINDOW, true);
   void editorService().closeInput?.(sessionKey(task));
+  if (useAgents.getState().sessionLocation === "toolWindow") toolWindowService().show(TOOL_WINDOW, true);
+  else if (previousDocked !== task) focusComposer(task);
 }
 
 function saveSessionLocation(location: SessionLocation) {
   useAgents.setState({ sessionLocation: location });
   save(SESSION_LOCATION_KEY, location);
-  if (location === "toolWindow") {
+  if (location !== "editor") {
     for (const { input } of editorService().openTabs?.() ?? []) {
       if (input.kind === SESSION_KIND || input.kind === HOME_KIND) void editorService().closeInput?.(input.key);
     }
@@ -1097,13 +1123,17 @@ function saveSessionLocation(location: SessionLocation) {
 }
 
 /** Conversation placement is an Agents-wide preference, shared by every task. */
-export function setSessionLocation(location: SessionLocation) {
+export function setSessionLocation(location: SessionLocation, target?: string) {
   const s = useAgents.getState();
-  if (s.sessionLocation === location) return;
+  if (s.sessionLocation === location) {
+    if (target) openTask(target);
+    return;
+  }
   const active = editorService().activeInput?.();
   const activeTask = active?.kind === SESSION_KIND ? (active.data as { task: string }).task : null;
-  const home = s.homeOpen || active?.kind === HOME_KIND;
+  const home = !target && (s.homeOpen || active?.kind === HOME_KIND);
   const task =
+    target ??
     s.docked ??
     activeTask ??
     (s.lastTask && s.tasks.has(s.lastTask) ? s.lastTask : null) ??
@@ -1119,7 +1149,7 @@ export function setSessionLocation(location: SessionLocation) {
     openHome();
   } else if (task) {
     openTask(task);
-  } else if (location === "toolWindow") {
+  } else if (location !== "editor") {
     openHome();
   }
 }
@@ -1173,12 +1203,13 @@ export function openHome(prompt?: string) {
     });
   }
   if (prompt !== undefined) updateComposer(HOME, { text: prompt });
-  if (useAgents.getState().sessionLocation === "toolWindow") {
+  if (useAgents.getState().sessionLocation !== "editor") {
     const previousDocked = useAgents.getState().docked;
     useAgents.setState({ docked: null, homeOpen: true });
     if (previousDocked) releaseClosedTaskCache(previousDocked);
-    toolWindowService().show(TOOL_WINDOW, true);
     void editorService().closeInput?.(HOME_KEY);
+    if (useAgents.getState().sessionLocation === "toolWindow") toolWindowService().show(TOOL_WINDOW, true);
+    else focusComposer(HOME);
     return;
   }
   void editorService().openInput({ kind: HOME_KIND, key: HOME_KEY, data: {} }, { focus: true });
@@ -1579,7 +1610,7 @@ export async function setTaskMcpOverrides(task: string, overrides: Record<string
 function activeComposerKey(): string {
   const s = useAgents.getState();
   // The tool window shows one conversation at a time; its inline New Task page wins.
-  if (s.sessionLocation === "toolWindow") {
+  if (s.sessionLocation !== "editor") {
     if (s.homeOpen) return HOME;
     if (s.docked && s.tasks.has(s.docked)) return s.docked;
   }

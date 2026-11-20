@@ -2,7 +2,7 @@ import type { Locator, Page } from "@playwright/test";
 import type { AgentEntry, AgentTask } from "../src/bindings";
 import { expect, openFromTree, test } from "./fixtures";
 
-type Placement = "editor" | "toolWindow";
+type Placement = "editor" | "pane";
 
 const firstTask: AgentTask = {
   id: "focus-first",
@@ -152,7 +152,7 @@ async function selectDraft(box: Locator, range: boolean) {
   return expected;
 }
 
-for (const placement of ["editor", "toolWindow"] as const) {
+for (const placement of ["editor", "pane"] as const) {
   for (const status of ["ready", "running"] as const) {
     test(`${placement}: default shortcut restores ${status} task input without changing draft, selection or history`, async ({
       workbench: page,
@@ -190,9 +190,10 @@ for (const placement of ["editor", "toolWindow"] as const) {
     await messageBox(page).fill("second task's unsent draft");
     if (placement === "editor") {
       await expect(page.getByRole("textbox", { name: "Message", exact: true, includeHidden: true })).toHaveCount(2);
-      await page.getByRole("tab", { name: firstTask.title, exact: true }).click();
+      await page.getByRole("button", { name: "Agents", exact: true }).click();
+      await page.getByRole("tree", { name: "Agent tasks" }).getByText(firstTask.title, { exact: true }).click();
     } else {
-      await page.getByRole("button", { name: "Agent sessions", exact: true }).click();
+      await page.getByRole("button", { name: "Agents", exact: true }).click();
       await page.getByRole("tree", { name: "Agent tasks" }).getByText(firstTask.title, { exact: true }).dblclick();
     }
     await expect(messageBox(page)).toHaveText("first task's unsent draft");
@@ -201,9 +202,8 @@ for (const placement of ["editor", "toolWindow"] as const) {
     await expect(messageBox(page)).toBeFocused();
     await expect(messageBox(page)).toHaveText("first task's unsent draft");
     if (placement === "editor") {
-      await page.getByRole("tab", { name: secondTask.title, exact: true }).click();
+      await page.getByRole("tree", { name: "Agent tasks" }).getByText(secondTask.title, { exact: true }).click();
     } else {
-      await page.getByRole("button", { name: "Agent sessions", exact: true }).click();
       await page.getByRole("tree", { name: "Agent tasks" }).getByText(secondTask.title, { exact: true }).dblclick();
     }
     await conversation(page).click({ position: { x: 12, y: 20 } });
@@ -311,7 +311,7 @@ test("subagent conversations do not focus the hidden parent composer", async ({ 
 
 test("editor Go to Line stays available while a docked agent conversation is visible", async ({ workbench: page }) => {
   const editor = await openFromTree(page, "README.md");
-  await seedTasks(page, "toolWindow");
+  await seedTasks(page, "pane");
   await messageBox(page).fill(draft);
   const content = editor.locator(".cm-content");
   await content.click();
@@ -327,7 +327,7 @@ test("editor Go to Line stays available while a docked agent conversation is vis
   await expect(messageBox(page)).toHaveText(draft);
 });
 
-for (const placement of ["editor", "toolWindow"] as const) {
+for (const placement of ["editor", "pane"] as const) {
   test(`${placement}: the shortcut jumps to the shown task's input from the project tree`, async ({
     workbench: page,
   }) => {
@@ -383,7 +383,7 @@ test("Find Action focuses the current task input after closing its popup", async
 });
 
 test("docked Changes view returns to the task input without losing its selection", async ({ workbench: page }) => {
-  await seedTasks(page, "toolWindow");
+  await seedTasks(page, "pane");
   const box = messageBox(page);
   const expected = await selectDraft(box, true);
   await seedChanges(page);

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentTask, ProjectInfo } from "@/bindings";
 import { useProject } from "@/platform/project";
-import { HOME_KEY, SESSION_KIND, TOOL_WINDOW, sessionKey } from "./model";
+import { HOME_KEY, SESSION_KIND, sessionKey } from "./model";
 import {
   HOME,
   composerDraft,
@@ -159,7 +159,7 @@ describe.each(paths)("$name project ownership", (path) => {
     return { ...response, pending: path.run() };
   }
 
-  it.each(["editor", "toolWindow"] as const)("opens a successful task in the current %s", async (location) => {
+  it.each(["editor", "toolWindow", "pane"] as const)("opens a successful task in the current %s", async (location) => {
     useAgents.setState({ sessionLocation: location });
     const response = begin();
     expect(path.mock).toHaveBeenCalledTimes(1);
@@ -180,7 +180,8 @@ describe.each(paths)("$name project ownership", (path) => {
       );
     } else {
       expect(useAgents.getState().docked).toBe("completed");
-      expect(backend.show).toHaveBeenCalledWith(TOOL_WINDOW, true);
+      if (location === "toolWindow") expect(backend.show).toHaveBeenCalledWith("agents", true);
+      else expect(backend.show).not.toHaveBeenCalled();
       expect(backend.open).not.toHaveBeenCalled();
     }
     expect(composerDraft(HOME).text).toBe(path.create ? "" : "submitted in A");

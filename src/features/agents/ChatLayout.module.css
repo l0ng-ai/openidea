@@ -1,0 +1,91 @@
+.layout {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+  grid-template-areas: "editor";
+}
+.editor {
+  grid-area: editor;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.right {
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr) 1px minmax(0, min(75%, var(--chat-pane-size)));
+  grid-template-areas: "editor resize chat";
+}
+.left {
+  grid-template: minmax(0, 1fr) / minmax(0, min(75%, var(--chat-pane-size))) 1px minmax(0, 1fr);
+  grid-template-areas: "chat resize editor";
+}
+.top {
+  grid-template: minmax(0, min(75%, var(--chat-pane-size))) 1px minmax(0, 1fr) / minmax(0, 1fr);
+  grid-template-areas: "chat" "resize" "editor";
+}
+.bottom {
+  grid-template: minmax(0, 1fr) 1px minmax(0, min(75%, var(--chat-pane-size))) / minmax(0, 1fr);
+  grid-template-areas: "editor" "resize" "chat";
+}
+.chat {
+  grid-area: chat;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.chat[hidden],
+.resize[hidden] {
+  display: none;
+}
+.header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+.title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.body {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.resize {
+  grid-area: resize;
+  position: relative;
+  background: var(--border);
+  touch-action: none;
+  outline: none;
+  cursor: col-resize;
+}
+.resize::after {
+  content: "";
+  position: absolute;
+  inset: 0 -3px;
+  z-index: var(--z-panel);
+}
+.top .resize,
+.bottom .resize {
+  cursor: row-resize;
+}
+.top .resize::after,
+.bottom .resize::after {
+  inset: -3px 0;
+}
+.resize:hover,
+.resize:focus-visible {
+  background: var(--accent);
+}

@@ -104,7 +104,7 @@ for (const home of [false, true]) {
         if (edited) await box.fill("next unsent prompt");
         await page.evaluate(() => document.dispatchEvent(new Event("test:agent-ack")));
         if (home && !failure) {
-          await expect(page.getByRole("tab", { name: "Draft acknowledgement" })).toBeVisible();
+          await expect(page.getByRole("tabpanel", { name: "Draft acknowledgement", exact: true })).toBeVisible();
           await page.evaluate(async () => {
             const storePath = "/src/features/agents/store.ts";
             (await import(storePath)).openHome();

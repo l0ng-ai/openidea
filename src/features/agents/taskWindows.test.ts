@@ -4,6 +4,7 @@ import { executeAction } from "@/platform/actions";
 import {
   activateTaskWindows,
   moveTaskToWindow,
+  returnTaskToProject,
   prepareTaskWindowInput,
   TASK_WINDOW,
   type TaskWindowMessage,
@@ -30,7 +31,7 @@ const backend = vi.hoisted(() => ({
     docked: null as string | null,
     unread: new Set<string>(),
   },
-  emit: vi.fn(async () => {}),
+  emit: vi.fn(async (..._args: unknown[]) => {}),
   openInWindow: vi.fn(async (_input: EditorInput) => "editor-main-3"),
   openInput: vi.fn(async (_input: EditorInput, _options?: unknown) => {}),
   openFile: vi.fn(async (_path: string, _options?: unknown) => {}),
@@ -205,6 +206,22 @@ describe("moving a conversation to a lightweight editor window", () => {
     expect(backend.unsubscribe).not.toHaveBeenCalled();
   });
 
+  it("asks the owning child to return and waits for its final draft before reopening here", async () => {
+    await detach();
+    backend.emit.mockClear();
+    expect(await returnTaskToProject("running-task")).toBe(true);
+    expect(backend.emit).toHaveBeenCalledWith(CHILD, TASK_WINDOW, { type: "return", task: "running-task" });
+    expect(backend.openTask).not.toHaveBeenCalled();
+    receive({ type: "draft", task: "running-task", label: CHILD, draft: { text: "Final child draft" } });
+    receive({ type: "closed", task: "running-task", label: CHILD });
+    expect(backend.updateComposer).toHaveBeenCalledWith("running-task", {
+      ...backend.draft,
+      text: "Final child draft",
+    });
+    expect(backend.openTask).toHaveBeenCalledWith("running-task");
+    expect(await returnTaskToProject("running-task")).toBe(false);
+  });
+
   it("counts a conversation in a focused window as read", async () => {
     await detach();
     backend.state.unread.add("running-task");
@@ -277,6 +294,27 @@ describe("moving a conversation to a lightweight editor window", () => {
       text: "Already typed there",
     });
   });
+
+  it.each([false, true])(
+    "honors the latest location while a window is still opening (choose new window again: %s)",
+    async (windowAgain) => {
+      let finish!: (label: string) => void;
+      backend.openInWindow.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const moving = moveTaskToWindow("running-task");
+      expect(await returnTaskToProject("running-task")).toBe(true);
+      if (windowAgain) expect(await moveTaskToWindow("running-task")).toBe(false);
+      backend.emit.mockClear();
+      finish(CHILD);
+      expect(await moving).toBe(true);
+      const requests = backend.emit.mock.calls.filter((call) => (call[2] as TaskWindowMessage)?.type === "return");
+      expect(requests).toHaveLength(windowAgain ? 0 : 1);
+    },
+  );
 
   it("ignores late draft events from a window that failed to open", async () => {
     backend.openInWindow.mockRejectedValueOnce(new Error("Cannot load task"));
@@ -351,6 +389,24 @@ describe("preparing the child's conversation", () => {
       action: "file.settings",
       arg: "agents",
     });
+  });
+
+  it("reports the full draft before closing only the requested conversation on a return request", async () => {
+    await child();
+    stop = activateTaskWindows();
+    backend.activeInput?.(input);
+    backend.emit.mockClear();
+    backend.closeInput.mockClear();
+    receive({ type: "return", task: "another-task" });
+    expect(backend.closeInput).not.toHaveBeenCalled();
+    receive({ type: "return", task: "running-task" });
+    expect(backend.emit).toHaveBeenCalledWith("main", TASK_WINDOW, {
+      type: "draft",
+      task: "running-task",
+      label: CHILD,
+      draft: backend.draft,
+    });
+    expect(backend.closeInput).toHaveBeenCalledExactlyOnceWith("agent:running-task");
   });
 
   it("applies context appended in the project to the child composer", async () => {

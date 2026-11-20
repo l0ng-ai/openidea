@@ -6,11 +6,12 @@ import { registerActions } from "@/platform/actions";
 import { EDITOR_TAB_MIME, type EditorInput } from "@/workbench/contributions";
 import { confirm, confirmChecked, showError } from "@/workbench/messages";
 import { promptInput } from "@/workbench/inputDialogs";
+import * as toolLayout from "@/workbench/toolwindows/store";
 import { ContextMenuHost, dragSession, hideContextMenu } from "@/ui";
 import { AgentsHeaderActions, AgentsView } from "./AgentsView";
 import { SESSION_KIND, TASK_DRAG } from "./model";
 import { usePlatform } from "@/platform/platformInfo";
-import { archiveTask, unarchiveTask, deleteTask, dockTask, openTask, useAgents } from "./store";
+import { archiveTask, unarchiveTask, deleteTask, dockTask, openTask, setSessionLocation, useAgents } from "./store";
 import { taskActions, taskMenu, useAgentsHeaderMenu } from "./taskActions";
 import styles from "./Agents.module.css";
 
@@ -42,6 +43,7 @@ vi.mock("./store", async (original) => ({
   deleteTask: vi.fn(async () => {}),
   dockTask: vi.fn(),
   setSessionLocation: vi.fn(),
+  openHome: vi.fn(),
 }));
 
 vi.mock("./SessionEditor", () => ({ SessionEditor: () => <div data-testid="docked-session" /> }));
@@ -121,6 +123,7 @@ beforeEach(() => {
     docked: null,
     homeOpen: false,
     sessionLocation: "editor",
+    chatSide: "right",
   });
   dispose = registerActions(taskActions);
 });
@@ -224,7 +227,7 @@ describe("Agents selection", () => {
 
 describe("Agents docked view", () => {
   it("opens session history on demand and closes it after switching tasks", () => {
-    useAgents.setState({ docked: "one" });
+    useAgents.setState({ docked: "one", sessionLocation: "toolWindow" });
     setup();
     expect(screen.getByTestId("docked-session")).toBeTruthy();
     expect(openTask).not.toHaveBeenCalled();
@@ -237,7 +240,7 @@ describe("Agents docked view", () => {
   });
 
   it("lets keyboard users browse history before confirming a session", () => {
-    useAgents.setState({ docked: "one" });
+    useAgents.setState({ docked: "one", sessionLocation: "toolWindow" });
     setup();
     fireEvent.click(screen.getByRole("button", { name: "Agent sessions" }));
     const tree = screen.getByRole("tree", { name: "Agent tasks" });
@@ -250,7 +253,7 @@ describe("Agents docked view", () => {
   });
 
   it("includes the current session in history and keeps the conversation mounted", () => {
-    useAgents.setState({ docked: "one" });
+    useAgents.setState({ docked: "one", sessionLocation: "toolWindow" });
     setup();
     const session = screen.getByTestId("docked-session");
     fireEvent.click(screen.getByRole("button", { name: "Agent sessions" }));
@@ -263,23 +266,84 @@ describe("Agents docked view", () => {
   });
 
   it("gives the whole tool window to the conversation when the docked task is the only one", () => {
-    useAgents.setState({ tasks: new Map([task("one")].map((t) => [t.id, t])), docked: "one" });
+    useAgents.setState({
+      tasks: new Map([task("one")].map((t) => [t.id, t])),
+      docked: "one",
+      sessionLocation: "toolWindow",
+    });
     setup();
     expect(screen.queryByRole("tree", { name: "Agent tasks" })).toBeNull();
     expect(screen.getByTestId("docked-session")).toBeTruthy();
   });
 
-  it("offers placement in the Agents options menu, checked by the current one", () => {
-    useAgents.setState({ sessionLocation: "toolWindow" });
-    const { result } = renderHook(() => useAgentsHeaderMenu());
-    expect(result.current).toEqual([
-      { kind: "action", action: "agents.useToolWindow", icon: "", checked: true },
-      { kind: "action", action: "agents.useEditor", icon: "", checked: false },
-      { kind: "separator" },
-      { kind: "action", action: "agents.newTaskGroup", label: "New Group…", icon: "plus" },
-      { kind: "action", action: "agents.importSessions", icon: "download" },
-    ]);
+  it("keeps the task list visible while a conversation is shown beside the editor", () => {
+    useAgents.setState({ docked: "one", sessionLocation: "pane" });
+    setup();
+    expect(screen.getByRole("tree", { name: "Agent tasks" })).toBeTruthy();
+    expect(selectedTasks()).toEqual(["one"]);
+    expect(screen.queryByTestId("docked-session")).toBeNull();
+    context("two");
+    expect(openTask).not.toHaveBeenCalled();
+    fireEvent.keyDown(document, { key: "Escape" });
+    select("two");
+    expect(openTask).toHaveBeenCalledWith("two");
   });
+
+  it("follows the task shown in the separate conversation pane", () => {
+    setup();
+    act(() => useAgents.setState({ docked: "three", sessionLocation: "pane" }));
+    expect(selectedTasks()).toEqual(["three"]);
+    expect(screen.getByRole("tree", { name: "Agent tasks" })).toBeTruthy();
+  });
+
+  it("offers placement in the Agents options menu, checked by the current one", () => {
+    useAgents.setState({ sessionLocation: "pane" });
+    const { result } = renderHook(() => useAgentsHeaderMenu());
+    const placement = () =>
+      result.current[0] as { label: string; submenu: Array<{ label?: string; checked?: boolean }> };
+    expect(placement().label).toBe("Open Chat In");
+    expect(placement().submenu.flatMap((item) => item.label ?? [])).toEqual([
+      "Agents",
+      "Main Area",
+      "Left",
+      "Right",
+      "Top",
+      "Bottom",
+      "New Window",
+    ]);
+    expect(
+      placement()
+        .submenu.filter((item) => item.checked)
+        .map((item) => item.label),
+    ).toEqual(["Right"]);
+    {
+      act(() => useAgents.setState({ chatSide: "bottom" }));
+      expect(
+        placement()
+          .submenu.filter((item) => item.checked)
+          .map((item) => item.label),
+      ).toEqual(["Bottom"]);
+      act(() => useAgents.setState({ sessionLocation: "editor" }));
+      expect(
+        placement()
+          .submenu.filter((item) => item.checked)
+          .map((item) => item.label),
+      ).toEqual(["Main Area"]);
+    }
+  });
+
+  it.each(["left", "right", "top", "bottom"] as const)(
+    "places chat on the %s and targets the requested conversation",
+    async (side) => {
+      const move = vi.spyOn(toolLayout, "moveToolWindow").mockImplementation(() => {});
+      const mode = vi.spyOn(toolLayout, "setToolWindowViewMode").mockImplementation(() => {});
+      await taskActions.find((action) => action.id === `agents.chat.${side}`)!.run({ ctx: {}, arg: "two" });
+      expect(move).not.toHaveBeenCalled();
+      expect(mode).not.toHaveBeenCalled();
+      expect(useAgents.getState().chatSide).toBe(side);
+      expect(setSessionLocation).toHaveBeenCalledWith("pane", "two");
+    },
+  );
 
   it("lists Import Sessions from Other Apps in Find Action", () => {
     const action = taskActions.find((a) => a.id === "agents.importSessions");
@@ -380,7 +444,7 @@ describe("Agents bulk actions", () => {
 });
 
 describe("Agents task menu", () => {
-  it.each([null, "one"])("keeps placement out of session menus (docked: %s)", (docked) => {
+  it.each([null, "one"])("uses the same placement menu for the clicked session (docked: %s)", (docked) => {
     useAgents.setState({ docked });
     const menu = taskMenu([useAgents.getState().tasks.get("one")!]);
     expect(menu).not.toContainEqual(expect.objectContaining({ action: "agents.dockTask" }));
@@ -388,6 +452,11 @@ describe("Agents task menu", () => {
     // A click opens the task: the menu doesn't repeat it.
     expect(menu).not.toContainEqual(expect.objectContaining({ action: "agents.openTask" }));
     expect(menu[0]).toMatchObject({ action: "agents.renameTask" });
+    const placement = menu.find((item) => "label" in item && item.label === "Open Chat In") as {
+      submenu: Array<{ action?: string; arg?: string }>;
+    };
+    expect(placement.submenu.filter((item) => item.action).every((item) => item.arg === "one")).toBe(true);
+    expect(placement.submenu).toContainEqual(expect.objectContaining({ action: "agents.moveToNewWindow", arg: "one" }));
   });
 
   it("offers Terminal for worktree or off-root tasks and hides it for local-checkout tasks at the project root", () => {
