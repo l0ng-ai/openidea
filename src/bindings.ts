@@ -1544,15 +1544,7 @@ export const commands = {
 	sdkProjectLibraries: (request: RequestId, onGroups: Channel<LibraryGroup[]>) => typedError<LibraryGroup[], IdeError>(__TAURI_INVOKE("sdk_project_libraries", { request, onGroups })),
 	/**  Creates a Python environment with `tool` (`venv` / `uv` / `poetry`); output streams through `on_output`. */
 	sdkPythonCreateVenv: (tool: VenvTool, base: string, location: string, request: RequestId, onOutput: Channel<string>) => typedError<Sdk, IdeError>(__TAURI_INVOKE("sdk_python_create_venv", { tool, base, location, request, onOutput })),
-	/**
-	 *  The interpreter the project uses: the configured one, else its virtualenv.
-	 *
-	 *  A workspace member's settings are merged and validated from scratch
-	 *  (`SettingsStore::load`), which needs a few hundred KiB of stack in a debug
-	 *  build — far more than a main thread has left inside a WebView2 IPC callback,
-	 *  where this sync command used to run and overflowed the stack on start-up.
-	 *  Like the other probes here, the work runs on the blocking pool.
-	 */
+	/**  The interpreter the project uses: the configured one, else its virtualenv. */
 	sdkPythonEffective: (near: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_effective", { near })),
 	/**  An existing Python executable or virtualenv folder as an SDK; `None` if Python cannot run. */
 	sdkPythonInterpreter: (path: string) => typedError<{

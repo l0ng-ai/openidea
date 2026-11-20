@@ -121,12 +121,6 @@ pub async fn sdk_python_interpreter(host: &Host, window: &str, path: PathBuf) ->
 }
 
 /// The interpreter the project uses: the configured one, else its virtualenv.
-///
-/// A workspace member's settings are merged and validated from scratch
-/// (`SettingsStore::load`), which needs a few hundred KiB of stack in a debug
-/// build — far more than a main thread has left inside a WebView2 IPC callback,
-/// where this sync command used to run and overflowed the stack on start-up.
-/// Like the other probes here, the work runs on the blocking pool.
 #[command(trust = trusted)]
 pub async fn sdk_python_effective(
     host: &Host,
@@ -136,6 +130,7 @@ pub async fn sdk_python_effective(
     host.require_trust(window)?;
     let project = host.project(window)?;
     let (config_dir, project_root) = (host.config_dir.clone(), project.root.clone());
+    // Loading a member's settings needs more stack than a sync command's main thread has left.
     tokio::task::spawn_blocking(move || {
         let member = ide_workspace::workspace::Workspace::load(&project_root).ok().flatten().and_then(|w| {
             let near = near.as_deref()?;
