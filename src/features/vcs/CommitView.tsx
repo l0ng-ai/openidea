@@ -876,6 +876,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
         }}
       >
         <Tree<ChangeNode>
+          className={mode === "commit" ? styles.commitChangesTree : undefined}
           handleRef={treeRef}
           roots={roots}
           getKey={(n) => n.key}
@@ -883,7 +884,9 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
           getDirectory={(n) => (n.path && n.type !== "group" ? (n.type === "dir" ? n.path : dirname(n.path)) : null)}
           getChildren={(n) => n.children}
           rowClassName={(n) =>
-            n.type !== "group" && n.path && isTestFile(n.path, projectRoots) ? styles.testFile : undefined
+            mode !== "commit" && n.type !== "group" && n.path && isTestFile(n.path, projectRoots)
+              ? styles.testFile
+              : undefined
           }
           isExpandable={(n) => n.type !== "file"}
           expanded={expanded}

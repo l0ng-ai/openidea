@@ -46,6 +46,10 @@
   margin: 0 4px;
   background: var(--border);
 }
+.commitChangesTree {
+  --bg-tree-hover: transparent;
+  --bg-tree-selected-inactive: transparent;
+}
 .treeWrap {
   flex: 1;
   min-height: 0;

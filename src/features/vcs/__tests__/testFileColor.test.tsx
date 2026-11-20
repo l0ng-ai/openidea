@@ -56,6 +56,12 @@ describe("test files in the changes tree (#931)", () => {
     expect(row("button.ts").className).not.toMatch(/testFile/);
   });
 
+  it("keeps test-source rows plain in the Commit tool window", () => {
+    render(<ChangesTree mode="commit" />);
+    expect(row("AppTest.java").className).not.toMatch(/testFile/);
+    expect(row("button.test.ts").className).not.toMatch(/testFile/);
+  });
+
   it("follows a folder being marked as test sources", () => {
     render(<ChangesTree mode="local" />);
     expect(row("App.java").className).not.toMatch(/testFile/);
