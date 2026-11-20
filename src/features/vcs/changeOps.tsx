@@ -2,7 +2,7 @@
 import { useEffect, useId, useState } from "react";
 import type { FileStatus, Stash } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
-import { Checkbox, Dialog, Icon, IconButton, Input, T, fileIconName } from "@/ui";
+import { Checkbox, Dialog, IconButton, Input, T } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { addedThenDeleted, groupOf, remainingOverrides, renamedFromPath } from "./changes";
 import { runCommitChecks } from "./commitChecks";
@@ -12,10 +12,11 @@ import { workflowSettings } from "@/platform/workflowSettings";
 import { notifyFileOperation } from "@/platform/fileOps";
 import { confirmDialog, openDialog } from "./dialogs";
 import { RepoPicker, useBranchInfo } from "./gitMenuDialogs";
-import { KIND_COLOR, baseName, dirName, effectiveKind, relTo, stripSlash } from "./model";
+import { baseName, effectiveKind, stripSlash } from "./model";
 import { logConsole, runOp, saveAll } from "./ops";
 import { ensureCommitIdentity } from "./commitIdentity";
 import { showCompareRevisions } from "./operations";
+import { FileChecklist } from "./shelf";
 import { currentRepo, loadStashes, refreshNow, useVcs } from "./store";
 import styles from "./common.module.css";
 import { tx } from "@/platform/i18n";
@@ -216,7 +217,6 @@ export function showRollbackDialog(files: FileStatus[]) {
 }
 
 function RollbackDialog({ files, onClose }: { files: FileStatus[]; onClose: () => void }) {
-  const root = useVcs((s) => s.root) ?? "";
   const [selected, setSelected] = useState(() => new Set(files.map((f) => f.path)));
   const [deleteAdded, setDeleteAdded] = useState(false);
   const hasAdded = files.some((f) => f.staged === "added");
@@ -256,32 +256,7 @@ function RollbackDialog({ files, onClose }: { files: FileStatus[]; onClose: () =
           ? tx`${selected.size} of ${files.length} file will be reverted to their last committed state. Uncommitted changes are lost.`
           : tx`${selected.size} of ${files.length} files will be reverted to their last committed state. Uncommitted changes are lost.`}
       </div>
-      <div className={styles.fileList} role="group" aria-label={tx("Files to roll back")}>
-        {files.map((f) => {
-          const kind = effectiveKind(f) ?? "modified";
-          return (
-            <div key={f.path} className={styles.fileRow}>
-              <Checkbox
-                aria-label={tx`Include ${baseName(f.path)}`}
-                checked={selected.has(f.path)}
-                onChange={(v) =>
-                  setSelected((s) => {
-                    const n = new Set(s);
-                    if (v) n.add(f.path);
-                    else n.delete(f.path);
-                    return n;
-                  })
-                }
-              />
-              <Icon name={fileIconName(baseName(f.path), f.path)} size={14} />
-              <span className={styles.fileName} style={{ color: KIND_COLOR[kind] }}>
-                {baseName(f.path)}
-              </span>
-              <span className={styles.fileDir}>{dirName(relTo(root, stripSlash(f.path)))}</span>
-            </div>
-          );
-        })}
-      </div>
+      <FileChecklist files={files} selected={selected} onChange={setSelected} label="Files to roll back" />
       <div style={{ height: 12 }} />
     </Dialog>
   );
