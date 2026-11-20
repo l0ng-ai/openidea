@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
+import { usePlatform } from "@/platform/platformInfo";
 import { ToolWindowShownProvider, useServiceProviders, type ServiceTreeItem } from "@/workbench/contributions";
 import { ServicesTreeView } from "./ServicesTree";
 import { useServicesTree } from "./tree";
@@ -54,19 +55,29 @@ function setup() {
 }
 
 describe("Services selection → actions", () => {
-  it.each(["ctrlKey", "metaKey"])("%s toggles rows and Run applies to the selection", (modifier) => {
-    const { row, selected, toolbar } = setup();
-    fireEvent.mouseDown(row("one"));
-    fireEvent.mouseDown(row("two"), { [modifier]: true });
-    expect(selected()).toEqual(["one", "two"]);
-    expect(screen.getByTestId("detail")).toHaveTextContent("two");
-    fireEvent.click(within(toolbar).getByRole("button", { name: "Run" }));
-    expect(run.mock.calls).toEqual([["one"], ["two"]]);
-    fireEvent.mouseDown(row("one"), { [modifier]: true });
-    expect(selected()).toEqual(["two"]);
-    fireEvent.mouseDown(row("two"), { [modifier]: true });
-    expect(selected()).toEqual([]);
-    expect(screen.queryByTestId("detail")).not.toBeInTheDocument();
+  it.each([
+    { os: "macos", modifier: "metaKey" },
+    { os: "windows", modifier: "ctrlKey" },
+    { os: "linux", modifier: "ctrlKey" },
+  ])("$modifier on $os toggles rows and Run applies to the selection", ({ os, modifier }) => {
+    const previousOs = usePlatform.getState().os;
+    usePlatform.setState({ os });
+    try {
+      const { row, selected, toolbar } = setup();
+      fireEvent.mouseDown(row("one"));
+      fireEvent.mouseDown(row("two"), { [modifier]: true });
+      expect(selected()).toEqual(["one", "two"]);
+      expect(screen.getByTestId("detail")).toHaveTextContent("two");
+      fireEvent.click(within(toolbar).getByRole("button", { name: "Run" }));
+      expect(run.mock.calls).toEqual([["one"], ["two"]]);
+      fireEvent.mouseDown(row("one"), { [modifier]: true });
+      expect(selected()).toEqual(["two"]);
+      fireEvent.mouseDown(row("two"), { [modifier]: true });
+      expect(selected()).toEqual([]);
+      expect(screen.queryByTestId("detail")).not.toBeInTheDocument();
+    } finally {
+      usePlatform.setState({ os: previousOs });
+    }
   });
 
   it("tells the provider which node became the lead selection", () => {
