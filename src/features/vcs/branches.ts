@@ -46,6 +46,16 @@ export interface BranchTreeOptions {
   showTags?: boolean;
 }
 
+/** The entries of `all` under `prefix` (without it); unprefixed entries when `prefix` is empty. */
+export function scopedExpansion(all: ReadonlyMap<string, boolean>, prefix: string): ReadonlyMap<string, boolean> {
+  const out = new Map<string, boolean>();
+  for (const [key, open] of all) {
+    const scoped = key.indexOf("\u0000");
+    if (prefix ? key.startsWith(prefix) : scoped < 0) out.set(key.slice(prefix.length), open);
+  }
+  return out;
+}
+
 /** Copy of `expanded` with `key` set to `open`. */
 export function withExpanded(expanded: ReadonlyMap<string, boolean>, key: string, open: boolean): Map<string, boolean> {
   return new Map(expanded).set(key, open);
