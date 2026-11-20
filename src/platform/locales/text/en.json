@@ -508,6 +508,8 @@
   "Keyword": "Keyword",
   "Identifiers": "Identifiers",
   "Local variable": "Local variable",
+  "Inlay hint preview": "Inlay hint preview",
+  "Inlay hint categories": "Inlay hint categories",
   "Parameter": "Parameter",
   "Global variable": "Global variable",
   "Package reference": "Package reference",

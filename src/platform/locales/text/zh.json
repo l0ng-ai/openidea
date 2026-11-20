@@ -451,6 +451,8 @@
   "Servers": "服务器",
   "Skills": "技能",
   "Identifiers": "标识符",
+  "Inlay hint preview": "嵌入提示预览",
+  "Inlay hint categories": "嵌入提示类别",
   "Parameter": "参数",
   "Package reference": "包引用",
   "Instance field": "实例字段",
