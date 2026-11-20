@@ -216,6 +216,17 @@ async function raiseWindowForPrompts(): Promise<void> {
   }
 }
 
+/** `deps` whose prompts bring the window up first; a window with nothing to ask stays where it is. */
+function raisingBeforeAsk(deps: CloseDeps): CloseDeps {
+  return {
+    ...deps,
+    ask: async (request) => {
+      await raiseWindowForPrompts();
+      return deps.ask(request);
+    },
+  };
+}
+
 /** Drops saved tabs when that setting is on. The result says whether a cancelled close should put them back. */
 function forgetTabs(): boolean {
   if (!closeTabsWithWindowEnabled(useProject.getState().settings)) return false;
@@ -234,8 +245,8 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
   };
   try {
     const ctx = await commands.windowCloseContext();
-    // Each window of a quit asks about its own processes and unsaved changes.
-    if (ctx.quitting) await raiseWindowForPrompts();
+    // Each window of a quit asks about its own processes and unsaved changes, if it has any.
+    if (ctx.quitting) deps = raisingBeforeAsk(deps);
     if (!(await closeDocumentWindows())) {
       await (ctx.quitting ? commands.appCancelQuit() : commands.windowGroupCancelClose());
       return false;
@@ -338,7 +349,6 @@ export async function confirmLeave(
 export async function quitApp(deps: CloseDeps = defaultDeps): Promise<void> {
   if (!isTauri()) return;
   if (confirmExitEnabled(useProject.getState().settings)) {
-    await raiseWindowForPrompts();
     // Each window asks about its own processes as the backend closes it.
     const ok = await decideClose(
       {
@@ -350,7 +360,7 @@ export async function quitApp(deps: CloseDeps = defaultDeps): Promise<void> {
         dirty: 0,
         project: null,
       },
-      { ...deps, prepareClose: undefined },
+      { ...raisingBeforeAsk(deps), prepareClose: undefined },
     );
     if (!ok) return;
   }

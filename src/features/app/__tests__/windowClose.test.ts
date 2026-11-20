@@ -193,6 +193,22 @@ describe("quitting from outside the window", () => {
     expect(ipc.commands.appQuit).toHaveBeenCalledOnce();
   });
 
+  it("leaves a window with nothing to ask where it is while the app quits", async () => {
+    vi.mocked(ipc.commands.windowCloseContext).mockResolvedValue({ quitting: true, windows: 2 });
+    deps.runningProcesses = async () => [];
+    const { d, asked } = recordingDeps("cancel");
+    useProject.setState({
+      project: { root: "/project", name: "project" },
+      lightEdit: false,
+      settings: { general: {} },
+    } as never);
+    uninstall = installCloseGuard(d);
+    await vi.waitFor(() => expect(native.close).toBeDefined());
+    await native.close!({ preventDefault: vi.fn() });
+    expect(asked).toEqual([]);
+    expect(native.order).toEqual([]);
+  });
+
   it("raises each window before the prompts a quit makes it show", async () => {
     vi.mocked(ipc.commands.windowCloseContext).mockResolvedValue({ quitting: true, windows: 2 });
     deps.runningProcesses = async () => ["server.js"];
