@@ -47,6 +47,16 @@
   margin: 0 -6px;
   border-radius: var(--radius-row);
 }
+.idleDuration {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+}
+.fileSynchronization {
+  display: grid;
+  gap: var(--space-1);
+  padding-top: var(--space-2);
+}
 /* Custom font block (IDEA Appearance): labels share one column, so the UI font,
    fallback and Size controls all start at the same x. */
 .customFontRow {
@@ -80,6 +90,15 @@
 }
 .pathInput {
   width: 320px;
+}
+.directoryBrowse {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.directoryBrowse > button {
+  flex: none;
 }
 .backgroundPreview {
   height: var(--h-control);
@@ -118,7 +137,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-4);
+  gap: var(--space-1) var(--space-4);
 }
 .radio {
   display: inline-flex;
