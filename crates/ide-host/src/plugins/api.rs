@@ -348,6 +348,7 @@ struct ProcState {
     status: Option<i32>,
     /// Reader threads still copying its pipes into the buffers above.
     readers: usize,
+    waiters: usize,
     mode: StreamMode,
     buffer_limit: usize,
     max_total: usize,
@@ -380,8 +381,20 @@ impl Proc {
                         && !state.stopped
                         && state.overflow_err.is_none()
                         && match stream {
-                            Stream::Out => state.stdout.len() >= state.buffer_limit,
-                            Stream::Err => state.stderr.len() >= state.buffer_limit,
+                            Stream::Out => {
+                                if state.waiters > 0 {
+                                    state.stdout.len() >= state.max_total
+                                } else {
+                                    state.stdout.len() >= state.buffer_limit
+                                }
+                            }
+                            Stream::Err => {
+                                if state.waiters > 0 {
+                                    state.stderr.len() >= state.max_total
+                                } else {
+                                    state.stderr.len() >= state.buffer_limit
+                                }
+                            }
                         }
                     {
                         this.can_read.wait(&mut state);
@@ -2823,21 +2836,31 @@ impl HostApi for PluginApi {
         };
         let (stdout, stdout_overflow) = stdout.join().unwrap_or_default();
         let (stderr, stderr_overflow) = stderr.join().unwrap_or_default();
-        if stdout_overflow || stderr_overflow {
-            let stream = match (stdout_overflow, stderr_overflow) {
-                (true, true) => "stdout and stderr",
-                (true, false) => "stdout",
-                (false, true) => "stderr",
-                (false, false) => unreachable!(),
-            };
-            let limit_mib = (max_output + (1 << 20) - 1) >> 20;
+        if options.is_some() {
+            if stdout_overflow || stderr_overflow {
+                let stream = match (stdout_overflow, stderr_overflow) {
+                    (true, true) => "stdout and stderr",
+                    (true, false) => "stdout",
+                    (false, true) => "stderr",
+                    (false, false) => unreachable!(),
+                };
+                let limit_mib = (max_output + (1 << 20) - 1) >> 20;
+                tracing::warn!(
+                    plugin = %self.id(),
+                    program = %cmd.program,
+                    limit_mib,
+                    "process {stream} exceeded limit"
+                );
+                return Err(HostError::Failed(format!("{} {stream} exceeded {} MiB limit", cmd.program, limit_mib)));
+            }
+        } else if stdout_overflow {
             tracing::warn!(
                 plugin = %self.id(),
                 program = %cmd.program,
-                limit_mib,
-                "process {stream} exceeded limit"
+                limit_mib = (max_output >> 20),
+                "process stdout exceeded limit"
             );
-            return Err(HostError::Failed(format!("{} {stream} exceeded {} MiB limit", cmd.program, limit_mib)));
+            return Err(HostError::Failed(format!("{} stdout exceeded 16 MiB limit", cmd.program)));
         }
         Ok(ProcessOutput { status: status.code(), stdout, stderr })
     }
@@ -2923,6 +2946,7 @@ impl HostApi for PluginApi {
                 stderr: Vec::new(),
                 status: None,
                 readers: 0,
+                waiters: 0,
                 mode,
                 buffer_limit,
                 max_total,
@@ -3033,6 +3057,20 @@ impl HostApi for PluginApi {
         cancel: &CancellationToken,
     ) -> Result<ProcessChunk, HostError> {
         let proc = self.process(id)?;
+        struct WaitGuard<'a>(&'a Proc);
+        impl Drop for WaitGuard<'_> {
+            fn drop(&mut self) {
+                let mut state = self.0.state.lock();
+                state.waiters = state.waiters.saturating_sub(1);
+                self.0.can_read.notify_all();
+            }
+        }
+        let _guard = {
+            let mut state = proc.state.lock();
+            state.waiters += 1;
+            proc.can_read.notify_all();
+            WaitGuard(&proc)
+        };
         let deadline = Instant::now() + timeout;
         loop {
             proc.reap()?;
@@ -4245,10 +4283,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let api = shell_api(tmp.path());
         let token = CancellationToken::new();
-        // Stderr beyond the limit fails symmetrically with stdout.
+        // stdout within the limit comes back whole; stderr beyond it is truncated (stdout beyond it fails).
         let cmd = shell(&format!("head -c 5242880 /dev/zero; head -c {} /dev/zero >&2", MAX_OUTPUT + (1 << 20)));
-        let err = api.run_process(cmd.clone(), None, None, &token, Duration::from_secs(5)).unwrap_err();
-        assert!(matches!(err, HostError::Failed(ref msg) if msg.contains("stderr exceeded 16 MiB limit")), "{err}");
+        let out = api.run_process(cmd.clone(), None, None, &token, Duration::from_secs(5)).unwrap();
+        assert_eq!(out.status, Some(0));
+        assert_eq!((out.stdout.len(), out.stderr.len()), (5 << 20, MAX_OUTPUT));
         let id = api.start_process(cmd, None, None).unwrap();
         let out = api.wait_process(id, MAX_PENDING, Duration::from_secs(5), &token).unwrap();
         assert_eq!(out.status, Some(0));
@@ -4419,6 +4458,29 @@ mod tests {
             .run_process_with_options(cmd, None, None, &token, Duration::from_secs(10), Some(opts_fail))
             .unwrap_err();
         assert!(matches!(err, HostError::Failed(ref msg) if msg.contains("stdout exceeded 1 MiB limit")), "{err}");
+
+        // Stderr overflow in run_captured also fails explicitly
+        let cmd_err = make_cmd("head -c 2097152 /dev/zero >&2", "[Console]::Error.Write('E' * 2097152)");
+        let err = api
+            .run_process_with_options(cmd_err, None, None, &token, Duration::from_secs(10), Some(opts_fail))
+            .unwrap_err();
+        assert!(matches!(err, HostError::Failed(ref msg) if msg.contains("stderr exceeded 1 MiB limit")), "{err}");
+    }
+
+    #[test]
+    fn start_stream_wait_drains_producer_larger_than_buffer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (api, make_cmd) = test_proc_api(tmp.path());
+        let token = CancellationToken::new();
+        // Emits 64 KiB, which is 16x larger than the 4 KiB buffer. Calling wait drains without blocking on pipe.
+        let cmd = make_cmd("head -c 65536 /dev/zero | tr '\\0' 'W'", "[Console]::Out.Write('W' * 65536)");
+        let options = ProcessOptions { buffer_bytes: Some(4096), max_output_bytes: Some(1 << 20) };
+        let id = api.start_process_stream(cmd, None, None, Some(options)).unwrap();
+        let chunk = api.wait_process(id, 100_000, Duration::from_secs(10), &token).unwrap();
+        assert_eq!(chunk.status, Some(0));
+        assert_eq!(chunk.stdout.len(), 65536);
+        assert!(chunk.stdout.chars().all(|c| c == 'W'));
+        api.release_process(id);
     }
 
     #[test]

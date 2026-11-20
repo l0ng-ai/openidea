@@ -1038,7 +1038,7 @@ mod imp {
             max_output_bytes: o.max_output_bytes,
             buffer_bytes: o.buffer_bytes,
         });
-        wit::process::run_captured(&c, cwd, stdin, opts.as_ref())
+        wit::process::run_captured(&c, cwd, stdin, opts)
             .map(|o| ProcessOutput { status: o.status, stdout: o.stdout, stderr: o.stderr })
             .map_err(error)
     }
@@ -1053,7 +1053,7 @@ mod imp {
             max_output_bytes: o.max_output_bytes,
             buffer_bytes: o.buffer_bytes,
         });
-        wit::process::start_stream(&c, cwd, opts.as_ref()).map_err(error)
+        wit::process::start_stream(&c, cwd, opts).map_err(error)
     }
 
     pub fn child_poll(child: &ChildRes, max: u32) -> Result<crate::host::Chunk, Error> {
