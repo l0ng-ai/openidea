@@ -102,11 +102,20 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
-  padding: 4px 0;
+  padding-bottom: var(--space-1);
+}
+
+.threadHeader {
+  display: flex;
+  align-items: center;
+  flex: none;
+  height: 30px;
+  padding: 0 var(--space-1);
+  border-bottom: 1px solid var(--border);
 }
 
 .threadSelect {
-  margin: 0 8px 4px;
+  max-width: 100%;
 }
 
 .frameList {
@@ -116,7 +125,7 @@
   display: flex;
   flex-direction: column;
   outline: none;
-  padding: 0 4px;
+  padding: var(--space-1) var(--space-1) 0;
 }
 
 .frame {
@@ -150,24 +159,36 @@
   flex: none;
 }
 
-.frameName {
+.frameText,
+.frameLabel {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+}
+.frameText {
+  flex: 1;
+}
+.frameLine {
   flex: none;
+}
+.frameName,
+.frameFile {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .frameFile {
-  flex: 1;
-  min-width: 0;
-  /* ", File.java:12" hugs the name, cancelling the row gap. */
-  margin-left: -6px;
+  flex: 0 1000 auto;
+  min-width: min(12ch, 32%);
   color: var(--fg-subtle);
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-size: var(--fs-small);
 }
 
 .hiddenFrames {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--fg-subtle);
   font-style: italic;
 }
