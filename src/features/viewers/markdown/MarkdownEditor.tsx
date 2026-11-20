@@ -119,6 +119,7 @@ export function MarkdownEditor({
     <div ref={ref} className={clsx(styles.split, styles[`mode-${mode}`])}>
       <SplitGroup
         orientation="horizontal"
+        disableCursor
         className={styles.group}
         storageKey={mode === "split" ? SPLIT_STORAGE_KEY : undefined}
       >
