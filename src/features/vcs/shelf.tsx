@@ -5,6 +5,7 @@
  */
 import { writeClipboardText } from "@/platform/clipboard";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import clsx from "clsx";
 import { create } from "zustand";
 import type {
   ApplyOutcome,
@@ -184,6 +185,7 @@ function ChangeChecklist<F>({
   selected,
   onChange,
   label,
+  className,
 }: {
   files: readonly F[];
   keyOf: (f: F) => string;
@@ -195,6 +197,7 @@ function ChangeChecklist<F>({
   selected: ReadonlySet<string>;
   onChange: (next: Set<string>) => void;
   label: string;
+  className?: string;
 }) {
   const tree: FileTreeNode<F>[] = [
     { key: "r:", name: rootName, file: null, children: buildFileTree(files, relPath), count: files.length },
@@ -211,7 +214,7 @@ function ChangeChecklist<F>({
     onChange(next);
   };
   return (
-    <div className={styles.fileTree}>
+    <div className={clsx(styles.fileTree, className)}>
       <Tree<FileTreeNode<F>>
         roots={tree}
         getKey={(n) => n.key}
@@ -226,6 +229,7 @@ function ChangeChecklist<F>({
         renderNode={(n) => {
           const below = filesBelow(n);
           const on = below.filter((f) => selected.has(keyOf(f))).length;
+          const path = n.file ? relPath(n.file) : undefined;
           return (
             <span className={styles.fileTreeRow}>
               <Checkbox
@@ -235,8 +239,8 @@ function ChangeChecklist<F>({
                 indeterminate={on > 0 && on < below.length}
                 onChange={() => toggle(n)}
               />
-              <Icon name={n.file ? fileIconName(n.name, relPath(n.file)) : "folder"} size={14} />
-              <span className={styles.fileName} style={{ color: n.file ? colorOf(n.file) : undefined }}>
+              <Icon name={path === undefined ? "folder" : fileIconName(n.name, path)} size={14} />
+              <span className={styles.fileName} style={{ color: n.file ? colorOf(n.file) : undefined }} title={path}>
                 {n.name}
               </span>
               <span className={styles.fileDir}>{n.file ? (detailOf?.(n.file) ?? "") : fileCount(n.count)}</span>
@@ -254,11 +258,13 @@ export function FileChecklist({
   selected,
   onChange,
   label,
+  className,
 }: {
   files: readonly FileStatus[];
   selected: ReadonlySet<string>;
   onChange: (next: Set<string>) => void;
   label: string;
+  className?: string;
 }) {
   const root = useVcs((s) => s.root) ?? "";
   return (
@@ -271,6 +277,7 @@ export function FileChecklist({
       selected={selected}
       onChange={onChange}
       label={label}
+      className={className}
     />
   );
 }
