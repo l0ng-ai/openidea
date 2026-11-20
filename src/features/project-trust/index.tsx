@@ -39,8 +39,10 @@ function TrustDialog() {
   return (
     <Dialog
       open={!!path}
-      icon="app"
-      width={560}
+      icon="warning"
+      width={600}
+      className={styles.trustDialog}
+      blockWorkbenchShortcuts
       title="Trust and Open Project?"
       onClose={() => void executeAction("project.dontOpen")}
       buttons={[
@@ -49,8 +51,12 @@ function TrustDialog() {
           autoFocus: true,
           onClick: () => void executeAction("project.previewRestricted"),
         },
-        { label: "Don't Open", onClick: () => void executeAction("project.dontOpen") },
-        { label: "Trust Project", role: "default", onClick: () => void executeAction("project.trust") },
+        { label: "Don't Open", role: "cancel" },
+        {
+          label: folder ? "Trust Folder" : "Trust Project",
+          role: "default",
+          onClick: () => void executeAction("project.trust"),
+        },
       ]}
       footerStart={
         <Checkbox
@@ -68,16 +74,16 @@ function TrustDialog() {
         />
       }
     >
-      <div className={styles.content}>
+      <div className={styles.promptContent}>
         <PathLine path={path ?? ""} />
         <p>
+          <T>Loading, running or building a project may execute potentially malicious code from its build scripts.</T>
+        </p>
+        <p className={styles.restrictedPreview}>
           <T>
             If you don't trust the source, preview the project in Restricted Mode, where project commands and tools
             can't run.
           </T>
-        </p>
-        <p>
-          <T>Loading, running or building a project may execute potentially malicious code from its build scripts.</T>
         </p>
       </div>
     </Dialog>
