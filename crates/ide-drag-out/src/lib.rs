@@ -2,9 +2,9 @@
 //! Finder, a file manager, an SFTP client such as Xftp) copies them, as when they are
 //! dragged from IDEA's Project view (#2867).
 //!
-//! Linux starts a GTK drag offering `text/uri-list`. Windows (OLE `DoDragDrop`) and
-//! macOS (an AppKit dragging session) go through the `drag` crate. A drag is always a
-//! copy, never a move, so no target can take project files away.
+//! Linux starts a GTK drag offering `text/uri-list`, Windows an OLE `DoDragDrop` of a
+//! `CF_HDROP` data object, macOS an AppKit dragging session of file URLs. A drag is
+//! always a copy, never a move, so no target can take project files away.
 //!
 //! [`start`] runs on the UI thread while the primary button is still held. It returns
 //! once the drag has begun (Linux, macOS) or ended (Windows); `done` gets the outcome
@@ -24,8 +24,8 @@ pub enum Outcome {
 
 /// The paths a drag may carry: at least one, each an absolute path to a file or folder
 /// on this machine. A remote project's paths name files on its server and fail here.
-/// Windows also refuses paths of `MAX_PATH` or more: the shell can't make drag items of
-/// them (crabnebula-dev/drag-rs#76).
+/// Windows also refuses paths of `MAX_PATH` or more: Explorer can't copy from them.
+/// Network shares (`\\server\share\…`) are local paths here and drag like any other.
 pub fn local_paths<S: Into<PathBuf>>(paths: impl IntoIterator<Item = S>) -> io::Result<Vec<PathBuf>> {
     let paths: Vec<PathBuf> = paths.into_iter().map(Into::into).collect();
     if paths.is_empty() {
@@ -122,47 +122,27 @@ mod gtk_impl {
     }
 }
 
-#[cfg(any(windows, target_os = "macos"))]
-pub use native::start;
+#[cfg(windows)]
+mod ole;
+#[cfg(windows)]
+pub use ole::start;
 
-#[cfg(any(windows, target_os = "macos"))]
-mod native {
-    use super::Outcome;
-    use std::io;
-    use std::panic::{AssertUnwindSafe, catch_unwind};
-    use std::path::PathBuf;
-    use std::sync::Mutex;
+#[cfg(target_os = "macos")]
+mod appkit;
+#[cfg(target_os = "macos")]
+pub use appkit::start;
 
-    /// Starts dragging `paths` (see [`super::local_paths`]) from `window`, showing `icon`
-    /// (PNG bytes) under the pointer. On Windows this returns when the drag has ended.
-    pub fn start<W: raw_window_handle::HasWindowHandle>(
-        window: &W,
-        paths: Vec<PathBuf>,
-        icon: &[u8],
-        done: impl FnOnce(Outcome) + Send + 'static,
-    ) -> io::Result<()> {
-        let done = Mutex::new(Some(done));
-        let on_end = move |result, _| {
-            let done = done.lock().ok().and_then(|mut done| done.take());
-            if let Some(done) = done {
-                done(match result {
-                    drag::DragResult::Dropped => Outcome::Dropped,
-                    drag::DragResult::Cancel => Outcome::Cancelled,
-                });
-            }
-        };
-        let options = drag::Options { skip_animatation_on_cancel_or_failure: false, mode: drag::DragMode::Copy };
-        // The crate unwraps where the shell can't make items of a path (network shares,
-        // overlong paths: crabnebula-dev/drag-rs#72, #76); that fails this drag, not the IDE.
-        let started = catch_unwind(AssertUnwindSafe(|| {
-            drag::start_drag(window, drag::DragItem::Files(paths), drag::Image::Raw(icon.to_vec()), on_end, options)
-        }));
-        match started {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(error)) => Err(io::Error::other(error.to_string())),
-            Err(_) => Err(io::Error::other("the system could not drag these files")),
-        }
+/// The `CF_HDROP` file list: each path in UTF-16 with `/` as `\\`, NUL-terminated, and a
+/// second NUL after the last.
+#[cfg(any(windows, test))]
+fn hdrop_file_list<P: IntoIterator<Item = u16>>(paths: impl IntoIterator<Item = P>) -> Vec<u16> {
+    let mut list = Vec::new();
+    for path in paths {
+        list.extend(path.into_iter().map(|unit| if unit == u16::from(b'/') { u16::from(b'\\') } else { unit }));
+        list.push(0);
     }
+    list.push(0);
+    list
 }
 
 #[cfg(test)]
@@ -183,6 +163,13 @@ mod tests {
         let path = |len: usize| PathBuf::from(format!("C:/{}", "中".repeat(len - 3)));
         assert!(fits_max_path(&path(259)));
         assert!(!fits_max_path(&path(260)));
+    }
+
+    #[test]
+    fn lists_hdrop_files_double_nul_terminated() {
+        let list = hdrop_file_list(["C:/a b/ü.txt", r"\\nas\share\中"].map(str::encode_utf16));
+        let expected: Vec<u16> = "C:\\a b\\ü.txt\0\\\\nas\\share\\中\0\0".encode_utf16().collect();
+        assert_eq!(list, expected);
     }
 
     #[test]

@@ -21,10 +21,6 @@ pub fn window_start_drag(window: WebviewWindow) -> IdeResult<bool> {
     Ok(true)
 }
 
-/// The image under the pointer while files are dragged out on Windows and macOS.
-#[cfg(any(windows, target_os = "macos"))]
-const DRAG_ICON: &[u8] = include_bytes!("../../icons/32x32.png");
-
 /// Drags `paths` (local files and folders) out of `window` while the primary mouse button is
 /// still down, so the app they are dropped on copies them (#2867). Resolves when the drag ends,
 /// with whether a target took the files.
@@ -53,7 +49,7 @@ pub async fn window_drag_files(window: WebviewWindow, paths: Vec<PathBuf>) -> Id
                 .map_err(|error| std::io::Error::other(error.to_string()))
                 .and_then(|gtk_window| ide_drag_out::start(&gtk_window, paths, done));
             #[cfg(any(windows, target_os = "macos"))]
-            let started = ide_drag_out::start(&source, paths, DRAG_ICON, done);
+            let started = ide_drag_out::start(&source, paths, done);
             let _ = started_tx.send(started);
         })
         .map_err(|error| IdeError::internal(format!("Cannot start a drag on the main thread: {error}")))?;
