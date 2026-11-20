@@ -197,6 +197,13 @@ export function isLive(s: DebugSession | null | undefined): boolean {
   return !!s && s.status !== "terminated";
 }
 
+/** The session the Debug tool window's Stop acts on: the selected one while it runs (any live one when none is selected). */
+export function stopTarget(): DebugSession | null {
+  const s = activeSession();
+  if (s) return isLive(s) ? s : null;
+  return Object.values(useDebug.getState().sessions).find(isLive) ?? null;
+}
+
 /** Whether the session with this id is still there and running, as of now. */
 export const isLiveSession = (id: DebugSessionId) => isLive(useDebug.getState().sessions[id]);
 
@@ -405,6 +412,8 @@ export function publishContext() {
   });
   const anyLive = Object.values(useDebug.getState().sessions).some(isLive);
   setContext("debugSessionActive", anyLive);
+  // Stop acts on the selected session tab, so a finished one doesn't stop another session.
+  setContext("debugCanStop", !!stopTarget());
   setContext("debugSessionRunning", s?.status === "running");
   setContext("debugSessionPaused", s?.status === "paused");
   // Dart and Flutter sessions: Hot Reload / Hot Restart.
