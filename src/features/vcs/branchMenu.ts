@@ -49,6 +49,22 @@ async function pullInto(remoteBranch: string, rebase: boolean) {
   );
 }
 
+type Run = (fn: () => unknown) => () => void;
+
+function favoriteMenuItem(b: Branch, run: Run): MenuItem {
+  loadFavoriteBranches();
+  const favorite = isFavoriteBranch(b, useFavoriteBranches.getState().names);
+  return {
+    label: favorite ? "Remove from Favorites" : "Add to Favorites",
+    icon: "star",
+    run: run(() => toggleFavoriteBranch(b)),
+  };
+}
+
+function historyMenuItem(name: string, run: Run): MenuItem {
+  return { label: "Show History", icon: "history", run: run(() => executeAction("vcs.showLog", { branch: name })) };
+}
+
 /** The Branches pane's context menu: `selected` carries the multi-selection, which Update Selected and Delete act on as a whole. */
 export function branchMenu(
   b: Branch,
@@ -61,13 +77,7 @@ export function branchMenu(
     void fn();
   };
   const cur = current ?? "HEAD";
-  loadFavoriteBranches();
-  const favorite = isFavoriteBranch(b, useFavoriteBranches.getState().names);
-  const favoriteItem: MenuItem = {
-    label: favorite ? "Remove from Favorites" : "Add to Favorites",
-    icon: "star",
-    run: run(() => toggleFavoriteBranch(b)),
-  };
+  const favoriteItem = favoriteMenuItem(b, run);
   // Update Selected acts on every selected local branch, each in its own repository.
   const update: MenuItem =
     selected.filter((t) => t.branch && !t.branch.remote).length > 1
@@ -78,11 +88,7 @@ export function branchMenu(
           disabled: !b.current && !b.upstream,
           run: run(() => updateBranches([{ branch: b }])),
         };
-  const history: MenuItem = {
-    label: "Show History",
-    icon: "history",
-    run: run(() => executeAction("vcs.showLog", { branch: b.name })),
-  };
+  const history = historyMenuItem(b.name, run);
   if (b.current) {
     return [
       { label: tx`New Branch from '${b.name}'…`, icon: "branch", run: run(() => newBranch()) },
@@ -240,4 +246,58 @@ export function inRepo(root: string, items: MenuItem[]): MenuItem[] {
       submenu: item.submenu && inRepo(root, item.submenu),
     };
   });
+}
+
+/**
+ * The Branches pane's menu for branch `b`, which the repositories `roots` all have: its
+ * actions act in each of them, like a common branch. `selected` holds one target per
+ * repository and selected branch; with several branches selected, Update and Delete act on
+ * the whole selection.
+ */
+export function mergedBranchMenu(
+  b: Branch,
+  common: CommonBranch,
+  roots: readonly string[],
+  current: string | null,
+  selected: readonly { repo?: string; branch?: Branch }[],
+  done: () => void = () => {},
+): MenuItem[] {
+  const run: Run = (fn) => () => {
+    done();
+    void fn();
+  };
+  const several = new Set(selected.map((t) => t.branch?.name)).size > 1;
+  const own = commonBranchMenu(common, roots, current, done).filter(
+    (item) => !several || !("label" in item) || (item.label !== "Update" && item.label !== "Delete"),
+  );
+  const selection: MenuItem[] = several
+    ? [
+        ...(selected.filter((t) => t.branch && !t.branch.remote).length > 1
+          ? [{ label: "Update Selected", icon: "git-pull" as const, run: run(() => updateBranches(selected)) }]
+          : []),
+        { label: "Delete", danger: true, icon: "trash", run: run(() => deleteBranches(selected)) },
+      ]
+    : b.remote
+      ? [{ label: "Delete", danger: true, icon: "trash", run: run(() => deleteBranches(selected)) }]
+      : [];
+  return tidySeparators([
+    ...own,
+    { kind: "separator" },
+    favoriteMenuItem(b, run),
+    historyMenuItem(b.name, run),
+    { kind: "separator" },
+    ...selection,
+  ]);
+}
+
+/** Drops leading, trailing and repeated separators. */
+function tidySeparators(items: MenuItem[]): MenuItem[] {
+  const out: MenuItem[] = [];
+  for (const item of items) {
+    const sep = "kind" in item && item.kind === "separator";
+    if (sep && (!out.length || ("kind" in out.at(-1)! && out.at(-1)!.kind === "separator"))) continue;
+    out.push(item);
+  }
+  while (out.length && "kind" in out.at(-1)! && out.at(-1)!.kind === "separator") out.pop();
+  return out;
 }

@@ -16,20 +16,15 @@ import {
   isFavoriteBranch,
   type BranchTreeNode,
 } from "../branches";
-import { branchMenu, commonBranchMenu, inRepo, tagMenu } from "../branchMenu";
-import {
-  canDeleteBranch,
-  deleteBranches,
-  loadFavoriteBranches,
-  toggleFavoriteBranch,
-  useFavoriteBranches,
-} from "../branchOps";
+import { branchMenu, inRepo, mergedBranchMenu, tagMenu } from "../branchMenu";
+import { canDeleteBranch, loadFavoriteBranches, useFavoriteBranches } from "../branchOps";
 import { BranchSync } from "../BranchSync";
 import styles from "../GitLog.module.css";
 import { LogIdContext } from "../logContext";
 import { canUpdateBranch, useBranchesPane, type BranchTarget } from "../logPaneActions";
 import { reloadLog, setLogBranches, setLogFilters, useGitLog } from "../logStore";
 import { branchesByRepo } from "../multiRoot";
+import { commonBranches } from "../repoBranches";
 import { currentRepo, loadBranches, repoName, useVcs } from "../store";
 import { useLogRepositories, useReadOnlyLog } from "./logHooks";
 
@@ -345,43 +340,14 @@ export function BranchesPanel() {
             }
             // The menu acts on the whole selection when the right-clicked branch is part of it.
             const picked: BranchTarget[] = n && selected.has(n.key) ? targets : n?.ref ? expand(n) : [];
-            // A merged branch in several repositories acts in all of them, like a common branch
-            // (unless it is part of a multi-selection: the menu then acts on every selected target).
-            const many = n && selected.has(n.key) && new Set(targets.map((t) => t.ref)).size > 1;
-            if (n?.branch && n.repos && n.repos.length > 1 && !many) {
+            // A merged branch in several repositories acts in all of them, like a common branch.
+            if (n?.branch && n.repos && n.repos.length > 1) {
+              const lists = n.repos.map((r) => allBranches[r] ?? []);
+              const group = commonBranches(lists, favorites)[n.branch.remote ? "remote" : "local"];
+              const common = group.find((c) => c.name === n.ref);
+              if (!common) return;
               e.preventDefault();
-              const heads = useVcs.getState().heads;
-              const own = n.repos.map((r) =>
-                allBranches[r]?.find((x) => x.name === n.ref && x.remote === n.branch!.remote),
-              );
-              const common = {
-                name: n.ref!,
-                remote: n.branch.remote,
-                current: !n.branch.remote && n.repos.every((r) => heads[r]?.head === n.ref),
-                favorite: !!n.favorite,
-                upstream: own.some((x) => !!x?.upstream),
-              };
-              const favorite = isFavoriteBranch(n.branch, favorites);
-              showContextMenu(e, [
-                ...commonBranchMenu(common, n.repos, sharedHead(n.repos)),
-                { kind: "separator" },
-                {
-                  label: favorite ? "Remove from Favorites" : "Add to Favorites",
-                  icon: "star",
-                  run: () => toggleFavoriteBranch(n.branch!),
-                },
-                {
-                  label: "Show History",
-                  icon: "history",
-                  run: () => void executeAction("vcs.showLog", { branch: n.ref }),
-                },
-                ...(n.branch.remote
-                  ? [
-                      { kind: "separator" as const },
-                      { label: "Delete", danger: true, icon: "trash" as const, run: () => void deleteBranches(picked) },
-                    ]
-                  : []),
-              ]);
+              showContextMenu(e, mergedBranchMenu(n.branch, common, n.repos, sharedHead(n.repos), picked));
               return;
             }
             const repo = n?.repo ?? (n?.repos?.length === 1 ? n.repos[0] : undefined);

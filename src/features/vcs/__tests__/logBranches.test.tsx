@@ -293,7 +293,9 @@ describe("Git Log branches pane with several repositories", () => {
     fireEvent.mouseDown(screen.getByText("solo"), cmd());
     fireEvent.contextMenu(screen.getByText("dev"));
     expect(await screen.findByRole("menuitem", { name: "Update Selected" })).toBeInTheDocument();
-    expect(screen.queryByRole("menuitem", { name: "Merge 'dev' into Current" })).toBeNull();
+    // The right-clicked branch's own actions still act in every repository that has it.
+    expect(screen.getByRole("menuitem", { name: "Merge 'dev' into Current" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Merge 'dev' into 'main'" })).toBeNull();
   });
 
   it("selecting a merged branch targets each repository's own branch", async () => {
