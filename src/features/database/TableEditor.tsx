@@ -73,10 +73,27 @@ export function TableEditor({ input }: { input: EditorInput }) {
   const [sort, setSort] = useState<DbSortKey[]>(initial?.sort ?? []);
   const [filterText, setFilterText] = useState(initial?.filterText ?? "");
   const [filter, setFilter] = useState(initial?.filter ?? "");
-  const [horizontalScrollLeft, setHorizontalScrollLeft] = useState(initial?.horizontalScrollLeft ?? 0);
+  // A ref, not state: scrolling must not re-render the editor.
+  const scrollLeft = useRef(initial?.horizontalScrollLeft ?? 0);
   useEffect(
-    () => rememberViewState(input.key, { offset, limit, sort, filterText, filter, horizontalScrollLeft }),
-    [input.key, offset, limit, sort, filterText, filter, horizontalScrollLeft],
+    () =>
+      rememberViewState(input.key, {
+        offset,
+        limit,
+        sort,
+        filterText,
+        filter,
+        horizontalScrollLeft: scrollLeft.current,
+      }),
+    [input.key, offset, limit, sort, filterText, filter],
+  );
+  const onHorizontalScroll = useCallback(
+    (left: number) => {
+      scrollLeft.current = left;
+      const state = viewStates.get(input.key);
+      if (state) state.horizontalScrollLeft = left;
+    },
+    [input.key],
   );
   const [nonce, setNonce] = useState(0);
   const [edits, setEdits] = useState<PendingEdits>(emptyEdits);
@@ -434,8 +451,8 @@ export function TableEditor({ input }: { input: EditorInput }) {
             driver={source?.driver}
             sort={sort}
             onSort={onSort}
-            horizontalScrollLeft={horizontalScrollLeft}
-            onHorizontalScroll={setHorizontalScrollLeft}
+            initialScrollLeft={scrollLeft.current}
+            onHorizontalScroll={onHorizontalScroll}
             pager={
               <Toolbar className={styles.resultPager} aria-label="Table pages">
                 {!singlePage && (

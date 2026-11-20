@@ -100,7 +100,7 @@ export interface DataViewProps extends Pick<
   | "sort"
   | "onSort"
   | "rowMenu"
-  | "horizontalScrollLeft"
+  | "initialScrollLeft"
   | "onHorizontalScroll"
 > {
   columns: readonly GridColumn[];
@@ -248,7 +248,7 @@ export function DataView(props: DataViewProps) {
             onSelectionChange={setRange}
             onFilter={(col, anchor) => setFilterAt({ col, anchor })}
             filtered={(col) => filter.has(col)}
-            horizontalScrollLeft={props.horizontalScrollLeft}
+            initialScrollLeft={props.initialScrollLeft}
             onHorizontalScroll={props.onHorizontalScroll}
           />
           {filter.size > 0 && (
