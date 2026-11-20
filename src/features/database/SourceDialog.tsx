@@ -502,6 +502,10 @@ export function SourceDialog({
   const sshUsed: DbSsh = effectiveSsh(ssh, sshConfigs) ?? ssh;
   const setSsh = (patch: Partial<DbSsh>) => setS((x) => ({ ...x, ssh: { ...blankSsh(), ...x.ssh, ...patch } }));
   const options: DbOptions = { ...blankOptions(), ...s.options };
+  const connectionTimers = (driver: DataSource["driver"]) => ({
+    keepAliveSecs: driver === "sqlite" ? null : options.keepAliveSecs,
+    autoDisconnectSecs: options.autoDisconnectSecs,
+  });
   const setOptions = (patch: Partial<DbOptions>) =>
     setS((x) => ({ ...x, options: { ...blankOptions(), ...x.options, ...patch } }));
   const intro: DbIntrospection = { ...blankIntrospection(), ...s.introspection };
@@ -579,7 +583,7 @@ export function SourceDialog({
       url: profile?.urlTemplate ?? "",
       jdbcDriver: profile?.id ?? "",
       properties: [],
-      options: { ...blankOptions(), autoDisconnectSecs: options.autoDisconnectSecs },
+      options: { ...blankOptions(), ...connectionTimers("jdbc") },
       ssh: null,
       ssl: "disable",
       sslCaFile: "",
@@ -640,7 +644,7 @@ export function SourceDialog({
             savePassword: newJdbcPassword ? nativeSource.savePassword : s.savePassword,
             readOnly: s.readOnly,
             introspection: intro,
-            options: { ...blankOptions(), ...nativeSource.options, autoDisconnectSecs: options.autoDisconnectSecs },
+            options: { ...blankOptions(), ...nativeSource.options, ...connectionTimers(v.driver) },
           }
         : s;
     if (nativeDraft) {
@@ -684,7 +688,7 @@ export function SourceDialog({
               urlOnly: false,
               url: "",
               properties: [],
-              options: { ...blankOptions(), autoDisconnectSecs: options.autoDisconnectSecs },
+              options: { ...blankOptions(), ...connectionTimers(v.driver) },
               ssh: null,
               ...builtInTarget({ ...x, url: jdbcUrl }, v.driver, projectRoot),
             }

@@ -365,7 +365,14 @@ describe("JDBC drivers for named database types", () => {
     backend.call.mockImplementation(async ([op]) => (op === "list" ? [profile] : "OK"));
     render(
       <SourceDialog
-        initial={{ driver: "jdbc", vendor: type, host: "stale.example.invalid", jdbcDriver: driver.id, url }}
+        initial={{
+          driver: "jdbc",
+          vendor: type,
+          host: "stale.example.invalid",
+          jdbcDriver: driver.id,
+          url,
+          options: { keepAliveSecs: 45 },
+        }}
       />,
     );
     await screen.findByRole("button", { name: "Go to Driver" });
@@ -379,7 +386,14 @@ describe("JDBC drivers for named database types", () => {
       await screen.findByText("Succeeded: OK");
       expect(backend.call).toHaveBeenCalledWith([
         "test",
-        expect.objectContaining({ driver: "clickhouse", host, database: "new", port: 8443, ssl: "verifyFull" }),
+        expect.objectContaining({
+          driver: "clickhouse",
+          host,
+          database: "new",
+          port: 8443,
+          ssl: "verifyFull",
+          options: expect.objectContaining({ keepAliveSecs: 45 }),
+        }),
         null,
         null,
       ]);
@@ -536,13 +550,24 @@ describe("JDBC drivers for named database types", () => {
           jdbcDriver: sqlite.id,
           url: "jdbc:sqlite:/fixture/new.db",
           file: "/fixture/stale.db",
+          options: { keepAliveSecs: 45 },
         }}
       />,
     );
     await screen.findByRole("button", { name: "Go to Driver" });
     select("Connection driver", "Built-in");
     expect(screen.getByLabelText("File:")).toHaveValue("/fixture/new.db");
-    expect(screen.getByRole("button", { name: "Test Connection" })).toBeDisabled();
+    const test = screen.getByRole("button", { name: "Test Connection" });
+    expect(test).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox", { name: "I have configured built-in connection security." }));
+    fireEvent.click(test);
+    await screen.findByText("Succeeded: SQLite");
+    expect(backend.call).toHaveBeenCalledWith([
+      "test",
+      expect.objectContaining({ driver: "sqlite", options: expect.objectContaining({ keepAliveSecs: null }) }),
+      null,
+      null,
+    ]);
   });
 
   it("keeps shared source options and restores the native draft's password", async () => {
@@ -550,7 +575,12 @@ describe("JDBC drivers for named database types", () => {
     backend.call.mockImplementation(async ([op]) => (op === "list" ? [pg] : "OK"));
     render(
       <SourceDialog
-        initial={{ driver: "postgres", user: "native", savePassword: true, options: { autoDisconnectSecs: 90 } }}
+        initial={{
+          driver: "postgres",
+          user: "native",
+          savePassword: true,
+          options: { keepAliveSecs: 30, autoDisconnectSecs: 90 },
+        }}
       />,
     );
     fireEvent.change(screen.getByLabelText("Password:"), { target: { value: "native-fixture" } });
@@ -561,6 +591,10 @@ describe("JDBC drivers for named database types", () => {
     fireEvent.change(screen.getByLabelText("Password:"), { target: { value: "jdbc-fixture" } });
     fireEvent.click(screen.getByRole("checkbox", { name: "Save password" }));
     fireEvent.click(screen.getByRole("tab", { name: "Options" }));
+    const keepAlive = screen.getByLabelText("Run keep-alive query each (seconds)");
+    expect(keepAlive).toBeEnabled();
+    expect(keepAlive).toHaveValue("30");
+    fireEvent.change(keepAlive, { target: { value: "45" } });
     expect(screen.getByLabelText("Auto-disconnect after (seconds)")).toHaveValue("90");
     fireEvent.change(screen.getByLabelText("Auto-disconnect after (seconds)"), { target: { value: "60" } });
     fireEvent.click(screen.getByRole("checkbox", { name: "Read-only" }));
@@ -571,6 +605,7 @@ describe("JDBC drivers for named database types", () => {
     expect(screen.getByRole("checkbox", { name: "Save password" })).not.toBeChecked();
     fireEvent.click(screen.getByRole("tab", { name: "Options" }));
     expect(screen.getByRole("checkbox", { name: "Read-only" })).toBeChecked();
+    expect(screen.getByLabelText("Run keep-alive query each (seconds)")).toHaveValue("45");
     expect(screen.getByLabelText("Auto-disconnect after (seconds)")).toHaveValue("60");
   });
 });
