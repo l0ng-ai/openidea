@@ -1046,8 +1046,12 @@ let nextTab = 1;
 let nextRun = 1;
 let nextLine = 1;
 
+function outputLine(kind: OutputLine["kind"], text: string, prompt?: string): OutputLine {
+  return { id: nextLine++, time: Date.now(), kind, text, prompt };
+}
+
 export function log(kind: OutputLine["kind"], text: string, prompt?: string) {
-  const line: OutputLine = { id: nextLine++, time: Date.now(), kind, text, prompt };
+  const line = outputLine(kind, text, prompt);
   useDatabase.setState((s) => ({ output: [...s.output, line].slice(-MAX_OUTPUT) }));
 }
 
@@ -1075,6 +1079,37 @@ export function outcomeSummary(o: DbStatementOutcome): string {
 /** The schema shown as the Output prompt (`main>`). */
 function promptOf(id: string): string {
   return useDatabase.getState().completion[id]?.defaultSchema || sourceById(id)?.name || id;
+}
+
+function changesSchema(outcome: DbStatementOutcome): boolean {
+  return !outcome.error && /^\s*(create|drop|alter|rename)\b/i.test(outcome.statement.text);
+}
+
+function outcomeUpdates(
+  state: DatabaseState,
+  id: string,
+  schema: string | undefined,
+  outcomes: readonly DbStatementOutcome[],
+  logConnected: boolean,
+): Pick<DatabaseState, "output" | "pendingTx"> {
+  const prompt = `${schema || promptOf(id)}>`;
+  const lines = logConnected ? [outputLine("info", "Connected")] : [];
+  for (const outcome of outcomes) {
+    lines.push(outputLine("statement", outcome.statement.text, prompt));
+    lines.push(
+      outcome.error
+        ? outputLine("error", `[${targetLabel(id)}] ${outcome.error}`)
+        : outputLine("result", outcomeSummary(outcome)),
+    );
+  }
+  const pending =
+    state.manualCommit.has(id) &&
+    !state.pendingTx.has(id) &&
+    outcomes.some((outcome) => !outcome.error && !READS.test(outcome.statement.text));
+  return {
+    output: [...state.output, ...lines].slice(-MAX_OUTPUT),
+    pendingTx: pending ? new Set(state.pendingTx).add(id) : state.pendingTx,
+  };
 }
 
 /**
@@ -1174,19 +1209,10 @@ async function run(
   if (!current()) return outcomes;
   // A failed statement can have found the session dead; the backend then dropped it.
   if (outcomes.some((o) => o.error)) void syncDropped(id);
-  if (progress && !progress.current()) return outcomes;
-  if (!wasConnected) log("info", "Connected");
-  const prompt = schema || promptOf(id);
-  for (const o of outcomes) {
-    log("statement", o.statement.text, `${prompt}>`);
-    log(o.error ? "error" : "result", o.error ? `[${targetLabel(id)}] ${o.error}` : outcomeSummary(o));
-  }
-  if (useDatabase.getState().manualCommit.has(id) && outcomes.some((o) => !o.error && !READS.test(o.statement.text)))
-    useDatabase.setState((s) => ({ pendingTx: new Set(s.pendingTx).add(id) }));
-  if (outcomes.some((o) => /^\s*(create|drop|alter|rename)\b/i.test(o.statement.text) && !o.error)) {
-    // Schema changed: the tree and completion re-read it.
-    void refresh(id);
-  }
+  // Consoles publish the same outcome updates alongside their progress and grids.
+  if (progress) return outcomes;
+  useDatabase.setState((s) => outcomeUpdates(s, id, schema, outcomes, !wasConnected));
+  if (outcomes.some(changesSchema)) void refresh(id);
   return outcomes;
 }
 
@@ -1354,6 +1380,7 @@ export async function executeConsole(
   const resultIds = new Set<number>();
   let finished = false;
   let selectOutput = false;
+  let schemaChanged = false;
   try {
     const statements = await consoleStatements(id, text, from, to);
     if (!current() || preparingConsoles.get(path) !== request || !statements.length) return [];
@@ -1371,6 +1398,7 @@ export async function executeConsole(
     const pageSize = useDatabase.getState().maxRows;
     const schema = consoleSchema(path) || (await loadCompletion(id))?.defaultSchema || "";
     if (!ownsRun()) return [];
+    let logConnected = !useDatabase.getState().connected.has(id);
     let runNumber: number | undefined;
     let queued: StatementProgress[] = [];
     let frame: number | undefined;
@@ -1382,9 +1410,12 @@ export async function executeConsole(
       const last = events[events.length - 1]!;
       const active = last.type === "started" ? { index: last.index, startedAt: Date.now() } : null;
       const placed = onProgress?.(events);
+      const completed: DbStatementOutcome[] = [];
       const tabs: ResultTab[] = [];
       for (const event of events) {
-        if (event.type === "started" || !event.outcome.result?.columns.length) continue;
+        if (event.type === "started") continue;
+        completed.push(event.outcome);
+        if (!event.outcome.result?.columns.length) continue;
         runNumber ??= nextRun++;
         const index = resultIds.size + 1;
         const title = index === 1 ? tx`Result ${runNumber}` : tx`Result ${runNumber}-${index}`;
@@ -1394,13 +1425,18 @@ export async function executeConsole(
         if (!inline) streamingResultTabs.add(tab.id);
         tabs.push(tab);
       }
+      schemaChanged ||= completed.some(changesSchema);
       useDatabase.setState((s) => {
         const executions = { ...s.executions, [path]: { ...execution, active } };
+        const state = completed.length
+          ? { executions, ...outcomeUpdates(s, id, schema, completed, logConnected) }
+          : { executions };
         const latest = tabs.at(-1);
-        if (!latest) return { executions };
-        if (inline) return { executions, inline: [...s.inline, ...tabs.map((tab) => ({ ...tab, inline: true }))] };
-        return { executions, results: capResults([...s.results, ...tabs], resultIds), activeResult: latest.id };
+        if (!latest) return state;
+        if (inline) return { ...state, inline: [...s.inline, ...tabs.map((tab) => ({ ...tab, inline: true }))] };
+        return { ...state, results: capResults([...s.results, ...tabs], resultIds), activeResult: latest.id };
       });
+      if (completed.length) logConnected = false;
     };
     const emit = (event: StatementProgress) => {
       if (!ownsRun()) return;
@@ -1435,6 +1471,7 @@ export async function executeConsole(
     return [];
   } finally {
     if (preparingConsoles.get(path) === request) preparingConsoles.delete(path);
+    const refreshMetadata = schemaChanged && ownsRun();
     for (const id of resultIds) streamingResultTabs.delete(id);
     useDatabase.setState((s) => {
       if (s.running[path] !== request) return s;
@@ -1456,6 +1493,7 @@ export async function executeConsole(
       }
       return { running, executions, results, activeResult: selectOutput ? OUTPUT_TAB : s.activeResult };
     });
+    if (refreshMetadata) void refresh(id);
   }
 }
 

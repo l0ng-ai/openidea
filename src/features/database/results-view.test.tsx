@@ -37,6 +37,7 @@ const backend = vi.hoisted(() => ({
   stream: vi.fn(),
   cancel: vi.fn(),
   connected: vi.fn(),
+  schemas: vi.fn(),
   statements: vi.fn(),
   explain: vi.fn(),
 }));
@@ -53,6 +54,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       dbExecuteStream: backend.stream,
       cancelRequest: backend.cancel,
       dbConnected: backend.connected,
+      dbSchemas: backend.schemas,
       dbStatements: backend.statements,
       dbExplain: backend.explain,
     },
@@ -131,6 +133,7 @@ beforeEach(() => {
   backend.stream.mockReset().mockImplementation(streamExecution(backend.execute));
   backend.cancel.mockResolvedValue(undefined);
   backend.connected.mockResolvedValue({ status: "ok", data: ["pg"] });
+  backend.schemas.mockResolvedValue({ status: "ok", data: ["main"] });
   backend.statements.mockImplementation((_id: unknown, text: string) =>
     Promise.resolve({ status: "ok", data: [{ from: 0, to: text.length, text }] }),
   );
@@ -713,6 +716,8 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
       output: [],
       details: {},
       running: {},
+      manualCommit: new Set(),
+      pendingTx: new Set(),
     });
     backend.statements.mockImplementation((_id: unknown, text: string) => {
       let from = 0;
@@ -797,27 +802,42 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
   });
 
   it.each(["stop", "timeout"])("releases an acknowledged stream with a missing terminal event on %s", async (exit) => {
+    useDatabase.setState({
+      sources: [{ id: "pg", name: "Local", driver: "sqlite" }],
+      manualCommit: new Set(["pg"]),
+    });
     await runIn("a.sql", "SELECT pinned");
     const pinned = ids()[0]!;
     pinResult(pinned, true);
     let sendDone!: () => void;
     let acknowledge!: () => void;
     backend.stream.mockImplementationOnce(async (_r, _id, statements: SqlStatement[], _max, _schema, channel) => {
-      channel.onmessage({ type: "started", index: 0 });
-      channel.onmessage({
-        type: "completed",
-        index: 0,
-        outcome: { statement: statements[0]!, result: result([{ name: "v" }], [["first"]]), error: null },
+      const completed = [
+        { ...result([], []), affected: 3 },
+        { ...result([], []), affected: 0 },
+        result([{ name: "v" }], [["first"]]),
+      ];
+      completed.forEach((query, index) => {
+        channel.onmessage({ type: "started", index });
+        channel.onmessage({
+          type: "completed",
+          index,
+          outcome: { statement: statements[index]!, result: query, error: null },
+        });
       });
       sendDone = () => channel.onmessage({ type: "done", error: null });
       await new Promise<void>((resolve) => (acknowledge = resolve));
       return { status: "ok", data: null };
     });
     vi.useFakeTimers();
-    const pending = runIn("a.sql", "SELECT first; SELECT missing");
+    const pending = runIn("a.sql", "UPDATE t SET n = 3; CREATE TABLE saved (id INT); SELECT first; SELECT missing");
+    const affected = () => useDatabase.getState().output.filter((line) => line.text === "3 rows affected in 1 ms");
     try {
       await vi.waitFor(() => expect(strip()).toEqual(["a.sql:SELECT pinned", "a.sql:SELECT first"]));
       const completed = ids()[1];
+      expect(affected()).toHaveLength(1);
+      expect(useDatabase.getState().pendingTx.has("pg")).toBe(true);
+      expect(backend.schemas).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(60_000);
       expect(useDatabase.getState().running["a.sql"]).toBeDefined();
       acknowledge();
@@ -828,12 +848,23 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
       expect(useDatabase.getState().executions).toEqual({});
       expect(await pending).toEqual([]);
       expect(ids()).toEqual([pinned, completed]);
+      expect(affected()).toHaveLength(1);
+      expect(useDatabase.getState().pendingTx.has("pg")).toBe(true);
+      expect(backend.schemas).toHaveBeenCalledExactlyOnceWith("pg");
     } finally {
       acknowledge?.();
       sendDone?.();
       await pending;
       vi.useRealTimers();
     }
+  });
+
+  it("keeps the grids from a fast DDL batch when refreshing schema metadata", async () => {
+    useDatabase.setState({ sources: [{ id: "pg", name: "Local", driver: "sqlite" }] });
+    const outcomes = await runIn("a.sql", "CREATE TABLE saved (id INT); SELECT saved");
+    expect(outcomes).toHaveLength(2);
+    expect(strip()).toContain("a.sql:SELECT saved");
+    expect(backend.schemas).toHaveBeenCalledExactlyOnceWith("pg");
   });
 
   it("publishes a frame of fast results together and retains every fresh grid beyond the tab limit", async () => {
