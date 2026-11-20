@@ -1,10 +1,11 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import type { HttpExchange, HttpRequestBlock } from "@/platform/ipc";
-import { runAll, runRequest, setEnvironment, useHttpClient } from "./store";
+import { runAll, runRequest, selectEntry, setEnvironment, useHttpClient } from "./store";
 
 const backend = vi.hoisted(() => ({
   httpEnvironments: vi.fn(),
   httpExecute: vi.fn(),
+  httpHistoryGet: vi.fn(),
   httpRequests: vi.fn(),
 }));
 vi.mock("@/platform/ipc", async (importOriginal) => {
@@ -94,4 +95,41 @@ it.each(["A", "missing"])("validates the starting choice %s once when environmen
   const environment = choice === "A" ? "A" : null;
   expect(backend.httpExecute).toHaveBeenNthCalledWith(1, expect.any(Number), path, text, 0, environment);
   expect(backend.httpExecute).toHaveBeenNthCalledWith(2, expect.any(Number), path, text, 1, environment);
+});
+
+function response(id: string): HttpExchange {
+  return { ...exchange, entry: { ...exchange.entry, id } };
+}
+
+it("keeps 100 history rows and the four most recently used exchanges", async () => {
+  for (let n = 0; n < 101; n++) {
+    backend.httpExecute.mockResolvedValueOnce(ok(response(String(n))));
+    await runRequest(null, text, 0);
+  }
+  const state = useHttpClient.getState();
+  expect(state.history).toHaveLength(100);
+  expect(state.history.at(-1)?.id).toBe("1");
+  expect(state.exchanges).toHaveLength(4);
+
+  await selectEntry("97"); // Touch the oldest resident before opening a cold row.
+  backend.httpHistoryGet.mockResolvedValueOnce(ok(response("1")));
+  await selectEntry("1");
+  await selectEntry("97");
+  expect(backend.httpHistoryGet.mock.calls).toEqual([["1"]]);
+  expect(useHttpClient.getState().exchanges.map((e) => e.entry.id)).toEqual(["97", "1", "100", "99"]);
+});
+
+it("keeps the latest selection when two cold reads finish out of order", async () => {
+  let finishFirst!: (result: ReturnType<typeof ok<HttpExchange>>) => void;
+  const first = new Promise<ReturnType<typeof ok<HttpExchange>>>((resolve) => {
+    finishFirst = resolve;
+  });
+  backend.httpHistoryGet.mockReturnValueOnce(first).mockResolvedValueOnce(ok(response("b")));
+  const pending = selectEntry("a");
+  await selectEntry("b");
+  finishFirst(ok(response("a")));
+  await pending;
+  const { selected, exchanges } = useHttpClient.getState();
+  expect(selected).toBe("b");
+  expect(exchanges).toEqual([response("b")]);
 });

@@ -1,4 +1,4 @@
-import { expect, test } from "./fixtures";
+import { expect, stubDesktop, test } from "./fixtures";
 
 test("Add Python Interpreter keeps environment labels and fields inside their rows", async ({ workbench: page }) => {
   await page.keyboard.press("Meta+,");
@@ -78,6 +78,84 @@ test("⌘, opens Settings with the page tree; Escape closes", async ({ workbench
   }
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
+});
+
+test("Directory Mappings keeps the controls and headers visible while scrolling repositories", async ({
+  workbench: page,
+}) => {
+  await page.setViewportSize({ width: 760, height: 550 });
+  await stubDesktop(page);
+  await page.evaluate(() => {
+    const parent = "/dev/acme-api/integrations/finance-and-order-reconciliation";
+    window.__ipc.handlers.vcs_detected_roots = () =>
+      Array.from({ length: 32 }, (_, i) =>
+        `${parent}/ledger-adapter-${String(i + 1).padStart(2, "0")}`.replaceAll("/", "\\"),
+      );
+    window.__ipc.handlers["plugin:dialog|open"] = () => `${parent}/billing-audit-adapter`;
+  });
+  await page.keyboard.press("Meta+,");
+  const settings = page.getByRole("dialog", { name: "Settings", exact: true });
+  await settings.getByRole("textbox", { name: "Search settings" }).fill("Directory Mappings");
+  await settings.getByRole("treeitem", { name: "Directory Mappings", exact: true }).click();
+  const table = settings.getByRole("table", { name: "Directory mappings", exact: true });
+  await expect(table.getByRole("row")).toHaveCount(33);
+  const header = table.getByRole("columnheader", { name: "Directory", exact: true });
+  const vcsHeader = table.getByRole("columnheader", { name: "VCS", exact: true });
+  const toolbar = settings.getByRole("toolbar", { name: "Directory mappings actions" });
+  const directoryBox = (await header.boundingBox())!;
+  expect(directoryBox.width).toBeGreaterThan(2 * (await vcsHeader.boundingBox())!.width);
+
+  const viewport = table.locator("xpath=..");
+  await expect.poll(() => viewport.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeGreaterThan(0);
+  expect(await viewport.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+  await viewport.evaluate((el) => (el.scrollTop = el.scrollHeight));
+  await expect(toolbar.getByRole("button", { name: "Add", exact: true })).toBeInViewport({ ratio: 1 });
+  expect(Math.abs((await header.boundingBox())!.y - directoryBox.y)).toBeLessThan(1);
+
+  const repo = table.getByRole("row").filter({ hasText: "ledger-adapter-32" });
+  const name = repo.getByText("ledger-adapter-32", { exact: true });
+  await expect(name).toBeInViewport({ ratio: 1 });
+  expect(await name.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+  const vcs = repo.getByRole("button", {
+    name: "VCS of integrations/finance-and-order-reconciliation/ledger-adapter-32",
+    exact: true,
+  });
+  await vcs.click();
+  await page.getByRole("option", { name: "<none>", exact: true }).click();
+  await expect(vcs).toHaveText("<none>");
+
+  await toolbar.getByRole("button", { name: "Add", exact: true }).click();
+  const added = table.getByRole("row").filter({ hasText: "billing-audit-adapter" });
+  await expect(added.getByText("billing-audit-adapter", { exact: true })).toBeInViewport({ ratio: 1 });
+  await expect(added).toHaveAttribute("aria-selected", "true");
+  await toolbar.getByRole("button", { name: "Remove", exact: true }).click();
+  await expect(added).toHaveCount(0);
+
+  await settings.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(settings).toBeHidden();
+});
+
+test("editor appearance groups related controls and keeps whitespace options editable", async ({ workbench: page }) => {
+  await page.keyboard.press("Meta+,");
+  const settings = page.getByRole("dialog", { name: "Settings", exact: true });
+  await settings.getByRole("textbox", { name: "Search settings" }).fill("Show whitespaces");
+  await settings.getByRole("treeitem", { name: "Appearance", exact: true }).click();
+  const section = (name: string) => settings.getByRole("region", { name, exact: true });
+
+  await expect(section("Caret").getByRole("checkbox", { name: "Use block caret" })).toBeVisible();
+  await expect(section("Code Structure").getByRole("checkbox", { name: "Show line numbers" })).toBeVisible();
+  await expect(section("Code Assistance").getByRole("checkbox", { name: "Show intention bulb" })).toBeVisible();
+  const presentation = section("Presentation");
+  await expect(presentation.getByRole("checkbox", { name: "Render documentation comments" })).toBeVisible();
+  await expect(presentation.getByRole("textbox", { name: "Distraction free mode text width:" })).toBeVisible();
+  const whitespace = presentation.getByRole("checkbox", { name: "Show whitespaces" });
+  const leading = presentation.getByRole("checkbox", { name: "Leading", exact: true });
+  if (await whitespace.isChecked()) await whitespace.uncheck();
+  await expect(leading).toBeDisabled();
+  await whitespace.check();
+  await expect(leading).toBeEnabled();
+  await settings.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(settings).toBeHidden();
 });
 
 test("Language Servers page installs a tool with progress (in-memory installer)", async ({ workbench: page }) => {

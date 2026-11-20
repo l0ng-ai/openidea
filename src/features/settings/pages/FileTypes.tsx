@@ -4,9 +4,9 @@
  * user's) and hashbang patterns, stored in `files.fileTypes`. The backend
  * detects languages with them; open editors re-detect when they change.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
-import { Icon, Input, T, fileIconName } from "@/ui";
+import { Icon, Input, SplitGroup, SplitHandle, SplitPanel, T, fileIconName } from "@/ui";
 import { commands, isTauri, type LanguageInfo_Serialize as LanguageInfo } from "@/platform/ipc";
 import {
   addPattern,
@@ -52,6 +52,19 @@ export function applyPatternEdit(
 }
 
 export function RecognizedFileTypes() {
+  const desktop = isTauri();
+  const container = useRef<HTMLDivElement>(null);
+  const [stacked, setStacked] = useState(true);
+  useLayoutEffect(() => {
+    const element = container.current;
+    if (!element) return;
+    const measure = () => setStacked(element.clientWidth < 530);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [desktop]);
   const langs = useLanguages();
   const [assoc, setAssoc] = useSetting<FileTypeAssociations>("files.fileTypes");
   const [filter, setFilter] = useState("");
@@ -68,74 +81,87 @@ export function RecognizedFileTypes() {
   }, [langs, filter, assoc]);
   // Keep the last explicit choice for when it becomes visible again.
   const selected = shown.find((l) => l.id === selectedId) ?? shown[0] ?? null;
-  if (!isTauri()) return null;
+  if (!desktop) return null;
   const current = assoc ?? {};
   const patterns = selected ? effectivePatterns(selected, current).map((p) => p.pattern) : [];
   const hashbangs = selected ? (current[selected.id]?.hashbangs ?? []) : [];
 
   return (
-    <div className={styles.fileTypes}>
-      <div className={styles.types}>
-        <Input
-          className={styles.filter}
-          value={filter}
-          placeholder="Filter file types"
-          aria-label="Filter file types"
-          onChange={(e) => setFilter(e.target.value)}
-        />
-        <div className={styles.typeList} role="listbox" aria-label={tx("Recognized file types")}>
-          {shown.map((l) => {
-            const sample = sampleFileName(l);
-            return (
-              <button
-                key={l.id}
-                type="button"
-                role="option"
-                aria-selected={l.id === selected?.id}
-                className={clsx(styles.type, l.id === selected?.id && styles.typeSelected)}
-                onClick={() => setSelectedId(l.id)}
+    <div className={styles.fileTypes} ref={container}>
+      <SplitGroup orientation={stacked ? "vertical" : "horizontal"} className={styles.split}>
+        <SplitPanel defaultSize="34%" minSize={stacked ? "106px" : "148px"}>
+          <div className={styles.types}>
+            <Input
+              className={styles.filter}
+              value={filter}
+              placeholder="Filter file types"
+              aria-label="Filter file types"
+              onChange={(e) => setFilter(e.target.value)}
+            />
+            <div className={styles.typeList} role="listbox" aria-label={tx("Recognized file types")}>
+              {shown.map((l) => {
+                const sample = sampleFileName(l);
+                return (
+                  <button
+                    key={l.id}
+                    type="button"
+                    role="option"
+                    aria-selected={l.id === selected?.id}
+                    className={clsx(styles.type, l.id === selected?.id && styles.typeSelected)}
+                    onClick={() => setSelectedId(l.id)}
+                  >
+                    <Icon name={sample ? fileIconName(sample) : "file-text"} size={16} />
+                    <span className={styles.typeName}>{l.name}</span>
+                    {current[l.id] && (
+                      <span className={styles.modified}>
+                        <T>modified</T>
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </SplitPanel>
+        <SplitHandle aria-label={tx("Resize file type panes")} />
+        <SplitPanel defaultSize="66%" minSize={stacked ? "196px" : "190px"}>
+          {selected && (
+            <div className={styles.patterns} key={selected.id}>
+              <Row
+                className={styles.patternRow}
+                label="File name patterns"
+                stacked
+                hint="* matches any characters, ? one (e.g. *.foo, Jenkinsfile)."
               >
-                <Icon name={sample ? fileIconName(sample) : "file-text"} size={16} />
-                <span className={styles.typeName}>{l.name}</span>
-                {current[l.id] && (
-                  <span className={styles.modified}>
-                    <T>modified</T>
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-      {selected && (
-        <div className={styles.patterns} key={selected.id}>
-          <Row label="File name patterns" stacked hint="* matches any characters, ? one (e.g. *.foo, Jenkinsfile).">
-            <GlobListEditor
-              value={patterns}
-              onChange={(next) => setAssoc(applyPatternEdit(current, langs, selected, next))}
-              placeholder="*.ext"
-              aria-label={tx`File name patterns of ${selected.name}`}
-            />
-          </Row>
-          <Row
-            label="Hashbang patterns"
-            stacked
-            hint="Interpreters run by a #! first line, e.g. node for #!/usr/bin/env node."
-          >
-            <GlobListEditor
-              value={hashbangs}
-              onChange={(next) => setAssoc(setHashbangs(current, selected.id, next))}
-              placeholder="interpreter"
-              aria-label={tx`Hashbang patterns of ${selected.name}`}
-            />
-          </Row>
-          {selected.firstLine && (
-            <div className={styles.note}>
-              <T>Also recognized by its first line:</T> <code className={styles.code}>{selected.firstLine}</code>
+                <GlobListEditor
+                  value={patterns}
+                  onChange={(next) => setAssoc(applyPatternEdit(current, langs, selected, next))}
+                  placeholder="*.ext"
+                  aria-label={tx`File name patterns of ${selected.name}`}
+                />
+              </Row>
+              <Row
+                className={styles.patternRow}
+                label="Hashbang patterns"
+                stacked
+                hint="Interpreters run by a #! first line, e.g. node for #!/usr/bin/env node."
+              >
+                <GlobListEditor
+                  value={hashbangs}
+                  onChange={(next) => setAssoc(setHashbangs(current, selected.id, next))}
+                  placeholder="interpreter"
+                  aria-label={tx`Hashbang patterns of ${selected.name}`}
+                />
+              </Row>
+              {selected.firstLine && (
+                <div className={styles.note}>
+                  <T>Also recognized by its first line:</T> <code className={styles.code}>{selected.firstLine}</code>
+                </div>
+              )}
             </div>
           )}
-        </div>
-      )}
+        </SplitPanel>
+      </SplitGroup>
     </div>
   );
 }

@@ -48,6 +48,37 @@ describe("startPointerDrag with a reordered macOS tap", () => {
     expect(onEnd).toHaveBeenCalledWith(true, expect.objectContaining({ x: 60 }));
   });
 
+  it.each([
+    ["dropped", () => fire("pointerup", 0, 40, 0)],
+    ["cancelled with Escape", () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))],
+  ])("wraps the ghost in its source's context and removes both when %s", (_, end) => {
+    const source = document.body.appendChild(document.createElement("div"));
+    startPointerDrag(
+      { button: 0, clientX: 0, clientY: 0, altKey: false },
+      source,
+      { type: "t", payload: "" },
+      { ghostContext: "strip editor" },
+    );
+    fire("pointermove", 1, 40, 0);
+    const ghost = document.querySelector<HTMLElement>("[aria-hidden]")!;
+    const context = ghost.parentElement!;
+    expect(context.parentElement).toBe(document.body);
+    expect([...context.classList]).toEqual(["strip", "editor"]);
+    expect(context.style.display).toBe("contents");
+    expect(ghost.style.position).toBe("fixed");
+    end();
+    expect(context.isConnected).toBe(false);
+    expect(document.body.children).toHaveLength(1);
+  });
+
+  it("puts the ghost straight into the body without a context", () => {
+    start();
+    fire("pointermove", 1, 40, 0);
+    expect(document.querySelector("[aria-hidden]")!.parentElement).toBe(document.body);
+    fire("pointerup", 0, 40, 0);
+    expect(document.querySelector("[aria-hidden]")).toBeNull();
+  });
+
   it("clears a text selection that began before the drag threshold (#3334)", () => {
     const text = document.body.appendChild(document.createElement("p"));
     text.textContent = "dragging a file must not select this";

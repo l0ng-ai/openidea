@@ -1,23 +1,27 @@
 /** Git menu dialogs: Pull…, Merge…, Rebase…, Manage Remotes… and Worktrees. */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import type { Branch, BranchInfo, MergeOptions, Remote, Worktree } from "@/bindings";
-import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
+import { openWorktree } from "./openWorktree";
 import {
+  Button,
   Checkbox,
   Dialog,
   HighlightedText,
   Icon,
   IconButton,
   Input,
+  Menu,
   Select,
   T,
   Tree,
+  listNavigate,
   useSanitizedField,
   type SelectOption,
   type SelectProps,
+  type MenuItem,
 } from "@/ui";
 import { sortLocal, sortRemote } from "./branches";
 import { conflictActions, openConflictsInstead, validateBranchName } from "./branchOps";
@@ -33,6 +37,8 @@ import {
   type RepoWorktrees,
 } from "./worktrees";
 import styles from "./common.module.css";
+import remoteStyles from "./GitRemotes.module.css";
+import pullStyles from "./PullDialog.module.css";
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 
@@ -73,16 +79,8 @@ const FLAG_LABELS: Array<[MergeFlag, string]> = [
   ["noCommit", "--no-commit"],
 ];
 
-function MergeFlags({
-  on,
-  setOn,
-  rebase = false,
-}: {
-  on: Set<MergeFlag>;
-  setOn: (next: Set<MergeFlag>) => void;
-  rebase?: boolean;
-}) {
-  const disabled = disabledMergeFlags(on, rebase);
+function MergeFlags({ on, setOn }: { on: Set<MergeFlag>; setOn: (next: Set<MergeFlag>) => void }) {
+  const disabled = disabledMergeFlags(on);
   return (
     <div className={styles.optionGrid} role="group" aria-label={tx("Merge options")}>
       {FLAG_LABELS.map(([flag, label]) => (
@@ -141,12 +139,21 @@ export function showPullDialog(repo?: string | null) {
 }
 
 /** IDEA's Git Root choice: shown only when the project holds several repositories. */
-export function RepoPicker({ repo, onChange }: { repo: string | null; onChange: (root: string) => void }) {
+export function RepoPicker({
+  repo,
+  onChange,
+  className,
+}: {
+  repo: string | null;
+  onChange: (root: string) => void;
+  className?: string;
+}) {
   const [roots] = useState(() => useVcs.getState().roots);
   if (roots.length < 2) return null;
   return (
     <Select
       aria-label="Repository"
+      className={className}
       value={repo ?? roots[0] ?? null}
       options={roots.map((root) => ({ value: root, label: repoName(root), verbatim: true }))}
       onChange={onChange}
@@ -181,6 +188,8 @@ function PullDialog({ initialRepo, onClose }: { initialRepo?: string | null; onC
   const [chosenBranch, setBranch] = useState<string | null>(null);
   const [rebase, setRebase] = useState(false);
   const [flags, setFlags] = useState<Set<MergeFlag>>(() => new Set());
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const optionsRef = useRef<HTMLButtonElement>(null);
 
   const chooseRepo = (root: string) => {
     if (root === repo) return;
@@ -215,6 +224,25 @@ function PullDialog({ initialRepo, onClose }: { initialRepo?: string | null; onC
       : preferred && remoteBranches.includes(preferred)
         ? preferred
         : (remoteBranches[0] ?? null);
+  const disabledFlags = disabledMergeFlags(flags, rebase);
+  const selectedFlags = rebase
+    ? ["--rebase"]
+    : FLAG_LABELS.filter(([flag]) => flags.has(flag)).map(([, label]) => label);
+  const options: MenuItem[] = [
+    { label: "--rebase", verbatim: true, checked: rebase, run: () => setRebase(!rebase) },
+    ...FLAG_LABELS.map(([flag, label]) => ({
+      label,
+      verbatim: true,
+      checked: flags.has(flag),
+      disabled: disabledFlags.has(flag) && !flags.has(flag),
+      run: () => {
+        const next = new Set(flags);
+        if (next.has(flag)) next.delete(flag);
+        else next.add(flag);
+        setFlags(next);
+      },
+    })),
+  ];
 
   const run = async () => {
     if (!remote) return;
@@ -238,44 +266,69 @@ function PullDialog({ initialRepo, onClose }: { initialRepo?: string | null; onC
       open
       title={tx`Pull to ${info?.head ?? "HEAD"}`}
       onClose={onClose}
-      width={460}
+      width={640}
+      footerStart={
+        <>
+          <Button
+            ref={optionsRef}
+            variant="ghost"
+            aria-haspopup="menu"
+            aria-expanded={optionsOpen}
+            onClick={() => setOptionsOpen(!optionsOpen)}
+          >
+            <T>Modify options</T>
+            <Icon name="chevron-down" size={12} />
+          </Button>
+          <Menu
+            open={optionsOpen}
+            onClose={() => setOptionsOpen(false)}
+            anchor={optionsRef}
+            placement="top-start"
+            aria-label="Modify options"
+            items={options}
+          />
+        </>
+      }
       buttons={[
         { label: "Pull", role: "default", disabled: !remote, onClick: () => void run() },
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div className={styles.form}>
-        {remotes && !remotes.length ? (
-          <>
-            <RepoPicker repo={repo} onChange={chooseRepo} />
-            <div className={styles.hint}>
+      <div className={pullStyles.form}>
+        <div className={pullStyles.source}>
+          <RepoPicker repo={repo} onChange={chooseRepo} className={pullStyles.repository} />
+          {remotes && !remotes.length ? (
+            <div className={clsx(styles.hint, pullStyles.noRemotes)}>
               <T>No remotes are configured. Add one with Git › Manage Remotes….</T>
             </div>
-          </>
-        ) : (
-          <div className={styles.fieldRow}>
-            <RepoPicker repo={repo} onChange={chooseRepo} />
-            <Select
-              aria-label="Remote"
-              value={remote}
-              options={(remotes ?? []).map((r) => ({ value: r.name, label: r.name, detail: r.url }))}
-              onChange={setRemote}
-            />
-            <BranchSelect
-              aria-label="Remote branch"
-              className={styles.grow}
-              value={branch}
-              placeholder="Branch"
-              options={remoteBranches.map((b) => ({ value: b, label: b, icon: "branch" }))}
-              onChange={setBranch}
-            />
+          ) : (
+            <div className={pullStyles.command}>
+              <code className={pullStyles.verb}>git pull</code>
+              <Select
+                aria-label="Remote"
+                className={pullStyles.remote}
+                value={remote}
+                options={(remotes ?? []).map((r) => ({ value: r.name, label: r.name, verbatim: true, detail: r.url }))}
+                onChange={setRemote}
+              />
+              <BranchSelect
+                aria-label="Remote branch"
+                className={pullStyles.branch}
+                value={branch}
+                renderValue={(option) => (option ? <span title={option.label}>{option.label}</span> : <T>Branch</T>)}
+                options={remoteBranches.map((b) => ({ value: b, label: b, icon: "branch", verbatim: true }))}
+                onChange={setBranch}
+              />
+            </div>
+          )}
+        </div>
+        {selectedFlags.length > 0 && (
+          <div className={pullStyles.flags} role="group" aria-label={tx("Options:")}>
+            {selectedFlags.map((label) => (
+              <code key={label}>{label}</code>
+            ))}
           </div>
         )}
-        <div className={styles.fieldLabel}>
-          <T>Options:</T>
-        </div>
-        <Checkbox label="--rebase" checked={rebase} onChange={setRebase} />
-        <MergeFlags on={flags} setOn={setFlags} rebase={rebase} />
         <div className={styles.hint}>
           <T>Uncommitted changes are stashed before the pull and restored afterwards.</T>
         </div>
@@ -479,10 +532,14 @@ function RemotesDialog({ onClose }: { onClose: () => void }) {
       open
       title="Git Remotes"
       onClose={onClose}
-      width={560}
+      width={600}
+      minWidth={360}
+      minHeight={280}
+      resizable="both"
+      className={remoteStyles.dialog}
       buttons={[{ label: "OK", role: "default", autoFocus: true, onClick: onClose }]}
     >
-      <div className={styles.form}>
+      <div className={remoteStyles.content}>
         <RepoPicker repo={repo} onChange={setRepo} />
         {/* Keyed: picking another repository starts a fresh list, so answers for the previous one are dropped. */}
         <RemotesList key={repo} repo={repo} />
@@ -544,35 +601,82 @@ function RemotesList({ repo }: { repo: string | null }) {
   };
   const current = remotes.find((r) => r.name === selected);
 
+  const onRowKey = (event: KeyboardEvent<HTMLTableRowElement>, remote: Remote) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      edit(remote);
+      return;
+    }
+    const row = event.currentTarget;
+    const index = listNavigate(event.key, { items: remotes, active: row.sectionRowIndex });
+    if (index === null) return;
+    event.preventDefault();
+    const target = row.closest("tbody")?.rows.item(index);
+    target?.focus({ preventScroll: true });
+    target?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  };
+
   return (
     <>
-      <div className={styles.manageBar} role="toolbar" aria-label={tx("Remotes")}>
-        <IconButton icon="plus" title="Add Remote…" size="small" onClick={() => edit()} />
-        <IconButton icon="minus" title="Remove Remote" size="small" disabled={!current} onClick={() => void remove()} />
-        <IconButton icon="edit" title="Edit Remote…" size="small" disabled={!current} onClick={() => edit(current)} />
+      <div className={remoteStyles.panel}>
+        <div className={remoteStyles.toolbar} role="toolbar" aria-label={tx("Remotes")}>
+          <IconButton icon="plus" title="Add Remote…" size="small" onClick={() => edit()} />
+          <IconButton
+            icon="minus"
+            title="Remove Remote"
+            size="small"
+            disabled={!current}
+            onClick={() => void remove()}
+          />
+          <IconButton icon="edit" title="Edit Remote…" size="small" disabled={!current} onClick={() => edit(current)} />
+        </div>
+        <div className={remoteStyles.scroller}>
+          <table className={remoteStyles.table} role="grid" aria-label={tx("Remotes")}>
+            <colgroup>
+              <col className={remoteStyles.nameColumn} />
+              <col />
+            </colgroup>
+            <thead>
+              <tr>
+                <th scope="col">
+                  <T>Name</T>
+                </th>
+                <th scope="col">
+                  <T>URL</T>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {!remotes.length && (
+                <tr>
+                  <td colSpan={2} className={styles.empty}>
+                    <T>No remotes</T>
+                  </td>
+                </tr>
+              )}
+              {remotes.map((r) => (
+                <tr
+                  key={r.name}
+                  aria-selected={r.name === selected}
+                  tabIndex={r.name === selected ? 0 : -1}
+                  onFocus={() => setSelected(r.name)}
+                  onClick={(e) => e.currentTarget.focus({ preventScroll: true })}
+                  onDoubleClick={() => edit(r)}
+                  onKeyDown={(e) => onRowKey(e, r)}
+                >
+                  <td title={r.name}>{r.name}</td>
+                  <td title={r.url}>{r.url}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
-      <div className={styles.choiceList} role="listbox" aria-label={tx("Remotes")}>
-        {!remotes.length && (
-          <div className={styles.empty}>
-            <T>No remotes</T>
-          </div>
-        )}
-        {remotes.map((r) => (
-          <button
-            key={r.name}
-            type="button"
-            role="option"
-            aria-selected={r.name === selected}
-            className={clsx(styles.manageRow, r.name === selected && styles.manageRowSelected)}
-            onClick={() => setSelected(r.name)}
-            onDoubleClick={() => edit(r)}
-          >
-            <span className={styles.fileName}>{r.name}</span>
-            <span className={clsx(styles.fileDir, styles.mono)}>{r.url}</span>
-          </button>
-        ))}
-      </div>
-      {error && <div className={styles.error}>{error}</div>}
+      {error && (
+        <div className={clsx(styles.error, remoteStyles.error)} role="alert">
+          {error}
+        </div>
+      )}
     </>
   );
 }
@@ -588,6 +692,8 @@ function RemoteEditDialog({
 }) {
   const [name, setName] = useState(remote?.name ?? (existing.includes("origin") ? "" : "origin"));
   const [url, setUrl] = useState(remote?.url ?? "");
+  const nameId = useId();
+  const urlId = useId();
   const error = validateRemoteName(name, existing) ?? (url.trim() ? null : "Enter the remote URL");
   const submit = () => {
     if (!error) onDone({ name: name.trim(), url: url.trim() });
@@ -604,21 +710,25 @@ function RemoteEditDialog({
       ]}
     >
       <form
-        className={styles.form}
+        className={remoteStyles.editor}
         onSubmit={(e) => {
           e.preventDefault();
           submit();
         }}
       >
-        <label className={styles.fieldLabel}>
+        <label htmlFor={nameId}>
           <T>Name:</T>
         </label>
-        <Input data-autofocus aria-label="Name" value={name} onChange={(e) => setName(e.target.value)} />
-        <label className={styles.fieldLabel}>
+        <Input id={nameId} data-autofocus aria-label="Name" value={name} onChange={(e) => setName(e.target.value)} />
+        <label htmlFor={urlId}>
           <T>URL:</T>
         </label>
-        <Input aria-label="URL" mono value={url} onChange={(e) => setUrl(e.target.value)} />
-        {error && (name || url) && <div className={styles.error}>{error}</div>}
+        <Input id={urlId} aria-label="URL" mono value={url} onChange={(e) => setUrl(e.target.value)} />
+        {error && (name || url) && (
+          <div className={clsx(styles.error, remoteStyles.error)} role="alert">
+            {error}
+          </div>
+        )}
       </form>
     </Dialog>
   );
@@ -839,7 +949,7 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
           title="Open in New Window"
           size="small"
           disabled={!current}
-          onClick={() => current && void executeAction("file.openProjectPath", current.path)}
+          onClick={() => current && void openWorktree(current.path)}
         />
       </div>
       <Tree<WorktreeNode>
@@ -861,7 +971,7 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
         selected={selectedKeys}
         multiSelect={false}
         onSelectionChange={(selection) => setSelected([...selection][0] ?? null)}
-        onActivate={(n) => n.worktree && void executeAction("file.openProjectPath", n.worktree.path)}
+        onActivate={(n) => n.worktree && void openWorktree(n.worktree.path)}
         className={listClassName ?? styles.worktreeListDialog}
         aria-label="Worktrees"
       />

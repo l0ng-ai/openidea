@@ -860,6 +860,38 @@ fn java_applications_and_spring_boot_keep_their_module() {
     assert_eq!(reason(&r, "NoMain"), &SkipReason::NothingToRun);
 }
 
+/// A checkout folder named like a child module's artifactId: IDEA's module is the child.
+#[test]
+fn maven_module_artifact_wins_over_a_folder_of_the_same_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap().join("demo-service");
+    write(
+        &root,
+        "pom.xml",
+        "<project><artifactId>demo-service-parent</artifactId><packaging>pom</packaging></project>",
+    );
+    write(
+        &root,
+        "app-web/pom.xml",
+        "<project><parent><artifactId>demo-service-parent</artifactId></parent><artifactId>demo-service</artifactId></project>",
+    );
+    write(
+        &root,
+        ".run/Demo.run.xml",
+        &run_file(
+            "Demo",
+            r#"<configuration name="Demo" type="Application" factoryName="Application">
+    <module name="demo-service" />
+    <option name="MAIN_CLASS_NAME" value="com.example.Demo" />
+  </configuration>"#,
+        ),
+    );
+
+    let r = import_from(&root, &[]);
+
+    assert_eq!(get(&r, "Demo").extras.module.as_deref(), Some("app-web"));
+}
+
 /// IDEA writes the working directory as a URL. On Windows `file://$PROJECT_DIR$`
 /// expands to `file://C:/project`, where the drive letter sits where the authority
 /// belongs; read as a path that is `C:project`, which resolves against the project

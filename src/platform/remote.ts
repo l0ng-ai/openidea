@@ -226,8 +226,9 @@ export async function connectRemote(target: RemoteTarget, path: string) {
   });
   try {
     const r = await call(commands.remoteConnect(target, path, onProgress));
+    // Another connect replaced this one, or the user cancelled. Disconnecting here
+    // would drop the connection that replacement published. Cancel already disconnects.
     if (useRemoteProgress.getState().location !== location) {
-      await commands.remoteDisconnect().catch(() => {});
       throw new IpcError({ kind: "cancelled", message: "Remote connection cancelled" });
     }
     await attachRemote(r, path);

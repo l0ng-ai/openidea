@@ -5,9 +5,58 @@
   padding: 14px;
 }
 
+.refactorForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+}
+
 .subject {
   color: var(--fg-emphasis);
   font-size: var(--fs-ui);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.moveDestination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-1) var(--space-2);
+}
+
+.moveDestination > .fieldLabel {
+  line-height: var(--h-field);
+}
+
+.destinationControls {
+  display: flex;
+  flex: 1 1 244px;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.destinationField {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.destinationField input {
+  flex: 1 1 0;
+}
+
+.destinationField button {
+  flex: none;
+}
+
+.destinationPath {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
 }
 
 .fieldLabel {
@@ -16,12 +65,17 @@
   overflow-wrap: anywhere;
 }
 
-.hint {
-  color: var(--fg-subtle);
-  font-size: var(--fs-small);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.copyFields {
+  display: grid;
+  grid-template-columns: fit-content(42%) minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-2);
+}
+
+.copyFields > .fieldLabel {
+  display: flex;
+  align-items: center;
+  min-height: var(--h-field);
 }
 
 .error {

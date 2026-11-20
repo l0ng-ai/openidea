@@ -232,8 +232,10 @@
 .conversationRow[data-measured] {
   content-visibility: auto;
 }
-/* Keep turns distinct and the work within a turn close to its author. */
-.stream > * + * {
+/* Keep turns distinct and the work within a turn close to its author. Not `* + *`: a
+   universal adjacent-sibling rule makes Chromium restyle whole sibling subtrees on every
+   DOM insertion anywhere in the window, which costs every editor scroll frame. */
+.stream > :where(:not(:first-child)) {
   margin-top: var(--space-4);
 }
 .stream > [data-process] + [data-process] {
@@ -336,7 +338,7 @@
 .agentAuthor > .role {
   margin-bottom: 0;
 }
-.agentAuthor + * {
+:where(.conversationRow[data-author]) > :nth-child(2) {
   margin-top: calc(var(--space-2) / 2);
 }
 .conversationRow > .process,
@@ -1065,16 +1067,6 @@
   align-items: center;
   gap: var(--space-2);
   color: var(--fg-muted);
-}
-
-/* Announced to screen readers, not shown: the fact behind a playful status. */
-.srOnly {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
 }
 
 .retrying {
@@ -2022,4 +2014,98 @@
   .toolLive .toolKindIcon {
     animation: none;
   }
+}
+
+.meterButton {
+  composes: meter;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  border: 0;
+  background: transparent;
+  padding: 0 var(--space-1);
+}
+.contextPopover {
+  max-width: calc(100vw - 24px);
+}
+.contextPopover[data-positioned],
+.contextClosing[data-positioned] {
+  animation: none;
+  transition: opacity 100ms ease;
+}
+.contextClosing {
+  composes: contextPopover;
+  pointer-events: none;
+}
+.contextClosing.contextPopover[data-positioned] {
+  opacity: 0;
+}
+@starting-style {
+  .contextPopover[data-positioned] {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .contextPopover[data-positioned] {
+    transition: none;
+  }
+}
+.contextDetails {
+  display: grid;
+  gap: var(--space-2);
+  width: min(330px, 80vw);
+  padding: var(--space-3);
+  color: var(--fg-secondary);
+  font-size: var(--fs-ui);
+  font-variant-numeric: tabular-nums;
+}
+.contextHeading,
+.contextDetails li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.contextHeading {
+  justify-content: space-between;
+  color: var(--fg);
+}
+.contextBar {
+  display: flex;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--border);
+}
+.contextBar span {
+  flex-basis: 0;
+}
+.contextDetails summary {
+  cursor: pointer;
+  color: var(--fg);
+}
+.contextDetails ul {
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  max-height: 220px;
+  overflow: auto;
+}
+.contextDetails li {
+  padding: var(--space-1) 0;
+}
+.contextDetails li i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+.contextDetails li span:last-child {
+  margin-left: auto;
+}
+.contextCompact {
+  justify-self: end;
+  cursor: pointer;
+  color: var(--fg);
+  background: var(--bg-button);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: var(--space-1) var(--space-2);
 }

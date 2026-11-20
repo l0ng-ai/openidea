@@ -4,7 +4,7 @@
  * Behaviour lives in the vcs feature, which reads `vcs.*` through
  * `platform/workflowSettings`.
  */
-import { useEffect, useId, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import clsx from "clsx";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
@@ -113,62 +113,80 @@ function MappingsTable() {
     setExcluded(excluded.filter((k) => k !== removable.key));
     setSelected(null);
   };
+  const revealRow = useCallback((row: HTMLTableRowElement | null) => {
+    row?.scrollIntoView({ block: "nearest" });
+  }, []);
 
   return (
-    <div className={styles.tableBox}>
+    <div className={clsx(styles.tableBox, styles.mappingsTable)}>
       {root && (
         <div className={styles.toolbar} role="toolbar" aria-label={tx("Directory mappings actions")}>
           <IconButton icon="plus" title="Add" size="small" onClick={() => void add()} />
           <IconButton icon="minus" title="Remove" size="small" disabled={!removable} onClick={remove} />
         </div>
       )}
-      <table className={styles.table} aria-label={tx("Directory mappings")}>
-        <thead>
-          <tr>
-            <th>
-              <T>Directory</T>
-            </th>
-            <th style={{ width: 120 }}>
-              <T>VCS</T>
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {!root ? (
+      <div className={styles.mappingRows}>
+        <table className={styles.table} aria-label={tx("Directory mappings")}>
+          <colgroup>
+            <col />
+            <col className={styles.mappingVcsColumn} />
+          </colgroup>
+          <thead>
             <tr>
-              <td colSpan={2} className={styles.empty}>
-                <T>No project is open</T>
-              </td>
+              <th scope="col">
+                <T>Directory</T>
+              </th>
+              <th scope="col">
+                <T>VCS</T>
+              </th>
             </tr>
-          ) : (
-            rows.map((row) => {
-              const name = row.key === "." ? tx("<Project>") : row.key;
-              return (
-                <tr
-                  key={row.key}
-                  aria-selected={selected === row.key}
-                  className={clsx(selected === row.key && styles.selectedRow)}
-                  onMouseDown={() => setSelected(row.key)}
-                >
-                  <td title={row.path}>
-                    <Icon name="folder" size={16} className={styles.mappingIcon} />
-                    {name}
-                  </td>
-                  <td>
-                    <Select
-                      value={row.vcs}
-                      options={VCS_OPTIONS}
-                      variant="ghost"
-                      aria-label={tx`VCS of ${name}`}
-                      onChange={(v) => setVcs(row.key, v)}
-                    />
-                  </td>
-                </tr>
-              );
-            })
-          )}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {!root ? (
+              <tr>
+                <td colSpan={2} className={styles.empty}>
+                  <T>No project is open</T>
+                </td>
+              </tr>
+            ) : (
+              rows.map((row) => {
+                const directory = mappingKey(root.replaceAll("\\", "/"), row.path.replaceAll("\\", "/"));
+                const name = directory === "." ? tx("<Project>") : directory;
+                const leaf = name.lastIndexOf("/") + 1;
+                return (
+                  <tr
+                    key={row.key}
+                    ref={selected === row.key ? revealRow : undefined}
+                    aria-selected={selected === row.key}
+                    className={clsx(selected === row.key && styles.selectedRow)}
+                    onMouseDown={() => setSelected(row.key)}
+                  >
+                    <td title={row.path}>
+                      <span className={styles.mappingDirectory}>
+                        <Icon name="folder" size={16} className={styles.mappingIcon} />
+                        <span className={styles.mappingPath}>
+                          {leaf > 0 && <span className={styles.mappingParent}>{name.slice(0, leaf)}</span>}
+                          <span className={styles.mappingName}>{name.slice(leaf)}</span>
+                        </span>
+                      </span>
+                    </td>
+                    <td>
+                      <Select
+                        value={row.vcs}
+                        options={VCS_OPTIONS}
+                        variant="ghost"
+                        className={styles.mappingSelect}
+                        aria-label={tx`VCS of ${name}`}
+                        onChange={(v) => setVcs(row.key, v)}
+                      />
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -644,6 +662,11 @@ export const VCS_PAGES: PageSpec[] = [
         title: "Commit Message Generation",
         options: [
           {
+            kind: "toggle",
+            key: "vcs.commit.agentButton",
+            label: "Show the Generate Commit Message with Agent button",
+          },
+          {
             kind: "custom",
             label: "Agent",
             keywords: ["agent", "ai", "model", "effort", "thinking", "reasoning", "generate commit message"],
@@ -745,6 +768,7 @@ export const VCS_PAGES: PageSpec[] = [
     title: "Directory Mappings",
     order: 3,
     keywords: ["root", "repository", "vcs root"],
+    component: MappingsTable,
     sections: [
       { options: [{ kind: "custom", label: "Directory", keywords: ["VCS", "Git"], component: MappingsTable }] },
     ],
@@ -774,6 +798,12 @@ export const VCS_PAGES: PageSpec[] = [
             kind: "toggle",
             key: "vcs.git.showBranchInProjectView",
             label: "Show branch and incoming/outgoing commits in the Project view",
+          },
+          {
+            kind: "toggle",
+            key: "vcs.git.syncBranchOperations",
+            label: "Execute branch operations on all repositories",
+            hint: "Only applies to projects with several Git repositories.",
           },
           {
             kind: "toggle",

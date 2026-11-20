@@ -5,10 +5,12 @@ import {
   branchNamePrefixes,
   buildBranchRows,
   buildBranchTree,
+  buildMergedBranchTree,
   filterBranchTree,
   isFavoriteBranch,
   preferredBranchRow,
   pushRecent,
+  scopedExpansion,
   type BranchRow,
   type BranchTreeNode,
 } from "../branches";
@@ -311,6 +313,71 @@ describe("buildBranchTree", () => {
   });
 });
 
+describe("buildMergedBranchTree", () => {
+  const nodes = (tree: readonly BranchTreeNode[]): BranchTreeNode[] =>
+    tree.flatMap((n) => [n, ...nodes(n.children ?? [])]);
+  const find = (tree: readonly BranchTreeNode[], key: string) => nodes(tree).find((n) => n.key === key);
+  const repo = (root: string, branches: Branch[], tags: string[] = []) => ({
+    root,
+    name: root.slice(1),
+    branches,
+    tags,
+  });
+
+  it("lists a branch once with the repositories that have it", () => {
+    const tree = buildMergedBranchTree(
+      [repo("/a", [b("main"), b("dev"), b("feat/x")]), repo("/b", [b("main"), b("dev")])],
+      null,
+      null,
+    );
+    expect(find(tree, "b:feat/x")?.repos).toEqual(["/a"]);
+    expect(find(tree, "b:main")?.repos).toEqual(["/a", "/b"]);
+    expect(nodes(tree).filter((n) => n.key === "b:main")).toHaveLength(1);
+    expect(find(tree, "b:feat/x")?.label).toBe("x");
+  });
+
+  it("marks a branch current when it is current in any repository", () => {
+    const tree = buildMergedBranchTree([repo("/a", [b("dev")]), repo("/b", [b("dev", { current: true })])], null, null);
+    expect(find(tree, "b:dev")?.branch?.current).toBe(true);
+  });
+
+  it("uses the current repository's branch", () => {
+    const tree = buildMergedBranchTree(
+      [repo("/a", [b("dev", { ahead: 1 })]), repo("/b", [b("dev", { ahead: 2 })])],
+      null,
+      "/b",
+    );
+    expect(find(tree, "b:dev")?.branch?.ahead).toBe(2);
+  });
+
+  it("keeps local and remote namesakes apart", () => {
+    const tree = buildMergedBranchTree(
+      [repo("/a", [b("x"), b("origin/x", { remote: true })]), repo("/b", [b("upstream/x", { remote: true })])],
+      null,
+      null,
+    );
+    expect(find(tree, "b:x")?.repos).toEqual(["/a"]);
+    expect(find(tree, "b:origin/x")?.repos).toEqual(["/a"]);
+    expect(find(tree, "b:upstream/x")?.repos).toEqual(["/b"]);
+    const odd = buildMergedBranchTree(
+      [repo("/a", [b("origin/y", { remote: false })]), repo("/b", [b("origin/y", { remote: true })])],
+      null,
+      null,
+    );
+    const ys = nodes(odd).filter((n) => n.kind === "branch");
+    expect(ys.map((n) => [n.branch?.remote, n.repos])).toEqual([
+      [false, ["/a"]],
+      [true, ["/b"]],
+    ]);
+  });
+
+  it("merges tags by name", () => {
+    const tree = buildMergedBranchTree([repo("/a", [], ["v1"]), repo("/b", [], ["v1", "v2"])], null, null);
+    expect(find(tree, "t:v1")?.repos).toEqual(["/a", "/b"]);
+    expect(find(tree, "t:v2")?.repos).toEqual(["/b"]);
+  });
+});
+
 describe("remote web URLs", () => {
   it("maps ssh, scp-like and https remotes to their web page", () => {
     expect(remoteWebUrl("git@github.com:acme/app.git")).toBe("https://github.com/acme/app");
@@ -321,5 +388,23 @@ describe("remote web URLs", () => {
     expect(remoteWebUrl("/srv/git/app.git")).toBeNull();
     expect(commitWebUrl("git@github.com:o/r.git", "abc")).toBe("https://github.com/o/r/commit/abc");
     expect(commitWebUrl("git@bitbucket.org:o/r.git", "abc")).toBe("https://bitbucket.org/o/r/commits/abc");
+  });
+});
+
+describe("scopedExpansion", () => {
+  it("keeps each repository's submenu expansion apart from the others and the project's", () => {
+    const all = new Map([
+      ["group:remote", false],
+      ["/r/alpha\u0000group:remote", true],
+      ["/r/alpha\u0000folder:remote:origin/feature", true],
+      ["/r/beta\u0000group:local", false],
+    ]);
+    expect([...scopedExpansion(all, "/r/alpha\u0000")]).toEqual([
+      ["group:remote", true],
+      ["folder:remote:origin/feature", true],
+    ]);
+    expect([...scopedExpansion(all, "/r/beta\u0000")]).toEqual([["group:local", false]]);
+    expect([...scopedExpansion(all, "/r/gamma\u0000")]).toEqual([]);
+    expect([...scopedExpansion(all, "")]).toEqual([["group:remote", false]]);
   });
 });

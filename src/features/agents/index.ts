@@ -6,6 +6,8 @@
 import { createElement } from "react";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
+import { clearContext, setContext } from "@/platform/context";
+import { onWorkflowSettingsChange, workflowSettings } from "@/platform/workflowSettings";
 import { executeAction } from "@/platform/actions";
 import { lazyComponent, lazyWhen } from "@/ui";
 import { isVirtualUri } from "@/platform/virtualDocs";
@@ -46,6 +48,18 @@ import { taskActions, useAgentsHeaderMenu } from "./taskActions";
 import { replyActions } from "./replyActions";
 
 export { activateSettingsPages } from "./settingsPages";
+
+function trackAgentButtonSetting(): () => void {
+  setContext("commitAgentButton", workflowSettings().vcs.commit.agentButton);
+  const stop = onWorkflowSettingsChange(
+    (s) => s.vcs.commit.agentButton,
+    (on) => setContext("commitAgentButton", on),
+  );
+  return () => {
+    stop();
+    clearContext("commitAgentButton");
+  };
+}
 
 export function activate(): () => void {
   const sync = (root: string | null | undefined) => {
@@ -153,12 +167,13 @@ export function activate(): () => void {
       accepts: (type) => type === TASK_DRAG,
       drop: ({ payload }) => void executeAction("agents.openTaskInEditor", payload),
     }),
-    // The button above the commit message (the Commit tool window and dialog).
+    // The button above the commit message (the Commit tool window and dialog), unless turned off.
+    trackAgentButtonSetting(),
     registerMenuSlotItem("commitMessage", {
       action: "agents.generateCommitMessage",
       label: "Generate Commit Message with Agent",
       icon: "toolwindow-agents",
-      when: "projectOpen && vcsAvailable",
+      when: "projectOpen && vcsAvailable && commitAgentButton",
     }),
     registerStatusItem({ id: "agents.status", align: "right", priority: 3, title: "Agents", component: AgentsStatus }),
     registerMenuGroup({

@@ -1,3 +1,4 @@
+import type { DataSource_Deserialize, DbJdbcDriver } from "../src/bindings";
 import { expect, ipcCalls, stubDesktop, test } from "./fixtures";
 
 test("uses a local JDBC profile for a named data source through mocked IPC", async ({ workbench: page }, info) => {
@@ -124,25 +125,29 @@ test("uses a local JDBC profile for a named data source through mocked IPC", asy
   await source.getByLabel("Property value", { exact: true }).fill("true");
   await test.click();
   await expect(source.getByRole("status")).toHaveText("Succeeded: Mock JDBC database");
-  const [{ source: tested, password }] = await ipcCalls(page, "db_test");
-  expect(password).toBe("mock secret");
+  const [tested] = await ipcCalls(page, "db_test");
   expect(tested).toMatchObject({
-    driver: "jdbc",
-    vendor: "clickhouse",
-    url,
-    user: "example-user",
-    readOnly: true,
-    properties: [{ name: "ssl", value: "true" }],
+    password: "mock secret",
+    source: {
+      driver: "jdbc",
+      vendor: "clickhouse",
+      url,
+      user: "example-user",
+      readOnly: true,
+      properties: [{ name: "ssl", value: "true" }],
+    },
   });
   await source.getByRole("button", { name: "OK", exact: true }).click();
   await expect(source).not.toBeVisible();
-  const [{ sources }] = await ipcCalls(page, "db_save_sources");
-  const [saved] = sources as Record<string, unknown>[];
-  const [{ driver }] = await ipcCalls(page, "db_save_jdbc_driver");
+  const [save] = await ipcCalls(page, "db_save_sources");
+  const saved = (save?.sources as DataSource_Deserialize[] | undefined)?.[0];
+  const [profile] = await ipcCalls(page, "db_save_jdbc_driver");
+  const driver = profile?.driver as DbJdbcDriver | undefined;
+  if (!saved || !driver) throw new Error("Expected the JDBC source and driver to be saved");
   expect(saved.readOnly).toBe(true);
-  expect(driver).toMatchObject({ vendor: "clickhouse" });
+  expect(driver.vendor).toBe("clickhouse");
   expect(saved.vendor).toBe("clickhouse");
-  expect(saved.jdbcDriver).toBe((driver as Record<string, unknown>).id);
+  expect(saved.jdbcDriver).toBe(driver.id);
   for (const key of ["jars", "className", "classpath", "exec", "password"]) expect(saved).not.toHaveProperty(key);
 
   await page.evaluate(async () => {

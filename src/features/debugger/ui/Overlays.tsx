@@ -3,6 +3,7 @@ import {
   Fragment,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -13,7 +14,23 @@ import { basename, relativePath, useProject } from "@/platform/project";
 import { executeAction, getAction } from "@/platform/actions";
 import { call, commands, type AttachableProcess, type RunConfig, type Variable } from "@/platform/ipc";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
-import { Button, Checkbox, Dialog, Icon, IconButton, Input, Kbd, List, Menu, Popup, Toggle, T } from "@/ui";
+import {
+  Button,
+  Checkbox,
+  Dialog,
+  Icon,
+  IconButton,
+  Input,
+  Kbd,
+  List,
+  Menu,
+  Popup,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
+  Toggle,
+  T,
+} from "@/ui";
 import { isConditional, suspends, type BreakpointEntry } from "../breakpoints/model";
 import {
   removeAllBreakpoints,
@@ -373,6 +390,15 @@ type DialogRow =
   | ({ type: "line"; key: string } & BpRow)
   | { type: "special"; key: string; bp: SpecialBreakpoint };
 
+function BreakpointLocation({ path, line }: { path: string; line: number }) {
+  return (
+    <span className={styles.bpLocation} title={`${path}:${line + 1}`}>
+      <span className={styles.bpName}>{basename(path)}</span>
+      <span className={styles.bpLine}>:{line + 1}</span>
+    </span>
+  );
+}
+
 function BreakpointsDialog() {
   const state = useOverlays((s) => s.breakpoints);
   const byFile = useBreakpoints((s) => s.byFile);
@@ -407,6 +433,18 @@ function BreakpointsDialog() {
   // Enter on Done and a click on a row don't blur them.
   const commitRef = useRef<(() => void) | null>(null);
   const open = !!state;
+  const layout = useRef<HTMLDivElement>(null);
+  const [stacked, setStacked] = useState(false);
+  useLayoutEffect(() => {
+    const el = layout.current;
+    if (!open || !el) return;
+    const update = () => setStacked(el.clientWidth > 0 && el.clientWidth < 560);
+    update();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [open]);
   const current = items.find((r) => r.key === (selected ?? state?.id)) ?? items[0];
   const close = () => {
     commitRef.current?.();
@@ -430,28 +468,38 @@ function BreakpointsDialog() {
       open={open}
       onClose={close}
       title="Breakpoints"
+      className={styles.bpWindow}
       width={760}
+      minWidth={400}
+      minHeight={340}
+      resizable="both"
       aria-label="Breakpoints"
       buttons={[{ label: "Done", role: "default", onClick: close }]}
     >
-      <div className={styles.bpDialog}>
-        <div className={styles.bpListPane}>
+      <SplitGroup
+        elementRef={layout}
+        orientation={stacked ? "vertical" : "horizontal"}
+        storageKey={stacked ? "openidea.debug.breakpoints.stacked" : "openidea.debug.breakpoints.split"}
+        className={styles.bpDialog}
+      >
+        <SplitPanel id="breakpoint-list" defaultSize={stacked ? "42%" : "35%"} minSize={stacked ? "34%" : "216px"}>
           <div className={styles.bpListHeader}>
             <Toggle checked={muted} onChange={setMuted} label="Mute breakpoints" />
-            <div className={styles.spacer} />
-            <IconButton
-              icon="plus"
-              title="Add Method Breakpoint"
-              size="small"
-              onClick={() => setSelected(addMethodBreakpoint("").id)}
-            />
-            <IconButton
-              icon="trash"
-              title="Remove All Breakpoints"
-              size="small"
-              disabled={!items.length}
-              onClick={removeAll}
-            />
+            <div className={styles.bpListActions}>
+              <IconButton
+                icon="plus"
+                title="Add Method Breakpoint"
+                size="small"
+                onClick={() => setSelected(addMethodBreakpoint("").id)}
+              />
+              <IconButton
+                icon="trash"
+                title="Remove All Breakpoints"
+                size="small"
+                disabled={!items.length}
+                onClick={removeAll}
+              />
+            </div>
           </div>
           <List
             items={rows}
@@ -486,7 +534,9 @@ function BreakpointsDialog() {
                       aria-label={tx`Enable ${specialTitle(r.bp)}`}
                     />
                     <Icon name={r.bp.kind === "method" ? "breakpoint-method" : "breakpoint-field"} size={14} />
-                    <span className={styles.bpName}>{specialTitle(r.bp)}</span>
+                    <span className={styles.bpName} title={specialTitle(r.bp)}>
+                      {specialTitle(r.bp)}
+                    </span>
                     {r.bp.path && (
                       <span className={styles.bpDir}>
                         {basename(r.bp.path)}
@@ -520,9 +570,7 @@ function BreakpointsDialog() {
                     }
                     aria-hidden
                   />
-                  <span className={styles.bpName}>
-                    {basename(r.path)}:{r.bp.line + 1}
-                  </span>
+                  <BreakpointLocation path={r.path} line={r.bp.line} />
                   <span className={styles.bpDir}>{relativePath(root, r.path)}</span>
                   {isConditional(r.bp) && <span className={styles.bpCond}>{suspends(r.bp) ? "if" : "log"}</span>}
                   {r.bp.temporary && (
@@ -534,17 +582,22 @@ function BreakpointsDialog() {
               );
             }}
           />
-          <ExceptionBreakpoints open={open} />
-          <EventBreakpointsSection />
-        </div>
-        <div className={styles.bpDetail}>
-          {current?.type === "line" ? (
-            <BreakpointDetail key={current.key} row={current} onGo={() => goTo(current)} commitRef={commitRef} />
-          ) : current?.type === "special" ? (
-            <SpecialDetail key={current.key} bp={current.bp} onGo={() => goTo(current)} commitRef={commitRef} />
-          ) : null}
-        </div>
-      </div>
+          <div className={styles.bpAuxiliary}>
+            <ExceptionBreakpoints open={open} />
+            <EventBreakpointsSection />
+          </div>
+        </SplitPanel>
+        <SplitHandle />
+        <SplitPanel id="breakpoint-detail" minSize={stacked ? "42%" : "284px"}>
+          <div className={styles.bpDetail}>
+            {current?.type === "line" ? (
+              <BreakpointDetail key={current.key} row={current} onGo={() => goTo(current)} commitRef={commitRef} />
+            ) : current?.type === "special" ? (
+              <SpecialDetail key={current.key} bp={current.bp} onGo={() => goTo(current)} commitRef={commitRef} />
+            ) : null}
+          </div>
+        </SplitPanel>
+      </SplitGroup>
     </Dialog>
   );
 }
@@ -610,10 +663,7 @@ function BreakpointDetail({
   return (
     <div className={styles.detail}>
       <div className={styles.bpTitle}>
-        <span className={styles.bpFile}>
-          {basename(path)}:{bp.line + 1}
-        </span>
-        <div className={styles.spacer} />
+        <BreakpointLocation path={path} line={bp.line} />
         <Button size="small" variant="ghost" onClick={onGo}>
           <T>Go to Source</T>
         </Button>
@@ -664,8 +714,9 @@ function SpecialDetail({
     <div className={styles.detail}>
       <div className={styles.bpTitle}>
         <Icon name={bp.kind === "method" ? "breakpoint-method" : "breakpoint-field"} size={14} />
-        <span className={styles.bpFile}>{specialTitle(bp)}</span>
-        <div className={styles.spacer} />
+        <span className={styles.bpFile} title={specialTitle(bp)}>
+          {specialTitle(bp)}
+        </span>
         {bp.path && (
           <Button size="small" variant="ghost" onClick={onGo}>
             <T>Go to Source</T>
@@ -764,8 +815,9 @@ function EvaluateDialogInner({ initial }: { initial: string }) {
   const [history, setHistory] = useState(() => readHistory("evaluate"));
   const [historyMenu, setHistoryMenu] = useState(false);
   const historyPos = useRef(-1);
-  const historyButton = useRef<HTMLSpanElement>(null);
+  const historyButton = useRef<HTMLButtonElement>(null);
   const field = useRef<HTMLTextAreaElement>(null);
+  const expressionId = useId();
   const session = useDebug((s) => (s.active != null ? s.sessions[s.active] : undefined));
   const paused = session?.status === "paused";
   const close = () => useOverlays.setState({ evaluate: null });
@@ -824,7 +876,10 @@ function EvaluateDialogInner({ initial }: { initial: string }) {
       onClose={close}
       title="Evaluate"
       width={620}
+      minWidth={340}
+      minHeight={240}
       resizable="both"
+      className={styles.evalDialog}
       aria-label="Evaluate expression"
       footerStart={
         <Button
@@ -844,13 +899,14 @@ function EvaluateDialogInner({ initial }: { initial: string }) {
       ]}
     >
       <div className={styles.evalBody}>
-        <div className={styles.field}>
-          <span className={styles.label}>
+        <div className={styles.evalExpression}>
+          <label className={styles.label} htmlFor={expressionId}>
             <T>Expression</T>
-          </span>
+          </label>
           <div className={styles.evalInputRow}>
             <textarea
               ref={field}
+              id={expressionId}
               className={styles.evalInput}
               rows={lines}
               value={expression}
@@ -866,19 +922,22 @@ function EvaluateDialogInner({ initial }: { initial: string }) {
               spellCheck={false}
               autoComplete="off"
               data-autofocus=""
-              aria-label={tx("Expression")}
-              placeholder={paused ? "Expression to evaluate in the selected frame" : "Pause the program to evaluate"}
+              placeholder={tx(
+                paused ? "Expression to evaluate in the selected frame" : "Pause the program to evaluate",
+              )}
             />
             {completion.popup}
-            <span ref={historyButton}>
-              <IconButton
-                icon="history"
-                title="History"
-                size="small"
-                disabled={!history.length}
-                onClick={() => setHistoryMenu(true)}
-              />
-            </span>
+            <IconButton
+              ref={historyButton}
+              className={styles.evalHistory}
+              icon="history"
+              title="History"
+              size="small"
+              aria-haspopup="menu"
+              aria-expanded={historyMenu}
+              disabled={!history.length}
+              onClick={() => setHistoryMenu(true)}
+            />
           </div>
           <Menu
             open={historyMenu}
@@ -891,32 +950,37 @@ function EvaluateDialogInner({ initial }: { initial: string }) {
               .map((h) => ({ label: h.replace(/\s+/g, " "), verbatim: true, run: () => recall(h) }))}
           />
         </div>
-        {ambiguous && (
-          <div className={styles.evalImport} role="group" aria-label={tx("Class to import")}>
-            <span className={styles.label}>{tx`Choose the class to import for ${className}:`}</span>
-            {ambiguous.candidates.map((c) => (
-              <Button
-                key={c}
-                variant="ghost"
-                size="small"
-                onClick={() => {
-                  if (session) rememberImport(session.id, c);
-                  void run();
-                }}
-              >
-                {c}
-              </Button>
-            ))}
-          </div>
-        )}
         <div className={styles.evalResult}>
-          {result ? (
-            <VariablesView roots={[result]} session={session?.id ?? null} aria-label="Evaluation result" />
-          ) : (
-            <div className={styles.empty}>
-              {paused ? tx("Press Enter to evaluate") : tx("Evaluation is available while the program is suspended")}
-            </div>
-          )}
+          <span className={styles.label}>
+            <T>Result</T>
+          </span>
+          <div className={styles.evalResultContent}>
+            {ambiguous && (
+              <div className={styles.evalImport} role="group" aria-label={tx("Class to import")}>
+                <span className={styles.label}>{tx`Choose the class to import for ${className}:`}</span>
+                {ambiguous.candidates.map((c) => (
+                  <Button
+                    key={c}
+                    variant="ghost"
+                    size="small"
+                    onClick={() => {
+                      if (session) rememberImport(session.id, c);
+                      void run();
+                    }}
+                  >
+                    {c}
+                  </Button>
+                ))}
+              </div>
+            )}
+            {result ? (
+              <VariablesView roots={[result]} session={session?.id ?? null} aria-label="Evaluation result" />
+            ) : (
+              <div className={styles.evalHint}>
+                {paused ? tx("Press Enter to evaluate") : tx("Evaluation is available while the program is suspended")}
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </Dialog>

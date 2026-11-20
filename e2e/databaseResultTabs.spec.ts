@@ -187,7 +187,7 @@ test("result context menu fits the viewport, responds to hover and keyboard, and
 for (const [theme, label] of [
   ["solarized-light", "Solarized Light"],
   ["solarized-dark", "Solarized Dark"],
-]) {
+] as const) {
   test(`${label}: retains the inactive context-menu target's hover until dismissal without selecting it`, async ({
     workbench: page,
   }, info) => {

@@ -7,9 +7,10 @@
 
 use crate::{
     COMPOSE_DIR, COMPOSE_FILES, COMPOSE_PROJECT, COMPOSE_SERVICE, ContainerOp, DockerAvailability, DockerContainer,
-    DockerEndpoint, DockerImage, DockerNetwork, DockerObject, DockerSnapshot, DockerVolume, split_csv,
+    DockerEndpoint, DockerImage, DockerImageLayer, DockerLogLine, DockerNetwork, DockerObject, DockerProcessList,
+    DockerSnapshot, DockerVolume, split_csv,
 };
-use ide_core::{IdeError, IdeResult};
+use ide_core::{CancellationToken, IdeError, IdeResult};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -193,9 +194,15 @@ fn request(addr: &Address, method: &str, path: &str, timeout: Duration) -> IdeRe
     read_response(&mut conn)
 }
 
-/// Reads an HTTP/1.1 response: head until `\r\n\r\n`, then the body per its
-/// framing (chunked, `Content-Length`, or until the connection closes).
-fn read_response(stream: &mut impl Read) -> IdeResult<Response> {
+/// A response's status line and body framing.
+struct Head {
+    status: u16,
+    chunked: bool,
+    length: Option<usize>,
+}
+
+/// Reads an HTTP/1.1 response head until `\r\n\r\n`.
+fn read_head(stream: &mut impl Read) -> IdeResult<Head> {
     let mut head: Vec<u8> = Vec::new();
     let mut byte = [0u8; 1];
     loop {
@@ -228,16 +235,27 @@ fn read_response(stream: &mut impl Read) -> IdeResult<Response> {
             length = value.parse().ok();
         }
     }
-    let body = if chunked {
+    Ok(Head { status, chunked, length })
+}
+
+/// Reads an HTTP/1.1 response: its head, then the body per its framing
+/// (chunked, `Content-Length`, or until the connection closes).
+fn read_response(stream: &mut impl Read) -> IdeResult<Response> {
+    let head = read_head(stream)?;
+    let body = read_body(stream, &head)?;
+    Ok(Response { status: head.status, body })
+}
+
+fn read_body(stream: &mut impl Read, head: &Head) -> IdeResult<Vec<u8>> {
+    Ok(if head.chunked {
         read_chunked(stream)?
-    } else if let Some(n) = length {
+    } else if let Some(n) = head.length {
         read_exact_n(stream, n)?
     } else {
         let mut body = Vec::new();
         stream.read_to_end(&mut body)?;
         body
-    };
-    Ok(Response { status, body })
+    })
 }
 
 /// Reads one `\n`-terminated line (returned without it).
@@ -480,6 +498,292 @@ pub(crate) fn inspect(
             Err(_) => Ok(body),
         }
     })())
+}
+
+/// The processes running in a container (`docker top`).
+pub(crate) fn container_top(ep: &DockerEndpoint, id: &str, timeout: Duration) -> Option<IdeResult<DockerProcessList>> {
+    let addr = address(ep)?;
+    Some((|| {
+        let body = check(request(&addr, "GET", &format!("/containers/{}/top", path_segment(id)), timeout)?)?;
+        serde_json::from_str::<ApiTop>(&body)
+            .map(|t| DockerProcessList { titles: t.titles, processes: t.processes })
+            .map_err(|e| IdeError::internal(format!("the Docker daemon's process list is not JSON: {e}")))
+    })())
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "PascalCase", default)]
+struct ApiTop {
+    titles: Vec<String>,
+    processes: Vec<Vec<String>>,
+}
+
+/// An image's layers, newest first (`docker image history`).
+pub(crate) fn image_history(
+    ep: &DockerEndpoint,
+    id: &str,
+    timeout: Duration,
+) -> Option<IdeResult<Vec<DockerImageLayer>>> {
+    let addr = address(ep)?;
+    Some((|| {
+        let body = check(request(&addr, "GET", &format!("/images/{}/history", path_segment(id)), timeout)?)?;
+        let layers = serde_json::from_str::<Vec<ApiLayer>>(&body)
+            .map_err(|e| IdeError::internal(format!("the Docker daemon's image history is not JSON: {e}")))?;
+        Ok(map_layers(layers, unix_now()))
+    })())
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "PascalCase", default)]
+struct ApiLayer {
+    id: String,
+    created: i64,
+    created_by: String,
+    size: i64,
+    comment: String,
+}
+
+fn map_layers(layers: Vec<ApiLayer>, now: i64) -> Vec<DockerImageLayer> {
+    layers
+        .into_iter()
+        .map(|l| DockerImageLayer {
+            id: l.id,
+            created_by: l.created_by,
+            size: human_size(l.size),
+            created_since: human_duration((now - l.created).max(0)),
+            created_at: unix_utc(l.created),
+            comment: l.comment,
+        })
+        .collect()
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+/// How often a log stream that has nothing to read checks for cancellation.
+const LOG_POLL: Duration = Duration::from_millis(200);
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "PascalCase", default)]
+struct ApiContainerInspect {
+    config: ApiContainerConfig,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "PascalCase", default)]
+struct ApiContainerConfig {
+    tty: bool,
+}
+
+/// Streams a container's logs (`tail` last lines, then follows while `follow`)
+/// from `ep`'s daemon until they end or `cancel` fires.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn logs(
+    ep: &DockerEndpoint,
+    id: &str,
+    tail: u32,
+    follow: bool,
+    timestamps: bool,
+    timeout: Duration,
+    cancel: &CancellationToken,
+    on_line: &dyn Fn(DockerLogLine),
+) -> Option<IdeResult<()>> {
+    let addr = address(ep)?;
+    Some((|| {
+        // A TTY container's log is one raw stream; otherwise it is framed per stream.
+        let body = check(request(&addr, "GET", &format!("/containers/{}/json", path_segment(id)), timeout)?)?;
+        let tty = serde_json::from_str::<ApiContainerInspect>(&body).map(|c| c.config.tty).unwrap_or(false);
+        let path = format!(
+            "/containers/{}/logs?stdout=1&stderr=1&tail={tail}&follow={}&timestamps={}",
+            path_segment(id),
+            u8::from(follow),
+            u8::from(timestamps),
+        );
+        let mut conn = Conn::connect(&addr, timeout)?;
+        conn.write_all(
+            format!("GET {path} HTTP/1.1\r\nHost: docker\r\nUser-Agent: openidea\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )?;
+        let head = read_head(&mut conn)?;
+        if !(200..300).contains(&head.status) {
+            let body = read_body(&mut conn, &head)?;
+            check(Response { status: head.status, body })?;
+        }
+        conn.set_timeouts(LOG_POLL);
+        let mut decoder = LogDecoder::new(&head, tty);
+        let mut buf = [0u8; 8192];
+        while !decoder.done() {
+            if cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
+            }
+            match conn.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => decoder.feed(&buf[..n], &mut |line| on_line(line))?,
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut | std::io::ErrorKind::Interrupted
+                    ) => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        decoder.finish(&mut |line| on_line(line));
+        Ok(())
+    })())
+}
+
+/// Turns a log response body, as it arrives, into lines: undoes the chunked
+/// transfer encoding, then the per-stream frames (8-byte header: stream, 3 zero
+/// bytes, big-endian length) unless the container has a TTY.
+struct LogDecoder {
+    body: BodyFraming,
+    tty: bool,
+    header: Vec<u8>,
+    frame_left: usize,
+    frame_stderr: bool,
+    /// Partial lines of stdout and stderr.
+    partial: [Vec<u8>; 2],
+}
+
+enum BodyFraming {
+    Chunked { state: ChunkState, line: Vec<u8> },
+    Length(usize),
+    Close,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum ChunkState {
+    Size,
+    Data(usize),
+    DataEnd,
+    Trailer,
+    Done,
+}
+
+impl LogDecoder {
+    fn new(head: &Head, tty: bool) -> Self {
+        let body = if head.chunked {
+            BodyFraming::Chunked { state: ChunkState::Size, line: Vec::new() }
+        } else if let Some(n) = head.length {
+            BodyFraming::Length(n)
+        } else {
+            BodyFraming::Close
+        };
+        Self { body, tty, header: Vec::new(), frame_left: 0, frame_stderr: false, partial: [Vec::new(), Vec::new()] }
+    }
+
+    fn done(&self) -> bool {
+        matches!(self.body, BodyFraming::Chunked { state: ChunkState::Done, .. } | BodyFraming::Length(0))
+    }
+
+    fn feed(&mut self, mut bytes: &[u8], emit: &mut dyn FnMut(DockerLogLine)) -> IdeResult<()> {
+        let mut payload = Vec::new();
+        match &mut self.body {
+            BodyFraming::Close => payload.extend_from_slice(bytes),
+            BodyFraming::Length(left) => {
+                let take = (*left).min(bytes.len());
+                payload.extend_from_slice(&bytes[..take]);
+                *left -= take;
+            }
+            BodyFraming::Chunked { state, line } => {
+                while !bytes.is_empty() {
+                    match *state {
+                        ChunkState::Done => break,
+                        ChunkState::Data(n) => {
+                            let take = n.min(bytes.len());
+                            payload.extend_from_slice(&bytes[..take]);
+                            bytes = &bytes[take..];
+                            *state = if take == n { ChunkState::DataEnd } else { ChunkState::Data(n - take) };
+                        }
+                        _ => {
+                            let b = bytes[0];
+                            bytes = &bytes[1..];
+                            if b != b'\n' {
+                                if b != b'\r' {
+                                    line.push(b);
+                                }
+                                continue;
+                            }
+                            let text = String::from_utf8_lossy(line).into_owned();
+                            line.clear();
+                            *state = match *state {
+                                ChunkState::Size => {
+                                    let size = text.split(';').next().unwrap_or_default().trim();
+                                    match usize::from_str_radix(size, 16) {
+                                        Ok(0) => ChunkState::Trailer,
+                                        Ok(n) => ChunkState::Data(n),
+                                        Err(_) => {
+                                            return Err(IdeError::internal(
+                                                "the Docker daemon answered with a malformed chunked response",
+                                            ));
+                                        }
+                                    }
+                                }
+                                ChunkState::DataEnd => ChunkState::Size,
+                                _ if text.is_empty() => ChunkState::Done,
+                                other => other,
+                            };
+                        }
+                    }
+                }
+            }
+        }
+        self.frames(&payload, emit);
+        Ok(())
+    }
+
+    fn frames(&mut self, mut bytes: &[u8], emit: &mut dyn FnMut(DockerLogLine)) {
+        if self.tty {
+            self.lines(false, bytes, emit);
+            return;
+        }
+        while !bytes.is_empty() {
+            if self.frame_left == 0 {
+                let take = (8 - self.header.len()).min(bytes.len());
+                self.header.extend_from_slice(&bytes[..take]);
+                bytes = &bytes[take..];
+                if self.header.len() == 8 {
+                    self.frame_stderr = self.header[0] == 2;
+                    self.frame_left =
+                        u32::from_be_bytes([self.header[4], self.header[5], self.header[6], self.header[7]]) as usize;
+                    self.header.clear();
+                }
+                continue;
+            }
+            let take = self.frame_left.min(bytes.len());
+            self.lines(self.frame_stderr, &bytes[..take], emit);
+            self.frame_left -= take;
+            bytes = &bytes[take..];
+        }
+    }
+
+    fn lines(&mut self, stderr: bool, bytes: &[u8], emit: &mut dyn FnMut(DockerLogLine)) {
+        let partial = &mut self.partial[usize::from(stderr)];
+        for &b in bytes {
+            if b == b'\n' {
+                emit(DockerLogLine { stderr, text: line_text(partial) });
+                partial.clear();
+            } else {
+                partial.push(b);
+            }
+        }
+    }
+
+    /// Emits the last lines that ended without a newline.
+    fn finish(&mut self, emit: &mut dyn FnMut(DockerLogLine)) {
+        for stderr in [false, true] {
+            let partial = &mut self.partial[usize::from(stderr)];
+            if !partial.is_empty() {
+                emit(DockerLogLine { stderr, text: line_text(partial) });
+                partial.clear();
+            }
+        }
+    }
+}
+
+fn line_text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes.strip_suffix(b"\r").unwrap_or(bytes)).into_owned()
 }
 
 /// One URL path segment, percent-encoded so an id cannot change the path.
@@ -815,6 +1119,75 @@ mod tests {
 
         let garbage = b"not http\r\n\r\n";
         assert!(read_response(&mut &garbage[..]).is_err());
+    }
+
+    /// Feeds `body` one byte at a time, as a slow connection delivers it.
+    fn decode(head: Head, tty: bool, body: &[u8]) -> (Vec<(bool, String)>, bool) {
+        let mut lines = Vec::new();
+        let mut decoder = LogDecoder::new(&head, tty);
+        for b in body {
+            decoder.feed(std::slice::from_ref(b), &mut |l| lines.push((l.stderr, l.text))).unwrap();
+        }
+        let done = decoder.done();
+        decoder.finish(&mut |l| lines.push((l.stderr, l.text)));
+        (lines, done)
+    }
+
+    fn frame(stream: u8, text: &str) -> Vec<u8> {
+        let mut f = vec![stream, 0, 0, 0];
+        f.extend((text.len() as u32).to_be_bytes());
+        f.extend(text.as_bytes());
+        f
+    }
+
+    #[test]
+    fn engine_image_history_reads_like_the_cli() {
+        let layers: Vec<ApiLayer> = serde_json::from_str(
+            r#"[{"Id":"sha256:abc","Created":1000,"CreatedBy":"CMD [\"python3\"]","Size":20500,"Comment":"buildkit","Tags":["py:3"]},
+                {"Id":"<missing>","Created":940,"CreatedBy":"RUN x","Size":0,"Comment":""}]"#,
+        )
+        .unwrap();
+        let rows = map_layers(layers, 1000 + 2 * 7 * 86_400);
+        assert_eq!(
+            rows.iter().map(|l| (l.id.as_str(), l.size.as_str(), l.created_since.as_str())).collect::<Vec<_>>(),
+            [("sha256:abc", "20.5kB", "2 weeks ago"), ("<missing>", "0B", "2 weeks ago")]
+        );
+        assert_eq!(rows[0].created_by, "CMD [\"python3\"]");
+        let top: ApiTop = serde_json::from_str(r#"{"Titles":["PID","CMD"],"Processes":[["1","sh"]]}"#).unwrap();
+        assert_eq!(
+            (top.titles, top.processes),
+            (vec!["PID".to_owned(), "CMD".to_owned()], vec![vec!["1".to_owned(), "sh".to_owned()]])
+        );
+    }
+
+    #[test]
+    fn container_logs_split_into_stream_lines_across_chunks_and_frames() {
+        // Frames split mid-line, a CRLF line, and a stderr line between stdout parts.
+        let mut framed = frame(1, "tick 1\r\ntick");
+        framed.extend(frame(2, "oops\n"));
+        framed.extend(frame(1, " 2\nlast"));
+        let mut chunked = Vec::new();
+        for part in framed.chunks(7) {
+            chunked.extend(format!("{:x}\r\n", part.len()).as_bytes());
+            chunked.extend(part);
+            chunked.extend(b"\r\n");
+        }
+        chunked.extend(b"0\r\n\r\n");
+        let (lines, done) = decode(Head { status: 200, chunked: true, length: None }, false, &chunked);
+        assert!(done);
+        let expected = [(false, "tick 1"), (true, "oops"), (false, "tick 2"), (false, "last")];
+        assert_eq!(lines, expected.map(|(e, t)| (e, t.to_owned())));
+
+        // A TTY container's log is one raw stream; the body may end with the connection.
+        let (lines, done) = decode(Head { status: 200, chunked: false, length: None }, true, b"a\r\nb\n");
+        assert!(!done);
+        assert_eq!(lines, [(false, "a".to_owned()), (false, "b".to_owned())]);
+
+        // A Content-Length body ends after its length.
+        let body = frame(1, "one\n");
+        let (lines, done) = decode(Head { status: 200, chunked: false, length: Some(body.len()) }, false, &body);
+        assert!(done);
+        assert_eq!(lines, [(false, "one".to_owned())]);
     }
 
     #[test]

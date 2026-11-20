@@ -332,6 +332,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "view.quickSwitchScheme": [],
   // Commit tool window (change lists) and Git log; keyWhen limits them to those tool windows.
   "vcs.changelist.move": [],
+  "vcs.shelveSilently": [],
+  "vcs.unshelveSilently": [],
   "vcs.changelist.edit": [],
   "vcs.log.copyRevision": [],
   "vcs.log.goToRef": [],

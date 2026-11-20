@@ -24,7 +24,6 @@ import { useChangesOptions } from "./changesOptions";
 import { taskActions } from "./taskActions";
 import { replyActions } from "./replyActions";
 import { focusedSession } from "./sessionFocus";
-import { PLAYFUL_MIN_MS, PLAYFUL_WORD_MS, PLAYFUL_WORDS } from "./workingStatus";
 import styles from "./Session.module.css";
 import chipStyles from "./ReferenceChip.module.css";
 import { caretOf, textOf, typeIn } from "./composerTesting";
@@ -74,6 +73,20 @@ vi.mock("@/platform/ipc", async (original) => ({
       status: "ok",
       data: { size: 1, binary: false, tooLarge: false },
     }),
+    agentContextUsage: vi.fn(async () => ({
+      status: "ok",
+      data: {
+        model: "Claude",
+        totalTokens: 3200,
+        maxTokens: 200000,
+        isAutoCompactEnabled: true,
+        autoCompactThreshold: 180000,
+        categories: [
+          { name: "System tools", tokens: 3200, kind: "used" },
+          { name: "Free space", tokens: 196800, kind: "free" },
+        ],
+      },
+    })),
     agentEntries: async (id: string, sub: string | null) => {
       const key = sub ? `${id}/${sub}` : id;
       backend.fetched.push(key);
@@ -517,107 +530,17 @@ describe("working status", () => {
       }),
     });
   };
-  const playful = (status: HTMLElement) => status.querySelector("[aria-hidden]")?.textContent ?? null;
-  const playfulOn = (agents: object = {}) =>
-    useProject.setState({ settings: { agents: { playfulStatus: true, ...agents } } as never });
 
-  it("says plainly what the agent does by default", async () => {
-    vi.useFakeTimers();
-    running([tool("one", { status: "running" })]);
-    render(<SessionEditor input={input("A")} />);
-    await act(async () => {});
-    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_WORD_MS * 2));
-    const status = stream().querySelector<HTMLElement>(`.${styles.working}`)!;
-    expect(playful(status)).toBeNull();
-    expect(status).toHaveTextContent("Reading…");
-  });
-
-  it("is playful from the start, holds each word while the work goes on, and turns to the new work's words", async () => {
-    vi.useFakeTimers();
-    playfulOn();
-    running([tool("one", { status: "running" })]);
-    render(<SessionEditor input={input("A")} />);
-    await act(async () => {});
-    const status = stream().querySelector<HTMLElement>(`.${styles.working}`)!;
-    const word = playful(status);
-    expect(PLAYFUL_WORDS.reading).toContain(word);
-    // Screen readers still hear the fact.
-    expect(status.querySelector(`.${styles.srOnly}`)).toHaveTextContent("Reading…");
-
-    // More of the same work keeps the word its full time.
-    running([tool("one", { status: "running" }), tool("two", { status: "running" })]);
-    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_WORD_MS - 1000));
-    expect(playful(status)).toBe(word);
-    await act(() => vi.advanceTimersByTimeAsync(1000));
-    const second = playful(status);
-    expect(PLAYFUL_WORDS.reading.filter((w) => w !== word)).toContain(second);
-
-    // New work leaves the word a moment, then says the new work playfully too.
-    running([tool("one", { status: "running" }), { type: "agent", text: "Found it" }]);
-    await act(() => vi.advanceTimersByTimeAsync(1000));
-    expect(playful(status)).toBe(second);
-    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_MIN_MS - 1000));
-    expect(PLAYFUL_WORDS.writing).toContain(playful(status));
-    expect(status.querySelector(`.${styles.srOnly}`)).toHaveTextContent("Writing…");
-  });
-
-  it("with a quiet time, is factual until the agent reports nothing new for it, and again on progress", async () => {
-    vi.useFakeTimers();
-    playfulOn({ playfulAfterSeconds: 10 });
+  it("says what the agent does", async () => {
     running([tool("one", { status: "running" })]);
     render(<SessionEditor input={input("A")} />);
     await act(async () => {});
     const status = stream().querySelector<HTMLElement>(`.${styles.working}`)!;
     expect(status).toHaveTextContent("Reading…");
-    expect(playful(status)).toBeNull();
 
-    await act(() => vi.advanceTimersByTimeAsync(9000));
-    expect(playful(status)).toBeNull();
-    await act(() => vi.advanceTimersByTimeAsync(1000));
-    const word = playful(status);
-    expect(PLAYFUL_WORDS.reading).toContain(word);
-
-    // Progress right after a word appeared leaves it a moment before the fact returns.
     running([tool("one", { status: "running" }), { type: "agent", text: "Found it" }]);
-    await act(() => vi.advanceTimersByTimeAsync(1000));
-    expect(playful(status)).toBe(word);
-    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_MIN_MS - 1000));
-    expect(playful(status)).toBeNull();
+    await act(async () => {});
     expect(status).toHaveTextContent("Writing…");
-  });
-
-  it("keeps each word its full time however soon the status turns playful", async () => {
-    vi.useFakeTimers();
-    playfulOn({ playfulAfterSeconds: 1 });
-    running([tool("one", { status: "running" })]);
-    render(<SessionEditor input={input("A")} />);
-    await act(async () => {});
-    const status = stream().querySelector<HTMLElement>(`.${styles.working}`)!;
-    await act(() => vi.advanceTimersByTimeAsync(1000));
-    const word = playful(status);
-    expect(PLAYFUL_WORDS.reading).toContain(word);
-    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_WORD_MS - 1000));
-    expect(playful(status)).toBe(word);
-    await act(() => vi.advanceTimersByTimeAsync(1000));
-    expect(PLAYFUL_WORDS.reading.filter((w) => w !== word)).toContain(playful(status));
-  });
-
-  it("shows the user's own words of the activity, and none where they left the list empty", async () => {
-    vi.useFakeTimers();
-    playfulOn({ playfulWords: { reading: ["Squinting really hard…"], working: [] } });
-    running([]);
-    render(<SessionEditor input={input("A")} />);
-    await act(async () => {});
-    const status = stream().querySelector<HTMLElement>(`.${styles.working}`)!;
-    // Nothing reported yet is `working`, whose list the user emptied.
-    expect(playful(status)).toBeNull();
-    expect(status).toHaveTextContent("Working…");
-
-    running([tool("one", { status: "running" })]);
-    await act(() => vi.advanceTimersByTimeAsync(1000));
-    expect(playful(status)).toBe("Squinting really hard…");
-    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_WORD_MS));
-    expect(playful(status)).toBe("Squinting really hard…");
   });
 });
 
@@ -2190,6 +2113,24 @@ describe("meters in the task header", () => {
     useAgents.setState({ limits: new Map() });
   });
 
+  it("queries the active task only when context details are opened", async () => {
+    const { commands } = await import("@/platform/ipc");
+    const reported: AgentTask = {
+      ...task("A"),
+      capabilities: { contextUsage: true },
+      usage: { used: 3000, size: 200000, cost: null },
+    };
+    useAgents.setState({ tasks: new Map([["A", reported]]) });
+    render(<SessionEditor input={input("A")} />);
+    const meter = await screen.findByRole("button", { name: /^Context window/ });
+    expect(commands.agentContextUsage).not.toHaveBeenCalled();
+    fireEvent.click(meter);
+    expect(await screen.findByText("System tools")).toBeInTheDocument();
+    expect(commands.agentContextUsage).toHaveBeenCalledWith("A");
+    expect(screen.getByText("196,800")).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Context window" })).toBeNull();
+  });
   it("shows the provider's usage limits by default and each meter as Settings › Tools › Agents › Chat allows", async () => {
     const reported: AgentTask = {
       ...task("A"),

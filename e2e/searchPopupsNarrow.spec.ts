@@ -79,7 +79,7 @@ test.describe("search popups at the minimum window width", () => {
         [400, 500],
         [600, 700],
         [1120, 750],
-      ]) {
+      ] as const) {
         await page.setViewportSize({ width, height });
         await expectControlsFit(page);
         // Room enough for the title and the reporter's count: shown whole, on one line.

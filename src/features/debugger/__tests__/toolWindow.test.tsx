@@ -292,7 +292,7 @@ describe("debug tool window", () => {
     expect(screen.getByRole("tab", { name: /main/ })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Threads & Variables" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Console" })).toBeTruthy();
-    expect(screen.getByText(", main.py:12")).toBeTruthy();
+    expect(screen.getByRole("option", { selected: true })).toHaveTextContent("main:12, main.py");
     expect(screen.getByPlaceholderText("Evaluate expression (↩) or add a watch (⇧⌘↩)")).toBeTruthy();
     expect(await screen.findByText("{int}")).toBeTruthy();
     expect(screen.getByText("'hi'")).toBeTruthy();
@@ -392,6 +392,32 @@ describe("variables the adapter computes after the stop", () => {
         status: "ok" as const,
         data: { name: "result", value: "4", typeName: "int", variablesReference: 0, evaluateName: null },
       }));
+      useDebug.setState({ watches: [] });
+    }
+  });
+
+  it("offers Remove All Watches on a watch's context menu", async () => {
+    useDebug.setState({ watches: ["count + 1", "label.upper()"] });
+    const menu = (text: string) => {
+      fireEvent.contextMenu(screen.getByText(text).closest("[role=treeitem]")!);
+      const items = useContextMenuStore.getState().menu?.items ?? [];
+      act(() => hideContextMenu());
+      return items.flatMap((i) => ("label" in i && i.label ? [i] : []));
+    };
+    try {
+      setup();
+      await screen.findByText("label.upper()");
+      await screen.findByText("'hi'");
+      expect(menu("label").map((i) => i.label)).not.toContain("Remove All Watches");
+      const items = menu("count + 1");
+      expect(items.map((i) => i.label)).toContain("Remove Watch");
+      const removeAll = items.find((i) => i.label === "Remove All Watches");
+      expect(removeAll).toBeTruthy();
+      act(() => (removeAll as { run: () => void }).run());
+      expect(useDebug.getState().watches).toEqual([]);
+      await waitFor(() => expect(screen.queryByText("label.upper()")).toBeNull());
+      expect(screen.getByText("'hi'")).toBeTruthy();
+    } finally {
       useDebug.setState({ watches: [] });
     }
   });

@@ -9,6 +9,7 @@ import { promptText } from "./dialogs";
 import { openContainerLogInEditor } from "./logEditor";
 import { isRunning, nodeContainers, nodeLabel, shortId, type DockerTarget, type ServiceNode } from "./model";
 import {
+  busyOp,
   composeOp,
   connectionState,
   containerOp,
@@ -21,17 +22,31 @@ import {
   type DetailTab,
 } from "./store";
 
+/**
+ * The operation in progress on `t`: a start / stop / … of its containers, or for a
+ * Compose project a running Docker task. Its actions stay disabled until it ends.
+ */
+export function targetBusy(t: DockerTarget | null, s = useServices.getState()): string | null {
+  if (!t) return null;
+  if (t.node.kind === "compose" && s.task) return "task";
+  return busyOp(
+    t.conn,
+    nodeContainers(t.node).map((c) => c.id),
+    s,
+  );
+}
+
 export function canStart(t: DockerTarget | null): boolean {
-  return !!t && nodeContainers(t.node).some((c) => !isRunning(c));
+  return !!t && !targetBusy(t) && nodeContainers(t.node).some((c) => !isRunning(c));
 }
 export function canStop(t: DockerTarget | null): boolean {
-  return !!t && nodeContainers(t.node).some(isRunning);
+  return !!t && !targetBusy(t) && nodeContainers(t.node).some(isRunning);
 }
 export function canRestart(t: DockerTarget | null): boolean {
-  return !!t && (t.node.kind === "container" || t.node.kind === "compose");
+  return !!t && !targetBusy(t) && (t.node.kind === "container" || t.node.kind === "compose");
 }
 export function canRemove(t: DockerTarget | null): boolean {
-  return !!t && ["container", "compose", "image", "volume", "network"].includes(t.node.kind);
+  return !!t && !targetBusy(t) && ["container", "compose", "image", "volume", "network"].includes(t.node.kind);
 }
 
 export async function start(t: DockerTarget | null) {

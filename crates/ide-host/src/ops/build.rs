@@ -8,30 +8,79 @@ use crate::{Host, Project};
 use ide_command::command;
 
 use ide_build::compile::{self, BuildEvent, BuildKind, BuildResult};
-use ide_build::maven::PomGoto;
 use ide_build::maven::completion::{PomCompletion, PomCompletionOption};
+use ide_build::maven::{PomGoto, PomManagedDeclaration, PomNavigationOptions};
 use ide_build::pom_edit::{ArtifactKey, Exclusion};
 use ide_build::{BuildModel, BuildTool, SyncOptions, SyncProgress};
 use ide_core::settings::Settings;
 use ide_core::{DocId, FileEdit, IdeError, IdeEvent, IdeResult, Location, Pos, Range, RequestId, WorkspaceEdit};
+use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 fn join_err(e: tokio::task::JoinError) -> IdeError {
     IdeError::internal(e.to_string())
 }
 
+/// POM gutters in several editors refresh together. A very short cache lets those
+/// requests share one reactor scan without serving a stale module list after edits settle.
+const MAVEN_MODULE_CACHE_TTL: Duration = Duration::from_millis(250);
+type MavenModuleCache = HashMap<String, (Instant, Vec<ide_build::maven::ModulePom>)>;
+static MAVEN_MODULES: OnceLock<Mutex<MavenModuleCache>> = OnceLock::new();
+
+fn maven_modules(
+    project: &Project,
+    settings: &Settings,
+    options: &PomNavigationOptions,
+) -> Vec<ide_build::maven::ModulePom> {
+    let key = format!(
+        "{}\0{:?}\0{:?}\0{:?}\0{:?}",
+        project.root.display(),
+        project.build_cache_dir(),
+        settings.languages.java.maven.linked_projects,
+        options.profiles,
+        options.jdk_version
+    );
+    let cache = MAVEN_MODULES.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some((_at, modules)) = cache.lock().ok().and_then(|mut cache| {
+        let fresh = cache.get(&key).filter(|(at, _)| at.elapsed() < MAVEN_MODULE_CACHE_TTL).cloned();
+        if fresh.is_none() {
+            cache.remove(&key);
+        }
+        fresh
+    }) {
+        return modules;
+    }
+    let model = load(&project.root, &project.build_cache_dir(), settings).maven.unwrap_or_default();
+    let modules = model
+        .projects
+        .into_iter()
+        .map(|p| ide_build::maven::ModulePom {
+            group_id: p.group_id,
+            artifact_id: p.artifact_id,
+            version: p.version,
+            pom: project.root.join(&p.pom),
+        })
+        .collect::<Vec<_>>();
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(key, (Instant::now(), modules.clone()));
+    }
+    modules
+}
+
 /// The build model with the launch settings applied: the JDK (`JAVA_HOME`), and
 /// the Maven home and options from Settings › Maven.
 pub fn load(root: &Path, cache: &Path, settings: &Settings) -> BuildModel {
-    let mut model = ide_build::load_linked(
+    let jdk = ide_sdk::apply::project_jdk(root, settings);
+    let mut model = ide_build::load_linked_with_jdk(
         root,
         cache,
         ide_sdk::apply::maven_local_repository(root, settings),
         &settings.languages.java.maven,
         &settings.languages.java.gradle,
+        ide_sdk::apply::maven_jdk(root, settings, None).map(|jdk| jdk.major),
     );
-    let jdk = ide_sdk::apply::project_jdk(root, settings);
     if let Some(m) = &mut model.maven {
         let mvn = ide_sdk::apply::maven_command(root, settings);
         let options = ide_sdk::apply::maven_options(root, settings);
@@ -75,6 +124,23 @@ pub fn load(root: &Path, cache: &Path, settings: &Settings) -> BuildModel {
         }
     }
     model
+}
+
+/// POM navigation follows the same profile choices as the last Maven sync and
+/// resolves JDK-activated profiles with the project's selected Maven runtime.
+fn pom_navigation_options(project: &Project, settings: &Settings) -> PomNavigationOptions {
+    let mut profiles = settings.languages.java.maven.profiles(&[]);
+    for profile in ide_build::maven_profiles(&project.build_cache_dir()) {
+        if !profiles.contains(&profile) {
+            profiles.push(profile);
+        }
+    }
+    PomNavigationOptions {
+        local_repo: ide_sdk::apply::maven_local_repository(&project.root, settings)
+            .or_else(ide_build::maven::default_local_repo),
+        profiles,
+        jdk_version: ide_sdk::apply::maven_jdk(&project.root, settings, None).map(|jdk| jdk.major),
+    }
 }
 
 /// Build and Run use the same selected toolchain and module-local runtime discovery.
@@ -547,8 +613,9 @@ pub async fn maven_dependency_declaration(
 }
 
 /// The go-to-declaration target at `pos` of a Maven POM: the definition of the
-/// `${property}` at the caret, or the `<dependencyManagement>` / `<pluginManagement>`
-/// entry providing the dependency's / plugin's version, along the parent chain.
+/// `${property}` at the caret, the parent POM, or the dependency / plugin's own POM
+/// (a project module first, then the local repository). A dependency without a
+/// resolvable artifact POM falls back to its management entry.
 #[command(trust = trusted)]
 pub async fn maven_goto_declaration(host: &Host, window: &str, pom: String, pos: Pos) -> IdeResult<Option<PomGoto>> {
     // `pom` is project-relative, or absolute for a parent POM opened from the local repository.
@@ -561,24 +628,53 @@ pub async fn maven_goto_declaration(host: &Host, window: &str, pom: String, pos:
         let path = if given.is_absolute() { given.to_path_buf() } else { project.root.join(given) };
         let text = project.text_of(&path)?;
         let settings = project.settings.effective();
-        let repo = ide_sdk::apply::maven_local_repository(&project.root, &settings)
-            .or_else(ide_build::maven::default_local_repo);
-        let modules = || {
-            let model = load(&project.root, &project.build_cache_dir(), &settings).maven.unwrap_or_default();
-            model
-                .projects
-                .into_iter()
-                .map(|p| ide_build::maven::ModulePom {
-                    group_id: p.group_id,
-                    artifact_id: p.artifact_id,
-                    pom: project.root.join(&p.pom),
-                })
-                .collect()
-        };
-        Ok(ide_build::maven::goto_declaration_in(&text, &path, pos, repo, modules))
+        let options = pom_navigation_options(&project, &settings);
+        let module_options = options.clone();
+        let modules = || maven_modules(&project, &settings, &module_options);
+        Ok(ide_build::maven::goto_declaration_with(&text, &path, pos, options, modules))
     })
     .await
     .map_err(join_err)?
+}
+
+/// Gutter targets of the unversioned dependencies and plugins in a Maven POM:
+/// the management declarations that actually supply their versions, including
+/// parent POMs and imported BOMs. Cancel with `cancel_request(request)`.
+#[command(trust = trusted)]
+pub async fn maven_managed_declarations(
+    host: &Host,
+    window: &str,
+    pom: String,
+    request: RequestId,
+) -> IdeResult<Vec<PomManagedDeclaration>> {
+    let project = host.project(window)?;
+    let cancel = host.begin_project_read_request(window, request);
+    let result = tokio::task::spawn_blocking(move || {
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        let given = Path::new(&pom);
+        let path = if given.is_absolute() { given.to_path_buf() } else { project.root.join(given) };
+        let text = project.text_of(&path)?;
+        let settings = project.settings.effective();
+        let options = pom_navigation_options(&project, &settings);
+        let cancelled = cancel.clone();
+        let module_options = options.clone();
+        let modules = || {
+            if cancelled.is_cancelled() {
+                return Vec::new();
+            }
+            maven_modules(&project, &settings, &module_options)
+        };
+        let declarations = ide_build::maven::managed_declarations_with(&text, &path, options, modules);
+        if cancel.is_cancelled() { Err(IdeError::cancelled()) } else { Ok(declarations) }
+    })
+    .await;
+    host.end_request(request);
+    match result {
+        Ok(result) => result,
+        Err(error) => Err(join_err(error)),
+    }
 }
 
 /// How long completion waits for Maven Central before answering from the local repository.
@@ -1333,4 +1429,5 @@ ide_command::domain!(
     maven_dependency_declaration,
     maven_exclude_dependency,
     maven_goto_declaration,
+    maven_managed_declarations,
 );

@@ -265,7 +265,7 @@ function HeaderTable({ headers }: { headers: Array<[string, string]> }) {
 export function HttpClientView() {
   const history = useHttpClient((s) => s.history);
   const selected = useHttpClient((s) => s.selected);
-  const exchange = useHttpClient((s) => (s.selected ? s.exchanges[s.selected] : undefined));
+  const exchange = useHttpClient((s) => s.exchanges.find((e) => e.entry.id === s.selected));
   const running = useHttpClient((s) => s.running);
   useEffect(() => {
     void refreshHistory();

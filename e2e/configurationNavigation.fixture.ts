@@ -49,7 +49,7 @@ commands.lspHover = async () => {
 };
 commands.lspDocumentLinks = async () => ({ status: "ok", data: [] });
 commands.lspDocumentHighlights = async () => ({ status: "ok", data: [] });
-commands.cancelRequest = async () => ({ status: "ok", data: null });
+commands.cancelRequest = async () => {};
 const java = new EditorView({
   parent: javaHost,
   state: EditorState.create({

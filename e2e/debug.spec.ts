@@ -113,3 +113,60 @@ test("stops at a breakpoint, shows frames and variables, steps and resumes", asy
   await expect.poll(() => ipcCalls(page, "debug_resume")).toHaveLength(1);
   await expect(debug.getByText("CreateOrderRequest(sku='A-1', qty=2)")).toBeHidden();
 });
+
+test("Evaluate keeps a multiline expression and its result visible in a short dialog", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 580, height: 420 });
+  await stubDesktop(page);
+  await page.evaluate(async (session) => {
+    const handlers = window.__ipc.handlers;
+    handlers.debug_capabilities = () => ({});
+    handlers.debug_completions = () => [];
+    handlers.debug_evaluate_in = () => ({
+      name: "orderSummary",
+      typeName: "OrderSummary",
+      value: "total = 36",
+      variablesReference: 210,
+      evaluateName: null,
+    });
+    handlers.debug_variables = () => [
+      { name: "tax", value: "4", typeName: "int", variablesReference: 0, evaluateName: null },
+    ];
+    const stateModule = "/src/features/debugger/state.ts";
+    const { adoptSession } = await import(/* @vite-ignore */ stateModule);
+    adoptSession(session, { name: "Checkout", adapter: "debugpy", status: "paused", selectedFrame: 11 });
+  }, SESSION);
+
+  await page.keyboard.press("Alt+F8");
+  const dialog = page.getByRole("dialog", { name: "Evaluate expression" });
+  const field = dialog.getByRole("textbox", { name: "Expression" });
+  const expression = ["orderSummary(", ...Array.from({ length: 12 }, (_, i) => `    item${i},`), ")"].join("\n");
+  await field.fill(expression);
+  await field.press("Enter");
+  const result = dialog.getByRole("tree", { name: "Evaluation result" });
+  const row = result.getByRole("treeitem").first();
+  await expect(row).toContainText("total = 36");
+  await expect
+    .poll(() =>
+      dialog.locator("[data-dialog-body]").evaluate((body) => {
+        const area = body.querySelector("textarea")!;
+        const resultRow = body.querySelector('[role="treeitem"]')!.getBoundingClientRect();
+        const bounds = body.getBoundingClientRect();
+        return (
+          body.scrollHeight <= body.clientHeight + 1 &&
+          area.scrollHeight > area.clientHeight &&
+          resultRow.top >= bounds.top &&
+          resultRow.bottom <= bounds.bottom
+        );
+      }),
+    )
+    .toBe(true);
+  await row.click();
+  await row.press("ArrowRight");
+  await expect(result.getByText("tax", { exact: true })).toBeVisible();
+
+  await field.fill("otherExpression");
+  await dialog.getByRole("button", { name: "History", exact: true }).click();
+  await page.getByRole("menuitem", { name: /orderSummary/ }).click();
+  await expect(field).toHaveValue(expression);
+  await expect(field).toBeFocused();
+});

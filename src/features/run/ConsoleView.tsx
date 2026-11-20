@@ -29,6 +29,7 @@ import { useConsoleSelection } from "./useConsoleSelection";
 import { hostBinding, formatBinding, hasPrimaryModifier, registerKeyClaim } from "@/platform/keymap";
 import { WidestColumns } from "@/platform/consoleColumns";
 import { tx } from "@/platform/i18n";
+import { executeAction } from "@/platform/actions";
 import { ConsoleFindBar } from "@/ui/ConsoleFindBar";
 import { DEFAULT_FIND_OPTIONS, findInLines, type FindOptions } from "@/ui/consoleFind";
 
@@ -114,6 +115,15 @@ export interface Fold {
  * the `<N internal lines>` placeholder to the previous line), or a fold with no line before it.
  */
 export type DisplayRow = { kind: "line"; index: number; fold?: Fold } | { kind: "fold"; fold: Fold };
+
+/**
+ * IDEA's Fold Lines Like This: the selection when it stays on one line, else the clicked line;
+ * trimmed, and `null` when that leaves nothing to fold on.
+ */
+export function foldLineText(selection: string, line: string | null): string | null {
+  const text = (selection || (line ?? "")).trim();
+  return text && !/[\r\n]/.test(text) ? text : null;
+}
 
 /**
  * Folds runs of consecutive output lines (one or more) that contain one of
@@ -421,9 +431,18 @@ export function ConsoleView({
   /** The selected text; after Select All the whole buffer, including rows that are not mounted. */
   const selectedOutput = () => (allSelected() ? model.text() : (window.getSelection()?.toString() ?? ""));
 
+  /** The output line a context menu opened on; folds and the input row have none. */
+  const lineAt = (target: EventTarget) => {
+    const index = (target as Element).closest?.("[data-index]")?.getAttribute("data-index");
+    const row = index == null ? undefined : rows[Number(index)];
+    const line = row?.kind === "line" ? lines[row.index] : undefined;
+    return line && line.kind !== "system" ? line.text : null;
+  };
+
   const onContextMenu = (e: MouseEvent) => {
     e.preventDefault();
     const selection = selectedOutput();
+    const foldText = foldLineText(selection, lineAt(e.target));
     showContextMenu(e, [
       {
         label: "Copy",
@@ -441,6 +460,12 @@ export function ConsoleView({
         run: openFind,
       },
       { kind: "separator" },
+      {
+        label: "Fold Lines Like This",
+        disabled: !foldText,
+        // Opens Settings › Console with the text added to the fold patterns, for OK / Cancel there.
+        run: () => void executeAction("file.settings", `build.console#${foldText}`),
+      },
       { label: "Clear All", icon: "trash", disabled: !onClear, run: () => onClear?.() },
       ...(input
         ? [{ kind: "separator" } as const, { label: "Send EOF", shortcut: "⌃D", run: () => input.onEof() }]

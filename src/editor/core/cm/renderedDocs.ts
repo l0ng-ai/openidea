@@ -61,6 +61,7 @@ import { tx, useI18n } from "@/platform/i18n";
 import { loadMarkdown, markupToHtml } from "@/editor/lsp/markdown";
 import { hasContent, renderDoc, type DocComment, type DocStyle, type RenderedDoc } from "./docRender";
 import { LINE_INSET } from "./lineInset";
+import { SPACE, spaceWidth } from "./spaceWidth";
 
 /** The file's default: render its doc comments or not. */
 export const renderDocComments = Facet.define<boolean, boolean>({
@@ -320,9 +321,9 @@ class DocWidget extends WidgetType {
     const titles = doc.sections.map(sectionTitle);
     const dom = document.createElement("div");
     dom.className = "cm-openidea-renderedDoc";
-    // In the code's character width, which `docMetrics` keeps current: the DOM stays
-    // right through a font size change or zoom, which does not draw the widget again.
-    const left = `(${this.indent} * var(--openidea-doc-char, 1ch) + ${LINE_INSET}px)`;
+    // In columns of the code's font (`spaceWidth`): the DOM stays right through a font
+    // size change or zoom, which does not draw the widget again.
+    const left = `(${this.indent} * ${SPACE} + ${LINE_INSET}px)`;
     dom.style.marginLeft = `calc${left}`;
     // The content is as wide as its longest line; the comment wraps at the visible width instead.
     dom.style.maxWidth = `calc(var(--openidea-doc-width, 100%) - ${left} - ${DOC_RIGHT_GAP}px)`;
@@ -827,12 +828,10 @@ export function toggleRenderedViewAtCaret(view: EditorView): boolean {
 const DOC_RIGHT_GAP = 24;
 
 /**
- * Publishes on the content the visible width of the text area, `--openidea-doc-width`,
- * and the code's character width, `--openidea-doc-char`. A block widget is as wide as
- * the content, which without soft wraps is as wide as the longest line, so a rendered
- * comment needs the first to wrap where the reader can see, as IDEA's does; it indents
- * by the second, which a font size change or zoom changes. Horizontal scrolling leaves
- * both unchanged.
+ * Publishes on the content the visible width of the text area, `--openidea-doc-width`.
+ * A block widget is as wide as the content, which without soft wraps is as wide as the
+ * longest line, so a rendered comment needs it to wrap where the reader can see.
+ * Scrolling leaves it unchanged, so lines are not restyled while scrolling.
  */
 const docMetrics = ViewPlugin.fromClass(
   class {
@@ -845,18 +844,12 @@ const docMetrics = ViewPlugin.fromClass(
     measure() {
       this.view.requestMeasure({
         key: this,
-        read: (view) => ({
-          width: view.scrollDOM.clientWidth - view.contentDOM.offsetLeft,
-          char: view.defaultCharacterWidth,
-        }),
-        write: ({ width, char }, view) => {
+        read: (view) => view.scrollDOM.clientWidth - view.contentDOM.offsetLeft,
+        write: (width, view) => {
           const style = view.contentDOM.style;
-          const widthValue = `${Math.max(0, Math.floor(width))}px`;
-          if (style.getPropertyValue("--openidea-doc-width") !== widthValue)
-            style.setProperty("--openidea-doc-width", widthValue);
-          const charValue = `${char}px`;
-          if (style.getPropertyValue("--openidea-doc-char") !== charValue)
-            style.setProperty("--openidea-doc-char", charValue);
+          const value = `${Math.max(0, Math.floor(width))}px`;
+          if (style.getPropertyValue("--openidea-doc-width") !== value)
+            style.setProperty("--openidea-doc-width", value);
         },
       });
     }
@@ -947,5 +940,6 @@ export const renderedDocsExtension: Extension = [
   markdownReady,
   languageWatcher,
   docMetrics,
+  spaceWidth,
   docsTheme,
 ];

@@ -100,16 +100,6 @@ pub struct AgentSettings {
     pub smooth_text: bool,
     /// Conversations and the composer expand to the full width of the pane instead of staying in a centred column.
     pub fit_window_width: bool,
-    /// While the agent works, playful words fill the pauses in what it reports.
-    pub playful_status: bool,
-    /// Seconds the agent reports nothing new before the playful words take over; 0 shows them
-    /// from the start.
-    pub playful_after_seconds: u32,
-    /// The user's playful words by activity (`working`, `thinking`, `reading`, …), replacing
-    /// the built-in ones of that activity; an empty list keeps its status factual.
-    #[serde(deserialize_with = "or_default")]
-    #[specta(type = BTreeMap<String, Vec<String>>)]
-    pub playful_words: BTreeMap<String, Vec<String>>,
     #[serde(deserialize_with = "or_default")]
     #[specta(type = ThinkingDisplay)]
     pub thinking: ThinkingDisplay,
@@ -152,9 +142,6 @@ impl Default for AgentSettings {
             fold_turns: true,
             smooth_text: true,
             fit_window_width: false,
-            playful_status: false,
-            playful_after_seconds: 0,
-            playful_words: BTreeMap::new(),
             thinking: ThinkingDisplay::Auto,
             tool_calls: ToolCallDisplay::Grouped,
             expand_tool_output: false,

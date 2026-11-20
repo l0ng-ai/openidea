@@ -2,6 +2,7 @@ import { StateEffect, StateField, type Text } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType, type DecorationSet as CmDecorations } from "@codemirror/view";
 import type { DecorationSet, Range } from "@/bindings";
 import { registerEditorContribution, useEditorRegistry, type EditorDocContext } from "@/editor/api";
+import { foldChipWidth } from "@/editor/core/cm/folding";
 import { commands, isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { addPathIconProvider, bumpFileIconRevision } from "@/ui";
@@ -147,8 +148,10 @@ class AfterText extends WidgetType {
     if (!line || !inner) return;
     const own = offsetOf(el, "--openidea-message-offset");
     const hint = line.querySelector<HTMLElement>(".cm-openidea-lensInlineInner");
+    // A folded chip drawn after this anchor paints under the box; step past it first (folding.ts).
+    let width = foldChipWidth(el);
     // The hint's inner box sits `--openidea-hint-offset` past its zero-width anchor.
-    let width = hint ? Math.round(hint.getBoundingClientRect().width) + offsetOf(hint, "--openidea-hint-offset") : 0;
+    if (hint) width += Math.round(hint.getBoundingClientRect().width) + offsetOf(hint, "--openidea-hint-offset");
     // Every message before this one adds its own width and offset.
     for (const other of line.querySelectorAll<HTMLElement>(".cm-plugin-after")) {
       if (other === el || other.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) continue;

@@ -274,8 +274,8 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
   const editability = useMemo(() => resultEditability(text, driver), [text, driver]);
   const model = useDatabase((s) => s.completion[tab.sourceId]) ?? null;
   const target = useMemo(
-    () => (editability.kind === "editable" ? resolveTarget(editability, model, tab.schema, driver) : null),
-    [editability, model, tab.schema, driver],
+    () => (editability.kind === "editable" ? resolveTarget(editability, model, tab.schema) : null),
+    [editability, model, tab.schema],
   );
   const detailsId = target ? detailsKey(tab.sourceId, target.schema ?? "", target.table) : null;
   const details = useDatabase((s) => (detailsId ? s.details[detailsId] : undefined));

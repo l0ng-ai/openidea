@@ -26,7 +26,14 @@ import {
 } from "@/ui";
 import { useRowHeight } from "@/ui/density";
 import type { PopupAnchor } from "@/ui/Popup";
-import { buildBranchRows, preferredBranchRow, withExpanded, type BranchRow, type PopupAction } from "./branches";
+import {
+  buildBranchRows,
+  preferredBranchRow,
+  scopedExpansion,
+  withExpanded,
+  type BranchRow,
+  type PopupAction,
+} from "./branches";
 import { branchPresentation, extensionPopupActions, useBranchWidgetExtensions } from "./branchWidgetExtensions";
 import { branchMenu, commonBranchMenu, inRepo, tagMenu } from "./branchMenu";
 import { loadFavoriteBranches, recentBranches, toggleFavoriteBranch, useFavoriteBranches } from "./branchOps";
@@ -46,6 +53,7 @@ import { showSyncCommits } from "./SyncCommitsPopup";
 import type { SyncDirection } from "./syncCommits";
 import styles from "./BranchWidget.module.css";
 import { tx } from "@/platform/i18n";
+import { useWorkflowSettings } from "@/platform/workflowSettings";
 
 /** `active` until the user moves: a new filter selects the row IDEA prefers for it. */
 const PREFERRED = -1;
@@ -262,12 +270,19 @@ function loadExpansion(root: string | null) {
   useExpansion.setState(next);
 }
 
-function useExpanded(kind: "single" | "multi") {
-  const expanded = useExpansion((s) => s[kind]);
+/**
+ * The expansion of one popup kind. `repo` scopes it to one repository's branches (a
+ * repository's submenu in a multi-repository project), so expanding a group there leaves
+ * the other repositories' submenus as they were.
+ */
+function useExpanded(kind: "single" | "multi", repo?: string) {
+  const all = useExpansion((s) => s[kind]);
+  const prefix = repo === undefined ? "" : `${repo}\u0000`;
+  const expanded = useMemo(() => scopedExpansion(all, prefix), [all, prefix]);
   const setOpen = (key: string, open: boolean) => {
     const s = useExpansion.getState();
-    if (s[kind].get(key) === open) return;
-    const next = { ...s, [kind]: withExpanded(s[kind], key, open) };
+    if (s[kind].get(prefix + key) === open) return;
+    const next = { ...s, [kind]: withExpanded(s[kind], prefix + key, open) };
     useExpansion.setState(next);
     if (!next.root) return;
     try {
@@ -459,7 +474,7 @@ function BranchesPanel({ onClose, actions: baseActions, root, fallback, onBack }
   const conflicts = useVcs((s) => s.status.filter((f) => f.unstaged === "conflicted").length);
   const actions = useMemo(() => [...operationActions(op, conflicts), ...baseActions], [op, conflicts, baseActions]);
   const options = usePopupOptions();
-  const [expanded, setOpen] = useExpanded("single");
+  const [expanded, setOpen] = useExpanded("single", root);
   const rows = useMemo(
     () => buildBranchRows(branches, recent, query, actions, favorites, tags, { ...options, expanded }),
     [branches, recent, query, actions, favorites, tags, options, expanded],
@@ -633,6 +648,7 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
   const [active, setActive] = useState(0);
   const [expanded, setOpen] = useExpanded("multi");
   const options = usePopupOptions();
+  const sync = useWorkflowSettings((s) => s.vcs.git.syncBranchOperations);
   const [all, setAll] = useState<Record<string, Branch[]>>({});
   const [menuFor, setMenuFor] = useState<{ items: MenuItem[]; label: string; el: HTMLElement } | null>(null);
   const [repoMenu, setRepoMenu] = useState<{ root: string; el: HTMLElement; focus: boolean } | null>(null);
@@ -682,9 +698,9 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
   const actions = useMemo(
     () => [
       ...operationActions(op, conflicts),
-      ...popupActions.map((a) => (a.id === "vcs.newBranch" ? { ...a, arg: { repos: roots } } : a)),
+      ...popupActions.map((a) => (a.id === "vcs.newBranch" && sync ? { ...a, arg: { repos: roots } } : a)),
     ],
-    [op, conflicts, roots, popupActions],
+    [op, conflicts, roots, popupActions, sync],
   );
   const rows = useMemo(
     () =>
@@ -699,10 +715,11 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
         current,
         recent,
         tags,
+        sync,
       }),
-    [repos, all, query, actions, expanded, favorites, current, recent, tags, options],
+    [repos, all, query, actions, expanded, favorites, current, recent, tags, options, sync],
   );
-  const isSection = (r: RepoRow) => r.type === "section";
+  const isSection = (r: RepoRow) => r.type === "section" || r.type === "notice";
   const activeIndex = pickActive(rows, active, isSection, () => preferredRepoRow(rows, query));
 
   const closeAll = () => {
@@ -727,7 +744,12 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
     }
     setRepoMenu(null);
     if (row.type === "common") {
-      setMenuFor({ items: commonBranchMenu(row.branch, roots, closeAll), label: tx`Branch ${row.branch.name}`, el });
+      const shared = widgetShowsRepo(repos) ? null : (repos[0]?.head ?? null);
+      setMenuFor({
+        items: commonBranchMenu(row.branch, roots, shared, closeAll),
+        label: tx`Branch ${row.branch.name}`,
+        el,
+      });
     } else if (row.type === "branch") {
       const items = inRepo(row.repo.root, branchMenu(row.branch, row.repo.head, closeAll));
       setMenuFor({ items, label: tx`Branch ${row.branch.name} of ${row.repo.name}`, el });
@@ -758,7 +780,7 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
     if (isNewBranchStroke(strokeOf(e))) {
       e.preventDefault();
       onClose();
-      void executeAction("vcs.newBranch", { repos: roots });
+      void executeAction("vcs.newBranch", sync ? { repos: roots } : undefined);
       return;
     }
     if (e.key === "Enter") {
@@ -815,7 +837,13 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
           isSection={isSection}
           sectionHeightOf={(r) => (r.type === "section" && !r.label ? SEPARATOR_HEIGHT : undefined)}
           renderSection={(r) =>
-            r.type === "section" && r.label ? (
+            r.type === "notice" ? (
+              <span className={styles.notice} title={r.detail} role="status">
+                <Icon name="warning" size={14} />
+                <span className={styles.noticeLabel}>{r.label}</span>
+                <span className={styles.noticeDetail}>{r.detail}</span>
+              </span>
+            ) : r.type === "section" && r.label ? (
               <span className={styles.section}>{tx(r.label)}</span>
             ) : (
               <span className={styles.separator} role="separator" />

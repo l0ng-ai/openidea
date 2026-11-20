@@ -1,0 +1,55 @@
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  font-size: var(--fs-ui);
+}
+
+.source,
+.command {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.source > .repository {
+  flex: 1 1 124px;
+}
+
+.command,
+.noRemotes {
+  flex: 4 1 352px;
+}
+
+.verb {
+  flex: none;
+  color: var(--fg-secondary);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.command > .remote {
+  flex: 1 1 104px;
+}
+
+.command > .branch {
+  flex: 3 1 208px;
+}
+
+.flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.flags > code {
+  padding: var(--space-0-5) var(--space-1-5);
+  border-radius: var(--radius-control);
+  background: var(--bg-field);
+  color: var(--fg-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+}

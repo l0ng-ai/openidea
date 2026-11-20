@@ -6,8 +6,17 @@
  */
 import { EditorSelection, Prec, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { completionStatus, hasNextSnippetField, hasPrevSnippetField } from "@codemirror/autocomplete";
-import { EditorView, ViewPlugin, keymap, showTooltip, type Tooltip, type ViewUpdate } from "@codemirror/view";
+import {
+  EditorView,
+  ViewPlugin,
+  keymap,
+  repositionTooltips,
+  showTooltip,
+  type Tooltip,
+  type ViewUpdate,
+} from "@codemirror/view";
 import { commands, type SignatureHelp } from "@/platform/ipc";
+import { tooltipBounds } from "@/editor/core/cm/setup";
 import { docOf, lspRequest, reportLspError, debounce } from "./lsp";
 import { offsetToPos } from "./positions";
 import { showHint } from "./hint";
@@ -40,8 +49,6 @@ export function splitSignature(label: string, params: ReadonlyArray<[number, num
   return { before: label.slice(0, s), param: label.slice(s, e), after: label.slice(e) };
 }
 
-const MAX_ROWS = 12;
-
 /** Whether an overload can take an argument at `index` (varargs take any number). */
 export function acceptsParameter(sig: { label: string; parameters: ReadonlyArray<[number, number]> }, index: number) {
   if (index < sig.parameters.length) return true;
@@ -54,23 +61,27 @@ function signatureTooltip(s: SigState): Tooltip {
     pos: s.pos,
     above: true,
     strictSide: false,
-    create: () => {
+    create: (view) => {
       const dom = document.createElement("div");
       dom.className = "cm-lsp-signature";
+      dom.setAttribute("role", "tooltip");
       const { signatures, activeSignature, activeParameter } = s.help;
-      const start = Math.max(0, Math.min(activeSignature - 6, signatures.length - MAX_ROWS));
-      signatures.slice(start, start + MAX_ROWS).forEach((sig, j) => {
-        const i = start + j;
+      let active: HTMLElement | null = null;
+      signatures.forEach((sig, i) => {
         const row = document.createElement("div");
         row.className = "cm-lsp-signature-row";
-        if (i === activeSignature) row.classList.add("cm-lsp-signature-active");
-        else if (!acceptsParameter(sig, activeParameter)) row.classList.add("cm-lsp-signature-disabled");
+        if (i === activeSignature) {
+          row.classList.add("cm-lsp-signature-active");
+          row.setAttribute("aria-current", "true");
+          active = row;
+        } else if (!acceptsParameter(sig, activeParameter)) row.classList.add("cm-lsp-signature-disabled");
         const parts = splitSignature(sig.label, sig.parameters, activeParameter);
         row.append(parts.before);
         if (parts.param) {
           const b = document.createElement("b");
           b.textContent = parts.param;
           row.appendChild(b);
+          if (i === activeSignature) active = b;
         }
         row.append(parts.after);
         dom.appendChild(row);
@@ -81,7 +92,37 @@ function signatureTooltip(s: SigState): Tooltip {
         d.classList.add("cm-lsp-signature-doc");
         dom.appendChild(d);
       }
-      return { dom };
+      const fit = ({ left, right }: { left: number; right: number }) => {
+        const width = `${Math.max(0, Math.floor(right - left))}px`;
+        const fontSize = getComputedStyle(view.contentDOM).fontSize;
+        const changed = dom.style.getPropertyValue("--cm-signature-width") !== width || dom.style.fontSize !== fontSize;
+        if (changed) {
+          dom.style.setProperty("--cm-signature-width", width);
+          dom.style.fontSize = fontSize;
+        }
+        return changed;
+      };
+      // Reveal the current parameter after wrapping or a vertical clamp. Leave manual scrolling alone.
+      let fittedWidth = 0;
+      let fittedHeight = 0;
+      return {
+        dom,
+        mount: () => void fit(tooltipBounds(view)),
+        positioned: (space) => {
+          if (fit(space)) {
+            repositionTooltips(view);
+            return;
+          }
+          if (!active || (fittedWidth === dom.clientWidth && fittedHeight === dom.clientHeight)) return;
+          fittedWidth = dom.clientWidth;
+          fittedHeight = dom.clientHeight;
+          const top = dom.getBoundingClientRect().top + dom.clientTop;
+          const parameter = active.getBoundingClientRect();
+          const below = parameter.bottom - (top + fittedHeight);
+          if (parameter.top < top || parameter.height >= fittedHeight) dom.scrollTop += parameter.top - top;
+          else if (below > 0) dom.scrollTop += below;
+        },
+      };
     },
   };
 }

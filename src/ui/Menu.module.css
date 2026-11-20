@@ -2,11 +2,15 @@
 .popup {
   padding: 6px 0;
   min-width: 180px;
+  overflow-x: hidden;
+}
+.popup .menu {
   max-width: 420px;
 }
 .menu {
   display: flex;
   flex-direction: column;
+  font-size: var(--fs-ui);
   outline: none;
 }
 .item {
@@ -59,15 +63,21 @@
   text-overflow: ellipsis;
 }
 .shortcut {
-  margin-left: 24px;
+  min-width: 0;
+  max-width: 50%;
+  margin-inline-start: var(--space-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-family: var(--font-keys);
   font-size: var(--fs-ui);
   color: var(--fg-muted);
 }
 .subArrow {
+  flex: none;
+  width: 14px;
+  display: flex;
   color: var(--fg-muted);
-  margin-left: 8px;
-  margin-right: -2px;
+  margin-inline-start: var(--space-1);
 }
 .separator {
   height: 1px;

@@ -322,6 +322,8 @@ export const intellijWindows: Record<string, string[]> = {
   "runAnything.show": ["Ctrl Ctrl"],
   "view.quickSwitchScheme": ["Ctrl+`"],
   "vcs.changelist.move": ["Alt+Shift+M"],
+  "vcs.shelveSilently": ["Ctrl+Shift+H"],
+  "vcs.unshelveSilently": ["Ctrl+Alt+U"],
   "vcs.changelist.edit": ["F2", "Shift+F6"],
   "vcs.log.copyRevision": ["Ctrl+Alt+Shift+C"],
   "vcs.log.goToRef": ["Ctrl+F"],

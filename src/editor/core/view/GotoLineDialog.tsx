@@ -1,9 +1,8 @@
 /** ⌘L: "Go to Line:Column" (1-based `line[:col]`). */
-import { useState, type FormEvent } from "react";
-import { Dialog, Input } from "@/ui";
+import { useId, useState, type FormEvent } from "react";
+import { Dialog, Input, T } from "@/ui";
 import { editorController, useEditorStatus, useGotoLine } from "../controller";
 import styles from "./EditorArea.module.css";
-import { tx } from "@/platform/i18n";
 
 export function parseLineCol(text: string): { line: number; col: number } | null {
   const m = /^\s*(\d+)\s*(?:[:,]\s*(\d+))?\s*$/.exec(text);
@@ -22,6 +21,7 @@ export function GotoLineDialog() {
 
 function GotoLineInner() {
   const status = useEditorStatus((s) => s.status);
+  const coordinatesId = useId();
   const [value, setValue] = useState(() => (status ? `${status.line + 1}:${status.col + 1}` : ""));
   const parsed = parseLineCol(value);
   const close = () => useGotoLine.setState({ open: false });
@@ -43,19 +43,24 @@ function GotoLineInner() {
       ]}
     >
       <form onSubmit={submit} className={styles.gotoBody}>
+        <label className={styles.gotoLabel} htmlFor={coordinatesId}>
+          <T>Line and column</T>
+        </label>
         <Input
+          id={coordinatesId}
           data-autofocus=""
-          mono
           value={value}
           invalid={!!value && !parsed}
           onChange={(e) => setValue(e.target.value)}
           onFocus={(e) => e.currentTarget.select()}
-          aria-label="Line and column"
+          aria-describedby={status ? undefined : `${coordinatesId}-hint`}
           placeholder="line[:column]"
         />
-        <span className={styles.gotoHint}>
-          {status ? tx`Current position ${status.line + 1}:${status.col + 1}` : tx("No active editor")}
-        </span>
+        {!status && (
+          <span className={styles.gotoHint} id={`${coordinatesId}-hint`}>
+            <T>No active editor</T>
+          </span>
+        )}
       </form>
     </Dialog>
   );

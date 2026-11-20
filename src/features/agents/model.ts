@@ -15,8 +15,6 @@ export const AGENTS_GROUP = "Agents";
 export const MCP_PAGE = "agents.mcpServers";
 /** Settings › Agents › Command Permissions. */
 export const POLICY_PAGE = "agents.policy";
-/** Settings › Agents › Working Status: the playful words under a working conversation. */
-export const WORKING_STATUS_PAGE = "agents.workingStatus";
 
 export const sessionKey = (task: string) => `agent:${task}`;
 

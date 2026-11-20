@@ -5017,6 +5017,7 @@ dependencies = [
  "ignore",
  "notify",
  "parking_lot",
+ "rayon",
  "rustix",
  "serde",
  "serde_json",

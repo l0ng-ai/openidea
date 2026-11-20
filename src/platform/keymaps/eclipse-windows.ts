@@ -160,6 +160,8 @@ export const eclipseWindows: Record<string, string[]> = {
   "vcs.changelist.edit": ["Shift+Alt+R"],
   "toolwindow.services": ["Shift+Alt+H"],
   "vcs.changelist.move": [],
+  "vcs.shelveSilently": [],
+  "vcs.unshelveSilently": [],
   "navigate.gotoBookmark1": [],
   "toolwindow.resizeLeft": [],
   "toolwindow.resizeRight": [],

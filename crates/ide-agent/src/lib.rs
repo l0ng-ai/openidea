@@ -132,6 +132,7 @@ pub type McpExecutableFn = dyn Fn() -> Option<PathBuf> + Send + Sync;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct CopilotBinaryKey {
     command: String,
+    github_account: Option<String>,
     modified: Option<std::time::SystemTime>,
     len: Option<u64>,
 }
@@ -193,6 +194,7 @@ impl Shared {
         let metadata = std::fs::metadata(&executable).ok();
         CopilotBinaryKey {
             command: executable.to_string_lossy().into_owned(),
+            github_account: provider::copilot_github_account(&spec.env),
             modified: metadata.as_ref().and_then(|m| m.modified().ok()),
             len: metadata.as_ref().map(std::fs::Metadata::len),
         }
@@ -1126,6 +1128,16 @@ impl AgentManager {
     /// Changes a session setting (model, mode…): right away when the agent runs, else when it next starts.
     pub async fn set_config(&self, id: &str, option: &str, value: String) -> IdeResult<()> {
         let task = self.task(id)?;
+        let provider = task.state.lock().task.provider.clone();
+        let discovered = self
+            .shared
+            .paths
+            .catalogs
+            .cached(&self.shared, &provider)
+            .config
+            .iter()
+            .find(|o| o.id == option && o.category.as_deref() == Some("model"))
+            .cloned();
         let (target, change) = {
             let mut s = task.state.lock();
             let busy = s.busy;
@@ -1146,17 +1158,19 @@ impl AgentManager {
                 task.emit_task();
                 return Ok(());
             }
-            let target = s
-                .task
-                .config
-                .iter()
-                .find(|o| o.id == option)
-                .ok_or_else(|| IdeError::not_found("no such setting"))?
-                .clone();
+            let session_target = s.task.config.iter().find(|o| o.id == option).cloned();
+            let recovered_model = session_target.is_none();
+            let target = match session_target {
+                Some(target) => target,
+                None if discovered.is_some() => discovered.unwrap(),
+                None => return Err(IdeError::not_found("no such setting")),
+            };
             if s.pending_model.is_some() && config::is_per_model_option(&target) {
                 return Err(IdeError::invalid("This setting is not available on the selected model"));
             }
-            if !target.values.iter().any(|v| v.value == value) {
+            if recovered_model {
+                (target, None)
+            } else if !target.values.iter().any(|v| v.value == value) {
                 if target.category.as_deref() != Some("model") {
                     return Err(IdeError::invalid(format!("{} has no value {value}", target.name)));
                 }
@@ -1541,6 +1555,18 @@ impl AgentManager {
             }
         }
         Ok(())
+    }
+
+    pub async fn context_usage(&self, id: &str) -> IdeResult<AgentContextUsage> {
+        let task = self.task(id)?;
+        let live = task.live.lock().clone().ok_or_else(|| IdeError::unavailable("the agent session is offline"))?;
+        if !live.capabilities.context_usage {
+            return Err(IdeError::unavailable("this agent does not report context details"));
+        }
+        live.peer
+            .request("_openidea/context_usage", json!({ "sessionId": live.session }), None)
+            .await
+            .map_err(|error| IdeError::internal(task.describe(error)))
     }
 
     /// Stops background task `background` of task `id`.
@@ -2799,9 +2825,12 @@ impl Task {
         pending_model: Option<&PendingModel>,
     ) -> Result<Live, SessionOpenError> {
         let launch_cwd = cwd.to_path_buf();
-        let mut spec = tokio::task::spawn_blocking(move || spec.resolve_for_launch(&launch_cwd))
-            .await
-            .map_err(|e| SessionOpenError { message: e.to_string(), allow_acp_fallback: false })?;
+        let mut spec = tokio::task::spawn_blocking(move || {
+            spec.resolve_for_launch_with_copilot_env(&launch_cwd, provider::prefer_stored_copilot_auth())
+        })
+        .await
+        .map_err(|e| SessionOpenError { message: e.to_string(), allow_acp_fallback: false })?
+        .map_err(|e| SessionOpenError { message: e, allow_acp_fallback: false })?;
         if spec.driver == provider::Driver::Acp && provider::is_copilot_provider(provider_id) {
             let mcp_overrides = self.state.lock().task.mcp_overrides.clone();
             for name in self.shared.mcp_servers_off_for_session(provider_id, &mcp_overrides) {
@@ -3850,6 +3879,7 @@ fn capabilities_of(init: &acp::Negotiated) -> (AgentCapabilities, bool) {
         rollback: meta("/openidea/rollback"),
         steer: steer_method(init).is_some(),
         background_tasks: meta("/openidea/backgroundTasks"),
+        context_usage: meta("/openidea/contextUsage"),
     };
     (capabilities, init.prompt("embeddedContext"))
 }

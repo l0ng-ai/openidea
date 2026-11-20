@@ -61,6 +61,20 @@ export interface Reveal {
 const KEPT_VIEWS = 8;
 const keptSlots: EditorSlot[] = [];
 
+/**
+ * Holds the visible tabs' tooltip layers. A layer added to `document.body` itself on every
+ * tab switch would change which element is the body's last child, and Chromium then
+ * restyles the whole workbench (`:last-child` rules); inside this host it restyles nothing else.
+ */
+let tooltipHost: HTMLElement | null = null;
+function tooltipHostElement(): HTMLElement {
+  if (!tooltipHost?.isConnected) {
+    tooltipHost = document.createElement("div");
+    document.body.appendChild(tooltipHost);
+  }
+  return tooltipHost;
+}
+
 export class EditorSlot {
   private stored: EditorState;
   private historyTarget: WorkspaceHistoryTarget;
@@ -70,7 +84,7 @@ export class EditorSlot {
   /** The view kept, detached from the document, while the tab is hidden. */
   private kept: EditorView | null = null;
   /**
-   * The tab's tooltips (hints, hover, completion…). They live outside the view, in `document.body`,
+   * The tab's tooltips (hints, hover, completion…). They live outside the view, under `document.body`,
    * so they leave the page with the view when the tab is hidden instead of floating over the next tab.
    */
   private readonly tooltipLayer = typeof document === "undefined" ? null : document.createElement("div");
@@ -207,7 +221,7 @@ export class EditorSlot {
 
   mount(parent: HTMLElement): EditorView {
     if (this.view) return this.view;
-    if (this.tooltipLayer && !this.tooltipLayer.isConnected) document.body.appendChild(this.tooltipLayer);
+    if (this.tooltipLayer && !this.tooltipLayer.isConnected) tooltipHostElement().appendChild(this.tooltipLayer);
     const kept = this.kept;
     let view: EditorView;
     if (kept) {

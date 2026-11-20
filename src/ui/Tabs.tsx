@@ -362,18 +362,16 @@ export function Tabs({
         )
       : null;
   const marker = dragging === null ? drop : null;
+  const stripClass = clsx(
+    styles.strip,
+    styles[variant],
+    vertical ? styles.vertical : layout !== "scroll" && styles[layout],
+    closePosition === "left" && styles.closeLeft,
+    className,
+  );
 
   return (
-    <div
-      className={clsx(
-        styles.strip,
-        styles[variant],
-        vertical ? styles.vertical : layout !== "scroll" && styles[layout],
-        closePosition === "left" && styles.closeLeft,
-        className,
-      )}
-      ref={stripRef}
-    >
+    <div className={stripClass} ref={stripRef}>
       {vertical && trailing && <div className={styles.trailing}>{trailing}</div>}
       <div
         ref={scrollRef}
@@ -422,6 +420,8 @@ export function Tabs({
                         e.currentTarget,
                         { type: dnd.type, payload: dnd.payload(item.id) },
                         {
+                          // The ghost keeps the strip's layout rules (close slot, insets).
+                          ghostContext: stripClass,
                           onStart: () => {
                             draggingRef.current = item.id;
                             setDragging(item.id);

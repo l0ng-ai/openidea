@@ -235,14 +235,19 @@ const laneTheme = EditorView.baseTheme({
  */
 export function laneMouseDown(view: EditorView, event: MouseEvent, path: string): boolean {
   if (event.button !== 0 || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return false;
+  const deletedMarker = event.target instanceof Element ? event.target.closest(".cm-openidea-laneDeleted") : null;
   const lane = view.dom.querySelector(".cm-openidea-lane");
   if (!lane) return false;
-  const rect = lane.getBoundingClientRect();
-  if (event.clientX < rect.left - 1 || event.clientX > rect.right + 3) return false;
-  if (event.clientY < rect.top || event.clientY > rect.bottom) return false;
-  const block = view.lineBlockAtHeight(event.clientY - view.documentTop);
+  if (!deletedMarker) {
+    const rect = lane.getBoundingClientRect();
+    if (event.clientX < rect.left - 1 || event.clientX > rect.right + 3) return false;
+    if (event.clientY < rect.top || event.clientY > rect.bottom) return false;
+  }
+  const markerRect = deletedMarker?.getBoundingClientRect();
+  const y = markerRect ? markerRect.top + markerRect.height / 2 + 1 : event.clientY;
+  const block = view.lineBlockAtHeight(y - view.documentTop);
   const hunk = hunkAtPos(view.state, block.from);
-  if (!hunk) return false;
+  if (!hunk || (deletedMarker && hunk.kind !== "deleted")) return false;
   event.preventDefault();
   event.stopPropagation();
   showHunkPopup(view, hunk, path);

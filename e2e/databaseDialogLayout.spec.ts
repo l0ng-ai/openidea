@@ -10,7 +10,7 @@ test("data source tabs share a stable layout and scroll within a short window", 
 
   const dialog = page.getByRole("dialog", { name: "New Data Source" });
   const panel = dialog.getByRole("tabpanel");
-  const dialogSize = () => dialog.evaluate((element) => [element.offsetWidth, element.offsetHeight]);
+  const dialogSize = () => dialog.evaluate((element: HTMLElement) => [element.offsetWidth, element.offsetHeight]);
   await expect(panel.getByRole("textbox", { name: "Host:" })).toBeVisible();
   const size = await dialogSize();
   await dialog.getByRole("tab", { name: "SSH/SSL" }).click();

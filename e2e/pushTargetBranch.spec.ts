@@ -9,50 +9,75 @@ import { expect, stubDesktop, test } from "./fixtures";
 const ROOT = "/dev/acme-api";
 const HUGE = `feature/wrap-${"x".repeat(140)}`;
 
-async function openPushDialog(page: Page) {
+const OUTGOING = "Apply order-level discounts before calculating checkout taxes";
+
+async function openPushDialog(page: Page, { outgoing = false, multi = false } = {}) {
   await stubDesktop(page);
-  await page.evaluate(async (root) => {
-    const h = window.__ipc.handlers;
-    h.vcs_roots = () => [{ root, operation: null, head: "main", headCommit: "1111111" }];
-    h.vcs_branch_info = () => ({
-      head: "main",
-      headCommit: "1111111",
-      upstream: "origin/main",
-      ahead: 0,
-      behind: 0,
-      operation: null,
-    });
-    h.vcs_status = () => [];
-    h.vcs_log = () => [];
-    h.vcs_remotes = () => [{ name: "origin", url: "git@example.com:acme/api.git" }];
-    const branch = (name: string, remote: boolean, upstream: string | null = null) => ({
-      name,
-      remote,
-      current: !remote,
-      upstream,
-      ahead: 0,
-      behind: 0,
-      lastCommitMs: 0,
-    });
-    h.vcs_branches = () => [
-      branch("main", false, "origin/main"),
-      branch("feature/login", false),
-      branch("origin/main", true),
-      branch("origin/feature/login", true),
-      branch("origin/fix/error-auth", true),
-      branch("origin/feature/PLATFORM-12345-order-history-export", true),
-      branch(`origin/feature/wrap-${"x".repeat(140)}`, true),
-    ];
-    const vcsModule = "/src/features/vcs/store.ts";
-    const { useVcs, refreshNow } = await import(/* @vite-ignore */ vcsModule);
-    useVcs.setState({ available: true, root, repo: root, branchesLoaded: false, stashesLoaded: false });
-    await refreshNow();
-    const actionsModule = "/src/platform/actions.ts";
-    const { executeAction } = await import(/* @vite-ignore */ actionsModule);
-    void executeAction("vcs.push");
-  }, ROOT);
+  await page.evaluate(
+    async ({ root, outgoing, multi, subject }) => {
+      const h = window.__ipc.handlers;
+      const head = multi ? "feature/refine-checkout-pricing-and-order-summary-for-regional-release" : "main";
+      const roots = multi ? [root, `${root}/billing-and-refunds`] : [root];
+      h.vcs_roots = () => roots.map((root) => ({ root, operation: null, head, headCommit: "1111111" }));
+      h.vcs_branch_info = () => ({
+        head,
+        headCommit: "1111111",
+        upstream: `origin/${head}`,
+        ahead: outgoing ? 1 : 0,
+        behind: 0,
+        operation: null,
+      });
+      h.vcs_status = () => [];
+      h.vcs_log = () =>
+        outgoing
+          ? [
+              {
+                id: "2222222",
+                shortId: "2222222",
+                parents: ["1111111"],
+                summary: subject,
+                message: subject + "\n\nKeep the new totals consistent with receipts.",
+                author: "Sam Rivera",
+                email: "sam@example.com",
+                timeMs: 1795100000000,
+              },
+            ]
+          : [];
+      h.vcs_commit_files = () => [{ path: "checkout.ts", oldPath: null, kind: "modified" }];
+      h.vcs_has_hook = () => false;
+      h.vcs_remotes = () => [{ name: "origin", url: "git@example.com:acme/api.git" }];
+      const branch = (name: string, remote: boolean, upstream: string | null = null) => ({
+        name,
+        remote,
+        current: !remote,
+        upstream,
+        ahead: 0,
+        behind: 0,
+        lastCommitMs: 0,
+      });
+      h.vcs_branches = () => [
+        branch("main", false, "origin/main"),
+        branch("feature/login", false),
+        branch("origin/main", true),
+        branch("origin/feature/login", true),
+        branch("origin/fix/error-auth", true),
+        branch("origin/feature/PLATFORM-12345-order-history-export", true),
+        branch(`origin/feature/wrap-${"x".repeat(140)}`, true),
+      ];
+      const vcsModule = "/src/features/vcs/store.ts";
+      const { useVcs, refreshNow } = await import(/* @vite-ignore */ vcsModule);
+      useVcs.setState({ available: true, root, repo: root, branchesLoaded: false, stashesLoaded: false });
+      await refreshNow();
+      const actionsModule = "/src/platform/actions.ts";
+      const { executeAction } = await import(/* @vite-ignore */ actionsModule);
+      void executeAction("vcs.push");
+    },
+    { root: ROOT, outgoing, multi, subject: OUTGOING },
+  );
   const dialog = page.getByRole("dialog", { name: /Push/ });
-  const input = dialog.getByRole("combobox", { name: "Target branch" });
+  const input = multi
+    ? dialog.getByRole("textbox", { name: "Target branch of acme-api" })
+    : dialog.getByRole("combobox", { name: "Target branch" });
   await expect(input).toBeVisible();
   return { dialog, input };
 }
@@ -126,4 +151,57 @@ test("Escape closes the list but keeps the dialog", async ({ workbench: page }) 
   await input.press("Escape");
   await expect(page.getByRole("listbox", { name: "Remote branches" })).toHaveCount(0);
   await expect(dialog).toBeVisible();
+});
+
+test("Push keeps commit subjects and changed files readable in a narrow window", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 1140, height: 760 });
+  const { dialog, input } = await openPushDialog(page, { outgoing: true });
+  const outgoing = dialog.getByRole("listbox", { name: "Outgoing commits" });
+  const files = dialog.getByRole("tree", { name: "Changed files" });
+  const commit = outgoing.getByRole("option", { name: new RegExp(OUTGOING) });
+  await commit.click();
+  await expect(files.getByText("checkout.ts")).toBeVisible();
+  const filesBelowCommits = async () => {
+    const [list, tree] = await Promise.all([outgoing.boundingBox(), files.boundingBox()]);
+    return !!list && !!tree && tree.y >= list.y + list.height;
+  };
+  await expect.poll(filesBelowCommits).toBe(false);
+
+  await page.setViewportSize({ width: 540, height: 630 });
+  await expect.poll(filesBelowCommits).toBe(true);
+  await expect(commit).toHaveAttribute("aria-selected", "true");
+  const subject = commit.getByText(OUTGOING, { exact: true });
+  await expect(subject).toHaveAttribute("title", /Sam Rivera/);
+  await expect.poll(() => subject.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await expect(input).toHaveValue("main");
+  await expect(dialog.getByRole("button", { name: "Push", exact: true })).toBeInViewport();
+  const details = dialog.getByRole("region", { name: "Commit details" });
+  await expect(details).toContainText("Keep the new totals consistent with receipts.");
+  await expect
+    .poll(async () => {
+      const [tree, message] = await Promise.all([files.boundingBox(), details.boundingBox()]);
+      return !!tree && !!message && message.y >= tree.y + tree.height;
+    })
+    .toBe(true);
+});
+
+test("Push keeps per-repository targets editable with long source branches", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 475, height: 620 });
+  const { dialog, input } = await openPushDialog(page, { outgoing: true, multi: true });
+  const other = dialog.getByRole("textbox", { name: "Target branch of billing-and-refunds" });
+  for (const field of [input, other]) {
+    await expect
+      .poll(() =>
+        field.evaluate((target) => {
+          const row = target.closest('[role="treeitem"]')!.getBoundingClientRect();
+          const bounds = target.getBoundingClientRect();
+          return bounds.width >= 42 && bounds.left >= row.left && bounds.right <= row.right;
+        }),
+      )
+      .toBe(true);
+  }
+  await input.fill("release/checkout");
+  await expect(input).toHaveValue("release/checkout");
+  await expect(other).toHaveValue(/^feature\//);
+  await expect(dialog.getByRole("checkbox", { name: "acme-api" })).toBeChecked();
 });

@@ -102,6 +102,20 @@
 .locations > * {
   flex: 1;
 }
+.switcher {
+  min-height: min(350px, 80vh);
+}
+.switcher .columns {
+  flex: auto;
+  height: auto;
+  max-height: 440px;
+}
+.switcher .tools {
+  width: clamp(112px, 32%, 184px);
+}
+.switcher .footer {
+  font-size: var(--fs-small);
+}
 .locationsLink {
   flex: none;
   display: flex;
@@ -266,6 +280,13 @@
   .hint,
   .tools .shortcut {
     display: none;
+  }
+  .switcher .columns {
+    --list-inset: var(--space-1);
+  }
+  .switcher .columns [role="option"] {
+    gap: var(--space-1);
+    padding-inline: var(--space-1);
   }
   .locationsLink {
     margin-inline: var(--space-1);
