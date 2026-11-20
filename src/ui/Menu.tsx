@@ -332,12 +332,12 @@ export function MenuList({
       default:
         if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
           if (numbers && /^[1-9]$/.test(e.key)) {
-            const n = Number(e.key);
-            for (let i = 0; i < resolved.length; i++)
-              if (numbersOf[i] === n) {
-                activate(i);
-                break;
-              }
+            const index = numbersOf.indexOf(Number(e.key));
+            if (index >= 0) {
+              e.preventDefault();
+              e.stopPropagation();
+              activate(index);
+            }
             return;
           }
           const ch = e.key.toLowerCase();
@@ -465,6 +465,7 @@ export interface MenuProps {
   onClose: () => void;
   anchor: PopupAnchor;
   items: MenuItem[];
+  title?: string;
   iconColumn?: boolean;
   placement?: Placement;
   "aria-label"?: string;
@@ -478,11 +479,13 @@ export function Menu({
   onClose,
   anchor,
   items,
+  title,
   placement = "bottom-start",
   iconColumn,
   numbers,
   ...aria
 }: MenuProps) {
+  const heading = title ? tx(title) : undefined;
   return (
     <Popup
       open={open}
@@ -491,14 +494,15 @@ export function Menu({
       placement={placement}
       role="presentation"
       autoFocus={false}
-      className={styles.popup}
+      className={clsx(styles.popup, heading && styles.titledPopup)}
     >
+      {heading && <div className={styles.menuHeading}>{heading}</div>}
       <MenuList
         items={items}
         onDone={onClose}
         iconColumn={iconColumn}
         numbers={numbers}
-        aria-label={aria["aria-label"]}
+        aria-label={aria["aria-label"] ?? heading}
       />
     </Popup>
   );
