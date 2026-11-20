@@ -123,11 +123,12 @@
 .radio {
   display: inline-flex;
   flex: none;
-  white-space: nowrap;
+  max-inline-size: 100%;
   align-items: center;
   gap: var(--space-1-5);
 }
 .radio input {
+  flex: none;
   margin: 0;
   accent-color: var(--accent);
 }
