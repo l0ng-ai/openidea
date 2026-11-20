@@ -6310,9 +6310,12 @@ export type FoldRange = {
 	kind: FoldKind,
 };
 
+export type FoldingOutlineVisibility = "hover" | "always";
+
 /**  Editor › General › Code Folding. */
 export type FoldingSettings = {
 	showOutline?: boolean,
+	outlineVisibility?: FoldingOutlineVisibility,
 	fileHeader?: boolean,
 	imports?: boolean,
 	docComments?: boolean,

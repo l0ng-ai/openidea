@@ -1,6 +1,7 @@
 {
   "Open diff as editor tab": "以编辑器标签页打开差异",
   "When off, diffs you open (changes, history, Compare) show in a separate window.": "关闭后，打开的差异（更改、历史记录、比较）会显示在单独的窗口中。",
+  "On hover": "悬停时",
   "Plain-text word lists (one word per line) or Hunspell .dic files; a .dic with its .aff beside it also accepts the inflected forms and compounds its rules allow. Relative paths resolve against the project root, ~/ against the home folder.": "纯文本单词列表（每行一个词）或 Hunspell .dic 文件；旁边有同名 .aff 的 .dic 还会接受其规则允许的变形和复合词。相对路径基于项目根目录解析，~/ 表示主目录。",
   "MCP server instructions": "MCP 服务器说明",
   "MCP tools (deferred)": "MCP 工具（延迟加载）",

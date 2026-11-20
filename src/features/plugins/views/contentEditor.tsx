@@ -6,12 +6,11 @@ import { defaultKeymap, history, historyKeymap, indentWithTab, redo, undo } from
 import { syntaxHighlighting } from "@codemirror/language";
 import { caretRowHighlight } from "@/editor/core/cm/caretRow";
 import { findExtension, findResultLines, findScope, type FindOptions } from "@/editor/core/cm/find";
-import { foldingExtension } from "@/editor/core/cm/folding";
 import { openideaHighlightStyle } from "@/editor/core/cm/highlight";
 import { overviewLane } from "@/editor/core/cm/lanes";
 import { findLanguageDescription, loadSupport } from "@/editor/core/cm/languages";
 import { caretExtension, fontZoom, setFontZoom, stepFontZoom } from "@/editor/core/cm/prefs";
-import { fontExtension, heavyExtension, lineNumbersExtension } from "@/editor/core/cm/setup";
+import { foldingFor, fontExtension, heavyExtension, lineNumbersExtension } from "@/editor/core/cm/setup";
 import { openideaTheme } from "@/editor/core/cm/theme";
 import { FindPanel, searchAgain, seedFind, type FindTarget } from "@/editor/core/view/FindBar";
 import { executeAction } from "@/platform/actions";
@@ -417,7 +416,7 @@ function PluginContentEditorBody({ input, initialData }: { input: EditorInput; i
           fontSlot.of(fontExtension(editorSettings())),
           caretSlot.of(caretExtension(editorPrefs())),
           lineNumbersSlot.of(lineNumbersExtension(editorSettings())),
-          foldingSlot.of(foldingExtension(editorPrefs().folding.showOutline)),
+          foldingSlot.of(foldingFor(editorSettings())),
           heavySlot.of(heavyExtension(session.currentText.length, editorSettings())),
           langSlot.of([]),
           readOnlySlot.of([EditorState.readOnly.of(effectiveReadOnly), EditorView.editable.of(!effectiveReadOnly)]),
@@ -482,7 +481,7 @@ function PluginContentEditorBody({ input, initialData }: { input: EditorInput; i
         effects.push(
           fontSlot.reconfigure(fontExtension(nextEditor)),
           lineNumbersSlot.reconfigure(lineNumbersExtension(nextEditor)),
-          foldingSlot.reconfigure(foldingExtension(nextPrefs.folding.showOutline)),
+          foldingSlot.reconfigure(foldingFor(nextEditor)),
           heavySlot.reconfigure(heavyExtension(view.state.doc.length, nextEditor)),
         );
       }
