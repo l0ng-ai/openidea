@@ -138,6 +138,58 @@
 .table tbody tr.selectedRow {
   background: var(--bg-tree-selected);
 }
+.mappingsTable {
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  font-size: var(--fs-ui);
+}
+.mappingsTable > .toolbar {
+  flex: none;
+}
+.mappingRows {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  scroll-padding-top: var(--h-list-row);
+}
+.mappingRows th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-control);
+  border-bottom: 0;
+  box-shadow: inset 0 -1px var(--border);
+}
+.mappingVcsColumn {
+  width: 112px;
+}
+.mappingRows .mappingSelect {
+  width: 100%;
+  padding-inline-start: 0;
+}
+.mappingDirectory {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+}
+.mappingPath {
+  display: flex;
+  min-width: 0;
+}
+.mappingParent,
+.mappingName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mappingParent {
+  min-width: 0;
+  color: var(--fg-subtle);
+}
+.mappingName {
+  flex: none;
+  max-width: 100%;
+}
 .mono {
   font-family: var(--font-mono);
 }
@@ -228,9 +280,7 @@
   color: var(--fg-subtle);
 }
 .mappingIcon {
-  display: inline-block;
-  vertical-align: -3px;
-  margin-right: 6px;
+  flex: none;
 }
 /* The aligned rows of a section share one label column, as wide as its widest label. */
 .toolsLayout *:has(> .alignedRow) {
