@@ -22,7 +22,7 @@ import { BranchSync } from "../BranchSync";
 import styles from "../GitLog.module.css";
 import { LogIdContext } from "../logContext";
 import { canUpdateBranch, useBranchesPane, type BranchTarget } from "../logPaneActions";
-import { hasFilters, reloadLog, scopedLogRepositories, setLogBranches, setLogFilters, useGitLog } from "../logStore";
+import { reloadLog, scopedLogRepositories, setLogBranches, setLogFilters, useGitLog } from "../logStore";
 import { branchesByRepo } from "../multiRoot";
 import { commonBranches } from "../repoBranches";
 import { currentRepo, loadBranches, repoName, useVcs } from "../store";
@@ -34,10 +34,10 @@ import { useLogRepositories, useReadOnlyLog } from "./logHooks";
  * `total`: the repositories shown; a ref missing from some of them names those that have it,
  * last, so a narrow pane cuts that list off before the branch name or its markers.
  */
-function branchDetail(n: BranchTreeNode, total: number, showRepositories: boolean): ReactNode {
+function branchDetail(n: BranchTreeNode, total: number): ReactNode {
   const b = n.branch;
   const repos =
-    showRepositories && n.repos && n.repos.length < total ? (
+    n.repos && n.repos.length < total ? (
       <span className={styles.branchRepos}>({n.repos.map(repoName).join(", ")})</span>
     ) : null;
   const sync =
@@ -113,7 +113,6 @@ export function BranchesPanel() {
   const favorites = useFavoriteBranches((s) => s.names);
   const filterBranches = filters.branches;
   const [query, setQuery] = useState("");
-  const showRepositories = hasFilters(filters) || Boolean(query.trim());
   const [tags, setTags] = useState<string[]>([]);
   useEffect(() => loadFavoriteBranches(), [root]);
   // Branches reload when refs move (fetch, new tag…): the tags are re-read with them.
@@ -332,7 +331,7 @@ export function BranchesPanel() {
                       : "branch"
                     : "folder"
           }
-          getDetail={(n) => branchDetail(n, repositories.length, showRepositories)}
+          getDetail={(n) => branchDetail(n, availableRepositories.length)}
           selected={selected}
           onSelectionChange={(sel) => setSelected(sel)}
           onActivate={(n) => {

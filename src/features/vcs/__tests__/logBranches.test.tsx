@@ -208,22 +208,12 @@ describe("Git Log branches pane with several repositories", () => {
   });
   afterEach(() => useVcs.setState({ roots: [], heads: {} }));
 
-  it("lists branches once and shows repository names when filtered", async () => {
+  it("lists branches once, naming the repositories of partial ones", async () => {
     render(<BranchesPanel />);
     const solo = await screen.findByText("solo");
-    expect(solo.closest("[data-row]")).not.toHaveTextContent("(a)");
+    expect(solo.closest("[data-row]")).toHaveTextContent("(a)");
     expect(screen.getAllByText("dev")).toHaveLength(1);
     expect(screen.getByText("dev").closest("[data-row]")).not.toHaveTextContent("(");
-
-    act(() => useGitLog.setState({ filters: { ...emptyFilters(), text: "commit" } }));
-    expect(solo.closest("[data-row]")).toHaveTextContent("(a)");
-
-    act(() => useGitLog.setState({ filters: emptyFilters() }));
-    expect(solo.closest("[data-row]")).not.toHaveTextContent("(a)");
-
-    fireEvent.change(screen.getByLabelText("Filter branches and tags"), { target: { value: "solo" } });
-    expect(screen.getByText("solo").closest("[data-row]")).toHaveTextContent("(a)");
-    expect(screen.queryByText("dev")).toBeNull();
   });
 
   it("shows only branches of the repository selected by Paths", async () => {
@@ -247,7 +237,6 @@ describe("Git Log branches pane with several repositories", () => {
 
   it("keeps the current marker ahead of the repository names, which may be cut off", async () => {
     repoData.branches = { "/p/a": [b("main", { current: true }), b("dev")], "/p/b": [b("dev", { current: true })] };
-    useGitLog.setState({ filters: { ...emptyFilters(), branches: ["main"] } });
     render(<BranchesPanel />);
     const row = (await screen.findByText("main")).closest("[data-row]")!;
     expect(row.textContent).toMatch(/main.*current.*\(a\)/);
