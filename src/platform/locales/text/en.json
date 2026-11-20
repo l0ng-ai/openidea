@@ -387,6 +387,8 @@
   "String ({chars} chars)": "String ({chars} chars)",
   "Roll back the changes to {path}?": "Roll back the changes to {path}?",
   "Roll back the changes to {count} files?": "Roll back the changes to {count} files?",
+  "Apply Patch": "Apply Patch",
+  "Patch source": "Patch source",
   "They go back to how they were when the task started, in the task's worktree.": "They go back to how they were when the task started, in the task's worktree.",
   "They go back to how they were when the task started. Edits of yours made to them since then are lost too; edits from before the task are kept.": "They go back to how they were when the task started. Edits of yours made to them since then are lost too; edits from before the task are kept.",
   "They go back to the last commit; changes made after it are lost.": "They go back to the last commit; changes made after it are lost.",
