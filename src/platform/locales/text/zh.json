@@ -8667,6 +8667,7 @@
   "Exited with code {code}": "退出代码 {code}",
   "Only while the tab cannot be seen. A command stopped with Ctrl-C, shell startup and short commands stay quiet; a non-zero exit always reports its code.": "仅当标签页不可见时通知。用 Ctrl-C 停止的命令、shell 启动和短命令保持安静；非零退出始终报告退出代码。",
   "Generate Commit Message with Agent": "使用智能体生成提交消息",
+  "Show the Generate Commit Message with Agent button": "显示“使用智能体生成提交消息”按钮",
   "Has the coding agent you work with review the changes about to be committed and write the commit message.": "让您正在使用的编程智能体审查即将提交的更改并撰写提交消息。",
   "No changes to describe": "没有可描述的更改",
   "Include changes in the commit first.": "请先在提交中包含更改。",
