@@ -2764,5 +2764,7 @@
   "{name} changed on disk": "{name} changed on disk",
   "The file was changed outside the IDE while it has unsaved changes in the editor. Saving keeps the editor's version and overwrites the file.": "The file was changed outside the IDE while it has unsaved changes in the editor. Saving keeps the editor's version and overwrites the file.",
   "Load Changes from Disk": "Load Changes from Disk",
-  "Keep Editor Changes": "Keep Editor Changes"
+  "Keep Editor Changes": "Keep Editor Changes",
+  "Branches have diverged": "Branches have diverged",
+  "Check out the same branch in all repositories to operate on them together.": "Check out the same branch in all repositories to operate on them together."
 }

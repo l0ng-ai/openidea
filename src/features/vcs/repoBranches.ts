@@ -106,6 +106,8 @@ export type BranchGroupKind = "recent" | "local" | "remote";
 export type RepoRow =
   /** Section header; an empty label draws a separator. */
   | { type: "section"; key: string; label: string }
+  /** A warning above the branches (not selectable): the repositories are on different branches. */
+  | { type: "notice"; key: string; label: string; detail: string }
   | { type: "action"; key: string; action: PopupAction; matches: number[] | null }
   | { type: "repo"; key: string; repo: RepoEntry; color: number; matches: number[] | null }
   /** Collapsible group (common branches, or one of the current repository's lists) or prefix / remote folder. */
@@ -148,13 +150,15 @@ export interface MultiRepoInput extends Omit<BranchTreeOptions, "expanded"> {
   recent?: readonly string[];
   /** Tags of the current repository. */
   tags?: readonly string[];
+  /** Branch operations act on all repositories (the setting): the common branches are listed. */
+  sync: boolean;
 }
 
 /**
  * Rows of the Branches popup with several repositories: actions; the repositories,
- * each with its current branch and opening its own branches; then, when they are all
- * on the same branch, the branches common to all of them (acting on all of them),
- * otherwise the current repository's recent, local and remote branches and tags, in
+ * each with its current branch and opening its own branches; then, with `sync`, the
+ * branches common to all of them (acting on all of them; a notice when the repositories
+ * are on different branches), otherwise the current repository's recent, local and remote branches and tags, in
  * collapsible groups (Recent open, Local open only without Recent). A query filters
  * actions, repositories (by name) and branches, expands every group, and adds the
  * other repositories' matching branches.
@@ -172,6 +176,7 @@ export function buildMultiRepoRows({
   groupByPrefix = true,
   showRecent = true,
   showTags = true,
+  sync,
 }: MultiRepoInput): RepoRow[] {
   const q = query.trim();
   const match = (text: string): number[] | null | false => (q ? (wordMatch(text, q) ?? false) : null);
@@ -277,8 +282,15 @@ export function buildMultiRepoRows({
     );
   };
 
-  const shared = !widgetShowsRepo(repos);
+  const shared = sync;
   const groups: RepoRow[] = [];
+  if (sync && widgetShowsRepo(repos))
+    groups.push({
+      type: "notice",
+      key: "notice:diverged",
+      label: tx("Branches have diverged"),
+      detail: tx("Check out the same branch in all repositories to operate on them together."),
+    });
   let shown = new Set<string>();
   const currentRepo = repos.find((r) => r.root === current) ?? repos[0];
   if (shared) {

@@ -5652,6 +5652,8 @@
   "Delete remote branch": "删除远程分支",
   "binary": "二进制",
   "Common Local Branches": "公共本地分支",
+  "Branches have diverged": "分支已分叉",
+  "Check out the same branch in all repositories to operate on them together.": "在所有仓库检出同一分支后，才能同时操作它们。",
   "Common Remote Branches": "公共远程分支",
   "Recent Branches in {name}": "{name} 中的最近分支",
   "Local Branches in {name}": "{name} 中的本地分支",
