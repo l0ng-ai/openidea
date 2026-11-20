@@ -324,6 +324,18 @@ const scroll: Scenario = {
 };
 
 /**
+ * Runs an action without a default shortcut from a key press: the press is the measured input,
+ * and the action runs in its handler, as from a key binding. Pause is bound to nothing.
+ */
+async function runActionOnKey(h: Harness, id: string) {
+  await h.page.evaluate((id) => {
+    const probe = (window as never as { __openideaPerf: { runAction(id: string): Promise<boolean> } }).__openideaPerf;
+    addEventListener("keydown", () => void probe.runAction(id), { capture: true, once: true });
+  }, id);
+  await h.page.keyboard.press("Pause");
+}
+
+/**
  * Git Log with 20,000 commits on branching lanes, loaded page by page as the
  * backend does (150 ms a page, like `git log`): showing it, walking the
  * selection with the arrow keys (the details pane follows) and wheel-scrolling
@@ -339,12 +351,7 @@ const gitLog: Scenario = {
       ).__openideaPerf.fakeGitLog(20_000, 150),
     );
     const showMs = await h.measure(
-      () =>
-        h.page.evaluate(() =>
-          (window as never as { __openideaPerf: { runAction(id: string): Promise<boolean> } }).__openideaPerf.runAction(
-            "vcs.showLog",
-          ),
-        ),
+      () => runActionOnKey(h, "vcs.showLog"),
       '[role="listbox"][aria-label="Commits"]',
       "order flow step 0",
     );
@@ -430,16 +437,13 @@ const resizePanels: Scenario = {
     await h.page.evaluate(() =>
       (window as never as { __openideaPerf: { fakeGitLog(n: number): void } }).__openideaPerf.fakeGitLog(2_000),
     );
-    await h.measure(
-      () =>
-        h.page.evaluate(() =>
-          (window as never as { __openideaPerf: { runAction(id: string): Promise<boolean> } }).__openideaPerf.runAction(
-            "vcs.showLog",
-          ),
-        ),
-      '[role="listbox"][aria-label="Commits"]',
-      "order flow step 0",
+    await h.page.evaluate(() =>
+      (window as never as { __openideaPerf: { runAction(id: string): Promise<boolean> } }).__openideaPerf.runAction(
+        "vcs.showLog",
+      ),
     );
+    // Set-up, not measured: the splitters are dragged once the log is shown.
+    await h.inPage((p) => p.waitShown('[role="listbox"][aria-label="Commits"]', "order flow step 0", 10_000));
     const refresh = await h.refreshMs();
     const drag = async (name: string, dx: number, dy: number) => {
       const box = (await h.page.getByRole("separator", { name }).boundingBox())!;
@@ -560,7 +564,9 @@ const agentTabs: Scenario = {
         window as never as { __openideaPerf: { runAction(id: string, arg?: unknown): Promise<boolean> } }
       ).__openideaPerf.runAction("agents.openSampleConversations", { tasks: 2, turns: 150 }),
     );
-    const shown = (n: number) => `[data-editor-focus] span[title="Sample task ${n}"]`;
+    // The conversation shown: its requests end with its task's title.
+    const SHOWN = "[data-editor-focus] [data-message]";
+    const title = (n: number) => `(Sample task ${n})`;
     // Both conversations get their earlier entries painted in background batches, also the
     // first one, hidden behind the second as soon as it opened.
     await h.page.waitForFunction(
@@ -575,25 +581,28 @@ const agentTabs: Scenario = {
     // Rows painted while hidden are laid out the first time their conversation shows.
     for (const n of [1, 2]) {
       await h.page.getByRole("tab", { name: `Sample task ${n}` }).click();
-      await h.page.locator(shown(n)).waitFor();
+      await h.page
+        .locator(SHOWN, { hasText: title(n) })
+        .first()
+        .waitFor();
       await h.page.waitForTimeout(300);
     }
     // WebKit restyles a hidden conversation in full when it is shown again (Chromium keeps its
     // style): what bounds that there is the history's DOM, and rows skipping rendering off screen.
     const { conversationNodes, rowsAlwaysRendered } = await h.page.evaluate((selector) => {
-      const conversation = document.querySelector(selector)!.closest("[data-editor-focus]")!;
+      const conversation = document.querySelector(selector)!;
       const rows = [...conversation.querySelector("[data-message]")!.parentElement!.children];
       return {
         conversationNodes: conversation.querySelectorAll("*").length,
         rowsAlwaysRendered: rows.filter((r) => getComputedStyle(r).contentVisibility !== "auto").length,
       };
-    }, shown(2));
+    }, "[data-editor-focus]");
 
     const t0 = await h.now();
     const before = await h.counters();
     const switches: number[] = [];
     for (let i = 0; i < 10; i++) {
-      switches.push(await h.measure(() => h.pressAction("navigate.switcher"), shown(i % 2 ? 2 : 1)));
+      switches.push(await h.measure(() => h.pressAction("navigate.switcher"), SHOWN, title(i % 2 ? 2 : 1)));
       await h.page.waitForTimeout(150);
     }
     const work = Harness.delta(before, await h.counters());
@@ -602,10 +611,7 @@ const agentTabs: Scenario = {
     // Scrolling up from the end, a step at a time: how far the text under the pointer moves
     // beyond the scroll itself.
     const scrollJumps = await h.page.evaluate(async (selector) => {
-      const stream = document
-        .querySelector(selector)!
-        .closest("[data-editor-focus]")!
-        .querySelector("[data-message]")!.parentElement!;
+      const stream = document.querySelector(selector)!.parentElement!;
       const frame = () => new Promise(requestAnimationFrame);
       stream.scrollTop = stream.scrollHeight;
       await frame();
@@ -626,7 +632,7 @@ const agentTabs: Scenario = {
       }
       stream.scrollTop = stream.scrollHeight;
       return jumps;
-    }, shown(2));
+    }, SHOWN);
 
     const refresh = await h.refreshMs();
     const box = (await h.page.locator("[data-editor-focus]").boundingBox())!;
@@ -732,6 +738,9 @@ const projectTree: Scenario = {
   async run(h) {
     const generated = h.page.locator('[role="treeitem"][aria-level="2"]', { hasText: "generated" }).first();
     await generated.click();
+    // Measure from a settled selection: a key pressed in the click's own frame also pays for that frame.
+    await generated.and(h.page.locator('[aria-selected="true"]')).waitFor();
+    await h.page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
     const expandMs = await h.measure(
       () => h.page.keyboard.press("ArrowRight"),
       '[role="tree"][aria-label="Project"]',

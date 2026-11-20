@@ -240,12 +240,10 @@ describe("shelf scope and diffs", () => {
       </>,
     );
     await waitFor(() => expect(screen.getByText("Work")).toBeTruthy());
-    fireEvent.doubleClick(screen.getByText("Work"));
-    // Expand explicitly through the accessible tree keyboard navigation.
-    const tree = screen.getByRole("tree");
-    fireEvent.keyDown(tree, { key: "ArrowRight" });
+    fireEvent.mouseDown(screen.getByText("Work"), { button: 0 });
+    expect(useCommit.getState().selectedShelf).toBe("work");
     const file = await screen.findByText("a.txt");
-    fireEvent.click(file);
+    fireEvent.mouseDown(file, { button: 0 });
     expect(useCommit.getState().selectedShelf).toBe("work\u0000a.txt");
     fireEvent.click(screen.getByRole("button", { name: "Unshelve…" }));
     expect(mocks.execute).toHaveBeenCalledWith("vcs.unshelve", { id: "work", path: "a.txt" });

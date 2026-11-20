@@ -3,23 +3,21 @@
   flex-direction: column;
   min-width: 0;
   height: 100%;
-  min-height: 420px;
+  min-height: 0;
 }
 .topBar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: center;
   gap: var(--space-1-5);
+  min-width: 0;
 }
-.side {
-  display: flex;
+.page > .topBar {
   flex: none;
-  flex-direction: column;
-  width: clamp(320px, 42%, 480px);
-  min-height: 0;
-  border-right: 1px solid var(--border);
+  padding: 0 var(--space-2) var(--space-1);
 }
 .sourceTabs {
-  flex: none;
   border-bottom: 0;
 }
 .tabCount {
@@ -37,13 +35,14 @@
 .searchRow {
   display: flex;
   flex: none;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-1-5);
   padding: 8px;
   border-bottom: 1px solid var(--border);
 }
 .searchField {
-  flex: 1;
+  flex: 1 1 132px;
   min-width: 0;
 }
 .spacer {
@@ -58,8 +57,6 @@
   overflow-wrap: anywhere;
 }
 .body {
-  display: flex;
-  min-width: 640px;
   flex: 1;
   min-height: 0;
   border-top: 1px solid var(--border);
@@ -237,11 +234,14 @@
 .details {
   flex: 1;
   min-width: 0;
-  padding: 16px 20px 20px;
+  min-height: 0;
+  padding: var(--space-4);
   overflow: auto;
 }
 .detailsEmpty {
   flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 /* Tags, name, vendor, then the actions with the version. */
 .header {
@@ -258,6 +258,7 @@
   color: var(--fg);
   font: inherit;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .titleLine {
   display: flex;
@@ -273,15 +274,19 @@
 .title {
   margin: 0;
   color: var(--fg-strong);
-  font-size: var(--fs-input-large);
+  font-size: 1.375em;
   font-weight: 600;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
 }
 .version {
   color: var(--fg-muted);
+  font-size: var(--fs-small);
   font-variant-numeric: tabular-nums;
 }
 .authors {
   color: var(--fg-secondary);
+  overflow-wrap: anywhere;
 }
 .headerActions {
   display: flex;
@@ -298,6 +303,7 @@
   margin: 10px 0 0;
   max-width: 640px;
   color: var(--fg);
+  overflow-wrap: anywhere;
 }
 .details .error {
   margin-top: 10px;
@@ -434,6 +440,7 @@
 
 .consentNotice {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-3);
   justify-content: space-between;
@@ -444,8 +451,7 @@
 }
 
 .categorySelect {
-  flex: none;
-  width: 150px;
+  flex: 0 1 150px;
 }
 .ownIcon {
   background: transparent;

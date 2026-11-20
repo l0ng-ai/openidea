@@ -29,7 +29,7 @@ function task(id: string, title: string, cwd: string): AgentTask {
 }
 
 /** A turn as agents work: a request, reasoning, a run of tool calls, then a reply with code. */
-function turn(cwd: string, i: number): AgentEntry[] {
+function turn(cwd: string, i: number, title: string): AgentEntry[] {
   const file = (k: number) => `${cwd}/src/orders/Order${(i + k) % 40}.kt`;
   const tools: AgentEntry[] = Array.from({ length: 10 }, (_, k) => {
     // Tool titles as agents report them (commands and paths, not UI text).
@@ -49,7 +49,8 @@ function turn(cwd: string, i: number): AgentEntry[] {
     };
   });
   // What a user and an agent wrote (conversation content, not UI text).
-  const request = `Turn ${i}: make the order service retry failed payments and cover it with tests`;
+  // Ends with the task's title, so each conversation shown can be told apart.
+  const request = `Turn ${i}: make the order service retry failed payments and cover it with tests (${title})`;
   const reasoning = `The payment client throws on timeouts; retrying belongs in the service (turn ${i}).`;
   return [
     {
@@ -94,14 +95,14 @@ function turn(cwd: string, i: number): AgentEntry[] {
 /** Opens `count` tasks of `turns` turns each (14 entries a turn), the last one shown. */
 export function openSampleConversations(count: number, turns: number) {
   const cwd = useProject.getState().project?.root ?? "/";
-  const entries = Array.from({ length: turns }, (_, i) => turn(cwd, i)).flat();
   const s = useAgents.getState();
   const tasks = new Map(s.tasks);
   const all = new Map(s.entries);
   const ids = Array.from({ length: count }, (_, n) => `sample-${n + 1}`);
   ids.forEach((id, n) => {
-    tasks.set(id, task(id, `Sample task ${n + 1}`, cwd));
-    all.set(id, entries);
+    const title = `Sample task ${n + 1}`;
+    tasks.set(id, task(id, title, cwd));
+    all.set(id, Array.from({ length: turns }, (_, i) => turn(cwd, i, title)).flat());
   });
   useAgents.setState({ tasks, entries: all });
   for (const id of ids) openTask(id);

@@ -1221,6 +1221,11 @@ export function removeWatch(expression: string) {
   persistWatches();
 }
 
+export function removeAllWatches() {
+  useDebug.setState({ watches: [] });
+  persistWatches();
+}
+
 /** Watches used to be one list for every project; it is only read now, as a project's first list. */
 const SHARED_WATCH_KEY = "openidea.debugger.watches";
 const watchKey = (root: string) => `${SHARED_WATCH_KEY}:${root}`;

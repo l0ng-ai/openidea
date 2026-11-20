@@ -41,7 +41,6 @@ import {
   type NotificationsValid,
 } from "./behaviorSchema";
 import { isThemeChoiceId, type ThemeChoiceId } from "@/platform/themes";
-import { PLAYFUL_AFTER_LIMITS } from "@/platform/agentStatus";
 
 /** Agents › IDE MCP Server › Port: its default (`ide-core::settings::DEFAULT_MCP_PORT`) and range. */
 export const DEFAULT_MCP_PORT = 26371;
@@ -238,9 +237,6 @@ export const DEFAULT_SETTINGS: ValidSettings = {
     foldTurns: true,
     smoothText: true,
     fitWindowWidth: false,
-    playfulStatus: false,
-    playfulAfterSeconds: 0,
-    playfulWords: {},
     thinking: "auto",
     toolCalls: "grouped",
     expandToolOutput: false,
@@ -289,15 +285,6 @@ const stringMap = (v: unknown): Record<string, string> =>
 /** Agent id → option id → value, keeping only string values. */
 function agentDefaults(v: unknown): Record<string, Record<string, string>> {
   return Object.fromEntries(Object.entries(obj(v)).map(([agent, options]) => [agent, stringMap(options)]));
-}
-
-/** Activity → the user's playful words; a list, even an empty one, stands for that activity. */
-function playfulWords(v: unknown): Record<string, string[]> {
-  return Object.fromEntries(
-    Object.entries(obj(v))
-      .filter(([, words]) => Array.isArray(words))
-      .map(([activity, words]) => [activity, stringList(words)]),
-  );
 }
 
 function agentMcpServers(v: unknown): Required<AgentSettings>["mcpServers"] {
@@ -453,9 +440,6 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
       foldTurns: bool(agents.foldTurns, d.agents.foldTurns),
       smoothText: bool(agents.smoothText, d.agents.smoothText),
       fitWindowWidth: bool(agents.fitWindowWidth, d.agents.fitWindowWidth),
-      playfulStatus: bool(agents.playfulStatus, d.agents.playfulStatus),
-      playfulAfterSeconds: num(agents.playfulAfterSeconds, d.agents.playfulAfterSeconds, PLAYFUL_AFTER_LIMITS, true),
-      playfulWords: playfulWords(agents.playfulWords),
       thinking: oneOf(agents.thinking, ["auto", "expanded", "collapsed"] as const, d.agents.thinking),
       toolCalls: oneOf(agents.toolCalls, ["grouped", "each"] as const, d.agents.toolCalls),
       expandToolOutput: bool(agents.expandToolOutput, d.agents.expandToolOutput),
