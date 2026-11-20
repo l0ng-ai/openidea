@@ -704,10 +704,6 @@ mod tests {
         }
     }
 
-    fn skill_at(name: &str, source: AgentSkillSource, path: &Path) -> AgentSkill {
-        AgentSkill { path: path.into(), ..skill(name, source, path) }
-    }
-
     fn policy(mode: AgentSkillMode) -> Option<AgentSkillPolicy> {
         Some(AgentSkillPolicy { mode })
     }
@@ -768,7 +764,7 @@ mod tests {
 
         let found = discover_skills(&repo, None);
         let by = |n: &str| found.iter().find(|s| s.name == n).unwrap();
-        assert!(!by("Bad_Name").valid && by("Bad_Name").warnings.len() >= 1);
+        assert!(!by("Bad_Name").valid && !by("Bad_Name").warnings.is_empty());
         assert!(!by("no-desc").valid && by("no-desc").warnings.len() == 1);
         assert!(!by("verbose").valid);
     }
@@ -871,7 +867,7 @@ mod tests {
         // A worktree task: the repo's skills are untracked, so nothing is native any more.
         let worktree = tmp.path().join("wt");
         std::fs::create_dir_all(&worktree).unwrap();
-        let delivery = stage(&farm, "copilot", &states, &worktree, Some(&home)).unwrap();
+        let _ = stage(&farm, "copilot", &states, &worktree, Some(&home)).unwrap();
         let copilot_staged: Vec<String> = std::fs::read_dir(farm.join("copilot"))
             .unwrap()
             .flatten()
