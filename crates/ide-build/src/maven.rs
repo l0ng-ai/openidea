@@ -2020,11 +2020,25 @@ fn property_target(text: &str, path: &Path, name: &str, local_repo: Option<PathB
             label: name.clone(),
         });
     }
-    // Built-in coordinates: the POM's own element, else the first ancestor declaring one.
-    if let Some(key) = name.strip_prefix("project.") {
-        if !matches!(key, "groupId" | "artifactId" | "version" | "packaging" | "name") {
-            return None; // `project.basedir`, `project.build.directory`… have no element.
+    // Built-in coordinates (`project.artifactId`, and the bare `@artifactId@`
+    // shorthand resource filtering resolves the same way): the POM's own element,
+    // else the first ancestor declaring one. Any other name under `project.` is a
+    // custom property (`project.port`, `project.servlet.path`), which the
+    // `<properties>` lookup below resolves.
+    let built_in = match name.strip_prefix("project.") {
+        Some(key) if matches!(key, "groupId" | "artifactId" | "version" | "packaging" | "name") => Some(key),
+        // `project.basedir`, `project.build.directory`… have no element of their own.
+        Some(_) => None,
+        None if matches!(name.as_str(), "groupId" | "artifactId" | "version" | "packaging" | "name") => {
+            // The bare shorthand of a built-in; a custom property of that name wins.
+            if let Some(found) = properties_target(&chain, &name, &resolver) {
+                return Some(found);
+            }
+            Some(name.as_str())
         }
+        None => None,
+    };
+    if let Some(key) = built_in {
         for (p, text) in &chain {
             let Some(root) = xml::parse(text).filter(|e| e.name == "project") else { continue };
             let Some(e) = root.child(key).filter(|e| !e.text.trim().is_empty()) else { continue };
@@ -2037,30 +2051,34 @@ fn property_target(text: &str, path: &Path, name: &str, local_repo: Option<PathB
         }
         return None;
     }
-    // A property of `<properties>`: the first POM of the chain (child-first) that
-    // declares it, at project level or in an active profile.
-    for (p, text) in &chain {
+    properties_target(&chain, &name, &resolver)
+}
+
+/// A property of `<properties>`: the first POM of the chain (child-first) that
+/// declares it, at project level or in an active profile.
+fn properties_target(chain: &[(PathBuf, String)], name: &str, resolver: &Resolver) -> Option<PomGoto> {
+    for (p, text) in chain {
         let Some(root) = xml::parse(text).filter(|e| e.name == "project") else { continue };
         let active: Vec<String> = parse_pom(text)
             .map(|pom| resolver.active(&pom.profiles).map(|pr| pr.id.clone()).collect())
             .unwrap_or_default();
         // Project level first, then the first active profile declaring the property.
-        let e = root.child("properties").and_then(|props| props.child(&name)).or_else(|| {
+        let e = root.child("properties").and_then(|props| props.child(name)).or_else(|| {
             root.list("profiles", "profile")
                 .into_iter()
                 .find(|profile| {
                     active.contains(&profile.child("id").map(|id| id.text.trim().to_owned()).unwrap_or_default())
-                        && profile.child("properties").and_then(|props| props.child(&name)).is_some()
+                        && profile.child("properties").and_then(|props| props.child(name)).is_some()
                 })?
                 .child("properties")?
-                .child(&name)
+                .child(name)
         });
         if let Some(e) = e {
             return Some(PomGoto {
                 path: p.clone(),
                 range: range_of(text, e),
                 kind: PomGotoKind::Property,
-                label: name.clone(),
+                label: name.to_owned(),
             });
         }
     }
@@ -3084,6 +3102,65 @@ mod tests {
         let from = text.find("<example.version>").unwrap();
         let to = text.find("</example.version>").unwrap() + "</example.version>".len();
         assert_eq!(goto.range, Range::new(pos_at(&text, from), pos_at(&text, to)));
+    }
+
+    #[test]
+    fn a_custom_project_property_is_found_like_a_plain_one() {
+        let text = format!(
+            r#"{CHILD_HEADER}<properties>
+    <project.port>8001</project.port>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>lib</artifactId>
+      <version>${{project.port}}</version>
+    </dependency>
+  </dependencies>
+</project>"#
+        );
+        let path = Path::new("/tmp/pom.xml");
+        let goto = goto_declaration(&text, path, at(&text, "${project.port}"), None).unwrap();
+        assert_eq!(goto.kind, PomGotoKind::Property);
+        assert_eq!(goto.label, "project.port");
+        assert_eq!(goto.path, path);
+        let from = text.find("<project.port>").unwrap();
+        let to = text.find("</project.port>").unwrap() + "</project.port>".len();
+        assert_eq!(goto.range, Range::new(pos_at(&text, from), pos_at(&text, to)));
+        // `${project.basedir}` has no element and no custom property: still nothing.
+        let basedir = text.replace("${project.port}", "${project.basedir}");
+        assert_eq!(goto_declaration(&basedir, path, at(&basedir, "${project.basedir}"), None), None);
+    }
+
+    #[test]
+    fn the_bare_builtin_shorthand_resolves_to_the_coordinate_and_a_custom_property_wins() {
+        let text = format!(
+            r#"{CHILD_HEADER}<artifactId>app</artifactId>
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>lib</artifactId>
+    </dependency>
+  </dependencies>
+  <properties>
+    <groupId>custom</groupId>
+  </properties>
+  <description>${{artifactId}}-${{groupId}} docs</description>
+</project>"#
+        );
+        let path = Path::new("/tmp/pom.xml");
+        // `@artifactId@` in a filtered resource resolves to the own coordinate.
+        let goto = goto_declaration(&text, path, at(&text, "${artifactId}"), None).unwrap();
+        assert_eq!(goto.label, "artifactId");
+        let from = text.find("<artifactId>app").unwrap();
+        assert_eq!(goto.range.start, pos_at(&text, from));
+        // A custom property of the bare name wins over the shorthand. The click
+        // sits inside the reference: the second one's `$` is behind the first's
+        // closing `}`, which `property_ref_at` does not take for the `$` itself.
+        let goto = goto_declaration(&text, path, at(&text, "groupId} docs"), None).unwrap();
+        assert_eq!(goto.label, "groupId");
+        let from = text.find("<groupId>custom").unwrap();
+        assert_eq!(goto.range.start, pos_at(&text, from));
     }
 
     #[test]
