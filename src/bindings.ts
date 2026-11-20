@@ -7126,6 +7126,8 @@ version: number } |
 { type: "docDiskConflict"; doc: DocId; path: string } | 
 /**  A complete workspace edit can be undone as one operation. */
 { type: "workspaceEditApplied"; id: number; paths: IpcPath[]; 
+/**  Files the edit renamed, as the edit named them: editors open on them follow. */
+moves: FileMove[]; 
 /**
  *  Made by an agent through the MCP server's tools: undoable like a refactoring, but
  *  not announced as one.
