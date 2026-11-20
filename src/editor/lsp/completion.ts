@@ -25,7 +25,16 @@ import {
   type CompletionSource,
 } from "@codemirror/autocomplete";
 import { EditorSelection, EditorState, Prec, StateEffect, StateField, type Text } from "@codemirror/state";
-import { EditorView, ViewPlugin, getTooltip, keymap, showTooltip, type Rect, type ViewUpdate } from "@codemirror/view";
+import {
+  EditorView,
+  ViewPlugin,
+  getTooltip,
+  keymap,
+  repositionTooltips,
+  showTooltip,
+  type Rect,
+  type ViewUpdate,
+} from "@codemirror/view";
 import {
   call,
   commands,
@@ -989,7 +998,14 @@ const completionPopup = ViewPlugin.fromClass(
   class {
     constructor(private view: EditorView) {}
     update(u: ViewUpdate) {
-      if (completionStatus(u.state) !== "active") return;
+      // The lookup can show partial results while another source is still pending.
+      const popup = u.state
+        .facet(showTooltip)
+        .map((tooltip) => tooltip && getTooltip(this.view, tooltip))
+        .find((tooltip) => tooltip?.dom.classList.contains("cm-lsp-completion"));
+      if (!popup) return;
+      popup.offset ??= { x: -completionLabelOffset, y: 0 };
+      const t = popup.dom;
       this.view.requestMeasure({
         key: this,
         read: () => {
@@ -1000,19 +1016,12 @@ const completionPopup = ViewPlugin.fromClass(
           };
         },
         write: ({ width, fontSize }) => {
-          const popup = this.view.state
-            .facet(showTooltip)
-            .map((tooltip) => tooltip && getTooltip(this.view, tooltip))
-            .find((tooltip) => tooltip?.dom.classList.contains("cm-lsp-completion"));
-          if (!popup) return;
-          // Apply the label alignment inside CodeMirror's viewport clamp.
-          popup.offset = { x: -completionLabelOffset, y: 0 };
-          const t = popup.dom;
-          if (t.style.getPropertyValue("--cm-completion-max-width") !== width)
-            t.style.setProperty("--cm-completion-max-width", width);
+          if (!t.isConnected) return;
+          const widthChanged = t.style.getPropertyValue("--cm-completion-max-width") !== width;
+          if (widthChanged) t.style.setProperty("--cm-completion-max-width", width);
           // The body-level tooltip does not inherit the editor's temporary font zoom.
-          if (t.style.getPropertyValue("--openidea-editor-font-size") !== fontSize)
-            t.style.setProperty("--openidea-editor-font-size", fontSize);
+          const fontChanged = t.style.getPropertyValue("--openidea-editor-font-size") !== fontSize;
+          if (fontChanged) t.style.setProperty("--openidea-editor-font-size", fontSize);
           let footer = t.querySelector<HTMLElement>(":scope > .cm-lsp-completion-footer");
           if (!footer) {
             footer = document.createElement("div");
@@ -1023,7 +1032,10 @@ const completionPopup = ViewPlugin.fromClass(
           }
           // CodeMirror appends a fresh list when the candidates change.
           const list = t.querySelector(":scope > ul");
-          if (list && list.nextElementSibling !== footer) list.after(footer);
+          const footerMoved = list && list.nextElementSibling !== footer;
+          if (footerMoved) list.after(footer);
+          // CodeMirror has already measured the lookup. Reposition it before this frame paints.
+          if (widthChanged || fontChanged || footerMoved) repositionTooltips(this.view);
         },
       });
     }
