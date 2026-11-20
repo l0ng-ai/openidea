@@ -48,7 +48,7 @@ const meta = (patch: Partial<DocMeta> = {}): DocMeta => ({
   ...patch,
 });
 
-const openMenu = (m: DocMeta) => {
+const openPicker = (m: DocMeta) => {
   useDocMeta.setState({ [m.path]: m });
   useEditorStatus.setState({
     status: { path: m.path, doc: m.doc, line: 0, col: 0, offset: 0, selectedChars: 0, selectedLines: 0, carets: 1 },
@@ -58,7 +58,8 @@ const openMenu = (m: DocMeta) => {
   return view;
 };
 
-const item = (name: string) => screen.getByRole("menuitem", { name });
+const choose = (name: string) => fireEvent.click(screen.getByRole("option", { name }));
+const button = (name: string) => screen.getByRole<HTMLButtonElement>("button", { name });
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -68,33 +69,67 @@ beforeEach(() => {
 
 describe("encoding status of read-only library documents", () => {
   it("offers Reload for re-decodable sources, but never Convert or BOM changes", () => {
-    const view = openMenu(meta());
-    expect(item("Reload with Encoding").getAttribute("aria-disabled")).toBeNull();
-    expect(item("Convert to Encoding").getAttribute("aria-disabled")).toBe("true");
-    expect(item("Add UTF-8 BOM").getAttribute("aria-disabled")).toBe("true");
+    const view = openPicker(meta());
+    expect(button("Add UTF-8 BOM").disabled).toBe(true);
+    choose("GBK");
+    expect(button("Reload").disabled).toBe(false);
+    expect(button("Convert").disabled).toBe(true);
     view.unmount();
   });
 
-  it("disables Reload for server-generated content that cannot be re-decoded", () => {
-    const view = openMenu(meta({ canReloadEncoding: false }));
-    expect(item("Reload with Encoding").getAttribute("aria-disabled")).toBe("true");
+  it("disables encoding changes for server-generated read-only content", () => {
+    const view = openPicker(meta({ canReloadEncoding: false }));
+    expect(screen.getByRole("option", { name: "GBK" }).querySelector("[aria-disabled=true]")).not.toBeNull();
+    choose("GBK");
+    expect(screen.queryByRole("dialog", { name: "Change File Encoding" })).toBeNull();
+    expect(setEncoding).not.toHaveBeenCalled();
     view.unmount();
   });
 
   it("keeps Reload disabled while a file has unsaved changes", () => {
-    const view = openMenu(meta({ path: "/p/Main.java", readOnly: false, dirty: true }));
-    expect(item("Reload with Encoding").getAttribute("aria-disabled")).toBe("true");
+    const view = openPicker(meta({ path: "/p/Main.java", readOnly: false, dirty: true }));
+    choose("GBK");
+    expect(button("Reload").disabled).toBe(true);
+    expect(button("Convert").disabled).toBe(false);
     view.unmount();
   });
 
   it("reloading a virtual document re-decodes it and refreshes the content cache", async () => {
     setEncoding.mockResolvedValue({ encoding: "gbk", hasBom: false });
-    const view = openMenu(meta());
-    fireEvent.mouseEnter(item("Reload with Encoding"));
-    fireEvent.click(await screen.findByRole("menuitem", { name: "GBK" }));
+    const view = openPicker(meta());
+    choose("GBK");
+    fireEvent.click(button("Reload"));
     expect(setEncoding).toHaveBeenCalledWith(1, "gbk", true);
     await waitFor(() => expect(setMeta).toHaveBeenCalledWith({ encoding: "gbk", hasBom: false }));
     expect(invalidateVirtualDocument).toHaveBeenCalledWith(JDT);
     view.unmount();
   });
+});
+
+it("filters encodings by typing and allows cancelling without a document change", () => {
+  const view = openPicker(meta({ readOnly: false }));
+  const search = screen.getByPlaceholderText("Search…");
+  expect(document.activeElement).toBe(search);
+  expect(screen.getByRole("option", { name: "UTF-8" })).toBeTruthy();
+  fireEvent.change(search, { target: { value: "1252" } });
+  expect(screen.queryByRole("option", { name: "GBK" })).toBeNull();
+  fireEvent.keyDown(search, { key: "Enter" });
+  const cancel = button("Cancel");
+  expect(document.activeElement).toBe(cancel);
+  expect(setEncoding).not.toHaveBeenCalled();
+  fireEvent.keyDown(cancel, { key: "Escape" });
+  expect(screen.queryByRole("dialog", { name: "Change File Encoding" })).toBeNull();
+  expect(setEncoding).not.toHaveBeenCalled();
+  expect(document.activeElement).toBe(button("UTF-8"));
+  view.unmount();
+});
+
+it("converts the current text when Convert is chosen", async () => {
+  setEncoding.mockResolvedValue({ encoding: "gbk", hasBom: false });
+  const view = openPicker(meta({ path: "/p/Main.java", readOnly: false }));
+  choose("GBK");
+  fireEvent.click(button("Convert"));
+  expect(setEncoding).toHaveBeenCalledWith(1, "gbk", false);
+  await waitFor(() => expect(setMeta).toHaveBeenCalledWith({ encoding: "gbk", hasBom: false, dirty: true }));
+  view.unmount();
 });
