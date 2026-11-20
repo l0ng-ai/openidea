@@ -3715,6 +3715,62 @@ async fn stream_collect_fails_cleanly_on_a_step_beyond_u16() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn exception_breakpoints_send_the_whole_list_and_decode_states() {
+    use ide_jvm_inspect::{ExceptionArmState, ExceptionClassBreakpoints, ExceptionClassSpec};
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let (_, path) = h.open("Sample.java", "class Sample {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let client = ide_lsp::JdtExceptionBreakpoints::new(h.mgr.clone(), path);
+    let specs = [
+        ExceptionClassSpec {
+            id: "a".into(),
+            class_name: "com.acme.Boom".into(),
+            caught: true,
+            uncaught: false,
+            enabled: true,
+            class_filters: vec!["com.acme.*".into()],
+            class_exclusion_filters: vec![],
+        },
+        ExceptionClassSpec {
+            id: "b".into(),
+            class_name: "java.lang.IllegalStateException".into(),
+            caught: true,
+            uncaught: true,
+            enabled: false,
+            class_filters: vec![],
+            class_exclusion_filters: vec!["*Test".into()],
+        },
+    ];
+    s.respond(
+        "workspace/executeCommand",
+        json!({"ok": [{"id": "a", "state": "pending"}, {"id": "b", "state": "disabled"}]}),
+    );
+    let states = client.set(&stream_launch_target(), &specs).await.unwrap();
+    assert_eq!(states, vec![("a".into(), ExceptionArmState::Pending), ("b".into(), ExceptionArmState::Disabled)]);
+    let asked = s.requested("workspace/executeCommand");
+    assert_eq!(asked[0]["command"], "openidea.jvm.exceptions.set");
+    assert_eq!(
+        asked[0]["arguments"],
+        json!([
+            {"pid": 42, "host": null, "port": null, "generation": 3},
+            {"breakpoints": [
+                {"id": "a", "className": "com.acme.Boom", "caught": true, "uncaught": false, "enabled": true,
+                 "classFilters": ["com.acme.*"], "classExclusionFilters": []},
+                {"id": "b", "className": "java.lang.IllegalStateException", "caught": true, "uncaught": true,
+                 "enabled": false, "classFilters": [], "classExclusionFilters": ["*Test"]},
+            ]},
+        ])
+    );
+
+    s.respond("workspace/executeCommand", json!({"error": "noSession", "detail": "hotCodeReplace is never?"}));
+    assert_eq!(
+        client.set(&stream_launch_target(), &specs).await.unwrap_err(),
+        ide_jvm_inspect::InspectError::NoSession
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn debug_server_port_maps_to_module() {
     let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
     let (_, path) = h.open("Sample.java", "class Sample {}");
