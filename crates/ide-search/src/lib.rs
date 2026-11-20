@@ -160,7 +160,8 @@ pub type PathFilter<'a> = &'a (dyn Fn(&str) -> bool + Sync);
 pub struct LineMatch {
     /// 0-based line.
     pub line: u32,
-    /// Line text, truncated around the match for very long lines.
+    /// Line text, truncated around the matches for very long lines: such a line comes as one
+    /// `LineMatch` per window, so the same `line` can repeat.
     pub text: String,
     /// UTF-16 column ranges within `text`.
     pub ranges: Vec<(u32, u32)>,
