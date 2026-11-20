@@ -132,6 +132,36 @@ fn whole_word() {
     assert_eq!(views[0].matches[0].ranges, vec![(0, 3), (27, 30), (32, 35)]);
 }
 
+/// IDEA's whole word: a word boundary is needed only at an edge where the match has an
+/// identifier character; a punctuation edge only needs a different character beside it.
+#[test]
+fn whole_word_needs_a_boundary_only_at_identifier_edges() {
+    let starts = |text: &str, q: SearchQuery| -> Vec<usize> {
+        let q = SearchQuery { whole_word: true, ..q };
+        ide_search::match_ranges(text, &q).unwrap().into_iter().map(|r| r.0).collect()
+    };
+    let text = "doWork(arg); redoWork(x); list: string[] = [];";
+    assert_eq!(starts(text, query("doWork(")), [0]);
+    assert_eq!(starts(text, query("(arg)")), [6]);
+    assert_eq!(starts(text, query("[]")), [38, 43]);
+    assert_eq!(starts(text, query("list")), [26]);
+    assert_eq!(starts("a == b; c === d", query("==")), [2]);
+    // `$` is part of an identifier (Java, Kotlin, JavaScript).
+    assert_eq!(starts("foo$bar foo", query("foo")), [8]);
+    // After an escape such as `\n`, a word starts.
+    assert_eq!(starts(r#"s = "\nfoo";"#, query("foo")), [7]);
+    assert_eq!(starts("é1 1 éé", query("1")), [4]);
+    // Regex matches follow the same rule.
+    assert_eq!(starts(text, regex(r"\w+\(")), [0, 13]);
+    assert_eq!(starts(text, regex(r"\[\]")), [38, 43]);
+
+    let p = project(&[("a.ts", text.as_bytes())]);
+    let (views, summary) = run(p.path(), &SearchQuery { whole_word: true, ..query("[]") });
+    assert_eq!((summary.matches, views[0].matches[0].ranges.clone()), (2, vec![(38, 40), (43, 45)]));
+    let (out, n) = replace_in_text(text, &SearchQuery { whole_word: true, ..query("doWork(") }, "run(").unwrap();
+    assert_eq!((out.as_str(), n), ("run(arg); redoWork(x); list: string[] = [];", 1));
+}
+
 #[test]
 fn invalid_regex_is_reported() {
     let p = project(&[("a.txt", b"x\n")]);
