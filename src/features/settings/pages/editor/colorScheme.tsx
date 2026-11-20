@@ -2,24 +2,34 @@ import { ATTRIBUTES, SCHEMES } from "@/platform/colorScheme";
 import { lazyPage } from "../lazyPage";
 import type { PageSpec } from "../spec";
 import { LANGUAGES, SCHEME_SUBPAGES, languagePageId } from "./colorSchemeMeta";
-import { editorPage } from "./kit";
+import { editorPage, EditorSections, sectionLabels, type EditorSection } from "./kit";
 
 const ALL_COLOR_SCHEME_PAGE_IDS = ["editor.colorScheme", ...SCHEME_SUBPAGES.map((p) => p.id)];
 const LazyColorSchemePage = lazyPage(ALL_COLOR_SCHEME_PAGE_IDS, () =>
   import("./ColorSchemeBody").then((m) => m.ColorSchemePage),
 );
 
-/** The scope chooser, import/export buttons and preview are identical on every sub-page. */
-function colorSchemeSection(scopes: readonly string[]) {
+function colorSchemePage(
+  spec: Pick<PageSpec, "id" | "title" | "order" | "keywords">,
+  scope: string,
+  extraSections: EditorSection[] = [],
+): PageSpec {
+  const scopes = [scope];
+  const labels = [
+    "Scheme",
+    ...ATTRIBUTES.filter((a) => a.path[0] === scope).map((a) => a.name),
+    ...sectionLabels(extraSections),
+  ];
   return {
-    items: [
-      {
-        t: "custom" as const,
-        label: "Scheme",
-        keywords: ATTRIBUTES.filter((a) => scopes.includes(a.path[0]!)).map((a) => a.name),
-        component: () => <LazyColorSchemePage scopes={scopes} />,
-      },
-    ],
+    ...spec,
+    group: "Editor",
+    projectScope: false,
+    dynamicLabels: () => labels,
+    component: () => (
+      <LazyColorSchemePage scopes={scopes}>
+        {extraSections.length > 0 && <EditorSections sections={extraSections} />}
+      </LazyColorSchemePage>
+    ),
   };
 }
 
@@ -55,22 +65,23 @@ const COLOR_SCHEME_PAGE = editorPage({
 /** JetBrains layout: scopes and languages live in the settings tree under Color Scheme, one page each. */
 export const COLOR_SCHEME_PAGES: PageSpec[] = [
   COLOR_SCHEME_PAGE,
-  editorPage({
-    id: "editor.colorScheme.general",
-    title: "General",
-    order: 1,
-    projectScope: false,
-    keywords: ATTRIBUTES.filter((a) => a.path[0] === "General").map((a) => a.name),
-    sections: [colorSchemeSection(["General"])],
-  }),
-  editorPage({
-    id: "editor.colorScheme.language-defaults",
-    title: "Language Defaults",
-    order: 2,
-    projectScope: false,
-    keywords: ["semantic highlighting", "rainbow"],
-    sections: [
-      colorSchemeSection(["Language Defaults"]),
+  colorSchemePage(
+    {
+      id: "editor.colorScheme.general",
+      title: "General",
+      order: 1,
+    },
+    "General",
+  ),
+  colorSchemePage(
+    {
+      id: "editor.colorScheme.language-defaults",
+      title: "Language Defaults",
+      order: 2,
+      keywords: ["semantic highlighting", "rainbow"],
+    },
+    "Language Defaults",
+    [
       {
         title: "Language Defaults",
         items: [
@@ -101,39 +112,42 @@ export const COLOR_SCHEME_PAGES: PageSpec[] = [
         ],
       },
     ],
-  }),
-  editorPage({
-    id: "editor.colorScheme.debugger",
-    title: "Debugger",
-    order: 3,
-    projectScope: false,
-    keywords: ["breakpoint", "inline values"],
-    sections: [colorSchemeSection(["Debugger"])],
-  }),
-  editorPage({
-    id: "editor.colorScheme.console-colors",
-    title: "Console Colors",
-    order: 4,
-    projectScope: false,
-    keywords: ["terminal", "ansi", "console", "background"],
-    sections: [colorSchemeSection(["Console Colors"])],
-  }),
-  editorPage({
-    id: "editor.colorScheme.git",
-    title: "Git",
-    order: 5,
-    projectScope: false,
-    keywords: ["git", "blame", "branch", "inline blame", "project view", "decoration"],
-    sections: [colorSchemeSection(["Git"])],
-  }),
+  ),
+  colorSchemePage(
+    {
+      id: "editor.colorScheme.debugger",
+      title: "Debugger",
+      order: 3,
+      keywords: ["breakpoint", "inline values"],
+    },
+    "Debugger",
+  ),
+  colorSchemePage(
+    {
+      id: "editor.colorScheme.console-colors",
+      title: "Console Colors",
+      order: 4,
+      keywords: ["terminal", "ansi", "console", "background"],
+    },
+    "Console Colors",
+  ),
+  colorSchemePage(
+    {
+      id: "editor.colorScheme.git",
+      title: "Git",
+      order: 5,
+      keywords: ["git", "blame", "branch", "inline blame", "project view", "decoration"],
+    },
+    "Git",
+  ),
   ...LANGUAGES.map((language, i) =>
-    editorPage({
-      id: languagePageId(language),
-      title: language,
-      order: 6 + i,
-      projectScope: false,
-      keywords: ATTRIBUTES.filter((a) => a.path[0] === language).map((a) => a.name),
-      sections: [colorSchemeSection([language])],
-    }),
+    colorSchemePage(
+      {
+        id: languagePageId(language),
+        title: language,
+        order: 6 + i,
+      },
+      language,
+    ),
   ),
 ];
