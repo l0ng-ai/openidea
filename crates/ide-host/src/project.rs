@@ -738,6 +738,19 @@ impl Host {
         let approvals = self.mcp_approvals.clone();
         let secrets = self.agent_secrets.clone();
         let root = root.to_path_buf();
+        // The skill policies sessions resolve against: both settings layers and the
+        // workspace's trust as it stands when a session starts.
+        let skill_settings = settings.clone();
+        let skill_root = root.clone();
+        let trust = self.trust.clone();
+        agents.set_skills_policy_hook(Box::new(move || {
+            let layer = |scope| skill_settings.layer(scope).agents.skills.clone();
+            ide_agent::SkillsPolicy {
+                user: layer(ide_workspace::settings::SettingsScope::Global),
+                workspace: layer(ide_workspace::settings::SettingsScope::Project),
+                workspace_trusted: trust.trusted(&skill_root).unwrap_or(false),
+            }
+        }));
         agents.set_mcp_servers_hook(Box::new(move || {
             crate::ops::agent::session_mcp_servers(&settings, &approvals, &secrets, &root)
         }));

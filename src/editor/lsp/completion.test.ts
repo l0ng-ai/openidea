@@ -323,6 +323,22 @@ describe("applying completions", () => {
     }
   });
 
+  it("puts the caret inside the parentheses of a server-inserted call that takes arguments", async () => {
+    setInvokeRoute(() => Promise.resolve(null));
+    try {
+      const { view, req } = setup("x.rea|\n", "", [completionExtension()]);
+      view.dispatch({ effects: StateEffect.appendConfig.of(lspDoc.of({ doc: 1 } as EditorDocContext)) });
+      const command = { title: "Apply Completion", command: "jetbrains.kotlin.completion.apply", arguments: ["1"] };
+      const kotlin = item({ label: "read", kind: "method", labelDetail: "(name: String)", insertText: "", command });
+      applyLspCompletion(view, makeCompletion(kotlin, req), 5, 5, "insert");
+      view.dispatch({ changes: { from: 5, insert: "d()" }, annotations: remoteChange.of(true) });
+      expect(view.state.doc.toString()).toBe("x.read()\n");
+      expect(view.state.selection.main.head).toBe(7);
+    } finally {
+      setInvokeRoute(null);
+    }
+  });
+
   it("completes at every caret whose typed prefix matches the main caret's", () => {
     const { view, req } = setup("a.cr|\nb.cr\nc.xy", "", [EditorState.allowMultipleSelections.of(true)]);
     // Carets after both `cr`s (the main one first) and after `xy`.

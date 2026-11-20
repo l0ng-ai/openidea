@@ -21,6 +21,7 @@ export const AGENT_SETTINGS_DEFAULTS: ResolvedAgentSettings = {
   newTaskApprovals: "bypass",
   defaults: {},
   mcpServers: {},
+  skills: {},
 };
 
 export function resolveAgentSettings(s: AgentSettings | null | undefined): ResolvedAgentSettings {

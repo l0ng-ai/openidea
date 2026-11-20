@@ -120,15 +120,53 @@ test("Directory Mappings keeps the controls and headers visible while scrolling 
     name: "VCS of integrations/finance-and-order-reconciliation/ledger-adapter-32",
     exact: true,
   });
-  await vcs.click();
-  await page.getByRole("option", { name: "<none>", exact: true }).click();
-  await expect(vcs).toHaveText("<none>");
+  await name.click();
+  const remove = toolbar.getByRole("button", { name: "Remove", exact: true });
+  await expect(remove).toBeEnabled();
+  await remove.click();
+  const unregistered = table.getByRole("rowgroup", { name: "Unregistered roots" });
+  await expect(unregistered.getByRole("row").last()).toContainText("ledger-adapter-32");
+  await expect(repo).toHaveAttribute("aria-selected", "true");
+  await expect(repo.getByRole("cell", { name: "Git", exact: true })).toBeVisible();
+  await expect(remove).toBeDisabled();
 
-  await toolbar.getByRole("button", { name: "Add", exact: true }).click();
+  const add = toolbar.getByRole("button", { name: "Add", exact: true });
+  await add.click();
+  await expect(vcs).toHaveText("Git");
+  await expect(unregistered).toHaveCount(0);
+  await expect(table.getByText("billing-audit-adapter", { exact: true })).toHaveCount(0);
+
+  const ledger = (n: number) => table.getByText(`ledger-adapter-${n}`, { exact: true });
+  const selectedNames = () => table.locator("tr[aria-selected=true] td:first-child").allTextContents();
+  await ledger(29).click();
+  await ledger(31).click({ modifiers: ["Meta"] });
+  expect(await selectedNames()).toEqual([
+    "integrations/finance-and-order-reconciliation/ledger-adapter-29",
+    "integrations/finance-and-order-reconciliation/ledger-adapter-31",
+  ]);
+  await ledger(29).click();
+  await ledger(31).click({ modifiers: ["Shift"] });
+  await expect(table.locator("tr[aria-selected=true]")).toHaveCount(3);
+  expect(await page.evaluate(() => window.getSelection()?.toString())).toBe("");
+  await remove.click();
+  await expect(unregistered.getByRole("row")).toHaveCount(4);
+  await expect(unregistered.locator("tr[aria-selected=true]")).toHaveCount(3);
+  await expect(unregistered.getByText("ledger-adapter-29", { exact: true })).toBeVisible();
+  await expect(unregistered.getByText("ledger-adapter-30", { exact: true })).toBeVisible();
+  await expect(unregistered.getByText("ledger-adapter-31", { exact: true })).toBeVisible();
+  await ledger(32).click({ modifiers: ["Meta"] });
+  await expect(remove).toBeDisabled();
+  await expect(add).toBeDisabled();
+  await ledger(32).click({ modifiers: ["Meta"] });
+  await add.click();
+  await expect(unregistered).toHaveCount(0);
+  await expect(table.locator("tr[aria-selected=true]")).toHaveCount(3);
+
+  await add.click();
   const added = table.getByRole("row").filter({ hasText: "billing-audit-adapter" });
   await expect(added.getByText("billing-audit-adapter", { exact: true })).toBeInViewport({ ratio: 1 });
   await expect(added).toHaveAttribute("aria-selected", "true");
-  await toolbar.getByRole("button", { name: "Remove", exact: true }).click();
+  await remove.click();
   await expect(added).toHaveCount(0);
 
   await settings.getByRole("button", { name: "Cancel", exact: true }).click();

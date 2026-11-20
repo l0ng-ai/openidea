@@ -172,6 +172,10 @@ struct Session {
     mcp_config: Option<tempfile::TempPath>,
     /// MCP servers switched off for this session (`--disallowedTools`), its own config's too.
     mcp_off: Vec<String>,
+    /// The staged skills folder passed as `--add-dir` (its `.claude/skills` holds the copies).
+    skills_add_dir: Option<PathBuf>,
+    /// The staged skills' `--settings` JSON (`skillOverrides` for the native ones too).
+    skills_settings: Option<String>,
     shim: Weak<Shim>,
     st: Mutex<State>,
     /// Serializes (re)starting the process.
@@ -356,10 +360,13 @@ impl Shim {
                 None
             }
         });
+        let skills = params.pointer("/_meta/openidea/skills");
         let session = Arc::new(Session {
             id: id.to_owned(),
             mcp_config,
             mcp_off,
+            skills_add_dir: skills.and_then(|s| s.get("claudeAddDir")).and_then(Value::as_str).map(PathBuf::from),
+            skills_settings: skills.and_then(|s| s.get("claudeSettings")).and_then(Value::as_str).map(str::to_owned),
             shim: Arc::downgrade(self),
             st: Mutex::new(State {
                 proc: None,
@@ -672,6 +679,14 @@ impl Session {
         }
         if !self.mcp_off.is_empty() {
             args.extend(["--disallowedTools".to_owned(), self.mcp_off.join(",")]);
+        }
+        // The staged skills: `.claude/skills` of the added directory is discovered like the
+        // project's own, and the settings hold the modes of the skills it sees natively too.
+        if let Some(dir) = &self.skills_add_dir {
+            args.extend(["--add-dir".to_owned(), dir.to_string_lossy().into_owned()]);
+        }
+        if let Some(settings) = &self.skills_settings {
+            args.extend(["--settings".to_owned(), settings.clone()]);
         }
         args.extend(start.args());
         let launch =
