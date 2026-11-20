@@ -16,6 +16,7 @@ import {
   Spinner,
   SymbolBadge,
   fileIconName,
+  firstSelectable,
   fuzzyMatch,
   selectableText,
   T,
@@ -40,6 +41,7 @@ import styles from "./Popups.module.css";
 import fieldsetStyles from "@/ui/DialogFieldset.module.css";
 import { tx } from "@/platform/i18n";
 import { executeAction } from "@/platform/actions";
+import { useRowHeight } from "@/ui/density";
 
 export function BulbIcon({ fix }: { fix?: boolean }) {
   return <Icon name={fix ? "bulb-fix" : "bulb"} size={16} className={styles.bulb} />;
@@ -82,19 +84,44 @@ function ListPreviewPanel({
 const LIST_PREVIEW_WIDTH = 420;
 const MIN_SIDE_BY_SIDE_WIDTH = 660;
 
+type ListPopupRow =
+  | { kind: "action"; item: ListPopupItem; match: number[] | null }
+  | { kind: "section"; key: string; label?: string };
+
+const isListSection = (row: ListPopupRow) => row.kind === "section";
+const dividerHeight = (row: ListPopupRow) => (row.kind === "section" && !row.label ? 9 : undefined);
+
+function listPopupRows(items: ListPopupItem[], query: string): ListPopupRow[] {
+  const rows: ListPopupRow[] = [];
+  let previous: string | undefined;
+  for (const item of items) {
+    const match = query ? fuzzyMatch(item.label, query) : null;
+    if (query && match === null) continue;
+    const { section } = item;
+    if (section?.id !== previous && (section?.label || rows.length)) {
+      rows.push({ kind: "section", key: `section:${rows.length}`, label: section?.label });
+    }
+    rows.push({ kind: "action", item, match });
+    previous = section?.id;
+  }
+  return rows;
+}
+
 function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
   const [query, setQuery] = useState("");
-  const filtered = useMemo(() => {
-    if (!query) return popup.items.map((item) => ({ item, match: null as number[] | null }));
-    return popup.items.map((item) => ({ item, match: fuzzyMatch(item.label, query) })).filter((r) => r.match !== null);
-  }, [popup.items, query]);
-  const firstEnabled = Math.max(
-    0,
-    filtered.findIndex((r) => !r.item.disabled),
-  );
+  const rows = useMemo(() => listPopupRows(popup.items, query), [popup.items, query]);
+  const firstEnabled = rows.findIndex((row) => row.kind === "action" && !row.item.disabled);
   const [active, setActive] = useState(firstEnabled);
-  const activeIndex = Math.min(active, Math.max(0, filtered.length - 1));
-  const activeItem = filtered[activeIndex]?.item;
+  const clamped = Math.min(active, rows.length - 1);
+  const activeIndex =
+    rows[clamped]?.kind === "action"
+      ? clamped
+      : firstEnabled >= 0
+        ? firstEnabled
+        : firstSelectable(rows, isListSection);
+  const activeRow = rows[activeIndex];
+  const activeItem = activeRow?.kind === "action" ? activeRow.item : undefined;
+  const showIcons = !popup.compact || popup.items.some((item) => item.icon || item.symbol);
 
   // Choosers highlight what the selected row would act on.
   useEffect(() => {
@@ -156,16 +183,20 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
       if (item) activate(item);
     } else if (e.key === "Backspace" && query) {
       setQuery(query.slice(0, -1));
-      setActive(0);
+      setActive(-1);
       e.preventDefault();
     } else if (e.key.length === 1 && !(e.key === " " && !query)) {
       setQuery(query + e.key);
-      setActive(0);
+      setActive(-1);
       e.preventDefault();
     }
   };
 
-  const height = Math.min(12, Math.max(1, filtered.length)) * 24;
+  const rowHeight = useRowHeight();
+  const height = Math.min(
+    12 * rowHeight,
+    rows.reduce((sum, row) => sum + (dividerHeight(row) ?? rowHeight), 0) || rowHeight,
+  );
   // Rows are virtualized (absolutely positioned), so size the popup from the content.
   const width = useMemo(() => {
     const chars = Math.max(
@@ -174,8 +205,9 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
         (i) => i.label.length + (i.preview?.length ?? 0) + (i.detail?.length ?? 0) + (i.shortcut?.length ?? 0),
       ),
     );
-    return Math.min(720, Math.max(320, chars * 7 + 90 + (popup.numbered ? 16 : 0)));
-  }, [popup]);
+    const padding = popup.compact ? 44 + (showIcons ? 20 : 0) : 90;
+    return Math.min(720, Math.max(popup.compact ? 272 : 320, chars * 7 + padding + (popup.numbered ? 16 : 0)));
+  }, [popup, showIcons]);
   const shownPreview = popup.preview
     ? preview && preview.id === activeItem?.id
       ? preview.data
@@ -216,6 +248,7 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
       aria-label={popup.title}
       className={clsx(
         styles.listPopup,
+        popup.compact && styles.compactListPopup,
         hasPreview && styles.withPreview,
         previewBelow && styles.previewBelow,
         previewLeft && styles.previewLeft,
@@ -242,14 +275,19 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
         </div>
         <div ref={bodyRef} onKeyDown={onKeyDown} className={styles.listBody} style={{ height }}>
           <List
-            items={filtered}
-            getKey={(r) => r.item.id}
+            items={rows}
+            getKey={(row) => (row.kind === "section" ? row.key : row.item.id)}
+            isSection={isListSection}
+            sectionHeightOf={dividerHeight}
+            renderSection={(row) =>
+              row.kind === "section" && row.label ? <T>{row.label}</T> : <span className={styles.listDivider} />
+            }
             activeIndex={activeIndex}
             onActiveChange={setActive}
             hoverSelects
             autoFocus
             aria-label={popup.title}
-            onActivate={(r) => activate(r.item)}
+            onActivate={(row) => row.kind === "action" && activate(row.item)}
             empty={
               popup.busy ? (
                 <span className={styles.empty}>
@@ -261,7 +299,9 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
                 </span>
               )
             }
-            renderItem={({ item, match }) => {
+            renderItem={(row) => {
+              if (row.kind !== "action") return null;
+              const { item, match } = row;
               const n = popup.numbered && !query ? indexOf(item) + 1 : 0;
               return (
                 <div
@@ -272,7 +312,7 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
                   data-line={item.location?.line}
                 >
                   {popup.numbered && <span className={styles.mnemonic}>{n > 0 && n <= 9 ? n : ""}</span>}
-                  <ItemIcon item={item} />
+                  {showIcons && <ItemIcon item={item} />}
                   <HighlightedText className={styles.label} text={item.label} indices={match} tone="accent" />
                   {item.preview && (
                     <span className={styles.preview} title={item.preview}>

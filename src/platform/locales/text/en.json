@@ -2646,6 +2646,7 @@
   "Delete…": "Delete…",
   "Previous Definition": "Previous Definition",
   "Next Definition": "Next Definition",
+  "Extract/Introduce": "Extract/Introduce",
   "Configure {name}…": "Configure {name}…",
   "Check the system Trash for these items. {names}": "Check the system Trash for these items. {names}",
   "Git User Name Is Not Defined": "Git User Name Is Not Defined",

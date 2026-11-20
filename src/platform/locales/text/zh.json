@@ -709,6 +709,7 @@
   "Unwrap/Remove…": "解包/移除…",
   "Basic": "基本补全",
   "Quick Definition": "快速定义",
+  "Extract/Introduce": "提取/引入",
   "Reformat File…": "重新格式化文件…",
   "Go to Declaration or Usages": "转到声明或用法",
   "Go to Implementation(s)": "转到实现",

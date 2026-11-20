@@ -14,6 +14,8 @@ export interface PopupPoint {
 export interface ListPopupItem {
   id: string;
   label: string;
+  /** Adjacent actions with the same section id share a caption or divider. */
+  section?: { id: string; label?: string };
   /** Muted trailing text (file:line, kind…). */
   detail?: string;
   /** Second line / muted text after the label (code preview). */
@@ -100,6 +102,8 @@ export type LspPopup =
       items: ListPopupItem[];
       /** Rows 1-9 get a number; typing it runs the row (IDEA's numbered popups). */
       numbered?: boolean;
+      /** Compact action list, with room for icons only when a row has one. */
+      compact?: boolean;
       /** More rows are still being looked for (`aria-busy`). */
       busy?: boolean;
       /** Header pin button (e.g. "Open in Find Tool Window"). */
