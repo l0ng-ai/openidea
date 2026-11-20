@@ -230,8 +230,10 @@
   align-items: center;
   height: var(--h-row);
   padding: 0 8px;
-  font-family: var(--font-mono);
   color: var(--fg);
+}
+.globMono {
+  font-family: var(--font-mono);
 }
 .globSelected {
   background: var(--bg-selected);

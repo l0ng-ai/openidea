@@ -307,6 +307,8 @@ export function ColorSwatches({ value, presets, onChange, allowCustom = true, ..
 export interface GlobListEditorProps {
   value: readonly string[];
   onChange: (value: string[]) => void;
+  className?: string;
+  mono?: boolean;
   placeholder?: string;
   "aria-label"?: string;
   /** Shown for an empty list. */
@@ -321,6 +323,8 @@ export interface GlobListEditorProps {
 export function GlobListEditor({
   value,
   onChange,
+  className,
+  mono = true,
   placeholder = "**/pattern",
   emptyText = "No patterns",
   itemLabel = "Pattern",
@@ -404,7 +408,7 @@ export function GlobListEditor({
 
   const rows = editing && editing.index >= value.length ? [...value, ""] : value;
   return (
-    <div className={styles.globEditor}>
+    <div className={clsx(styles.globEditor, className)}>
       <div className={styles.listToolbar} role="toolbar" aria-controls={listId}>
         <IconButton icon="plus" title="Add" size="small" onClick={() => void add()} />
         <IconButton icon="minus" title="Remove" size="small" disabled={selected === null} onClick={remove} />
@@ -437,14 +441,14 @@ export function GlobListEditor({
             id={`${listId}-${i}`}
             role="option"
             aria-selected={selected === i}
-            className={clsx(styles.globRow, selected === i && styles.globSelected)}
+            className={clsx(styles.globRow, mono && styles.globMono, selected === i && styles.globSelected)}
             onMouseDown={() => setSelected(i)}
             onDoubleClick={() => setEditing({ index: i, text: glob })}
           >
             {editing?.index === i ? (
               <Input
                 autoFocus
-                mono
+                mono={mono}
                 variant="bare"
                 className={styles.globInput}
                 value={editing.text}
