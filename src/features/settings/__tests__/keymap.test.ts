@@ -18,6 +18,8 @@ import { vscodeMacos } from "@/platform/keymaps/vscode-macos";
 import {
   addBinding,
   bindingMatches,
+  parseShortcutQuery,
+  shortcutQueryMatches,
   findConflicts,
   isModified,
   removeBinding,
@@ -260,6 +262,56 @@ describe("shortcut search", () => {
     expect(bindingMatches(["Meta+K Meta+C"], "Meta+K")).toBe(true);
     expect(bindingMatches(["Shift+Meta+O"], "Meta+Shift+O")).toBe(true);
     expect(bindingMatches(["Meta+O"], "Meta+Shift+O")).toBe(false);
+  });
+
+  it("reads typed shortcut text in the search field", () => {
+    const m = (bindings: string[], query: string) => {
+      const parsed = parseShortcutQuery(query);
+      return !!parsed && shortcutQueryMatches(bindings, parsed);
+    };
+    for (const q of [
+      "ctrl+shift+n",
+      "Ctrl+Shift+N",
+      "shift+ctrl+n",
+      "ctrl shift n",
+      "Ctrl + Shift + N",
+      "control+shift+n",
+    ])
+      expect(m(["Ctrl+Shift+N"], q)).toBe(true);
+    expect(m(["Ctrl+N"], "ctrl+shift+n")).toBe(false);
+    expect(m(["Ctrl+Shift+N"], "ctrl+n")).toBe(false);
+    // Only modifiers typed so far: every shortcut holding them.
+    expect(m(["Ctrl+Shift+N"], "ctrl")).toBe(true);
+    expect(m(["Ctrl+Shift+N"], "ctrl+shift")).toBe(true);
+    expect(m(["Ctrl+Shift+N"], "ctrl+shift+")).toBe(true);
+    expect(m(["Alt+N"], "ctrl")).toBe(false);
+    expect(m(["Shift+Meta+O"], "⇧⌘O")).toBe(true);
+    expect(m(["Shift+Meta+O"], "cmd+shift+o")).toBe(true);
+    expect(m(["Meta+K Meta+C"], "Meta+K, Meta+C")).toBe(true);
+    expect(m(["Meta+K Meta+C"], "cmd+k")).toBe(true);
+    expect(m(["Meta+K Meta+C"], "cmd+k cmd+x")).toBe(false);
+    expect(m(["Shift Shift"], "shift")).toBe(true);
+    expect(m(["Ctrl+Escape"], "ctrl+esc")).toBe(true);
+    expect(m(["Shift+F6"], "shift+f6")).toBe(true);
+    expect(m(["F5"], "f5")).toBe(true);
+    // Plain words stay name searches.
+    expect(parseShortcutQuery("save")).toBeNull();
+    expect(parseShortcutQuery("go to file")).toBeNull();
+    expect(parseShortcutQuery("")).toBeNull();
+  });
+
+  it("lists actions whose shortcut matches the typed text", () => {
+    const run = () => {};
+    const actions = [
+      { id: "a.one", title: "Alpha", category: "File", run },
+      { id: "a.two", title: "Beta", category: "File", run },
+    ];
+    const draft = { preset: "intellij-windows", overrides: { "a.one": ["Ctrl+Shift+N"], "a.two": ["Ctrl+N"] } };
+    const keys = (nodes: ReturnType<typeof buildKeymapTree>): string[] =>
+      nodes.flatMap((n) => (n.kind === "group" ? keys(n.children) : [n.key]));
+    expect(keys(buildKeymapTree(actions, draft, "ctrl+shift+n", ""))).toEqual(["a.one"]);
+    expect(keys(buildKeymapTree(actions, draft, "ctrl+n", ""))).toEqual(["a.two"]);
+    expect(keys(buildKeymapTree(actions, draft, "Ctrl", "")).sort()).toEqual(["a.one", "a.two"]);
   });
 
   it("filters the keymap tree by name and by shortcut", () => {
