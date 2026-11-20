@@ -920,15 +920,6 @@ impl AgentSkillSource {
     pub fn discovered(&self) -> bool {
         !matches!(self, Self::Workspace | Self::User)
     }
-
-    /// The order the discovery reads sources in; the first of a canonical path wins.
-    pub fn precedence(&self) -> u8 {
-        match self {
-            Self::Workspace => 0,
-            Self::User => 1,
-            _ => 2,
-        }
-    }
 }
 
 /// One discovered skill: a folder with a `SKILL.md`.

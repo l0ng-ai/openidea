@@ -799,7 +799,7 @@ impl AgentManager {
         }
         // The hub's active skills complete on every agent; its `off` ones drop out here,
         // which is all the enforcement an ACP agent gets.
-        let holder = self.task_for_commands(&provider, task.as_deref());
+        let holder = self.task_for_commands(&provider, task);
         let states = match holder {
             Some(holder) => holder.skill_states().await,
             None => {
@@ -1376,7 +1376,7 @@ impl AgentManager {
             (s.task.cwd.0.clone(), s.task.provider.clone(), s.task.mcp_overrides.clone())
         };
         let mcp_servers = source.shared.mcp_servers_for_session(&provider_id, &live.init, &mcp_overrides);
-        let skills_delivery = source.stage_skills(&provider_id, &cwd).await;
+        let skills_delivery = source.stage_skills(stage_key(live.driver), &cwd).await;
         let cwd_s = dunce::canonicalize(&cwd).unwrap_or(cwd).to_string_lossy().into_owned();
         let reply: Value = live
             .peer
@@ -3026,7 +3026,7 @@ impl Task {
         let (capabilities, embedded) = capabilities_of(&init);
         let mcp_overrides = self.state.lock().task.mcp_overrides.clone();
         let mcp_servers = self.shared.mcp_servers_for_session(provider_id, &init, &mcp_overrides);
-        let skills_delivery = self.stage_skills(provider_id, cwd).await;
+        let skills_delivery = self.stage_skills(stage_key(spec.driver), cwd).await;
         // Agents that compare canonical paths fail in a symlinked directory (macOS `/tmp`).
         let cwd_s = dunce::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf()).to_string_lossy().into_owned();
 
@@ -4055,6 +4055,17 @@ fn turn_starts(entries: &[AgentEntry]) -> Vec<usize> {
 struct McpForSession {
     servers: Vec<Value>,
     off: Vec<String>,
+}
+
+/// The driver a session's staged skills are staged for (`skills::stage` matches on it):
+/// the native CLIs take the farm, everything else (an ACP agent) gets the `/` menu filter.
+fn stage_key(driver: provider::Driver) -> &'static str {
+    match driver {
+        provider::Driver::Claude => "claude",
+        provider::Driver::Codex => "codex",
+        provider::Driver::Copilot => "copilot",
+        provider::Driver::Acp => "acp",
+    }
 }
 
 /// The session parameters `session/new`, `session/load` and `session/fork` share: the MCP

@@ -397,8 +397,10 @@ pub fn stage(
 ) -> std::io::Result<Delivery> {
     let mut out = Delivery::default();
     let cwd = dunce::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
-    // Each CLI's tree holds what it cannot see on its own.
-    let (claude_tree, copilot_tree, codex_tree) = match provider.strip_suffix("-acp").unwrap_or(provider) {
+    // Each CLI's tree holds what it cannot see on its own. Only the native drivers take
+    // the farm; `provider` is their key (`claude`, `copilot`, `codex`), anything else
+    // (an ACP agent) gets the `/` menu filter instead.
+    let (claude_tree, copilot_tree, codex_tree) = match provider {
         "claude" => (Some(farm.join(".claude/skills")), Some(farm.join("copilot")), Some(farm.join("codex"))),
         "copilot" => (None, Some(farm.join("copilot")), Some(farm.join("codex"))),
         "codex" => (None, Some(farm.join("copilot")), Some(farm.join("codex"))),
@@ -460,7 +462,7 @@ pub fn stage(
 /// directory (a worktree lacks the untracked originals) or the home.
 fn native_claude(skill: &AgentSkill, cwd: &Path, home: Option<&Path>) -> bool {
     match skill.source {
-        AgentSkillSource::ClaudeWorkspace => is_under(skill.path.0.as_path(), &cwd),
+        AgentSkillSource::ClaudeWorkspace => is_under(skill.path.0.as_path(), cwd),
         AgentSkillSource::ClaudeUser => home.is_some_and(|h| is_under(skill.path.0.as_path(), &h.join(".claude"))),
         _ => false,
     }
@@ -469,7 +471,7 @@ fn native_claude(skill: &AgentSkill, cwd: &Path, home: Option<&Path>) -> bool {
 /// Copilot reads the repository's `.github/skills` and the home's `.copilot` itself.
 fn native_copilot(skill: &AgentSkill, cwd: &Path, home: Option<&Path>) -> bool {
     match skill.source {
-        AgentSkillSource::GithubWorkspace => is_under(skill.path.0.as_path(), &cwd),
+        AgentSkillSource::GithubWorkspace => is_under(skill.path.0.as_path(), cwd),
         AgentSkillSource::CopilotUser => home.is_some_and(|h| is_under(skill.path.0.as_path(), &h.join(".copilot"))),
         _ => false,
     }
@@ -478,7 +480,7 @@ fn native_copilot(skill: &AgentSkill, cwd: &Path, home: Option<&Path>) -> bool {
 /// Codex reads its own folders itself.
 fn native_codex(skill: &AgentSkill, cwd: &Path, home: Option<&Path>) -> bool {
     match skill.source {
-        AgentSkillSource::CodexWorkspace => is_under(skill.path.0.as_path(), &cwd),
+        AgentSkillSource::CodexWorkspace => is_under(skill.path.0.as_path(), cwd),
         AgentSkillSource::CodexUser => home.is_some_and(|h| is_under(skill.path.0.as_path(), &h.join(".codex"))),
         _ => false,
     }
