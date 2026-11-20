@@ -114,7 +114,8 @@ describe("dependency analyzer", () => {
   it("marks conflicts, shows their usages and excludes through the direct dependency", async () => {
     ipc.exclude.mockResolvedValue({ path: "/p/pom.xml", range: {} });
     render(<DependencyAnalyzer input={{ kind: ANALYZER_KIND, key: ANALYZER_KIND }} />);
-    fireEvent.click(screen.getByRole("checkbox", { name: "Show conflicts only" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show conflicts only", pressed: false }));
+    expect(screen.getByRole("button", { name: "Show conflicts only", pressed: true })).toBeTruthy();
     expect(screen.queryByText("com.google.inject:guice")).toBeNull();
     fireEvent.mouseDown(screen.getByText("com.google.guava:guava").closest("[role=treeitem]")!, { button: 0 });
     expect(screen.getByText("omitted for conflict with 32.1.3-jre")).toBeTruthy();
@@ -213,7 +214,7 @@ describe("dependency analyzer for Gradle", () => {
     render(<DependencyAnalyzer input={{ kind: ANALYZER_KIND, key: ANALYZER_KIND }} />);
     expect(ipc.gradle).toHaveBeenCalledWith(":app", "runtimeClasspath", false, expect.any(Number), "");
     await screen.findByText("com.fasterxml.jackson.core:jackson-databind");
-    fireEvent.click(screen.getByRole("checkbox", { name: "Show conflicts only" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show conflicts only", pressed: false }));
     expect(screen.queryByText("org.springframework.boot:spring-boot-starter-json")).toBeNull();
     fireEvent.mouseDown(screen.getByText("com.fasterxml.jackson.core:jackson-databind").closest("[role=treeitem]")!, {
       button: 0,

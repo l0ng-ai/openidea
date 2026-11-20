@@ -1,6 +1,17 @@
 import type { Page } from "@playwright/test";
-import type { BuildModel, BuildTool } from "../src/platform/ipc";
+import type { BuildModel, BuildTool, MavenDependency } from "../src/platform/ipc";
 import { expect, stubDesktop, test } from "./fixtures";
+
+const jsonCore: MavenDependency = {
+  groupId: "com.example.json",
+  artifactId: "json-core",
+  version: "2.1.0",
+  type: "jar",
+  classifier: null,
+  scope: "compile",
+  optional: false,
+  children: [],
+};
 
 const model: BuildModel = {
   maven: {
@@ -17,7 +28,14 @@ const model: BuildModel = {
         modules: [],
         aggregated: false,
         plugins: [],
-        dependencies: [],
+        dependencies: [
+          jsonCore,
+          {
+            ...jsonCore,
+            artifactId: "json-mapper",
+            children: [{ ...jsonCore, version: "2.0.0", omitted: "conflict", conflictWith: "2.1.0" }],
+          },
+        ],
         profiles: [],
         javaVersion: 21,
         command: "mvn",
@@ -97,3 +115,45 @@ for (const tool of ["maven", "gradle"] as const) {
     await expect(menu).toBeHidden();
   });
 }
+
+test("Dependency Analyzer pairs its pane controls and stacks usages in a narrow editor", async ({
+  workbench: page,
+}) => {
+  await page.setViewportSize({ width: 1360, height: 780 });
+  await showTool(page, "maven");
+  const toolActions = page.getByRole("toolbar", { name: "Maven actions" });
+  await toolActions.getByRole("button", { name: "More Actions", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Analyze Dependencies…", exact: true }).click();
+
+  const filters = page.getByRole("toolbar", { name: "Dependency Analyzer", exact: true });
+  const resolved = page.getByRole("heading", { name: "Resolved Dependencies", exact: true });
+  const usages = page.getByRole("heading", { name: "Usages of com.example.json:json-core:2.1.0", exact: true });
+  const dependencies = page.getByRole("tree", { name: "Dependencies", exact: true });
+  const core = dependencies.getByRole("treeitem", { name: /^com\.example\.json:json-core\b/ });
+  const treeMode = page.getByRole("button", { name: "Show as Tree", exact: true });
+  const conflicts = filters.getByRole("button", { name: "Show conflicts only", exact: true });
+  await expect(resolved).toBeVisible();
+  await expect(filters.getByRole("button", { name: "Show as Tree" })).toHaveCount(0);
+  await treeMode.click();
+  await expect(treeMode).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "Show as List", exact: true }).click();
+  await conflicts.press("Space");
+  await expect(conflicts).toHaveAttribute("aria-pressed", "true");
+  await expect(dependencies.getByRole("treeitem")).toHaveCount(1);
+  await core.click();
+  await expect(usages).toBeVisible();
+  await expect(page.getByText("omitted for conflict with 2.1.0")).toBeVisible();
+  const wideLeft = (await resolved.boundingBox())!;
+  const wideRight = (await usages.boundingBox())!;
+  expect(Math.abs(wideLeft.y - wideRight.y)).toBeLessThan(1);
+  expect(wideRight.x).toBeGreaterThan(wideLeft.x + wideLeft.width);
+
+  await page.setViewportSize({ width: 790, height: 780 });
+  await expect
+    .poll(async () => (await usages.boundingBox())!.y - (await resolved.boundingBox())!.y)
+    .toBeGreaterThan(100);
+  expect(Math.abs((await usages.boundingBox())!.x - (await resolved.boundingBox())!.x)).toBeLessThan(1);
+  expect(await filters.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+  await expect(core).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("button", { name: "Copy Coordinates" })).toBeInViewport({ ratio: 1 });
+});
