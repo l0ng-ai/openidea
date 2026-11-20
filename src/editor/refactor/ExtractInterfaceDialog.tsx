@@ -1,6 +1,5 @@
-/** IDEA's Extract Interface dialog for Java classes (`extractInterface.ts`). */
 import { useEffect, useRef, useState } from "react";
-import { Checkbox, Dialog, Input, Select, Spinner, T } from "@/ui";
+import { Checkbox, Dialog, Icon, Input, Select, Spinner, T } from "@/ui";
 import { useTx } from "@/platform/i18n";
 import {
   extractInterface,
@@ -74,8 +73,8 @@ function ExtractInterfaceDialogInner({ request }: { request: InterfaceRequest })
       title="Extract Interface"
       className={styles.dialog}
       width={560}
+      minWidth={350}
       minHeight={360}
-      maxHeight={600}
       resizable="both"
       buttons={[
         { label: "Preview", role: "extra", disabled: !ready, onClick: () => void submit(true) },
@@ -92,13 +91,13 @@ function ExtractInterfaceDialogInner({ request }: { request: InterfaceRequest })
       }
     >
       <div className={styles.body}>
-        <div className={styles.field}>
+        <label className={styles.field}>
           <T>Extract interface from:</T>
-          <span className={styles.source}>{info.className}</span>
-        </div>
+          <Input className={styles.source} mono readOnly value={info.className} />
+        </label>
         <label className={styles.field}>
           <T>Interface name:</T>
-          <Input mono autoFocus value={name} onChange={(e) => setName(e.target.value)} />
+          <Input mono data-autofocus="" value={name} onChange={(e) => setName(e.target.value)} />
         </label>
         <label className={styles.field}>
           <T>Package for new interface:</T>
@@ -109,27 +108,42 @@ function ExtractInterfaceDialogInner({ request }: { request: InterfaceRequest })
             onChange={setPkg}
           />
         </label>
+        <div className={styles.memberTitle}>
+          <T>Members to Form Interface</T>
+        </div>
         <div className={styles.table} role="table" aria-label={tx("Members to Form Interface")}>
           <div className={styles.head} role="row">
-            <Checkbox
-              checked={allChecked}
-              indeterminate={checked.size > 0 && !allChecked}
-              onChange={(on) => setChecked(on ? new Set(info.members.map((m) => m.handleIdentifier)) : new Set())}
-              label={<T>Members to Form Interface</T>}
-            />
+            <div role="columnheader">
+              <Checkbox
+                className={styles.member}
+                checked={allChecked}
+                indeterminate={checked.size > 0 && !allChecked}
+                onChange={(on) => setChecked(on ? new Set(info.members.map((m) => m.handleIdentifier)) : new Set())}
+                aria-label="Select All"
+                label={<T>Member</T>}
+              />
+            </div>
           </div>
-          <div className={styles.rows}>
-            {info.members.map((m) => (
+          {info.members.map((m) => {
+            const label = memberLabel(m);
+            return (
               <div key={m.handleIdentifier} className={styles.row} role="row">
-                <Checkbox
-                  className={styles.member}
-                  checked={checked.has(m.handleIdentifier)}
-                  onChange={(on) => toggle(m.handleIdentifier, on)}
-                  label={<span className={styles.label}>{memberLabel(m)}</span>}
-                />
+                <div role="cell">
+                  <Checkbox
+                    className={styles.member}
+                    checked={checked.has(m.handleIdentifier)}
+                    onChange={(on) => toggle(m.handleIdentifier, on)}
+                    label={
+                      <span className={styles.memberLabel} title={label}>
+                        <Icon name={m.parameters ? "method" : "field"} size={16} />
+                        <span className={styles.label}>{label}</span>
+                      </span>
+                    }
+                  />
+                </div>
               </div>
-            ))}
-          </div>
+            );
+          })}
         </div>
         {(error ?? (trimmed && problem)) && (
           <span className={styles.error} role="alert">
