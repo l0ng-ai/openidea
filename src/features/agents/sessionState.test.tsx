@@ -3026,7 +3026,7 @@ describe("grouped changes", () => {
     expect(screen.getByRole("button", { name: /1 commit/ })).toBeInTheDocument();
   });
 
-  it("puts a whole-workspace task's files under a row per repository", async () => {
+  it("puts the files of a task across nested repositories under a row per repository", async () => {
     const inRepo = (repo: string, rel: string): AgentChange => ({
       ...change(rel),
       path: `/${repo}/${rel.slice(rel.indexOf("/") + 1)}`,
@@ -3060,6 +3060,8 @@ describe("grouped changes", () => {
     const pane = await screen.findByRole("complementary", { name: "Changes" });
     expect(await within(pane).findByText("a.ts")).toBeInTheDocument();
     expect(within(pane).queryByText("project")).toBeNull();
+    // A file at the top of the project names no folder.
+    expect([...pane.querySelectorAll("[data-row]")].map((r) => r.textContent)).toEqual(["a.ts+1 −1", "b.ts+1 −1"]);
   });
 
   it("accepts the task's committed work too, not only the uncommitted files", async () => {

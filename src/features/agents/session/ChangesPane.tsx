@@ -512,7 +512,11 @@ export function ChangesPane({
                     {basename(n.change.path)}
                   </span>
                   <span className={styles.changeDir}>
-                    {n.change.repo ? dirname(n.change.relPath) : relativeDir(task.cwd, n.change.path)}
+                    {n.change.repo
+                      ? n.change.relPath.includes("/")
+                        ? dirname(n.change.relPath)
+                        : ""
+                      : relativeDir(task.cwd, n.change.path)}
                   </span>
                   <span className={styles.changeStat}>
                     {n.change.added > 0 && <span className={styles.added}>+{n.change.added}</span>}{" "}
