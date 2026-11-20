@@ -13,6 +13,7 @@ import type {
 } from "@/bindings";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
+import { manageLocalCli } from "./localCli";
 
 export interface RegistryBackend {
   list(request: RequestId): Promise<AgentRegistry>;
@@ -23,6 +24,7 @@ export interface RegistryBackend {
 
 /** The built-in agents' launch commands: read, and override through an agent file. */
 export interface CommandsBackend {
+  localCli: typeof manageLocalCli;
   providers(): Promise<AgentProvider[]>;
   set(id: string, command: string | null): Promise<void>;
   setEnv(id: string, env: Record<string, string>): Promise<void>;
@@ -47,6 +49,7 @@ export const tauriRegistry: RegistryBackend = {
 };
 
 export const tauriCommands: CommandsBackend = {
+  localCli: manageLocalCli,
   providers: () => call(commands.agentProviders()),
   chooseExecutable: async (title, current) => {
     const picked = await open({ title, defaultPath: current || undefined, directory: false, multiple: false });

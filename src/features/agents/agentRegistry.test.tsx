@@ -413,6 +413,7 @@ describe("the ACP Registry in the agent list", () => {
 });
 
 class FakeCommands implements CommandsBackend {
+  localCli = vi.fn<CommandsBackend["localCli"]>();
   list: AgentProvider[] = [];
   saved: [string, string | null][] = [];
   providers = vi.fn(async () => this.list);
@@ -482,6 +483,23 @@ describe("Built-in executable overrides", () => {
   };
   const apply = () => screen.getByRole("button", { name: "Apply" });
   const field = () => screen.getByRole("textbox", { name: "Executable" });
+
+  it("checks only on click and updates only after the user chooses the offered version", async () => {
+    const commands = new FakeCommands();
+    const provider = claudeProvider("claude");
+    const offer = { status: "available" as const, current: "1.0.0", latest: "1.1.0", prefix: "/usr/local" };
+    commands.list = [provider];
+    commands.localCli.mockResolvedValueOnce(offer).mockResolvedValueOnce({ status: "updated", current: "1.1.0" });
+    const panel = within(await openCommands(commands));
+    expect(commands.localCli).not.toHaveBeenCalled();
+    fireEvent.click(panel.getByRole("button", { name: "Check for updates" }));
+    const update = await panel.findByRole("button", { name: "Update to 1.1.0" });
+    expect(commands.localCli).toHaveBeenCalledOnce();
+    fireEvent.click(update);
+    await panel.findByText("Updated to 1.1.0. New sessions will use this version.");
+    expect(commands.localCli).toHaveBeenLastCalledWith(provider, offer);
+    expect(commands.saved).toEqual([]);
+  });
 
   it("follows locale changes and renders login commands as inline code", async () => {
     const commands = new FakeCommands();

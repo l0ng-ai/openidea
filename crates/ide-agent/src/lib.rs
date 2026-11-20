@@ -1441,6 +1441,14 @@ impl AgentManager {
         Ok(first)
     }
 
+    /// The executable a new session of `provider` starts, chosen as the launcher chooses it
+    /// (newest of several installs, the agent's `PATH`).
+    pub async fn launch_program(&self, provider: &str) -> IdeResult<String> {
+        let spec = self.shared.spec(provider).ok_or_else(|| IdeError::invalid(format!("unknown agent {provider}")))?;
+        let root = self.shared.paths.project_root.clone();
+        blocking(move || Ok(spec.resolve_for_launch(&root).command)).await
+    }
+
     /// What `provider` reports about itself, from `initialize` alone: no session is opened,
     /// so no MCP server, hook or sign-in runs. A successful answer is remembered until
     /// `refresh`; a failed one is not, so a transient startup failure (a CLI updating itself,

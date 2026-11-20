@@ -343,6 +343,13 @@ pub async fn agent_rollback(host: &Host, window: &str, task: String, turns: u32)
     host.project(window)?.agents.rollback(&task, turns).await
 }
 
+/// The executable a new session of the agent starts, resolved as the launcher resolves it.
+#[command(trust = trusted)]
+pub async fn agent_launch_program(host: &Host, window: &str, provider: String) -> IdeResult<String> {
+    host.require_trust(window)?;
+    host.project(window)?.agents.launch_program(&provider).await
+}
+
 /// What the agent reports about itself when it starts (no session: no MCP servers, hooks
 /// or sign-in run). Remembered until `refresh`.
 #[command(trust = trusted)]
@@ -1095,6 +1102,7 @@ ide_command::domain!(
     agent_grouped_changes,
     agent_hermes_profiles,
     agent_import_session,
+    agent_launch_program,
     agent_mcp_discover_sources,
     agent_mcp_import,
     agent_mcp_import_selected,

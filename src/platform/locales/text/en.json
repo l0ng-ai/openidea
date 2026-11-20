@@ -2789,5 +2789,21 @@
   "Download to {folder} finished with errors": "Download to {folder} finished with errors",
   "Cannot download to {folder}": "Cannot download to {folder}",
   "Copy the selected files and folders of a remote project to a folder on this computer": "Copy the selected files and folders of a remote project to a folder on this computer",
-  "{modifier}+Click to only see \"{name}\"": "{modifier}+Click to only see \"{name}\""
+  "{modifier}+Click to only see \"{name}\"": "{modifier}+Click to only see \"{name}\"",
+  "CLI version": "CLI version",
+  "Checking…": "Checking…",
+  "Check for updates": "Check for updates",
+  "Agent CLI update": "Agent CLI update",
+  "The CLI update check could not finish.": "The CLI update check could not finish.",
+  "Updating the npm installation…": "Updating the npm installation…",
+  "Installed: {0} · npm latest: {1} · {2}": "Installed: {0} · npm latest: {1} · {2}",
+  "Installed: {0} · npm latest: {1}. No write permission for the npm installation at {2}.": "Installed: {0} · npm latest: {1}. No write permission for the npm installation at {2}.",
+  "View permission fixes": "View permission fixes",
+  "Updated to {0}. New sessions will use this version.": "Updated to {0}. New sessions will use this version.",
+  "Installed: {0} · No newer npm release.": "Installed: {0} · No newer npm release.",
+  "Installed: {0}. Use your installer to manage this release channel.": "Installed: {0}. Use your installer to manage this release channel.",
+  "npm could not complete the operation ({0}).": "npm could not complete the operation ({0}).",
+  "The CLI operation timed out.": "The CLI operation timed out.",
+  "An update for this agent is already running.": "An update for this agent is already running.",
+  "This is not a global npm install OpenIDEA can update. Use its original installer.": "This is not a global npm install OpenIDEA can update. Use its original installer."
 }

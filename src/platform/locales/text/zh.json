@@ -9152,5 +9152,21 @@
   "Download to {folder} finished with errors": "下载到 {folder} 完成，但有错误",
   "Cannot download to {folder}": "无法下载到 {folder}",
   "Copy the selected files and folders of a remote project to a folder on this computer": "把远程项目中选中的文件和文件夹复制到本机的文件夹",
-  "{modifier}+Click to only see \"{name}\"": "{modifier}+点击仅显示“{name}”"
+  "{modifier}+Click to only see \"{name}\"": "{modifier}+点击仅显示“{name}”",
+  "CLI version": "CLI 版本",
+  "Checking…": "正在检查…",
+  "Check for updates": "检查更新",
+  "Agent CLI update": "智能体 CLI 更新",
+  "The CLI update check could not finish.": "未能完成 CLI 更新检查。",
+  "Updating the npm installation…": "正在更新 npm 安装…",
+  "Installed: {0} · npm latest: {1} · {2}": "已安装：{0} · npm 最新版：{1} · {2}",
+  "Installed: {0} · npm latest: {1}. No write permission for the npm installation at {2}.": "已安装：{0} · npm 最新版：{1}。没有位于 {2} 的 npm 安装目录的写入权限。",
+  "View permission fixes": "查看权限修复方法",
+  "Updated to {0}. New sessions will use this version.": "已更新到 {0}。新会话将使用此版本。",
+  "Installed: {0} · No newer npm release.": "已安装：{0} · 没有更新的 npm 版本。",
+  "Installed: {0}. Use your installer to manage this release channel.": "已安装：{0}。请使用原安装工具管理此发布渠道。",
+  "npm could not complete the operation ({0}).": "npm 无法完成操作（{0}）。",
+  "The CLI operation timed out.": "CLI 操作超时。",
+  "An update for this agent is already running.": "此智能体已有更新正在进行。",
+  "This is not a global npm install OpenIDEA can update. Use its original installer.": "这不是 OpenIDEA 能更新的 npm 全局安装。请使用原安装工具更新。"
 }
