@@ -1,7 +1,7 @@
 use ide_core::{CancellationToken, IdeError, IdeResult, Pos, TextEdit};
 use ide_search::{
-    ReplaceEvent, ReplaceHost, ReplaceTarget, SearchQuery, SearchScope, preserve_case, preview, replace_files,
-    replacement_edits,
+    LiteralKind, LiteralRange, ReplaceEvent, ReplaceHost, ReplaceTarget, SearchQuery, SearchScope, preserve_case,
+    preview, replace_files, replace_files_in_context, replacement_edits,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -168,4 +168,47 @@ fn replace_files_respects_selected_matches_and_invalid_patterns() {
     assert_eq!(docs.text("a"), "foo\nx\nfoo");
     let err = replace_files(&docs, &regex("("), "x", false, &t, &CancellationToken::new(), &|_| {}).unwrap_err();
     assert_eq!(err.kind, ide_core::error::ErrorKind::InvalidInput);
+}
+
+/// `// …` comments and `"…"` strings of `.rs` files; other files have no syntax tree.
+fn toy_literals(path: &Path, text: &str) -> Option<Vec<LiteralRange>> {
+    if path.extension().is_none_or(|e| e != "rs") {
+        return None;
+    }
+    let mut out = Vec::new();
+    for (i, _) in text.match_indices("//") {
+        let end = text[i..].find('\n').map_or(text.len(), |n| i + n);
+        out.push(LiteralRange { start: i, end, kind: LiteralKind::Comment });
+    }
+    let quotes: Vec<usize> = text.match_indices('"').map(|(i, _)| i).collect();
+    for pair in quotes.chunks(2) {
+        if let [a, b] = pair {
+            out.push(LiteralRange { start: *a, end: b + 1, kind: LiteralKind::String });
+        }
+    }
+    out.sort_by_key(|l| l.start);
+    Some(out)
+}
+
+#[test]
+fn replace_files_in_context_keeps_to_the_search_context() {
+    use ide_search::SearchContext as C;
+    let text = "foo(\"foo\"); // foo\nfoo\n";
+    let plain = "foo // foo\n";
+    let cases = [
+        (C::Any, "x(\"x\"); // x\nx\n", "x // x\n"),
+        (C::InComments, "foo(\"foo\"); // x\nfoo\n", plain),
+        (C::InStringLiterals, "foo(\"x\"); // foo\nfoo\n", plain),
+        (C::ExceptComments, "x(\"x\"); // foo\nx\n", "x // x\n"),
+        (C::ExceptStringLiterals, "x(\"foo\"); // x\nx\n", "x // x\n"),
+        (C::ExceptCommentsAndStringLiterals, "x(\"foo\"); // foo\nx\n", "x // x\n"),
+    ];
+    for (context, in_rs, in_txt) in cases {
+        let docs = FakeDocs::with(&[("a.rs", text), ("b.txt", plain)]);
+        let q = SearchQuery { context, ..query("foo") };
+        let t = targets(&["a.rs", "b.txt"]);
+        replace_files_in_context(&docs, &q, "x", false, &t, Some(&toy_literals), &CancellationToken::new(), &|_| {})
+            .unwrap();
+        assert_eq!((docs.text("a.rs").as_str(), docs.text("b.txt").as_str()), (in_rs, in_txt), "{context:?}");
+    }
 }

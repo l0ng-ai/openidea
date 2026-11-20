@@ -22,7 +22,7 @@ pub use mask::FileMask;
 pub use pattern::ScopePattern;
 pub use replace::{
     ReplaceEvent, ReplaceHost, ReplacePreview, ReplaceSummary, ReplaceTarget, apply_edits, preserve_case, preview,
-    replace_files, replacement_edits,
+    replace_files, replace_files_in_context, replacement_edits,
 };
 pub use words::{WordFiles, WordQuery, files_with_word};
 
@@ -99,8 +99,15 @@ impl SearchContext {
         }
     }
 
+    /// Whether a match starting at byte `at` is kept, given the file's sorted comments and
+    /// string literals. Find and Replace both filter with it, so they keep the same matches.
+    pub fn keeps(self, literals: &[LiteralRange], at: usize) -> bool {
+        let i = literals.partition_point(|l| l.start <= at);
+        self.accepts(literals[..i].last().filter(|l| at < l.end).map(|l| l.kind))
+    }
+
     /// Only matches inside comments / string literals: files without any are skipped.
-    fn needs_literals(self) -> bool {
+    pub(crate) fn needs_literals(self) -> bool {
         matches!(self, Self::InComments | Self::InStringLiterals)
     }
 }
