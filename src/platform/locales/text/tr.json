@@ -5127,7 +5127,6 @@
   "VCS Operations…": "VCS İşlemleri…",
   "Value": "Değer",
   "Value tooltip delay (ms)": "Değer ipucu gecikmesi (ms)",
-  "Value tooltips are off": "Değer ipuçları kapalı",
   "Values are inserted as SQL: quote strings, e.g. 'abc'.": "Değerler SQL olarak eklenir; metinleri tırnak içine alın (ör. 'abc').",
   "Values of local variables are shown after the lines that use them while suspended.": "Program duraklatılmışken yerel değişkenlerin değerleri, kullanıldıkları satırların ardından gösterilir.",
   "Variable": "Değişken",
