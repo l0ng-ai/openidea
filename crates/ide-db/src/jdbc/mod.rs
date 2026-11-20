@@ -5,6 +5,7 @@ use crate::{DataSource, DbManager, QueryResult, ResultColumn};
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::collections::HashMap;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -600,14 +601,26 @@ fn decode(data: &[u8], sql: &str, elapsed_ms: f64) -> IdeResult<QueryResult> {
 impl DbManager {
     pub(crate) async fn jdbc_completion(&self, id: &str, pool: &JdbcPool) -> IdeResult<crate::CompletionModel> {
         let mut tables = vec![];
+        let mut column_count = 0;
         let schemas = self.schemas(id).await?;
         for schema in &schemas {
+            // Columns of the whole namespace in one call; a driver that refuses it still completes tables.
+            let mut columns = if column_count < crate::MAX_META_ROWS {
+                pool.metadata(&["schemaColumns", schema]).await.map(schema_columns).unwrap_or_else(|e| {
+                    tracing::warn!("JDBC columns of {schema}: {}", e.message);
+                    HashMap::new()
+                })
+            } else {
+                HashMap::new()
+            };
             for table in self.tables(id, schema).await? {
+                let columns = columns.remove(&table.name).unwrap_or_default();
+                column_count += columns.len();
                 tables.push(crate::CompletionTable {
                     schema: schema.clone(),
                     name: table.name,
                     kind: table.kind,
-                    columns: vec![],
+                    columns,
                 });
                 if tables.len() >= crate::MAX_META_ROWS {
                     break;
@@ -632,9 +645,48 @@ impl DbManager {
     }
 }
 
+/// The bridge's `schemaColumns` rows (table, name, type, nullable, default) by table.
+fn schema_columns(rows: Vec<Vec<Option<String>>>) -> HashMap<String, Vec<crate::CompletionColumn>> {
+    let mut by_table: HashMap<String, Vec<crate::CompletionColumn>> = HashMap::new();
+    for row in rows {
+        let mut it = row.into_iter();
+        let (Some(Some(table)), Some(Some(name))) = (it.next(), it.next()) else { continue };
+        let data_type = it.next().flatten().unwrap_or_default();
+        let nullable = it.next().flatten().as_deref() != Some("0");
+        let has_default = it.next().flatten().is_some();
+        by_table.entry(table).or_default().push(crate::CompletionColumn {
+            name,
+            data_type,
+            nullable,
+            primary_key: false,
+            has_default,
+        });
+    }
+    by_table
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schema_columns_group_by_table() {
+        let row = |t: &str, n: &str, null: &str, def: Option<&str>| {
+            vec![Some(t.into()), Some(n.into()), Some("INT".into()), Some(null.into()), def.map(Into::into)]
+        };
+        let by_table = schema_columns(vec![
+            row("orders", "id", "0", None),
+            row("orders", "note", "1", Some("'none'")),
+            row("items", "sku", "1", None),
+            vec![None, Some("orphan".into())],
+        ]);
+        let orders = &by_table["orders"];
+        assert_eq!(orders.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["id", "note"]);
+        assert_eq!((orders[0].nullable, orders[0].has_default), (false, false));
+        assert_eq!((orders[1].nullable, orders[1].has_default), (true, true));
+        assert_eq!(by_table["items"].len(), 1);
+        assert_eq!(by_table.len(), 2);
+    }
 
     #[tokio::test]
     async fn frame_codec_checks_both_16_mib_boundaries() {
