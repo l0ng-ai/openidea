@@ -749,6 +749,14 @@ impl Pool {
     }
 
     /// The keep-alive ping (Oracle needs a FROM clause).
+    /// Keep-alive: one cheap round trip on the session.
+    pub async fn ping(&self) -> IdeResult<()> {
+        match self {
+            Pool::Jdbc(p) => p.ping().await,
+            _ => self.rows(self.ping_sql(), 1).await.map(|_| ()),
+        }
+    }
+
     pub fn ping_sql(&self) -> &'static str {
         match self {
             Pool::Oracle(_) => "SELECT 1 FROM DUAL",

@@ -1072,6 +1072,18 @@ function promptOf(id: string): string {
  * `schema` is a console's active context: the backend puts the connection that runs
  * each statement in it, so unqualified names resolve there.
  */
+/** Shows `id` disconnected when the backend closed its connection (it reconnects on next use). */
+async function syncDropped(id: string) {
+  const server = await call(commands.dbConnected()).catch(() => null);
+  if (!server || server.includes(id) || !useDatabase.getState().connected.has(id)) return;
+  useDatabase.setState((s) => {
+    const connected = new Set(s.connected);
+    connected.delete(id);
+    return { connected };
+  });
+  log("info", `${targetLabel(id)}: the connection was lost; the next statement reconnects`);
+}
+
 async function run(
   id: string,
   statements: SqlStatement[],
@@ -1087,6 +1099,8 @@ async function run(
   );
   if (!current()) return outcomes;
   if (!wasConnected) log("info", "Connected");
+  // A failed statement can have found the session dead; the backend then dropped it.
+  if (outcomes.some((o) => o.error)) void syncDropped(id);
   const prompt = schema || promptOf(id);
   for (const o of outcomes) {
     log("statement", o.statement.text, `${prompt}>`);
