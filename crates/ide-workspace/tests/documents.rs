@@ -1,5 +1,4 @@
 use ide_core::error::ErrorKind;
-use ide_core::event::NotifyLevel;
 use ide_core::{ChangeSet, DocId, IdeEvent, LanguageId, Pos, Range, SharedSink, TextChange, TextEdit};
 use ide_text::{AppliedChange, LineEnding};
 use ide_workspace::documents::DocumentObserver;
@@ -565,14 +564,30 @@ fn external_changes() {
     fs::write(&path, "something else\n").unwrap();
     f.docs.on_disk_changed(std::slice::from_ref(&path));
     assert_eq!(f.docs.snapshot(id).unwrap().text, "// alpha\nBETA\ngamma\n");
-    let warnings =
-        f.events.lock().iter().filter(|e| matches!(e, IdeEvent::Notify { level: NotifyLevel::Warning, .. })).count();
+    let warnings = f
+        .events
+        .lock()
+        .iter()
+        .filter(|e| matches!(e, IdeEvent::DocDiskConflict { path: p, .. } if *p == path.to_string_lossy()))
+        .count();
     assert_eq!(warnings, 1);
     // The same disk state is reported only once.
     f.docs.on_disk_changed(std::slice::from_ref(&path));
-    let warnings =
-        f.events.lock().iter().filter(|e| matches!(e, IdeEvent::Notify { level: NotifyLevel::Warning, .. })).count();
+    let warnings = f
+        .events
+        .lock()
+        .iter()
+        .filter(|e| matches!(e, IdeEvent::DocDiskConflict { path: p, .. } if *p == path.to_string_lossy()))
+        .count();
     assert_eq!(warnings, 1);
+
+    // Load Changes from Disk drops the buffer's changes; autosave writes again afterwards.
+    f.docs.discard_and_reload(id).unwrap();
+    let reloaded = f.docs.snapshot(id).unwrap();
+    assert_eq!((reloaded.text.as_str(), reloaded.dirty), ("something else\n", false));
+    f.docs.edit(id, reloaded.version, change(0, 0, "# ")).unwrap();
+    assert!(f.docs.autosave(id).unwrap());
+    assert_eq!(fs::read_to_string(&path).unwrap(), "# something else\n");
 
     // Unknown paths are ignored.
     f.docs.on_disk_changed(&[f.root.join("other.txt")]);
