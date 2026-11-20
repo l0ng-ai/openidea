@@ -2454,7 +2454,8 @@ impl ManagedSearch<'_> {
                 .chain(base.iter().copied().filter(|entry| imported(entry)));
             for import in imports {
                 let Some((group, artifact)) = coordinates(import, &props) else { continue };
-                let version = import.text_of("version").map(|v| interpolate(&v, &props))?;
+                // An import without a version can't be resolved; the remaining imports and parents still can.
+                let Some(version) = import.text_of("version").map(|v| interpolate(&v, &props)) else { continue };
                 // A source module is authoritative over an installed copy: the local
                 // repository may be stale or may not contain current workspace edits.
                 let bom = (self.modules)()
@@ -4112,6 +4113,32 @@ mod tests {
         assert_eq!(links[0].version.as_deref(), Some("2.3"));
         assert_eq!(links[0].target.path, canon(&bom_path));
         assert_eq!(links[0].target.range.start, at(bom, "<artifactId>bom-lib"));
+    }
+
+    #[test]
+    fn an_import_without_a_version_does_not_hide_the_next_bom() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let bom_path = repo.join("com/example/platform-bom/1.0/platform-bom-1.0.pom");
+        std::fs::create_dir_all(bom_path.parent().unwrap()).unwrap();
+        let bom = "<project><groupId>com.example</groupId><artifactId>platform-bom</artifactId><version>1.0</version><dependencyManagement><dependencies><dependency><groupId>com.example</groupId><artifactId>lib</artifactId><version>3.0</version></dependency></dependencies></dependencyManagement></project>";
+        std::fs::write(&bom_path, bom).unwrap();
+        let parent = format!(
+            r#"{PARENT_HEADER}<dependencyManagement><dependencies>
+  <dependency><groupId>com.example</groupId><artifactId>unversioned-bom</artifactId><type>pom</type><scope>import</scope></dependency>
+  <dependency><groupId>com.example</groupId><artifactId>platform-bom</artifactId><version>1.0</version><type>pom</type><scope>import</scope></dependency>
+</dependencies></dependencyManagement></project>"#
+        );
+        let child = format!(
+            r#"{CHILD_HEADER}<dependencies><dependency><groupId>com.example</groupId><artifactId>lib</artifactId></dependency></dependencies></project>"#
+        );
+        write_parent_child(tmp.path(), &parent, &child);
+        let path = tmp.path().join("app/pom.xml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let links = managed_declarations(&text, &path, Some(repo), Vec::new);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].version.as_deref(), Some("3.0"));
+        assert_eq!(links[0].target.path, canon(&bom_path));
     }
 
     #[test]
