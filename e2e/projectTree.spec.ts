@@ -110,3 +110,29 @@ test("a real mouse drag still shows the drag label until release", async ({ work
   await page.mouse.up();
   await expect(dragLabel).toHaveCount(0);
 });
+
+test("Copy aligns the file fields and keeps the open-in-editor option in the footer", async ({ workbench: page }) => {
+  await page.getByRole("treeitem", { name: "README.md", exact: true }).click();
+  await page.keyboard.press("F5");
+  const dialog = page.getByRole("dialog", { name: "Copy", exact: true });
+  const name = dialog.getByRole("textbox", { name: "New name" });
+  const target = dialog.getByRole("textbox", { name: "Target directory" });
+  const openCopy = dialog.getByRole("checkbox", { name: "Open copy in editor" });
+  await expect(name).toBeFocused();
+  expect(await name.evaluate((el: HTMLInputElement) => el.value.slice(el.selectionStart!, el.selectionEnd!))).toBe(
+    (await name.inputValue()).replace(/\.md$/, ""),
+  );
+  for (const width of [1100, 430]) {
+    await page.setViewportSize({ width, height: 560 });
+    const [nameBox, targetBox] = await Promise.all([name.boundingBox(), target.boundingBox()]);
+    expect(nameBox!.x).toBeCloseTo(targetBox!.x, 0);
+    expect(targetBox!.x).toBeGreaterThan((await dialog.getByText("To directory:", { exact: true }).boundingBox())!.x);
+    await expect(dialog.locator("[data-dialog-footer]").getByRole("checkbox")).toBeInViewport();
+  }
+  await name.fill("release-notes.md");
+  await target.fill("src");
+  await openCopy.check();
+  await dialog.getByRole("button", { name: "OK", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole("tab", { name: "release-notes.md" })).toBeVisible();
+});

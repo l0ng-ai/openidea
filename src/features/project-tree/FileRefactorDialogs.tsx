@@ -3,7 +3,7 @@
  * paste, ⌥ drag) dialogs for files and folders, with "Search for references"
  * and "Search in comments and strings".
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type Ref } from "react";
 import { create } from "zustand";
 import type { FileMove } from "@/bindings";
 import { Checkbox, Dialog, IconButton, Input, Spinner, T } from "@/ui";
@@ -264,12 +264,83 @@ function resolveTarget(typed: string, root: string): string {
   return absolute ? path : joinPath(root, path);
 }
 
-function MoveDialog({ request }: { request: Extract<FileRefactorRequest, { kind: "move" }> }) {
+function useDestination(initialTarget: string) {
   const root = useProjectTree((s) => s.root) ?? "";
-  const [target, setTarget] = useState(request.target);
-  const [options, setOptions] = useState(() => loadOptions("move"));
+  const [target, setTarget] = useState(initialTarget);
   const [browsing, setBrowsing] = useState(false);
   const [browseError, setBrowseError] = useState<string | null>(null);
+  const dest = resolveTarget(target, root);
+  const change = (value: string) => {
+    setBrowseError(null);
+    setTarget(value);
+  };
+  const browse = async () => {
+    setBrowsing(true);
+    setBrowseError(null);
+    try {
+      const picked = await choosePath({ directory: true, title: tx("Select Target Directory"), defaultPath: dest });
+      if (picked !== null) setTarget(ipcPath(picked));
+    } catch (e) {
+      setBrowseError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBrowsing(false);
+    }
+  };
+  return { target, dest, root, change, browse, browsing, browseError };
+}
+
+function DestinationField({
+  id,
+  destination,
+  inputRef,
+  disabled,
+  invalid,
+  focus,
+}: {
+  id: string;
+  destination: ReturnType<typeof useDestination>;
+  inputRef?: Ref<HTMLInputElement>;
+  disabled: boolean;
+  invalid?: boolean;
+  focus?: boolean;
+}) {
+  const { target, dest, root, change, browse, browsing } = destination;
+  const previewId = `${id}-preview`;
+  return (
+    <>
+      <div className={styles.destinationField}>
+        <Input
+          id={id}
+          ref={inputRef}
+          data-autofocus={focus || undefined}
+          mono
+          value={target}
+          disabled={disabled}
+          invalid={invalid}
+          aria-label="Target directory"
+          aria-describedby={previewId}
+          onChange={(e) => change(e.target.value)}
+        />
+        {isTauri() && (
+          <IconButton
+            icon="folder-open"
+            title={tx("Browse for target directory")}
+            disabled={disabled || browsing}
+            onClick={() => void browse()}
+          />
+        )}
+      </div>
+      <div className={styles.destinationPath} id={previewId} title={dest}>
+        {relativeTo(root, dest) || (dest === root ? tx("Project root") : dest)}
+      </div>
+    </>
+  );
+}
+
+function MoveDialog({ request }: { request: Extract<FileRefactorRequest, { kind: "move" }> }) {
+  const destination = useDestination(request.target);
+  const { dest, browsing, browseError } = destination;
+  const [options, setOptions] = useState(() => loadOptions("move"));
   const field = useRef<HTMLInputElement>(null);
   const { busy, run, cancel } = useSearch();
   useEffect(() => {
@@ -280,7 +351,6 @@ function MoveDialog({ request }: { request: Extract<FileRefactorRequest, { kind:
     input.setSelectionRange(start, path.length);
     input.scrollLeft = input.scrollWidth;
   }, [request.target]);
-  const dest = resolveTarget(target, root);
   const moves: FileMove[] = request.paths
     .map((from) => ({ from, to: joinPath(dest, nameOf(from)) }))
     .filter((move) => move.from !== move.to);
@@ -295,18 +365,6 @@ function MoveDialog({ request }: { request: Extract<FileRefactorRequest, { kind:
       ? tx`Move directory '${nameOf(single)}'`
       : tx`Move file '${nameOf(single)}'`
     : tx`Move ${request.paths.length} items`;
-  const browse = async () => {
-    setBrowsing(true);
-    setBrowseError(null);
-    try {
-      const picked = await choosePath({ directory: true, title: tx("Select Target Directory"), defaultPath: dest });
-      if (picked !== null) setTarget(ipcPath(picked));
-    } catch (e) {
-      setBrowseError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBrowsing(false);
-    }
-  };
   const submit = async () => {
     if (busy || browsing || error) return;
     saveOptions("move", options);
@@ -327,46 +385,26 @@ function MoveDialog({ request }: { request: Extract<FileRefactorRequest, { kind:
       ]}
     >
       <form
-        className={styles.moveForm}
+        className={styles.refactorForm}
         onSubmit={(e) => {
           e.preventDefault();
           void submit();
         }}
       >
-        <div className={styles.moveSubject}>{subject}</div>
+        <div className={styles.subject}>{subject}</div>
         <div className={styles.moveDestination}>
           <label className={styles.fieldLabel} htmlFor="file-move-target">
             <T>To directory:</T>
           </label>
-          <div className={styles.moveControls}>
-            <div className={styles.moveField}>
-              <Input
-                id="file-move-target"
-                ref={field}
-                data-autofocus
-                mono
-                value={target}
-                disabled={busy}
-                invalid={!!error}
-                aria-label="Target directory"
-                aria-describedby="file-move-preview"
-                onChange={(e) => {
-                  setBrowseError(null);
-                  setTarget(e.target.value);
-                }}
-              />
-              {isTauri() && (
-                <IconButton
-                  icon="folder-open"
-                  title={tx("Browse for target directory")}
-                  disabled={busy || browsing}
-                  onClick={() => void browse()}
-                />
-              )}
-            </div>
-            <div className={styles.movePath} id="file-move-preview" title={dest}>
-              {relativeTo(root, dest) || (dest === root ? tx("Project root") : dest)}
-            </div>
+          <div className={styles.destinationControls}>
+            <DestinationField
+              id="file-move-target"
+              destination={destination}
+              inputRef={field}
+              disabled={busy}
+              invalid={!!error}
+              focus
+            />
             {(browseError ?? error) && (
               <div className={styles.error} role="alert">
                 {browseError ?? error}
@@ -383,10 +421,9 @@ function MoveDialog({ request }: { request: Extract<FileRefactorRequest, { kind:
 const COPY_OPEN_KEY = "openidea.projectTree.copyOpenInEditor";
 
 function CopyDialog({ request }: { request: Extract<FileRefactorRequest, { kind: "copy" }> }) {
-  const root = useProjectTree((s) => s.root) ?? "";
+  const destination = useDestination(request.target);
+  const { dest, browsing, browseError } = destination;
   const single = request.paths.length === 1 ? request.paths[0]! : null;
-  const [target, setTarget] = useState(request.target);
-  const dest = resolveTarget(target, root);
   const listing = useProjectTree((s) => s.listings.get(dest));
   const [name, setName] = useState(() => {
     const own = single ? nameOf(single) : "";
@@ -417,11 +454,15 @@ function CopyDialog({ request }: { request: Extract<FileRefactorRequest, { kind:
     : single
       ? validateName(name, { siblings, caseInsensitive, windows: hostOs() === "windows" }).error
       : null;
-  const subject = single
-    ? `Copy ${request.dir ? "directory" : "file"} '${nameOf(single)}'`
-    : `Copy ${request.paths.length} items`;
+  const sourceName = single ? nameOf(single) : null;
+  const count = request.paths.length;
+  const subject = sourceName
+    ? request.dir
+      ? tx`Copy directory '${sourceName}'`
+      : tx`Copy file '${sourceName}'`
+    : tx`Copy ${count} items`;
   const submit = async () => {
-    if (busy || error) return;
+    if (busy || browsing || error) return;
     try {
       localStorage.setItem(COPY_OPEN_KEY, String(openInEditor));
     } catch {
@@ -438,58 +479,54 @@ function CopyDialog({ request }: { request: Extract<FileRefactorRequest, { kind:
       title="Copy"
       onClose={closeFileRefactorDialog}
       width={520}
+      footerStart={
+        single &&
+        !request.dir && (
+          <Checkbox label="Open copy in editor" checked={openInEditor} disabled={busy} onChange={setOpenInEditor} />
+        )
+      }
       buttons={[
-        { label: "OK", role: "default", disabled: busy || !!error, onClick: () => void submit() },
+        { label: "OK", role: "default", disabled: busy || browsing || !!error, onClick: () => void submit() },
         { label: "Cancel", role: "cancel" },
       ]}
     >
       <form
-        className={styles.form}
+        className={styles.refactorForm}
         onSubmit={(e) => {
           e.preventDefault();
           void submit();
         }}
       >
         <div className={styles.subject}>{subject}</div>
-        {single && (
-          <>
-            <label className={styles.fieldLabel} htmlFor="file-copy-name">
-              <T>New name:</T>
-            </label>
-            <Input
-              id="file-copy-name"
-              ref={input}
-              value={name}
-              disabled={busy}
-              invalid={!!error}
-              aria-label="New name"
-              onChange={(e) => setName(e.target.value)}
-            />
-          </>
-        )}
-        <label className={styles.fieldLabel} htmlFor="file-copy-target">
-          <T>To directory:</T>
-        </label>
-        <Input
-          id="file-copy-target"
-          autoFocus={!single}
-          mono
-          value={target}
-          disabled={busy}
-          aria-label="Target directory"
-          onChange={(e) => setTarget(e.target.value)}
-        />
-        <div className={styles.hint}>{relativeTo(root, dest) || (dest === root ? tx("Project root") : dest)}</div>
-        {error && (
-          <div className={styles.error} role="alert">
-            {error}
+        <div className={styles.copyFields}>
+          {single && (
+            <>
+              <label className={styles.fieldLabel} htmlFor="file-copy-name">
+                <T>New name:</T>
+              </label>
+              <Input
+                id="file-copy-name"
+                ref={input}
+                value={name}
+                disabled={busy}
+                invalid={!!error}
+                aria-label="New name"
+                onChange={(e) => setName(e.target.value)}
+              />
+            </>
+          )}
+          <label className={styles.fieldLabel} htmlFor="file-copy-target">
+            <T>To directory:</T>
+          </label>
+          <div className={styles.destinationControls}>
+            <DestinationField id="file-copy-target" destination={destination} disabled={busy} focus={!single} />
+            {(browseError ?? error) && (
+              <div className={styles.error} role="alert">
+                {browseError ?? error}
+              </div>
+            )}
           </div>
-        )}
-        {single && !request.dir && (
-          <div className={styles.options}>
-            <Checkbox label="Open copy in editor" checked={openInEditor} disabled={busy} onChange={setOpenInEditor} />
-          </div>
-        )}
+        </div>
       </form>
     </Dialog>
   );
