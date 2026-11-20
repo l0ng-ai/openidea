@@ -484,4 +484,11 @@ describe("current line decoration", () => {
     // The visible label is the pointer/click region; the anchor stays zero-width.
     expect(inlineBlameTheme['.cm-vcs-inline-blame-inner[role="button"]']).toEqual({ cursor: "pointer" });
   });
+
+  it("caps the commit tooltip's height and scrolls inside it, so a long message stays on screen", () => {
+    expect(inlineBlameTheme[".cm-vcs-inline-blame-tooltip"]).toMatchObject({
+      maxHeight: expect.any(String),
+      overflow: "auto",
+    });
+  });
 });
