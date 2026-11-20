@@ -15,6 +15,8 @@ const categoryTones = new Map([
   ["Custom agents", "var(--info)"],
   ["Skills", "var(--success)"],
   ["MCP tools", "var(--warning)"],
+  ["MCP tools (deferred)", "var(--fg-muted)"],
+  ["MCP server instructions", "var(--warning)"],
   ["Messages", "var(--info)"],
   ["Memory files", "var(--success)"],
   ["Autocompact buffer", "var(--fg-muted)"],

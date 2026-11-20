@@ -1,4 +1,6 @@
 {
+  "MCP server instructions": "MCP 服务器说明",
+  "MCP tools (deferred)": "MCP 工具（延迟加载）",
   "System tools (deferred)": "系统工具（延迟加载）",
   "Custom agents": "自定义 Agent",
   "Context window": "上下文窗口",
