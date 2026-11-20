@@ -165,6 +165,15 @@ describe("items and rows", () => {
     expect([t!.col, t!.endCol]).toEqual([8, 13]);
   });
 
+  it("textItems keeps each window of a long line as its own item", () => {
+    const items = textItems("/p/min.js", "min.js", [
+      { line: 0, text: "x foo x", ranges: [[2, 5]], textOffset: 0 },
+      { line: 0, text: "x foo x", ranges: [[2, 5]], textOffset: 2000 },
+    ]);
+    expect(new Set(items.map((i) => i.key)).size).toBe(2);
+    expect(items.map((i) => i.col)).toEqual([2, 2002]);
+  });
+
   it("buildRows orders sections, adds headers and more rows", () => {
     const sections = new Map<SectionId, SectionState>([
       [

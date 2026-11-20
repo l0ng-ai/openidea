@@ -1108,6 +1108,8 @@
   "Connect to local socket {path} — equivalent to running arbitrary code on the project machine": "Connect to local socket {path} — equivalent to running arbitrary code on the project machine",
   "Send requests to the {server} language server, which reads and changes the project's files": "Send requests to the {server} language server, which reads and changes the project's files",
   "Read the project's resolved Maven and Gradle dependencies": "Read the project's resolved Maven and Gradle dependencies",
+  "Resolved Dependencies": "Resolved Dependencies",
+  "Usages of {symbol}": "Usages of {symbol}",
   "Read the clipboard's text and images when you run one of its commands": "Read the clipboard's text and images when you run one of its commands",
   "Output: {channel}": "Output: {channel}",
   "You can close this tab.": "You can close this tab.",

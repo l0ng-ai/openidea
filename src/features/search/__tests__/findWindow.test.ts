@@ -87,6 +87,14 @@ describe("buildFindTree", () => {
     expect(roots.map((n) => n.key)).toEqual(["f:/p/a.ts", "f:/p/src/a.ts", "f:/p/src/b.ts"]);
   });
 
+  it("keeps each window of a long line as its own node", () => {
+    const long = file("min.js");
+    long.matches.push({ ...long.matches[0]!, textOffset: 2000 });
+    const [f] = buildFindTree([long]);
+    const children = f?.kind === "file" ? f.children : [];
+    expect(new Set(children.map((n) => n.key)).size).toBe(2);
+  });
+
   it("groups files by directory on request", () => {
     const roots = buildFindTree(files, true);
     expect(roots.map((n) => (n.kind === "dir" ? [n.label, n.count] : n.kind))).toEqual([

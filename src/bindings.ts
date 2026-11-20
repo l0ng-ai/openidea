@@ -550,7 +550,7 @@ export const commands = {
 	docOpenVirtual: (uri: string) => typedError<DocumentInfo, IdeError>(__TAURI_INVOKE("doc_open_virtual", { uri })),
 	/**
 	 *  Structure view: LSP document symbols when available (with tree-sitter
-	 *  visibility), tree-sitter otherwise.
+	 *  visibility and type-alias kinds), tree-sitter otherwise.
 	 *  Tree-sitter answers come from the per-document tree cache (incremental
 	 *  re-parse); large documents get no syntax structure.
 	 */
@@ -7230,6 +7230,8 @@ version: number } |
 { type: "docDiskConflict"; doc: DocId; path: string } | 
 /**  A complete workspace edit can be undone as one operation. */
 { type: "workspaceEditApplied"; id: number; paths: IpcPath[]; 
+/**  Files the edit renamed, as the edit named them: editors open on them follow. */
+moves: FileMove[]; 
 /**
  *  Made by an agent through the MCP server's tools: undoable like a refactoring, but
  *  not announced as one.
@@ -8265,7 +8267,10 @@ export type LineMarkerInfo = {
 export type LineMatch = {
 	/**  0-based line. */
 	line: number,
-	/**  Line text, truncated around the match for very long lines. */
+	/**
+	 *  Line text, truncated around the matches for very long lines: such a line comes as one
+	 *  `LineMatch` per window, so the same `line` can repeat.
+	 */
 	text: string,
 	/**  UTF-16 column ranges within `text`. */
 	ranges: ([number, number])[],
