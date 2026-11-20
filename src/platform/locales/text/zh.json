@@ -2196,6 +2196,8 @@
   "Postfix Completion": "后缀补全",
   "Poetry Environment": "Poetry 环境",
   "Postfix templates": "后缀模板",
+  "Template preview": "模板预览",
+  "Fallback expansion": "备用展开结果",
   "Prefer": "首选",
   "Prefer moving caret line to minimize editor scrolling": "优先移动光标所在行，以尽量减少编辑器滚动",
   "Prefer scrolling editor canvas to keep caret line centered": "优先滚动编辑器画布，使光标所在行保持居中",

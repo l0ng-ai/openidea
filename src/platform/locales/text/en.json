@@ -1680,6 +1680,8 @@
   "New Project": "New Project",
   "{path} already exists and is not empty": "{path} already exists and is not empty",
   "Example": "Example",
+  "Template preview": "Template preview",
+  "Fallback expansion": "Fallback expansion",
   "Shows how to use the plugin API; not maintained as a product.": "Shows how to use the plugin API; not maintained as a product.",
   "{count} downloads": "{count} downloads",
   "This plugin shows how to use the plugin API and is not maintained as a product. Build on it in your own repository.": "This plugin shows how to use the plugin API and is not maintained as a product. Build on it in your own repository.",
