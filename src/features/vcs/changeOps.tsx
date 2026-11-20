@@ -1,5 +1,5 @@
 /** Local change operations: commit, rollback, add, stash. */
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import type { FileStatus, Stash } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { Checkbox, Dialog, Icon, IconButton, Input, T, fileIconName } from "@/ui";
@@ -367,7 +367,9 @@ function StashDialog({
   const [message, setMessage] = useState("");
   const [keepIndex, setKeepIndex] = useState(false);
   const [includeUntracked, setIncludeUntracked] = useState(false);
+  const showRepo = useVcs((s) => pickRepo && s.roots.length > 1);
   const branch = useBranchInfo(repo)?.head ?? null;
+  const messageId = useId();
   const submit = () => onDone({ repo, message: message.trim(), keepIndex, includeUntracked });
   return (
     <Dialog
@@ -381,26 +383,38 @@ function StashDialog({
       ]}
     >
       <form
-        className={styles.form}
+        className={`${styles.form} ${styles.stashForm}`}
         onSubmit={(e) => {
           e.preventDefault();
           submit();
         }}
       >
-        {pickRepo && <RepoPicker repo={repo} onChange={setRepo} />}
-        {branch && <div className={styles.hint}>{tx`Current branch: ${branch}`}</div>}
-        <label className={styles.fieldLabel}>
-          <T>Message:</T>
-        </label>
-        <Input
-          data-autofocus
-          aria-label="Message"
-          placeholder="WIP"
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-        />
-        <Checkbox checked={keepIndex} onChange={setKeepIndex} label="Keep index" />
-        <Checkbox checked={includeUntracked} onChange={setIncludeUntracked} label="Include untracked files" />
+        {showRepo && (
+          <div className={styles.stashRepo}>
+            <T>Repository:</T>
+            <RepoPicker repo={repo} onChange={setRepo} />
+          </div>
+        )}
+        {branch && <div className={styles.stashBranch}>{tx`Current branch: ${branch}`}</div>}
+        <div className={styles.stashMessage}>
+          <label htmlFor={messageId}>
+            <T>Message:</T>
+          </label>
+          <textarea
+            id={messageId}
+            className={styles.textarea}
+            data-autofocus
+            aria-label={tx("Message")}
+            placeholder={tx("WIP")}
+            rows={3}
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+          />
+        </div>
+        <div className={styles.stashOptions}>
+          <Checkbox checked={keepIndex} onChange={setKeepIndex} label="Keep index" />
+          <Checkbox checked={includeUntracked} onChange={setIncludeUntracked} label="Include untracked files" />
+        </div>
       </form>
     </Dialog>
   );
