@@ -397,34 +397,45 @@ pub fn stage(
 ) -> std::io::Result<Delivery> {
     let mut out = Delivery::default();
     let cwd = dunce::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
-    // Each CLI's tree holds what it cannot see on its own. Only the native drivers take
-    // the farm; `provider` is their key (`claude`, `copilot`, `codex`), anything else
-    // (an ACP agent) gets the `/` menu filter instead.
+    // Only the native drivers take the farm, each its own tree; `provider` is their key
+    // (`claude`, `copilot`, `codex`), anything else (an ACP agent) gets the `/` menu filter.
     let (claude_tree, copilot_tree, codex_tree) = match provider {
-        "claude" => (Some(farm.join(".claude/skills")), Some(farm.join("copilot")), Some(farm.join("codex"))),
-        "copilot" => (None, Some(farm.join("copilot")), Some(farm.join("codex"))),
-        "codex" => (None, Some(farm.join("copilot")), Some(farm.join("codex"))),
+        "claude" => (Some(farm.join(".claude/skills")), None, None),
+        "copilot" => (None, Some(farm.join("copilot")), None),
+        "codex" => (None, None, Some(farm.join("codex"))),
         _ => return Ok(out),
     };
+    // Restage from scratch: a skill turned off or deleted since the last session must not
+    // linger in the tree. Removing a tree removes its links, never the skills they point at.
+    for tree in [&claude_tree, &copilot_tree, &codex_tree].into_iter().flatten() {
+        match std::fs::remove_dir_all(tree) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
+    }
     for state in states {
         let name = state.skill.name.as_str();
+        let path = state.skill.path.0.as_path();
         match state.mode {
             AgentSkillMode::Off => {
                 out.codex_off.push((name.to_owned(), state.skill.path.to_string_lossy().into_owned()));
             }
-            AgentSkillMode::SlashOnly => {}
+            // Claude Code runs a slash-only skill on `/name`, so it has to see the folder;
+            // Copilot and Codex have no such mode and get it disabled or left out.
+            AgentSkillMode::SlashOnly => {
+                if let Some(tree) = claude_tree.as_ref().filter(|_| !native_claude(&state.skill, &cwd, home)) {
+                    link_skill(&tree.join(name), path)?;
+                }
+            }
             AgentSkillMode::Auto => {
-                let native_claude = native_claude(&state.skill, &cwd, home);
-                let native_copilot = native_copilot(&state.skill, &cwd, home);
-                let native_codex = native_codex(&state.skill, &cwd, home);
-                if let Some(tree) = claude_tree.as_ref().filter(|_| !native_claude) {
-                    link_skill(&tree.join(name), state.skill.path.0.as_path())?;
+                if let Some(tree) = claude_tree.as_ref().filter(|_| !native_claude(&state.skill, &cwd, home)) {
+                    link_skill(&tree.join(name), path)?;
                 }
-                if let Some(tree) = copilot_tree.as_ref().filter(|_| !native_copilot) {
-                    link_skill(&tree.join(name), state.skill.path.0.as_path())?;
+                if let Some(tree) = copilot_tree.as_ref().filter(|_| !native_copilot(&state.skill, &cwd, home)) {
+                    link_skill(&tree.join(name), path)?;
                 }
-                if let Some(tree) = codex_tree.as_ref().filter(|_| !native_codex) {
-                    link_skill(&tree.join(name), state.skill.path.0.as_path())?;
+                if let Some(tree) = codex_tree.as_ref().filter(|_| !native_codex(&state.skill, &cwd, home)) {
+                    link_skill(&tree.join(name), path)?;
                 }
             }
         }
@@ -726,7 +737,10 @@ mod tests {
         write(&home.join(".cursor/skills/cursory/SKILL.md"), "---\nname: cursory\ndescription: Cursor's\n---\n");
         // A symlink to `dep` in the home (the same canonical folder): collapsed.
         #[cfg(unix)]
-        std::os::unix::fs::symlink(repo.join(".agents/skills/dep"), home.join(".claude/skills/dep")).unwrap();
+        {
+            std::fs::create_dir_all(home.join(".claude/skills")).unwrap();
+            std::os::unix::fs::symlink(repo.join(".agents/skills/dep"), home.join(".claude/skills/dep")).unwrap();
+        }
         // Hidden folders and files are not skills.
         write(&repo.join(".agents/skills/.stash/SKILL.md"), "---\nname: hidden\ndescription: x\n---\n");
         write(&repo.join(".agents/skills/loose.txt"), "not a folder");
@@ -802,11 +816,20 @@ mod tests {
         assert_eq!((resolved[2].mode, resolved[2].origin), (AgentSkillMode::Off, AgentSkillOrigin::Trust));
     }
 
+    fn listed(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> =
+            std::fs::read_dir(dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        names
+    }
+
     #[test]
     fn hub_staging_hands_each_cli_its_own_tree() {
         let tmp = tempfile::tempdir().unwrap();
-        let home = tmp.path().join("home");
-        let repo = tmp.path().join("app");
+        // Discovery reports canonical paths (macOS's temp folder is a symlink).
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let home = root.join("home");
+        let repo = root.join("app");
         std::fs::create_dir_all(&repo).unwrap();
         // The staged folders must exist: Windows copies them (symlinks need Developer Mode).
         for path in [
@@ -835,29 +858,21 @@ mod tests {
         );
 
         // Local (non-worktree) session: the project's GitHub skills are Copilot's own.
-        let farm = farm_dir(&tmp.path().join("store"), "task-1");
+        let farm = farm_dir(&root.join("store"), "task-1");
         let delivery = stage(&farm, "claude", &states, &repo, Some(&home)).unwrap();
         assert_eq!(delivery.claude_add_dir.as_deref(), Some(farm.as_path()));
         let claude_tree = farm.join(".claude/skills");
-        let staged: Vec<String> = std::fs::read_dir(&claude_tree)
-            .unwrap()
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .collect();
+        let staged = listed(&claude_tree);
         assert_eq!(
             staged,
-            ["codexy", "gh", "lint", "tdd"],
-            "everything active but Claude's own folders (none native here) and the off one"
+            ["codexy", "gh", "lint", "muted", "tdd"],
+            "everything but the off one: none is native to Claude here, and slash-only needs the folder"
         );
 
         let delivery = stage(&farm, "copilot", &states, &repo, Some(&home)).unwrap();
         assert_eq!(delivery.copilot_skill_directories, [farm.join("copilot").to_string_lossy().into_owned()]);
         assert_eq!(delivery.copilot_disabled_skills, ["muted", "off"]);
-        let copilot_staged: Vec<String> = std::fs::read_dir(farm.join("copilot"))
-            .unwrap()
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .collect();
+        let copilot_staged = listed(&farm.join("copilot"));
         assert_eq!(copilot_staged, ["codexy", "lint", "tdd"], "`gh` is native to a local Copilot session");
         assert_eq!(
             delivery.codex_off,
@@ -865,14 +880,10 @@ mod tests {
         );
 
         // A worktree task: the repo's skills are untracked, so nothing is native any more.
-        let worktree = tmp.path().join("wt");
+        let worktree = root.join("wt");
         std::fs::create_dir_all(&worktree).unwrap();
         let _ = stage(&farm, "copilot", &states, &worktree, Some(&home)).unwrap();
-        let copilot_staged: Vec<String> = std::fs::read_dir(farm.join("copilot"))
-            .unwrap()
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .collect();
+        let copilot_staged = listed(&farm.join("copilot"));
         assert!(copilot_staged.contains(&"gh".to_string()));
 
         // Slash-only reaches Claude as `user-invocable-only`, off as `off`.
@@ -881,12 +892,26 @@ mod tests {
         assert_eq!(settings["skillOverrides"]["muted"], "user-invocable-only");
         assert_eq!(settings["skillOverrides"]["off"], "off");
 
+        // Restaging after a session turned `lint` off drops its link and leaves the skill.
+        let session = BTreeMap::from([("lint".to_owned(), AgentSkillMode::Off)]);
+        let restated = resolve(
+            states.iter().map(|s| s.skill.clone()).collect(),
+            Some(&session),
+            &BTreeMap::from([("muted".to_owned(), policy(AgentSkillMode::SlashOnly).unwrap())]),
+            &BTreeMap::from([("off".to_owned(), policy(AgentSkillMode::Off).unwrap())]),
+            true,
+        );
+        stage(&farm, "claude", &restated, &repo, Some(&home)).unwrap();
+        assert_eq!(listed(&claude_tree), ["codexy", "gh", "muted", "tdd"]);
+        assert!(home.join(".agents/skills/lint").is_dir());
+        assert!(farm.join("copilot").is_dir(), "restaging Claude's tree leaves Copilot's alone");
+
         // An ACP agent gets no farm.
         let delivery = stage(&farm, "cursor-acp", &states, &repo, Some(&home)).unwrap();
         assert_eq!(delivery, Delivery::default());
 
         // The farm goes away with the task.
-        remove_farm(&tmp.path().join("store"), "task-1");
+        remove_farm(&root.join("store"), "task-1");
         assert!(!farm.exists());
     }
 
