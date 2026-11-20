@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
+import {
+  CONTRIBUTED_DEFINITION,
+  CONTRIBUTED_HOVER,
+  type ContributedDefinition,
+  type ContributedHover,
+} from "@/editor/api";
 import type { commands, Location } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
 import { resetNavigationModifier } from "@/platform/navigationModifier";
@@ -18,7 +24,7 @@ vi.mock("@/platform/ipc", async (orig) => {
 
 const { gotoTargets, navigationExtension } = await import("./navigation");
 const { lspDoc } = await import("./lsp");
-const { quickDefinition } = await import("./hover");
+const { quickDefinition, requestHover } = await import("./hover");
 const { invalidateConfigurationNavigation } = await import("./configurationNavigation");
 const { closePopup } = await import("./popupStore");
 const { provideEditorService } = await import("@/workbench/contributions");
@@ -95,6 +101,49 @@ afterEach(() => {
   resetNavigationModifier();
   vi.useRealTimers();
   vi.restoreAllMocks();
+});
+
+it("tries a later contributed definition when an earlier provider declines", async () => {
+  const declined = vi.fn<ContributedDefinition>(() => false);
+  const handled = vi.fn<ContributedDefinition>((_view, _pos) => {
+    openFile("/p/Handled.java", {});
+    return true;
+  });
+  view = new EditorView({
+    state: EditorState.create({
+      doc: "maven",
+      extensions: [
+        EditorState.languageData.of(() => [{ [CONTRIBUTED_DEFINITION]: declined }]),
+        EditorState.languageData.of(() => [{ [CONTRIBUTED_DEFINITION]: handled }]),
+      ],
+    }),
+    parent: document.body,
+  });
+
+  await gotoTargets(view, "definition", 0);
+  expect(declined).toHaveBeenCalledOnce();
+  expect(handled).toHaveBeenCalledOnce();
+  expect(openFile).toHaveBeenCalledWith("/p/Handled.java", {});
+  expect(lspGoto).not.toHaveBeenCalled();
+});
+
+it("tries a later contributed hover when an earlier provider declines", async () => {
+  const declined = vi.fn<ContributedHover>(() => null);
+  const handled = vi.fn<ContributedHover>(() => ({ from: 1, to: 3, markdown: "handled" }));
+  view = new EditorView({
+    state: EditorState.create({
+      doc: "maven",
+      extensions: [
+        EditorState.languageData.of(() => [{ [CONTRIBUTED_HOVER]: declined }]),
+        EditorState.languageData.of(() => [{ [CONTRIBUTED_HOVER]: handled }]),
+      ],
+    }),
+    parent: document.body,
+  });
+
+  expect((await requestHover(view, 1))?.contents.value).toBe("handled");
+  expect(declined).toHaveBeenCalledOnce();
+  expect(handled).toHaveBeenCalledOnce();
 });
 
 describe.each(cases)("shared definition requests in $language", (c) => {

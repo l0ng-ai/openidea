@@ -6,7 +6,18 @@ import { executeAction } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
 import { basename, dirname, projectFolder, relativePath, useProject } from "@/platform/project";
 import type { LineEnding, OutlineItem } from "@/platform/ipc";
-import { BarButton, Icon, Menu, badgeKind, fileIconName, revealHorizontally } from "@/ui";
+import {
+  BarButton,
+  Button,
+  Dialog,
+  Icon,
+  Menu,
+  Popup,
+  SelectListbox,
+  badgeKind,
+  fileIconName,
+  revealHorizontally,
+} from "@/ui";
 import { notifications, useProjectViewLead } from "@/workbench/contributions";
 import { useDistractionFree } from "@/workbench/distractionFree";
 import { ENCODING_CHOICES, useEditorPrefs } from "@/platform/editorSettings";
@@ -19,12 +30,12 @@ import {
   untitledTitle,
 } from "@/platform/virtualDocs";
 import { editorController, isTextInput, useEditorStatus, useGotoLine, useTabs } from "../controller";
-import { useDocMeta, useOutline } from "../model/document";
+import { useDocMeta, useOutline, type DocMeta } from "../model/document";
 import { symbolChain } from "./outline";
 import { NavChildrenPopup } from "./NavBarPopup";
 import type { NavSegment } from "./navBar";
 import styles from "./EditorArea.module.css";
-import { tx } from "@/platform/i18n";
+import { tx, useTx } from "@/platform/i18n";
 
 function useActiveMeta() {
   const path = useEditorStatus((s) => s.status?.path ?? null);
@@ -438,18 +449,25 @@ export function LineEndingStatus() {
   );
 }
 
-const ENCODINGS = ENCODING_CHOICES;
+const ENCODINGS = ENCODING_CHOICES.map(([value, label]) => ({ value, label, verbatim: true }));
 
-/** File encoding widget (IDEA: click → choose an encoding, then Reload or Convert). */
 export function EncodingStatus() {
   const meta = useActiveMeta();
+  return meta ? <EncodingPicker key={meta.doc} meta={meta} /> : null;
+}
+
+function EncodingPicker({ meta }: { meta: DocMeta }) {
   const prefs = useEditorPrefs();
+  const tx = useTx();
   const [open, setOpen] = useState(false);
+  const [target, setTarget] = useState<(typeof ENCODINGS)[number] | null>(null);
   const ref = useRef<HTMLButtonElement>(null);
-  if (!meta) return null;
+  const canReload = meta.canReloadEncoding && !meta.dirty;
+  const canConvert = !meta.readOnly;
   const apply = (encoding: string, reload: boolean) => {
+    setTarget(null);
     const model = editorController().manager.get(meta.path);
-    if (!model) return;
+    if (!model || !(reload ? canReload : canConvert)) return;
     void editorController()
       .manager.backend.setEncoding(meta.doc, encoding, reload)
       .then((enc) => {
@@ -468,7 +486,7 @@ export function EncodingStatus() {
   const current = meta.encoding.toLowerCase();
   const nativeToAsciiProperties = prefs.encodings.nativeToAscii && meta.path.endsWith(".properties");
   const canToggleBom = current === "utf-8" && !nativeToAsciiProperties;
-  const label = ENCODINGS.find(([id]) => id === current)?.[1] ?? meta.encoding;
+  const label = ENCODINGS.find(({ value }) => value === current)?.label ?? meta.encoding;
   const applyBom = (hasBom: boolean) => {
     const controller = editorController();
     const model = controller.manager.get(meta.path);
@@ -487,56 +505,99 @@ export function EncodingStatus() {
         }),
       );
   };
-  const group = (reload: boolean) =>
-    ENCODINGS.filter(([id]) => id !== current).map(([id, label]) => ({
-      id: `${reload ? "reload" : "convert"}.${id}`,
-      label,
-      run: () => apply(id, reload),
-    }));
+  const chooseEncoding = (value: string) => {
+    setOpen(false);
+    if (value === current) return;
+    ref.current?.focus({ preventScroll: true });
+    setTarget(ENCODINGS.find((option) => option.value === value) ?? null);
+  };
+  const encodings =
+    canReload || canConvert
+      ? ENCODINGS
+      : ENCODINGS.map((option) => ({ ...option, disabled: option.value !== current }));
   return (
     <>
       <BarButton
         ref={ref}
         tooltip="File Encoding"
-        aria-haspopup="menu"
+        aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       >
         {meta.hasBom ? `${label} BOM` : label}
       </BarButton>
-      <Menu
+      <Popup
         open={open}
         onClose={() => setOpen(false)}
         anchor={ref}
         placement="top-end"
-        aria-label="File encoding"
-        items={[
-          {
-            id: "reload",
-            label: "Reload with Encoding",
-            disabled: meta.dirty || !meta.canReloadEncoding,
-            submenu: group(true),
-          },
-          { id: "convert", label: "Convert to Encoding", disabled: meta.readOnly, submenu: group(false) },
-          ...(canToggleBom
-            ? [
-                { kind: "separator" as const },
-                {
-                  id: "toggle-bom",
-                  label: meta.hasBom ? "Remove UTF-8 BOM" : "Add UTF-8 BOM",
-                  disabled: meta.readOnly,
-                  run: () => applyBom(!meta.hasBom),
-                },
-              ]
-            : []),
-          { kind: "separator" },
-          {
-            id: "configure",
-            label: "File Encodings Settings…",
-            run: () => void executeAction("file.settings", "editor.fileEncodings"),
-          },
-        ]}
-      />
+        aria-label={tx("File encoding")}
+        className={styles.encodingPopup}
+        trapFocus
+      >
+        <div className={styles.encodingHeading}>{tx("Change File Encoding")}</div>
+        <SelectListbox
+          searchable
+          value={current}
+          options={encodings}
+          onChoose={chooseEncoding}
+          aria-label="File encoding"
+        />
+        <div className={styles.encodingCommands}>
+          {canToggleBom && (
+            <Button
+              variant="ghost"
+              icon="file"
+              disabled={meta.readOnly}
+              onClick={() => {
+                setOpen(false);
+                applyBom(!meta.hasBom);
+              }}
+            >
+              {meta.hasBom ? "Remove UTF-8 BOM" : "Add UTF-8 BOM"}
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            icon="settings"
+            onClick={() => {
+              setOpen(false);
+              void executeAction("file.settings", "editor.fileEncodings");
+            }}
+          >
+            File Encodings Settings…
+          </Button>
+        </div>
+      </Popup>
+      {target && (
+        <Dialog
+          open
+          title="Change File Encoding"
+          icon="question"
+          width={384}
+          blockWorkbenchShortcuts
+          onClose={() => setTarget(null)}
+          buttons={[
+            {
+              label: "Reload",
+              title: "Reload with Encoding",
+              disabled: !canReload,
+              onClick: () => apply(target.value, true),
+            },
+            {
+              label: "Convert",
+              title: "Convert to Encoding",
+              disabled: !canConvert,
+              onClick: () => apply(target.value, false),
+            },
+            { label: "Cancel", role: "cancel", autoFocus: true },
+          ]}
+        >
+          {tx`Use ${target.label} for this file?`}
+          {"\n"}
+          {tx("Reload reads the file again. Convert keeps the current text and changes its encoding on save.")}
+        </Dialog>
+      )}
     </>
   );
 }

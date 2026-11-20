@@ -46,8 +46,8 @@ import {
 } from "@/platform/ipc";
 import {
   CONTRIBUTED_DEFINITION,
+  contributedAtAll,
   activeEditor,
-  contributedAt,
   whenSynced,
   type ContributedDefinition,
   type EditorDocContext,
@@ -444,8 +444,12 @@ async function gotoResolved(
   done: () => void,
 ) {
   if (kind === "definition" || kind === "declaration") {
-    const own = contributedAt<ContributedDefinition>(view.state, CONTRIBUTED_DEFINITION, offset);
-    if (own?.(view, offset)) return;
+    // More than one feature can attach a definition provider to the same file (the
+    // MyBatis SQL support and the Maven POM navigator both see XML). Providers decline
+    // positions they do not own, so try every one instead of letting the first false
+    // result hide the real target.
+    const own = contributedAtAll<ContributedDefinition>(view.state, CONTRIBUTED_DEFINITION, offset);
+    if (own.some((definition) => definition(view, offset))) return;
     if (showPhpConstructDocumentation(view, offset)) return;
     const before = view.state.doc;
     const plugin = await contributedNavigation(view, offset).catch(() => null);
@@ -873,7 +877,9 @@ async function probeNavigation(
   const plugin = await contributedNavigation(view, offset).catch(() => null);
   if (plugin) return { info: null, plugin };
   const doc = docOf(view);
-  let navigable = !!contributedAt<ContributedDefinition>(view.state, CONTRIBUTED_DEFINITION, offset);
+  let navigable = contributedAtAll<ContributedDefinition>(view.state, CONTRIBUTED_DEFINITION, offset).some(
+    (definition) => definition.canHandle?.(view.state, offset) ?? true,
+  );
   if (!navigable && doc) {
     const pos = offsetToPos(view.state.doc, offset);
     let fromSyntax = false;

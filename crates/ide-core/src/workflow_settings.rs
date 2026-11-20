@@ -176,6 +176,8 @@ pub struct CommitSettings {
     pub agent_model: String,
     /// That model's thinking level for commit messages; empty keeps the agent's.
     pub agent_effort: String,
+    /// Show the Generate Commit Message with Agent button above the commit message.
+    pub agent_button: bool,
 }
 
 impl Default for CommitSettings {
@@ -201,6 +203,7 @@ impl Default for CommitSettings {
             agent: String::new(),
             agent_model: String::new(),
             agent_effort: String::new(),
+            agent_button: true,
         }
     }
 }
