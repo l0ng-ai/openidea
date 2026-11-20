@@ -191,6 +191,19 @@ fn file_ranking_is_idea_like() {
 }
 
 #[test]
+fn a_pasted_absolute_path_finds_the_indexed_file() {
+    let fx = sample();
+    let idx = fx.open();
+    let abs = fx.root.join("src/ui/Button.tsx");
+    let abs = abs.to_string_lossy().into_owned();
+    assert_eq!(files(&idx, &abs)[0], "src/ui/Button.tsx");
+    // A trailing `:line:col`, and a path outside the project that names no file.
+    assert_eq!(files(&idx, &format!("{abs}:12:4"))[0], "src/ui/Button.tsx");
+    let outside = fx.root.parent().unwrap().join("elsewhere/Button.tsx");
+    assert!(files(&idx, &outside.to_string_lossy()).is_empty());
+}
+
+#[test]
 fn find_dirs_ranks_folder_names() {
     let f = sample();
     let idx = f.open();
