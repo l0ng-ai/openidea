@@ -2,12 +2,12 @@
  * Appearance & Behavior › Scopes (named file sets) and › File Colors (a background
  * colour per scope in the project view and on editor tabs). Both are project settings.
  */
-import { useId, useState } from "react";
+import { useId, useLayoutEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { FILE_COLOR_NAMES, fileColorCss, validateFileColors, type FileColorEntry } from "@/platform/fileColors";
 import { tx } from "@/platform/i18n";
 import { BUILTIN_SCOPES, scopeError, validateScopes, type NamedScope } from "@/platform/scopes";
-import { IconButton, Input, T, type SelectOption } from "@/ui";
+import { IconButton, Input, List, T, type SelectOption } from "@/ui";
 import { ColorSwatches, Row, Section, Select } from "../components/Form";
 import { useSetting } from "../components/context";
 import styles from "./Workflow.module.css";
@@ -79,6 +79,14 @@ export function ScopesEditor() {
   const current = scopes[index];
   const nameId = useId();
   const patternId = useId();
+  const nameInput = useRef<HTMLInputElement>(null);
+  const focusNewScope = useRef(false);
+  useLayoutEffect(() => {
+    if (!focusNewScope.current) return;
+    focusNewScope.current = false;
+    nameInput.current?.focus();
+    nameInput.current?.select();
+  }, [scopes.length]);
   const set = (next: NamedScope[]) => setRaw(next);
   const update = (patch: Partial<NamedScope>) => set(scopes.map((s, i) => (i === index ? { ...s, ...patch } : s)));
   const error = current?.pattern.trim() ? scopeError(current.pattern) : null;
@@ -86,13 +94,14 @@ export function ScopesEditor() {
   const nameClash = !!current && taken.filter((n) => n === current.name).length > 1;
 
   return (
-    <div className={styles.toolsLayout}>
-      <div className={styles.tableBox}>
+    <div className={own.scopeLayout}>
+      <div className={clsx(styles.tableBox, own.scopePane)}>
         <ListToolbar
           label="Scopes actions"
           index={index}
           count={scopes.length}
           onAdd={() => {
+            focusNewScope.current = true;
             set([...scopes, { name: freshName(taken), pattern: "" }]);
             setSelected(scopes.length);
           }}
@@ -105,34 +114,32 @@ export function ScopesEditor() {
             }
           }}
         />
-        <div className={styles.toolList} role="listbox" aria-label={tx("Scopes")}>
-          {scopes.length === 0 && (
-            <div className={clsx(styles.toolRow, styles.empty)}>
+        <List
+          aria-label={tx("Scopes")}
+          className={own.scopeList}
+          items={scopes}
+          activeIndex={index}
+          onActiveChange={setSelected}
+          getKey={(_, i) => String(i)}
+          renderItem={({ name, pattern }) => (
+            <span className={own.scopeName} title={pattern ? `${name}\n${pattern}` : name}>
+              {name}
+            </span>
+          )}
+          empty={
+            <div className={own.scopeEmpty}>
               <T>No scopes. Click + to add one.</T>
             </div>
-          )}
-          {scopes.map((s, i) => (
-            <div
-              key={i}
-              role="option"
-              aria-selected={i === index}
-              className={clsx(styles.toolRow, i === index && styles.toolRowSelected)}
-              onMouseDown={() => setSelected(i)}
-            >
-              <span className={styles.toolName}>{s.name}</span>
-              <span className={styles.toolGroup} title={s.pattern}>
-                {s.pattern}
-              </span>
-            </div>
-          ))}
-        </div>
+          }
+        />
       </div>
       {current && (
         <Section title="Scope">
-          <Row label="Name" htmlFor={nameId} className={styles.alignedRow}>
+          <Row label="Name" htmlFor={nameId}>
             <Input
               id={nameId}
-              className={styles.wide}
+              ref={nameInput}
+              className={own.scopeInput}
               value={current.name}
               invalid={nameClash || !current.name.trim()}
               onChange={(e) => update({ name: e.target.value })}
@@ -141,7 +148,6 @@ export function ScopesEditor() {
           <Row
             label="Pattern"
             htmlFor={patternId}
-            className={styles.alignedRow}
             hint={
               error ? (
                 <span className={own.error} role="alert">
@@ -155,7 +161,7 @@ export function ScopesEditor() {
             <Input
               id={patternId}
               mono
-              className={styles.wide}
+              className={own.scopeInput}
               value={current.pattern}
               invalid={!!error}
               placeholder={PATTERN_EXAMPLE}
