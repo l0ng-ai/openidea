@@ -159,3 +159,86 @@ test("Find in Files streams matches by file and opens the chosen one at its line
     }, `Editor for ${ROOT}/build.gradle.kts`);
   await expect.poll(caretLine).toBe("import com.acme.orders.service.OrderService");
 });
+
+test("the Find tool window keeps the selected preview and replacement actions when narrowed", async ({
+  workbench: page,
+}) => {
+  await page.setViewportSize({ width: 1500, height: 820 });
+  await stubDesktop(page);
+  await page.evaluate(
+    ({ path, relPath }) => {
+      window.__ipc.handlers.search_validate = () => null;
+      window.__ipc.handlers.search_start = ({ query, onEvent }) => {
+        if ((query as SearchQuery).pattern !== "OrderService") return null;
+        setTimeout(() => {
+          window.__ipc.send(onEvent, {
+            type: "file",
+            file: {
+              path,
+              relPath,
+              matches: [
+                {
+                  line: 2,
+                  text: "import com.acme.orders.service.OrderService",
+                  ranges: [[31, 43]],
+                  textOffset: 0,
+                },
+              ],
+            },
+          });
+          window.__ipc.send(onEvent, {
+            type: "done",
+            summary: { files: 1, matches: 1, limitHit: false, cancelled: false, elapsedMs: 1 },
+          });
+        }, 20);
+        return null;
+      };
+    },
+    { path: `${ROOT}/build.gradle.kts`, relPath: "build.gradle.kts" },
+  );
+  await page.keyboard.press("Meta+Shift+r");
+  const popup = page.getByRole("dialog", { name: "Replace in Files" });
+  await popup.getByRole("textbox", { name: "Text to find" }).fill("OrderService");
+  await popup.getByRole("textbox", { name: "Replace with" }).fill("OrdersApi");
+  await expect(popup.getByRole("listbox", { name: "Matches" }).getByRole("option")).toHaveCount(1);
+  await popup.getByRole("button", { name: "Open in Find Window", exact: true }).click();
+
+  const find = page.getByRole("region", { name: "Find", exact: true });
+  await find.getByRole("button", { name: "Options", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Move To", exact: true }).hover();
+  await page.getByRole("menuitem", { name: "Right Top", exact: true }).click();
+
+  const dockDivider = page.getByRole("separator", { name: "Resize right tool window", exact: true });
+  const resizeDock = async (width: number) => {
+    await expect(dockDivider).toBeVisible();
+    const handle = (await dockDivider.boundingBox())!;
+    const dock = (await find.boundingBox())!;
+    const x = handle.x + handle.width / 2;
+    const y = handle.y + handle.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + dock.width - width, y, { steps: 5 });
+    await page.mouse.up();
+  };
+  await resizeDock(690);
+  const row = find.getByRole("treeitem", { name: /OrderService.*OrdersApi/ });
+  await row.click();
+  const preview = find.getByRole("region", { name: "Preview", exact: true });
+  await expect(preview.locator(".cm-content")).toContainText("OrderService");
+  const divider = find.getByRole("separator", { name: "Resize find preview" });
+  await expect(divider).toHaveAttribute("aria-orientation", "vertical");
+
+  await resizeDock(325);
+  await expect(divider).toHaveAttribute("aria-orientation", "horizontal");
+  await expect(row).toHaveAttribute("aria-selected", "true");
+  await expect(preview.locator(".cm-content")).toContainText("OrderService");
+  await expect(find.getByRole("toolbar", { name: "Find actions" })).toHaveAttribute("aria-orientation", "vertical");
+  for (const label of ["Preview", "Replace Selected", "Replace All"]) {
+    await expect(find.getByRole("button", { name: label, exact: true })).toBeInViewport({ ratio: 1 });
+  }
+  await find.getByRole("button", { name: "Replace All", exact: true }).click();
+  const confirmation = page.getByRole("dialog", { name: "Replace All" });
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole("button", { name: "Cancel" }).click();
+  await expect(confirmation).toBeHidden();
+});
