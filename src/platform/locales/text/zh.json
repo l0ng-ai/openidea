@@ -3138,6 +3138,7 @@
   "UI font size": "UI 字体大小",
   "Uninstalled {name}": "已卸载 {name}",
   "URL:": "URL：",
+  "URL": "URL",
   "The controls show the scheme's actual appearance; changes override it.": "控件显示方案的实际外观；修改即覆盖方案。",
   "Uncommitted": "未提交",
   "Uncommitted changes are stashed before the update and restored afterwards.": "更新前会储藏未提交的更改，并在之后恢复。",
