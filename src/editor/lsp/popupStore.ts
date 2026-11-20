@@ -1,6 +1,7 @@
 /** State of the React popups the LSP editor features open (rendered by `Popups.tsx`). */
 import { create } from "zustand";
 import type { EditorView } from "@codemirror/view";
+import type { CSSProperties } from "react";
 import type { Location, Markup } from "@/bindings";
 import type { MenuItem } from "@/ui";
 import type { WorkspaceEditSummary } from "./workspaceEdit";
@@ -90,6 +91,7 @@ export type LspPopup =
       targets: DefinitionTarget[];
       index: number;
       themeClasses: string;
+      codeStyle: Pick<CSSProperties, "fontFamily" | "fontSize" | "fontWeight" | "lineHeight" | "tabSize">;
     }
   | {
       kind: "list";
