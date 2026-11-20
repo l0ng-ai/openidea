@@ -199,7 +199,9 @@ async fn python_effective_interpreter_falls_back_to_the_primary_project() {
     host.trust.decide(&member, true, false).unwrap();
     host.open_project("main", &primary).unwrap();
     let python = |near: Option<&std::path::Path>| {
-        ops::sdk::sdk_python_effective(&host, "main", near.map(|p| p.to_path_buf())).unwrap().map(|p| p.into_path_buf())
+        futures::executor::block_on(ops::sdk::sdk_python_effective(&host, "main", near.map(|p| p.to_path_buf())))
+            .unwrap()
+            .map(|p| p.into_path_buf())
     };
     // The primary project's own virtualenv, and the bare member inheriting it.
     assert_eq!(python(Some(&primary)), Some(venv_python.clone()));
@@ -217,6 +219,13 @@ async fn python_effective_interpreter_falls_back_to_the_primary_project() {
         )
         .unwrap();
     assert_eq!(python(Some(&member.join("src"))), Some(configured));
+    // A workspace file that fails to load (a corrupt one, say) falls back to the
+    // primary project's interpreter instead of failing the whole command.
+    let workspace_file = primary.join(ide_workspace::workspace::FILE);
+    let valid = std::fs::read(&workspace_file).unwrap();
+    std::fs::write(&workspace_file, b"{not json").unwrap();
+    assert_eq!(python(Some(&member.join("src"))), Some(venv_python.clone()));
+    std::fs::write(&workspace_file, valid).unwrap();
     host.close_project("main");
 }
 
