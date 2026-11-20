@@ -5,19 +5,14 @@
   padding: 14px;
 }
 
-.subject {
-  color: var(--fg-emphasis);
-  font-size: var(--fs-ui);
-}
-
-.moveForm {
+.refactorForm {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
 }
 
-.moveSubject {
+.subject {
   color: var(--fg-emphasis);
   font-size: var(--fs-ui);
   font-weight: 600;
@@ -35,7 +30,7 @@
   line-height: var(--h-field);
 }
 
-.moveControls {
+.destinationControls {
   display: flex;
   flex: 1 1 244px;
   flex-direction: column;
@@ -43,21 +38,21 @@
   min-width: 0;
 }
 
-.moveField {
+.destinationField {
   display: flex;
   align-items: center;
   gap: var(--space-1);
 }
 
-.moveField input {
+.destinationField input {
   flex: 1 1 0;
 }
 
-.moveField button {
+.destinationField button {
   flex: none;
 }
 
-.movePath {
+.destinationPath {
   color: var(--fg-subtle);
   font-size: var(--fs-small);
   font-family: var(--font-mono);
@@ -70,12 +65,17 @@
   overflow-wrap: anywhere;
 }
 
-.hint {
-  color: var(--fg-subtle);
-  font-size: var(--fs-small);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.copyFields {
+  display: grid;
+  grid-template-columns: fit-content(42%) minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-2);
+}
+
+.copyFields > .fieldLabel {
+  display: flex;
+  align-items: center;
+  min-height: var(--h-field);
 }
 
 .error {
