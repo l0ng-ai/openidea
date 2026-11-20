@@ -9,6 +9,7 @@ import {
   isFavoriteBranch,
   preferredBranchRow,
   pushRecent,
+  scopedExpansion,
   type BranchRow,
   type BranchTreeNode,
 } from "../branches";
@@ -321,5 +322,23 @@ describe("remote web URLs", () => {
     expect(remoteWebUrl("/srv/git/app.git")).toBeNull();
     expect(commitWebUrl("git@github.com:o/r.git", "abc")).toBe("https://github.com/o/r/commit/abc");
     expect(commitWebUrl("git@bitbucket.org:o/r.git", "abc")).toBe("https://bitbucket.org/o/r/commits/abc");
+  });
+});
+
+describe("scopedExpansion", () => {
+  it("keeps each repository's submenu expansion apart from the others and the project's", () => {
+    const all = new Map([
+      ["group:remote", false],
+      ["/r/alpha\u0000group:remote", true],
+      ["/r/alpha\u0000folder:remote:origin/feature", true],
+      ["/r/beta\u0000group:local", false],
+    ]);
+    expect([...scopedExpansion(all, "/r/alpha\u0000")]).toEqual([
+      ["group:remote", true],
+      ["folder:remote:origin/feature", true],
+    ]);
+    expect([...scopedExpansion(all, "/r/beta\u0000")]).toEqual([["group:local", false]]);
+    expect([...scopedExpansion(all, "/r/gamma\u0000")]).toEqual([]);
+    expect([...scopedExpansion(all, "")]).toEqual([["group:remote", false]]);
   });
 });
