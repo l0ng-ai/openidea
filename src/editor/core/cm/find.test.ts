@@ -171,6 +171,40 @@ describe("find in selection", () => {
   });
 });
 
+describe("plain-text queries", () => {
+  it("match regex syntax and line breaks literally, case-insensitively", () => {
+    const v = make("a.b(c)[d]$ x A.B(C)[D]$ axb\nend\n1 + 1 = 2", { search: "a.b(c)[d]$" });
+    expect(countMatches(v.state).total).toBe(2);
+    expect(countMatches(make("one\ntwo\none two", { search: "one\ntwo" }).state).total).toBe(1);
+    expect(countMatches(make("1+1 11", { search: "1+1" }).state).total).toBe(1);
+    expect(countMatches(make("a/b a\\b", { search: "a\\b" }).state).total).toBe(1);
+  });
+
+  it("replace with `$` and backslashes as written", () => {
+    const v = make("cost: x; cost: y", { search: "cost", replace: "$& $1 $$ \\n" });
+    replaceAll(v);
+    expect(v.state.doc.toString()).toBe("$& $1 $$ \\n: x; $& $1 $$ \\n: y");
+    const w = make("cost", { search: "cost", replace: "$" });
+    replaceNext(w, true);
+    replaceNext(w, true);
+    expect(w.state.doc.toString()).toBe("$");
+  });
+
+  it("previous wraps from the start to the last match, skipping the selected one", () => {
+    const v = make("ab ab ab", { search: "ab" });
+    v.dispatch({ selection: { anchor: 0, head: 2 } });
+    findPrevious(v);
+    expect(sel(v)).toEqual([6, 8]);
+    findPrevious(v);
+    expect(sel(v)).toEqual([3, 5]);
+    const only = make("x ab", { search: "ab" });
+    only.dispatch({ selection: { anchor: 2, head: 4 } });
+    expect(findPrevious(only)).toBe(false);
+    expect(sel(only)).toEqual([2, 4]);
+    expect(findPrevious(make("x", { search: "ab" }))).toBe(false);
+  });
+});
+
 describe("search context, exclude and preserve case", () => {
   const lang = StreamLanguage.define<null>({
     token(stream) {

@@ -7,9 +7,9 @@ import { ask } from "./messages";
 import { maybeEditorService } from "./contributions";
 
 /** "Open project in": `new` | `same` | `ask`. */
-export function openPolicy(): "ask" | "new" | "same" {
+export function openPolicy(): "ask" | "new" | "same" | "tab" {
   const v = useProject.getState().settings?.general?.openProjectIn;
-  return v === "new" || v === "same" ? v : "ask";
+  return v === "new" || v === "same" || v === "tab" ? v : "ask";
 }
 
 /**
@@ -26,6 +26,8 @@ export async function chooseProjectWindow(
   // Both ways of keeping this window's project: a workspace folder, or a project tab of this window.
   const canAdd = allowAttach && !!project && !isRemoteWindow();
   const mode = openPolicy();
+  // A project tab needs this window's project beside it; without one, a new window is the closest.
+  if (mode === "tab") return canAdd ? "tab" : "new";
   if (mode !== "ask") return mode;
   const r = await ask({
     title: t("app.window.askTitle"),
@@ -46,9 +48,9 @@ export async function chooseProjectWindow(
     ],
     checkbox: t("app.window.askRemember"),
   });
-  // "Attach" and "New Tab" are one-off: "Open project in" has no value for them, so Don't ask again ignores both.
+  // "Attach" is one-off, as in IDEA: "Open project in" has no value for it, so Don't ask again ignores it.
   if (r.button !== "same" && r.button !== "new" && r.button !== "attach" && r.button !== "tab") return null;
-  if (r.checked && (r.button === "same" || r.button === "new")) {
+  if (r.checked && r.button !== "attach") {
     try {
       useProject.setState({
         settings: await call(commands.settingsSet("global", "general.openProjectIn", JSON.stringify(r.button))),
