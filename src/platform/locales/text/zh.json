@@ -9078,5 +9078,8 @@
   "Database and schema": "数据库和 schema",
   "Shelve Silently": "静默搁置",
   "Unshelve Silently": "静默取消搁置",
-  "Remove All Watches": "移除所有监视"
+  "Remove All Watches": "移除所有监视",
+  "GitHub account": "GitHub 账号",
+  "Leave empty to use the active GitHub CLI account. OpenIDEA resolves the token at launch and never stores it.": "留空则使用 GitHub CLI 当前登录的账号。OpenIDEA 在启动时获取令牌，不会保存它。",
+  "github-username": "GitHub 用户名"
 }

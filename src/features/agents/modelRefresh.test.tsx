@@ -251,6 +251,44 @@ it("refreshes an existing chat's searchable model choices and switches through i
   expect(useAgents.getState().draft).toBe(draft);
 });
 
+it("recovers a model picker after a Copilot ACP fallback removed the session option", async () => {
+  const task: AgentTask = {
+    id: "fallback-task",
+    title: "Recovered chat",
+    provider: "first",
+    status: "ready",
+    isolation: "local",
+    model: "stale-model",
+    cwd: "/models",
+    branch: null,
+    base: null,
+    baseCommit: null,
+    error: null,
+    createdMs: 0,
+    updatedMs: 0,
+    config: [{ ...option("mode", "mode", ["plan", "act"]), name: "Mode" }],
+    commands: [],
+    usage: null,
+    queue: [],
+  };
+  const input = { kind: SESSION_KIND, key: sessionKey(task.id), data: { task: task.id } };
+  backend.providers[0]!.config = [];
+  backend.tasks = [task];
+  backend.activeInput = input;
+  await connect();
+  backend.refresh.mockResolvedValueOnce(ok(catalog("first", { config: [option("model", "model", ["auto"])] })));
+
+  render(<SessionEditor input={input} />);
+  const modelButton = screen.getByRole("button", { name: "Model" });
+  expect(modelButton).toHaveTextContent("stale-model (unavailable)");
+  fireEvent.click(modelButton);
+  expect(await screen.findByRole("option", { name: "auto" })).toBeVisible();
+  fireEvent.click(screen.getByRole("option", { name: "auto" }));
+
+  expect(backend.refresh).toHaveBeenCalledWith("first", false, null);
+  expect(backend.setConfig).toHaveBeenCalledExactlyOnceWith("fallback-task", "model", "auto");
+});
+
 it("keeps cached choices usable while refreshing and shares the completion/cooldown from another window", async () => {
   backend.refresh.mockImplementation(async (id: string) => ok(catalog(id, { refreshing: true })));
   render(<HomeEditor />);

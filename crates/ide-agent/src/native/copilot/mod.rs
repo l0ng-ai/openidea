@@ -144,7 +144,8 @@ async fn discover_once(spec: ProviderSpec, cwd: PathBuf, strip_ambient: bool) ->
         move || spec.resolve_for_launch_with_copilot_env(&cwd, strip_ambient)
     })
     .await
-    .map_err(|e| DiscoverError { message: e.to_string(), allow_acp_fallback: false })?;
+    .map_err(|e| DiscoverError { message: e.to_string(), allow_acp_fallback: false })?
+    .map_err(|e| DiscoverError { message: e, allow_acp_fallback: false })?;
     let cwd = dunce::canonicalize(&cwd).unwrap_or(cwd);
     let args = headless_args(&launch.args);
     let peer = Peer::spawn_framed(
