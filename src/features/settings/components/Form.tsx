@@ -43,7 +43,17 @@ export function SearchLabel({ text: source, className }: { text: string; classNa
   return <span className={className}>{parts}</span>;
 }
 
-export function Section({ title, children, className }: { title?: string; children: ReactNode; className?: string }) {
+export function Section({
+  title,
+  children,
+  className,
+  stackFields,
+}: {
+  title?: string;
+  children: ReactNode;
+  className?: string;
+  stackFields?: boolean;
+}) {
   return (
     <section className={clsx(styles.section, className)} aria-label={tx(title)}>
       {title && (
@@ -52,7 +62,7 @@ export function Section({ title, children, className }: { title?: string; childr
           <span className={styles.sectionRule} aria-hidden />
         </div>
       )}
-      <FormGroup className={styles.sectionBody}>{children}</FormGroup>
+      <FormGroup className={clsx(styles.sectionBody, stackFields && styles.stackFields)}>{children}</FormGroup>
     </section>
   );
 }

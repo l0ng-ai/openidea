@@ -3236,6 +3236,8 @@
   "Used for new files.": "用于新文件。",
   "User": "用户",
   "User settings file": "用户设置文件",
+  "Importing": "导入",
+  "Runner": "运行器",
   "User:": "用户：",
   "Uses HostName, User, Port, IdentityFile and ProxyJump from ~/.ssh/config, and keys of the SSH agent.": "使用 ~/.ssh/config 中的 HostName、User、Port、IdentityFile 和 ProxyJump，以及 SSH 代理中的密钥。",
   "VCS Operations": "VCS 操作",

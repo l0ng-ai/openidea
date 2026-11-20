@@ -275,6 +275,8 @@ export const EXECUTION_PAGES: PageSpec[] = [
       "Always update snapshots",
       "SNAPSHOT",
       "-U",
+      "Importing",
+      "Automatically download sources",
     ],
     component: MavenPage,
   },
