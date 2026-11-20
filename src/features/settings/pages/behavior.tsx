@@ -604,21 +604,23 @@ function DefaultDirectoryRow() {
       htmlFor={id}
       hint={'This directory is preselected in "Open…" and "New Window" dialogs.'}
     >
-      <Input
-        id={id}
-        className={styles.pathInput}
-        value={dir}
-        placeholder="System default"
-        onChange={(e) => setDir(e.target.value)}
-      />
-      <IconButton
-        icon="folder-open"
-        size="small"
-        title="Browse…"
-        aria-label="Browse"
-        disabled={!isTauri()}
-        onClick={() => void browse()}
-      />
+      <div className={styles.directoryBrowse}>
+        <Input
+          id={id}
+          className={styles.pathInput}
+          value={dir}
+          placeholder="System default"
+          onChange={(e) => setDir(e.target.value)}
+        />
+        <IconButton
+          icon="folder-open"
+          size="small"
+          title="Browse…"
+          aria-label="Browse"
+          disabled={!isTauri()}
+          onClick={() => void browse()}
+        />
+      </div>
     </Row>
   );
 }
@@ -746,12 +748,28 @@ function IdleSaveRow() {
   const [seconds, setSeconds] = useSetting<number>("general.idleSeconds");
   const matched = useLabelMatch("Save files if the IDE is idle for");
   return (
-    <div className={clsx(styles.fontRow, matched && styles.matched)}>
+    <div className={clsx(styles.fontRow, matched && styles.matched)} data-search-match={matched || undefined}>
       <Checkbox checked={on} onChange={setOn} label={<SearchLabel text="Save files if the IDE is idle for" />} />
-      <NumberInput value={seconds} onChange={setSeconds} {...IDLE_LIMITS} integer aria-label="Idle seconds" />
-      <span className={clsx(!on && styles.disabled)}>
-        <T>seconds</T>
+      <span className={styles.idleDuration}>
+        <NumberInput value={seconds} onChange={setSeconds} {...IDLE_LIMITS} integer aria-label="Idle seconds" />
+        <span className={clsx(!on && styles.disabled)}>
+          <T>seconds</T>
+        </span>
       </span>
+    </div>
+  );
+}
+
+function FileSynchronizationRow() {
+  const labelId = useId();
+  return (
+    <div className={styles.fileSynchronization} role="group" aria-labelledby={labelId}>
+      <div id={labelId}>
+        <SearchLabel text="Synchronization" />
+      </div>
+      <Indented>
+        <BoundToggle k="files.syncOnFocus" label="Synchronize external changes when switching to the IDE window" />
+      </Indented>
     </div>
   );
 }
@@ -1051,8 +1069,11 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
     title: "System Settings",
     group: APPEARANCE_GROUP,
     order: 1,
-    keywords: ["general", "startup", "exit", "quit", "autosave", "save", "local history", "welcome", "editor tabs"],
+    keywords: ["general", "startup", "exit", "quit", "save", "local history", "welcome", "editor tabs"],
     sections: [
+      {
+        options: [{ kind: "toggle", key: "general.confirmExit", label: "Confirm before exiting the IDE" }],
+      },
       {
         title: "Project",
         options: [
@@ -1067,23 +1088,12 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
         ],
       },
       {
-        title: "Caches",
-        options: [
-          {
-            kind: "custom",
-            label: "Local data directory",
-            keywords: ["cache", "local data", "data directory", "C盘", "缓存", "目录"],
-            component: LocalDataDirRow,
-          },
-        ],
-      },
-      {
-        title: "Autosave",
+        title: "Files",
         options: [
           {
             kind: "custom",
             label: "Save files if the IDE is idle for",
-            keywords: ["idle", "seconds"],
+            keywords: ["Autosave", "idle", "seconds"],
             component: IdleSaveRow,
           },
           {
@@ -1092,9 +1102,21 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
             label: "Save files when switching to a different application or a built-in terminal",
           },
           {
-            kind: "toggle",
-            key: "files.syncOnFocus",
-            label: "Synchronize external changes when switching to the IDE window",
+            kind: "custom",
+            label: "Synchronization",
+            keywords: ["Synchronize external changes when switching to the IDE window"],
+            component: FileSynchronizationRow,
+          },
+        ],
+      },
+      {
+        title: "Caches",
+        options: [
+          {
+            kind: "custom",
+            label: "Local data directory",
+            keywords: ["cache", "local data", "data directory", "C盘", "缓存", "目录"],
+            component: LocalDataDirRow,
           },
         ],
       },
@@ -1124,7 +1146,6 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
       {
         title: "Exit",
         options: [
-          { kind: "toggle", key: "general.confirmExit", label: "Confirm before exiting the IDE" },
           {
             kind: "toggle",
             key: "general.closeWithoutWelcome",

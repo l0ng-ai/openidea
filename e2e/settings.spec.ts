@@ -1,5 +1,59 @@
 import { expect, stubDesktop, test } from "./fixtures";
 
+test("System Settings groups file controls before caches and keeps the idle timeout unit beside its field", async ({
+  workbench: page,
+}) => {
+  await page.keyboard.press("Meta+,");
+  const dialog = page.getByRole("dialog", { name: "Settings", exact: true });
+  const system = dialog.getByRole("treeitem", { name: "System Settings", exact: true });
+  const search = dialog.getByRole("textbox", { name: "Search settings" });
+  await search.fill("Autosave");
+  await expect(system).toBeVisible();
+  await search.clear();
+  await system.click();
+  const exit = dialog.getByRole("checkbox", { name: "Confirm before exiting the IDE" });
+  const reopen = dialog.getByRole("checkbox", { name: "Reopen projects on startup" });
+  const project = dialog.getByRole("region", { name: "Project", exact: true });
+  const directory = project.getByRole("textbox", { name: /^Default directory/ });
+  const browse = project.getByRole("button", { name: "Browse", exact: true });
+  const idle = dialog.getByRole("checkbox", { name: "Save files if the IDE is idle for" });
+  const timeout = dialog.getByRole("textbox", { name: "Idle seconds" });
+  const unit = dialog.getByText("seconds", { exact: true });
+  const caches = dialog.getByRole("region", { name: "Caches", exact: true });
+  for (const width of [1120, 580]) {
+    await page.setViewportSize({ width, height: 760 });
+    await expect(async () => {
+      const [exitBox, projectBox, idleBox, timeoutBox, unitBox, cacheBox] = await Promise.all(
+        [exit, reopen, idle, timeout, unit, caches].map((item) => item.boundingBox()),
+      );
+      expect(exitBox!.y).toBeLessThan(projectBox!.y);
+      expect(projectBox!.y).toBeLessThan(idleBox!.y);
+      expect(idleBox!.y).toBeLessThan(cacheBox!.y);
+      expect(unitBox!.x).toBeGreaterThanOrEqual(timeoutBox!.x + timeoutBox!.width);
+      expect(unitBox!.y).toBeGreaterThan(timeoutBox!.y);
+      expect(unitBox!.y + unitBox!.height).toBeLessThanOrEqual(timeoutBox!.y + timeoutBox!.height + 1);
+      const [directoryBox, browseBox] = await Promise.all([directory.boundingBox(), browse.boundingBox()]);
+      expect(browseBox!.x).toBeGreaterThanOrEqual(directoryBox!.x + directoryBox!.width);
+      expect(browseBox!.y).toBeGreaterThanOrEqual(directoryBox!.y);
+      expect(browseBox!.y + browseBox!.height).toBeLessThanOrEqual(directoryBox!.y + directoryBox!.height + 1);
+    }).toPass({ timeout: 3000 });
+  }
+
+  const files = dialog.getByRole("region", { name: "Files", exact: true });
+  const sync = files
+    .getByRole("group", { name: "Synchronization", exact: true })
+    .getByRole("checkbox", { name: "Synchronize external changes when switching to the IDE window" });
+  await idle.check();
+  await timeout.fill("22");
+  await sync.uncheck();
+  await dialog.getByRole("button", { name: "OK", exact: true }).click();
+  await page.keyboard.press("Meta+,");
+  await system.click();
+  await expect(idle).toBeChecked();
+  await expect(timeout).toHaveValue("22");
+  await expect(sync).not.toBeChecked();
+});
+
 test("Add Python Interpreter keeps environment labels and fields inside their rows", async ({ workbench: page }) => {
   await page.keyboard.press("Meta+,");
   const settings = page.getByRole("dialog", { name: "Settings", exact: true });
