@@ -35,6 +35,10 @@ import {
 import styles from "./AgentList.module.css";
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const COPILOT_GITHUB_ACCOUNT_ENV = "OPENIDEA_COPILOT_GITHUB_ACCOUNT";
+
+const launchEnv = (env: Record<string, string>) =>
+  Object.fromEntries(Object.entries(env).filter(([name]) => name !== COPILOT_GITHUB_ACCOUNT_ENV));
 
 /** How often the page checks on installs it did not start. */
 const BACKGROUND_POLL_MS = 1500;
@@ -819,13 +823,26 @@ function ProviderSettings({
     onChanged?.();
     return command === agent.defaultProgram ? "" : (command ?? "");
   });
-  const envBase = formatEnv(agent.env);
+  const accountBase = agent.env[COPILOT_GITHUB_ACCOUNT_ENV] ?? "";
+  const account = form.useExternal(`agents.${agent.id}.githubAccount`, accountBase, async (draft) => {
+    const next = { ...agent.env };
+    const value = draft.trim();
+    if (value) next[COPILOT_GITHUB_ACCOUNT_ENV] = value;
+    else delete next[COPILOT_GITHUB_ACCOUNT_ENV];
+    await backend.setEnv(agent.id, next);
+    await refresh();
+    onChanged?.();
+    return value;
+  });
+  const envBase = formatEnv(launchEnv(agent.env));
   const env = form.useExternal(`agents.${agent.id}.env`, envBase, async (draft) => {
     const parsed = parseEnv(draft);
+    const account = agent.env[COPILOT_GITHUB_ACCOUNT_ENV];
+    if (account) parsed[COPILOT_GITHUB_ACCOUNT_ENV] = account;
     await backend.setEnv(agent.id, parsed);
     await refresh();
     onChanged?.();
-    return formatEnv(parsed);
+    return formatEnv(launchEnv(parsed));
   });
   const [error, setError] = useState<string | null>(null);
   // An edit can have been staged by a previous page instance. Its Apply callback
@@ -849,6 +866,27 @@ function ProviderSettings({
       </Section>
       <Section title="Launch">
         <div className={styles.form}>
+          {agent.id === "copilot" && (
+            <Row
+              label={<T>GitHub account</T>}
+              htmlFor={`agent-github-account-${agent.id}`}
+              hint={
+                <T>
+                  Leave empty to use the active GitHub CLI account. OpenIDEA resolves the token at launch and never
+                  stores it.
+                </T>
+              }
+            >
+              <Input
+                id={`agent-github-account-${agent.id}`}
+                mono
+                value={account.value}
+                disabled={account.saving}
+                placeholder="github-username"
+                onChange={(e) => account.set(e.target.value)}
+              />
+            </Row>
+          )}
           <Row label={<T>Command</T>}>
             <code className={styles.launch} title={launch}>
               {launch}

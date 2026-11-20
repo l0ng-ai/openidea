@@ -132,6 +132,7 @@ pub type McpExecutableFn = dyn Fn() -> Option<PathBuf> + Send + Sync;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct CopilotBinaryKey {
     command: String,
+    github_account: Option<String>,
     modified: Option<std::time::SystemTime>,
     len: Option<u64>,
 }
@@ -193,6 +194,7 @@ impl Shared {
         let metadata = std::fs::metadata(&executable).ok();
         CopilotBinaryKey {
             command: executable.to_string_lossy().into_owned(),
+            github_account: provider::copilot_github_account(&spec.env),
             modified: metadata.as_ref().and_then(|m| m.modified().ok()),
             len: metadata.as_ref().map(std::fs::Metadata::len),
         }
@@ -2799,9 +2801,12 @@ impl Task {
         pending_model: Option<&PendingModel>,
     ) -> Result<Live, SessionOpenError> {
         let launch_cwd = cwd.to_path_buf();
-        let mut spec = tokio::task::spawn_blocking(move || spec.resolve_for_launch(&launch_cwd))
-            .await
-            .map_err(|e| SessionOpenError { message: e.to_string(), allow_acp_fallback: false })?;
+        let mut spec = tokio::task::spawn_blocking(move || {
+            spec.resolve_for_launch_with_copilot_env(&launch_cwd, provider::prefer_stored_copilot_auth())
+        })
+        .await
+        .map_err(|e| SessionOpenError { message: e.to_string(), allow_acp_fallback: false })?
+        .map_err(|e| SessionOpenError { message: e, allow_acp_fallback: false })?;
         if spec.driver == provider::Driver::Acp && provider::is_copilot_provider(provider_id) {
             let mcp_overrides = self.state.lock().task.mcp_overrides.clone();
             for name in self.shared.mcp_servers_off_for_session(provider_id, &mcp_overrides) {

@@ -469,7 +469,7 @@ describe("Built-in executable overrides", () => {
     dispose();
   });
 
-  const openCommands = async (commands: FakeCommands, onChanged = vi.fn()) => {
+  const openCommands = async (commands: FakeCommands, onChanged = vi.fn(), name = "Claude Code") => {
     const backend = new FakeBackend();
     dispose = registerSettingsPage({
       id: REGISTRY_PAGE,
@@ -478,7 +478,7 @@ describe("Built-in executable overrides", () => {
       component: () => <RegistryPage backend={backend} commandBackend={commands} onChanged={onChanged} />,
     });
     render(<SettingsDialog />);
-    return screen.findByRole("region", { name: "Claude Code" });
+    return screen.findByRole("region", { name });
   };
   const apply = () => screen.getByRole("button", { name: "Apply" });
   const field = () => screen.getByRole("textbox", { name: "Executable" });
@@ -562,6 +562,38 @@ describe("Built-in executable overrides", () => {
     fireEvent.change(env(), { target: { value: "" } });
     await act(async () => fireEvent.click(apply()));
     expect(commands.savedEnv.at(-1)).toEqual(["claude", {}]);
+  });
+
+  it("writes a Copilot GitHub account without storing a token or exposing the control variable", async () => {
+    const commands = new FakeCommands();
+    commands.list = [
+      {
+        ...claudeProvider("copilot"),
+        id: "copilot",
+        name: "GitHub Copilot",
+        command: "copilot --acp",
+        defaultProgram: "copilot",
+        commandReadOnlyReason: "registry",
+        env: { COPILOT_TELEMETRY_OPTOUT: "1" },
+      },
+    ];
+    await openCommands(commands, vi.fn(), "GitHub Copilot");
+    const account = screen.getByRole("textbox", { name: "GitHub account" });
+    expect(screen.queryByRole("textbox", { name: "Environment variables" })).toBeNull();
+    fireEvent.change(account, { target: { value: "dengliu_microsoft" } });
+
+    await act(async () => fireEvent.click(apply()));
+
+    expect(commands.savedEnv).toEqual([
+      [
+        "copilot",
+        {
+          COPILOT_TELEMETRY_OPTOUT: "1",
+          OPENIDEA_COPILOT_GITHUB_ACCOUNT: "dengliu_microsoft",
+        },
+      ],
+    ]);
+    expect(JSON.stringify(commands.savedEnv)).not.toMatch(/gho_|ghp_|token/i);
   });
 
   it("Cancel discards command edits without writing", async () => {

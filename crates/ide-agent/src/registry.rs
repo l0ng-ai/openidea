@@ -537,6 +537,14 @@ fn install_entry_with(
             return Err(e);
         }
     };
+    let github_account = (entry.id == "copilot")
+        .then(|| CustomAgent::read(&file).ok())
+        .flatten()
+        .and_then(|agent| agent.env.get(provider::COPILOT_GITHUB_ACCOUNT_ENV).cloned());
+    let mut env = env;
+    if let Some(account) = github_account {
+        env.insert(provider::COPILOT_GITHUB_ACCOUNT_ENV.into(), account);
+    }
     let agent = CustomAgent {
         name: Some(entry.name.clone()),
         driver: Driver::Acp,

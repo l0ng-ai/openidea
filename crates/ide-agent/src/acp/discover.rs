@@ -51,7 +51,7 @@ async fn run_once(
         move || launch.resolve_for_launch_with_copilot_env(&root, strip_ambient)
     })
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())??;
     let cwd = dunce::canonicalize(&root).unwrap_or(root);
     let updates = Arc::new(DiscoveryUpdates { provider: spec.id.clone(), ..Default::default() });
     let client = Dialect::wrap(updates.clone());
