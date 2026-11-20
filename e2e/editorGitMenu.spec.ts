@@ -64,3 +64,15 @@ test("editor Git submenu keeps repository actions disabled without Git", async (
   }
   await expect(page.getByRole("menuitem", { name: "Clone…", exact: true })).toBeEnabled();
 });
+
+test("Project view Git submenu ends with Manage Remotes and Clone", async ({ workbench: page }) => {
+  await page.getByRole("treeitem", { name: /README\.md/ }).click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Git", exact: true }).hover();
+  const git = page.getByRole("menu").filter({ has: page.getByRole("menuitem", { name: "Clone…", exact: true }) });
+  const items = git.locator('[role="menuitem"], [role="menuitemcheckbox"]');
+  await expect(items.nth(-3)).toHaveText(/Unstash Changes…/);
+  await expect(items.nth(-2)).toHaveText(/Manage Remotes…/);
+  await expect(items.nth(-1)).toHaveText(/Clone…/);
+  await git.getByRole("menuitem", { name: "Manage Remotes…", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Git Remotes" })).toBeVisible();
+});
