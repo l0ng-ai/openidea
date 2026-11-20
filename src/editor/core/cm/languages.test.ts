@@ -394,6 +394,11 @@ describe("language modes", () => {
     return found;
   }
 
+  it("colours Go's `default` branch like the other keywords", async () => {
+    const support = await loadSupport(findLanguageDescription("Go", "/p/main.go")!);
+    expect(keywords(support!.language, "switch x {\ncase 1:\ndefault:\n}")).toEqual(["switch", "case", "default"]);
+  });
+
   it("colours TOML keys as keywords in files, lock files and ```toml code blocks", async () => {
     for (const path of ["/p/Cargo.toml", "/p/uv.lock"]) {
       const support = await loadSupport(findLanguageDescription("TOML", path)!);
