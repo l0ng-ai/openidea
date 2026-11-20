@@ -7,6 +7,7 @@
 import { EditorState, Facet, RangeSetBuilder, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType, type DecorationSet } from "@codemirror/view";
 import { codeLenses, type CodeLens } from "@/editor/api";
+import { foldChipWidth } from "./folding";
 import { showContextMenu } from "@/ui";
 import { codeVisionMenuItems } from "../codeVision";
 import { LINE_INSET } from "./lineInset";
@@ -99,6 +100,21 @@ class LensWidget extends WidgetType {
     return this.key === other.key && this.lenses.every((l, i) => l.run === other.lenses[i]?.run);
   }
 
+  /** The box parks a fixed offset past its zero-width anchor; a folded chip drawn after the
+      anchor paints under the box, so the box also steps past the chip's width (folding.ts). */
+  private stepPastFoldChip(el: HTMLElement) {
+    const inner = this.inline ? (el.firstElementChild as HTMLElement | null) : el;
+    if (!inner) return;
+    const chip = foldChipWidth(el);
+    if (chip === this.appliedChip) return;
+    this.appliedChip = chip;
+    if (chip) inner.style.left = `calc(var(--openidea-hint-offset) + ${chip}px)`;
+    else inner.style.removeProperty("left");
+  }
+
+  private appliedChip = -1;
+  private observer: MutationObserver | undefined;
+
   override toDOM(view: EditorView): HTMLElement {
     // The inline one shares no class with the row, so none of the row's block styles reach into the line.
     const dom: HTMLElement = document.createElement(this.inline ? "span" : "div");
@@ -111,6 +127,18 @@ class LensWidget extends WidgetType {
       dom.appendChild(host);
     }
     this.fill(host, view);
+    if (this.inline) {
+      // The chip can appear (or go away) after this widget mounted, hence the observer; the
+      // element is only measurable once CodeMirror has inserted it, so defer like the blame does.
+      setTimeout(() => {
+        if (!dom.isConnected) return;
+        this.stepPastFoldChip(dom);
+        const line = dom.closest(".cm-line");
+        if (!line) return;
+        this.observer = new MutationObserver(() => this.stepPastFoldChip(dom));
+        this.observer.observe(line, { childList: true, subtree: true, characterData: true });
+      }, 0);
+    }
     dom.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -126,6 +154,7 @@ class LensWidget extends WidgetType {
     const host = this.inline ? (dom.firstElementChild as HTMLElement | null) : dom;
     if (!host) return false;
     this.fill(host, view);
+    if (this.inline) this.stepPastFoldChip(dom);
     return true;
   }
 
@@ -172,6 +201,11 @@ class LensWidget extends WidgetType {
 
   override get estimatedHeight(): number {
     return this.inline ? -1 : 16;
+  }
+
+  override destroy(): void {
+    this.observer?.disconnect();
+    this.observer = undefined;
   }
 
   override ignoreEvent(): boolean {
