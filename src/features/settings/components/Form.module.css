@@ -203,10 +203,12 @@
   display: flex;
   flex-direction: column;
   flex: 1;
-  max-width: 480px;
   border-radius: var(--radius-small);
   box-shadow: inset 0 0 0 1px var(--border-strong);
   overflow: hidden;
+}
+.globCompact {
+  max-width: 480px;
 }
 .listToolbar {
   display: flex;
