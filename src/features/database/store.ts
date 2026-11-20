@@ -25,7 +25,6 @@ import {
   type DbTableDetails,
   type DbTableInfo,
   type DbTableKind,
-  type IdeError,
   type RequestId,
   type SqlStatement,
 } from "@/platform/ipc";
@@ -73,6 +72,7 @@ const BINDINGS_KEY = "openidea.database.consoles";
 const CONSOLE_SCHEMAS_KEY = "openidea.database.consoleSchemas";
 const VIEW_OPTIONS_KEY = "openidea.database.viewOptions";
 const MAX_TABS = 12;
+const RESULT_DELIVERY_TIMEOUT_MS = 15_000;
 
 export interface ResultTab {
   id: number;
@@ -896,6 +896,9 @@ export async function revealOpened(): Promise<void> {
 
 const completionLoads = new Map<string, { current: () => boolean; promise: Promise<DbCompletion | null> }>();
 const preparingConsoles = new Map<string, RequestId>();
+const stopResultDelivery = new Map<RequestId, () => void>();
+const stoppedResultDelivery = new Error("Stopped waiting for SQL results");
+const streamingResultTabs = new Set<number>();
 
 /** The schema model of `id` for completion (cached; one load at a time). */
 export function loadCompletion(id: string): Promise<DbCompletion | null> {
@@ -1082,8 +1085,9 @@ function promptOf(id: string): string {
  */
 /** Shows `id` disconnected when the backend closed its connection (it reconnects on next use). */
 async function syncDropped(id: string) {
+  const current = databaseRequest(id);
   const server = await call(commands.dbConnected()).catch(() => null);
-  if (!server || server.includes(id) || !useDatabase.getState().connected.has(id)) return;
+  if (!current() || !server || server.includes(id) || !useDatabase.getState().connected.has(id)) return;
   useDatabase.setState((s) => {
     const connected = new Set(s.connected);
     connected.delete(id);
@@ -1113,24 +1117,41 @@ async function run(
     if (!progress || statements.length === 1) return execute();
     const outcomes: DbStatementOutcome[] = [];
     let received = false;
-    let finish!: (error: IdeError | null) => void;
-    const done = new Promise<IdeError | null>((resolve) => (finish = resolve));
+    let acknowledged = false;
+    let stopRequested = false;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let finish!: (error: Error | null) => void;
+    const done = new Promise<Error | null>((resolve) => (finish = resolve));
+    const waitForDelivery = () => {
+      clearTimeout(timeout);
+      timeout = setTimeout(
+        () => finish(new IpcError({ kind: "timedOut", message: tx("SQL results did not finish arriving") })),
+        RESULT_DELIVERY_TIMEOUT_MS,
+      );
+    };
     const channel = new Channel<ExecutionEvent>();
     channel.onmessage = (event) => {
       received = true;
       if (event.type === "done") {
-        finish(event.error);
+        finish(event.error ? new IpcError(event.error) : null);
         return;
       }
       if (event.type === "completed") outcomes.push(event.outcome);
       progress.emit(event);
+      if (acknowledged) waitForDelivery();
     };
+    stopResultDelivery.set(request, () => {
+      stopRequested = true;
+      if (acknowledged) finish(stoppedResultDelivery);
+    });
     try {
-      const [, error] = await Promise.all([
-        call(commands.dbExecuteStream(request, id, statements, maxRows, schema || null, channel)),
-        done,
-      ]);
-      if (error) throw new IpcError(error);
+      // Large channel frames can arrive after the reply. Bound only this delivery wait.
+      await call(commands.dbExecuteStream(request, id, statements, maxRows, schema || null, channel));
+      acknowledged = true;
+      if (stopRequested) finish(stoppedResultDelivery);
+      else waitForDelivery();
+      const error = await done;
+      if (error) throw error;
       return outcomes;
     } catch (error) {
       // An older remote dispatcher rejects the missing command before it executes any SQL.
@@ -1145,13 +1166,16 @@ async function run(
         return execute();
       throw error;
     } finally {
+      clearTimeout(timeout);
+      stopResultDelivery.delete(request);
       channel.onmessage = () => {};
     }
   });
-  if (!current() || (progress && !progress.current())) return outcomes;
-  if (!wasConnected) log("info", "Connected");
+  if (!current()) return outcomes;
   // A failed statement can have found the session dead; the backend then dropped it.
   if (outcomes.some((o) => o.error)) void syncDropped(id);
+  if (progress && !progress.current()) return outcomes;
+  if (!wasConnected) log("info", "Connected");
   const prompt = schema || promptOf(id);
   for (const o of outcomes) {
     log("statement", o.statement.text, `${prompt}>`);
@@ -1309,7 +1333,7 @@ export async function executeConsole(
   to: number,
   /** Called once the statements are submitted, with what was submitted. */
   onStart?: (statements: readonly SqlStatement[]) => void,
-  onProgress?: (event: StatementProgress) => DbStatementOutcome | void,
+  onProgress?: (events: readonly StatementProgress[]) => ReadonlyMap<number, DbStatementOutcome> | void,
 ): Promise<DbStatementOutcome[]> {
   const id = consoleSource(path);
   if (!id) {
@@ -1335,7 +1359,7 @@ export async function executeConsole(
     if (!current() || preparingConsoles.get(path) !== request || !statements.length) return [];
     preparingConsoles.delete(path);
     const prev = useDatabase.getState().running[path];
-    if (prev) void commands.cancelRequest(prev);
+    if (prev) cancelExecution(prev);
     const execution = { startedAt: Date.now(), statements: statements.length, active: null };
     useDatabase.setState((s) => ({
       running: { ...s.running, [path]: request },
@@ -1348,37 +1372,62 @@ export async function executeConsole(
     const schema = consoleSchema(path) || (await loadCompletion(id))?.defaultSchema || "";
     if (!ownsRun()) return [];
     let runNumber: number | undefined;
+    let queued: StatementProgress[] = [];
+    let frame: number | undefined;
+    const publish = () => {
+      frame = undefined;
+      const events = queued;
+      queued = [];
+      if (!ownsRun() || !events.length) return;
+      const last = events[events.length - 1]!;
+      const active = last.type === "started" ? { index: last.index, startedAt: Date.now() } : null;
+      const placed = onProgress?.(events);
+      const tabs: ResultTab[] = [];
+      for (const event of events) {
+        if (event.type === "started" || !event.outcome.result?.columns.length) continue;
+        runNumber ??= nextRun++;
+        const index = resultIds.size + 1;
+        const title = index === 1 ? tx`Result ${runNumber}` : tx`Result ${runNumber}-${index}`;
+        const outcome = (inline ? placed?.get(event.index) : undefined) ?? event.outcome;
+        const tab = { id: nextTab++, title, path, sourceId: id, schema, outcome, page: 0, pageSize };
+        resultIds.add(tab.id);
+        if (!inline) streamingResultTabs.add(tab.id);
+        tabs.push(tab);
+      }
+      useDatabase.setState((s) => {
+        const executions = { ...s.executions, [path]: { ...execution, active } };
+        const latest = tabs.at(-1);
+        if (!latest) return { executions };
+        if (inline) return { executions, inline: [...s.inline, ...tabs.map((tab) => ({ ...tab, inline: true }))] };
+        return { executions, results: capResults([...s.results, ...tabs], resultIds), activeResult: latest.id };
+      });
+    };
     const emit = (event: StatementProgress) => {
       if (!ownsRun()) return;
-      const active = event.type === "started" ? { index: event.index, startedAt: Date.now() } : null;
-      useDatabase.setState((s) => ({ executions: { ...s.executions, [path]: { ...execution, active } } }));
-      const placed = onProgress?.(event);
-      if (event.type === "started" || !event.outcome.result?.columns.length) return;
-      runNumber ??= nextRun++;
-      const index = resultIds.size + 1;
-      const title = index === 1 ? tx`Result ${runNumber}` : tx`Result ${runNumber}-${index}`;
-      const tab = { id: nextTab++, title, path, sourceId: id, schema, outcome: event.outcome, page: 0, pageSize };
-      resultIds.add(tab.id);
-      if (inline)
-        useDatabase.setState((s) => ({
-          inline: [...s.inline, { ...tab, outcome: placed ?? tab.outcome, inline: true }],
-        }));
-      else useDatabase.setState((s) => ({ results: [...s.results, tab], activeResult: tab.id }));
+      queued.push(event);
+      if (statements.length === 1) publish();
+      else frame ??= requestAnimationFrame(publish);
     };
-    const outcomes = await run(id, statements, request, pageSize, 0, schema, { emit, current: ownsRun });
+    let outcomes: DbStatementOutcome[];
+    try {
+      outcomes = await run(id, statements, request, pageSize, 0, schema, { emit, current: ownsRun });
+    } finally {
+      if (frame !== undefined) cancelAnimationFrame(frame);
+      publish();
+    }
     if (!ownsRun()) return [];
     finished = true;
     selectOutput = !inline && (!resultIds.size || outcomes.some((o) => o.error));
     return outcomes;
   } catch (e) {
     if (!current() || (!ownsRun() && preparingConsoles.get(path) !== request)) return [];
-    if (!isCancelled(e)) {
+    if (!isCancelled(e) && e !== stoppedResultDelivery) {
       log("error", message(e));
       notifications().notify({ level: "error", title: "Cannot execute", body: message(e), key: "db-execute" });
     } else {
       log("info", "Cancelled");
       // The backend dropped the connection, and its transaction with it.
-      if (useDatabase.getState().pendingTx.has(id)) {
+      if (e !== stoppedResultDelivery && useDatabase.getState().pendingTx.has(id)) {
         log("info", "Transaction rolled back");
         setPending(id, false);
       }
@@ -1386,6 +1435,7 @@ export async function executeConsole(
     return [];
   } finally {
     if (preparingConsoles.get(path) === request) preparingConsoles.delete(path);
+    for (const id of resultIds) streamingResultTabs.delete(id);
     useDatabase.setState((s) => {
       if (s.running[path] !== request) return s;
       const running = { ...s.running };
@@ -1400,8 +1450,9 @@ export async function executeConsole(
               s.results.filter((tab) => !resultIds.has(tab.id)),
               path,
               tabs,
+              resultIds,
             )
-          : capResults(s.results, tabs);
+          : capResults(s.results, resultIds);
       }
       return { running, executions, results, activeResult: selectOutput ? OUTPUT_TAB : s.activeResult };
     });
@@ -1413,20 +1464,25 @@ export async function executeConsole(
  * unpinned ones (where the first of them was), others stay. Nothing is
  * replaced when the run returned no result set (an UPDATE keeps the SELECT).
  */
-function replaceResults(results: ResultTab[], path: string, tabs: ResultTab[]): ResultTab[] {
+function replaceResults(
+  results: ResultTab[],
+  path: string,
+  tabs: ResultTab[],
+  fresh: ReadonlySet<number>,
+): ResultTab[] {
   if (!tabs.length) return results;
   const replaced = (r: ResultTab) => r.path === path && !r.plan && !r.pinned;
   const at = results.findIndex(replaced);
   const kept = results.filter((r) => !replaced(r));
   const index = at < 0 ? kept.length : at;
-  return capResults([...kept.slice(0, index), ...tabs, ...kept.slice(index)], tabs);
+  return capResults([...kept.slice(0, index), ...tabs, ...kept.slice(index)], fresh);
 }
 
-/** Drops the oldest tabs beyond `MAX_TABS`, never pinned or `fresh` ones (exceeding the limit instead). */
-function capResults(results: ResultTab[], fresh: ResultTab[]): ResultTab[] {
+/** Drops older tabs beyond `MAX_TABS`, keeping pinned and newly arrived grids. */
+function capResults(results: ResultTab[], fresh: ReadonlySet<number>): ResultTab[] {
   let extra = results.length - MAX_TABS;
   if (extra <= 0) return results;
-  return results.filter((r) => r.pinned || fresh.includes(r) || extra-- <= 0);
+  return results.filter((r) => r.pinned || fresh.has(r.id) || streamingResultTabs.has(r.id) || extra-- <= 0);
 }
 
 /** The statements of console `path` to run or explain: the selection's, else the one at `from`, parameters bound. */
@@ -1450,7 +1506,9 @@ function showPlan(path: string, id: string, statement: SqlStatement, plan: DbPla
       outcome: { statement, result: null, error: null },
       plan,
     };
-    const results = old ? s.results.map((r) => (r === old ? tab : r)) : capResults([...s.results, tab], [tab]);
+    const results = old
+      ? s.results.map((r) => (r === old ? tab : r))
+      : capResults([...s.results, tab], new Set([tab.id]));
     return { results, activeResult: tab.id };
   });
   showServiceView(RESULTS_VIEW, false);
@@ -1697,7 +1755,12 @@ export async function setManualCommit(id: string, manual: boolean): Promise<void
 
 export function cancelConsole(path: string) {
   const r = useDatabase.getState().running[path];
-  if (r) void commands.cancelRequest(r);
+  if (r) cancelExecution(r);
+}
+
+function cancelExecution(request: RequestId) {
+  stopResultDelivery.get(request)?.();
+  void commands.cancelRequest(request);
 }
 
 export function closeResult(id: number) {

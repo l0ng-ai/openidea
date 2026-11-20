@@ -304,23 +304,6 @@ function errorBanner(message: string) {
   };
 }
 
-/** Shows an outcome immediately and keeps the marks from earlier statements. */
-function markOutcome(view: EditorView, state: RunState, outcome: DbStatementOutcome) {
-  const { from, to } = outcome.statement;
-  const marks = state.marks.filter((mark) => mark.to <= from || mark.from >= to);
-  marks.push({
-    from,
-    to,
-    timingAt: view.state.sliceDoc(to, to + 1) === ";" ? to + 1 : to,
-    error: outcome.error,
-    ms: outcome.result?.elapsedMs ?? null,
-  });
-  const name = outcome.error ? (sourceById(consoleSource(view.state.facet(consolePath)))?.name ?? "") : "";
-  view.dispatch({
-    effects: setRun.of({ ...state, marks, banner: outcome.error ? `[${name}] ${outcome.error}` : null }),
-  });
-}
-
 let nextExecution = 0;
 
 /** Runs `from`–`to` of `view`, following each statement as it executes. */
@@ -338,24 +321,33 @@ async function executeRange(view: EditorView, path: string, from: number, to: nu
     view.dispatch({ effects: setRun.of({ marks, banner: null, executing: { token, spans, active: null } }) });
   };
   try {
-    await executeConsole(path, sent.toString(), from, to, start, (event) => {
+    await executeConsole(path, sent.toString(), from, to, start, (events) => {
       const st = view.state.field(runField, false);
       const ex = st?.executing;
       if (!st || ex?.token !== token) return;
-      if (event.type === "started") {
-        const active = { index: event.index, startedAt: Date.now() };
-        view.dispatch({ effects: setRun.of({ ...st, executing: { ...ex, active } }) });
-        return;
+      const last = events[events.length - 1]!;
+      const active = last.type === "started" ? { index: last.index, startedAt: Date.now() } : null;
+      const marks = [...st.marks];
+      let banner = st.banner;
+      const placed = new Map<number, DbStatementOutcome>();
+      for (const event of events) {
+        if (event.type === "started") continue;
+        const span = ex.spans[event.index];
+        if (!span || span.from >= span.to) continue;
+        const { from, to } = span;
+        const { error, result } = event.outcome;
+        marks.push({
+          from,
+          to,
+          timingAt: view.state.sliceDoc(to, to + 1) === ";" ? to + 1 : to,
+          error,
+          ms: result?.elapsedMs ?? null,
+        });
+        if (error) banner = `[${sourceById(consoleSource(path))?.name ?? ""}] ${error}`;
+        placed.set(event.index, { ...event.outcome, statement: { ...event.outcome.statement, ...span } });
       }
-      const span = ex.spans[event.index];
-      const state = { ...st, executing: { ...ex, active: null } };
-      if (!span || span.from >= span.to) {
-        view.dispatch({ effects: setRun.of(state) });
-        return;
-      }
-      const outcome = { ...event.outcome, statement: { ...event.outcome.statement, ...span } };
-      markOutcome(view, state, outcome);
-      return outcome;
+      view.dispatch({ effects: setRun.of({ marks, banner, executing: { ...ex, active } }) });
+      return placed;
     });
   } finally {
     const st = view.state.field(runField, false);

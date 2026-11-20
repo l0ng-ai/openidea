@@ -198,8 +198,8 @@ describe("statements in flight", () => {
     try {
       await act(async () => {
         pending = mode === "selection" ? executeInView(view, PATH) : executeScriptInView(view, PATH);
+        await vi.waitFor(() => expect(cells()).toEqual(["first"]));
       });
-      expect(cells()).toEqual(["first"]);
       expect(highlighted()).toEqual(["UPDATE t SET n = 2"]);
       expect(times()).toEqual(["500 ms"]);
       expect(view.dom.querySelectorAll(".cm-openidea-db-run-ok")).toHaveLength(1);
@@ -269,6 +269,7 @@ describe("statements in flight", () => {
 
       await act(async () => {
         pending = executeInView(view, PATH);
+        await vi.waitFor(() => expect(ok()).toHaveLength(1));
       });
       expect(ok()).toHaveLength(1);
       expect(error()).toHaveLength(1);
@@ -283,7 +284,9 @@ describe("statements in flight", () => {
       expect(ok()).toHaveLength(1);
       expect(error()).toHaveLength(1);
       expect(view.dom.querySelector(".cm-openidea-db-elapsed")).toBeNull();
-      expect(useDatabase.getState().results.at(-1)?.outcome.result?.rows).toEqual([["new"]]);
+      const tabs = useDatabase.getState().results;
+      expect(new Set(tabs.map((tab) => tab.id)).size).toBe(4);
+      expect(tabs.map((tab) => tab.outcome.result?.rows)).toEqual([[["old"]], [["old"]], [["old"]], [["new"]]]);
     } finally {
       cancel?.();
       await pending;
@@ -350,9 +353,8 @@ describe("statements in flight", () => {
     let pending!: Promise<void>;
     await act(async () => {
       pending = executeScriptInView(view, PATH);
-      await vi.waitFor(() => expect(backend.execute).toHaveBeenCalled());
+      await vi.waitFor(() => expect(executing()).toEqual(["SELECT 1"]));
     });
-    expect(executing()).toEqual(["SELECT 1"]);
     expect(elapsed()).toMatch(/^Executing… \d+ ms$/);
     expect(view.dom.querySelector(".cm-openidea-db-run-executing")).not.toBeNull();
 

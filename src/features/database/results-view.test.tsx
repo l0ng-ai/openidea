@@ -2,11 +2,11 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
+  ChannelFrame,
   DbDriver,
   ExecutionEvent,
   DbQueryResult,
   DbTableDetails,
-  RemoteSession,
   SqlStatement,
 } from "@/platform/ipc";
 import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
@@ -15,7 +15,15 @@ import { installCellActions } from "./cellActions";
 import { getContext } from "@/platform/context";
 import { ResultsView } from "./ResultsView";
 import { streamExecution } from "./executeStream.fixture";
-import { executeConsole, explainConsole, pinResult, rerunResult, useDatabase, type ResultTab } from "./store";
+import {
+  cancelConsole,
+  executeConsole,
+  explainConsole,
+  pinResult,
+  rerunResult,
+  useDatabase,
+  type ResultTab,
+} from "./store";
 import { registerResultTabActions } from "./resultTabActions";
 import { activeTableEditor, installTableEditorFocus } from "./tableEditorFocus";
 import { provideToolWindowService } from "@/workbench/contributions";
@@ -28,6 +36,7 @@ const backend = vi.hoisted(() => ({
   execute: vi.fn(),
   stream: vi.fn(),
   cancel: vi.fn(),
+  connected: vi.fn(),
   statements: vi.fn(),
   explain: vi.fn(),
 }));
@@ -43,6 +52,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       dbExecute: backend.execute,
       dbExecuteStream: backend.stream,
       cancelRequest: backend.cancel,
+      dbConnected: backend.connected,
       dbStatements: backend.statements,
       dbExplain: backend.explain,
     },
@@ -120,6 +130,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   backend.stream.mockReset().mockImplementation(streamExecution(backend.execute));
   backend.cancel.mockResolvedValue(undefined);
+  backend.connected.mockResolvedValue({ status: "ok", data: ["pg"] });
   backend.statements.mockImplementation((_id: unknown, text: string) =>
     Promise.resolve({ status: "ok", data: [{ from: 0, to: text.length, text }] }),
   );
@@ -785,6 +796,82 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
     expect(useDatabase.getState().output.map((entry) => entry.text)).toContain("[Local] syntax error");
   });
 
+  it.each(["stop", "timeout"])("releases an acknowledged stream with a missing terminal event on %s", async (exit) => {
+    await runIn("a.sql", "SELECT pinned");
+    const pinned = ids()[0]!;
+    pinResult(pinned, true);
+    let sendDone!: () => void;
+    let acknowledge!: () => void;
+    backend.stream.mockImplementationOnce(async (_r, _id, statements: SqlStatement[], _max, _schema, channel) => {
+      channel.onmessage({ type: "started", index: 0 });
+      channel.onmessage({
+        type: "completed",
+        index: 0,
+        outcome: { statement: statements[0]!, result: result([{ name: "v" }], [["first"]]), error: null },
+      });
+      sendDone = () => channel.onmessage({ type: "done", error: null });
+      await new Promise<void>((resolve) => (acknowledge = resolve));
+      return { status: "ok", data: null };
+    });
+    vi.useFakeTimers();
+    const pending = runIn("a.sql", "SELECT first; SELECT missing");
+    try {
+      await vi.waitFor(() => expect(strip()).toEqual(["a.sql:SELECT pinned", "a.sql:SELECT first"]));
+      const completed = ids()[1];
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(useDatabase.getState().running["a.sql"]).toBeDefined();
+      acknowledge();
+      await vi.advanceTimersByTimeAsync(0);
+      if (exit === "stop") cancelConsole("a.sql");
+      await vi.advanceTimersByTimeAsync(exit === "stop" ? 0 : 60_000);
+      expect(useDatabase.getState().running).toEqual({});
+      expect(useDatabase.getState().executions).toEqual({});
+      expect(await pending).toEqual([]);
+      expect(ids()).toEqual([pinned, completed]);
+    } finally {
+      acknowledge?.();
+      sendDone?.();
+      await pending;
+      vi.useRealTimers();
+    }
+  });
+
+  it("publishes a frame of fast results together and retains every fresh grid beyond the tab limit", async () => {
+    await runIn("b.sql", "SELECT pinned");
+    pinResult(ids()[0]!, true);
+    await runIn("b.sql", "SELECT old");
+    const texts = Array.from({ length: 16 }, (_, i) => `SELECT ${i}`);
+    const text = texts.join("; ");
+    let finish!: () => void;
+    backend.stream.mockImplementationOnce(async (_r, _id, statements: SqlStatement[], _max, _schema, channel) => {
+      statements.forEach((statement, index) => {
+        channel.onmessage({ type: "started", index });
+        channel.onmessage({
+          type: "completed",
+          index,
+          outcome: { statement, result: result([{ name: "v" }], [[String(index)]]), error: null },
+        });
+      });
+      await new Promise<void>((resolve) => (finish = resolve));
+      channel.onmessage({ type: "done", error: null });
+      return { status: "ok", data: null };
+    });
+    const publish = vi.fn();
+    const pending = executeConsole("a.sql", text, 0, text.length, undefined, publish);
+    try {
+      await vi.waitFor(() => expect(publish).toHaveBeenCalledTimes(1));
+      const expected = ["b.sql:SELECT pinned", ...texts.map((query) => `a.sql:${query}`)];
+      expect(strip()).toEqual(expected);
+      finish();
+      await pending;
+      expect(strip()).toEqual(expected);
+      expect(new Set(ids()).size).toBe(expected.length);
+    } finally {
+      finish?.();
+      await pending;
+    }
+  });
+
   it("ignores results from a superseded request after an early invocation reply", async () => {
     let stale!: () => void;
     backend.stream.mockImplementationOnce(async (_r, _id, statements: SqlStatement[], _max, _schema, channel) => {
@@ -819,21 +906,82 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
     }
   });
 
-  it.each([false, true])("retries a missing remote command only before progress (started: %s)", async (started) => {
-    enableRemote({ commands: [] } as unknown as RemoteSession);
-    backend.stream.mockImplementationOnce(async (_r, _id, _statements, _max, _schema, channel) => {
-      if (started) channel.onmessage({ type: "started", index: 0 });
-      return {
-        status: "error",
-        error: { kind: "protocol", message: "command db_execute_stream is not available remotely", data: null },
-      };
+  it("syncs a lost connection reported by a superseded run", async () => {
+    useDatabase.setState({ connected: new Set(["pg"]) });
+    let finish!: () => void;
+    backend.stream.mockImplementationOnce(async (_r, _id, statements: SqlStatement[], _max, _schema, channel) => {
+      await new Promise<void>((resolve) => (finish = resolve));
+      channel.onmessage({
+        type: "completed",
+        index: 0,
+        outcome: { statement: statements[0], result: null, error: "Connection lost" },
+      });
+      channel.onmessage({ type: "done", error: null });
+      return { status: "ok", data: null };
     });
+    const older = runIn("a.sql", "SELECT old; SELECT untouched");
+    try {
+      await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+      await runIn("a.sql", "SELECT current");
+      backend.connected.mockResolvedValueOnce({ status: "ok", data: [] });
+      finish();
+      await older;
+      expect(backend.connected).toHaveBeenCalledOnce();
+      await vi.waitFor(() => expect(useDatabase.getState().connected.has("pg")).toBe(false));
+      expect(strip()).toEqual(["a.sql:SELECT current"]);
+      expect(useDatabase.getState().output.map((entry) => entry.text)).not.toContain("SELECT old");
+    } finally {
+      finish?.();
+      await older;
+    }
+  });
+
+  it.each([false, true])("retries a missing remote command only before progress (started: %s)", async (started) => {
+    const { commands } = await vi.importActual<typeof import("@/platform/ipc")>("@/platform/ipc");
+    const invoke = vi.fn(
+      async (
+        name: string,
+        args: { cmd: string; args: string; onChannel: { onmessage: (frame: ChannelFrame) => void } },
+      ) => {
+        expect(name).toBe("remote_invoke");
+        const { statements, onProgress } = JSON.parse(args.args) as {
+          statements: SqlStatement[];
+          onProgress?: { $channel: number };
+        };
+        if (args.cmd === "db_execute_stream") {
+          if (started)
+            args.onChannel.onmessage({ id: onProgress!.$channel, data: JSON.stringify({ type: "started", index: 0 }) });
+          throw { kind: "protocol", message: "command db_execute_stream is not available remotely", data: null };
+        }
+        expect(args.cmd).toBe("db_execute");
+        return JSON.stringify(
+          statements.map((statement) => ({
+            statement,
+            result: result([{ name: "v" }], [[statement.text]]),
+            error: null,
+          })),
+        );
+      },
+    );
+    vi.stubGlobal("__TAURI_INTERNALS__", { invoke });
+    enableRemote({
+      target: { kind: "wsl", distro: "Ubuntu" },
+      root: "/remote",
+      host: "Ubuntu",
+      os: "linux",
+      commands: ["db_execute_stream", "db_execute"],
+    });
+    backend.stream.mockImplementationOnce(commands.dbExecuteStream);
+    if (!started) backend.execute.mockImplementationOnce(commands.dbExecute);
     try {
       await runIn("a.sql", "SELECT 1; SELECT 2");
-      expect(backend.execute).toHaveBeenCalledTimes(started ? 0 : 1);
+      expect(invoke.mock.calls.map(([_name, args]) => args.cmd)).toEqual(
+        started ? ["db_execute_stream"] : ["db_execute_stream", "db_execute"],
+      );
       expect(strip()).toEqual(started ? [] : ["a.sql:SELECT 1", "a.sql:SELECT 2"]);
     } finally {
       disableRemote();
+      vi.unstubAllGlobals();
     }
   });
 
@@ -944,7 +1092,7 @@ describe("a console request in flight", () => {
       pending = executeConsole("console.sql", "SELECT 1; SELECT 2", 0, 18);
       await vi.waitFor(() => expect(backend.execute).toHaveBeenCalled());
     });
-    expect(screen.getByText("Executing statement 1 of 2 in console.sql…")).toBeTruthy();
+    expect(await screen.findByText("Executing statement 1 of 2 in console.sql…")).toBeTruthy();
     expect(screen.getByText("Ann")).toBeTruthy();
     await act(async () => {
       finish();

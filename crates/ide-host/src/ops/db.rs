@@ -26,7 +26,7 @@ pub struct StatementOutcome {
 }
 
 #[derive(Serialize, Deserialize, Type)]
-#[serde(tag = "type", rename_all = "camelCase", rename = "DbExecutionEvent")]
+#[serde(tag = "type", rename_all = "camelCase")]
 pub enum ExecutionEvent {
     Started { index: u32 },
     Completed { index: u32, outcome: StatementOutcome },
