@@ -243,6 +243,20 @@ public final class OpenIdeaJdbc {
                     } catch (SQLException | AbstractMethodError ignored) {}
                     row(reply, name);
                 }
+                case "valid" -> {
+                    // After a failed statement: whether the session survived (a dropped TCP
+                    // connection leaves every later statement failing until the IDE reconnects).
+                    header(reply, "valid");
+                    boolean valid;
+                    try {
+                        valid = connection != null && !connection.isClosed() && connection.isValid(5);
+                    } catch (AbstractMethodError | SQLFeatureNotSupportedException e) {
+                        valid = true; // A pre-JDBC 4 driver cannot tell: keep the session.
+                    } catch (SQLException e) {
+                        valid = false;
+                    }
+                    row(reply, Boolean.toString(valid));
+                }
                 case "page" -> execute(work, a, reply, true);
                 case "query" -> {
                     if (a.size() == 3 || a.get(3).isEmpty()) {

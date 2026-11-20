@@ -14,6 +14,7 @@ import java.util.logging.Logger;
 public class SelfTest {
     public static class Fixture implements Driver {
         private boolean readonly;
+        private boolean dropped;
         private int changes;
         private Path started;
 
@@ -36,6 +37,8 @@ public class SelfTest {
                 case "getMetaData" -> meta;
                 case "close" -> null;
                 case "createStatement" -> statement();
+                case "isClosed" -> false;
+                case "isValid" -> !dropped;
                 default -> throw new SQLFeatureNotSupportedException();
             });
         }
@@ -53,6 +56,7 @@ public class SelfTest {
                         throw new SQLException("statement cancelled");
                     }
                     if (sql.equals("write") && readonly) throw new SQLException("read-only");
+                    if (sql.equals("drop")) { dropped = true; throw new SQLException("connection reset"); }
                     changes++;
                     yield false;
                 }
@@ -122,6 +126,12 @@ public class SelfTest {
             send(out, 5, "query", "after cancel", "0", "2");
             var result = reply(in);
             assert result[0] == 1 && result[result.length - 1] == 2;
+            send(out, 6, "valid");
+            assert new String(reply(in), StandardCharsets.UTF_8).contains("true");
+            send(out, 7, "query", "drop", "0", "2");
+            assert reply(in)[0] == 0;
+            send(out, 8, "valid");
+            assert new String(reply(in), StandardCharsets.UTF_8).contains("false");
         } finally {
             child.destroyForcibly().waitFor();
         }

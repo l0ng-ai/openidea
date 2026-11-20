@@ -458,6 +458,44 @@ impl JdbcPool {
     }
 
     async fn request(&self, fields: &[&str], sql: &str, cancel: &CancellationToken) -> IdeResult<QueryResult> {
+        let result = self.exchange_once(fields, sql, cancel).await;
+        if let Err(e) = &result
+            && fields.first() != Some(&"open")
+            && e.kind != ide_core::error::ErrorKind::Cancelled
+            && !self.is_closed()
+            && !self.session_valid().await
+        {
+            // The session is gone (a proxy or tunnel dropped the idle TCP connection): close the
+            // pool so the next statement or Connect starts a new one instead of failing forever.
+            self.close().await;
+        }
+        result
+    }
+
+    /// Keep-alive: checks the session (any SQL would be dialect-specific) and closes a dead one.
+    pub(crate) async fn ping(&self) -> IdeResult<()> {
+        if self.session_valid().await {
+            return Ok(());
+        }
+        self.close().await;
+        Err(IdeError::new(ide_core::error::ErrorKind::Io, "JDBC connection was lost"))
+    }
+
+    /// Whether the JDBC session still works, asked after a failed statement.
+    async fn session_valid(&self) -> bool {
+        if self.bridge.lock().await.is_none() {
+            return false;
+        }
+        let cancel = CancellationToken::new();
+        match tokio::time::timeout(Duration::from_secs(10), self.exchange_once(&["valid"], "", &cancel)).await {
+            Ok(Ok(result)) => {
+                result.rows.first().and_then(|row| row.first()).cloned().flatten().as_deref() != Some("false")
+            }
+            Ok(Err(_)) | Err(_) => false,
+        }
+    }
+
+    async fn exchange_once(&self, fields: &[&str], sql: &str, cancel: &CancellationToken) -> IdeResult<QueryResult> {
         let mut slot = tokio::select! {
             biased;
             () = cancel.cancelled() => return Err(IdeError::cancelled()),

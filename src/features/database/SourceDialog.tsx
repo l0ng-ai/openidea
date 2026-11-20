@@ -1020,13 +1020,15 @@ export function SourceDialog({
             }
             onChange={(e) => setOptions({ timeZone: e.target.value })}
           />
-          <SecondsOption
-            label="Run keep-alive query each"
-            value={options.keepAliveSecs}
-            fallback={60}
-            onChange={(keepAliveSecs) => setOptions({ keepAliveSecs })}
-          />
         </>
+      )}
+      {!sqlite && (
+        <SecondsOption
+          label="Run keep-alive query each"
+          value={options.keepAliveSecs}
+          fallback={60}
+          onChange={(keepAliveSecs) => setOptions({ keepAliveSecs })}
+        />
       )}
       <SecondsOption
         label="Auto-disconnect after"
