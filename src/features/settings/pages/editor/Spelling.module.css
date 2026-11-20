@@ -1,0 +1,18 @@
+.spelling .list {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+}
+
+.wordPanel:not([hidden]) {
+  display: grid;
+  gap: var(--space-1-5);
+  padding-top: var(--space-1);
+}
+
+.note {
+  margin: 0;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  line-height: 1.4;
+}

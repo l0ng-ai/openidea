@@ -71,12 +71,17 @@ test("⌘1 focuses, hides and re-shows the Project tool window", async ({ workbe
 
 test("⌘4 toggles Run; Shift+Escape hides the active tool window", async ({ workbench: page }) => {
   const run = page.getByRole("region", { name: "Run" });
+  // The shortcut hides the window only once it is active: activation focuses it a frame after it shows.
+  const focusedInRun = () =>
+    expect.poll(() => page.evaluate(() => !!document.activeElement?.closest('[data-toolwindow="run"]'))).toBe(true);
   await page.keyboard.press("Meta+4");
   await expect(run).toBeVisible();
+  await focusedInRun();
   await page.keyboard.press("Meta+4");
   await expect(run).toBeHidden();
   await page.keyboard.press("Meta+4");
   await expect(run).toBeVisible();
+  await focusedInRun();
   await page.keyboard.press("Shift+Escape");
   await expect(run).toBeHidden();
 });

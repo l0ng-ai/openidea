@@ -98,7 +98,14 @@ function ThemeRow() {
     showPicked(shown);
   };
   return (
-    <Row label="Theme">
+    <Row
+      label="Theme"
+      hint={
+        <button type="button" className={styles.link} onClick={() => selectPage("plugins#themes")}>
+          <T>Get more themes</T>
+        </button>
+      }
+    >
       <Select<ConcreteTheme>
         value={shown}
         options={themeSelectOptions(choices, shown)}
@@ -108,11 +115,7 @@ function ThemeRow() {
         className={styles.themeSelect}
         disabled={sync}
       />
-      {/* As in IntelliJ IDEA: most themes are plugins, so point at the marketplace's. */}
-      <button type="button" className={styles.link} onClick={() => selectPage("plugins#themes")}>
-        <T>Get more themes</T>
-      </button>
-      <span className={clsx(styles.inline, matched && styles.matched)}>
+      <span className={clsx(styles.themeSync, matched && styles.matched)}>
         <Checkbox
           checked={sync}
           onChange={(on) => {
@@ -141,7 +144,7 @@ function ThemeRow() {
         offset={4}
         aria-label="Preferred themes"
       >
-        <div className={styles.popupBody}>
+        <FormGroup className={styles.preferredThemes}>
           <Row label="Preferred theme for light OS mode">
             <Select<ConcreteTheme>
               value={light}
@@ -158,7 +161,7 @@ function ThemeRow() {
               aria-label="Preferred dark theme"
             />
           </Row>
-        </div>
+        </FormGroup>
       </Popup>
     </Row>
   );
@@ -260,53 +263,37 @@ function CustomFontRow() {
   const [size, setSize] = useSetting<number>("appearance.uiFontSize");
   const id = useId();
   const matched = useLabelMatch("Use custom font");
-  // Labels share one column (IDEA Appearance): the UI font, fallback and Size
-  // controls all start at the same x instead of drifting with flex wrapping.
   return (
     <div className={clsx(styles.customFontRow, matched && styles.matched)}>
       <span className={styles.fontCheck}>
         <Checkbox checked={on} onChange={setOn} label={<SearchLabel text="Use custom font:" />} />
       </span>
-      <span className={styles.fontControl}>
-        <FontPicker label="UI font" disabled={!on} value={family} onChange={setFamily} />
-      </span>
+      <FontPicker label="UI font" disabled={!on} value={family} onChange={setFamily} />
+      <div className={clsx(styles.fontSize, !on && styles.disabled)}>
+        <label htmlFor={`${id}-size`}>
+          <SearchLabel text="Size:" />
+        </label>
+        <NumberInput
+          id={`${id}-size`}
+          value={size}
+          onChange={setSize}
+          {...LIMITS.uiFontSize}
+          integer
+          disabled={!on}
+          aria-label="UI font size"
+        />
+      </div>
       <label className={clsx(styles.fontLabel, !on && styles.disabled)} htmlFor={`${id}-fallback`}>
         <SearchLabel text="Fallback font:" />
       </label>
-      <span className={styles.fontControl}>
-        <FontPicker
-          id={`${id}-fallback`}
-          label="UI fallback font"
-          disabled={!on}
-          value={fallback}
-          onChange={setFallback}
-          allowEmpty
-        />
-      </span>
-      <label className={clsx(styles.fontLabel, !on && styles.disabled)} htmlFor={`${id}-size`}>
-        <SearchLabel text="Size:" />
-      </label>
-      <span className={styles.fontControl}>
-        {on ? (
-          <NumberInput
-            id={`${id}-size`}
-            value={size}
-            onChange={setSize}
-            {...LIMITS.uiFontSize}
-            integer
-            aria-label="UI font size"
-          />
-        ) : (
-          <Input
-            id={`${id}-size`}
-            className={styles.sizeInput}
-            value={String(size)}
-            disabled
-            aria-label="UI font size"
-            readOnly
-          />
-        )}
-      </span>
+      <FontPicker
+        id={`${id}-fallback`}
+        label="UI fallback font"
+        disabled={!on}
+        value={fallback}
+        onChange={setFallback}
+        allowEmpty
+      />
     </div>
   );
 }
@@ -617,21 +604,23 @@ function DefaultDirectoryRow() {
       htmlFor={id}
       hint={'This directory is preselected in "Open…" and "New Window" dialogs.'}
     >
-      <Input
-        id={id}
-        className={styles.pathInput}
-        value={dir}
-        placeholder="System default"
-        onChange={(e) => setDir(e.target.value)}
-      />
-      <IconButton
-        icon="folder-open"
-        size="small"
-        title="Browse…"
-        aria-label="Browse"
-        disabled={!isTauri()}
-        onClick={() => void browse()}
-      />
+      <div className={styles.directoryBrowse}>
+        <Input
+          id={id}
+          className={styles.pathInput}
+          value={dir}
+          placeholder="System default"
+          onChange={(e) => setDir(e.target.value)}
+        />
+        <IconButton
+          icon="folder-open"
+          size="small"
+          title="Browse…"
+          aria-label="Browse"
+          disabled={!isTauri()}
+          onClick={() => void browse()}
+        />
+      </div>
     </Row>
   );
 }
@@ -759,12 +748,28 @@ function IdleSaveRow() {
   const [seconds, setSeconds] = useSetting<number>("general.idleSeconds");
   const matched = useLabelMatch("Save files if the IDE is idle for");
   return (
-    <div className={clsx(styles.fontRow, matched && styles.matched)}>
+    <div className={clsx(styles.fontRow, matched && styles.matched)} data-search-match={matched || undefined}>
       <Checkbox checked={on} onChange={setOn} label={<SearchLabel text="Save files if the IDE is idle for" />} />
-      <NumberInput value={seconds} onChange={setSeconds} {...IDLE_LIMITS} integer aria-label="Idle seconds" />
-      <span className={clsx(!on && styles.disabled)}>
-        <T>seconds</T>
+      <span className={styles.idleDuration}>
+        <NumberInput value={seconds} onChange={setSeconds} {...IDLE_LIMITS} integer aria-label="Idle seconds" />
+        <span className={clsx(!on && styles.disabled)}>
+          <T>seconds</T>
+        </span>
       </span>
+    </div>
+  );
+}
+
+function FileSynchronizationRow() {
+  const labelId = useId();
+  return (
+    <div className={styles.fileSynchronization} role="group" aria-labelledby={labelId}>
+      <div id={labelId}>
+        <SearchLabel text="Synchronization" />
+      </div>
+      <Indented>
+        <BoundToggle k="files.syncOnFocus" label="Synchronize external changes when switching to the IDE window" />
+      </Indented>
     </div>
   );
 }
@@ -919,6 +924,12 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
           },
           { kind: "custom", label: "Accent color", keywords: ["accent colour", "highlight"], component: AccentRow },
           { kind: "custom", label: "Different tool window background", component: ToolWindowBackgroundRow },
+          {
+            kind: "custom",
+            label: "Use custom font",
+            keywords: ["UI font size", "Size", "font family", "fallback font"],
+            component: CustomFontRow,
+          },
         ],
       },
       {
@@ -936,12 +947,6 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
         title: "Accessibility",
         options: [
           { kind: "custom", label: "Zoom", keywords: ["scale", "zoom ide"], component: ZoomRow },
-          {
-            kind: "custom",
-            label: "Use custom font",
-            keywords: ["UI font size", "Size", "font family", "fallback font"],
-            component: CustomFontRow,
-          },
           { kind: "toggle", key: "appearance.contrastScrollbars", label: "Use contrast scrollbars" },
           {
             kind: "toggle",
@@ -1064,8 +1069,11 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
     title: "System Settings",
     group: APPEARANCE_GROUP,
     order: 1,
-    keywords: ["general", "startup", "exit", "quit", "autosave", "save", "local history", "welcome", "editor tabs"],
+    keywords: ["general", "startup", "exit", "quit", "save", "local history", "welcome", "editor tabs"],
     sections: [
+      {
+        options: [{ kind: "toggle", key: "general.confirmExit", label: "Confirm before exiting the IDE" }],
+      },
       {
         title: "Project",
         options: [
@@ -1080,23 +1088,12 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
         ],
       },
       {
-        title: "Caches",
-        options: [
-          {
-            kind: "custom",
-            label: "Local data directory",
-            keywords: ["cache", "local data", "data directory", "C盘", "缓存", "目录"],
-            component: LocalDataDirRow,
-          },
-        ],
-      },
-      {
-        title: "Autosave",
+        title: "Files",
         options: [
           {
             kind: "custom",
             label: "Save files if the IDE is idle for",
-            keywords: ["idle", "seconds"],
+            keywords: ["Autosave", "idle", "seconds"],
             component: IdleSaveRow,
           },
           {
@@ -1105,9 +1102,21 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
             label: "Save files when switching to a different application or a built-in terminal",
           },
           {
-            kind: "toggle",
-            key: "files.syncOnFocus",
-            label: "Synchronize external changes when switching to the IDE window",
+            kind: "custom",
+            label: "Synchronization",
+            keywords: ["Synchronize external changes when switching to the IDE window"],
+            component: FileSynchronizationRow,
+          },
+        ],
+      },
+      {
+        title: "Caches",
+        options: [
+          {
+            kind: "custom",
+            label: "Local data directory",
+            keywords: ["cache", "local data", "data directory", "C盘", "缓存", "目录"],
+            component: LocalDataDirRow,
           },
         ],
       },
@@ -1137,7 +1146,6 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
       {
         title: "Exit",
         options: [
-          { kind: "toggle", key: "general.confirmExit", label: "Confirm before exiting the IDE" },
           {
             kind: "toggle",
             key: "general.closeWithoutWelcome",

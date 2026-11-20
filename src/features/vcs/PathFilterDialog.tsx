@@ -1,10 +1,12 @@
 import { useState } from "react";
-import { Checkbox, Dialog, Input, Tree } from "@/ui";
+import { Checkbox, Dialog, SearchField, Tree } from "@/ui";
 import { projectFs } from "@/features/project-tree/fs";
 import { openDialog } from "./dialogs";
-import { repoName } from "./store";
+import { dirName, relTo, stripSlash } from "./model";
+import { repoName, repoOf } from "./store";
 import { call, commands } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
+import { ipcPath, isSameOrInside } from "@/platform/paths";
 
 interface PathNode {
   path: string;
@@ -28,6 +30,90 @@ export function chooseLogPaths(roots: string[], initial: string[], readOnly = fa
   });
 }
 
+export function editLogPaths(roots: string[], initial: string[]): Promise<string[] | null> {
+  let base = roots[0];
+  while (base && !roots.every((root) => isSameOrInside(root, base!))) {
+    const parent = dirName(base);
+    base = parent || (base.startsWith("/") && base !== "/" ? "/" : undefined);
+  }
+  return new Promise((resolve) => {
+    const close = openDialog(() => (
+      <LogPathsEditor
+        roots={roots}
+        initial={initial}
+        base={base}
+        onDone={(value) => {
+          close();
+          resolve(value);
+        }}
+      />
+    ));
+  });
+}
+
+function LogPathsEditor({
+  roots,
+  initial,
+  base,
+  onDone,
+}: {
+  roots: string[];
+  initial: string[];
+  base?: string;
+  onDone: (value: string[] | null) => void;
+}) {
+  const [text, setText] = useState(() =>
+    initial.map((path) => (base ? (path === base ? "." : relTo(stripSlash(base), path)) : path)).join("\n"),
+  );
+  const [error, setError] = useState(false);
+  const apply = () => {
+    const paths = text
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const path = ipcPath(line);
+        return !base || path.startsWith("/") || /^[A-Za-z]:\//.test(path)
+          ? path
+          : path === "."
+            ? base
+            : `${stripSlash(base)}/${path.replace(/^\.\//, "")}`;
+      })
+      .map(stripSlash);
+    if (paths.some((path) => path.split(/[\\/]/).includes("..") || !roots.some((root) => isSameOrInside(path, root)))) {
+      setError(true);
+      return;
+    }
+    onDone([...new Set(paths)]);
+  };
+  return (
+    <Dialog
+      open
+      title="Filter by Paths"
+      width={560}
+      onClose={() => onDone(null)}
+      buttons={[
+        { label: "OK", role: "default", onClick: apply },
+        { label: "Cancel", role: "cancel" },
+      ]}
+    >
+      <SearchField
+        data-autofocus
+        multiline
+        leadingIcon={null}
+        value={text}
+        onChange={(value) => {
+          setText(value);
+          setError(false);
+        }}
+        aria-label="Paths"
+        placeholder="One path per line"
+      />
+      {error && <div role="alert">{tx("Choose a path inside a repository.")}</div>}
+    </Dialog>
+  );
+}
+
 function PathFilterDialog({
   roots,
   initial,
@@ -41,7 +127,6 @@ function PathFilterDialog({
 }) {
   const [checked, setChecked] = useState<ReadonlySet<string>>(() => new Set(initial));
   const [listings, setListings] = useState<Map<string, PathNode[]>>(() => new Map());
-  const [custom, setCustom] = useState("");
   const [error, setError] = useState<string | null>(null);
   const toggle = (path: string, on: boolean) =>
     setChecked((before) => {
@@ -50,26 +135,10 @@ function PathFilterDialog({
       else next.delete(path);
       return next;
     });
-  const apply = () => {
-    const added = custom
-      .split("\n")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    if (
-      added.some(
-        (path) =>
-          !roots.some((root) => path === root || path.startsWith(`${root}/`)) || path.split(/[\\/]/).includes(".."),
-      )
-    ) {
-      setError(tx("Choose an absolute path inside a selected repository."));
-      return;
-    }
-    onDone([...new Set([...checked, ...added])]);
-  };
   const nodes = roots.map((path) => ({ path, name: repoName(path), directory: true }));
   const load = async (node: PathNode) => {
     try {
-      const root = roots.find((r) => node.path === r || node.path.startsWith(`${r}/`));
+      const root = roots.includes(node.path) ? node.path : repoOf(node.path, roots);
       if (!root) return;
       let entries: PathNode[];
       if (readOnly) {
@@ -101,11 +170,11 @@ function PathFilterDialog({
       width={560}
       onClose={() => onDone(null)}
       buttons={[
-        { label: "OK", role: "default", onClick: apply },
+        { label: "OK", role: "default", onClick: () => onDone([...checked]) },
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div style={{ height: 320, display: "flex" }}>
+      <div style={{ height: 320 }}>
         <Tree<PathNode>
           roots={nodes}
           getKey={(n) => n.path}
@@ -121,17 +190,13 @@ function PathFilterDialog({
       </div>
       {checked.size > 0 && (
         <div style={{ maxHeight: 100, overflow: "auto" }} aria-label="Selected paths">
-          {[...checked].map((path) => (
-            <Checkbox key={path} label={path} checked onChange={(on) => toggle(path, on)} />
-          ))}
+          {[...checked].map((path) => {
+            const root = roots.includes(path) ? path : repoOf(path, roots);
+            const label = root ? (path === root ? repoName(root) : `${repoName(root)}/${relTo(root, path)}`) : path;
+            return <Checkbox key={path} label={label} checked onChange={(on) => toggle(path, on)} />;
+          })}
         </div>
       )}
-      <Input
-        value={custom}
-        onChange={(e) => setCustom(e.target.value)}
-        placeholder="Additional absolute path"
-        aria-label="Additional absolute path"
-      />
       {error && <div role="alert">{error}</div>}
     </Dialog>
   );

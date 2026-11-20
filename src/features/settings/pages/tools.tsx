@@ -22,8 +22,9 @@ import { selectPage, setQuery } from "../model/staging";
 import { MirrorPrefixRow } from "./DownloadSources";
 import { MCP_SERVER_PAGE } from "./mcpServer";
 import type { PageSpec } from "./spec";
-import { BoundToggle, Grid, Indented, PageLink, TableEditor } from "./workflowControls";
+import { BoundToggle, Grid, PageLink, TableEditor } from "./workflowControls";
 import styles from "./Workflow.module.css";
+import terminalStyles from "./TerminalSettings.module.css";
 import { tx } from "@/platform/i18n";
 import { TERMINAL_MAX_FPS_OPTIONS } from "@/platform/workflowSettings";
 
@@ -62,29 +63,27 @@ const isMac = typeof navigator !== "undefined" && /Mac/i.test(navigator.platform
 // ---------------------------------------------------------------------------
 // Terminal
 
-function TextSetting({
+function TerminalTextSetting({
   k,
   label,
   placeholder,
   hint,
-  width = "wide",
   mono,
 }: {
   k: string;
   label: string;
   placeholder?: string;
   hint?: ReactNode;
-  width?: "wide" | "medium";
   mono?: boolean;
 }) {
   const [value, set] = useSetting<string>(k);
   const id = useId();
   return (
-    <Row label={label} htmlFor={id} hint={hint}>
+    <Row label={label} htmlFor={id} hint={hint} className={terminalStyles.textRow}>
       <Input
         id={id}
         mono={mono}
-        className={styles[width]}
+        className={terminalStyles.field}
         value={value}
         placeholder={placeholder}
         onChange={(e) => set(e.target.value)}
@@ -95,7 +94,7 @@ function TextSetting({
 
 function StartDirectoryRow() {
   return (
-    <TextSetting
+    <TerminalTextSetting
       k="terminal.startDirectory"
       label="Start directory"
       placeholder="Project root"
@@ -148,25 +147,35 @@ function ShellPathRow() {
       label="Shell path"
       htmlFor={id}
       hint="A command line, e.g. /bin/zsh --login. Leave empty to use the login shell."
+      className={terminalStyles.textRow}
     >
-      <Input
-        id={id}
-        mono
-        className={styles.wide}
-        value={value}
-        placeholder={detected ?? "Login shell"}
-        onChange={(e) => set(e.target.value)}
-      />
-      <IconButton
-        ref={menuRef}
-        icon="chevron-down"
-        size="small"
-        title="Installed Shells"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        disabled={shells.length === 0}
-        onClick={() => setOpen((o) => !o)}
-      />
+      <div className={terminalStyles.shellControls}>
+        <Input
+          id={id}
+          mono
+          value={value}
+          placeholder={detected ?? "Login shell"}
+          onChange={(e) => set(e.target.value)}
+        />
+        <IconButton
+          ref={menuRef}
+          icon="chevron-down"
+          size="small"
+          title="Installed Shells"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          disabled={shells.length === 0}
+          onClick={() => setOpen((o) => !o)}
+        />
+        <IconButton
+          icon="folder-open"
+          size="small"
+          title="Browse…"
+          aria-label="Browse"
+          disabled={!isTauri()}
+          onClick={() => void browse()}
+        />
+      </div>
       <Menu
         open={open}
         onClose={() => setOpen(false)}
@@ -174,14 +183,6 @@ function ShellPathRow() {
         placement="bottom-end"
         aria-label="Installed shells"
         items={shells.map((p) => ({ id: p, label: p, checked: quotePath(p) === value, run: () => set(quotePath(p)) }))}
-      />
-      <IconButton
-        icon="folder-open"
-        size="small"
-        title="Browse…"
-        aria-label="Browse"
-        disabled={!isTauri()}
-        onClick={() => void browse()}
       />
     </Row>
   );
@@ -225,41 +226,45 @@ function TerminalKeybindingsLink() {
 
 function TerminalOptions() {
   return (
-    <Grid
-      left={
-        <>
-          <BoundToggle k="terminal.audibleBell" label="Audible bell" />
-          <BoundToggle k="terminal.closeOnExit" label="Close session when it ends" />
-          <BoundToggle k="terminal.mouseReporting" label="Mouse reporting" />
-          <BoundToggle k="terminal.copyOnSelection" label="Copy to clipboard on selection" />
-          <BoundToggle k="terminal.pasteOnMiddleClick" label="Paste on middle mouse button click" />
-          <BoundToggle
-            k="terminal.escapeToEditor"
-            label="Move focus to the Editor with Escape"
-            hint="Otherwise Escape goes to the shell."
-          />
-        </>
-      }
-      right={
-        <>
-          <BoundToggle
-            k="terminal.overrideIdeShortcuts"
-            label="Override IDE shortcuts"
-            hint={<TerminalKeybindingsLink />}
-          />
-          <BoundToggle k="terminal.shellIntegration" label="Shell integration" />
-          <BoundToggle k="terminal.highlightHyperlinks" label="Highlight hyperlinks" />
-          <BoundToggle k="terminal.highlightSelection" label="Highlight occurrences of selected text" />
-          {isMac && <BoundToggle k="terminal.optionAsMeta" label="Use Option as Meta key" />}
-          <SettingSelect
-            k="terminal.maxFps"
-            label="Maximum refresh rate"
-            hint="Caps how often fast terminal output is painted. Hidden windows always paint more slowly."
-            options={TERMINAL_MAX_FPS_OPTIONS}
-          />
-        </>
-      }
-    />
+    <>
+      <div className={terminalStyles.options}>
+        <Grid
+          left={
+            <>
+              <BoundToggle k="terminal.audibleBell" label="Audible bell" />
+              <BoundToggle k="terminal.closeOnExit" label="Close session when it ends" />
+              <BoundToggle k="terminal.mouseReporting" label="Mouse reporting" />
+              <BoundToggle k="terminal.copyOnSelection" label="Copy to clipboard on selection" />
+              <BoundToggle k="terminal.pasteOnMiddleClick" label="Paste on middle mouse button click" />
+              <BoundToggle
+                k="terminal.escapeToEditor"
+                label="Move focus to the Editor with Escape"
+                hint="Otherwise Escape goes to the shell."
+              />
+            </>
+          }
+          right={
+            <>
+              <BoundToggle
+                k="terminal.overrideIdeShortcuts"
+                label="Override IDE shortcuts"
+                hint={<TerminalKeybindingsLink />}
+              />
+              <BoundToggle k="terminal.shellIntegration" label="Shell integration" />
+              <BoundToggle k="terminal.highlightHyperlinks" label="Highlight hyperlinks" />
+              <BoundToggle k="terminal.highlightSelection" label="Highlight occurrences of selected text" />
+              {isMac && <BoundToggle k="terminal.optionAsMeta" label="Use Option as Meta key" />}
+            </>
+          }
+        />
+      </div>
+      <SettingSelect
+        k="terminal.maxFps"
+        label="Maximum refresh rate"
+        hint="Caps how often fast terminal output is painted. Hidden windows always paint more slowly."
+        options={TERMINAL_MAX_FPS_OPTIONS}
+      />
+    </>
   );
 }
 
@@ -285,9 +290,9 @@ function TerminalFont() {
           </PageLink>
         </span>
       </div>
-      <Indented>
-        <Row label="Font">
-          <span className={styles.fontFamily}>
+      <div className={terminalStyles.families}>
+        <Row label="Font" stacked>
+          <span className={terminalStyles.fontPicker}>
             <FontPicker
               value={family}
               onChange={setFamily}
@@ -305,6 +310,11 @@ function TerminalFont() {
             </span>
           </span>
         </Row>
+        <Row label="Fallback font" stacked hint="Used for characters the main font lacks.">
+          <FontPicker value={fallback} onChange={setFallback} allowEmpty label="Terminal fallback font" />
+        </Row>
+      </div>
+      <div className={terminalStyles.metrics}>
         <Row label="Size">
           <NumberInput
             value={size}
@@ -315,28 +325,25 @@ function TerminalFont() {
             aria-label="Terminal font size"
           />
         </Row>
-      </Indented>
-      <Row label="Line height">
-        <NumberInput
-          value={lineHeight}
-          onChange={setLineHeight}
-          {...L.terminalLineHeight}
-          step={0.1}
-          aria-label="Terminal line height"
-        />
-      </Row>
-      <Row label="Fallback font" hint="Used for characters the main font lacks.">
-        <FontPicker value={fallback} onChange={setFallback} allowEmpty label="Terminal fallback font" />
-      </Row>
-      <Row label="Column width">
-        <NumberInput
-          value={columnWidth}
-          onChange={setColumnWidth}
-          {...L.terminalColumnWidth}
-          step={0.1}
-          aria-label="Terminal column width"
-        />
-      </Row>
+        <Row label="Line height">
+          <NumberInput
+            value={lineHeight}
+            onChange={setLineHeight}
+            {...L.terminalLineHeight}
+            step={0.1}
+            aria-label="Terminal line height"
+          />
+        </Row>
+        <Row label="Column width">
+          <NumberInput
+            value={columnWidth}
+            onChange={setColumnWidth}
+            {...L.terminalColumnWidth}
+            step={0.1}
+            aria-label="Terminal column width"
+          />
+        </Row>
+      </div>
     </>
   );
 }
@@ -653,10 +660,25 @@ export const TOOLS_PAGES: PageSpec[] = [
         ],
       },
       {
+        title: "Font",
+        options: [
+          {
+            kind: "custom",
+            label: "Use editor font",
+            keywords: ["Font", "Show only monospaced fonts", "Size", "Line height", "Fallback font", "Column width"],
+            component: TerminalFont,
+          },
+        ],
+      },
+      {
         title: "Application Settings",
         options: [
           { kind: "custom", label: "Shell path", component: ShellPathRow },
-          { kind: "text", key: "terminal.tabName", label: "Default Tab name", placeholder: "Local" },
+          {
+            kind: "custom",
+            label: "Default Tab name",
+            component: () => <TerminalTextSetting k="terminal.tabName" label="Default Tab name" placeholder="Local" />,
+          },
           {
             kind: "select",
             key: "terminal.appTitleAsTabName",
@@ -686,17 +708,6 @@ export const TOOLS_PAGES: PageSpec[] = [
             label: "Cursor shape",
             keywords: ["Block", "Underline", "Vertical", "Blinking cursor"],
             component: CursorRow,
-          },
-        ],
-      },
-      {
-        title: "Font",
-        options: [
-          {
-            kind: "custom",
-            label: "Use editor font",
-            keywords: ["Font", "Show only monospaced fonts", "Size", "Line height", "Fallback font", "Column width"],
-            component: TerminalFont,
           },
         ],
       },
