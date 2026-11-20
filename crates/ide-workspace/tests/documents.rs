@@ -1319,7 +1319,7 @@ fn ascii_file_in_a_latin_project_saves_new_characters_in_the_project_encoding() 
 }
 
 #[test]
-fn ascii_file_stays_utf8_when_no_encoding_is_configured() {
+fn ascii_file_stays_utf8_when_the_project_encoding_is_utf8() {
     let f = fixture();
     let path = f.root.join("A.java");
     fs::write(&path, b"class A {}\n").unwrap();
@@ -1343,7 +1343,7 @@ fn utf8_text_with_accents_keeps_utf8_in_a_latin_project() {
 }
 
 #[test]
-fn a_character_the_project_encoding_lacks_fails_the_save_of_a_promoted_ascii_file() {
+fn typing_a_character_latin9_lacks_into_an_ascii_file_fails_the_save() {
     let f = fixture();
     latin_project(&f);
     let path = f.root.join("A.java");
@@ -1357,4 +1357,34 @@ fn a_character_the_project_encoding_lacks_fails_the_save_of_a_promoted_ascii_fil
     assert_eq!(err.kind, ErrorKind::InvalidInput, "{err}");
     assert_failed_save_preserves_edit(&f, doc.id, "// 漢\nclass A {}\n", before);
     assert_eq!(fs::read(&path).unwrap(), b"class A {}\n");
+}
+
+#[test]
+fn editorconfig_utf8_charset_wins_over_a_latin_project_for_ascii_files() {
+    let f = fixture();
+    latin_project(&f);
+    fs::write(f.root.join(".editorconfig"), "root = true\n[*.java]\ncharset = utf-8\n").unwrap();
+    let path = f.root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "utf-8");
+    f.docs.edit(doc.id, doc.version, change(0, 0, "// é\n")).unwrap();
+    f.docs.save(doc.id).unwrap();
+
+    assert_eq!(fs::read(&path).unwrap(), "// é\nclass A {}\n".as_bytes());
+}
+
+#[test]
+fn ascii_properties_file_takes_the_properties_encoding_by_default() {
+    let f = fixture();
+    let path = f.root.join("messages.properties");
+    fs::write(&path, b"greeting=Hello\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "windows-1252", "the iso-8859-1 default is windows-1252 in WHATWG");
+    f.docs.edit(doc.id, doc.version, change(9, 14, "Olá")).unwrap();
+    f.docs.save(doc.id).unwrap();
+
+    assert_eq!(fs::read(&path).unwrap(), b"greeting=Ol\xe1\n");
 }

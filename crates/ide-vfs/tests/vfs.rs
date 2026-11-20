@@ -534,27 +534,54 @@ fn ascii_text_takes_the_configured_encoding() {
     assert_eq!(decode_text(b"class A {}\n", fallback).as_deref(), Some("class A {}\n"));
 }
 
-#[test]
-fn only_plain_ascii_is_relabelled() {
+fn configured_label(name: &str, bytes: &[u8], configured: Option<&str>) -> String {
     let (_tmp, root) = root();
-    let file = |name: &str, bytes: &[u8]| {
-        let path = root.join(name);
-        fs::write(&path, bytes).unwrap();
-        path
-    };
-    let label = |path: &Path, fallback| load_text_with_fallback(path, fallback).unwrap().encoding;
-    let ascii = file("ascii.txt", b"abc\n");
-    let accented = file("accented.txt", "ação\n".as_bytes());
-    let bom = file("bom.txt", b"\xef\xbb\xbfabc\n");
-    let utf16 = file("utf16.txt", b"\xff\xfea\x00b\x00");
-    let latin = file("latin.txt", b"a\xe7\xe3o \xa4\n");
+    let path = root.join(name);
+    fs::write(&path, bytes).unwrap();
+    load_text_with_fallback(&path, configured).unwrap().encoding
+}
 
-    assert_eq!(label(&ascii, None), "utf-8");
-    assert_eq!(label(&ascii, Some("utf-16le")), "utf-8", "UTF-16 does not read ASCII bytes as ASCII");
-    assert_eq!(label(&accented, Some("iso-8859-15")), "utf-8");
-    assert_eq!(label(&bom, Some("iso-8859-15")), "utf-8");
-    assert_eq!(label(&utf16, Some("iso-8859-15")), "utf-16le");
-    let latin = load_text_with_fallback(&latin, Some("iso-8859-15")).unwrap();
-    assert_eq!((latin.text.as_str(), latin.encoding.as_str()), ("ação €\n", "iso-8859-15"));
+#[test]
+fn ascii_stays_utf8_without_a_configured_encoding() {
+    assert_eq!(configured_label("a.txt", b"abc\n", None), "utf-8");
+}
+
+#[test]
+fn ascii_ignores_a_configured_encoding_that_is_not_ascii_compatible() {
+    assert_eq!(configured_label("a.txt", b"abc\n", Some("utf-16le")), "utf-8");
+}
+
+#[test]
+fn utf8_with_accents_keeps_utf8() {
+    assert_eq!(configured_label("a.txt", "ação\n".as_bytes(), Some("iso-8859-15")), "utf-8");
     assert_eq!(detect_encoding("ação".as_bytes(), Some("iso-8859-15")), encoding_rs::UTF_8);
+}
+
+#[test]
+fn a_utf8_bom_keeps_utf8() {
+    assert_eq!(configured_label("a.txt", b"\xef\xbb\xbfabc\n", Some("iso-8859-15")), "utf-8");
+}
+
+#[test]
+fn utf16_keeps_utf16_with_or_without_a_bom() {
+    assert_eq!(configured_label("a.txt", b"\xff\xfea\x00b\x00", Some("iso-8859-15")), "utf-16le");
+    let bomless = b"a\x00b\x00c\x00d\x00";
+    assert_eq!(configured_label("b.txt", bomless, Some("iso-8859-15")), "utf-16le");
+    assert_eq!(decode_text(bomless, Some("iso-8859-15")).as_deref(), Some("abcd"));
+}
+
+#[test]
+fn binary_content_keeps_its_label() {
+    let elf = b"\x7fELF\x00\x00\x01";
+    assert_eq!(configured_label("a.bin", elf, Some("iso-8859-15")), "utf-8");
+    assert_eq!(detect_encoding(elf, Some("iso-8859-15")), encoding_rs::UTF_8);
+}
+
+#[test]
+fn non_utf8_bytes_are_decoded_with_the_configured_encoding() {
+    let (_tmp, root) = root();
+    let path = root.join("latin.txt");
+    fs::write(&path, b"a\xe7\xe3o \xa4\n").unwrap();
+    let latin = load_text_with_fallback(&path, Some("iso-8859-15")).unwrap();
+    assert_eq!((latin.text.as_str(), latin.encoding.as_str()), ("ação €\n", "iso-8859-15"));
 }
