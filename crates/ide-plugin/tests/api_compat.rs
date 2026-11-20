@@ -153,6 +153,7 @@ fn shipped_components_are_built_for_this_api() {
     }
 }
 
+// Verify backward compatibility: plugins built against 1.14 still load after bumping ENGINE_VERSION to 1.15.
 #[test]
 fn a_1_14_component_still_loads() {
     let engine = PluginEngine::new().unwrap();

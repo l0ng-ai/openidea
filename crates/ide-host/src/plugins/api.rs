@@ -348,6 +348,9 @@ struct ProcState {
     status: Option<i32>,
     /// Reader threads still copying its pipes into the buffers above.
     readers: usize,
+    /// Active wait_process callers. While positive, reader threads buffer up to
+    /// max_total instead of buffer_limit so producers emitting more than the chunk
+    /// buffer do not deadlock waiting for process exit.
     waiters: usize,
     mode: StreamMode,
     buffer_limit: usize,
@@ -382,6 +385,8 @@ impl Proc {
                         && state.overflow_err.is_none()
                         && match stream {
                             Stream::Out => {
+                                // While wait_process is active, allow readers to buffer up to max_total
+                                // to prevent pipe write backpressure from hanging the child process.
                                 if state.waiters > 0 {
                                     state.stdout.len() >= state.max_total
                                 } else {
@@ -2837,6 +2842,7 @@ impl HostApi for PluginApi {
         let (stdout, stdout_overflow) = stdout.join().unwrap_or_default();
         let (stderr, stderr_overflow) = stderr.join().unwrap_or_default();
         if options.is_some() {
+            // run_captured fails explicitly if either stdout or stderr exceeds the configured limit.
             if stdout_overflow || stderr_overflow {
                 let stream = match (stdout_overflow, stderr_overflow) {
                     (true, true) => "stdout and stderr",
@@ -2854,6 +2860,8 @@ impl HostApi for PluginApi {
                 return Err(HostError::Failed(format!("{} {stream} exceeded {} MiB limit", cmd.program, limit_mib)));
             }
         } else if stdout_overflow {
+            // Documented legacy behavior for run / run-command: stdout overflow fails, but
+            // stderr overflow is silently truncated to 16 MiB.
             tracing::warn!(
                 plugin = %self.id(),
                 program = %cmd.program,
@@ -3057,6 +3065,8 @@ impl HostApi for PluginApi {
         cancel: &CancellationToken,
     ) -> Result<ProcessChunk, HostError> {
         let proc = self.process(id)?;
+        // Track active waiters and wake reader threads so lossless streams continue
+        // draining into the retained buffer up to max_total without pipe deadlock.
         struct WaitGuard<'a>(&'a Proc);
         impl Drop for WaitGuard<'_> {
             fn drop(&mut self) {
