@@ -37,6 +37,7 @@ import {
   runContextAction,
 } from "./contextRun";
 import { runWithExecutor } from "./executors";
+import { notifyCwdError, withExpandedCwd } from "./cwdMacros";
 import { debugWithAgent, jdwpLaunch } from "./javaDebug";
 import { attachesToChild, debugAttachingToChild } from "./pluginAttach";
 import { RunDialogsOverlay } from "./dialogs";
@@ -184,6 +185,11 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = [], sho
 }
 
 async function debugLaunch(config: RunConfig, chain: readonly string[], show?: boolean): Promise<void> {
+  try {
+    config = await withExpandedCwd(config);
+  } catch (e) {
+    return notifyCwdError(config, e);
+  }
   if (!(await prepareLaunch(config, chain, show))) return;
   if (config.kind === UNITY_CONFIG_KIND) return showUnityAttach(config);
   // Python on a Docker / Compose target: debugpy in the container, the debugger attaches.
