@@ -68,6 +68,7 @@ import { cloneCaretAbove, cloneCaretBelow } from "./cm/verticalMotion";
 import { pasteAsPlainText, pasteFromHistory, unwrapAtCaret } from "./extras";
 import { cyclicExpandWord } from "./wordCompletion";
 import { copyReferenceToClipboard, declaredName, qualifiedReference, referenceOffset } from "./copyReference";
+import { selectedLineContext, selectedLines } from "./selectedLines";
 import { declarationChain } from "./view/outline";
 import { recordClipboard } from "./clipboardHistory";
 import { useDocMeta, useOutline } from "./model/document";
@@ -589,15 +590,6 @@ function copyReference(reference: Promise<string>) {
   }
 }
 
-/** The selected lines (1-based), leaving out the one a selection ends at the start of. */
-function selectedLines(state: EditorState): { first: number; last: number } {
-  const { doc, selection } = state;
-  const { from, to } = selection.main;
-  const first = doc.lineAt(from).number;
-  const last = Math.max(first, doc.lineAt(to).number - (to > from && doc.lineAt(to).from === to ? 1 : 0));
-  return { first, last };
-}
-
 /** `path:12`, or `path:12-18` for a selection over several lines. */
 function pathWithLines(state: EditorState, path: string): string {
   const { first, last } = selectedLines(state);
@@ -606,11 +598,9 @@ function pathWithLines(state: EditorState, path: string): string {
 
 function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
   const path = slot.model.path;
-  const { first, last } = selectedLines(view.state);
   const contributed = menuGroupItems("copyPath", {
     paths: [path],
-    line: first - 1,
-    endLine: last > first ? last - 1 : undefined,
+    ...selectedLineContext(view.state),
   }).flatMap((item) =>
     (item.kind ?? "item") === "item" && "run" in item && item.id && item.run && item.preview
       ? [
