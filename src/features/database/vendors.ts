@@ -176,6 +176,15 @@ const SCHEMES: Record<string, string> = {
 
 export const vendorOfScheme = (scheme: string): DbVendor | undefined => BY_ID.get(SCHEMES[scheme.toLowerCase()] ?? "");
 
+/**
+ * The dialect a custom JDBC source's URL speaks (`jdbc:oracle:thin:@//db:1521/ORCL` → `oracle`):
+ * its `driver: "jdbc"` says nothing about how the server folds identifiers.
+ */
+export function jdbcDialect(url: string | null | undefined): DbDriver | null {
+  const scheme = /^(?:jdbc:)?([a-z][a-z0-9]*):/i.exec((url ?? "").trim())?.[1] ?? "";
+  return vendorOfScheme(scheme)?.driver ?? null;
+}
+
 const bracketed = (host: string) => (host.includes(":") && !host.startsWith("[") ? `[${host}]` : host);
 
 /** The JDBC URL of a data source's fields (the General tab's URL preview). */

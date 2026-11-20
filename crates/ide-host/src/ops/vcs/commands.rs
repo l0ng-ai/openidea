@@ -633,8 +633,14 @@ pub async fn vcs_add_to_ignore(
     host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || {
+        // The Changes view lists every repository of the window (the project's and the
+        // attached ones'): a path inside the project folder, or in any of those repositories.
+        // The folder check stays so a request right after opening, before the repositories
+        // are discovered, still works.
+        let repos = project.repos();
         for path in &paths {
-            if path == &project.root || !path.starts_with(&project.root) {
+            let in_project = path != &project.root && path.starts_with(&project.root);
+            if !in_project && repos.for_path(path).is_none() {
                 return Err(ide_core::IdeError::invalid("Ignore selection is outside the project"));
             }
         }
