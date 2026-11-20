@@ -1587,7 +1587,7 @@ mod zig_tests {
         std::fs::set_permissions(&zig, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut settings = Settings::default();
         settings.languages.zig.zig = "tools".into();
-        let groups = zig_groups(root, &settings, &CancellationToken::new());
+        let groups = zig_groups(root, root, &settings, &CancellationToken::new());
         let summary: Vec<(&str, &str, Vec<&str>)> = groups
             .iter()
             .map(|g| (g.name.as_str(), g.kind.as_str(), g.roots.iter().map(|r| r.name.as_str()).collect()))
