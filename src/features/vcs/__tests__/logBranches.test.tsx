@@ -245,6 +245,50 @@ describe("Git Log branches pane with several repositories", () => {
     expect(screen.getByRole("menuitem", { name: "Rename…" })).toBeInTheDocument();
   });
 
+  it("a merged branch's menu keeps favorites and history", async () => {
+    render(
+      <>
+        <BranchesPanel />
+        <ContextMenuHost />
+      </>,
+    );
+    fireEvent.contextMenu(await screen.findByText("dev"));
+    expect(await screen.findByRole("menuitem", { name: "Add to Favorites" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Show History" })).toBeInTheDocument();
+  });
+
+  it("a remote branch in several repositories can be deleted in each", async () => {
+    const origin = b("origin/main", { remote: true });
+    repoData.branches = { "/p/a": [...aBranches, origin], "/p/b": [...bBranches, origin] };
+    render(
+      <>
+        <BranchesPanel />
+        <ContextMenuHost />
+      </>,
+    );
+    fireEvent.mouseDown(await screen.findByText("origin"));
+    fireEvent.keyDown(screen.getByRole("tree", { name: "Branches" }), { key: "ArrowRight" });
+    const mains = await screen.findAllByText("main");
+    expect(mains).toHaveLength(2);
+    fireEvent.contextMenu(mains[1]!);
+    expect(await screen.findByRole("menuitem", { name: "Merge 'origin/main' into Current" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Delete" })).toBeInTheDocument();
+  });
+
+  it("a multi-selection keeps the menu acting on every selected branch", async () => {
+    render(
+      <>
+        <BranchesPanel />
+        <ContextMenuHost />
+      </>,
+    );
+    fireEvent.mouseDown(await screen.findByText("dev"));
+    fireEvent.mouseDown(screen.getByText("solo"), cmd());
+    fireEvent.contextMenu(screen.getByText("dev"));
+    expect(await screen.findByRole("menuitem", { name: "Update Selected" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Merge 'dev' into Current" })).toBeNull();
+  });
+
   it("selecting a merged branch targets each repository's own branch", async () => {
     render(<BranchesPanel />);
     fireEvent.mouseDown(await screen.findByText("dev"));

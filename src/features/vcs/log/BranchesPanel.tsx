@@ -16,7 +16,13 @@ import {
   type BranchTreeNode,
 } from "../branches";
 import { branchMenu, commonBranchMenu, inRepo, tagMenu } from "../branchMenu";
-import { canDeleteBranch, loadFavoriteBranches, useFavoriteBranches } from "../branchOps";
+import {
+  canDeleteBranch,
+  deleteBranches,
+  loadFavoriteBranches,
+  toggleFavoriteBranch,
+  useFavoriteBranches,
+} from "../branchOps";
 import { BranchSync } from "../BranchSync";
 import styles from "../GitLog.module.css";
 import { LogIdContext } from "../logContext";
@@ -335,8 +341,10 @@ export function BranchesPanel() {
             }
             // The menu acts on the whole selection when the right-clicked branch is part of it.
             const picked: BranchTarget[] = n && selected.has(n.key) ? targets : n?.ref ? expand(n) : [];
-            // A merged branch in several repositories acts in all of them, like a common branch.
-            if (n?.branch && n.repos && n.repos.length > 1) {
+            // A merged branch in several repositories acts in all of them, like a common branch
+            // (unless it is part of a multi-selection: the menu then acts on every selected target).
+            const many = n && selected.has(n.key) && new Set(targets.map((t) => t.ref)).size > 1;
+            if (n?.branch && n.repos && n.repos.length > 1 && !many) {
               e.preventDefault();
               const heads = useVcs.getState().heads;
               const own = n.repos.map((r) =>
@@ -349,7 +357,27 @@ export function BranchesPanel() {
                 favorite: !!n.favorite,
                 upstream: own.some((x) => !!x?.upstream),
               };
-              showContextMenu(e, commonBranchMenu(common, n.repos, sharedHead(n.repos)));
+              const favorite = isFavoriteBranch(n.branch, favorites);
+              showContextMenu(e, [
+                ...commonBranchMenu(common, n.repos, sharedHead(n.repos)),
+                { kind: "separator" },
+                {
+                  label: favorite ? "Remove from Favorites" : "Add to Favorites",
+                  icon: "star",
+                  run: () => toggleFavoriteBranch(n.branch!),
+                },
+                {
+                  label: "Show History",
+                  icon: "history",
+                  run: () => void executeAction("vcs.showLog", { branch: n.ref }),
+                },
+                ...(n.branch.remote
+                  ? [
+                      { kind: "separator" as const },
+                      { label: "Delete", danger: true, icon: "trash" as const, run: () => void deleteBranches(picked) },
+                    ]
+                  : []),
+              ]);
               return;
             }
             const repo = n?.repo ?? (n?.repos?.length === 1 ? n.repos[0] : undefined);
