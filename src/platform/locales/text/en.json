@@ -1,4 +1,9 @@
 {
+  "No files selected": "No files selected",
+  "{added} added": "{added} added",
+  "{modified} modified": "{modified} modified",
+  "{deleted} deleted": "{deleted} deleted",
+  "Rollback discards uncommitted changes in the selected files.": "Rollback discards uncommitted changes in the selected files.",
   "MCP server instructions": "MCP server instructions",
   "MCP tools (deferred)": "MCP tools (deferred)",
   "System tools (deferred)": "System tools (deferred)",
