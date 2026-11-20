@@ -322,9 +322,10 @@ export function AgentsView() {
           })
         }
         selected={selected}
-        onSelectionChange={(sel, lead) => {
+        onSelectionChange={(sel, lead, reason) => {
           setSelected(sel);
-          if (!inline && sel.size === 1 && lead?.kind === "task" && sel.has(lead.task.id)) showTask(lead.task.id);
+          if (reason !== "contextMenu" && !inline && sel.size === 1 && lead?.kind === "task" && sel.has(lead.task.id))
+            showTask(lead.task.id);
         }}
         onActivate={(n) => n.kind === "task" && showTask(n.task.id)}
         onContextMenu={(n, sel, e) => {
