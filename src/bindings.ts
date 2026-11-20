@@ -12428,6 +12428,8 @@ export type VcsRoot = {
 export type VcsSettings = {
 	/**  Colour folders that contain changed files (project tree, tabs). */
 	showDirtyDirectories?: boolean,
+	/**  Diffs the user opens show in an editor tab; off, in a separate window. */
+	diffAsEditorTab?: boolean,
 	/**  Stop file history (Show History) after `history_limit` commits. */
 	limitHistory?: boolean,
 	historyLimit?: number,
