@@ -63,20 +63,26 @@ export function shouldAutoCompleteSql(analysis: Analysis): boolean {
 
 const MAX_ALL_COLUMNS = 3000;
 
-/** `name`, quoted when the dialect needs it (case, characters, reserved words). */
-export function quoteIdent(name: string, driver: DbDriver): string {
+/**
+ * `name`, quoted when the dialect needs it (case, characters, reserved words).
+ * A `jdbc` source quotes by the dialect its URL speaks (`dialect`); without one, only
+ * what is not a plain word is quoted, which is right for the dialects that fold case
+ * neither way.
+ */
+export function quoteIdent(name: string, driver: DbDriver, dialect?: DbDriver | null): string {
+  const d = driver === "jdbc" && dialect ? dialect : driver;
   const plain =
-    driver === "postgres"
+    d === "postgres"
       ? /^[a-z_][a-z0-9_$]*$/
       : // Oracle and Snowflake fold unquoted names to upper case; a lower-case name must stay quoted.
-        driver === "oracle" || driver === "snowflake"
+        d === "oracle" || d === "snowflake"
         ? /^[A-Z_][A-Z0-9_$]*$/
-        : driver === "clickhouse"
+        : d === "clickhouse"
           ? /^[A-Za-z_][A-Za-z0-9_]*$/
           : /^[A-Za-z_][A-Za-z0-9_$]*$/;
-  if (plain.test(name) && !isReserved(name, driver)) return name;
-  if (driver === "clickhouse") return `"${name.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-  const q = driver === "mysql" ? "`" : '"';
+  if (plain.test(name) && !isReserved(name, d)) return name;
+  if (d === "clickhouse") return `"${name.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  const q = d === "mysql" ? "`" : '"';
   return q + name.split(q).join(q + q) + q;
 }
 
@@ -121,11 +127,20 @@ export interface CompletionInput {
   model: DbCompletion | null;
   analysis: Analysis;
   driver: DbDriver;
+  /** The dialect a `jdbc` source speaks, from its URL (`jdbcDialect`); quoting follows it. */
+  dialect?: DbDriver | null;
   /** Data source name, shown next to tables like IDEA does. */
   sourceName?: string;
 }
 
-export function sqlCandidates({ model, analysis: a, driver, sourceName, catalog }: CompletionInput): SqlCandidate[] {
+export function sqlCandidates({
+  model,
+  analysis: a,
+  driver,
+  dialect,
+  sourceName,
+  catalog,
+}: CompletionInput): SqlCandidate[] {
   const eq = nameMatcher(driver);
   const ctx = a.context;
   if (ctx.kind === "none") return [];
@@ -135,7 +150,7 @@ export function sqlCandidates({ model, analysis: a, driver, sourceName, catalog 
   const kw = (k: string) => (lower ? k.toLowerCase() : k);
   const tables = model?.tables ?? [];
   const defaultSchema = model?.defaultSchema ?? "";
-  const exact = (n: string) => quoteIdent(n, driver);
+  const exact = (n: string) => quoteIdent(n, driver, dialect);
   // Snowflake folds unquoted names to upper case, so a name typed in lower case may stay lower case.
   const lowerQualifier = !!a.qualifier?.length && a.qualifier.every((p) => /[a-z]/.test(p) && p === p.toLowerCase());
   // What is typed decides: the name's own prefix, else the qualifier before it, else the statement's keywords.
@@ -270,7 +285,7 @@ export function sqlCandidates({ model, analysis: a, driver, sourceName, catalog 
 
     case "table": {
       const taken = new Set(a.refs.flatMap((r) => [refName(r).toLowerCase(), r.name.toLowerCase()]));
-      if (ctx.join) out.push(...joinCandidates(a, model, driver, taken, kw));
+      if (ctx.join) out.push(...joinCandidates(a, model, driver, dialect, taken, kw));
       for (const c of a.ctes) out.push({ label: c.name, kind: "table", tail: "(CTE)", boost: 40 });
       const schemas = new Set<string>();
       for (const t of tables) {
@@ -472,13 +487,14 @@ function joinCandidates(
   a: Analysis,
   model: DbCompletion | null,
   driver: DbDriver,
+  dialect: DbDriver | null | undefined,
   taken: Set<string>,
   kw: Kw,
 ): SqlCandidate[] {
   if (!model) return [];
   const eq = nameMatcher(driver);
   const out: SqlCandidate[] = [];
-  const q = (n: string) => quoteIdent(n, driver);
+  const q = (n: string) => quoteIdent(n, driver, dialect);
   const seen = new Set<string>();
   const local = (s: string) => eq(s, model.defaultSchema) || driver === "sqlite";
   const tableText = (schema: string, name: string) => (local(schema) ? q(name) : `${q(schema)}.${q(name)}`);
