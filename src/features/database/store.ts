@@ -482,7 +482,7 @@ export async function saveSourceVisibility(id: string, available: string[], chan
   } catch (e) {
     // This command is deliberately separate: older hosts reject it before writing or disconnecting.
     if (message(e).includes("command db_save_source_visibility is not available remotely")) {
-      throw new Error(tx("Update the remote OpenIDEA server to edit visibility from the tree."));
+      throw new Error(tx("Update the remote OpenIDEA server to edit visibility from the tree."), { cause: e });
     }
     throw e;
   }
