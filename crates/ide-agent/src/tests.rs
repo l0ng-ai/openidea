@@ -452,6 +452,35 @@ fn manager(dir: &Path, agent: Arc<FakeAgent>) -> AgentManager {
     manager_at(dir, &dir.join("models.json"), agent)
 }
 
+#[tokio::test]
+async fn subscribers_do_not_replace_or_close_each_other() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let main = Arc::new(Mutex::new(Vec::new()));
+    let child = Arc::new(Mutex::new(Vec::new()));
+    let subscribe = |window: &str, events: &Arc<Mutex<Vec<AgentEvent>>>| {
+        let events = events.clone();
+        mgr.subscribe_as(window, Arc::new(move |event| events.lock().push(event)));
+    };
+    subscribe("main", &main);
+    subscribe("editor-main-1", &child);
+    mgr.shared.emit(AgentEvent::Providers);
+    assert_eq!(main.lock().len(), 1);
+    assert_eq!(child.lock().len(), 1);
+    // A reloaded webview replaces only its own old channel.
+    let reloaded = Arc::new(Mutex::new(Vec::new()));
+    subscribe("editor-main-1", &reloaded);
+    mgr.shared.emit(AgentEvent::Providers);
+    assert_eq!(main.lock().len(), 2);
+    assert_eq!(child.lock().len(), 1);
+    assert_eq!(reloaded.lock().len(), 1);
+    mgr.unsubscribe("editor-main-1");
+    mgr.shared.emit(AgentEvent::Providers);
+    assert_eq!(main.lock().len(), 3);
+    assert_eq!(reloaded.lock().len(), 1);
+    mgr.shutdown();
+}
+
 fn manager_at(dir: &Path, models_file: &Path, agent: Arc<FakeAgent>) -> AgentManager {
     // These tests speak to FakeAgent, never an installed CLI, including after a provider reload.
     let agents = dir.join("agents");

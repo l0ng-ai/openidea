@@ -150,11 +150,16 @@ export const commands = {
 	agentShell: (task: string, command: string, request: RequestId) => typedError<null, IdeError>(__TAURI_INVOKE("agent_shell", { task, command, request })),
 	/**  Stops one of the task's background tasks. */
 	agentStopBackground: (task: string, background: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_stop_background", { task, background })),
-	/**  Streams the project's agent events to this window; returns every task. */
-	agentSubscribe: (onEvent: Channel<AgentEvent_Deserialize>) => typedError<AgentTask_Serialize[], IdeError>(__TAURI_INVOKE("agent_subscribe", { onEvent })),
+	/**
+	 *  Streams the project's agent events to `subscriber`, one of the project's windows (a remote
+	 *  host sees them all as one `window`); returns every task.
+	 */
+	agentSubscribe: (onEvent: Channel<AgentEvent_Deserialize>, subscriber: string) => typedError<AgentTask_Serialize[], IdeError>(__TAURI_INVOKE("agent_subscribe", { onEvent, subscriber })),
 	agentUnarchive: (task: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_unarchive", { task })),
 	/**  Drops a queued message and returns it (to edit it). */
 	agentUnqueue: (task: string, queued: string) => typedError<AgentQueued, IdeError>(__TAURI_INVOKE("agent_unqueue", { task, queued })),
+	/**  Stops the events of a window that closed. */
+	agentUnsubscribe: (subscriber: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_unsubscribe", { subscriber })),
 	/**  Locate Duplicates over the files of `scope`. */
 	analysisLocateDuplicates: (request: RequestId, scope: SearchScope, options: DuplicateOptions) => typedError<DuplicatesReport, IdeError>(__TAURI_INVOKE("analysis_locate_duplicates", { request, scope, options })),
 	/**  Devices `adb` knows about, online ones first. */
@@ -5628,21 +5633,34 @@ export type EditorGeneralSettings = {
 	richTextCopy?: boolean,
 };
 
-/**  A file opened in a lightweight editor window, with optional caret / selection (0-based). */
+/**
+ *  What a lightweight editor window shows: a file, with optional caret / selection (0-based), or
+ *  the tab of another editor kind.
+ */
 export type EditorLaunch = EditorLaunch_Serialize | EditorLaunch_Deserialize;
 
-/**  A file opened in a lightweight editor window, with optional caret / selection (0-based). */
+/**
+ *  What a lightweight editor window shows: a file, with optional caret / selection (0-based), or
+ *  the tab of another editor kind.
+ */
 export type EditorLaunch_Deserialize = {
-	path: IpcPath,
+	path?: IpcPath | null,
+	/**  The tab's editor input, as JSON. */
+	input?: string | null,
 	line?: number | null,
 	column?: number | null,
 	endLine?: number | null,
 	endColumn?: number | null,
 };
 
-/**  A file opened in a lightweight editor window, with optional caret / selection (0-based). */
+/**
+ *  What a lightweight editor window shows: a file, with optional caret / selection (0-based), or
+ *  the tab of another editor kind.
+ */
 export type EditorLaunch_Serialize = {
-	path: IpcPath,
+	path?: IpcPath | null,
+	/**  The tab's editor input, as JSON. */
+	input?: string | null,
 	line?: number | null,
 	column?: number | null,
 	endLine?: number | null,

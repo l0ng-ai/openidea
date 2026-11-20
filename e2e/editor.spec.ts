@@ -406,6 +406,48 @@ test("Markdown preview highlights ⌘F matches, selected words and scales diagra
   expect(reset.excalidraw).toBeCloseTo(base.excalidraw, 1);
 });
 
+test("Markdown preview keeps following find and edits after scrolling the source", async ({ workbench: page }) => {
+  const editor = await openFromTree(page, "README.md");
+  const content = editor.locator(".cm-content");
+  const preview = page.getByRole("document", { name: "Markdown preview" });
+  await content.click();
+  await page.keyboard.press("Meta+a");
+  const spacer = Array.from({ length: 90 }, (_, i) => `Paragraph ${i}.`).join("\n\n");
+  await page.keyboard.insertText(`First needle\n\n${spacer}\n\nSecond needle\n\n${spacer}\n\nThird needle`);
+  await content.press("Control+Home");
+  await expect(preview).toContainText("Third needle");
+  await editor.locator(".cm-scroller").evaluate((el) => (el.scrollTop = 2000));
+  await expect.poll(() => preview.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+
+  await preview.focus();
+  await page.keyboard.press("Meta+f");
+  const find = page.getByRole("textbox", { name: "Find" });
+  await find.fill("needle");
+  const visibleMatch = () =>
+    preview.evaluate((el) => {
+      const match = (CSS.highlights.get("markdown-find-current") as unknown as Set<Range> | undefined)
+        ?.values()
+        .next().value;
+      if (!match) return null;
+      const box = el.getBoundingClientRect();
+      const range = match.getBoundingClientRect();
+      return range.top >= box.top && range.bottom <= box.bottom ? match.startContainer.textContent : null;
+    });
+  await expect.poll(visibleMatch).toBe("First needle");
+  await find.press("ArrowDown");
+  await expect.poll(visibleMatch).toBe("Second needle");
+  await find.press("ArrowDown");
+  await expect.poll(visibleMatch).toBe("Third needle");
+  await find.press("ArrowUp");
+  await expect.poll(visibleMatch).toBe("Second needle");
+
+  await find.press("Escape");
+  await content.focus();
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.insertText("- **$`v_0`$ Flat wings.**");
+  await expect(preview.locator("strong .katex annotation")).toHaveText("v_0");
+});
+
 test("Markdown preview aligns Mermaid diagrams to their container align attribute", async ({ workbench: page }) => {
   const editor = await openFromTree(page, "README.md");
   const content = editor.locator(".cm-content");

@@ -757,7 +757,7 @@ function RunDetail({ item }: { item: ServiceTreeItem }) {
   // Re-render on session changes.
   useRun((s) => s.sessions);
   const debugViews = useDebugRunSessions();
-  const Console = debugViews.Console;
+  const { Console, View } = debugViews;
   const t = useT();
   const txTemplate = useTxTemplate();
   const r = resolve(item);
@@ -773,11 +773,14 @@ function RunDetail({ item }: { item: ServiceTreeItem }) {
     );
   // The configuration ran: its console, as in the Run tool window. Run / Debug / Stop
   // come from this window's toolbar (the selection), so the console strip leaves them out.
-  if (r.session?.run) {
-    const execution = r.session;
-    return <SessionPanel key={execution.run!.id} session={execution.run!} showLifecycle={false} />;
-  }
+  const execution = r.session?.run;
+  const runConsole = execution && <SessionPanel key={execution.id} session={execution} showLifecycle={false} />;
   const d = r.session?.debug[0];
+  // Being debugged: the whole debugger in place, as in IDEA's Services (#4773); the console of a
+  // run the debugger is attached to stays its Console tab.
+  if (d && View && (d.status !== "terminated" || !execution))
+    return <View key={d.id} sessionId={d.id} console={runConsole} />;
+  if (runConsole) return runConsole;
   if (d && Console)
     return (
       <div className={styles.debugConsole}>

@@ -278,11 +278,14 @@ export function changeMarkers(ctx: EditorDocContext): Extension {
 }
 
 /** Moves the caret to the next / previous change in `view`. Returns whether it moved. */
-export function gotoChange(view: EditorView, dir: 1 | -1): EditorHunk | undefined {
+export function gotoChange(
+  view: EditorView,
+  dir: 1 | -1,
+  from = view.state.selection.main.head,
+): EditorHunk | undefined {
   const hunks = editorHunks(view.state);
   if (!hunks.length) return undefined;
-  const head = view.state.selection.main.head;
-  const lineFrom = view.state.doc.lineAt(head).from;
+  const lineFrom = view.state.doc.lineAt(from).from;
   const sorted = [...hunks].sort((a, b) => a.from - b.from);
   let target: EditorHunk | undefined;
   if (dir === 1) target = sorted.find((h) => h.from > lineFrom && view.state.doc.lineAt(h.from).from > lineFrom);
@@ -292,7 +295,7 @@ export function gotoChange(view: EditorView, dir: 1 | -1): EditorHunk | undefine
       .find(
         (h) =>
           view.state.doc.lineAt(Math.min(h.from, view.state.doc.length)).from < lineFrom &&
-          !(h.from <= head && head < h.to),
+          !(h.from <= from && from < h.to),
       );
   target ??= dir === 1 ? sorted[0] : sorted[sorted.length - 1];
   if (!target) return undefined;

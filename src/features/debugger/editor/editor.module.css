@@ -180,8 +180,21 @@
   word-break: break-word;
 }
 .valueTooltipTree {
-  padding: 2px 0;
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: min(460px, calc(var(--debug-value-editor-width, 100vw) - var(--space-2)));
+  max-width: 100%;
+  height: min(260px, 50vh);
+  padding: 0;
+  font-family: var(--font-ui);
   white-space: normal;
+}
+:global(.cm-lsp-hint):has(> .valueTooltipTree) {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
 }
 .valueExpand {
   display: inline-flex;

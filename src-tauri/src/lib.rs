@@ -288,6 +288,12 @@ pub fn run() {
             window_groups::frame_changed(window.app_handle(), window.label());
         }
         tauri::WindowEvent::Destroyed => {
+            // Also release a view that failed during startup, before the parent could watch it.
+            if let Some(state) = window.try_state::<AppState>()
+                && let Ok(project) = state.host.project(window.label())
+            {
+                project.agents.unsubscribe(window.label());
+            }
             window_zoom::forget(window.label());
             #[cfg(target_os = "macos")]
             {

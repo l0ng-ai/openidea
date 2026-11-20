@@ -4466,8 +4466,6 @@
   "No local history for this folder yet": "Aún no hay historial local para esta carpeta",
   "No local history for this path yet": "Aún no hay historial local para esta ruta",
   "{name} has been resolved and staged.": "{name} ha sido resuelto y preparado (staged).",
-  "{selected} of {total} file will be reverted to their last committed state. Uncommitted changes are lost.": "{selected} de {total} archivo se revertirá a su último estado confirmado. Los cambios sin confirmar se perderán.",
-  "{selected} of {total} files will be reverted to their last committed state. Uncommitted changes are lost.": "{selected} de {total} archivos se revertirán a su último estado confirmado. Los cambios sin confirmar se perderán.",
   "Current branch: {branch}": "Rama actual: {branch}",
   "{count} TODO item found in the changed lines:": "Se encontró {count} elemento TODO en las líneas modificadas:",
   "{count} TODO items found in the changed lines:": "Se encontraron {count} elementos TODO en las líneas modificadas:",

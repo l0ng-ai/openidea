@@ -17,12 +17,28 @@ use ide_tools::InstallEvent;
 use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex};
 
-/// Streams the project's agent events to this window; returns every task.
+/// Streams the project's agent events to `subscriber`, one of the project's windows (a remote
+/// host sees them all as one `window`); returns every task.
 #[command(trust = always)]
-pub fn agent_subscribe(host: &Host, window: &str, on_event: Channel<AgentEvent>) -> IdeResult<Vec<AgentTask>> {
-    Ok(host.project(window)?.agents.subscribe(std::sync::Arc::new(move |e| {
-        let _ = on_event.send(e);
-    })))
+pub fn agent_subscribe(
+    host: &Host,
+    window: &str,
+    on_event: Channel<AgentEvent>,
+    subscriber: String,
+) -> IdeResult<Vec<AgentTask>> {
+    Ok(host.project(window)?.agents.subscribe_as(
+        &subscriber,
+        std::sync::Arc::new(move |e| {
+            let _ = on_event.send(e);
+        }),
+    ))
+}
+
+/// Stops the events of a window that closed.
+#[command(trust = always)]
+pub fn agent_unsubscribe(host: &Host, window: &str, subscriber: String) -> IdeResult<()> {
+    host.project(window)?.agents.unsubscribe(&subscriber);
+    Ok(())
 }
 
 #[command(trust = trusted)]
@@ -1171,4 +1187,5 @@ ide_command::domain!(
     agent_subscribe,
     agent_unarchive,
     agent_unqueue,
+    agent_unsubscribe,
 );

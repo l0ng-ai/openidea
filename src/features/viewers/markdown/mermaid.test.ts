@@ -97,6 +97,16 @@ describe("mermaid in the markdown preview", () => {
     expect(document.body.querySelector(":scope > [id^='d']")).toBeNull();
   });
 
+  it("keeps native math labels inside their SVG foreign objects on WebKit", async () => {
+    const svg = await renderedSvg(
+      '<svg><foreignObject><div><span class="katex"><math><mi>x</mi></math></span>' +
+        '<span class="katex"><span class="katex-html">y</span></span></div></foreignObject></svg>',
+    );
+    const [native, html] = svg.querySelectorAll<HTMLElement>("foreignObject .katex");
+    expect(native?.style.position).toBe("static");
+    expect(html?.style.position).toBe("");
+  });
+
   it("shows syntax errors inline next to the source without throwing", async () => {
     const root = preview("```mermaid\nsequenceDiagram\nbad\n```\n");
     await expect(renderMermaidIn(root).done).resolves.toBeUndefined();
