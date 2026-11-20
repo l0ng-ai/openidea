@@ -597,7 +597,8 @@ export function branchUpdateSummary(results: readonly RepoBranchUpdate[]) {
 
 /** "in 3 repositories", or "in 2 of 3 repositories" when some were left out. */
 function inRepos(done: number, total: number): string {
-  return done === total ? `in ${total} repositories` : `in ${done} of ${total} repositories`;
+  if (done === total) return total === 1 ? "in 1 repository" : `in ${total} repositories`;
+  return `in ${done} of ${total} repositories`;
 }
 
 interface Rollback<T> {
