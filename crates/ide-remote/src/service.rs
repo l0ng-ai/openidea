@@ -349,64 +349,9 @@ impl RemoteService {
         progress: &mut (dyn FnMut(&str, usize, usize) + Send),
     ) -> IdeResult<TransferReport> {
         let fs = self.fs(connection).await?;
-        let mut report = TransferReport::default();
-        let mut folders = Vec::new();
-        let mut jobs = Vec::new();
-        for remote in remotes {
-            let Some(top) = download_target(dir, remote, remote) else {
-                report.skipped += 1;
-                continue;
-            };
-            match fs.stat(remote).await {
-                Ok(Some(e)) if e.is_dir => {
-                    folders.push(top);
-                    let mut entries = Vec::new();
-                    if let Err(e) = remote_tree(&fs, remote, cancel, &mut entries).await {
-                        report.fail(remote.clone(), e);
-                    }
-                    for entry in entries {
-                        match download_target(dir, remote, &entry.path) {
-                            Some(local) if entry.is_dir => folders.push(local),
-                            Some(local) => jobs.push((entry.path, local)),
-                            None => report.skipped += 1,
-                        }
-                    }
-                }
-                Ok(Some(_)) => jobs.push((remote.clone(), top)),
-                Ok(None) => report.fail(remote.clone(), IdeError::not_found(format!("{remote} does not exist"))),
-                Err(e) => report.fail(remote.clone(), e),
-            }
-        }
-        let root = tokio::fs::canonicalize(dir).await?;
-        for folder in &folders {
-            if !stays_inside(&root, folder).await {
-                report.fail(folder.display().to_string(), outside(folder));
-            } else if let Err(e) = tokio::fs::create_dir_all(folder).await {
-                report.fail(folder.display().to_string(), e.into());
-            }
-        }
-        for (i, (remote, local)) in jobs.iter().enumerate() {
-            if cancel.is_cancelled() {
-                break;
-            }
-            progress(remote, i, jobs.len());
-            if !stays_inside(&root, local).await {
-                report.fail(remote.clone(), outside(local));
-                continue;
-            }
-            if let Some(parent) = local.parent()
-                && let Err(e) = tokio::fs::create_dir_all(parent).await
-            {
-                report.fail(remote.clone(), e.into());
-                continue;
-            }
-            match fs.download(remote, local).await {
-                Ok(()) => report.files += 1,
-                Err(e) => report.fail(remote.clone(), e),
-            }
-        }
+        let r = download_into(&fs, remotes, dir, cancel, progress).await;
         fs.close().await;
-        Ok(report)
+        r
     }
 
     // --- save hook -----------------------------------------------------------------
@@ -656,6 +601,75 @@ fn cache_key(connection: &FsConnection) -> String {
 }
 
 /// Files and folders under remote folder `dir` (symlinked folders are not followed).
+/// `remotes` (folders recursively) into the local folder `dir`, each under its own name, without
+/// the remote path above it; existing files are replaced. Remote Host › Download to…, and the
+/// project view's Download to… in a remote project.
+pub async fn download_into(
+    fs: &RemoteFs,
+    remotes: &[String],
+    dir: &Path,
+    cancel: &CancellationToken,
+    progress: &mut (dyn FnMut(&str, usize, usize) + Send),
+) -> IdeResult<TransferReport> {
+    let mut report = TransferReport::default();
+    let mut folders = Vec::new();
+    let mut jobs = Vec::new();
+    for remote in remotes {
+        let Some(top) = download_target(dir, remote, remote) else {
+            report.skipped += 1;
+            continue;
+        };
+        match fs.stat(remote).await {
+            Ok(Some(e)) if e.is_dir => {
+                folders.push(top);
+                let mut entries = Vec::new();
+                if let Err(e) = remote_tree(fs, remote, cancel, &mut entries).await {
+                    report.fail(remote.clone(), e);
+                }
+                for entry in entries {
+                    match download_target(dir, remote, &entry.path) {
+                        Some(local) if entry.is_dir => folders.push(local),
+                        Some(local) => jobs.push((entry.path, local)),
+                        None => report.skipped += 1,
+                    }
+                }
+            }
+            Ok(Some(_)) => jobs.push((remote.clone(), top)),
+            Ok(None) => report.fail(remote.clone(), IdeError::not_found(format!("{remote} does not exist"))),
+            Err(e) => report.fail(remote.clone(), e),
+        }
+    }
+    let root = tokio::fs::canonicalize(dir).await?;
+    for folder in &folders {
+        if !stays_inside(&root, folder).await {
+            report.fail(folder.display().to_string(), outside(folder));
+        } else if let Err(e) = tokio::fs::create_dir_all(folder).await {
+            report.fail(folder.display().to_string(), e.into());
+        }
+    }
+    for (i, (remote, local)) in jobs.iter().enumerate() {
+        if cancel.is_cancelled() {
+            break;
+        }
+        progress(remote, i, jobs.len());
+        if !stays_inside(&root, local).await {
+            report.fail(remote.clone(), outside(local));
+            continue;
+        }
+        if let Some(parent) = local.parent()
+            && let Err(e) = tokio::fs::create_dir_all(parent).await
+        {
+            report.fail(remote.clone(), e.into());
+            continue;
+        }
+        match fs.download(remote, local).await {
+            Ok(()) => report.files += 1,
+            Err(e) => report.fail(remote.clone(), e),
+        }
+    }
+    Ok(report)
+}
+
 async fn remote_tree(
     fs: &RemoteFs,
     dir: &str,

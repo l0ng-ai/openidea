@@ -215,6 +215,22 @@ describe("project view context menu", () => {
     }
   });
 
+  it("offers Download to… for remote project files only (#4718)", () => {
+    const off = registerActions([{ id: "project.downloadTo", title: "Download to…", run: () => undefined }]);
+    try {
+      const files = [node(`${ROOT}/src`, true), node(`${ROOT}/a.py`)];
+      expect(labels(contextMenuItems(files))).not.toContain("Download to…");
+      useRemote.setState({
+        session: { target: { kind: "ssh", config: "box" }, root: ROOT, host: "h", os: "linux", commands: [] },
+      });
+      const l = labels(contextMenuItems(files));
+      expect(l.indexOf("Download to…")).toBe(l.indexOf("Open In") + 1);
+      expect(labels(contextMenuItems([node(`${SCRATCHES}/s.py`)]))).not.toContain("Download to…");
+    } finally {
+      off();
+    }
+  });
+
   it("offers file revision actions only for a single file", () => {
     expect(sub(contextMenuItems([node("/p/a.py")]), "Git")).toEqual(
       expect.arrayContaining(["Compare with Revision…", "Show Current Revision"]),

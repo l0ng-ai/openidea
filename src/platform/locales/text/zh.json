@@ -9146,5 +9146,10 @@
   "Test source: {location}": "测试源码：{location}",
   "Expected:": "期望：",
   "Actual:": "实际：",
-  "… {more} more lines": "… 另有 {more} 行"
+  "… {more} more lines": "… 另有 {more} 行",
+  "Downloading files": "正在下载文件",
+  "Downloaded {files} files to {folder}": "已下载 {files} 个文件到 {folder}",
+  "Download to {folder} finished with errors": "下载到 {folder} 完成，但有错误",
+  "Cannot download to {folder}": "无法下载到 {folder}",
+  "Copy the selected files and folders of a remote project to a folder on this computer": "把远程项目中选中的文件和文件夹复制到本机的文件夹"
 }

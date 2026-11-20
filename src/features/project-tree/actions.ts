@@ -36,6 +36,7 @@ import {
 } from "./operations";
 import { nameOf, parentOf } from "./paths";
 import { showFilePathPopup } from "./filePath";
+import { canDownload, downloadTo } from "./download";
 import { showNewPopup, treeHandle } from "./ProjectView";
 import { lastFileRefactoring, undoFileRefactoring } from "./fileRefactor";
 import {
@@ -411,6 +412,17 @@ export function registerProjectActions(): () => void {
       when: OPEN,
       keywords: ["show in explorer", "open in finder"],
       run: ({ arg }) => revealInFinder(nodesFrom(contextTarget(arg))),
+    },
+    {
+      id: "project.downloadTo",
+      title: "Download to…",
+      category: "Project View",
+      icon: "download",
+      when: OPEN,
+      enabled: () => canDownload(),
+      description: "Copy the selected files and folders of a remote project to a folder on this computer",
+      keywords: ["save to local", "copy to local", "scp", "remote"],
+      run: ({ arg }) => downloadTo(nodesFrom(contextTarget(arg)).map((n) => n.path)),
     },
     {
       id: "project.openWithAssociatedApp",
