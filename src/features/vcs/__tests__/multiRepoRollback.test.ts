@@ -181,6 +181,21 @@ describe("checkout and rebase of a common branch", () => {
     expect(mocks.restore).toHaveBeenCalledWith("/a", "/a-feature", "/a-rebased");
     expect(mocks.checkout.mock.calls.at(-1)).toEqual(["/a", "main"]);
   });
+
+  it("returns the repository whose rebase was refused to the previous branch", async () => {
+    mocks.ask.mockResolvedValue({ button: "keep" });
+    await checkoutAndRebaseInRepos("feature", "main", ["/a", "/b"]);
+    expect(mocks.checkout.mock.calls.filter((c) => c[0] === "/b")).toEqual([
+      ["/b", "feature"],
+      ["/b", "main"],
+    ]);
+  });
+
+  it("leaves a repository stopped on rebase conflicts as it is", async () => {
+    mocks.ops = { "/b": "rebase" };
+    await checkoutAndRebaseInRepos("feature", "main", ["/a", "/b"]);
+    expect(mocks.checkout.mock.calls.filter((c) => c[0] === "/b")).toEqual([["/b", "feature"]]);
+  });
 });
 
 describe("Commit and Rebase after Fixup…", () => {

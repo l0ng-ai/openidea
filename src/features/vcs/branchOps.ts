@@ -742,7 +742,8 @@ export async function checkoutAndRebaseInRepos(name: string, current: string, ro
   await eachRepo(
     roots,
     async (root) => {
-      if (!(await performCheckout(name, () => "", root, true))) return undefined;
+      const before = await branchInfo(root);
+      if (!before || !(await performCheckout(name, () => "", root, true))) return undefined;
       const tip = (await branchInfo(root))?.headCommit;
       if (!tip) return undefined;
       const done = await runOp(
@@ -750,7 +751,10 @@ export async function checkoutAndRebaseInRepos(name: string, current: string, ro
         () => call(commands.vcsRebase(root, current)),
         { refresh: false, errorActions: conflictActions, onError: openConflictsInstead },
       );
-      return done === undefined ? undefined : { tip };
+      if (done !== undefined) return { tip };
+      // A refused rebase leaves this repository on `name`; conflicts stay for the user to resolve.
+      if (!(await branchInfo(root))?.operation) await checkoutBack(root, before);
+      return undefined;
     },
     `Checked out ${name} and rebased onto ${current}`,
     {
