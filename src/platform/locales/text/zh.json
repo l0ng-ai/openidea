@@ -7862,6 +7862,8 @@
   "Imported {count} MCP servers from the project.": "已从项目导入 {count} 个 MCP 服务器。",
   "Servers added to the project's settings file outside OpenIDEA stay off until you turn them on here.": "在 OpenIDEA 之外添加到项目设置文件中的服务器会保持关闭，直到你在这里将其开启。",
   "Show branch and incoming/outgoing commits in the Project view": "在项目视图中显示分支及传入/传出提交",
+  "Execute branch operations on all repositories": "在所有仓库执行分支操作",
+  "Only applies to projects with several Git repositories.": "仅对包含多个 Git 仓库的项目生效。",
   "Up to date with {upstream}": "已与 {upstream} 同步",
   "Highlight occurrences of selected text": "高亮所选文本的匹配项",
   "Some shortcuts are already used by another app": "某些快捷键已被其他应用占用",

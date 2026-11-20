@@ -1458,6 +1458,8 @@
   "Imported {count} MCP servers from the project.": "Imported {count} MCP servers from the project.",
   "Servers added to the project's settings file outside OpenIDEA stay off until you turn them on here.": "Servers added to the project's settings file outside OpenIDEA stay off until you turn them on here.",
   "Show branch and incoming/outgoing commits in the Project view": "Show branch and incoming/outgoing commits in the Project view",
+  "Execute branch operations on all repositories": "Execute branch operations on all repositories",
+  "Only applies to projects with several Git repositories.": "Only applies to projects with several Git repositories.",
   "Up to date with {upstream}": "Up to date with {upstream}",
   "Incoming commits": "Incoming commits",
   "Outgoing commits": "Outgoing commits",
