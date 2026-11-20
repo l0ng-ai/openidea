@@ -850,6 +850,7 @@ mod tests {
                 "agent": "",
                 "agentModel": "",
                 "agentEffort": "",
+                "agentButton": true,
             })
         );
     }
