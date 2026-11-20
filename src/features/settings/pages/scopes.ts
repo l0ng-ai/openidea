@@ -17,17 +17,18 @@ export const SCOPE_PAGES: PageSpec[] = [
     sections: [
       {
         options: [
-          { kind: "toggle", key: "fileColors.enabled", label: "Enable file colors" },
-          { kind: "toggle", key: "fileColors.editorTabs", label: "Use in editor tabs" },
-          { kind: "toggle", key: "fileColors.projectView", label: "Use in project view" },
-        ],
-      },
-      {
-        options: [
           {
             kind: "custom",
             label: "File Colors",
-            keywords: ["Scope", "Color", "Custom", "Hex value"],
+            keywords: [
+              "Enable file colors",
+              "Use in editor tabs",
+              "Use in project view",
+              "Scope",
+              "Color",
+              "Custom",
+              "Hex value",
+            ],
             component: FileColorsEditor,
           },
         ],

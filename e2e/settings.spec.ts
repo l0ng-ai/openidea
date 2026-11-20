@@ -184,6 +184,7 @@ test("Language Servers page installs a tool with progress (in-memory installer)"
 test("font picker supports manual families and CJK fallback in browser development", async ({ workbench: page }) => {
   await page.keyboard.press("Meta+,");
   const dialog = page.getByRole("dialog", { name: "Settings" });
+  const preview = dialog.getByRole("textbox", { name: "Font preview", exact: true });
   await dialog.getByRole("textbox", { name: "Search settings" }).fill("Typography Settings");
   await dialog.getByRole("treeitem", { name: "Font", exact: true }).click();
   const family = dialog.getByRole("combobox", { name: "Font", exact: true });
@@ -201,16 +202,16 @@ test("font picker supports manual families and CJK fallback in browser developme
   await family.fill("Inter");
   await family.press("Enter");
   // Computed styles drop redundant quotes around single-token families ("Inter" -> Inter).
-  await expect(dialog.getByLabel("Font preview")).toHaveCSS("font-family", /^Inter, "Inter Variable",/);
+  await expect(preview).toHaveCSS("font-family", /^Inter, "Inter Variable",/);
   const fallback = dialog.getByRole("combobox", { name: "Fallback font", exact: true });
   await family.fill("Maple Mono NF");
   await family.press("Enter");
   await fallback.fill("Inter");
   await fallback.press("Enter");
-  await expect(dialog.getByLabel("Font preview")).toHaveCSS("font-family", /Maple Mono NF.*Inter Variable/);
+  await expect(preview).toHaveCSS("font-family", /Maple Mono NF.*Inter Variable/);
   await fallback.fill("思源宋体");
   await fallback.press("Enter");
-  await expect(dialog.getByLabel("Font preview")).toHaveCSS("font-family", /思源宋体/);
+  await expect(preview).toHaveCSS("font-family", /思源宋体/);
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(dialog).toBeHidden();
 });

@@ -373,9 +373,9 @@ export const commands = {
 	/**  Completions for an expression typed in Evaluate (`line` / `column` 0-based, UTF-16). */
 	debugCompletions: (session: DebugSessionId, frameId: number | null, text: string, line: number, column: number) => typedError<DebugCompletion[], IdeError>(__TAURI_INVOKE("debug_completions", { session, frameId, text, line, column })),
 	debugDataBreakpointInfo: (session: DebugSessionId, container: number, name: string, frameId: number | null) => typedError<DataBreakpointInfo, IdeError>(__TAURI_INVOKE("debug_data_breakpoint_info", { session, container, name, frameId })),
-	debugEvaluate: (session: DebugSessionId, frameId: number | null, expression: string) => typedError<Variable, IdeError>(__TAURI_INVOKE("debug_evaluate", { session, frameId, expression })),
+	debugEvaluate: (session: DebugSessionId, frameId: number | null, expression: string) => typedError<Variable_Serialize, IdeError>(__TAURI_INVOKE("debug_evaluate", { session, frameId, expression })),
 	/**  Evaluate with an explicit DAP context: `repl`, `watch`, `hover` or `clipboard`. */
-	debugEvaluateIn: (session: DebugSessionId, frameId: number | null, expression: string, context: string | null) => typedError<Variable, IdeError>(__TAURI_INVOKE("debug_evaluate_in", { session, frameId, expression, context })),
+	debugEvaluateIn: (session: DebugSessionId, frameId: number | null, expression: string, context: string | null) => typedError<Variable_Serialize, IdeError>(__TAURI_INVOKE("debug_evaluate_in", { session, frameId, expression, context })),
 	debugExceptionFilters: () => typedError<SessionExceptionFilters[], IdeError>(__TAURI_INVOKE("debug_exception_filters")),
 	/**  Force Step Over: step over with every breakpoint suspended until the step ends. */
 	debugForceStepOver: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_force_step_over", { session, threadId })),
@@ -430,6 +430,7 @@ export const commands = {
 	debugPause: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_pause", { session, threadId })),
 	/**  HotSwap (Reload Changed Classes) in a java-debug session. */
 	debugRedefineClasses: (session: DebugSessionId) => typedError<HotSwapResult, IdeError>(__TAURI_INVOKE("debug_redefine_classes", { session })),
+	debugResolveVariable: (session: DebugSessionId, variable: Variable_Deserialize) => typedError<Variable_Serialize, IdeError>(__TAURI_INVOKE("debug_resolve_variable", { session, variable })),
 	/**  Reset Frame (Drop Frame). */
 	debugRestartFrame: (session: DebugSessionId, frameId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_restart_frame", { session, frameId })),
 	debugResume: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_resume", { session, threadId })),
@@ -445,7 +446,7 @@ export const commands = {
 	debugSetExceptionBreakpoints: (choices: { [key in string]: boolean }) => typedError<null, IdeError>(__TAURI_INVOKE("debug_set_exception_breakpoints", { choices })),
 	/**  Method breakpoints (all files); states aligned with `breakpoints`. */
 	debugSetFunctionBreakpoints: (breakpoints: FunctionBreakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_function_breakpoints", { breakpoints })),
-	debugSetVariable: (session: DebugSessionId, container: number, name: string, evaluateName: string | null, frameId: number | null, value: string) => typedError<Variable, IdeError>(__TAURI_INVOKE("debug_set_variable", { session, container, name, evaluateName, frameId, value })),
+	debugSetVariable: (session: DebugSessionId, container: number, name: string, evaluateName: string | null, frameId: number | null, value: string) => typedError<Variable_Serialize, IdeError>(__TAURI_INVOKE("debug_set_variable", { session, container, name, evaluateName, frameId, value })),
 	debugStackTrace: (session: DebugSessionId, threadId: number) => typedError<StackFrame[], IdeError>(__TAURI_INVOKE("debug_stack_trace", { session, threadId })),
 	/**  Starts a session owned by this window: its events (and those of child sessions) go here only. */
 	debugStart: (config: LaunchConfig) => typedError<DebugSessionId, IdeError>(__TAURI_INVOKE("debug_start", { config })),
@@ -471,7 +472,7 @@ export const commands = {
 { kind: "finished" } | null, IdeError>(__TAURI_INVOKE("debug_stream_trace_abort", { session })),
 	debugThreads: (session: DebugSessionId) => typedError<ThreadInfo[], IdeError>(__TAURI_INVOKE("debug_threads", { session })),
 	debugUnityProcesses: () => typedError<AttachableProcess[], IdeError>(__TAURI_INVOKE("debug_unity_processes")),
-	debugVariables: (session: DebugSessionId, reference: number) => typedError<Variable[], IdeError>(__TAURI_INVOKE("debug_variables", { session, reference })),
+	debugVariables: (session: DebugSessionId, reference: number) => typedError<Variable_Serialize[], IdeError>(__TAURI_INVOKE("debug_variables", { session, reference })),
 	dependencyVersions: (doc: DocId, offset: number | null, request: RequestId) => typedError<DependencyVersions[], IdeError>(__TAURI_INVOKE("dependency_versions", { doc, offset, request })),
 	deployCompare: (path: IpcPath, server: string | null, request: RequestId) => typedError<SyncEntry[], IdeError>(__TAURI_INVOKE("deploy_compare", { path, server, request })),
 	deployCoverage: (paths: IpcPath[]) => typedError<DeploymentCoverage[], IdeError>(__TAURI_INVOKE("deploy_coverage", { paths })),
@@ -3848,6 +3849,8 @@ export type Commit_Deserialize = {
 	historyPath?: string | null,
 	logPosition?: number | null,
 	logTotal?: number | null,
+	/**  Newest committer time at or after this row if newer than the row's commit. */
+	logMergeTimeMs?: number | null,
 	graphBoundaryParents?: string[],
 	/**  Reachability from HEAD, computed independently of the visible filters. */
 	onCurrentBranch?: boolean | null,
@@ -3877,6 +3880,8 @@ export type Commit_Serialize = {
 	historyPath?: string | null,
 	logPosition?: number | null,
 	logTotal?: number | null,
+	/**  Newest committer time at or after this row if newer than the row's commit. */
+	logMergeTimeMs?: number | null,
 	graphBoundaryParents?: string[],
 	/**  Reachability from HEAD, computed independently of the visible filters. */
 	onCurrentBranch?: boolean | null,
@@ -6306,9 +6311,12 @@ export type FoldRange = {
 	kind: FoldKind,
 };
 
+export type FoldingOutlineVisibility = "hover" | "always";
+
 /**  Editor › General › Code Folding. */
 export type FoldingSettings = {
 	showOutline?: boolean,
+	outlineVisibility?: FoldingOutlineVisibility,
 	fileHeader?: boolean,
 	imports?: boolean,
 	docComments?: boolean,
@@ -12376,13 +12384,34 @@ export type UpdateStatus = {
 	checking: boolean,
 };
 
-export type Variable = {
+export type Variable = Variable_Serialize | Variable_Deserialize;
+
+export type Variable_Deserialize = {
 	name: string,
 	value: string,
 	typeName: string | null,
 	/**  > 0 when expandable. */
 	variablesReference: number,
 	evaluateName: string | null,
+	/**
+	 *  `value` is not computed yet (DAP `presentationHint.lazy`): the single variable that
+	 *  `variables` returns for `variables_reference` holds the value and its children.
+	 */
+	lazy?: boolean,
+};
+
+export type Variable_Serialize = {
+	name: string,
+	value: string,
+	typeName: string | null,
+	/**  > 0 when expandable. */
+	variablesReference: number,
+	evaluateName: string | null,
+	/**
+	 *  `value` is not computed yet (DAP `presentationHint.lazy`): the single variable that
+	 *  `variables` returns for `variables_reference` holds the value and its children.
+	 */
+	lazy?: boolean,
 };
 
 /**  Version Control › Confirmation. */
@@ -12424,6 +12453,8 @@ export type VcsRoot = {
 export type VcsSettings = {
 	/**  Colour folders that contain changed files (project tree, tabs). */
 	showDirtyDirectories?: boolean,
+	/**  Diffs the user opens show in an editor tab; off, in a separate window. */
+	diffAsEditorTab?: boolean,
 	/**  Stop file history (Show History) after `history_limit` commits. */
 	limitHistory?: boolean,
 	historyLimit?: number,

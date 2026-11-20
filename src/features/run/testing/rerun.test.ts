@@ -191,6 +191,17 @@ describe("rerunFailedConfig", () => {
     expect(await rerunFailedConfig(cfg("zig", "zig", ["build", "test"]), [["tally", "subs"]])).toBeNull();
   });
 
+  it("gradle: reruns and tree selections of a subproject's run keep its test task", async () => {
+    const run = cfg("gradle", "./gradlew", [":services:api:test", "--tests", "com.a.FooTest"]);
+    expect((await rerunFailedConfig(run, [["com.a.FooTest", "bar()"]]))!.args).toEqual([
+      ":services:api:test",
+      "--tests",
+      "com.a.FooTest.bar",
+    ]);
+    const [selected] = await testsConfigs(run, [["com.a.FooTest", "baz"]], "FooTest.baz");
+    expect(selected!.args).toEqual([":services:api:test", "--tests", "com.a.FooTest.baz"]);
+  });
+
   it("gradle and maven filters", async () => {
     expect((await rerunFailedConfig(cfg("gradle", "./gradlew", ["test"]), [["com.a.FooTest", "bar()"]]))!.args).toEqual(
       ["test", "--tests", "com.a.FooTest.bar"],
@@ -201,7 +212,18 @@ describe("rerunFailedConfig", () => {
         ["com.a.FooTest", "baz"],
         ["com.a.BarTest"],
       ]))!.args,
-    ).toEqual(["test", "-Dtest=com.a.FooTest#bar+baz,com.a.BarTest"]);
+    ).toEqual(["test", "-Dtest=com.a.FooTest#bar+baz,com.a.BarTest", "-Dsurefire.failIfNoSpecifiedTests=false"]);
+  });
+
+  it("maven: a rerun replaces the previous selection and lets modules without the tests pass", async () => {
+    const narrowed = cfg("maven", "./mvnw", ["test", "-Dtest=Old", "-Dsurefire.failIfNoSpecifiedTests=false"]);
+    expect((await rerunFailedConfig(narrowed, [["com.a.FooTest", "bar"]]))!.args).toEqual([
+      "test",
+      "-Dtest=com.a.FooTest#bar",
+      "-Dsurefire.failIfNoSpecifiedTests=false",
+    ]);
+    const [selected] = await testsConfigs(cfg("maven", "mvn", ["test"]), [["com.a.FooTest", "baz"]], "FooTest.baz");
+    expect(selected!.args).toEqual(["test", "-Dtest=com.a.FooTest#baz", "-Dsurefire.failIfNoSpecifiedTests=false"]);
   });
 
   it("zig: --test-filter per failed test for `zig test`, null for build-based runs", async () => {

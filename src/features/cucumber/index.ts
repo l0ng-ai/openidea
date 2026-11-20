@@ -42,7 +42,7 @@ import {
   usagesOf,
 } from "./stepIndex";
 
-const SCRIPT = /\.(?:[cm]?[jt]sx?|java|kt)$/i;
+const SCRIPT = /\.(?:[cm]?[jt]sx?|java|kt|py)$/i;
 const FEATURE = /\.feature$/i;
 const DELAY_MS = 300;
 
@@ -168,7 +168,7 @@ export function activate(): () => void {
       return targets.length ? { from: step.from, to: step.to, targets } : null;
     }
     if (!SCRIPT.test(doc.path)) return null;
-    const definition = stepDefinitions(text).find((d) => d.from <= offset && offset < d.to);
+    const definition = stepDefinitions(text, doc.path).find((d) => d.from <= offset && offset < d.to);
     if (!definition) return null;
     const targets = await usagesOf(definition);
     return targets.length ? { from: definition.from, to: definition.to, targets } : null;

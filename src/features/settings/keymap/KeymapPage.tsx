@@ -41,6 +41,8 @@ import {
   isKeymapAction,
   keymapName,
   keymapSearchLabels,
+  parseShortcutQuery,
+  shortcutQueryMatches,
   removeBinding,
   removeConflicts,
   renameKeymap,
@@ -122,6 +124,7 @@ export function buildKeymapTree(
     return parent;
   };
   const q = query.toLowerCase();
+  const typedShortcut = query ? parseShortcutQuery(query) : null;
   for (const action of actions) {
     const bindings = resolveBindings(draft, action.id);
     if (!isKeymapAction(action, draft)) continue;
@@ -130,7 +133,9 @@ export function buildKeymapTree(
       hits = wordMatch(action.title, query);
       if (!hits) {
         const other =
-          action.id.toLowerCase().includes(q) || (action.keywords ?? []).some((k) => k.toLowerCase().includes(q));
+          action.id.toLowerCase().includes(q) ||
+          (action.keywords ?? []).some((k) => k.toLowerCase().includes(q)) ||
+          (!!typedShortcut && shortcutQueryMatches(bindings, typedShortcut));
         if (!other) continue;
         hits = [];
       }

@@ -245,6 +245,11 @@ pub struct DebuggerConfig {
     pub connect: Option<String>,
     #[serde(default)]
     pub install_hint: Option<String>,
+    /// The adapter's lazy values (DAP `presentationHint.lazy`) are renderings such as `toString()`,
+    /// safe to compute for every value shown: they are resolved before the UI sees them, as IDEA
+    /// shows `toString()` at once. Off (getters with side effects), a value resolves when opened.
+    #[serde(default)]
+    pub resolve_lazy_variables: bool,
     /// Set on plugin languages: start exactly this approved program.
     #[serde(skip)]
     pub pinned: Option<ProgramPin>,

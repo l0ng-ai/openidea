@@ -2,8 +2,15 @@
  * Cucumber steps, both sides: the step definitions of JavaScript / TypeScript files
  * (`Given('a {int} item cart', …)` of `@cucumber/cucumber`, `playwright-bdd`'s `createBdd()`
  * functions) and the steps of Gherkin `.feature` files, with Cucumber expression and regular
- * expression matching between them.
+ * expression matching between them. Python files are read by `pythonSteps`.
  */
+import {
+  pythonFramework,
+  pythonImportInsertion,
+  pythonStepDefinitions,
+  pythonStepSnippet,
+  type PythonFramework,
+} from "./pythonSteps";
 
 /**
  * A step definition: the pattern literal of a `Given` / `When` / `Then` / `Step` call, or of a
@@ -35,8 +42,9 @@ export interface FeatureStep {
 
 const DEFINE = /\b(?:Given|When|Then|And|But|Step|defineStep)\s*(?:<[^<>()]*>\s*)?\(\s*/g;
 
-/** The step definitions of a script. */
-export function stepDefinitions(text: string): StepDefinition[] {
+/** The step definitions of a script; `path` tells a Python file from the others. */
+export function stepDefinitions(text: string, path = ""): StepDefinition[] {
+  if (/\.py$/i.test(path)) return pythonStepDefinitions(text);
   const out: StepDefinition[] = [];
   for (const m of text.matchAll(DEFINE)) {
     const at = m.index + m[0].length;
@@ -303,12 +311,15 @@ export function definingKeyword(steps: readonly FeatureStep[], step: FeatureStep
 /** Strings and numbers of a step's text, as Cucumber's snippets turn them into parameters. */
 const SNIPPET_PARAMETER = /(^|[^\w.-])("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|-?\d+\.\d+|-?\d+)(?![\w.])/g;
 
-export type SnippetStyle = "cucumber" | "playwright-bdd" | "java" | "kotlin";
+export type SnippetStyle = "cucumber" | "playwright-bdd" | "java" | "kotlin" | PythonFramework;
+
+const isPython = (style: SnippetStyle): style is PythonFramework => style === "behave" || style === "pytest-bdd";
 
 /** The snippet style of a step definition file. */
 export function snippetStyle(path: string, text: string): SnippetStyle {
   if (/\.java$/i.test(path)) return "java";
   if (/\.kts?$/i.test(path)) return "kotlin";
+  if (/\.py$/i.test(path)) return pythonFramework(text);
   return /\bcreateBdd\s*\(/.test(text) ? "playwright-bdd" : "cucumber";
 }
 
@@ -351,6 +362,7 @@ export function stepSnippet(
   text: string,
   style: SnippetStyle = "cucumber",
 ): { text: string; body: number } {
+  if (isPython(style)) return pythonStepSnippet(keyword, text, style);
   const jvm = style === "java" || style === "kotlin";
   const types: string[] = [];
   let expression = "";
@@ -457,7 +469,12 @@ export function definitionInsertions(
     }
   } else {
     at = fileText.length;
-    const lead = !fileText ? "" : fileText.endsWith("\n\n") ? "" : fileText.endsWith("\n") ? "\n" : "\n\n";
+    const imported = isPython(style) ? pythonImportInsertion(fileText, keyword, style) : null;
+    if (imported) insertions.push(imported);
+    // Python separates top-level functions with two blank lines.
+    const gap = isPython(style) ? "\n\n\n" : "\n\n";
+    const ending = /\n*$/.exec(fileText)![0].length;
+    const lead = !fileText ? "" : gap.slice(Math.min(ending, gap.length));
     insert = lead + snippet.text;
   }
   insertions.push({ at, text: insert });
