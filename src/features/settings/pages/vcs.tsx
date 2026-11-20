@@ -10,7 +10,18 @@ import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { WORKFLOW_LIMITS, type IssueLinkValid, type VcsSettingsValid } from "@/platform/workflowSettings";
 import { showInFileManagerLabel } from "@/platform/fileManager";
-import { Button, Icon, IconButton, Input, Radio, rowSelectionMode, Select, selectRow, type SelectOption, T } from "@/ui";
+import {
+  Button,
+  Icon,
+  IconButton,
+  Input,
+  Radio,
+  rowSelectionMode,
+  Select,
+  selectRow,
+  type SelectOption,
+  T,
+} from "@/ui";
 import { choosePath } from "@/platform/choosePath";
 import { Row, SearchLabel, SettingSelect } from "../components/Form";
 import { useSetting } from "../components/context";
