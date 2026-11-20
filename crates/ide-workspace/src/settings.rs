@@ -899,6 +899,16 @@ mod tests {
     }
 
     #[test]
+    fn commit_default_inclusion_persists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = SettingsStore::load(tmp.path(), None);
+        assert!(store.effective().vcs.commit.include_changes_by_default);
+        let settings = store.set(SettingsScope::Global, "vcs.commit.includeChangesByDefault", json!(false)).unwrap();
+        assert!(!settings.vcs.commit.include_changes_by_default);
+        assert!(!SettingsStore::load(tmp.path(), None).effective().vcs.commit.include_changes_by_default);
+    }
+
+    #[test]
     fn inspection_profiles_live_in_their_layers() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = tmp.path().join("cfg");

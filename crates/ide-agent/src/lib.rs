@@ -23,7 +23,7 @@ mod provider;
 pub mod registry;
 pub mod security;
 mod shell;
-mod skills;
+pub mod skills;
 mod timeline;
 mod worktree;
 
@@ -131,6 +131,19 @@ pub type McpServersFn = dyn Fn() -> Vec<McpServer> + Send + Sync;
 /// Returns the executable of the running built-in MCP server, if any.
 pub type McpExecutableFn = dyn Fn() -> Option<PathBuf> + Send + Sync;
 
+/// The `[agents.skills.<name>]` policies a session resolves against: the user's (global
+/// `settings.toml`), the workspace's (`.openidea/settings.toml`), and whether the workspace
+/// is trusted (an untrusted one can only turn skills off).
+#[derive(Clone, Debug, Default)]
+pub struct SkillsPolicy {
+    pub user: BTreeMap<String, AgentSkillPolicy>,
+    pub workspace: BTreeMap<String, AgentSkillPolicy>,
+    pub workspace_trusted: bool,
+}
+
+/// Returns the skill policies for this project.
+pub type SkillsPolicyFn = dyn Fn() -> SkillsPolicy + Send + Sync;
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct CopilotBinaryKey {
     command: String,
@@ -156,27 +169,18 @@ struct Shared {
     idle_release_ms: AtomicU64,
     mcp_servers_hook: RwLock<Option<Arc<McpServersFn>>>,
     mcp_executable_hook: RwLock<Option<Arc<McpExecutableFn>>>,
+    skills_policy_hook: RwLock<Option<Arc<SkillsPolicyFn>>>,
     /// Monotonic id for [`AgentEvent::Attention`] episodes.
     attention_seq: AtomicU64,
 }
 
-/// What an agent offered in its last session, for the New Task page.
+/// What an agent offered, for the New Task page.
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Known {
-    #[serde(default)]
-    config: Vec<AgentConfigOption>,
-    /// Thinking levels reported for each model value, including its last choice.
-    #[serde(default, rename = "thoughtLevels")]
-    thought_levels: BTreeMap<String, Vec<AgentConfigOption>>,
     /// By project root: skills and custom commands differ per project.
     #[serde(default, rename = "projectCommands")]
     commands: HashMap<String, Vec<AgentCommand>>,
-    /// Successful discovery, unlike a session report, owns availability.
-    #[serde(default)]
-    authoritative: bool,
-    #[serde(default, rename = "refreshedAtMs")]
-    refreshed_at_ms: Option<f64>,
-    /// Authoritative availability and freshness are scoped to project and launch context.
+    /// Model catalogs by project root, valid for the launch context they were read with.
     #[serde(default, rename = "projectCatalogs")]
     catalogs: HashMap<String, catalogs::SavedCatalog>,
 }
@@ -294,7 +298,8 @@ impl Shared {
         self.paths.project_root.to_string_lossy().into_owned()
     }
 
-    /// Cache levels only when `model` confirms which model the session reported them for.
+    /// Keeps the commands a session offered and the effort levels it reported for `model`, the
+    /// only model whose levels it describes.
     fn remember(
         &self,
         provider: &str,
@@ -303,43 +308,22 @@ impl Shared {
         model: Option<&str>,
     ) {
         let acp = self.spec(provider).is_some_and(|spec| spec.driver == provider::Driver::Acp);
-        let mut cache = self.known.lock();
-        let known = cache.entry(provider.to_owned()).or_default();
         let mut changed = false;
-        // Running tasks retain their own reported settings. Once discovery has
-        // succeeded, a session's older list/defaults cannot change New Task choices.
-        if !known.authoritative
-            && let Some(config) = config.filter(|c| !c.is_empty())
-        {
-            if let Some(model) = model {
-                let levels: Vec<_> = config.iter().filter(|o| config::is_per_model_option(o)).cloned().collect();
-                if known.thought_levels.get(model) != Some(&levels) {
-                    known.thought_levels.insert(model.to_owned(), levels);
-                    changed = true;
-                }
-            }
-            if known.config != config {
-                known.config = config.to_vec();
+        if let Some(commands) = commands.filter(|c| !c.is_empty()) {
+            let mut cache = self.known.lock();
+            let known = cache.entry(provider.to_owned()).or_default();
+            if known.commands.get(&self.root_key()).map(Vec::as_slice) != Some(commands) {
+                known.commands.insert(self.root_key(), commands.to_vec());
+                self.persist_known(&cache);
                 changed = true;
             }
         }
         // Discovery reads one model's options; a session on another model reports that model's.
-        let learned = model.filter(|_| acp && known.authoritative).zip(config).map(|(model, config)| {
+        if acp && let Some((model, config)) = model.zip(config) {
             let levels: Vec<_> = config.iter().filter(|o| config::is_per_model_option(o)).cloned().collect();
-            (model, levels)
-        });
-        if let Some(commands) = commands.filter(|c| !c.is_empty())
-            && known.commands.get(&self.root_key()).map(Vec::as_slice) != Some(commands)
-        {
-            known.commands.insert(self.root_key(), commands.to_vec());
-            changed = true;
-        }
-        if changed {
-            self.persist_known(&cache);
-        }
-        drop(cache);
-        if let Some((model, levels)) = learned.filter(|(_, levels)| !levels.is_empty()) {
-            self.paths.catalogs.learn_levels(self, provider, model, levels);
+            if !levels.is_empty() {
+                self.paths.catalogs.learn_levels(self, provider, model, levels);
+            }
         }
         if changed {
             self.emit(AgentEvent::Providers);
@@ -528,6 +512,8 @@ struct Task {
     idle_epoch: AtomicU64,
     /// Turned on when per-session MCP overrides changed while a turn was busy; dropped once idle.
     mcp_reload_pending: AtomicBool,
+    /// Turned on when per-session skill overrides changed while a turn was busy; dropped once idle.
+    skills_reload_pending: AtomicBool,
     /// Settings already sent this session (`(option, value)`), so a refusal is not retried.
     config_sent: Mutex<HashSet<(String, String)>>,
     dirty: Mutex<BTreeSet<(Session, usize)>>,
@@ -575,6 +561,7 @@ impl AgentManager {
             idle_release_ms: AtomicU64::new(IDLE_RELEASE.as_millis() as u64),
             mcp_servers_hook: RwLock::new(None),
             mcp_executable_hook: RwLock::new(None),
+            skills_policy_hook: RwLock::new(None),
             attention_seq: AtomicU64::new(0),
         });
         shared.paths.catalogs.subscribe(&shared);
@@ -724,10 +711,15 @@ impl AgentManager {
         *self.shared.mcp_executable_hook.write() = Some(Arc::from(hook));
     }
 
+    /// Provides the user and workspace skill policies and the workspace's trust.
+    pub fn set_skills_policy_hook(&self, hook: Box<SkillsPolicyFn>) {
+        *self.shared.skills_policy_hook.write() = Some(Arc::from(hook));
+    }
+
     /// The slash commands to complete for `provider`, in `task`'s directory or (without one)
     /// in the project: what the agent offered last time there, unadvertised builtins,
-    /// and, for Claude Code, skills and custom commands on disk it has not listed (for Hermes,
-    /// its profile's skills).
+    /// for Claude Code the skills and custom commands on disk it has not listed (for
+    /// Hermes, its profile's skills), and the skills hub's active skills for every agent.
     pub async fn commands(&self, provider: &str, task: Option<&str>) -> IdeResult<Vec<AgentCommand>> {
         let (provider, offered, cwd) = match task {
             Some(id) => {
@@ -770,11 +762,44 @@ impl AgentManager {
             .await?;
             return Ok(skills::merge(offered, found));
         }
-        if provider != "claude" && provider != "claude-acp" {
-            return Ok(offered);
+        if provider == "claude" || provider == "claude-acp" {
+            let claude_cwd = cwd.clone();
+            let found = blocking(move || Ok(skills::discover(&claude_cwd, home.as_deref()))).await?;
+            offered = skills::merge(offered, found);
         }
-        let found = blocking(move || Ok(skills::discover(&cwd, home.as_deref()))).await?;
-        Ok(skills::merge(offered, found))
+        // The hub's active skills complete on every agent; its `off` ones drop out here,
+        // which is all the enforcement an ACP agent gets.
+        let holder = self.task_for_commands(&provider, task);
+        let states = match holder {
+            Some(holder) => holder.skill_states().await,
+            None => {
+                let (policy, root) = {
+                    let shared = &self.shared;
+                    let policy = shared.skills_policy_hook.read().as_ref().map(|hook| hook()).unwrap_or_default();
+                    (policy, shared.paths.project_root.clone())
+                };
+                let home = self.shared.paths.home_dir.clone();
+                blocking(move || {
+                    Ok(skills::resolve(
+                        skills::discover_skills(&root, home.as_deref()),
+                        None,
+                        &policy.workspace,
+                        &policy.user,
+                        policy.workspace_trusted,
+                    ))
+                })
+                .await
+                .unwrap_or_default()
+            }
+        };
+        Ok(skills::menu_commands(offered, &states))
+    }
+
+    /// The task to resolve skills for, when the commands are for one and its provider matches.
+    fn task_for_commands(&self, provider: &str, task: Option<&str>) -> Option<Arc<Task>> {
+        let task = self.task(task?).ok()?;
+        let matches = task.state.lock().task.provider == provider;
+        matches.then_some(task)
     }
 
     fn task(&self, id: &str) -> IdeResult<Arc<Task>> {
@@ -858,6 +883,7 @@ impl AgentManager {
             retry: None,
             background: Box::default(),
             mcp_overrides: BTreeMap::new(),
+            skill_overrides: BTreeMap::new(),
             stats: Box::default(),
         };
         let file = TaskFile {
@@ -976,6 +1002,7 @@ impl AgentManager {
             retry: None,
             background: Box::default(),
             mcp_overrides: req.mcp_overrides,
+            skill_overrides: req.skill_overrides,
             stats: Box::default(),
         };
         let file = TaskFile {
@@ -1319,13 +1346,14 @@ impl AgentManager {
             (s.task.cwd.0.clone(), s.task.provider.clone(), s.task.mcp_overrides.clone())
         };
         let mcp_servers = source.shared.mcp_servers_for_session(&provider_id, &live.init, &mcp_overrides);
+        let skills_delivery = source.stage_skills(stage_key(live.driver), &cwd).await;
         let cwd_s = dunce::canonicalize(&cwd).unwrap_or(cwd).to_string_lossy().into_owned();
         let reply: Value = live
             .peer
             .request(
                 "session/fork",
                 {
-                    let mut params = session_params(&cwd_s, &mcp_servers);
+                    let mut params = session_params(&cwd_s, &mcp_servers, skills_delivery.as_ref());
                     params["sessionId"] = json!(live.session);
                     params
                 },
@@ -1726,6 +1754,7 @@ impl AgentManager {
         *task.deleted.lock() = true;
         let _ = std::fs::remove_file(self.shared.paths.store_dir.join(format!("{id}.json")));
         let _ = std::fs::remove_dir_all(task.turn_dir());
+        skills::remove_farm(&self.shared.paths.store_dir, id);
         let saved = task.state.lock().saved.clone();
         if let Some(saved) = saved
             && !self.tasks.read().values().any(|t| t.state.lock().saved.as_ref() == Some(&saved))
@@ -1987,6 +2016,38 @@ impl AgentManager {
         Ok(out)
     }
 
+    /// Sets the session's skill modes; like MCP overrides, a change reaches the agent when
+    /// its idle session is recycled and the next turn starts fresh.
+    pub fn set_skill_overrides(&self, id: &str, overrides: BTreeMap<String, AgentSkillMode>) -> IdeResult<AgentTask> {
+        let task = self.task(id)?;
+        let cleaned: BTreeMap<String, AgentSkillMode> = overrides
+            .into_iter()
+            .filter_map(|(k, v)| (!k.trim().is_empty()).then(|| (k.trim().to_owned(), v)))
+            .collect();
+        let (changed, busy, has_bg, out) = {
+            let mut s = task.state.lock();
+            if s.task.status == AgentStatus::Archived {
+                return Err(IdeError::invalid("the task is archived"));
+            }
+            let changed = s.task.skill_overrides != cleaned;
+            if changed {
+                s.task.skill_overrides = cleaned;
+                s.task.updated_ms = now_ms();
+            }
+            (changed, s.busy, !s.background_tasks.is_empty(), s.task.clone())
+        };
+        if changed {
+            task.persist();
+            task.emit_task();
+            if busy || has_bg || !task.permissions.lock().is_empty() {
+                task.skills_reload_pending.store(true, Ordering::Release);
+            } else {
+                task.recycle_resumable_session();
+            }
+        }
+        Ok(out)
+    }
+
     /// Recycles idle resumable live sessions (or schedules reload after the running turn) when
     /// global, workspace, or built-in IDE MCP server settings change.
     pub fn notify_mcp_servers_changed(&self) {
@@ -2019,6 +2080,55 @@ impl AgentManager {
 }
 
 impl Task {
+    /// The skills offered in this project: every discovery resolved against the policies
+    /// and the task's overrides.
+    async fn skill_states(&self) -> Vec<AgentSkillState> {
+        let (policy, overrides, home, root) = {
+            let shared = &self.shared;
+            let policy = shared.skills_policy_hook.read().as_ref().map(|hook| hook()).unwrap_or_default();
+            let overrides = self.state.lock().task.skill_overrides.clone();
+            (policy, overrides, shared.paths.home_dir.clone(), shared.paths.project_root.clone())
+        };
+        blocking(move || {
+            Ok(skills::resolve(
+                skills::discover_skills(&root, home.as_deref()),
+                Some(&overrides),
+                &policy.workspace,
+                &policy.user,
+                policy.workspace_trusted,
+            ))
+        })
+        .await
+        .unwrap_or_default()
+    }
+
+    /// Stages the session's skills into the task's farm and reports what its CLI takes.
+    /// Nothing staged for an ACP agent (its `/` menu is filtered instead), and a failed
+    /// stage (locked files, full disk) runs the session without the farm.
+    async fn stage_skills(&self, provider: &str, cwd: &Path) -> Option<skills::Delivery> {
+        let states = self.skill_states().await;
+        let (farm, home, out_cwd) = {
+            (
+                skills::farm_dir(&self.shared.paths.store_dir, &self.id),
+                self.shared.paths.home_dir.clone(),
+                cwd.to_path_buf(),
+            )
+        };
+        let provider = provider.to_owned();
+        match blocking(move || {
+            skills::stage(&farm, &provider, &states, &out_cwd, home.as_deref())
+                .map_err(|e| IdeError::internal(e.to_string()))
+        })
+        .await
+        {
+            Ok(delivery) => Some(delivery),
+            Err(e) => {
+                tracing::warn!("agent task {}: staging its skills failed: {e}", self.id);
+                None
+            }
+        }
+    }
+
     fn restore(file: TaskFile, shared: Arc<Shared>) -> Arc<Self> {
         let mut task = file.task;
         config::add_client_options(&task.provider, &mut task.config);
@@ -2075,6 +2185,7 @@ impl Task {
             turns: AtomicU64::new(0),
             idle_epoch: AtomicU64::new(0),
             mcp_reload_pending: AtomicBool::new(false),
+            skills_reload_pending: AtomicBool::new(false),
             config_sent: Mutex::new(HashSet::new()),
             dirty: Mutex::new(BTreeSet::new()),
             streamed: Mutex::new(HashMap::new()),
@@ -2366,7 +2477,8 @@ impl Task {
                     if stop != "cancelled" {
                         self.emit_attention(AgentAttentionReason::Finished);
                     }
-                    if self.mcp_reload_pending.swap(false, Ordering::AcqRel)
+                    if (self.mcp_reload_pending.swap(false, Ordering::AcqRel)
+                        || self.skills_reload_pending.swap(false, Ordering::AcqRel))
                         && self.state.lock().background_tasks.is_empty()
                     {
                         self.recycle_resumable_session();
@@ -2395,8 +2507,7 @@ impl Task {
 
     async fn switch_discovered_model(&self, target: AgentConfigOption, value: String) -> IdeResult<()> {
         let provider = self.state.lock().task.provider.clone();
-        let spec = self.shared.spec(&provider).ok_or_else(|| IdeError::not_found("no such agent"))?;
-        let candidate = self.shared.paths.catalogs.fresh_model(&self.shared, &spec, &value).ok_or_else(|| {
+        let candidate = self.shared.paths.catalogs.listed_model(&self.shared, &provider, &value).ok_or_else(|| {
             IdeError::invalid(format!("{} has no value {value} in the current model catalog", target.name))
         })?;
         let selection = {
@@ -2884,6 +2995,7 @@ impl Task {
         let (capabilities, embedded) = capabilities_of(&init);
         let mcp_overrides = self.state.lock().task.mcp_overrides.clone();
         let mcp_servers = self.shared.mcp_servers_for_session(provider_id, &init, &mcp_overrides);
+        let skills_delivery = self.stage_skills(stage_key(spec.driver), cwd).await;
         // Agents that compare canonical paths fail in a symlinked directory (macOS `/tmp`).
         let cwd_s = dunce::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf()).to_string_lossy().into_owned();
 
@@ -2898,7 +3010,7 @@ impl Task {
         }
         if let (Some(id), true, false) = (saved, can_load, start_fresh) {
             self.replaying.store(true, Ordering::Release);
-            let mut params = session_params(&cwd_s, &mcp_servers);
+            let mut params = session_params(&cwd_s, &mcp_servers, skills_delivery.as_ref());
             params["sessionId"] = json!(&id);
             let loaded = self.request_with_auth(&peer, &init, &mut tried_auth, "session/load", params).await;
             tokio::time::sleep(REPLAY_GRACE).await;
@@ -2938,7 +3050,7 @@ impl Task {
         let (session_id, result) = match session {
             Some(s) => s,
             None => {
-                let params = session_params(&cwd_s, &mcp_servers);
+                let params = session_params(&cwd_s, &mcp_servers, skills_delivery.as_ref());
                 let v = self.request_with_auth(&peer, &init, &mut tried_auth, "session/new", params).await.map_err(
                     |e| match self.sign_in_error(&e, Some(&sign_in_message)) {
                         Some(msg) => SessionOpenError { message: msg, allow_acp_fallback: false },
@@ -3914,13 +4026,34 @@ struct McpForSession {
     off: Vec<String>,
 }
 
+/// The driver a session's staged skills are staged for (`skills::stage` matches on it):
+/// the native CLIs take the farm, everything else (an ACP agent) gets the `/` menu filter.
+fn stage_key(driver: provider::Driver) -> &'static str {
+    match driver {
+        provider::Driver::Claude => "claude",
+        provider::Driver::Codex => "codex",
+        provider::Driver::Copilot => "copilot",
+        provider::Driver::Acp => "acp",
+    }
+}
+
 /// The session parameters `session/new`, `session/load` and `session/fork` share: the MCP
 /// servers, and the ones off for this session, so an agent that also loads its own
-/// configuration (Claude Code) can keep a same-named server of it off too.
-fn session_params(cwd: &str, mcp: &McpForSession) -> Value {
+/// configuration (Claude Code) can keep a same-named server of it off too — plus the
+/// session's staged skills for the drivers that take them.
+fn session_params(cwd: &str, mcp: &McpForSession, skills: Option<&skills::Delivery>) -> Value {
     let mut params = json!({ "cwd": cwd, "mcpServers": mcp.servers });
+    let mut meta = json!({});
     if !mcp.off.is_empty() {
-        params["_meta"] = json!({ "openidea": { "mcpServersOff": mcp.off } });
+        meta["mcpServersOff"] = json!(mcp.off);
+    }
+    if let Some(skills) = skills
+        && let Ok(v) = serde_json::to_value(skills)
+    {
+        meta["skills"] = v;
+    }
+    if !meta.is_null() && meta.as_object().is_some_and(|m| !m.is_empty()) {
+        params["_meta"] = json!({ "openidea": meta });
     }
     params
 }

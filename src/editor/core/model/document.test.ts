@@ -571,7 +571,10 @@ describe("DocumentManager + slots", () => {
         if (id === a.doc) throw new Error("disk full");
         await save(id);
       });
+      const logged = vi.spyOn(console, "error").mockImplementation(() => {});
       await expect(manager.saveAll("explicit")).rejects.toThrow("disk full");
+      expect(logged).toHaveBeenCalledWith("saving /p/a.txt failed", expect.objectContaining({ message: "disk full" }));
+      logged.mockRestore();
       expect(backend.files.get("/p/a.txt")).toBe("a\n");
       expect(backend.files.get("/p/b.txt")).toBe("changed b\n");
       expect(a.getMeta().dirty).toBe(true);

@@ -315,6 +315,41 @@ mod tests {
         assert_eq!(skipped.all().len(), 2);
     }
 
+    /// A workspace: members in repositories of their own (one with a nested repository, not a
+    /// submodule), a plain folder, and a member that is a subfolder of a bigger repository; the
+    /// container's agent folder links to each member and must not add a repository again.
+    #[cfg(unix)]
+    #[test]
+    fn workspace_members_bring_their_repositories_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(tmp.path()).unwrap();
+        let (api, web, plain, mono) = (base.join("api"), base.join("web"), base.join("plain"), base.join("mono"));
+        git_init(&api);
+        git_init(&api.join("libs/sdk"));
+        git_init(&web);
+        std::fs::create_dir_all(&plain).unwrap();
+        git_init(&mono);
+        let docs = mono.join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        let container = base.join("ws");
+        let links = container.join(".openidea/agent-root");
+        std::fs::create_dir_all(&links).unwrap();
+        for (name, target) in [("api", &api), ("web", &web), ("plain", &plain), ("docs", &docs)] {
+            std::os::unix::fs::symlink(target, links.join(name)).unwrap();
+            // A link elsewhere in the container: never followed either.
+            std::os::unix::fs::symlink(target, container.join(name)).unwrap();
+        }
+
+        let roots = [container.clone(), api.clone(), web.clone(), plain.clone(), docs.clone()];
+        let repos = Repos::discover_roots(&roots, &|_| false).unwrap();
+        let found: Vec<&Path> = repos.all().iter().map(|r| r.root()).collect();
+        assert_eq!(found, [api.as_path(), &api.join("libs/sdk"), &mono, &web]);
+        let file = api.join("libs/sdk/lib.rs");
+        assert_eq!(repos.for_path(&file).unwrap().root(), api.join("libs/sdk"), "a nested file is its own repo's");
+        assert_eq!(repos.for_path(&docs.join("a.md")).unwrap().root(), mono, "a subfolder member is its repo's");
+        assert!(repos.for_path(&plain.join("x")).is_none());
+    }
+
     #[test]
     fn side_by_side_repositories_without_an_enclosing_one() {
         let tmp = tempfile::tempdir().unwrap();
