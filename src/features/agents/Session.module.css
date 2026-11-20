@@ -2015,3 +2015,97 @@
     animation: none;
   }
 }
+
+.meterButton {
+  composes: meter;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  border: 0;
+  background: transparent;
+  padding: 0 var(--space-1);
+}
+.contextPopover {
+  max-width: calc(100vw - 24px);
+}
+.contextPopover[data-positioned],
+.contextClosing[data-positioned] {
+  animation: none;
+  transition: opacity 100ms ease;
+}
+.contextClosing {
+  composes: contextPopover;
+  pointer-events: none;
+}
+.contextClosing.contextPopover[data-positioned] {
+  opacity: 0;
+}
+@starting-style {
+  .contextPopover[data-positioned] {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .contextPopover[data-positioned] {
+    transition: none;
+  }
+}
+.contextDetails {
+  display: grid;
+  gap: var(--space-2);
+  width: min(330px, 80vw);
+  padding: var(--space-3);
+  color: var(--fg-secondary);
+  font-size: var(--fs-ui);
+  font-variant-numeric: tabular-nums;
+}
+.contextHeading,
+.contextDetails li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.contextHeading {
+  justify-content: space-between;
+  color: var(--fg);
+}
+.contextBar {
+  display: flex;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--border);
+}
+.contextBar span {
+  flex-basis: 0;
+}
+.contextDetails summary {
+  cursor: pointer;
+  color: var(--fg);
+}
+.contextDetails ul {
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  max-height: 220px;
+  overflow: auto;
+}
+.contextDetails li {
+  padding: var(--space-1) 0;
+}
+.contextDetails li i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+.contextDetails li span:last-child {
+  margin-left: auto;
+}
+.contextCompact {
+  justify-self: end;
+  cursor: pointer;
+  color: var(--fg);
+  background: var(--bg-button);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: var(--space-1) var(--space-2);
+}
