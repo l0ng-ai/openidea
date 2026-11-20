@@ -375,6 +375,7 @@ maven_dependency_completion                  trusted            project_host bin
 maven_dependency_declaration                 trusted            project_host bindings async
 maven_exclude_dependency                     trusted            project_host bindings async
 maven_goto_declaration                       trusted            project_host bindings async
+maven_managed_declarations                   trusted            project_host bindings async
 mcp_agent_run_closed                         trusted            project_host bindings sync
 mcp_background_projects                      always             project_host bindings sync
 mcp_regenerate_token                         outside_restricted project_host bindings sync
