@@ -12,7 +12,8 @@ import { Checkbox, Icon, type IconName } from "@/ui";
 import { SearchLabel, Select } from "../../components/Form";
 import { useLabelMatch, useSearchQuery, useSetting } from "../../components/context";
 import { labelMatches } from "../../model/pages";
-import { editorPage, type Item } from "./kit";
+import { editorPage } from "./kit";
+import { InlayHintsPanel, inlayHintLabels } from "./InlayHintsPanel";
 import styles from "./Editor.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -886,19 +887,6 @@ const CODE_EDITING = editorPage({
   ],
 });
 
-const INLAY: Item[] = [
-  {
-    t: "check",
-    key: `${P}.inlayHints`,
-    label: "Show inlay hints",
-    children: [
-      { t: "check", key: `${P}.inlay.types`, label: "Types" },
-      { t: "check", key: `${P}.inlay.parameters`, label: "Parameter names" },
-      { t: "check", key: `${P}.inlay.other`, label: "Other hints (chaining, closing labels…)" },
-    ],
-  },
-];
-
 const CODE_VISION_POSITIONS = [
   { value: "top", label: "Top" },
   { value: "right", label: "Right" },
@@ -910,7 +898,17 @@ const INLAY_HINTS = editorPage({
   order: 33,
   keywords: ["hints", "code vision", "code lens", "usages", "code author", "parameter hints", "type hints"],
   sections: [
-    { items: INLAY },
+    {
+      items: [
+        { t: "check", key: "editor.inlayHints", label: "Show inlay hints" },
+        {
+          t: "custom",
+          label: "Inlay hint preview",
+          keywords: inlayHintLabels,
+          component: InlayHintsPanel,
+        },
+      ],
+    },
     {
       title: "Code Vision",
       items: [
