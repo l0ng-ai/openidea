@@ -149,8 +149,8 @@ describe("branchUpdateSummary", () => {
 
 describe("branch common to several repositories", () => {
   it("updates it in every repository at once", () => {
-    const common = { name: "feature", remote: false, current: false, favorite: false };
-    const items = commonBranchMenu(common, ["/p", "/p/lib"]);
+    const common = { name: "feature", remote: false, current: false, favorite: false, upstream: false };
+    const items = commonBranchMenu(common, ["/p", "/p/lib"], null);
     const item = items.find((i) => "label" in i && i.label === "Update");
     if (item && "run" in item) item.run?.();
     expect([...mocks.update.mock.calls[0]![0]]).toEqual([

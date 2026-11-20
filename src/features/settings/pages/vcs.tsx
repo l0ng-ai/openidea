@@ -801,6 +801,12 @@ export const VCS_PAGES: PageSpec[] = [
           },
           {
             kind: "toggle",
+            key: "vcs.git.syncBranchOperations",
+            label: "Execute branch operations on all repositories",
+            hint: "Only applies to projects with several Git repositories.",
+          },
+          {
+            kind: "toggle",
             key: "vcs.git.cliStatus",
             label: "Detect changes with the Git command line",
             hint: "Slower, but matches git status where encryption or file protection software makes files look modified.",

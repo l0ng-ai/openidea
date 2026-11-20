@@ -53,6 +53,7 @@ import { showSyncCommits } from "./SyncCommitsPopup";
 import type { SyncDirection } from "./syncCommits";
 import styles from "./BranchWidget.module.css";
 import { tx } from "@/platform/i18n";
+import { useWorkflowSettings } from "@/platform/workflowSettings";
 
 /** `active` until the user moves: a new filter selects the row IDEA prefers for it. */
 const PREFERRED = -1;
@@ -647,6 +648,7 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
   const [active, setActive] = useState(0);
   const [expanded, setOpen] = useExpanded("multi");
   const options = usePopupOptions();
+  const sync = useWorkflowSettings((s) => s.vcs.git.syncBranchOperations);
   const [all, setAll] = useState<Record<string, Branch[]>>({});
   const [menuFor, setMenuFor] = useState<{ items: MenuItem[]; label: string; el: HTMLElement } | null>(null);
   const [repoMenu, setRepoMenu] = useState<{ root: string; el: HTMLElement; focus: boolean } | null>(null);
@@ -696,9 +698,9 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
   const actions = useMemo(
     () => [
       ...operationActions(op, conflicts),
-      ...popupActions.map((a) => (a.id === "vcs.newBranch" ? { ...a, arg: { repos: roots } } : a)),
+      ...popupActions.map((a) => (a.id === "vcs.newBranch" && sync ? { ...a, arg: { repos: roots } } : a)),
     ],
-    [op, conflicts, roots, popupActions],
+    [op, conflicts, roots, popupActions, sync],
   );
   const rows = useMemo(
     () =>
@@ -713,10 +715,11 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
         current,
         recent,
         tags,
+        sync,
       }),
-    [repos, all, query, actions, expanded, favorites, current, recent, tags, options],
+    [repos, all, query, actions, expanded, favorites, current, recent, tags, options, sync],
   );
-  const isSection = (r: RepoRow) => r.type === "section";
+  const isSection = (r: RepoRow) => r.type === "section" || r.type === "notice";
   const activeIndex = pickActive(rows, active, isSection, () => preferredRepoRow(rows, query));
 
   const closeAll = () => {
@@ -741,7 +744,12 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
     }
     setRepoMenu(null);
     if (row.type === "common") {
-      setMenuFor({ items: commonBranchMenu(row.branch, roots, closeAll), label: tx`Branch ${row.branch.name}`, el });
+      const shared = widgetShowsRepo(repos) ? null : (repos[0]?.head ?? null);
+      setMenuFor({
+        items: commonBranchMenu(row.branch, roots, shared, closeAll),
+        label: tx`Branch ${row.branch.name}`,
+        el,
+      });
     } else if (row.type === "branch") {
       const items = inRepo(row.repo.root, branchMenu(row.branch, row.repo.head, closeAll));
       setMenuFor({ items, label: tx`Branch ${row.branch.name} of ${row.repo.name}`, el });
@@ -772,7 +780,7 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
     if (isNewBranchStroke(strokeOf(e))) {
       e.preventDefault();
       onClose();
-      void executeAction("vcs.newBranch", { repos: roots });
+      void executeAction("vcs.newBranch", sync ? { repos: roots } : undefined);
       return;
     }
     if (e.key === "Enter") {
@@ -829,7 +837,13 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
           isSection={isSection}
           sectionHeightOf={(r) => (r.type === "section" && !r.label ? SEPARATOR_HEIGHT : undefined)}
           renderSection={(r) =>
-            r.type === "section" && r.label ? (
+            r.type === "notice" ? (
+              <span className={styles.notice} title={r.detail} role="status">
+                <Icon name="warning" size={14} />
+                <span className={styles.noticeLabel}>{r.label}</span>
+                <span className={styles.noticeDetail}>{r.detail}</span>
+              </span>
+            ) : r.type === "section" && r.label ? (
               <span className={styles.section}>{tx(r.label)}</span>
             ) : (
               <span className={styles.separator} role="separator" />
