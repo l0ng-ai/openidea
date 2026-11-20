@@ -413,7 +413,9 @@ describe("the ACP Registry in the agent list", () => {
 });
 
 class FakeCommands implements CommandsBackend {
-  localCli = vi.fn<CommandsBackend["localCli"]>();
+  checkCli = vi.fn<CommandsBackend["checkCli"]>();
+  updateCli = vi.fn<CommandsBackend["updateCli"]>();
+  cancel = vi.fn<CommandsBackend["cancel"]>();
   list: AgentProvider[] = [];
   saved: [string, string | null][] = [];
   providers = vi.fn(async () => this.list);
@@ -456,6 +458,7 @@ const claudeProvider = (command: string): AgentProvider => ({
   commandEditable: true,
   commandReadOnlyReason: null,
   installed: true,
+  canCheckCliUpdate: true,
   env: {},
   config: [],
   commands: [],
@@ -489,16 +492,38 @@ describe("Built-in executable overrides", () => {
     const provider = claudeProvider("claude");
     const offer = { status: "available" as const, current: "1.0.0", latest: "1.1.0", prefix: "/usr/local" };
     commands.list = [provider];
-    commands.localCli.mockResolvedValueOnce(offer).mockResolvedValueOnce({ status: "updated", current: "1.1.0" });
+    commands.checkCli.mockResolvedValueOnce(offer);
+    commands.updateCli.mockResolvedValueOnce({ status: "updated", current: "1.1.0" });
     const panel = within(await openCommands(commands));
-    expect(commands.localCli).not.toHaveBeenCalled();
+    expect(commands.checkCli).not.toHaveBeenCalled();
     fireEvent.click(panel.getByRole("button", { name: "Check for updates" }));
     const update = await panel.findByRole("button", { name: "Update to 1.1.0" });
-    expect(commands.localCli).toHaveBeenCalledOnce();
+    expect(commands.checkCli).toHaveBeenCalledOnce();
     fireEvent.click(update);
     await panel.findByText("Updated to 1.1.0. New sessions will use this version.");
-    expect(commands.localCli).toHaveBeenLastCalledWith(provider, offer);
+    expect(commands.updateCli).toHaveBeenCalledWith(provider.id, offer, expect.any(Number));
     expect(commands.saved).toEqual([]);
+  });
+
+  it("cancels the in-progress update by its request id", async () => {
+    const commands = new FakeCommands();
+    commands.list = [claudeProvider("claude")];
+    commands.checkCli.mockResolvedValue({ status: "available", current: "1.0.0", latest: "1.1.0", prefix: "/test" });
+    let cancel!: () => void;
+    commands.updateCli.mockImplementation(
+      () =>
+        new Promise((_, reject) => {
+          cancel = () => reject(new IpcError({ kind: "cancelled", message: "cancelled" }));
+        }),
+    );
+    const panel = within(await openCommands(commands));
+    fireEvent.click(panel.getByRole("button", { name: "Check for updates" }));
+    fireEvent.click(await panel.findByRole("button", { name: "Update to 1.1.0" }));
+    fireEvent.click(panel.getByRole("button", { name: "Cancel" }));
+    expect(commands.cancel).toHaveBeenCalledWith(commands.updateCli.mock.calls[0]![2]);
+    await act(async () => cancel());
+    await waitFor(() => expect(panel.getByRole("button", { name: "Check for updates" })).toBeEnabled());
+    expect(panel.queryByRole("alert")).toBeNull();
   });
 
   it("follows locale changes and renders login commands as inline code", async () => {

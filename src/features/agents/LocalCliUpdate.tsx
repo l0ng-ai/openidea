@@ -1,28 +1,52 @@
-import { useState } from "react";
-import type { AgentProvider } from "@/bindings";
+import { useEffect, useRef, useState } from "react";
+import type { AgentCliOffer, AgentCliUpdateResult, AgentProvider, RequestId } from "@/bindings";
+import { IpcError, isCancelled, nextRequestId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { isRemoteWindow } from "@/platform/remote";
 import { openExternalUrl } from "@/platform/openUrl";
 import { Button, T } from "@/ui";
-import { type manageLocalCli, supportsNpmUpdate, type CliResult, type CliUpdate } from "./localCli";
+import type { CommandsBackend } from "./registry";
 import styles from "./AgentList.module.css";
 
-export function LocalCliUpdate({ agent, manage }: { agent: AgentProvider; manage: typeof manageLocalCli }) {
+export function LocalCliUpdate({ agent, backend }: { agent: AgentProvider; backend: CommandsBackend }) {
+  const active = useRef<RequestId | null>(null);
   const [busy, setBusy] = useState<"check" | "update" | null>(null);
-  const [report, setReport] = useState<{ program: string; result: CliResult } | null>(null);
-  const result = report?.program === agent.program ? report.result : null;
+  const [result, setResult] = useState<AgentCliUpdateResult | null>(null);
   const [error, setError] = useState("");
-  if (!supportsNpmUpdate(agent) || isRemoteWindow()) return null;
-  const check = async (update?: CliUpdate) => {
-    setBusy(update ? "update" : "check");
+  useEffect(
+    () => () => {
+      if (active.current !== null) backend.cancel(active.current);
+      active.current = null;
+    },
+    [backend],
+  );
+  if (isRemoteWindow()) return null;
+  const check = async (offer?: AgentCliOffer) => {
+    const request = nextRequestId();
+    active.current = request;
+    setBusy(offer ? "update" : "check");
     setError("");
-    setReport(null);
+    setResult(null);
     try {
-      setReport({ program: agent.program, result: await manage(agent, update) });
+      const reply = offer
+        ? await backend.updateCli(agent.id, offer, request)
+        : await backend.checkCli(agent.id, request);
+      if (active.current === request) setResult(reply);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (active.current === request && !isCancelled(e)) {
+        setError(
+          e instanceof IpcError && e.kind === "alreadyExists"
+            ? tx("An update for this agent is already running.")
+            : e instanceof Error
+              ? e.message
+              : String(e),
+        );
+      }
     } finally {
-      setBusy(null);
+      if (active.current === request) {
+        active.current = null;
+        setBusy(null);
+      }
     }
   };
   return (
@@ -35,6 +59,11 @@ export function LocalCliUpdate({ agent, manage }: { agent: AgentProvider; manage
         <Button size="small" disabled={!!busy} onClick={() => void check()}>
           {busy === "check" ? tx("Checking…") : tx("Check for updates")}
         </Button>
+        {busy && (
+          <Button size="small" onClick={() => backend.cancel(active.current!)}>
+            <T>Cancel</T>
+          </Button>
+        )}
         {result?.status === "available" && (
           <Button size="small" variant="primary" onClick={() => void check(result)}>
             {tx`Update to ${result.latest}`}

@@ -9157,8 +9157,6 @@
   "CLI version": "CLI 版本",
   "Checking…": "正在检查…",
   "Check for updates": "检查更新",
-  "Agent CLI update": "智能体 CLI 更新",
-  "The CLI update check could not finish.": "未能完成 CLI 更新检查。",
   "Updating the npm installation…": "正在更新 npm 安装…",
   "Installed: {0} · npm latest: {1} · {2}": "已安装：{0} · npm 最新版：{1} · {2}",
   "Installed: {0} · npm latest: {1}. No write permission for the npm installation at {2}.": "已安装：{0} · npm 最新版：{1}。没有位于 {2} 的 npm 安装目录的写入权限。",
@@ -9167,7 +9165,6 @@
   "Installed: {0} · No newer npm release.": "已安装：{0} · 没有更新的 npm 版本。",
   "Installed: {0}. Use your installer to manage this release channel.": "已安装：{0}。请使用原安装工具管理此发布渠道。",
   "npm could not complete the operation ({0}).": "npm 无法完成操作（{0}）。",
-  "The CLI operation timed out.": "CLI 操作超时。",
   "An update for this agent is already running.": "此智能体已有更新正在进行。",
   "This is not a global npm install OpenIDEA can update. Use its original installer.": "这不是 OpenIDEA 能更新的 npm 全局安装。请使用原安装工具更新。"
 }

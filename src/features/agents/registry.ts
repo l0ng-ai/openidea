@@ -3,6 +3,8 @@ import { open } from "@/platform/dialog";
 import { Channel } from "@tauri-apps/api/core";
 import type {
   AcpImportOutcome,
+  AgentCliOffer,
+  AgentCliUpdateResult,
   AgentProvider,
   AgentRegistry,
   CustomAgentInput,
@@ -13,7 +15,6 @@ import type {
 } from "@/bindings";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
-import { manageLocalCli } from "./localCli";
 
 export interface RegistryBackend {
   list(request: RequestId): Promise<AgentRegistry>;
@@ -24,7 +25,9 @@ export interface RegistryBackend {
 
 /** The built-in agents' launch commands: read, and override through an agent file. */
 export interface CommandsBackend {
-  localCli: typeof manageLocalCli;
+  checkCli(id: string, request: RequestId): Promise<AgentCliUpdateResult>;
+  updateCli(id: string, offer: AgentCliOffer, request: RequestId): Promise<AgentCliUpdateResult>;
+  cancel(request: RequestId): void;
   providers(): Promise<AgentProvider[]>;
   set(id: string, command: string | null): Promise<void>;
   setEnv(id: string, env: Record<string, string>): Promise<void>;
@@ -49,7 +52,9 @@ export const tauriRegistry: RegistryBackend = {
 };
 
 export const tauriCommands: CommandsBackend = {
-  localCli: manageLocalCli,
+  checkCli: (id, request) => call(commands.agentCliUpdateCheck(id, request)),
+  updateCli: (id, offer, request) => call(commands.agentCliUpdate(id, offer, request)),
+  cancel: tauriRegistry.cancel,
   providers: () => call(commands.agentProviders()),
   chooseExecutable: async (title, current) => {
     const picked = await open({ title, defaultPath: current || undefined, directory: false, multiple: false });

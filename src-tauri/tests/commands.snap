@@ -6,6 +6,8 @@ agent_archive                                always             project_host bin
 agent_base_text                              trusted            project_host bindings async
 agent_cancel                                 always             project_host bindings sync
 agent_changes                                trusted            project_host bindings async
+agent_cli_update                             trusted            project_host bindings async
+agent_cli_update_check                       trusted            project_host bindings async
 agent_commands                               always             project_host bindings async
 agent_context_usage                          trusted            project_host bindings async
 agent_create                                 trusted            project_host bindings async
@@ -19,7 +21,6 @@ agent_fork                                   trusted            project_host bin
 agent_grouped_changes                        trusted            project_host bindings async
 agent_hermes_profiles                        trusted            project_host bindings async
 agent_import_session                         trusted            project_host bindings async
-agent_launch_program                         trusted            project_host bindings async
 agent_mcp_discover_sources                   always             project_host bindings async
 agent_mcp_import                             always             project_host bindings sync
 agent_mcp_import_selected                    always             project_host bindings async

@@ -855,7 +855,9 @@ function ProviderSettings({
   const envEditable = agent.commandReadOnlyReason !== "registry" && agent.commandReadOnlyReason !== "customAgent";
   return (
     <>
-      {value.trim() === current && <LocalCliUpdate key={agent.id} agent={agent} manage={backend.localCli} />}
+      {value.trim() === current && agent.installed && agent.canCheckCliUpdate && (
+        <LocalCliUpdate key={agent.program} agent={agent} backend={backend} />
+      )}
       {agent.loginHint && (
         <Section title="Sign In">
           <p className={styles.text}>

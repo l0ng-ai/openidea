@@ -10,6 +10,7 @@
 mod acp;
 mod async_questions;
 mod catalogs;
+mod cli_update;
 mod config;
 mod conversation;
 mod elicitation;
@@ -27,6 +28,7 @@ mod timeline;
 mod worktree;
 
 pub use catalogs::AgentCatalogs;
+pub use cli_update::{AgentCliOffer, AgentCliUpdateResult};
 pub use external::ExternalSession;
 pub use model::*;
 
@@ -1439,14 +1441,6 @@ impl AgentManager {
         // Undoing may have started the agent: it stops again once idle.
         task.release_when_idle();
         Ok(first)
-    }
-
-    /// The executable a new session of `provider` starts, chosen as the launcher chooses it
-    /// (newest of several installs, the agent's `PATH`).
-    pub async fn launch_program(&self, provider: &str) -> IdeResult<String> {
-        let spec = self.shared.spec(provider).ok_or_else(|| IdeError::invalid(format!("unknown agent {provider}")))?;
-        let root = self.shared.paths.project_root.clone();
-        blocking(move || Ok(spec.resolve_for_launch(&root).command)).await
     }
 
     /// What `provider` reports about itself, from `initialize` alone: no session is opened,

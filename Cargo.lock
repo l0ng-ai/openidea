@@ -4156,6 +4156,8 @@ dependencies = [
  "ide-vcs",
  "ide-vfs",
  "parking_lot",
+ "rustix",
+ "semver",
  "serde",
  "serde_json",
  "specta",
