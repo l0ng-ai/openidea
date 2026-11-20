@@ -672,9 +672,11 @@ export function ProjectView() {
     // While dragging, the tree scrolls only when the pointer is near its top or bottom edge
     // (IDEA's DnD autoscroll). Leaving the tree toward a drop target elsewhere (the terminal,
     // an editor) keeps it where it is: WebKit's own autoscroll of the pressed scroll container
-    // would otherwise keep scrolling it toward the pointer.
+    // would otherwise keep scrolling it toward the pointer. It never scrolls sideways: a pointer
+    // right of the tree would scroll its long rows out of view.
     const scroller = containerRef.current?.querySelector<HTMLElement>('[role="tree"]') ?? null;
     let held = scroller?.scrollTop ?? 0;
+    const heldLeft = scroller?.scrollLeft ?? 0;
     let pointer: { x: number; y: number } | null = null;
     let frame = 0;
     const inside = (p: { x: number; y: number }) => {
@@ -685,6 +687,7 @@ export function ProjectView() {
       if (!scroller) return;
       if (pointer && !inside(pointer)) scroller.scrollTop = held;
       else held = scroller.scrollTop;
+      if (scroller.scrollLeft !== heldLeft) scroller.scrollLeft = heldLeft;
     };
     const edgeScroll = () => {
       frame = 0;
