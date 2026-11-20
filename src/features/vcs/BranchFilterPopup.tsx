@@ -2,6 +2,7 @@ import clsx from "clsx";
 import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import type { Branch } from "@/bindings";
 import { HighlightedText, Icon, List, Popup, SearchField, T, firstSelectable, fuzzyMatch, listNavigate } from "@/ui";
+import { useRowHeight } from "@/ui/density";
 import { tx } from "@/platform/i18n";
 import { isFavoriteBranch, sortLocal, sortRemote } from "./branches";
 import { loadFavoriteBranches, useFavoriteBranches } from "./branchOps";
@@ -91,6 +92,7 @@ export function BranchFilterPopup({
   onSelectMany: () => void;
   onClose: () => void;
 }) {
+  const rowHeight = useRowHeight(ROW_HEIGHT);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const [expanded, setExpanded] = useState<ReadonlySet<Group>>(new Set());
@@ -127,7 +129,7 @@ export function BranchFilterPopup({
       setActive(next);
     }
   };
-  const height = Math.min(MAX_LIST_HEIGHT, Math.max(ROW_HEIGHT * 3, rows.length * ROW_HEIGHT));
+  const height = Math.min(MAX_LIST_HEIGHT, Math.max(rowHeight * 3, rows.length * rowHeight));
   return (
     <Popup
       open
@@ -163,7 +165,7 @@ export function BranchFilterPopup({
           onActivate={activate}
           focusable={false}
           hoverSelects
-          rowHeight={ROW_HEIGHT}
+          rowHeight={rowHeight}
           aria-label="Branches"
           className={styles.branchFilterListBody}
           empty={

@@ -5,6 +5,7 @@ import {
   commands,
   IpcError,
   isCancelled,
+  isErrorKind,
   isTauri,
   type RecentProject,
   type RecentProjectGroup,
@@ -117,10 +118,10 @@ export async function removeRecent(path: string) {
 }
 
 /** An open failure's kind and message, whether it is an `IpcError` or a raw rejected invoke. */
-function failure(e: unknown): { kind?: string; message: string } {
+function failure(e: unknown): { kind?: unknown; message: string } {
   if (e instanceof IpcError) return { kind: e.kind, message: e.message };
   if (e && typeof e === "object" && "message" in e)
-    return { kind: (e as { kind?: string }).kind, message: String((e as { message: unknown }).message) };
+    return { kind: "kind" in e ? e.kind : undefined, message: String(e.message) };
   return { message: e instanceof Error ? e.message : String(e) };
 }
 
@@ -149,8 +150,9 @@ export async function openRecent(project: Pick<RecentProject, "path" | "name">):
     return true;
   } catch (e) {
     if (isCancelled(e)) return false;
-    const { kind, message } = failure(e);
-    if (kind === "notFound" || (!kind && /not found|no such/i.test(message))) {
+    const error = failure(e);
+    const { message } = error;
+    if (isErrorKind(error, "notFound") || (!error.kind && /not found|no such/i.test(message))) {
       // A balloon can be switched off for this group and the welcome screen has no log to open.
       const remove = await confirm({
         title: tx`Project folder not found: ${project.name}`,

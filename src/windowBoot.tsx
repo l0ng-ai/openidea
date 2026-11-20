@@ -58,8 +58,23 @@ export function mountWindowRoot(View: ComponentType, { prefetchLazy = false }: {
   function App() {
     useEffect(() => {
       hideSplash();
+      if (!prefetchLazy) return;
+      // The first file opened would otherwise also build the editor setup cold.
+      const warm = () => {
+        if (!document.querySelector(".cm-editor"))
+          void import("./editor/core/cm/prewarm").then((m) => m.prewarmEditor());
+      };
+      const idle =
+        typeof requestIdleCallback === "function"
+          ? requestIdleCallback(warm, { timeout: 2000 })
+          : window.setTimeout(warm, 500);
       // Views split out of the start-up bundle load in the background once the UI is up.
-      if (prefetchLazy) return prefetchLazyComponents();
+      const stopPrefetch = prefetchLazyComponents();
+      return () => {
+        if (typeof cancelIdleCallback === "function") cancelIdleCallback(idle);
+        else window.clearTimeout(idle);
+        stopPrefetch();
+      };
     }, []);
     return <View />;
   }

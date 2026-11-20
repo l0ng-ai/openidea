@@ -27,6 +27,7 @@ OpenIDEA 本身不带模型或账号：它启动你已安装并登录的 agent�
 | Auggie         | `auggie --acp`              | `auggie login`        |
 | Kiro           | `kiro-cli acp`              | `kiro-cli login`      |
 | Mistral Vibe   | `vibe-acp`                  | `vibe`                |
+| Hermes Agent   | `hermes acp`                | `hermes model`        |
 
 **Claude Code** 和 **Codex** 通过它们自己的协议驱动（Claude Code 的 stream-json 模式和 `codex app-server`）。它们的 ACP 适配器（`claude-acp`、`codex-acp`）不再列出；已经在用它们的任务照常运行，为这两个 id 写一个 [agent 文件](#添加自定义-agent)也会重新列出。agent 需要登录时，任务中会提示该运行哪条命令。
 
@@ -136,7 +137,7 @@ agent 运行过一个任务后，新任务会以它自动批准所有操作的�
 - **智能体配置**：自动发现 `~/.copilot/mcp-config.json`（及已安装的 Copilot CLI 插件）、`~/.claude.json`、`~/.codex/config.toml`、`~/.cursor/mcp.json`、`~/.gemini/settings.json`、`~/.jetbrains/mcp/mcp.json`、`.mcp.json` 和 `.vscode/mcp.json` 中已配置的服务器，可一键导入到全局或项目设置。添加或编辑服务器时既可使用表单，也可直接粘贴 `mcpServers` JSON（**从 JSON 添加**），并可通过 **测试连接** 查看服务器声明的工具列表。
 - **按会话覆盖（`MCP` / `/mcp`）**：在 **新建 Agent 任务** 和进行中的任务对话中，单击输入框工具栏的 **MCP**（或输入 `/mcp`），即可仅针对当前任务开启或关闭任意服务器（包括内置的 `openidea` 服务器），或点击 **重置** 恢复继承的默认状态。
 
-agent 工作时，对话下方的状态行显示它正在做什么：思考、读取、编辑、运行命令、输出回复。在 **设置 › 智能体 › 工作状态** 中可以让这里改为显示与当前工作相关的趣味文字，默认关闭。开启后，工作一变化就轮换显示，也可以设置在 agent 无新进展多少秒后才显示（0 到 600，默认 0）；屏幕阅读器读出的仍是 agent 实际在做的事。agent 持续做同一类工作时，每条文字停留八秒；转向其他工作时也至少停留三秒，状态行不会频繁跳动。同一页面还可以替换这些文字：选择状态（**正在读取…**、**正在运行命令…**…），再添加或移除对应的文字。**恢复内置文字** 会换回 OpenIDEA 自带的文字；没有任何文字的状态只显示实际进展。
+agent 工作时，对话下方的状态行显示它正在做什么：思考、读取、编辑、运行命令、输出回复。
 
 ## 添加自定义 agent
 

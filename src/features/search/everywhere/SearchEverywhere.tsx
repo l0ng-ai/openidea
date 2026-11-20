@@ -1,6 +1,7 @@
 import { writeClipboardText } from "@/platform/clipboard";
 import { onSearchCategoriesChanged, onEndpointsChanged } from "@/workbench/contributions";
 import { useFilePresentation } from "@/ui/filePresentation";
+import { useRowHeight } from "@/ui/density";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import clsx from "clsx";
 import { actionToggled, executeAction, executeActionFrom, getAction } from "@/platform/actions";
@@ -87,8 +88,7 @@ export function claimSearchKeys(input: () => HTMLElement | null): () => void {
   return registerKeyClaim((e) => e.target === input() && SEARCH_KEYS.has(e.key));
 }
 const ROW = 24;
-const MAX_LIST = 672;
-const MIN_LIST = 10 * ROW;
+const MIN_LIST_ROWS = 10;
 const DEBOUNCE_MS = 60;
 
 export function SearchEverywhereOverlay() {
@@ -101,6 +101,7 @@ const INITIAL_SELECTION: Selection = { key: null, anchorKey: null, lead: -1, anc
 
 function SearchEverywhereDialog() {
   const tx = useTx();
+  const rowHeight = useRowHeight(ROW);
   const tab = useSearchEverywhere((s) => s.tab);
   const hint = hintFor(tab, tx);
   const [tabs, setTabs] = useState(searchTabs);
@@ -473,8 +474,8 @@ function SearchEverywhereDialog() {
   };
 
   // While a query is typed the list keeps a minimum height so the popup doesn't jump with every keystroke.
-  const minList = parsed.text.trim() && !listing ? MIN_LIST : 0;
-  const listHeight = Math.min(MAX_LIST, Math.max(minList, rows.length * ROW));
+  const minList = parsed.text.trim() && !listing ? MIN_LIST_ROWS * rowHeight : 0;
+  const listHeight = Math.max(minList, rows.length * rowHeight);
   const previewTarget = previewOf(activeRow);
   const emptyQuery = !parsed.text.trim();
   const showEmpty = !rows.length && snap && !snap.loading && (!emptyQuery || tab !== "all");
@@ -522,8 +523,8 @@ function SearchEverywhereDialog() {
           isSelected={(r) => !!sel.keys?.has(r.key)}
           onActivate={(r, _i, e) => activate(r, (e as MouseEvent).shiftKey)}
           focusable={false}
-          rowHeight={ROW}
-          sectionHeight={ROW}
+          rowHeight={rowHeight}
+          sectionHeight={rowHeight}
           className={styles.list}
           aria-label={tx("Results")}
           renderItem={(r, state) => (
@@ -555,7 +556,7 @@ function SearchEverywhereDialog() {
     <Dialog
       open
       onClose={close}
-      width={760}
+      width={700}
       position="top"
       transparentBackdrop
       aria-label={tx("Search Everywhere")}

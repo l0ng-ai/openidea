@@ -953,7 +953,8 @@ describe("PluginsPage", () => {
     await user.click(screen.getByRole("button", { name: "Apply theme Harbor Night" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Use Default Theme" })).toBeInTheDocument());
 
-    await user.type(screen.getByLabelText("Filter plugins"), "toy");
+    screen.getByLabelText("Filter plugins").focus();
+    await user.keyboard("toy");
     await waitFor(() => expect(within(list).getAllByRole("listitem")).toHaveLength(1));
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("Toy Language");
     expect(screen.getByText("Toy (.toy)")).toBeInTheDocument();

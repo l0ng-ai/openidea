@@ -552,6 +552,7 @@ export async function showIntentions(view: EditorView) {
       items,
       busy,
       preview,
+      themeClasses: view.themeClasses,
       onClose: () => {
         dismissed = true;
       },

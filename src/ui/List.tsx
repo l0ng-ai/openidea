@@ -16,6 +16,7 @@ import {
 } from "react";
 import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { useRowHeight } from "./density";
 import { rowSelectionMode } from "./rowSelection";
 import styles from "./List.module.css";
 
@@ -133,8 +134,8 @@ export function List<T>({
   isSelected,
   onActivate,
   onContextMenu,
-  rowHeight = 24,
-  sectionHeight = 24,
+  rowHeight: fixedRowHeight,
+  sectionHeight: fixedSectionHeight,
   sectionHeightOf,
   focusable = true,
   hoverSelects = false,
@@ -154,6 +155,9 @@ export function List<T>({
   const scrollRef = useRef<HTMLDivElement>(null);
   const generatedId = useId();
   const baseId = id ?? generatedId;
+  const defaultRowHeight = useRowHeight();
+  const rowHeight = fixedRowHeight ?? defaultRowHeight;
+  const sectionHeight = fixedSectionHeight ?? defaultRowHeight;
   const virtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => scrollRef.current,
@@ -161,6 +165,7 @@ export function List<T>({
     overscan,
     getItemKey: (i) => getKey(items[i]!, i),
   });
+  useEffect(() => virtualizer.measure(), [virtualizer, rowHeight, sectionHeight]);
 
   const viewportHeight = virtualizer.scrollRect?.height;
   useEffect(() => {

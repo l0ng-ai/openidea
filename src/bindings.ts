@@ -57,6 +57,8 @@ export const commands = {
 	agentFork: (task: string, turns: number | null) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_fork", { task, turns })),
 	/**  The task's uncommitted changes and the commits made since it started. */
 	agentGroupedChanges: (task: string) => typedError<AgentChanges, IdeError>(__TAURI_INVOKE("agent_grouped_changes", { task })),
+	/**  Hermes Agent profiles on this machine (`default` first); empty without Hermes. */
+	agentHermesProfiles: () => typedError<HermesProfile[], IdeError>(__TAURI_INVOKE("agent_hermes_profiles")),
 	/**  Imports an external session as a task: its first turn loads and replays it. */
 	agentImportSession: (provider: string, sessionId: string) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_import_session", { provider, sessionId })),
 	/**  Discovers external MCP configuration files on disk (CLI user configs + workspace `.mcp.json`). */
@@ -2267,11 +2269,15 @@ steered?: boolean } | { type: "agent"; text: string } |
 /**  A question that can be answered while the agent keeps working, or after the turn ends. */
 { type: "question"; id: string; title: string; questions: AgentQuestion[]; 
 /**  The submitted answers, or `Skipped`; `None` while unanswered. */
-chosen: string | null } | { type: "thought"; text: string } | { type: "tool"; id: string; title: string; 
+chosen: string | null } | { type: "thought"; text: string; 
+/**  When the reasoning started (ms since the epoch); `None` in tasks saved before. */
+startedMs?: number | null } | { type: "tool"; id: string; title: string; 
 /**  ACP tool kind: `read`, `edit`, `execute`, `search`, `fetch`, `think`… */
 kind: string; status: AgentToolStatus; locations: IpcPath[]; 
 /**  Text the tool reported (command output…), truncated. */
-output: string | null; diffs: AgentToolDiff[] } | { type: "plan"; items: AgentPlanItem[] } | 
+output: string | null; diffs: AgentToolDiff[]; 
+/**  When the call started and ended (ms since the epoch); `None` in tasks saved before. */
+startedMs?: number | null; endedMs?: number | null } | { type: "plan"; items: AgentPlanItem[] } | 
 /**  A subagent the agent started: its own session, whose entries are listed separately. */
 { type: "subagent"; 
 /**  The subagent's session id. */
@@ -2570,6 +2576,13 @@ export type AgentSecuritySettings = {
 	blockedCommands?: string[],
 };
 
+export type AgentSessionStats = {
+	/**  The last turn's tokens (`session/prompt` result `usage`). */
+	tokens?: AgentTokens | null,
+	/**  How many times the agent compressed the conversation (Hermes `compressionDepth`). */
+	compressions?: number,
+};
+
 /**  Settings › Agents: what the conversation shows and how messages are sent. */
 export type AgentSettings = AgentSettings_Serialize | AgentSettings_Deserialize;
 
@@ -2589,18 +2602,6 @@ export type AgentSettings_Deserialize = {
 	smoothText?: boolean,
 	/**  Conversations and the composer expand to the full width of the pane instead of staying in a centred column. */
 	fitWindowWidth?: boolean,
-	/**  While the agent works, playful words fill the pauses in what it reports. */
-	playfulStatus?: boolean,
-	/**
-	 *  Seconds the agent reports nothing new before the playful words take over; 0 shows them
-	 *  from the start.
-	 */
-	playfulAfterSeconds?: number,
-	/**
-	 *  The user's playful words by activity (`working`, `thinking`, `reading`, …), replacing
-	 *  the built-in ones of that activity; an empty list keeps its status factual.
-	 */
-	playfulWords?: { [key in string]: string[] },
 	thinking?: ThinkingDisplay,
 	toolCalls?: ToolCallDisplay,
 	/**  A tool call's output (a command's, a diff) is shown without opening it. */
@@ -2641,18 +2642,6 @@ export type AgentSettings_Serialize = {
 	smoothText: boolean,
 	/**  Conversations and the composer expand to the full width of the pane instead of staying in a centred column. */
 	fitWindowWidth: boolean,
-	/**  While the agent works, playful words fill the pauses in what it reports. */
-	playfulStatus: boolean,
-	/**
-	 *  Seconds the agent reports nothing new before the playful words take over; 0 shows them
-	 *  from the start.
-	 */
-	playfulAfterSeconds: number,
-	/**
-	 *  The user's playful words by activity (`working`, `thinking`, `reading`, …), replacing
-	 *  the built-in ones of that activity; an empty list keeps its status factual.
-	 */
-	playfulWords: { [key in string]: string[] },
 	thinking: ThinkingDisplay,
 	toolCalls: ToolCallDisplay,
 	/**  A tool call's output (a command's, a diff) is shown without opening it. */
@@ -2749,6 +2738,8 @@ export type AgentTask_Deserialize = {
 	background?: AgentBackgroundTask[],
 	/**  Per-session MCP server enable/disable overrides (`server_name` -> `enabled`), including `"openidea"`. */
 	mcpOverrides?: { [key in string]: boolean },
+	/**  Token counts of the last turn and context compressions, when the agent reports them. */
+	stats?: AgentSessionStats,
 };
 
 export type AgentTask_Serialize = {
@@ -2797,6 +2788,8 @@ export type AgentTask_Serialize = {
 	background: AgentBackgroundTask[],
 	/**  Per-session MCP server enable/disable overrides (`server_name` -> `enabled`), including `"openidea"`. */
 	mcpOverrides?: { [key in string]: boolean },
+	/**  Token counts of the last turn and context compressions, when the agent reports them. */
+	stats: AgentSessionStats,
 };
 
 /**  Token pricing (Credits per 1M tokens) and context window capacity for one tier. */
@@ -2806,6 +2799,12 @@ export type AgentTokenPricing = {
 	cacheRead?: number | null,
 	cacheWrite?: number | null,
 	contextTokens?: number | null,
+};
+
+export type AgentTokens = {
+	input: number,
+	cached: number,
+	output: number,
 };
 
 export type AgentToolDiff = {
@@ -6760,6 +6759,14 @@ export type HeapSummary = {
 	analysisMs: number,
 };
 
+/**  A profile and the name Hermes shows for it (`hermes profile list`). */
+export type HermesProfile = {
+	/**  What `hermes -p` takes; `default` is the Hermes home itself. */
+	name: string,
+	/**  `display_name` from the profile's `profile.yaml`, else the name. */
+	label: string,
+};
+
 export type HierarchyChoice = {
 	id: string,
 	makeAbstract: boolean,
@@ -6943,6 +6950,8 @@ export type HttpResponse = {
 	version: string,
 	headers: ([string, string])[],
 	contentType: string | null,
+	/**  Followed redirects, first hop first; empty when not redirected. */
+	redirects?: RedirectHop[],
 	/**  Body as text (lossy UTF-8); `None` for binary bodies. */
 	body: string | null,
 	/**  Size in bytes as received (after decompression). */
@@ -7012,7 +7021,9 @@ ignoreRules?: IpcPath[] } |
 /**  Part of a grouped transaction; the editor must not record a file-local undo. */
 workspaceEdit?: boolean } | 
 /**  A document's dirty flag changed (saved / modified externally). */
-{ type: "docDirty"; doc: DocId; dirty: boolean } | 
+{ type: "docDirty"; doc: DocId; dirty: boolean; 
+/**  Text version when this transition occurred, including when it was saved. */
+version: number } | 
 /**  A complete workspace edit can be undone as one operation. */
 { type: "workspaceEditApplied"; id: number; paths: IpcPath[]; 
 /**
@@ -10282,6 +10293,13 @@ export type RecentProjectGroup = {
 	/**  Its projects, in the order they were added. */
 	paths: IpcPath[],
 	expanded?: boolean,
+};
+
+/**  One followed redirect: the response and the `Location` it pointed to. */
+export type RedirectHop = {
+	status: number,
+	statusText: string,
+	location: string,
 };
 
 export type RefactoringProblem = {

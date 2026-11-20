@@ -15,12 +15,13 @@
 .editor {
   --tab-inline-padding: var(--space-2);
   height: var(--h-header);
+  font-size: var(--fs-chrome);
   padding: 0 4px;
 }
 .compact {
   /* Shrinks inside tool window headers so the overflow dropdown can take over. */
   flex: 0 1 auto;
-  height: 28px;
+  height: var(--h-tab);
 }
 .scroller {
   display: flex;
@@ -41,7 +42,7 @@
   align-items: stretch;
   height: calc(100% - 6px);
   min-height: 22px;
-  max-height: 28px;
+  max-height: var(--h-tab);
   border-radius: var(--radius-tab, 6px);
   color: var(--fg-strong);
   transition:
@@ -274,6 +275,37 @@
 }
 .closeLeft .closable .tabButton {
   padding: 0 var(--tab-inline-padding, 10px) 0 2px;
+}
+
+/* Editor tabs in a row sit 4px apart; wrapped rows keep their row gap. */
+.editor:not(.vertical) .scroller {
+  column-gap: var(--space-1);
+}
+/* Every closable tab keeps a close slot at one edge (IDEA), cut to what the close glyph needs: 18px, a 2px
+   inset and the 16px button. The label side keeps the 8px inset, so the side doesn't change a tab's width. */
+.editor:not(.vertical) .closeSlot {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 2px;
+  width: auto;
+  margin: 0;
+}
+.editor:not(.vertical) .close {
+  width: 16px;
+}
+.editor:not(.vertical) .closeSlot .modified {
+  left: 5px;
+}
+.editor:not(.vertical, .closeLeft) .closable .tabButton {
+  padding-right: 18px;
+}
+.editor.closeLeft:not(.vertical) .closeSlot {
+  right: auto;
+  left: 2px;
+}
+.editor.closeLeft:not(.vertical) .closable .tabButton {
+  padding-left: 18px;
 }
 
 /* drag & drop: the dragged tab is an empty slot the other tabs make room for (IDEA) */

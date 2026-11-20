@@ -268,7 +268,6 @@ function ChooseDialog({ options, done }: { options: ChooseItemOptions; done: (v:
           activeIndex={active}
           onActiveChange={setActive}
           onActivate={(item) => done(item)}
-          rowHeight={24}
           className={styles.list}
           aria-label={options.title}
           empty={
@@ -474,7 +473,6 @@ function PathDialog({ options, done }: { options: ChoosePathOptions; done: (v: s
           }}
           // A click selects; a double click or Enter opens the folder or chooses the file.
           onActivate={(entry, _i, e) => (e.type !== "click" || e.detail > 1) && choose(entry)}
-          rowHeight={24}
           className={styles.pathList}
           aria-label={dir ?? options.title}
           empty={

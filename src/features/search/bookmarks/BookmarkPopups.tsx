@@ -29,6 +29,7 @@ import {
   type PathBookmark,
 } from "./store";
 import styles from "./BookmarkPopups.module.css";
+import { useRowHeight } from "@/ui/density";
 
 export function BookmarkPopupsOverlay() {
   const chooser = useBookmarkPopups((s) => s.chooser);
@@ -186,6 +187,7 @@ export function bookmarkRows(
 const isSectionRow = (r: Row) => r.kind === "file" || r.kind === "list";
 
 function BookmarksPopup() {
+  const rowHeight = useRowHeight(22);
   const items = useBookmarks((s) => s.items);
   const paths = useBookmarks((s) => s.paths);
   const lists = useBookmarks((s) => s.lists);
@@ -247,8 +249,7 @@ function BookmarksPopup() {
               jump(r);
             }}
             aria-label="Bookmarks"
-            rowHeight={22}
-            sectionHeight={24}
+            rowHeight={rowHeight}
             empty={<span>{items.length || paths.length ? null : <T>No bookmarks</T>}</span>}
             renderSection={(r) =>
               r.kind === "file" ? (

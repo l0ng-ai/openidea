@@ -58,9 +58,13 @@
 .active:hover {
   background: var(--bg-tree-selected);
 }
-/* A focusable list that lost focus shows the inactive selection, like IDEA's JList. */
-.list[tabindex="0"]:not(:focus-within) .active {
+/* A focusable list shows the inactive selection until it holds focus. Not `:not(:focus-within)`:
+   WebKit then restyles the whole window on every focus change. */
+.list[tabindex="0"] .active {
   background: var(--bg-tree-selected-inactive);
+}
+.list[tabindex="0"]:focus-within .active {
+  background: var(--bg-tree-selected);
 }
 .section {
   padding: 0 8px;

@@ -4,17 +4,16 @@
  * and its language pages (`scopeGroup`); "Copy to Project" / "Copy to IDE"
  * stage every Code Style value in the other scope.
  */
-import { useState } from "react";
-import clsx from "clsx";
-import { Button, T, type SelectOption } from "@/ui";
+import { useId, useState, type ReactNode } from "react";
+import { Button, T, Tabs, type SelectOption } from "@/ui";
 import { useProject } from "@/platform/project";
 import { GlobListEditor, Row, Select } from "../../components/Form";
-import { usePageContext, useSetting } from "../../components/context";
+import { usePageContext, useSearchQuery, useSetting } from "../../components/context";
+import { labelMatches, queryTerms } from "../../model/pages";
 import { setPageScope, stage, stagedValue, useSettingsDialog, type Scope } from "../../model/staging";
 import { EditorSections, sectionLabels, type EditorSection } from "./kit";
 import { PluginFormattersSection } from "./pluginFormatters";
 import styles from "./CodeStyle.module.css";
-import { tx } from "@/platform/i18n";
 
 export const CODE_STYLE_SCOPE = "editor.codeStyle";
 
@@ -115,39 +114,88 @@ export const FORMATTER_SECTIONS: EditorSection[] = [
     ],
   },
 ];
+const FORMATTER_LABELS = [...sectionLabels(FORMATTER_SECTIONS), "Plugin Formatters"];
 
-type Tab = "general" | "formatter";
+export interface CodeStyleTab {
+  id: string;
+  label: string;
+  keywords: readonly string[];
+  content: ReactNode;
+}
+
+export function CodeStyleTabs({ tabs }: { tabs: CodeStyleTab[] }) {
+  const query = useSearchQuery();
+  const prefix = useId();
+  const [selection, select] = useState({ id: tabs[0]!.id, query: "" });
+  let active = tabs.find((tab) => tab.id === selection.id)?.id ?? tabs[0]!.id;
+  if (query !== selection.query) {
+    const terms = queryTerms(query);
+    let best = 0;
+    for (const tab of tabs) {
+      const labels = [tab.label, ...tab.keywords];
+      const score = terms.filter((term) => labels.some((label) => labelMatches(label, term))).length;
+      if (score > best) {
+        active = tab.id;
+        best = score;
+      }
+    }
+  }
+  return (
+    <>
+      <Tabs
+        aria-label="Code Style"
+        variant="compact"
+        layout="wrap"
+        className={styles.tabs}
+        items={tabs.map(({ id, label }) => ({ id, label }))}
+        activeId={active}
+        panelIdPrefix={prefix}
+        onSelect={(id) => select({ id, query })}
+      />
+      {tabs.map(({ id, content }) => (
+        <div
+          key={id}
+          role="tabpanel"
+          id={`${prefix}-panel-${id}`}
+          aria-labelledby={`${prefix}-tab-${id}`}
+          className={styles.panel}
+          hidden={id !== active}
+        >
+          {id === active && content}
+        </div>
+      ))}
+    </>
+  );
+}
 
 /** Code Style: Scheme, then the General / Formatter tabs. */
 export function CodeStyleMain({ general }: { general: EditorSection[] }) {
-  const [tab, setTab] = useState<Tab>("general");
-  const tabs: Array<[Tab, string]> = [
-    ["general", "General"],
-    ["formatter", "Formatter"],
-  ];
   return (
     <div className={styles.page}>
       <SchemeRow />
-      <div className={styles.tabs} role="tablist" aria-label={tx("Code Style")}>
-        {tabs.map(([id, label]) => (
-          <button
-            key={id}
-            type="button"
-            role="tab"
-            aria-selected={tab === id}
-            className={clsx(styles.tab, tab === id && styles.tabOn)}
-            onClick={() => setTab(id)}
-          >
-            <T>{label}</T>
-          </button>
-        ))}
-      </div>
-      <div role="tabpanel">
-        <EditorSections sections={tab === "general" ? general : FORMATTER_SECTIONS} />
-        {tab === "formatter" && <PluginFormattersSection />}
-      </div>
+      <CodeStyleTabs
+        tabs={[
+          {
+            id: "general",
+            label: "General",
+            keywords: sectionLabels(general),
+            content: <EditorSections sections={general} />,
+          },
+          {
+            id: "formatter",
+            label: "Formatter",
+            keywords: FORMATTER_LABELS,
+            content: (
+              <>
+                <EditorSections sections={FORMATTER_SECTIONS} />
+                <PluginFormattersSection />
+              </>
+            ),
+          },
+        ]}
+      />
     </div>
   );
 }
 
-export const formatterLabels = () => ["Scheme", "Formatter", ...sectionLabels(FORMATTER_SECTIONS), "Plugin Formatters"];
+export const formatterLabels = () => ["Scheme", "Formatter", ...FORMATTER_LABELS];

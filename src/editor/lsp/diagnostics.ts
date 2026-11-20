@@ -5,7 +5,7 @@
  * tooltip — `hover.ts` renders diagnostics together with documentation).
  */
 import type { EditorState, Text } from "@codemirror/state";
-import { EditorSelection, StateEffect, StateField } from "@codemirror/state";
+import { ChangeSet, EditorSelection, StateEffect, StateField } from "@codemirror/state";
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { forEachDiagnostic, linter, setDiagnostics, type Diagnostic as LintDiagnostic } from "@codemirror/lint";
 import type { Diagnostic, Severity } from "@/bindings";
@@ -36,6 +36,9 @@ type Listener = (publication?: DiagnosticPublication) => void;
 
 const byPath = new Map<string, Map<string, Diagnostic[]>>();
 const listeners = new Map<string, Set<Listener>>();
+/** Per path and source: a number that changes with each replacement of the source's list. */
+const stamps = new Map<string, Map<string, number>>();
+let lastStamp = 0;
 
 /** Diagnostics a UI-side inspection computed for `path` (shown in the editor and Problems). */
 export function setFileDiagnostics(path: string, source: string, items: Diagnostic[]) {
@@ -55,7 +58,11 @@ function storeDiagnostics(path: string, source: string, items: Diagnostic[], pub
   if (!items.length) {
     if (!sources?.delete(source) && !published) return;
     if (!sources?.size) byPath.delete(path);
+    stamps.get(path)?.delete(source);
   } else {
+    let pathStamps = stamps.get(path);
+    if (!pathStamps) stamps.set(path, (pathStamps = new Map()));
+    pathStamps.set(source, ++lastStamp);
     if (!sources) byPath.set(path, (sources = new Map()));
     sources.set(
       source,
@@ -129,10 +136,17 @@ export interface EditorDiagnostic extends LintDiagnostic {
   problem?: Diagnostic;
 }
 
-/** Backend diagnostics → lint diagnostics for `doc` (empty ranges widened to one character). */
-export function toLintDiagnostics(doc: Text, items: readonly Diagnostic[]): EditorDiagnostic[] {
+/**
+ * Backend diagnostics → lint diagnostics for `doc` (empty ranges widened to one character).
+ * `place` gives an item's offsets in `doc` when its range refers to an earlier text.
+ */
+export function toLintDiagnostics(
+  doc: Text,
+  items: readonly Diagnostic[],
+  place: (d: Diagnostic) => { from: number; to: number } = (d) => rangeToOffsets(doc, d.range),
+): EditorDiagnostic[] {
   const out: EditorDiagnostic[] = items.map((d) => {
-    let { from, to } = rangeToOffsets(doc, d.range);
+    let { from, to } = place(d);
     if (from === to) {
       const line = doc.lineAt(from);
       if (to < line.to) to++;
@@ -216,10 +230,43 @@ const diagnosticsSync = ViewPlugin.fromClass(
     private unsubscribe: () => void;
     private pending = false;
     private skipped = false;
+    /**
+     * Per source: the text its list arrived for and the edits made since. A list's ranges
+     * refer to the text it was published for (a saved file, for a build or PHPStan), so
+     * when another source updates, each list is placed through the edits since its own
+     * arrival instead of being read against the current text again.
+     */
+    private anchors = new Map<string, { stamp: number; doc: Text; changes: ChangeSet }>();
     constructor(private view: EditorView) {
       const path = view.state.facet(lspDoc)?.path;
-      this.unsubscribe = path ? subscribeDiagnostics(path, () => this.schedule()) : () => {};
-      if (path && diagnosticsFor(path).length) this.schedule();
+      this.unsubscribe = path
+        ? subscribeDiagnostics(path, () => {
+            this.anchor(path);
+            this.schedule();
+          })
+        : () => {};
+      if (path && diagnosticsFor(path).length) {
+        this.anchor(path);
+        this.schedule();
+      }
+    }
+    /** Lists that changed are anchored at the current text. */
+    anchor(path: string) {
+      const current = stamps.get(path);
+      for (const source of this.anchors.keys()) if (!current?.has(source)) this.anchors.delete(source);
+      const doc = this.view.state.doc;
+      for (const [source, stamp] of current ?? []) {
+        if (this.anchors.get(source)?.stamp !== stamp)
+          this.anchors.set(source, { stamp, doc, changes: ChangeSet.empty(doc.length) });
+      }
+    }
+    /** Offsets in the current text of `d`, an item of `source`. */
+    place(source: string, d: Diagnostic): { from: number; to: number } {
+      const anchor = this.anchors.get(source);
+      if (!anchor) return rangeToOffsets(this.view.state.doc, d.range);
+      const { from, to } = rangeToOffsets(anchor.doc, d.range);
+      const start = anchor.changes.mapPos(from, 1);
+      return { from: start, to: Math.max(start, anchor.changes.mapPos(to, -1)) };
     }
     schedule() {
       if (this.pending) return;
@@ -229,7 +276,17 @@ const diagnosticsSync = ViewPlugin.fromClass(
         const path = this.view.state.facet(lspDoc)?.path;
         this.skipped = !this.view.dom.isConnected;
         if (!path || this.skipped) return;
-        const lint = toLintDiagnostics(this.view.state.doc, diagnosticsFor(path));
+        const profile = inspectionProfile();
+        const sources = [...(byPath.get(path) ?? [])];
+        const items = sources.flatMap(([source, list]) =>
+          applyProfile(profile, source, list).map((d) => ({ source, d })),
+        );
+        const sourceOf = new Map(items.map(({ source, d }) => [d, source]));
+        const lint = toLintDiagnostics(
+          this.view.state.doc,
+          items.map(({ d }) => d),
+          (d) => this.place(sourceOf.get(d)!, d),
+        );
         const tr = setDiagnostics(this.view.state, lint);
         this.view.dispatch({
           ...tr,
@@ -238,6 +295,7 @@ const diagnosticsSync = ViewPlugin.fromClass(
       });
     }
     update(u: ViewUpdate) {
+      if (u.docChanged) for (const anchor of this.anchors.values()) anchor.changes = anchor.changes.compose(u.changes);
       if (this.skipped && shownAgain(u)) this.schedule();
     }
     destroy() {
