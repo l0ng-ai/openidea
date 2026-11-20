@@ -3770,6 +3770,8 @@ export type CommitSettings = {
 	agentModel?: string,
 	/**  That model's thinking level for commit messages; empty keeps the agent's. */
 	agentEffort?: string,
+	/**  Show the Generate Commit Message with Agent button above the commit message. */
+	agentButton?: boolean,
 };
 
 export type Commit_Deserialize = {
