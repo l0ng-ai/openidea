@@ -1,5 +1,6 @@
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
+import { isMacHost } from "@/platform/keymap";
 import { Icon, IconButton, SearchField, type MenuItem } from "@/ui";
 import clsx from "clsx";
 import { useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -251,11 +252,18 @@ export function FilterBar() {
             onOpen: (anchor: HTMLElement) =>
               menuBelow(
                 anchor,
-                repositories.map((repo) => ({
-                  label: repoName(repo),
-                  checked: filters.repositories?.includes(repo) ?? false,
-                  run: () => setLogFilters({ repositories: toggleRepository(filters.repositories, repo) }),
-                })),
+                repositories.map((repo) => {
+                  const name = repoName(repo);
+                  const modifier = isMacHost() ? "⌘" : "Ctrl";
+                  return {
+                    label: name,
+                    verbatim: true,
+                    checked: filters.repositories?.includes(repo) ?? false,
+                    run: () => setLogFilters({ repositories: toggleRepository(filters.repositories, repo) }),
+                    runWithModifier: () => setLogFilters({ repositories: [repo] }),
+                    hint: tx`${modifier}+Click to only see "${name}"`,
+                  };
+                }),
               ),
             onClear: () => setLogFilters({ repositories: [] }),
           },

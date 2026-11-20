@@ -15,7 +15,7 @@ import clsx from "clsx";
 import { create } from "zustand";
 import { getAction, isActionEnabled, executeActionFrom, actionToggled } from "@/platform/actions";
 import { useContextKeys } from "@/platform/context";
-import { shortcutLabel } from "@/platform/keymap";
+import { hasPrimaryModifier, shortcutLabel } from "@/platform/keymap";
 import { Icon, type IconName } from "./icons";
 import { Popup, type PopupAnchor } from "./Popup";
 import type { Placement } from "@floating-ui/react-dom";
@@ -48,6 +48,10 @@ export type MenuItem =
       checked?: boolean;
       danger?: boolean;
       run?: () => void;
+      /** Run instead of `run` on ⌘-click (macOS) / Ctrl-click, e.g. "only this one" in a multi-choice filter. */
+      runWithModifier?: () => void;
+      /** Tooltip of the whole row (the label's own tooltip shows a truncated label). */
+      hint?: string;
       /** The pointer or the keyboard made it the active item (not on opening the menu). */
       onActive?: () => void;
       submenu?: MenuItem[];
@@ -65,6 +69,8 @@ interface Resolved {
   checked?: boolean;
   danger?: boolean;
   run?: () => void;
+  runWithModifier?: () => void;
+  hint?: string;
   onActive?: () => void;
   submenu?: MenuItem[];
 }
@@ -205,7 +211,7 @@ export function MenuList({
     }
   };
 
-  const activate = (i: number) => {
+  const activate = (i: number, modifiers?: Pick<KeyboardEvent, "metaKey" | "ctrlKey">) => {
     cancelHover();
     const item = resolved[i];
     if (!selectable(item)) return;
@@ -215,7 +221,8 @@ export function MenuList({
       return;
     }
     onDone();
-    item!.run?.();
+    if (item!.runWithModifier && modifiers && hasPrimaryModifier(modifiers)) item!.runWithModifier();
+    else item!.run?.();
   };
 
   const cancelHover = () => {
@@ -320,7 +327,7 @@ export function MenuList({
         break;
       case "Enter":
       case " ":
-        activate(active);
+        activate(active, e);
         break;
       default:
         if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
@@ -396,7 +403,8 @@ export function MenuList({
               onMouseEnter={(e) => hover(i, { x: e.clientX, y: e.clientY })}
               onPointerLeave={() => leave(i)}
               onMouseLeave={() => leave(i)}
-              onClick={() => activate(i)}
+              onClick={(e) => activate(i, e)}
+              title={r.hint}
             >
               {numbers && (
                 <span className={styles.mnemonic} data-menu-number={numbersOf[i]} aria-hidden={true}>
@@ -408,7 +416,7 @@ export function MenuList({
                   {r.checked ? <Icon name="check" size={13} /> : r.icon ? <Icon name={r.icon} size={14} /> : null}
                 </span>
               )}
-              <span className={styles.label} title={r.label}>
+              <span className={styles.label} title={r.hint ? undefined : r.label}>
                 {r.label}
               </span>
               {r.shortcut && (

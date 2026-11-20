@@ -386,6 +386,20 @@ async function pythonImplementations(doc: EditorDocContext, pos: Pos): Promise<D
   return pythonImplementationTargets(hierarchy, doc.path, pos, outline).catch(() => []);
 }
 
+/**
+ * Asks for the declaration at `offset`, dropping the target under the caret. Called when Go to
+ * Implementation finds nothing: the jump then ends on the declaration, as in IDEA.
+ */
+async function implementationFallbackTargets(
+  view: EditorView,
+  offset: number,
+  path: string,
+  pos: Pos,
+): Promise<readonly DeclarationTarget[]> {
+  const declaration = await requestNavigation(view, offset, "definition").catch(() => []);
+  return declaration.filter((l) => !isSelfTarget([l], path, pos));
+}
+
 /** Whether `line` (0-based) of `text` is an import statement. */
 function isImportLine(text: Text, line: number): boolean {
   return line < text.lines && /^\s*(from|import)\s/.test(text.line(line + 1).text);
@@ -510,7 +524,17 @@ async function gotoResolved(
     const graph = graphTargets ? await graphTargets : [];
     if (superseded()) return;
     if (graph.length) locs = graph;
-    else if (isCancelled(e) || !declaration) {
+    else if (kind === "implementation" && !isCancelled(e) && !isUnavailable(e)) {
+      // Some servers fail the request instead of answering empty (gopls: "no interfaces
+      // implemented by this method"). Treat that as a search that found nothing, not a broken server.
+      const declarationTargets = await implementationFallbackTargets(view, offset, doc.path, pos);
+      if (superseded()) return;
+      if (!declarationTargets.length) {
+        reportLspError(view, e, true);
+        return;
+      }
+      locs = dedupeLocations(declarationTargets);
+    } else if (isCancelled(e) || !declaration) {
       reportLspError(view, e, true);
       return;
     } else {
@@ -542,6 +566,12 @@ async function gotoResolved(
     return;
   }
   if (superseded()) return;
+  // Outside `gotoAfterEdits`, whose retries would repeat the extra request.
+  if (!locs.length && kind === "implementation" && !serverDown) {
+    const declarationTargets = await implementationFallbackTargets(view, offset, doc.path, pos);
+    if (superseded()) return;
+    locs = dedupeLocations(declarationTargets);
+  }
   if (!locs.length) {
     // The server has no definition here: a link (`href`, `#include`, Markdown) or a file path.
     if (

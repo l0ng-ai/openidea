@@ -2788,5 +2788,6 @@
   "Downloaded {files} files to {folder}": "Downloaded {files} files to {folder}",
   "Download to {folder} finished with errors": "Download to {folder} finished with errors",
   "Cannot download to {folder}": "Cannot download to {folder}",
-  "Copy the selected files and folders of a remote project to a folder on this computer": "Copy the selected files and folders of a remote project to a folder on this computer"
+  "Copy the selected files and folders of a remote project to a folder on this computer": "Copy the selected files and folders of a remote project to a folder on this computer",
+  "{modifier}+Click to only see \"{name}\"": "{modifier}+Click to only see \"{name}\""
 }
