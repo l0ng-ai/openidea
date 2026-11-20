@@ -261,7 +261,7 @@ describe("hover documentation", () => {
   const frame = (el: Element) => el.querySelector<HTMLElement>('[data-lsp-doc="hover"]')!;
   afterEach(() => document.body.replaceChildren());
 
-  it("shows the hovered documentation in the same view as F1's", async () => {
+  it("shows the hovered documentation in the same view as F1's, laid out when create() returns", async () => {
     const docHover: ContributedHover = (state, pos) => {
       const w = state.wordAt(pos);
       return w ? { from: w.from, to: w.to, markdown: "hovered docs" } : null;
@@ -275,11 +275,13 @@ describe("hover documentation", () => {
     });
     const tooltip = await hoverSource(view, 2);
     let created!: { dom: HTMLElement; destroy: () => void };
-    await act(async () => {
+    // Asserted inside a synchronous act(): `create()` has to leave a laid-out popup behind, since
+    // CodeMirror places the tooltip in the measure pass that follows it.
+    act(() => {
       created = tooltip!.create() as typeof created;
-      document.body.appendChild(created.dom);
+      expect(frame(created.dom).textContent).toContain("hovered docs");
     });
-    expect(frame(created.dom).textContent).toContain("hovered docs");
+    await act(async () => void document.body.appendChild(created.dom));
     expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
     created.destroy();
     view.destroy();
