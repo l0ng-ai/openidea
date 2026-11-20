@@ -538,7 +538,7 @@ export const commands = {
 	docOpenVirtual: (uri: string) => typedError<DocumentInfo, IdeError>(__TAURI_INVOKE("doc_open_virtual", { uri })),
 	/**
 	 *  Structure view: LSP document symbols when available (with tree-sitter
-	 *  visibility), tree-sitter otherwise.
+	 *  visibility and type-alias kinds), tree-sitter otherwise.
 	 *  Tree-sitter answers come from the per-document tree cache (incremental
 	 *  re-parse); large documents get no syntax structure.
 	 */
