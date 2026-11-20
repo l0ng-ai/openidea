@@ -1282,11 +1282,11 @@ fn build_rendered<R: Runtime>(
     for rendered in menus {
         let submenu = Submenu::with_id(app, format!("submenu:{}", rendered.id), &rendered.title, true)?;
         append_rendered(app, &submenu, &rendered.items, disabled)?;
+        // The Window menu is registered after `set_menu`: doing it here cannot see the submenu
+        // on NSApp, so AppKit never adds the open-window list.
         #[cfg(target_os = "macos")]
-        match rendered.id {
-            "window" => submenu.set_as_windows_menu_for_nsapp()?,
-            "help" => submenu.set_as_help_menu_for_nsapp()?,
-            _ => {}
+        if rendered.id == "help" {
+            submenu.set_as_help_menu_for_nsapp()?;
         }
         menu.append(&submenu)?;
     }
@@ -1632,9 +1632,43 @@ pub fn install<R: Runtime>(app: &AppHandle<R>, menu_state: &MenuState, recent: &
         *slot = Some(rendered);
         return;
     }
-    match build(app, Os::current(), &config, &items, &disabled).and_then(|menu| app.set_menu(menu)) {
-        Ok(_) => *slot = Some(rendered),
-        Err(e) => tracing::warn!("failed to build the app menu: {e}"),
+    let installed = match build(app, Os::current(), &config, &items, &disabled).and_then(|menu| app.set_menu(menu)) {
+        Ok(_) => {
+            *slot = Some(rendered);
+            true
+        }
+        Err(e) => {
+            tracing::warn!("failed to build the app menu: {e}");
+            false
+        }
+    };
+    drop(slot);
+    if installed {
+        // After the menu bar is installed. Holding `rendered` across this would deadlock a menu
+        // click on the main thread, which also takes that lock.
+        #[cfg(target_os = "macos")]
+        register_macos_windows_menu(app);
+    }
+}
+
+/// Makes the Window submenu the macOS windows menu, so AppKit lists open windows under it.
+///
+/// Each item uses the window title (`project – file`, or the workspace name). muda can only
+/// resolve the submenu once `set_menu` has attached it, and Tauri itself only does this for
+/// the id `__tauri_window_menu__`.
+#[cfg(target_os = "macos")]
+fn register_macos_windows_menu<R: Runtime>(app: &AppHandle<R>) {
+    let Some(menu) = app.menu() else { return };
+    let Ok(items) = menu.items() else { return };
+    for item in items {
+        let Some(submenu) = item.as_submenu() else { continue };
+        if submenu.id().as_ref() != "submenu:window" {
+            continue;
+        }
+        if let Err(error) = submenu.set_as_windows_menu_for_nsapp() {
+            tracing::warn!("failed to register the macOS Window menu: {error}");
+        }
+        return;
     }
 }
 
