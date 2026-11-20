@@ -3243,7 +3243,6 @@
   "VCS Operations…": "VCS 操作…",
   "Value": "值",
   "Value tooltip delay (ms)": "值工具提示延迟（毫秒）",
-  "Value tooltips are off": "值工具提示已关闭",
   "Values are inserted as SQL: quote strings, e.g. 'abc'.": "值将按 SQL 插入：字符串请加引号，例如 'abc'。",
   "Values of local variables are shown after the lines that use them while suspended.": "挂起时，局部变量的值会显示在使用它们的行之后。",
   "Variable": "变量",
