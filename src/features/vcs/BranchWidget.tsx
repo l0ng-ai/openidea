@@ -744,7 +744,12 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
     }
     setRepoMenu(null);
     if (row.type === "common") {
-      setMenuFor({ items: commonBranchMenu(row.branch, roots, closeAll), label: tx`Branch ${row.branch.name}`, el });
+      const shared = widgetShowsRepo(repos) ? null : (repos[0]?.head ?? null);
+      setMenuFor({
+        items: commonBranchMenu(row.branch, roots, shared, closeAll),
+        label: tx`Branch ${row.branch.name}`,
+        el,
+      });
     } else if (row.type === "branch") {
       const items = inRepo(row.repo.root, branchMenu(row.branch, row.repo.head, closeAll));
       setMenuFor({ items, label: tx`Branch ${row.branch.name} of ${row.repo.name}`, el });

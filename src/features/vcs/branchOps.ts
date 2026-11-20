@@ -733,6 +733,37 @@ export async function newBranchInRepos(roots: readonly string[], from?: string) 
   );
 }
 
+/**
+ * Checkout and Rebase onto Current in every repository of `roots`: checks out `name`, then
+ * rebases it onto `current` (the branch they were all on); stops on conflicts.
+ */
+export async function checkoutAndRebaseInRepos(name: string, current: string, roots: readonly string[]) {
+  await saveAll();
+  await eachRepo(
+    roots,
+    async (root) => {
+      if (!(await performCheckout(name, () => "", root, true))) return undefined;
+      const tip = (await branchInfo(root))?.headCommit;
+      if (!tip) return undefined;
+      const done = await runOp(
+        tx`Rebase onto ${current} (${repoName(root)})`,
+        () => call(commands.vcsRebase(root, current)),
+        { refresh: false, errorActions: conflictActions, onError: openConflictsInstead },
+      );
+      return done === undefined ? undefined : { tip };
+    },
+    `Checked out ${name} and rebased onto ${current}`,
+    {
+      undo: tx`restore ${name} and check out the previous branch again`,
+      run: async (root, { tip }, before) => {
+        const after = (await branchInfo(root))?.headCommit;
+        if (after) await call(commands.vcsRestoreHead(root, tip, after));
+        await checkoutBack(root, before);
+      },
+    },
+  );
+}
+
 /** Merges `branch` into the current branch of every repository of `roots`; stops on conflicts. */
 export async function mergeInRepos(branch: string, roots: readonly string[]) {
   await saveAll();

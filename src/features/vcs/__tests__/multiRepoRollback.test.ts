@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   merge: vi.fn(),
   checkout: vi.fn(),
   rename: vi.fn(),
+  rebase: vi.fn(),
   prompt: vi.fn(),
   restore: vi.fn(),
   heads: {} as Record<string, string>,
@@ -39,7 +40,14 @@ vi.mock("@/platform/ipc", async (original) => {
       },
       vcsCheckout: (root: string, rev: string) => {
         mocks.checkout(root, rev);
+        mocks.heads[root] = `${root}-${rev}`;
         return ok({ kind: "done" });
+      },
+      vcsRebase: (root: string, onto: string) => {
+        mocks.rebase(root, onto);
+        if (root === "/b") return fail("rebase refused");
+        mocks.heads[root] = `${root}-rebased`;
+        return ok(null);
       },
       vcsRestoreHead: (root: string, before: string, after: string) => {
         mocks.restore(root, before, after);
@@ -54,7 +62,7 @@ vi.mock("../dialogs", async (original) => ({
   promptText: mocks.prompt,
 }));
 
-import { checkoutInRepos, mergeInRepos, renameInRepos } from "../branchOps";
+import { checkoutAndRebaseInRepos, checkoutInRepos, mergeInRepos, renameInRepos } from "../branchOps";
 import { useVcs } from "../store";
 import { pendingFixup } from "../commitStore";
 import type { Commit } from "@/bindings";
@@ -141,6 +149,37 @@ describe("renaming a common branch", () => {
     mocks.prompt.mockClear();
     await renameInRepos("feature", ["/a"], false);
     expect(mocks.prompt.mock.calls[0]![0].checkbox).toBeUndefined();
+  });
+});
+
+describe("checkout and rebase of a common branch", () => {
+  beforeEach(() => {
+    mocks.ask.mockReset();
+    mocks.checkout.mockReset();
+    mocks.rebase.mockReset();
+    mocks.restore.mockReset();
+    mocks.heads = { "/a": "a1", "/b": "b1", "/c": "c1" };
+    mocks.ops = {};
+  });
+
+  it("checks the branch out and rebases it onto the current one, repository by repository", async () => {
+    await checkoutAndRebaseInRepos("feature", "main", ["/a", "/c"]);
+    expect(mocks.checkout.mock.calls).toEqual([
+      ["/a", "feature"],
+      ["/c", "feature"],
+    ]);
+    expect(mocks.rebase.mock.calls).toEqual([
+      ["/a", "main"],
+      ["/c", "main"],
+    ]);
+  });
+
+  it("restores the branch and checks out the previous one in repositories done before a failure", async () => {
+    mocks.ask.mockResolvedValue({ button: "rollback" });
+    await checkoutAndRebaseInRepos("feature", "main", ["/a", "/b", "/c"]);
+    expect(mocks.rebase.mock.calls.map((c) => c[0])).toEqual(["/a", "/b"]);
+    expect(mocks.restore).toHaveBeenCalledWith("/a", "/a-feature", "/a-rebased");
+    expect(mocks.checkout.mock.calls.at(-1)).toEqual(["/a", "main"]);
   });
 });
 

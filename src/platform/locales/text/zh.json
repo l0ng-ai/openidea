@@ -7160,6 +7160,7 @@
   "Don't Rollback": "不回滚",
   "Rollback ({repo})": "回滚（{repo}）",
   "check out the previous branch again": "重新签出之前的分支",
+  "restore {name} and check out the previous branch again": "恢复 {name} 并重新签出之前的分支",
   "delete branch {name}": "删除分支 {name}",
   "reset to the commit before the merge": "重置到合并前的提交",
   "reset to the commit before the rebase": "重置到变基前的提交",

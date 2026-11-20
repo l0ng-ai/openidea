@@ -8,6 +8,7 @@ import {
   checkoutAndRebase,
   checkoutBranch,
   checkoutDetached,
+  checkoutAndRebaseInRepos,
   checkoutInRepos,
   deleteBranch,
   deleteBranches,
@@ -158,8 +159,16 @@ export function tagMenu(tag: string, done: () => void = () => {}): MenuItem[] {
   ];
 }
 
-/** Entries for a branch common to all repositories: each acts in every one of `roots`. */
-export function commonBranchMenu(b: CommonBranch, roots: readonly string[], done: () => void = () => {}): MenuItem[] {
+/**
+ * Entries for a branch common to all repositories: each acts in every one of `roots`.
+ * `current`: the branch they are all on (null when they are on different branches).
+ */
+export function commonBranchMenu(
+  b: CommonBranch,
+  roots: readonly string[],
+  current: string | null,
+  done: () => void = () => {},
+): MenuItem[] {
   const run = (fn: () => unknown) => () => {
     done();
     void fn();
@@ -182,6 +191,14 @@ export function commonBranchMenu(b: CommonBranch, roots: readonly string[], done
   const items: MenuItem[] = [
     { label: "Checkout", run: run(() => checkoutInRepos(b.name, roots)) },
     newFrom,
+    ...(current
+      ? [
+          {
+            label: tx`Checkout and Rebase onto '${current}'`,
+            run: run(() => checkoutAndRebaseInRepos(b.name, current, roots)),
+          },
+        ]
+      : []),
     { kind: "separator" },
     { label: tx`Rebase Current onto '${b.name}'`, run: run(() => rebaseInRepos(b.name, roots)) },
     { label: tx`Merge '${b.name}' into Current`, run: run(() => mergeInRepos(b.name, roots)) },
