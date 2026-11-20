@@ -226,7 +226,15 @@ function BreadcrumbStrip({
 }
 
 /** A row of crumbs; a segment with `nav` opens a popup of its children. */
-function CrumbNav({ segments, className }: { segments: Crumb[]; className?: string }) {
+function CrumbNav({
+  segments,
+  className,
+  inStatusBar,
+}: {
+  segments: Crumb[];
+  className?: string;
+  inStatusBar: boolean;
+}) {
   const [popup, setPopup] = useState<{ nav: NavSegment; anchor: HTMLElement } | null>(null);
   return (
     <BreadcrumbStrip
@@ -261,7 +269,15 @@ function CrumbNav({ segments, className }: { segments: Crumb[]; className?: stri
           </Fragment>
         );
       })}
-      {popup && <NavChildrenPopup segment={popup.nav} anchor={popup.anchor} onClose={() => setPopup(null)} />}
+      {popup && (
+        <NavChildrenPopup
+          key={`${popup.nav.kind}:${popup.nav.path}:${popup.nav.label}`}
+          segment={popup.nav}
+          anchor={popup.anchor}
+          openAbove={inStatusBar}
+          onClose={() => setPopup(null)}
+        />
+      )}
     </BreadcrumbStrip>
   );
 }
@@ -311,7 +327,7 @@ export function Breadcrumbs({ className, inStatusBar = false }: { className?: st
     segments.push(projectCrumb(project ?? currentProject));
   }
   if (!segments.length) return null;
-  return <CrumbNav segments={segments} className={className ?? styles.status} />;
+  return <CrumbNav segments={segments} className={className ?? styles.status} inStatusBar={inStatusBar} />;
 }
 
 /** The status bar instance of the navigation bar; renders only for `statusBar`. */
