@@ -2,7 +2,8 @@ import { executeAction, useActions } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
 import { T } from "@/ui";
-import { useWorkbenchSlots } from "./contributions";
+import { useContributions, useWorkbenchSlots } from "./contributions";
+import type { ReactNode } from "react";
 import { ErrorBoundary, Slot } from "./ErrorBoundary";
 import styles from "./EditorArea.module.css";
 
@@ -56,14 +57,23 @@ export function EmptyEditor() {
 
 export function EditorArea() {
   const Provided = useWorkbenchSlots((s) => s.editorArea);
+  const wrappers = useContributions((s) => s.editorAreaWrappers);
+  const content: ReactNode = Provided ? (
+    <ErrorBoundary name="editor area" fallback={<EmptyEditor />}>
+      <Slot component={Provided} />
+    </ErrorBoundary>
+  ) : (
+    <EmptyEditor />
+  );
   return (
     <div className={styles.area} data-editor-area="" tabIndex={-1}>
-      {Provided ? (
-        <ErrorBoundary name="editor area" fallback={<EmptyEditor />}>
-          <Slot component={Provided} />
-        </ErrorBoundary>
-      ) : (
-        <EmptyEditor />
+      {[...wrappers.values()].reduceRight<ReactNode>(
+        (children, { id, component: Wrapper }) => (
+          <ErrorBoundary key={id} name={id} fallback={children}>
+            <Wrapper>{children}</Wrapper>
+          </ErrorBoundary>
+        ),
+        content,
       )}
     </div>
   );

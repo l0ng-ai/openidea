@@ -463,6 +463,20 @@ describe("docking a conversation in the tool window", () => {
     expect(backend.openInput).toHaveBeenLastCalledWith(expect.objectContaining({ key: "agent:two" }), { focus: true });
   });
 
+  it("opens an explicitly selected task instead of the previous task or new-task draft when changing placement", () => {
+    backend.active = { kind: "agent-home", key: "agent:new", data: {} };
+    act(() => setSessionLocation("toolWindow", "two"));
+    expect(useAgents.getState().docked).toBe("two");
+    expect(useAgents.getState().homeOpen).toBe(false);
+    act(() => setSessionLocation("editor", "one"));
+    expect(backend.openInput).toHaveBeenLastCalledWith(expect.objectContaining({ key: "agent:one" }), { focus: true });
+    backend.openInput.mockClear();
+    act(() => setSessionLocation("editor", "two"));
+    expect(backend.openInput).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ key: "agent:two" }), {
+      focus: true,
+    });
+  });
+
   it("opens new tasks in the selected location and moves an unfinished draft with the layout", () => {
     act(() => setSessionLocation("toolWindow"));
     backend.openInput.mockClear();

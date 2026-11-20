@@ -376,13 +376,15 @@ export function enforceTabLimit(
   isDirty: (tab: Tab) => boolean,
   keep?: string,
   isProtected?: (tab: Tab) => boolean,
+  include: (tab: Tab) => boolean = () => true,
 ): TabsState {
   let next = s;
   for (;;) {
     const pane = next.panes[paneId];
     if (!pane || limit <= 0) return next;
-    const closable = pane.tabs.filter((t) => !t.pinned && t.id !== keep && t.id !== pane.active && !isProtected?.(t));
-    if (pane.tabs.filter((t) => !t.pinned).length <= limit || !closable.length) return next;
+    const counted = pane.tabs.filter(include);
+    const closable = counted.filter((t) => !t.pinned && t.id !== keep && t.id !== pane.active && !isProtected?.(t));
+    if (counted.filter((t) => !t.pinned).length <= limit || !closable.length) return next;
     const lruOrder = [...closable].sort((a, b) => rank(pane, b) - rank(pane, a));
     const victim = (policy === "unchanged" ? lruOrder.find((t) => !isDirty(t)) : undefined) ?? lruOrder[0]!;
     next = removeTabs(next, paneId, new Set([victim.id]));
@@ -407,11 +409,18 @@ export function sortTabs(s: TabsState, paneId: string, title: (t: Tab) => string
   return tabs.every((t, i) => t === pane.tabs[i]) ? s : withPane(s, { ...pane, tabs });
 }
 
-export function cycleTab(s: TabsState, delta: number, paneId = s.activePane): TabsState {
+export function cycleTab(
+  s: TabsState,
+  delta: number,
+  paneId = s.activePane,
+  include: (tab: Tab) => boolean = () => true,
+): TabsState {
   const pane = paneOf(s, paneId);
-  if (pane.tabs.length < 2) return s;
-  const idx = pane.tabs.findIndex((t) => t.id === pane.active);
-  const next = pane.tabs[(idx + delta + pane.tabs.length) % pane.tabs.length]!;
+  const tabs = pane.tabs.filter(include);
+  if (!tabs.length) return s;
+  if (tabs.length === 1 && tabs[0]!.id === pane.active) return s;
+  const idx = tabs.findIndex((t) => t.id === pane.active);
+  const next = tabs[idx < 0 ? (delta < 0 ? tabs.length - 1 : 0) : (idx + delta + tabs.length) % tabs.length]!;
   return activateTab(s, paneId, next.id);
 }
 

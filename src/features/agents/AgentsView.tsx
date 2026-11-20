@@ -171,7 +171,8 @@ export function AgentsView() {
   const providers = useAgents((s) => s.providers);
   const docked = useAgents((s) => s.docked);
   const homeOpen = useAgents((s) => s.homeOpen);
-  const inline = docked !== null || homeOpen;
+  const location = useAgents((s) => s.sessionLocation);
+  const inline = location === "toolWindow" && (docked !== null || homeOpen);
   const historyRef = useRef<HTMLButtonElement>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const external = useAgents((s) => s.external);
@@ -183,7 +184,7 @@ export function AgentsView() {
   }, [historyOpen]);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(["g:archived"]));
   const [selected, setSelected] = useState<Set<string>>(() => {
-    const task = sessionTask(maybeEditorService()?.activeInput?.());
+    const task = docked ?? sessionTask(maybeEditorService()?.activeInput?.());
     return new Set(task ? [task] : []);
   });
   const organize = useAgents((s) => s.organize);
@@ -200,6 +201,18 @@ export function AgentsView() {
         const keys = known ? keysOf(known) : [];
         if (keys.length)
           setCollapsed((c) => (keys.some((k) => c.has(k)) ? new Set([...c].filter((k) => !keys.includes(k))) : c));
+      }),
+    [],
+  );
+  useEffect(
+    () =>
+      useAgents.subscribe((state, previous) => {
+        const taskId = state.docked;
+        if (!taskId || taskId === previous.docked) return;
+        setSelected((current) => (current.has(taskId) ? current : new Set([taskId])));
+        const task = state.tasks.get(taskId);
+        const keys = task ? keysOf(task) : [];
+        if (keys.length) setCollapsed((current) => new Set([...current].filter((key) => !keys.includes(key))));
       }),
     [],
   );
