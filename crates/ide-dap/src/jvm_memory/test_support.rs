@@ -102,6 +102,7 @@ pub(crate) fn bare_session_of(name: &str, request: &str) -> BareSession {
         server_host: None,
         connect: None,
         pinned: None,
+        resolve_lazy_variables: false,
     };
     let session = Session::new(
         DebugSessionId(1),

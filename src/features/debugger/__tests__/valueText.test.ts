@@ -22,6 +22,11 @@ describe("valueText", () => {
     );
   });
 
+  it("does not open a lazy child, whose reference holds only its uncomputed value", async () => {
+    const tree = { 1: [{ ...v("total", "(...)", 2), lazy: true }], 2: [v("", "3")] };
+    expect(await valueText({ value: "Cart", reference: 1 }, fetcher(tree))).toBe("Cart\n  total: (...)");
+  });
+
   it("stops at a cycle", async () => {
     const tree = { 1: [v("self", "Node", 1)] };
     expect(await valueText({ value: "Node", reference: 1 }, fetcher(tree))).toBe("Node\n  self: Node");

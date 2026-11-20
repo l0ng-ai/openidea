@@ -49,6 +49,8 @@ pub struct AdapterSpec {
     pub connect: Option<String>,
     /// A plugin language's adapter: start exactly this approved program.
     pub pinned: Option<ProgramPin>,
+    /// See [`DebuggerConfig::resolve_lazy_variables`].
+    pub resolve_lazy_variables: bool,
 }
 
 /// Built-in adapters used when no language definition names `adapter`.
@@ -60,6 +62,7 @@ fn builtin(adapter: &str) -> Option<DebuggerConfig> {
         transport: transport.to_owned(),
         connect: None,
         install_hint: Some(hint.to_owned()),
+        resolve_lazy_variables: false,
         pinned: None,
     };
     Some(match adapter {
@@ -130,12 +133,15 @@ fn builtin(adapter: &str) -> Option<DebuggerConfig> {
         ),
         "rdbg" => cfg("rdbg", &["-O", "--port", PORT_PLACEHOLDER, "-c"], "tcp", "gem install debug"),
         // A jdtls bundle: the session is started through jdtls and reached via `debugServer`.
-        "java-debug" => cfg(
-            "com.microsoft.java.debug.plugin.jar",
-            &[],
-            "tcp",
-            "Install Microsoft java-debug (Settings › Languages & Frameworks › Language Servers)",
-        ),
+        "java-debug" => DebuggerConfig {
+            resolve_lazy_variables: true,
+            ..cfg(
+                "com.microsoft.java.debug.plugin.jar",
+                &[],
+                "tcp",
+                "Install Microsoft java-debug (Settings › Languages & Frameworks › Language Servers)",
+            )
+        },
         // The Java language server's own debugger, for modules jdtls doesn't serve; the host
         // runs the executable of the java-analyzer serving the module.
         JAVA_ANALYZER => cfg(
@@ -186,6 +192,7 @@ pub fn resolve(config: &DebuggerConfig, cwd: PathBuf) -> AdapterSpec {
         server_host: None,
         connect: config.connect.clone(),
         pinned: config.pinned.clone(),
+        resolve_lazy_variables: config.resolve_lazy_variables,
     }
 }
 
