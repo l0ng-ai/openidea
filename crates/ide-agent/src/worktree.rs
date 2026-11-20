@@ -47,6 +47,37 @@ pub(crate) fn spans_repos(cwd: &Path) -> bool {
     nested_repos(cwd).is_ok_and(|r| r.is_some())
 }
 
+/// The repositories a turn's files are in, and the folder those files are named from.
+struct TurnRepos {
+    base: PathBuf,
+    repos: Vec<Repo>,
+    /// The project holds nested repositories: each one's `HEAD` is recorded on its own.
+    nested: bool,
+}
+
+impl TurnRepos {
+    fn of(cwd: &Path) -> IdeResult<Option<Self>> {
+        if let Some((base, repos)) = nested_repos(cwd)? {
+            return Ok(Some(Self { base, repos, nested: true }));
+        }
+        Ok(discover(cwd)?.map(|repo| Self { base: repo.root().to_path_buf(), repos: vec![repo], nested: false }))
+    }
+
+    /// The innermost repository holding `path`.
+    fn owner(&self, path: &Path) -> Option<&Repo> {
+        self.repos.iter().filter(|r| path.starts_with(r.root())).max_by_key(|r| r.root().as_os_str().len())
+    }
+
+    /// `repo`'s `HEAD` as the turn `start` began.
+    fn head_then<'a>(&self, start: &'a TurnStart, repo: &Repo) -> Option<&'a str> {
+        if self.nested { start.heads.get(&root_key(repo.root())) } else { start.head.as_ref() }.map(String::as_str)
+    }
+}
+
+fn root_key(root: &Path) -> String {
+    root.to_string_lossy().into_owned()
+}
+
 /// `path` as a task in `base` names it, if it is not in a repository nested below `repo` (that
 /// one lists it itself; to `repo` its folder is untracked).
 fn nested_rel(base: &Path, repo: &Repo, roots: &[PathBuf], path: &Path) -> Option<String> {
@@ -762,6 +793,9 @@ pub(crate) struct TurnStart {
     /// `HEAD` then (`None` outside a repository or before its first commit).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head: Option<String>,
+    /// With nested repositories, each one's `HEAD` then, by its root.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub heads: BTreeMap<String, String>,
     /// The files already changed then, stamped.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub before: BTreeMap<String, Stamp>,
@@ -777,12 +811,16 @@ pub(crate) struct TurnStart {
 /// The copies `previous` saved of files unchanged since are kept rather than made again, so
 /// starting a turn copies little more than what the turn before it changed.
 pub(crate) fn start_turn(cwd: &Path, dir: &Path, previous: Option<&TurnStart>) -> IdeResult<TurnStart> {
-    // Turns across nested repositories are not recorded.
-    if spans_repos(cwd) {
-        return Ok(TurnStart::default());
-    }
-    let Some(repo) = discover(cwd)? else { return Ok(TurnStart::default()) };
-    let head = repo.head()?.1;
+    let Some(at) = TurnRepos::of(cwd)? else { return Ok(TurnStart::default()) };
+    let mut heads = BTreeMap::new();
+    let head = if at.nested {
+        for repo in &at.repos {
+            heads.extend(repo.head()?.1.map(|h| (root_key(repo.root()), h)));
+        }
+        None
+    } else {
+        at.repos[0].head()?.1
+    };
     // As the turn's end is read, so the two compare.
     let before = snapshot(cwd)?;
     let mut saved = BTreeSet::new();
@@ -803,7 +841,7 @@ pub(crate) fn start_turn(cwd: &Path, dir: &Path, previous: Option<&TurnStart>) -
         }
     }
     for (rel, stamp) in &before {
-        let path = repo.root().join(rel);
+        let path = at.base.join(rel);
         if stamp.is_none()
             || saved.contains(rel)
             || !std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() <= SAVED_MAX)
@@ -816,32 +854,34 @@ pub(crate) fn start_turn(cwd: &Path, dir: &Path, previous: Option<&TurnStart>) -
             saved.insert(rel.clone());
         }
     }
-    Ok(TurnStart { head, before, saved, changed: None })
+    Ok(TurnStart { head, heads, before, saved, changed: None })
 }
 
 /// The files that changed in `cwd` since the turn `start` began: in the working tree (as
 /// `changed_between` sees them), and in the commits made since.
 pub(crate) fn changed_in_turn(cwd: &Path, start: &TurnStart) -> IdeResult<(Vec<String>, BTreeSet<String>)> {
-    if spans_repos(cwd) {
-        return Ok(Default::default());
-    }
     let end = snapshot(cwd)?;
     let worktree = changed_between(&start.before, &end);
     let mut all: BTreeSet<String> = worktree.iter().cloned().collect();
-    if let Some(repo) = discover(cwd)?
-        && let (Some(from), Some(to)) = (&start.head, repo.head()?.1)
-        && *from != to
-    {
+    let Some(at) = TurnRepos::of(cwd)? else { return Ok((worktree, all)) };
+    for repo in &at.repos {
+        let (Some(from), Some(to)) = (at.head_then(start, repo), repo.head()?.1) else { continue };
+        if from == to {
+            continue;
+        }
+        // Named from the base, as the working tree's files are.
+        let prefix = rel_in(&at.base, repo.root())?;
+        let named = |rel: String| if prefix.is_empty() { rel } else { format!("{prefix}/{rel}") };
         for f in repo.diff_revisions(from, &to)? {
-            all.extend(f.old_path);
-            all.insert(f.path);
+            all.extend(f.old_path.map(named));
+            all.insert(named(f.path));
         }
     }
     Ok((worktree, all))
 }
 
 /// The content of `rel` as the turn `start` began (`None`: no file), its copies in `dir`.
-fn at_turn_start(repo: &Repo, rel: &str, start: &TurnStart, dir: &Path) -> IdeResult<Option<Vec<u8>>> {
+fn at_turn_start(at: &TurnRepos, rel: &str, start: &TurnStart, dir: &Path) -> IdeResult<Option<Vec<u8>>> {
     match start.before.get(rel) {
         Some(None) => Ok(None),
         Some(Some(_)) => match start.saved.contains(rel).then(|| saved_copy(dir, rel)).flatten() {
@@ -850,10 +890,13 @@ fn at_turn_start(repo: &Repo, rel: &str, start: &TurnStart, dir: &Path) -> IdeRe
                 "{rel} had changes when the turn started that weren't saved; roll it back in Git instead"
             ))),
         },
-        None => match &start.head {
-            Some(head) => repo.file_bytes_at(&repo.root().join(rel), Some(head)),
-            None => Ok(None),
-        },
+        None => {
+            let path = at.base.join(rel);
+            match at.owner(&path).and_then(|repo| Some((repo, at.head_then(start, repo)?))) {
+                Some((repo, head)) => repo.file_bytes_at(&path, Some(head)),
+                None => Ok(None),
+            }
+        }
     }
 }
 
@@ -875,16 +918,13 @@ pub(crate) fn turn_changes(
     dir: &Path,
     changed: &BTreeSet<String>,
 ) -> IdeResult<Vec<AgentChange>> {
-    if spans_repos(cwd) {
-        return Ok(Vec::new());
-    }
-    let Some(repo) = discover(cwd)? else { return Ok(Vec::new()) };
+    let Some(at) = TurnRepos::of(cwd)? else { return Ok(Vec::new()) };
     let mut out = Vec::new();
     for rel in changed {
-        let path = repo.root().join(rel);
+        let path = at.base.join(rel);
         // A folder (a submodule, say) or a file that can't be read has nothing to compare.
         let Some(now) = existing(&path) else { continue };
-        let (kind, (added, removed)) = match at_turn_start(&repo, rel, start, dir) {
+        let (kind, (added, removed)) = match at_turn_start(&at, rel, start, dir) {
             Ok(then) if then == now => continue,
             Ok(then) => {
                 let kind = match (&then, &now) {
@@ -898,13 +938,13 @@ pub(crate) fn turn_changes(
             Err(_) => (ChangeKind::Modified, (0, 0)),
         };
         out.push(AgentChange {
-            path: IpcPath(path),
             rel_path: rel.clone(),
             kind,
             added,
             removed,
             old_path: None,
-            repo: None,
+            repo: at.nested.then(|| at.owner(&path).map(|r| IpcPath(r.root().to_path_buf()))).flatten(),
+            path: IpcPath(path),
         });
     }
     Ok(out)
@@ -912,15 +952,14 @@ pub(crate) fn turn_changes(
 
 /// The text of `path` as the turn `start` began, `None` when there was no file.
 pub(crate) fn turn_text(cwd: &Path, path: &Path, start: &TurnStart, dir: &Path) -> IdeResult<Option<String>> {
-    if spans_repos(cwd) {
-        return Ok(None);
-    }
-    let Some(repo) = discover(cwd)? else { return Ok(None) };
-    let rel = rel_in(repo.root(), path)?;
-    if let (None, Some(head)) = (start.before.get(&rel), &start.head) {
+    let Some(at) = TurnRepos::of(cwd)? else { return Ok(None) };
+    let rel = rel_in(&at.base, path)?;
+    if !start.before.contains_key(&rel)
+        && let Some(head) = at.owner(&at.base.join(&rel)).and_then(|repo| at.head_then(start, repo))
+    {
         return file_at(cwd, path, head);
     }
-    let Some(bytes) = at_turn_start(&repo, &rel, start, dir)? else { return Ok(None) };
+    let Some(bytes) = at_turn_start(&at, &rel, start, dir)? else { return Ok(None) };
     let encoding = match ide_vfs::load_text(path) {
         Ok(loaded) => encoding_rs::Encoding::for_label(loaded.encoding.as_bytes()).unwrap_or(encoding_rs::UTF_8),
         Err(_) => ide_vfs::detect_encoding(&bytes, None),
@@ -946,8 +985,9 @@ fn rel_in(root: &Path, path: &Path) -> IdeResult<String> {
 
 /// Puts `change` back as it was when the turn `start` began.
 pub(crate) fn restore_turn(cwd: &Path, start: &TurnStart, dir: &Path, change: &AgentChange) -> IdeResult<()> {
-    let repo = repo_at(cwd)?;
-    put(&change.path.0, at_turn_start(&repo, &change.rel_path, start, dir)?)
+    let at = TurnRepos::of(cwd)?
+        .ok_or_else(|| IdeError::unavailable(format!("{} is not in a git repository", cwd.display())))?;
+    put(&change.path.0, at_turn_start(&at, &change.rel_path, start, dir)?)
 }
 
 pub(crate) fn file_at(cwd: &Path, path: &Path, rev: &str) -> IdeResult<Option<String>> {
