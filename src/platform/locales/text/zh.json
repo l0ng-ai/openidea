@@ -4912,6 +4912,7 @@
   "Result {n}-{index}": "结果 {n}-{index}",
   "Executing": "正在执行",
   "Executing {count} statements in {name}…": "正在 {name} 中执行 {count} 条语句…",
+  "Executing statement {index} of {count} in {name}…": "正在 {name} 中执行第 {index} 条语句，共 {count} 条…",
   "Executing in {name}…": "正在 {name} 中执行…",
   "Executing… {elapsed}": "正在执行… {elapsed}",
   "{name} has uncommitted changes. Commit or roll them back before switching to auto-commit?": "{name} 有未提交的更改。是否在切换到自动提交前提交或回滚这些更改？",

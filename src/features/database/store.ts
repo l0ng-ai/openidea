@@ -3,6 +3,8 @@
  * cache of the tree, query consoles (file → data source) and their results.
  */
 import { useProject } from "@/platform/project";
+import { isRemoteWindow } from "@/platform/remote";
+import { Channel } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import {
   IpcError,
@@ -15,6 +17,7 @@ import {
   type DbCompletion,
   type DbDatabases,
   type DbDriver,
+  type ExecutionEvent,
   type DbObjectKind,
   type DbPlanNode,
   type DbSchemaObjects,
@@ -22,6 +25,7 @@ import {
   type DbTableDetails,
   type DbTableInfo,
   type DbTableKind,
+  type IdeError,
   type RequestId,
   type SqlStatement,
 } from "@/platform/ipc";
@@ -176,9 +180,11 @@ export interface SourceCatalog {
 
 export interface ConsoleExecution {
   startedAt: number;
-  /** Statements submitted (a batch runs them in order; the backend doesn't say which one is current). */
   statements: number;
+  active: { index: number; startedAt: number } | null;
 }
+
+export type StatementProgress = Exclude<ExecutionEvent, { type: "done" }>;
 
 interface DatabaseState {
   sources: DataSource[];
@@ -889,6 +895,7 @@ export async function revealOpened(): Promise<void> {
 }
 
 const completionLoads = new Map<string, { current: () => boolean; promise: Promise<DbCompletion | null> }>();
+const preparingConsoles = new Map<string, RequestId>();
 
 /** The schema model of `id` for completion (cached; one load at a time). */
 export function loadCompletion(id: string): Promise<DbCompletion | null> {
@@ -920,6 +927,7 @@ useProject.subscribe((state, previous) => {
   sourceConnectionIntents.clear();
   sourceMutations.clear();
   completionLoads.clear();
+  preparingConsoles.clear();
   lastUsed.clear();
 });
 
@@ -1091,13 +1099,55 @@ async function run(
   maxRows = useDatabase.getState().maxRows,
   skip = 0,
   schema?: string,
+  progress?: { emit: (event: StatementProgress) => void; current: () => boolean },
 ): Promise<DbStatementOutcome[]> {
   const current = databaseRequest(id);
   const wasConnected = useDatabase.getState().connected.has(id);
-  const outcomes = await withConnection(id, () =>
-    call(commands.dbExecute(request, id, statements, skip, maxRows, schema || null)),
-  );
-  if (!current()) return outcomes;
+  const outcomes = await withConnection(id, async () => {
+    const execute = async () => {
+      progress?.emit({ type: "started", index: 0 });
+      const outcomes = await call(commands.dbExecute(request, id, statements, skip, maxRows, schema || null));
+      outcomes.forEach((outcome, index) => progress?.emit({ type: "completed", index, outcome }));
+      return outcomes;
+    };
+    if (!progress || statements.length === 1) return execute();
+    const outcomes: DbStatementOutcome[] = [];
+    let received = false;
+    let finish!: (error: IdeError | null) => void;
+    const done = new Promise<IdeError | null>((resolve) => (finish = resolve));
+    const channel = new Channel<ExecutionEvent>();
+    channel.onmessage = (event) => {
+      received = true;
+      if (event.type === "done") {
+        finish(event.error);
+        return;
+      }
+      if (event.type === "completed") outcomes.push(event.outcome);
+      progress.emit(event);
+    };
+    try {
+      const [, error] = await Promise.all([
+        call(commands.dbExecuteStream(request, id, statements, maxRows, schema || null, channel)),
+        done,
+      ]);
+      if (error) throw new IpcError(error);
+      return outcomes;
+    } catch (error) {
+      // An older remote dispatcher rejects the missing command before it executes any SQL.
+      if (
+        !received &&
+        isRemoteWindow() &&
+        error instanceof IpcError &&
+        error.kind === "protocol" &&
+        error.message === "command db_execute_stream is not available remotely"
+      )
+        return execute();
+      throw error;
+    } finally {
+      channel.onmessage = () => {};
+    }
+  });
+  if (!current() || (progress && !progress.current())) return outcomes;
   if (!wasConnected) log("info", "Connected");
   // A failed statement can have found the session dead; the backend then dropped it.
   if (outcomes.some((o) => o.error)) void syncDropped(id);
@@ -1258,6 +1308,7 @@ export async function executeConsole(
   to: number,
   /** Called once the statements are submitted, with what was submitted. */
   onStart?: (statements: readonly SqlStatement[]) => void,
+  onProgress?: (event: StatementProgress) => DbStatementOutcome | void,
 ): Promise<DbStatementOutcome[]> {
   const id = consoleSource(path);
   if (!id) {
@@ -1272,44 +1323,54 @@ export async function executeConsole(
     return [];
   }
   const current = databaseRequest(id);
-  const statements = await consoleStatements(id, text, from, to);
-  if (!current() || !statements.length) return [];
-  const prev = useDatabase.getState().running[path];
-  if (prev) void commands.cancelRequest(prev);
   const request = nextRequestId();
-  useDatabase.setState((s) => ({
-    running: { ...s.running, [path]: request },
-    executions: { ...s.executions, [path]: { startedAt: Date.now(), statements: statements.length } },
-  }));
+  const ownsRun = () => current() && useDatabase.getState().running[path] === request;
+  preparingConsoles.set(path, request);
+  const resultIds = new Set<number>();
+  let finished = false;
+  let selectOutput = false;
   try {
+    const statements = await consoleStatements(id, text, from, to);
+    if (!current() || preparingConsoles.get(path) !== request || !statements.length) return [];
+    preparingConsoles.delete(path);
+    const prev = useDatabase.getState().running[path];
+    if (prev) void commands.cancelRequest(prev);
+    const execution = { startedAt: Date.now(), statements: statements.length, active: null };
+    useDatabase.setState((s) => ({
+      running: { ...s.running, [path]: request },
+      executions: { ...s.executions, [path]: execution },
+    }));
     onStart?.(statements);
-    // IDEA brings the results up as the run starts, showing it executing.
-    if (!inEditorResults()) showServiceView(RESULTS_VIEW, false);
+    const inline = inEditorResults();
+    if (!inline) showServiceView(RESULTS_VIEW, false);
     const pageSize = useDatabase.getState().maxRows;
     const schema = consoleSchema(path) || (await loadCompletion(id))?.defaultSchema || "";
-    if (!current()) return [];
-    const outcomes = await run(id, statements, request, pageSize, 0, schema);
-    if (!current() || useDatabase.getState().running[path] !== request) return outcomes;
-    const sets = outcomes.filter((o) => o.result?.columns.length);
-    const n = sets.length ? nextRun++ : 0;
-    const tabs: ResultTab[] = sets.map((outcome, i) => {
-      const index = i + 1;
-      const title = index === 1 ? tx`Result ${n}` : tx`Result ${n}-${index}`;
-      return { id: nextTab++, title, path, sourceId: id, schema, outcome, page: 0, pageSize };
-    });
-    if (inEditorResults()) {
-      useDatabase.setState((s) => ({ inline: [...s.inline, ...tabs.map((t) => ({ ...t, inline: true }))] }));
-      return outcomes;
-    }
-    const failed = outcomes.some((o) => o.error);
-    useDatabase.setState((s) => ({
-      results: replaceResults(s.results, path, tabs),
-      activeResult: failed || !tabs.length ? OUTPUT_TAB : tabs.at(-1)!.id,
-    }));
-    showServiceView(RESULTS_VIEW, false);
+    if (!ownsRun()) return [];
+    let runNumber: number | undefined;
+    const emit = (event: StatementProgress) => {
+      if (!ownsRun()) return;
+      const active = event.type === "started" ? { index: event.index, startedAt: Date.now() } : null;
+      useDatabase.setState((s) => ({ executions: { ...s.executions, [path]: { ...execution, active } } }));
+      const placed = onProgress?.(event);
+      if (event.type === "started" || !event.outcome.result?.columns.length) return;
+      runNumber ??= nextRun++;
+      const index = resultIds.size + 1;
+      const title = index === 1 ? tx`Result ${runNumber}` : tx`Result ${runNumber}-${index}`;
+      const tab = { id: nextTab++, title, path, sourceId: id, schema, outcome: event.outcome, page: 0, pageSize };
+      resultIds.add(tab.id);
+      if (inline)
+        useDatabase.setState((s) => ({
+          inline: [...s.inline, { ...tab, outcome: placed ?? tab.outcome, inline: true }],
+        }));
+      else useDatabase.setState((s) => ({ results: [...s.results, tab], activeResult: tab.id }));
+    };
+    const outcomes = await run(id, statements, request, pageSize, 0, schema, { emit, current: ownsRun });
+    if (!ownsRun()) return [];
+    finished = true;
+    selectOutput = !inline && (!resultIds.size || outcomes.some((o) => o.error));
     return outcomes;
   } catch (e) {
-    if (!current()) return [];
+    if (!current() || (!ownsRun() && preparingConsoles.get(path) !== request)) return [];
     if (!isCancelled(e)) {
       log("error", message(e));
       notifications().notify({ level: "error", title: "Cannot execute", body: message(e), key: "db-execute" });
@@ -1323,13 +1384,25 @@ export async function executeConsole(
     }
     return [];
   } finally {
+    if (preparingConsoles.get(path) === request) preparingConsoles.delete(path);
     useDatabase.setState((s) => {
       if (s.running[path] !== request) return s;
       const running = { ...s.running };
       delete running[path];
       const executions = { ...s.executions };
       delete executions[path];
-      return { running, executions };
+      const tabs = s.results.filter((tab) => resultIds.has(tab.id));
+      let results = s.results;
+      if (tabs.length) {
+        results = finished
+          ? replaceResults(
+              s.results.filter((tab) => !resultIds.has(tab.id)),
+              path,
+              tabs,
+            )
+          : capResults(s.results, tabs);
+      }
+      return { running, executions, results, activeResult: selectOutput ? OUTPUT_TAB : s.activeResult };
     });
   }
 }

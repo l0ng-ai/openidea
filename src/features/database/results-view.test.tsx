@@ -1,11 +1,20 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { DbDriver, DbQueryResult, DbTableDetails } from "@/platform/ipc";
+import type {
+  DbDriver,
+  ExecutionEvent,
+  DbQueryResult,
+  DbTableDetails,
+  RemoteSession,
+  SqlStatement,
+} from "@/platform/ipc";
 import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
+import { disableRemote, enableRemote } from "@/platform/remote";
 import { installCellActions } from "./cellActions";
 import { getContext } from "@/platform/context";
 import { ResultsView } from "./ResultsView";
+import { streamExecution } from "./executeStream.fixture";
 import { executeConsole, explainConsole, pinResult, rerunResult, useDatabase, type ResultTab } from "./store";
 import { registerResultTabActions } from "./resultTabActions";
 import { activeTableEditor, installTableEditorFocus } from "./tableEditorFocus";
@@ -17,6 +26,8 @@ const backend = vi.hoisted(() => ({
   details: vi.fn(),
   applyEdits: vi.fn(),
   execute: vi.fn(),
+  stream: vi.fn(),
+  cancel: vi.fn(),
   statements: vi.fn(),
   explain: vi.fn(),
 }));
@@ -30,11 +41,20 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       dbTableDetails: backend.details,
       dbApplyEdits: backend.applyEdits,
       dbExecute: backend.execute,
+      dbExecuteStream: backend.stream,
+      cancelRequest: backend.cancel,
       dbStatements: backend.statements,
       dbExplain: backend.explain,
     },
   };
 });
+
+vi.mock("@tauri-apps/api/core", async (original) => ({
+  ...(await original<typeof import("@tauri-apps/api/core")>()),
+  Channel: class {
+    onmessage = (_event: unknown) => {};
+  },
+}));
 
 vi.mock("@tanstack/react-virtual", () => ({
   useVirtualizer: ({ count }: { count: number }) => ({
@@ -98,6 +118,8 @@ function show(text: string, columns: Array<{ name: string }>, rows: (string | nu
 beforeEach(() => {
   provideToolWindowService({ show: () => {} } as never);
   vi.clearAllMocks();
+  backend.stream.mockReset().mockImplementation(streamExecution(backend.execute));
+  backend.cancel.mockResolvedValue(undefined);
   backend.statements.mockImplementation((_id: unknown, text: string) =>
     Promise.resolve({ status: "ok", data: [{ from: 0, to: text.length, text }] }),
   );
@@ -752,6 +774,69 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
     expect(useDatabase.getState().results).toBe(before);
   });
 
+  it("keeps a completed grid and a pinned result when a later statement fails", async () => {
+    await runIn("a.sql", "SELECT old");
+    const pinned = ids()[0]!;
+    pinResult(pinned, true);
+    await runIn("a.sql", "SELECT 1; bad sql");
+    expect(ids()[0]).toBe(pinned);
+    expect(strip()).toEqual(["a.sql:SELECT old", "a.sql:SELECT 1"]);
+    expect(useDatabase.getState().activeResult).toBe(0);
+    expect(useDatabase.getState().output.map((entry) => entry.text)).toContain("[Local] syntax error");
+  });
+
+  it("ignores results from a superseded request after an early invocation reply", async () => {
+    let stale!: () => void;
+    backend.stream.mockImplementationOnce(async (_r, _id, statements: SqlStatement[], _max, _schema, channel) => {
+      const emit = (event: ExecutionEvent) => channel.onmessage(event);
+      emit({ type: "started", index: 0 });
+      stale = () => {
+        emit({
+          type: "completed",
+          index: 0,
+          outcome: { statement: statements[0]!, result: result([{ name: "v" }], [["stale"]]), error: null },
+        });
+        emit({ type: "done", error: null });
+      };
+      return { status: "ok", data: null };
+    });
+    const superseded = runIn("a.sql", "SELECT stale; SELECT later");
+    await vi.waitFor(() => expect(stale).toBeTypeOf("function"));
+    const oldRequest = useDatabase.getState().running["a.sql"];
+    expect(oldRequest).toBeDefined();
+    expect(strip()).toEqual([]);
+    try {
+      await runIn("a.sql", "SELECT current");
+      expect(backend.cancel).toHaveBeenCalledWith(oldRequest);
+      stale();
+      expect(await superseded).toEqual([]);
+      expect(strip()).toEqual(["a.sql:SELECT current"]);
+      expect(useDatabase.getState().executions).toEqual({});
+      expect(useDatabase.getState().output.map((entry) => entry.text)).not.toContain("SELECT stale");
+    } finally {
+      stale();
+      await superseded;
+    }
+  });
+
+  it.each([false, true])("retries a missing remote command only before progress (started: %s)", async (started) => {
+    enableRemote({ commands: [] } as unknown as RemoteSession);
+    backend.stream.mockImplementationOnce(async (_r, _id, _statements, _max, _schema, channel) => {
+      if (started) channel.onmessage({ type: "started", index: 0 });
+      return {
+        status: "error",
+        error: { kind: "protocol", message: "command db_execute_stream is not available remotely", data: null },
+      };
+    });
+    try {
+      await runIn("a.sql", "SELECT 1; SELECT 2");
+      expect(backend.execute).toHaveBeenCalledTimes(started ? 0 : 1);
+      expect(strip()).toEqual(started ? [] : ["a.sql:SELECT 1", "a.sql:SELECT 2"]);
+    } finally {
+      disableRemote();
+    }
+  });
+
   it("never replaces the Query Plan from a run, and appends a new plan beside a pinned one", async () => {
     backend.explain.mockResolvedValue({ status: "ok", data: [] });
     await explainConsole("a.sql", "SELECT 1", 0, 0);
@@ -859,7 +944,7 @@ describe("a console request in flight", () => {
       pending = executeConsole("console.sql", "SELECT 1; SELECT 2", 0, 18);
       await vi.waitFor(() => expect(backend.execute).toHaveBeenCalled());
     });
-    expect(screen.getByText("Executing 2 statements in console.sql…")).toBeTruthy();
+    expect(screen.getByText("Executing statement 1 of 2 in console.sql…")).toBeTruthy();
     expect(screen.getByText("Ann")).toBeTruthy();
     await act(async () => {
       finish();

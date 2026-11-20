@@ -203,6 +203,7 @@
   "Result {n}-{index}": "Result {n}-{index}",
   "Executing": "Executing",
   "Executing {count} statements in {name}…": "Executing {count} statements in {name}…",
+  "Executing statement {index} of {count} in {name}…": "Executing statement {index} of {count} in {name}…",
   "Executing in {name}…": "Executing in {name}…",
   "Executing… {elapsed}": "Executing… {elapsed}",
   "Absolute": "Absolute",
