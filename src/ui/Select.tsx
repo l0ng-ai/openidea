@@ -292,6 +292,9 @@ export function SelectListbox<V extends string = string>({
                   className={styles.rowAction}
                   onMouseDown={(e) => e.stopPropagation()}
                   onClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") e.stopPropagation();
+                  }}
                 >
                   {action}
                 </span>
