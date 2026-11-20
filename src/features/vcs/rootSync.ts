@@ -21,6 +21,9 @@ const styled = (attr: string, extra: Pick<DecorationSegment, "text"> & Decoratio
   ...extra,
 });
 
+/** Tooltip of the working-tree marker. */
+const changedLabel = (count: number) => tx`${count} changed files`;
+
 export function rootSyncSuffix(info: BranchInfo, changed = 0): DecorationSegment[] | null {
   const { head, upstream, ahead, behind } = info;
   if (!head) return null;
@@ -60,7 +63,7 @@ export function rootSyncSuffix(info: BranchInfo, changed = 0): DecorationSegment
   });
   const workingTree: DecorationSegment =
     changed > 0
-      ? { text: `${changed} Δ`, label: tx`${changed} changed files`, color: "var(--vcs-modified)" }
+      ? { text: `${changed} Δ`, label: changedLabel(changed), color: "var(--vcs-modified)" }
       : styled("head-tags", { text: "∅", label: tx("No local changes"), color: tagsColor });
   return [branch, ...counts, separator, workingTree];
 }
