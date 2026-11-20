@@ -81,6 +81,10 @@
   color: var(--warning);
   font-size: var(--fs-small);
 }
+.noticeLabel {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
 .noticeDetail {
   overflow: hidden;
   color: var(--fg-subtle);

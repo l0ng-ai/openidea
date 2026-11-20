@@ -835,7 +835,7 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
             r.type === "notice" ? (
               <span className={styles.notice} title={r.detail} role="status">
                 <Icon name="warning" size={14} />
-                <span>{r.label}</span>
+                <span className={styles.noticeLabel}>{r.label}</span>
                 <span className={styles.noticeDetail}>{r.detail}</span>
               </span>
             ) : r.type === "section" && r.label ? (
