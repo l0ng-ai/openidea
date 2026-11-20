@@ -4532,6 +4532,7 @@ async fn per_session_mcp_overrides_filter_session_and_reload_when_idle() {
             base: None,
             mcp_overrides: BTreeMap::from([("slack".into(), false)]),
             idle: false,
+            skill_overrides: BTreeMap::new(),
         })
         .await
         .unwrap();
@@ -4660,6 +4661,7 @@ async fn copilot_falls_back_to_acp_when_headless_probe_session_or_prompt_fails()
             base: None,
             mcp_overrides: BTreeMap::new(),
             idle: false,
+            skill_overrides: BTreeMap::new(),
         })
         .await
         .unwrap();
@@ -4685,6 +4687,7 @@ async fn copilot_falls_back_to_acp_when_headless_probe_session_or_prompt_fails()
             base: None,
             mcp_overrides: BTreeMap::new(),
             idle: false,
+            skill_overrides: BTreeMap::new(),
         })
         .await
         .unwrap();
@@ -4763,10 +4766,10 @@ done
 #[test]
 fn session_params_name_the_servers_off() {
     let mcp = McpForSession { servers: vec![json!({ "name": "docs" })], off: vec!["github".into()] };
-    let params = session_params("/p", &mcp);
+    let params = session_params("/p", &mcp, None);
     assert_eq!(params["cwd"], "/p");
     assert_eq!(params["mcpServers"][0]["name"], "docs");
     assert_eq!(params["_meta"]["openidea"]["mcpServersOff"], json!(["github"]));
     let none = McpForSession { servers: Vec::new(), off: Vec::new() };
-    assert!(session_params("/p", &none).get("_meta").is_none());
+    assert!(session_params("/p", &none, None).get("_meta").is_none());
 }

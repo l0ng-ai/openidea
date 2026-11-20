@@ -1,8 +1,8 @@
 import { lazyComponent } from "@/ui";
 import { registerSettingsPages } from "@/workbench/contributions";
-import { AGENTS_GROUP, MCP_PAGE, POLICY_PAGE, REGISTRY_PAGE } from "./model";
+import { AGENTS_GROUP, MCP_PAGE, POLICY_PAGE, REGISTRY_PAGE, SKILLS_PAGE } from "./model";
 
-/** Settings › Agents › Coding Agents and Settings › Agents › External MCP Servers (also used by the Settings window). */
+/** Settings › Agents › Coding Agents, External MCP Servers, Skills, and Command Permissions (also used by the Settings window). */
 export function activateSettingsPages(): () => void {
   return registerSettingsPages([
     {
@@ -21,6 +21,14 @@ export function activateSettingsPages(): () => void {
       order: 475,
       keywords: ["mcp", "model context protocol", "servers", "tools", "agent"],
       component: lazyComponent(() => import("./McpServersPage").then((m) => m.McpServersPage)),
+    },
+    {
+      id: SKILLS_PAGE,
+      title: "Skills",
+      group: AGENTS_GROUP,
+      order: 480,
+      keywords: ["skills", "skill", "skill.md", "agents", "slash commands", "auto", "slash only"],
+      component: lazyComponent(() => import("./SkillsPage").then((m) => m.SkillsPage)),
     },
     {
       id: POLICY_PAGE,

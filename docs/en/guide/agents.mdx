@@ -139,6 +139,14 @@ Tasks are saved per project and survive restarts. When the agent supports resumi
 - **Agent Configs**: discovers servers already configured in `~/.copilot/mcp-config.json` (and installed Copilot CLI plugins), `~/.claude.json`, `~/.codex/config.toml`, `~/.cursor/mcp.json`, `~/.gemini/settings.json`, `~/.jetbrains/mcp/mcp.json`, `.mcp.json`, and `.vscode/mcp.json` so you can import them into Global or Project settings with one click. You can also add or edit servers via structured fields or raw `mcpServers` JSON (**Add from JSON**), and run **Test Connection** to inspect the tools a server advertises.
 - **Per-session (`MCP` / `/mcp`)**: in both **New Agent Task** and active task conversations, open **MCP** in the composer toolbar (or run `/mcp`) to enable or disable individual servers—including the built-in `openidea` server—for that task only, or click **Reset** to return to the inherited defaults.
 
+### Agent skills
+
+**Settings › Agents › Skills** lists every skill (`SKILL.md` folders) in one place, grouped by the folder it was found in: the project's `.agents/skills` and `.openidea/skills`, your `~/.agents/skills` (what `npx skills add` fills), and each CLI's own folders (`.claude/skills`, `.github/skills`, `.codex/skills`, `.cursor/skills`, `~/.claude/skills`, `~/.copilot/skills` and its installed plugins, `~/.codex/skills`, `~/.cursor/skills`). Symlinked copies of the same skill appear once, and expanding a row shows its canonical path and the `SKILL.md` validation result.
+
+Each skill runs in one of three modes, set globally or per workspace without ever editing the skill's files: **Auto** (the model decides), **Slash only** (just `/name`), or **Off**. A workspace can turn a global skill off without prose rules in `AGENTS.md`; a skill the settings keep off shows as **Enable in Settings** in the session picker.
+
+In the composer, `/skills` (or the **Add Context** menu) opens the per-session picker next to the MCP one: turn individual skills off for this task only, or **Reset** to the inherited modes. The `/` menu offers the active skills of every agent, and Claude Code, Copilot and Codex all receive the same set. Agents that only speak ACP keep their own `/` menu, so turning a skill off there stops OpenIDEA from offering it but is otherwise best-effort.
+
 While the agent works, the line under the conversation says what it is doing: thinking, reading, editing, running a command, writing its reply.
 
 ## Add a custom agent
