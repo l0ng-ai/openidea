@@ -187,6 +187,18 @@ describe("IntelliJ theme import", () => {
     });
   });
 
+  it("takes what a Darcula-based scheme leaves out from Darcula", () => {
+    const s = convertIcls(`<scheme name="Mine" version="142" parent_scheme="Darcula"><attributes>
+      <option name="DEFAULT_KEYWORD"><value><option name="FOREGROUND" value="ff8800"/></value></option>
+      <option name="DEFAULT_STRING"><value/></option>
+    </attributes></scheme>`);
+    expect(s.tokens["--bg-editor"]).toBe("#2b2b2b");
+    expect(s.tokens["--syn-keyword"]).toBe("#ff8800");
+    // An empty entry of its own replaces Darcula's colour.
+    expect(s.tokens["--syn-string"]).toBeUndefined();
+    expect(convertIcls(`<scheme name="I" parent_scheme="Islands Dark"></scheme>`).tokens).toEqual({});
+  });
+
   it("only targets tokens that exist in tokens.css", () => {
     const declared = new Set([...css.matchAll(/(--[a-z0-9-]+)\s*:/g)].map((m) => m[1]!));
     // Read with a fallback by the editor (no tokens.css default), still themeable.
