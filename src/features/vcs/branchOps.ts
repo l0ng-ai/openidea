@@ -655,6 +655,12 @@ async function eachRepo<T>(
     notifications().notify({ group: "vcs", level: "info", title: `${title} ${inRepos(done.length, roots.length)}` });
 }
 
+/** The repositories of `roots` whose current branch is not `name`. */
+function reposNotOn(name: string, roots: readonly string[]): string[] {
+  const { heads } = useVcs.getState();
+  return roots.filter((root) => heads[root]?.head !== name);
+}
+
 /** HEAD as a checkout target: the branch, or the commit on a detached HEAD. */
 const headRef = (b: BranchInfo) => b.head ?? b.headCommit ?? "HEAD";
 
@@ -673,11 +679,11 @@ async function resetBack(root: string, before: BranchInfo) {
  * not already on it (with diverged branches, only the others move).
  */
 export async function checkoutInRepos(name: string, roots: readonly string[]) {
-  const { heads } = useVcs.getState();
-  const elsewhere = roots.filter((root) => heads[root]?.head !== name);
+  const elsewhere = reposNotOn(name, roots);
   if (!elsewhere.length) return;
-  const label = useVcs.getState().branches.some((b) => b.remote && b.name === name) ? shortRemoteName(name) : name;
-  const previous = useVcs.getState().branch?.head;
+  const { branches, branch } = useVcs.getState();
+  const label = branches.some((b) => b.remote && b.name === name) ? shortRemoteName(name) : name;
+  const previous = branch?.head;
   await eachRepo(
     elsewhere,
     async (root) => ((await performCheckout(name, () => "", root, true)) ? true : undefined),
@@ -762,8 +768,7 @@ export async function rebaseInRepos(branch: string, roots: readonly string[]) {
  * (git refuses those; with diverged branches it may be current in some of them).
  */
 export async function deleteInRepos(name: string, roots: readonly string[]) {
-  const { heads } = useVcs.getState();
-  const deletable = roots.filter((root) => heads[root]?.head !== name);
+  const deletable = reposNotOn(name, roots);
   if (!deletable.length) return;
   const ok = await confirmDialog({
     title: "Delete Branch",

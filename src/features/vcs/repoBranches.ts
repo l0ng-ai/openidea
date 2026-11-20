@@ -282,7 +282,6 @@ export function buildMultiRepoRows({
     );
   };
 
-  const shared = sync;
   const groups: RepoRow[] = [];
   if (sync && widgetShowsRepo(repos))
     groups.push({
@@ -293,7 +292,7 @@ export function buildMultiRepoRows({
     });
   let shown = new Set<string>();
   const currentRepo = repos.find((r) => r.root === current) ?? repos[0];
-  if (shared) {
+  if (sync) {
     const loaded = repos.every((r) => branches[r.root]);
     const common = loaded
       ? commonBranches(
@@ -339,7 +338,7 @@ export function buildMultiRepoRows({
 
   if (q) {
     for (const repo of repos) {
-      if (!shared && repo === currentRepo) continue;
+      if (!sync && repo === currentRepo) continue;
       const list = branches[repo.root] ?? [];
       const own = (l: Branch[]) => l.filter((b) => !shown.has(`${b.remote}:${b.name}`));
       const rows = [
