@@ -3,19 +3,18 @@
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::num::NonZeroU16;
 
 /// Tools › Remote Development. This is a user setting on the remote host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct RemoteDevelopmentSettings {
-    #[specta(type = u16)]
-    pub idle_timeout_minutes: NonZeroU16,
+    /// Zero disables idle shutdown. Positive values from older configurations keep their meaning.
+    pub idle_timeout_minutes: u16,
 }
 
 impl Default for RemoteDevelopmentSettings {
     fn default() -> Self {
-        Self { idle_timeout_minutes: NonZeroU16::new(180).unwrap() }
+        Self { idle_timeout_minutes: 180 }
     }
 }
 

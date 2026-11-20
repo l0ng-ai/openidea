@@ -553,6 +553,13 @@ async fn an_idle_open_project_expires_but_an_attached_view_does_not() {
     initialize(&peer).await;
     invoke(&peer, "open_project", json!({ "path": project })).await.unwrap();
     assert_indexed(&peer, "kept_during_index").await;
+    invoke(
+        &peer,
+        "settings_set",
+        json!({ "scope": "global", "key": "remoteDevelopment.idleTimeoutMinutes", "value": "0" }),
+    )
+    .await
+    .unwrap();
     tokio::time::sleep(Duration::from_millis(2300)).await;
     assert!(!invoke(&peer, "project_current", json!({})).await.unwrap().is_null());
     peer.kill();
@@ -562,6 +569,15 @@ async fn an_idle_open_project_expires_but_an_attached_view_does_not() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn applying_the_host_timeout_expires_the_running_daemon_without_a_restart() {
+    saved_idle_policy(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn never_keeps_the_same_idle_daemon_until_explicit_shutdown() {
+    saved_idle_policy(true).await;
+}
+
+async fn saved_idle_policy(never: bool) {
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path().join("h");
     let base = tmp.path().join("s");
@@ -590,14 +606,29 @@ async fn applying_the_host_timeout_expires_the_running_daemon_without_a_restart(
     };
     let global = invoke(&peer, "settings_get_global", json!({})).await.unwrap();
     assert_eq!(global["remoteDevelopment"]["idleTimeoutMinutes"], 180);
-    assert!(set("global", "0").await.is_err());
+    assert!(set("global", "-1").await.is_err());
     assert!(set("project", "1").await.is_err());
     let updated = set("global", "1").await.unwrap();
     assert_eq!(updated["remoteDevelopment"]["idleTimeoutMinutes"], 1);
     assert!(std::fs::read_to_string(base.join("config/settings.toml")).unwrap().contains("idleTimeoutMinutes = 1"));
+    if never {
+        // A different project's daemon can change the host preference after this window connected.
+        let other = ide_workspace::SettingsStore::load(&base.join("config"), None);
+        other.set(ide_workspace::SettingsScope::Global, "remoteDevelopment.idleTimeoutMinutes", json!(0)).unwrap();
+        assert_eq!(invoke(&peer, "remote_idle_timeout_minutes", json!({})).await.unwrap(), 0);
+    }
     let disconnect = std::time::Instant::now();
     peer.kill();
     peer.exited().await;
+    if never {
+        assert!(
+            tokio::time::timeout(Duration::from_secs(72), daemon.wait()).await.is_err(),
+            "Never expired at the previous one-minute timeout"
+        );
+        let (resumed, _) = attach_client(&home, &base, "~/demo", 1);
+        assert!(!invoke(&resumed, "project_current", json!({})).await.unwrap().is_null());
+        shutdown(&resumed).await;
+    }
     let status =
         tokio::time::timeout(Duration::from_secs(80), daemon.wait()).await.expect("saved timeout not used").unwrap();
     assert!(status.success());

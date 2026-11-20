@@ -41,6 +41,7 @@ import {
   type NotificationsValid,
 } from "./behaviorSchema";
 import { isThemeChoiceId, type ThemeChoiceId } from "@/platform/themes";
+import { DEFAULT_REMOTE_IDLE_MINUTES, validRemoteIdleMinutes } from "@/platform/remoteIdle";
 
 /** Agents › IDE MCP Server › Port: its default (`ide-core::settings::DEFAULT_MCP_PORT`) and range. */
 export const DEFAULT_MCP_PORT = 26371;
@@ -48,7 +49,6 @@ export const MCP_PORT_LIMITS = { min: 1, max: 65535 };
 /** Agents › IDE MCP Server › Background projects: the idle minutes (0 = never unload) and the project limit. */
 export const MCP_BACKGROUND_IDLE_LIMITS = { min: 0, max: 1440 };
 export const MCP_BACKGROUND_PROJECT_LIMITS = { min: 1, max: 32 };
-export const REMOTE_IDLE_MINUTES = { min: 1, max: 65535 };
 export const MCP_BACKGROUND_MODES = ["off", "trusted", "listed"] as const;
 /** Agents › IDE MCP Server › Listen address: its default (`ide-core::settings::DEFAULT_MCP_ADDRESS`). */
 export const DEFAULT_MCP_ADDRESS = "127.0.0.1";
@@ -223,7 +223,7 @@ export const DEFAULT_SETTINGS: ValidSettings = {
   customKeymaps: {},
   notifications: DEFAULT_NOTIFICATIONS,
   proxy: DEFAULT_PROXY,
-  remoteDevelopment: { idleTimeoutMinutes: 180 },
+  remoteDevelopment: { idleTimeoutMinutes: DEFAULT_REMOTE_IDLE_MINUTES },
   toolDownloads: { githubMirror: "" },
   languages: DEFAULT_LANGUAGES,
   cmake: {},
@@ -426,12 +426,7 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
     notifications: validateNotifications(root.notifications),
     proxy: validateProxy(root.proxy),
     remoteDevelopment: {
-      idleTimeoutMinutes: num(
-        obj(root.remoteDevelopment).idleTimeoutMinutes,
-        d.remoteDevelopment.idleTimeoutMinutes,
-        REMOTE_IDLE_MINUTES,
-        true,
-      ),
+      idleTimeoutMinutes: validRemoteIdleMinutes(obj(root.remoteDevelopment).idleTimeoutMinutes),
     },
     toolDownloads: {
       githubMirror:

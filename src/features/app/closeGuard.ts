@@ -12,6 +12,7 @@
  * `general.closeWithoutWelcome` is on, in which case it closes. When
  * `general.closeTabsWithWindow` is on, that close drops the saved editor tabs.
  */
+import { createElement } from "react";
 import { call, IpcError, commands, isCancelled, isTauri, onIdeEvent, type Settings } from "@/platform/ipc";
 import { t, tx } from "@/platform/i18n";
 import { closeProject, provideLeaveProjectGuard, useProject } from "@/platform/project";
@@ -25,6 +26,7 @@ import {
   type EditorCloseSession,
 } from "@/workbench/contributions";
 import { beginTermination, endTermination } from "./termination";
+import { RemoteCloseMessage } from "./RemoteCloseMessage";
 import { ask, type Ask } from "@/workbench/messages";
 import { AUX_CLOSED, auxiliaryWindow, closeDocumentWindows, type AuxCloseResult } from "@/platform/auxWindow";
 
@@ -266,10 +268,9 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
     const remote = useRemote.getState();
     let stop = false;
     if (remote.session && !remote.lost) {
-      const { host } = remote.session;
       const r = await deps.ask({
         title: tx("Close Remote Development Window"),
-        body: tx`Keep the IDE backend on ${host} running so you can reconnect later, or stop it and end its terminals, runs and agent tasks.`,
+        body: createElement(RemoteCloseMessage, { session: remote.session }),
         buttons: [
           { id: "stop", label: tx("Stop Backend") },
           { id: "keep", label: tx("Keep Backend Running"), primary: true },

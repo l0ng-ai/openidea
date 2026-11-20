@@ -87,6 +87,15 @@ pub fn settings_get_global(host: &Host) -> Settings {
     host.with_proxy_password(host.global_settings.effective())
 }
 
+/// Read the same host-wide value for the close dialog and the idle timer: another project's
+/// daemon may have edited the file since this host loaded its settings.
+#[command(trust = always)]
+pub async fn remote_idle_timeout_minutes(host: &Arc<Host>) -> IdeResult<u16> {
+    let h = host.clone();
+    host.blocking(move || Ok(h.global_settings.layer(SettingsScope::Global).remote_development.idle_timeout_minutes))
+        .await
+}
+
 /// The removed built-in theme id a settings file of this window still names, if any:
 /// `settings_get` reports the built-in that stands in for it, so the notice about
 /// a theme that moved to a plugin can address the installs it concerns.
@@ -401,6 +410,7 @@ ide_command::domain!(
     project_trust_remove_location,
     project_trust_set,
     project_trust_status,
+    remote_idle_timeout_minutes,
     settings_get,
     settings_get_global,
     settings_removed_theme,
