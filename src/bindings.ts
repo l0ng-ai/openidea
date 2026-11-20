@@ -3848,6 +3848,8 @@ export type Commit_Deserialize = {
 	historyPath?: string | null,
 	logPosition?: number | null,
 	logTotal?: number | null,
+	/**  Newest committer time at or after this row if newer than the row's commit. */
+	logMergeTimeMs?: number | null,
 	graphBoundaryParents?: string[],
 	/**  Reachability from HEAD, computed independently of the visible filters. */
 	onCurrentBranch?: boolean | null,
@@ -3877,6 +3879,8 @@ export type Commit_Serialize = {
 	historyPath?: string | null,
 	logPosition?: number | null,
 	logTotal?: number | null,
+	/**  Newest committer time at or after this row if newer than the row's commit. */
+	logMergeTimeMs?: number | null,
 	graphBoundaryParents?: string[],
 	/**  Reachability from HEAD, computed independently of the visible filters. */
 	onCurrentBranch?: boolean | null,
