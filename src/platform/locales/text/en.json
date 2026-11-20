@@ -953,6 +953,8 @@
   "Insert imports on paste": "Insert imports on paste",
   "Path with line number": "Path with line number",
   "Clipboard history": "Clipboard history",
+  "From Clipboard": "From Clipboard",
+  "Selection from {file}": "Selection from {file}",
   "Copy Path with Line Number": "Copy Path with Line Number",
   "1 line": "1 line",
   "Path From Source Root": "Path From Source Root",

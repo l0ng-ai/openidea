@@ -5281,28 +5281,28 @@ export type DiffSide = DiffSide_Serialize | DiffSide_Deserialize;
 /**  One side of a diff window's comparison (the UI's `DiffSide`, `diffInput.ts`). */
 export type DiffSide_Deserialize = 
 /**  File content at a Git revision (`HEAD`, `:0` = index, a commit id). */
-({ type: "rev"; rev: string; path?: string | null; label?: string | null }) & { id?: never; text?: never } | 
+({ type: "rev"; rev: string; path?: string | null; label?: string | null }) & { id?: never; labelDetail?: never; text?: never } | 
 /**  The working file (unsaved editor buffer included). */
-({ type: "worktree"; label?: string | null }) & { id?: never; path?: never; rev?: never; text?: never } | 
+({ type: "worktree"; label?: string | null; labelDetail?: string | null }) & { id?: never; path?: never; rev?: never; text?: never } | 
 /**  Another file (Compare With…, Compare Files). */
-({ type: "file"; path: string; label?: string | null }) & { id?: never; rev?: never; text?: never } | 
-/**  Literal text: a side that does not exist. */
-({ type: "text"; text: string; label: string }) & { id?: never; path?: never; rev?: never } | 
+({ type: "file"; path: string; label?: string | null }) & { id?: never; labelDetail?: never; rev?: never; text?: never } | 
+/**  Literal text, such as clipboard contents or an editor selection. */
+({ type: "text"; text: string; label: string; labelDetail?: string | null }) & { id?: never; path?: never; rev?: never } | 
 /**  A Local History revision. */
-({ type: "history"; id: string; label: string }) & { path?: never; rev?: never; text?: never };
+({ type: "history"; id: string; label: string }) & { labelDetail?: never; path?: never; rev?: never; text?: never };
 
 /**  One side of a diff window's comparison (the UI's `DiffSide`, `diffInput.ts`). */
 export type DiffSide_Serialize = 
 /**  File content at a Git revision (`HEAD`, `:0` = index, a commit id). */
-({ type: "rev"; rev: string; path?: string | null; label?: string | null }) & { id?: never; text?: never } | 
+({ type: "rev"; rev: string; path?: string | null; label?: string | null }) & { id?: never; labelDetail?: never; text?: never } | 
 /**  The working file (unsaved editor buffer included). */
-({ type: "worktree"; label?: string | null }) & { id?: never; path?: never; rev?: never; text?: never } | 
+({ type: "worktree"; label?: string | null; labelDetail?: string | null }) & { id?: never; path?: never; rev?: never; text?: never } | 
 /**  Another file (Compare With…, Compare Files). */
-({ type: "file"; path: string; label?: string | null }) & { id?: never; rev?: never; text?: never } | 
-/**  Literal text: a side that does not exist. */
-({ type: "text"; text: string; label: string }) & { id?: never; path?: never; rev?: never } | 
+({ type: "file"; path: string; label?: string | null }) & { id?: never; labelDetail?: never; rev?: never; text?: never } | 
+/**  Literal text, such as clipboard contents or an editor selection. */
+({ type: "text"; text: string; label: string; labelDetail?: string | null }) & { id?: never; path?: never; rev?: never } | 
 /**  A Local History revision. */
-({ type: "history"; id: string; label: string }) & { path?: never; rev?: never; text?: never };
+({ type: "history"; id: string; label: string }) & { labelDetail?: never; path?: never; rev?: never; text?: never };
 
 export type DirectoryCompareEntry = {
 	path: string,
