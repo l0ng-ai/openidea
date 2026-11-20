@@ -421,7 +421,7 @@ export async function refreshModels(
 export async function refreshTaskModels(id: string, force = true): Promise<void> {
   const { tasks, providers } = useAgents.getState();
   const task = tasks.get(id);
-  if (!task || task.status === "archived" || !task.config.some((o) => o.category === "model")) return;
+  if (!task || task.status === "archived" || (!task.model && !task.config.some((o) => o.category === "model"))) return;
   const provider = providers.find((p) => p.id === task.provider);
   if (!provider?.installed || useProject.getState().project?.trusted === false) return;
   await refreshProviderModels(provider, force, null, null);

@@ -2712,5 +2712,8 @@
   "Shelve Silently": "Shelve Silently",
   "Unshelve Silently": "Unshelve Silently",
   "Fold Lines Like This": "Fold Lines Like This",
-  "Remove All Watches": "Remove All Watches"
+  "Remove All Watches": "Remove All Watches",
+  "GitHub account": "GitHub account",
+  "Leave empty to use the active GitHub CLI account. OpenIDEA resolves the token at launch and never stores it.": "Leave empty to use the active GitHub CLI account. OpenIDEA resolves the token at launch and never stores it.",
+  "github-username": "github-username"
 }
