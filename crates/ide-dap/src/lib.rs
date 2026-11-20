@@ -1713,7 +1713,7 @@ impl DebugManager {
         // A step runs its thread; other threads stopped by their own events stay stopped.
         session.suspended.resumed(ticket, thread_id, false);
         stream_trace::release_done(&session);
-        session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: true });
+        session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: false });
         Ok(())
     }
 
@@ -1825,7 +1825,7 @@ impl DebugManager {
         step_settled(&session, sent)?;
         session.suspended.resumed(ticket, thread_id, false);
         stream_trace::release_done(&session);
-        session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: true });
+        session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: false });
         Ok(())
     }
 
