@@ -62,7 +62,7 @@ describe("SkillsPage", () => {
     expect(screen.getByRole("region", { name: "GitHub Copilot" })).toBeInTheDocument();
     expect(screen.getAllByText("Slash only").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Mode for impeccable" })).toHaveTextContent("Off");
-    expect(screen.getAllByText("Valid")).toHaveLength(4);
+    expect(screen.queryByText("Valid")).not.toBeInTheDocument();
   });
 
   it("filters skills by search", async () => {

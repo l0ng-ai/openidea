@@ -242,11 +242,6 @@
   color: var(--warning);
 }
 
-.tagSuccess {
-  background: color-mix(in srgb, var(--success) 18%, var(--bg-elev));
-  color: var(--success);
-}
-
 .subtitle {
   color: var(--fg-muted);
   font-size: var(--fs-small);

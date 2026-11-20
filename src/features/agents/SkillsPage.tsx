@@ -326,11 +326,6 @@ function SkillCard({
                   <T>Invalid SKILL.md</T>
                 </span>
               )}
-              {skill.valid && (
-                <span className={clsx(styles.tag, styles.tagSuccess)}>
-                  <T>Valid</T>
-                </span>
-              )}
             </div>
             {skill.description && (
               <span className={styles.subtitle} title={skill.description}>
