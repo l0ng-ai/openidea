@@ -77,6 +77,10 @@ export interface DocBackend {
   onDirty(handler: (e: DocDirtyEvent) => void): () => void;
   /** Files changed on disk (used to refresh nothing but closed-file state). */
   onFsChanged?(handler: (e: { removed: string[] }) => void): () => void;
+  /** A file changed on disk while its buffer had unsaved changes, which the buffer kept. */
+  onDiskConflict?(handler: (e: { doc: DocId; path: string }) => void): () => void;
+  /** Load Changes from Disk: drops the buffer's unsaved changes and reads its file again. */
+  reloadDiscarding?(doc: DocId): Promise<void>;
   /**
    * Every OpenIDEA window lost focus to another application. Also seen while focus is in a frame
    * (a plugin's web view), which hides the window's own `blur`.
@@ -112,6 +116,8 @@ export const ipcBackend: DocBackend = {
   onPatched: (h) => onIdeEvent("docPatched", (e) => h(e)),
   onDirty: (h) => onIdeEvent("docDirty", (e) => h(e)),
   onFsChanged: (h) => onIdeEvent("fsChanged", (e) => h(e)),
+  onDiskConflict: (h) => onIdeEvent("docDiskConflict", (e) => h(e)),
+  reloadDiscarding: async (doc) => void (await call(commands.docReloadFromDisk(doc))),
   onApplicationDeactivated: (h) => {
     if (!isTauri()) return () => {};
     const listener = getCurrentWebviewWindow().listen("ide://application-deactivated", () => h());

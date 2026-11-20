@@ -2733,5 +2733,15 @@
   "Caret": "Caret",
   "Code Structure": "Code Structure",
   "Presentation": "Presentation",
-  "Code Assistance": "Code Assistance"
+  "Code Assistance": "Code Assistance",
+  "Change File Encoding": "Change File Encoding",
+  "Convert": "Convert",
+  "Use {label} for this file?": "Use {label} for this file?",
+  "Reload reads the file again. Convert keeps the current text and changes its encoding on save.": "Reload reads the file again. Convert keeps the current text and changes its encoding on save.",
+  "Managed version {version} in {location}": "Managed version {version} in {location}",
+  "Managed in {location}": "Managed in {location}",
+  "{name} changed on disk": "{name} changed on disk",
+  "The file was changed outside the IDE while it has unsaved changes in the editor. Saving keeps the editor's version and overwrites the file.": "The file was changed outside the IDE while it has unsaved changes in the editor. Saving keeps the editor's version and overwrites the file.",
+  "Load Changes from Disk": "Load Changes from Disk",
+  "Keep Editor Changes": "Keep Editor Changes"
 }

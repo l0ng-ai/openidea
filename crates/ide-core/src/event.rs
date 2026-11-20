@@ -92,6 +92,12 @@ pub enum IdeEvent {
         /// Text version when this transition occurred, including when it was saved.
         version: u32,
     },
+    /// An open document's file changed on disk while the buffer had unsaved changes. The buffer
+    /// keeps them (autosave leaves the file alone); the UI offers to load the disk version.
+    DocDiskConflict {
+        doc: DocId,
+        path: String,
+    },
     /// A complete workspace edit can be undone as one operation.
     WorkspaceEditApplied {
         id: u32,

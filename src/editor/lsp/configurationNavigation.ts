@@ -5,6 +5,7 @@
 import type { Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { onEditorEvent } from "@/editor/api";
+import { isMavenPom } from "@/platform/buildFiles";
 import { commands, IpcError, onIdeEvent, type GotoKind, type Location } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { onServerSettled } from "./availability";
@@ -54,9 +55,60 @@ export function isConfigurationDocument(view: EditorView): boolean {
   return language === "yaml" || language === "properties";
 }
 
-/** Configuration names include hyphens and dots even when the editor's
- * language word rules split them. Share this range between decoration and lookup. */
+const XML_VALUE_SCAN_LINES = 256;
+
+/** The text of the XML element, trimmed to the value itself. */
+function pomElementValueAt(view: EditorView, offset: number): { from: number; to: number } | null {
+  const doc = view.state.doc;
+  const line = doc.lineAt(offset);
+  let open = -1;
+  const onLine = line.text.lastIndexOf(">", offset - line.from);
+  if (onLine >= 0) open = line.from + onLine;
+  else {
+    for (let number = line.number - 1; number >= 1 && line.number - number <= XML_VALUE_SCAN_LINES; number--) {
+      const previous = doc.line(number);
+      const col = previous.text.lastIndexOf(">");
+      if (col >= 0) {
+        open = previous.from + col;
+        break;
+      }
+    }
+  }
+  if (open < 0 || offset <= open) return null;
+
+  const afterOpen = doc.lineAt(Math.min(open + 1, doc.length));
+  let close = -1;
+  for (
+    let number = afterOpen.number;
+    number <= doc.lines && number - afterOpen.number <= XML_VALUE_SCAN_LINES;
+    number++
+  ) {
+    const current = doc.line(number);
+    const col = current.text.indexOf("<", number === afterOpen.number ? open + 1 - current.from : 0);
+    if (col >= 0) {
+      close = current.from + col;
+      break;
+    }
+  }
+  if (close < 0 || offset > close) return null;
+
+  let from = open + 1;
+  let to = close;
+  const raw = doc.sliceString(from, to);
+  from += raw.length - raw.trimStart().length;
+  to -= raw.length - raw.trimEnd().length;
+  return from < to ? { from, to } : null;
+}
+
+/** Configuration names include hyphens and dots even when the editor's language word
+ * rules split them. Maven element values use the whole value (`cdf-parent`, not its
+ * hyphenated words). Share this range between decoration and lookup. */
 export function navigationWord(view: EditorView, offset: number): { from: number; to: number } | null {
+  const doc = docOf(view);
+  if (doc && isMavenPom(doc.path)) {
+    const value = pomElementValueAt(view, offset);
+    if (value) return value;
+  }
   if (!isConfigurationDocument(view)) return view.state.wordAt(offset);
   const line = view.state.doc.lineAt(offset);
   const nameChar = /[\p{L}\p{N}_.$-]/u;

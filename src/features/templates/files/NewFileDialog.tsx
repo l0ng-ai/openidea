@@ -1,5 +1,5 @@
 /** "New ▸ <template>" dialog: template chooser, then name + kind (IDEA's New Class dialog). */
-import { useEffect, useEffectEvent, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useEffectEvent, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { create } from "zustand";
 import clsx from "clsx";
 import { relativePath, useProject } from "@/platform/project";
@@ -120,6 +120,8 @@ function NameStep({
 }) {
   const [name, setName] = useState(template.fileName ?? initialName ?? "");
   const variables = template.variables ?? [];
+  const hasVariables = variables.length > 0;
+  const hintId = useId();
   const [values, setValues] = useState<Record<string, string>>(() =>
     Object.fromEntries(variables.map((v) => [v.name, ""])),
   );
@@ -230,12 +232,13 @@ function NameStep({
       open
       onClose={close}
       title={tx`New ${tx(template.name)}`}
-      width={380}
-      position="top"
+      width={hasVariables ? 380 : 320}
+      position={hasVariables ? "top" : "center"}
+      popup
       aria-label={tx`New ${tx(template.name)}`}
-      className={variables.length ? styles.variableDialog : undefined}
+      className={hasVariables ? styles.variableDialog : styles.nameDialog}
       buttons={
-        variables.length
+        hasVariables
           ? [
               { label: "Cancel", role: "cancel" },
               { label: "Create", role: "default", onClick: () => void submit(), disabled: busy },
@@ -245,19 +248,25 @@ function NameStep({
     >
       <div className={styles.form}>
         {template.fileName === undefined && (
-          <Input
-            disabled={busy}
-            data-autofocus
-            value={name}
-            invalid={!!error}
-            placeholder={effective.extension ? tx`Name (.${effective.extension})` : "File name with extension"}
-            aria-label="Name"
-            onChange={(e) => {
-              setName(e.target.value);
-              setError(null);
-            }}
-            onKeyDown={onKeyDown}
-          />
+          <div className={hasVariables ? undefined : styles.nameField}>
+            {!hasVariables && <Icon name={template.icon} size={16} className={styles.icon} />}
+            <Input
+              className={styles.nameInput}
+              variant={hasVariables ? "framed" : "bare"}
+              disabled={busy}
+              data-autofocus
+              value={name}
+              invalid={!!error}
+              placeholder={effective.extension ? tx`Name (.${effective.extension})` : "File name with extension"}
+              aria-label="Name"
+              aria-describedby={hintId}
+              onChange={(e) => {
+                setName(e.target.value);
+                setError(null);
+              }}
+              onKeyDown={onKeyDown}
+            />
+          </div>
         )}
         {variables.map((v, i) => (
           <VerbatimTextContext.Provider key={v.name} value={true}>
@@ -278,26 +287,33 @@ function NameStep({
           </VerbatimTextContext.Provider>
         ))}
         {template.kinds.length > 1 && (
-          <div className={styles.kinds} role="listbox" aria-label={tx("Kind")}>
-            {template.kinds.map((k, i) => (
-              <div
-                key={k.id}
-                role="option"
-                aria-selected={i === kind}
-                className={clsx(styles.kind, i === kind && styles.kindActive)}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  setKind(i);
-                }}
-                onDoubleClick={() => void submit()}
-              >
-                <Icon name={template.icon} size={14} className={styles.icon} />
-                {tx(k.label)}
-              </div>
-            ))}
+          <div className={styles.kinds}>
+            <List
+              className={styles.kindList}
+              aria-label={tx("Kind")}
+              items={template.kinds}
+              getKey={(k) => k.id}
+              activeIndex={kind}
+              onActiveChange={setKind}
+              focusable={false}
+              onActivate={(_, _index, event) => {
+                if ("detail" in event && event.detail === 2) void submit();
+              }}
+              renderItem={(k) => (
+                <>
+                  <Icon name={template.icon} size={16} className={styles.icon} />
+                  <span className={styles.kindLabel}>{tx(k.label)}</span>
+                </>
+              )}
+            />
           </div>
         )}
-        <div className={clsx(styles.hint, error && styles.error)}>
+        <div
+          id={hintId}
+          className={clsx(styles.hint, error && styles.error)}
+          title={error ? undefined : where}
+          role={error ? "alert" : undefined}
+        >
           {error ?? (
             <>
               {where}

@@ -8,9 +8,10 @@
 import { useEffect, useId, useState } from "react";
 import clsx from "clsx";
 import { commands, isTauri } from "@/platform/ipc";
-import { Checkbox } from "@/ui";
+import { Checkbox, Icon, type IconName } from "@/ui";
 import { SearchLabel, Select } from "../../components/Form";
-import { useLabelMatch, useSetting } from "../../components/context";
+import { useLabelMatch, useSearchQuery, useSetting } from "../../components/context";
+import { labelMatches } from "../../model/pages";
 import { editorPage, type Item } from "./kit";
 import styles from "./Editor.module.css";
 import { tx } from "@/platform/i18n";
@@ -625,6 +626,29 @@ function CloseButtonPosition() {
   );
 }
 
+const GUTTER_OPTIONS: ReadonlyArray<{ id: string; label: string; icon?: IconName; keywords?: string[] }> = [
+  {
+    id: "run",
+    label: "Run configurations and tests",
+    icon: "gutter-run",
+    keywords: ["Run", "run configurations", "test"],
+  },
+  { id: "bookmarks", label: "Bookmarks", icon: "bookmark" },
+  {
+    id: "inheritors",
+    label: "Implemented and overridden declarations",
+    icon: "gutter-implemented",
+    keywords: ["Implemented and overridden", "implementations", "subclasses", "inheritors"],
+  },
+  {
+    id: "supers",
+    label: "Implementing and overriding methods",
+    icon: "gutter-implementing",
+    keywords: ["Implementing and overriding", "super method", "overrides", "implements"],
+  },
+  { id: "colors", label: "Color preview", keywords: ["color", "swatch", "colour"] },
+];
+
 const GUTTER = editorPage({
   id: "editor.general.gutterIcons",
   title: "Gutter Icons",
@@ -632,56 +656,46 @@ const GUTTER = editorPage({
   sections: [
     {
       items: [
+        { t: "check", key: `${P}.showGutterIcons`, label: "Show gutter icons" },
         {
-          t: "check",
-          key: `${P}.showGutterIcons`,
-          label: "Show gutter icons",
-          children: [
-            {
-              t: "custom",
-              label: "Run",
-              keywords: ["run configurations", "test"],
-              component: () => <GutterGroup id="run" label="Run configurations and tests" />,
-            },
-            { t: "custom", label: "Bookmarks", component: () => <GutterGroup id="bookmarks" label="Bookmarks" /> },
-            {
-              t: "custom",
-              label: "Implemented and overridden",
-              keywords: ["implementations", "subclasses", "inheritors"],
-              component: () => <GutterGroup id="inheritors" label="Implemented and overridden declarations" />,
-            },
-            {
-              t: "custom",
-              label: "Implementing and overriding",
-              keywords: ["super method", "overrides", "implements"],
-              component: () => <GutterGroup id="supers" label="Implementing and overriding methods" />,
-            },
-            {
-              t: "custom",
-              label: "Color preview",
-              keywords: ["color", "swatch", "colour"],
-              component: () => <GutterGroup id="colors" label="Color preview" />,
-            },
-          ],
+          t: "custom",
+          label: "Gutter Icons",
+          keywords: GUTTER_OPTIONS.flatMap(({ label, keywords }) => [label, ...(keywords ?? [])]),
+          component: GutterIconList,
         },
       ],
     },
   ],
 });
 
-function GutterGroup({ id, label }: { id: string; label: string }) {
+function GutterIconList() {
   const [disabled, set] = useSetting<string[]>(`${P}.gutterIconsDisabled`);
   const [master] = useSetting<boolean>(`${P}.showGutterIcons`);
-  const matched = useLabelMatch(label);
+  const query = useSearchQuery();
   return (
-    <div className={matched ? `${styles.check} ${styles.matched}` : styles.check}>
-      <Checkbox
-        checked={!disabled.includes(id)}
-        disabled={!master}
-        label={<SearchLabel text={label} />}
-        onChange={(on) => set(on ? disabled.filter((x) => x !== id) : [...disabled, id])}
-      />
-    </div>
+    <ul role="list" aria-label={tx("Gutter Icons")} className={styles.gutterIconList}>
+      {GUTTER_OPTIONS.map(({ id, label, icon }) => {
+        const matched = labelMatches(label, query);
+        return (
+          <li
+            key={id}
+            className={clsx(styles.gutterIconRow, matched && styles.matched)}
+            data-search-match={matched || undefined}
+          >
+            <span className={styles.gutterIconPreview} aria-hidden>
+              {icon ? <Icon name={icon} size={16} /> : <span className={styles.gutterSwatch} />}
+            </span>
+            <Checkbox
+              className={styles.gutterIconChoice}
+              checked={!disabled.includes(id)}
+              disabled={!master}
+              label={<SearchLabel text={label} />}
+              onChange={(on) => set(on ? disabled.filter((x) => x !== id) : [...disabled, id])}
+            />
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
