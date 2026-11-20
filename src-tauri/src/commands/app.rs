@@ -313,6 +313,7 @@ pub async fn settings_import(window: Window, state: State<'_, AppState>, path: P
     crate::commands::ssh::apply_ssh_settings(&state);
     state.host.mcp.apply(&state.host);
     state.host.apply_proxy();
+    state.host.apply_git_executable();
     state.updates.wake.notify_one();
     state.sink.emit(ide_core::IdeEvent::SettingsChanged { key: String::new() });
     let settings = ide_host::ops::project::settings_get(&state.host, window.label());

@@ -1072,8 +1072,14 @@ impl Project {
     /// The project's git repositories.
     pub fn repos(&self) -> Repos {
         let repos = self.repos.read().clone();
+        let trusted = self.is_trusted();
+        // Settings › Version Control › Git › Path to Git executable, this project's value (its
+        // own layer over the global one).
+        let git = self.settings.read_effective(|s| s.vcs.git.executable.trim().to_owned());
+        let git = (trusted && !git.is_empty()).then(|| PathBuf::from(git));
         for repo in repos.all() {
-            repo.set_execution_allowed(self.is_trusted());
+            repo.set_execution_allowed(trusted);
+            repo.set_git_executable(git.as_deref());
         }
         repos
     }
@@ -1157,9 +1163,6 @@ impl Project {
 
     fn run_in<T>(&self, repo: &Repo, f: impl FnOnce(&Repo) -> IdeResult<T>) -> IdeResult<T> {
         let settings = self.settings.effective();
-        if self.is_trusted() {
-            apply_git_executable(&settings);
-        }
         repo.set_ignored_names(settings.ignored_names());
         repo.set_cli_status(settings.vcs.git.cli_status);
         f(repo)
@@ -2173,12 +2176,6 @@ fn notify_transfer(sink: &SharedSink, what: &str, path: &Path, result: IdeResult
         title: format!("{what} failed: {name}"),
         body: Some(body),
     });
-}
-
-/// Settings › Version Control › Git › Path to Git executable (empty = auto-detect).
-pub fn apply_git_executable(settings: &ide_core::settings::Settings) {
-    let exe = settings.vcs.git.executable.trim();
-    ide_vcs::set_git_executable((!exe.is_empty()).then(|| Path::new(exe)));
 }
 
 #[cfg(test)]

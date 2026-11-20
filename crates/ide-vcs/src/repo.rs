@@ -72,6 +72,7 @@ pub(crate) fn discover(path: &Path) -> IdeResult<Option<Repo>> {
     let cache = Cache { stamp: stamp(&files), files, repo: ts, pack_stamp: pack_stamp(&pack_dir), pack_dir };
     Ok(Some(Repo {
         execution_allowed: std::sync::atomic::AtomicBool::new(false),
+        git_executable: Default::default(),
         root,
         git_dir,
         inner: std::sync::Mutex::new(cache),
@@ -102,7 +103,7 @@ impl Repo {
     /// A thread-local gitoxide handle; reopened when configuration or packed refs change.
     /// gitoxide's packed-ref snapshot only reloads for a newer mtime, which a replacement may preserve.
     pub(crate) fn gix(&self) -> IdeResult<gix::Repository> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         if !self.execution_allowed.load(std::sync::atomic::Ordering::Acquire) {
             return gix::open_opts(&self.git_dir, gix::open::Options::default().filter_config_section(|_| false))
                 .map_err(gx);
@@ -128,7 +129,7 @@ impl Repo {
     /// Repository-relative path with `/` separators. Accepts absolute paths inside the
     /// worktree or paths already relative to it.
     pub(crate) fn rel_path(&self, path: &Path) -> IdeResult<String> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         Ok(self.index_spelling(self.given_rel_path(path)?))
     }
 
@@ -217,7 +218,7 @@ impl Repo {
 
     /// Absolute path for a repository-relative path.
     pub(crate) fn abs_path(&self, rel: &str) -> PathBuf {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         let mut p = self.root.clone();
         for part in rel.split('/').filter(|s| !s.is_empty()) {
             p.push(part);

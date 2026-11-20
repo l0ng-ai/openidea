@@ -17,7 +17,7 @@ const UNCOMMITTED_AUTHOR: &str = "Not Committed Yet";
 
 impl Repo {
     pub(crate) fn rel_paths(&self, paths: &[PathBuf]) -> IdeResult<Vec<String>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         paths
             .iter()
             .map(|p| {
@@ -28,7 +28,7 @@ impl Repo {
     }
 
     pub(crate) fn has_head(&self) -> IdeResult<bool> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         let repo = self.gix()?;
         Ok(!repo.head().map_err(gx)?.is_unborn())
     }
