@@ -4322,8 +4322,6 @@
   "No local history for this folder yet": "Aucun historique local pour ce dossier pour l'instant",
   "No local history for this path yet": "Aucun historique local pour ce chemin pour l'instant",
   "{name} has been resolved and staged.": "{name} a été résolu et indexé.",
-  "{selected} of {total} file will be reverted to their last committed state. Uncommitted changes are lost.": "{selected} fichier sur {total} sera rétabli à son dernier état validé. Les modifications non validées seront perdues.",
-  "{selected} of {total} files will be reverted to their last committed state. Uncommitted changes are lost.": "{selected} fichiers sur {total} seront rétablis à leur dernier état validé. Les modifications non validées seront perdues.",
   "Current branch: {branch}": "Branche actuelle : {branch}",
   "{count} TODO item found in the changed lines:": "{count} élément TODO trouvé dans les lignes modifiées :",
   "{count} TODO items found in the changed lines:": "{count} éléments TODO trouvés dans les lignes modifiées :",

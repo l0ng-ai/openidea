@@ -19,6 +19,7 @@ import { showCompareRevisions } from "./operations";
 import { FileChecklist } from "./shelf";
 import { currentRepo, loadStashes, refreshNow, useVcs } from "./store";
 import styles from "./common.module.css";
+import rollbackStyles from "./RollbackDialog.module.css";
 import { tx } from "@/platform/i18n";
 
 export function firstLine(message: string): string {
@@ -219,9 +220,14 @@ export function showRollbackDialog(files: FileStatus[]) {
 function RollbackDialog({ files, onClose }: { files: FileStatus[]; onClose: () => void }) {
   const [selected, setSelected] = useState(() => new Set(files.map((f) => f.path)));
   const [deleteAdded, setDeleteAdded] = useState(false);
-  const hasAdded = files.some((f) => f.staged === "added");
+  const chosen = files.filter((f) => selected.has(f.path));
+  const counts = { added: 0, modified: 0, deleted: 0 };
+  for (const file of chosen) {
+    const kind = effectiveKind(file);
+    counts[kind === "added" || kind === "deleted" ? kind : "modified"]++;
+  }
+  const { added, modified, deleted } = counts;
   const run = async () => {
-    const chosen = files.filter((f) => selected.has(f.path));
     onClose();
     if (!chosen.length) return;
     await saveAll();
@@ -240,24 +246,40 @@ function RollbackDialog({ files, onClose }: { files: FileStatus[]; onClose: () =
       open
       title="Rollback Changes"
       onClose={onClose}
-      width={520}
-      footerStart={
-        hasAdded && (
-          <Checkbox checked={deleteAdded} onChange={setDeleteAdded} label="Delete local copies of added files" />
-        )
-      }
+      className={rollbackStyles.dialog}
+      width={540}
+      minWidth={320}
+      minHeight={240}
+      resizable="both"
       buttons={[
-        { label: "Rollback", role: "default", autoFocus: true, disabled: !selected.size, onClick: () => void run() },
-        { label: "Cancel", role: "cancel" },
+        { label: "Rollback", role: "default", disabled: !chosen.length, onClick: () => void run() },
+        { label: "Close", role: "cancel" },
       ]}
     >
-      <div className={styles.section}>
-        {files.length === 1
-          ? tx`${selected.size} of ${files.length} file will be reverted to their last committed state. Uncommitted changes are lost.`
-          : tx`${selected.size} of ${files.length} files will be reverted to their last committed state. Uncommitted changes are lost.`}
+      <div className={rollbackStyles.content}>
+        <FileChecklist
+          files={files}
+          selected={selected}
+          onChange={setSelected}
+          label="Files to roll back"
+          className={rollbackStyles.tree}
+        />
+        <div className={rollbackStyles.summary} role="status">
+          {!chosen.length && <T>No files selected</T>}
+          {added > 0 && <span className={rollbackStyles.added}>{tx`${added} added`}</span>}
+          {modified > 0 && <span className={rollbackStyles.modified}>{tx`${modified} modified`}</span>}
+          {deleted > 0 && <span className={rollbackStyles.deleted}>{tx`${deleted} deleted`}</span>}
+        </div>
+        <Checkbox
+          checked={added > 0 && deleteAdded}
+          disabled={!added}
+          onChange={setDeleteAdded}
+          label="Delete local copies of added files"
+        />
+        <p className={rollbackStyles.warning}>
+          <T>Rollback discards uncommitted changes in the selected files.</T>
+        </p>
       </div>
-      <FileChecklist files={files} selected={selected} onChange={setSelected} label="Files to roll back" />
-      <div style={{ height: 12 }} />
     </Dialog>
   );
 }

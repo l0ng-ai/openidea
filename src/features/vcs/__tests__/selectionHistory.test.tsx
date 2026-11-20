@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { EditorState } from "@codemirror/state";
 import type { BlockHistory, BlockRevision } from "@/bindings";
 
@@ -108,7 +108,12 @@ describe("History for Selection tab", () => {
     await waitFor(() =>
       expect(screen.getByTestId("diff").textContent).toBe("bbbbbbb^: two\nthree\n| bbbbbbb: TWO\nthree\n"),
     );
-    expect(screen.getByText(/^bbbbbbb · Ada · /)).toBeTruthy();
+    const row = screen.getByRole("row", { name: /bbbbbbb.*Ada.*Shout two/ });
+    expect(
+      within(row)
+        .getAllByRole("gridcell")
+        .map((cell) => cell.textContent),
+    ).toEqual(["bbbbbbb", expect.any(String), "Ada", "Shout two"]);
   });
 
   it("says why there is nothing to show", async () => {

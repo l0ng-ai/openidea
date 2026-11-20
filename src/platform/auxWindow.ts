@@ -17,11 +17,12 @@ const KINDS: readonly AuxKind[] = ["settings", "comparison", "diff", "editor", "
 /** An auxiliary window reports to its parent whether it closed, and which documents it released. */
 export const AUX_CLOSED = "openidea://auxiliary/closed";
 
-/** Lightweight editor window reports that it opened (or failed to open) the moved file. */
+/** Lightweight editor window reports that it opened (or failed to open) the moved file or tab. */
 export const EDITOR_READY = "openidea://editor/ready";
 
 export interface EditorReadyResult {
   label: string;
+  /** The launch's file, or the key of its tab. */
   path: string;
   ok: boolean;
   error?: string;
@@ -33,7 +34,8 @@ export interface AuxCloseResult {
   documents: number[];
 }
 
-function currentLabel(): string {
+/** This window's label ("" outside the desktop app). */
+export function windowLabel(): string {
   if (!isTauri()) return "";
   try {
     return getCurrentWindow().label;
@@ -43,7 +45,7 @@ function currentLabel(): string {
 }
 
 /** The kind and parent of an auxiliary window, or null for a project window. */
-export function auxiliaryWindow(label = currentLabel()): { kind: AuxKind; parent: string } | null {
+export function auxiliaryWindow(label = windowLabel()): { kind: AuxKind; parent: string } | null {
   for (const kind of KINDS) {
     if (!label.startsWith(`${kind}-`)) continue;
     const rest = label.slice(kind.length + 1);
