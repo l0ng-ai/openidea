@@ -452,7 +452,7 @@ export const isContextOption = (id: string) => /^(context_tier|contextTier)$/.te
 
 /** Whether an option's available values and default belong to the selected model rather than the provider. */
 export const isPerModelOption = (o: AgentConfigOption) =>
-  o.category === "thought_level" || o.category === "context_tier" || isContextOption(o.id);
+  o.category === "thought_level" || o.category === "context_tier" || isContextOption(o.id) || o.id === "service_tier";
 
 const matchesCategory = (o: AgentConfigOption, category: string) =>
   o.category === category ||

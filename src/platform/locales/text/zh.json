@@ -170,6 +170,8 @@
   "Unpin model": "取消置顶模型",
   "Models": "模型",
   "Effort Level": "思考强度",
+  "Fast": "快速",
+  "Standard": "标准",
   "Model settings": "模型设置",
   "Model settings: {summary}": "模型设置：{summary}",
   "Context Size": "上下文大小",

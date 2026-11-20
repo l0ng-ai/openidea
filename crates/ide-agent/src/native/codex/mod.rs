@@ -108,7 +108,7 @@ pub(crate) async fn discover(
                 let options = translate::config_options(&models, &settings);
                 let levels = crate::config::options_of(&json!({ "configOptions": options }))
                     .into_iter()
-                    .filter(|o| o.category.as_deref() == Some("thought_level"))
+                    .filter(|o| matches!(o.category.as_deref(), Some("thought_level" | "model_config")))
                     .collect();
                 (model.id.clone(), levels)
             })
@@ -605,6 +605,9 @@ impl CodexShim {
                     }
                     if let Some(effort) = &s.effort {
                         request["effort"] = json!(effort);
+                    }
+                    if let Some(tier) = s.service_tier_override(&models) {
+                        request["serviceTier"] = json!(tier);
                     }
                 }
                 self.call("turn/start", request).await

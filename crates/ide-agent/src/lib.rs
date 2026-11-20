@@ -3161,7 +3161,10 @@ impl Task {
             if config::is_per_model_option(&o) && !model_options {
                 continue;
             }
-            let already = (known || explicit) && o.current.as_deref() == Some(choice.value.as_str());
+            // A displayed tier can be inherited. Preserve an explicit Fast/Standard choice
+            // even when it currently looks the same, so subsequent turns receive the override.
+            let already =
+                o.id != "service_tier" && (known || explicit) && o.current.as_deref() == Some(choice.value.as_str());
             if already || !o.values.iter().any(|v| v.value == choice.value) {
                 continue;
             }
