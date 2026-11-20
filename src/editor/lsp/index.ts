@@ -28,6 +28,7 @@ import { inlineCompletionExtension, registerInlineCompletionActions } from "./in
 import { semanticExtension } from "./semantic";
 import { usagesLensExtension } from "./codeLens";
 import { autoImportExtension } from "./autoImport";
+import { jsxAttrValueExtension } from "./jsxAttrValue";
 import { importsOnPasteExtension, registerImportsOnPasteActions } from "./importsOnPaste";
 import { installConfigurationNavigationEvents } from "./configurationNavigation";
 import { installAvailabilityEvents } from "./availability";
@@ -69,6 +70,7 @@ export function lspExtensions(ctx: EditorDocContext): Extension[] {
     semanticExtension(),
     usagesLensExtension(),
     autoImportExtension(),
+    jsxAttrValueExtension(ctx.language),
     importsOnPasteExtension(),
     unresolvedReferences(),
     syntaxErrorsExtension(),

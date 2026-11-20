@@ -444,20 +444,27 @@
 /* Configuration chooser */
 
 .chooser {
-  width: 340px;
-  padding: 0 0 4px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-block-end: var(--space-1);
 }
 .chooserSearch {
+  flex: none;
   padding: 6px 8px;
   border-bottom: 1px solid var(--border-popup);
 }
+.chooserViewport {
+  min-height: 0;
+}
 .chooserList {
   height: 100%;
+  overflow-x: hidden;
 }
 .chooserRow {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1-5);
   width: 100%;
   min-width: 0;
 }
@@ -494,7 +501,10 @@
   font-weight: 500;
 }
 .chooserMuted {
-  flex: none;
+  min-width: 0;
+  max-width: 35%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--fg-faint);
   font-size: var(--fs-small);
 }
@@ -512,6 +522,7 @@
   opacity: 0.55;
 }
 .chooserCaption {
+  flex: none;
   padding: 6px 10px 0;
   color: var(--fg-secondary);
   font-weight: 500;
@@ -525,6 +536,7 @@
 }
 /* IDEA's popup ad text. */
 .chooserHint {
+  flex: none;
   padding: 4px 10px 0;
   border-top: 1px solid var(--border-popup);
   color: var(--fg-faint);
@@ -532,6 +544,7 @@
 }
 .chooserActions {
   display: flex;
+  flex: none;
   margin-right: -4px;
 }
 .chooserSeparator {

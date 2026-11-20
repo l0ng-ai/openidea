@@ -33,7 +33,14 @@ export function menuItems(nodes: MenuNode[]): MenuItem[] {
       case "placeholder":
         return { id: n.id, label: label(n.id, n.label), disabled: true };
       case "submenu":
-        return { id: n.id, label: label(n.id, n.label), submenu: menuItems(n.children) };
+        return {
+          id: n.id,
+          label: n.current == null ? label(n.id, n.label) : n.label,
+          verbatim: n.current != null,
+          current: n.current ?? undefined,
+          icon: n.current ? "check" : undefined,
+          submenu: menuItems(n.children),
+        };
       case "action":
         return {
           kind: "action",

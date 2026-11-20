@@ -27,6 +27,7 @@ import {
   closePopup,
   updatePopup,
   useLspPopup,
+  type DefinitionTarget,
   type ListPopupItem,
   type ListPreview,
   type LspPopup,
@@ -544,6 +545,8 @@ function DefinitionPopup({ popup }: { popup: Extract<LspPopup, { kind: "definiti
   const target = popup.targets[popup.index]!;
   const { location } = target;
   const many = popup.targets.length > 1;
+  const source = (loc: DefinitionTarget["location"]) => `${relativePath(root, loc.path)}:${loc.range.start.line + 1}`;
+  const targetIcon = (path: string) => fileIconName(basename(path), path);
   const open = () => {
     closePopup();
     void editorService().openFile(location.path, {
@@ -564,41 +567,76 @@ function DefinitionPopup({ popup }: { popup: Extract<LspPopup, { kind: "definiti
     }
   };
   return (
-    <Popup open anchor={popup.anchor} onClose={closePopup} aria-label="Definition" className={styles.defPopup}>
+    <Popup
+      open
+      anchor={popup.anchor}
+      onClose={closePopup}
+      aria-label={tx("Definition")}
+      className={styles.defPopup}
+      resizable="both"
+    >
       <div className={styles.defFrame} tabIndex={-1} data-autofocus onKeyDown={onKeyDown}>
         <div className={styles.defHeader}>
-          <Icon name={fileIconName(basename(location.path), location.path)} size={14} />
           {many ? (
             <Select
               variant="ghost"
+              className={styles.defTarget}
               aria-label="Definition"
               value={String(popup.index)}
               options={popup.targets.map((t, i) => ({
                 value: String(i),
                 label: t.name,
-                detail: `${basename(t.location.path)}:${t.location.range.start.line + 1}`,
+                verbatim: true,
+                icon: targetIcon(t.location.path),
+                detail: source(t.location),
               }))}
               onChange={(v) => select(Number(v))}
             />
           ) : (
-            <span className={styles.defFile}>{basename(location.path)}</span>
+            <div className={styles.defTarget}>
+              <Icon name={targetIcon(location.path)} size={14} />
+              <span className={styles.defName} title={target.name}>
+                {target.name}
+              </span>
+            </div>
           )}
-          <span className={styles.defPath}>
-            {relativePath(root, location.path)}:{location.range.start.line + 1}
+          <span className={styles.defPath} title={source(location)}>
+            {source(location)}
           </span>
-          <span className={styles.spacer} />
-          {many && (
-            <span className={styles.defCount}>
-              {popup.index + 1}/{popup.targets.length}
-            </span>
-          )}
-          <IconButton icon="edit" size="small" title="Edit Source" shortcut="F4" onClick={open} />
+          <div className={styles.defActions}>
+            {many && (
+              <>
+                <IconButton
+                  icon="chevron-left"
+                  size="small"
+                  title="Previous Definition"
+                  onClick={() => select(popup.index - 1)}
+                />
+                <span className={styles.defCount} aria-live="polite">
+                  {popup.index + 1}/{popup.targets.length}
+                </span>
+                <IconButton
+                  icon="chevron-right"
+                  size="small"
+                  title="Next Definition"
+                  onClick={() => select(popup.index + 1)}
+                />
+              </>
+            )}
+            <IconButton icon="edit" size="small" title="Edit Source" shortcut="F4" onClick={open} />
+          </div>
         </div>
-        <div className={clsx(popup.themeClasses, styles.docScope)}>
+        <div
+          className={clsx(popup.themeClasses, styles.defBody)}
+          style={popup.codeStyle}
+          tabIndex={0}
+          role="region"
+          aria-label={tx("Preview")}
+        >
           <DomContent
             key={popup.index}
-            className={clsx(styles.defBody, selectableText)}
-            build={() => renderCode(target.text, target.language, "cm-lsp-code")}
+            className={selectableText}
+            build={() => renderCode(target.text, target.language, styles.defCode)}
           />
         </div>
       </div>

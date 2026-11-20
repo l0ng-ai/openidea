@@ -382,51 +382,78 @@
   text-decoration: underline;
 }
 .defPopup {
-  width: min(640px, 90vw);
-  max-height: 460px;
+  width: 600px;
+  height: 400px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 .defHeader {
-  height: 28px;
+  min-height: var(--h-field);
   flex: none;
   display: flex;
   align-items: center;
-  gap: var(--space-1-5);
-  padding: 0 6px 0 12px;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
   background: var(--bg-popup-inline, var(--bg-elev));
   border-bottom: 1px solid var(--border-popup);
   font-size: var(--fs-ui);
   color: var(--fg-muted);
 }
-.defFile {
+.defTarget {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-width: 0;
   color: var(--fg-emphasis);
 }
+.defTarget > svg {
+  flex: none;
+}
+.defName,
 .defPath {
-  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.defPath {
+  max-width: 45%;
+  min-width: 0;
   color: var(--fg-subtle);
 }
 .defFrame {
+  flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
   outline: none;
 }
-.defCount {
+.defActions {
+  margin-inline-start: auto;
+  display: flex;
+  align-items: center;
   flex: none;
+  gap: var(--space-0-5);
+}
+.defCount {
   font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
   color: var(--fg-subtle);
 }
 .defBody {
+  flex: 1;
+  min-height: 0;
   overflow: auto;
-  padding: 4px 12px;
+  padding: var(--space-3) var(--space-2);
+  color: var(--fg-emphasis);
 }
-.defBody pre {
+.defCode {
+  margin: 0;
+  font: inherit;
   white-space: pre;
+}
+.defCode code {
+  font: inherit;
 }
 
 .previewDialog [data-dialog-body] {

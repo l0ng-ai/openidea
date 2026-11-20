@@ -39,6 +39,7 @@ for (const windowKind of ["project", "welcome", "lightEdit"]) {
 test("Updates shows check status and keeps manual checks available when automatic checks are off", async ({
   workbench: page,
 }) => {
+  await page.setViewportSize({ width: 1120, height: 680 });
   await page.evaluate(async () => {
     const ipcPath = "/src/platform/ipc.ts";
     const actionsPath = "/src/platform/actions.ts";
@@ -62,11 +63,33 @@ test("Updates shows check status and keeps manual checks available when automati
   await expect(dialog.getByText("0.1.39", { exact: true })).toBeVisible();
   await expect(dialog.getByText("Never", { exact: true })).toBeVisible();
   const automatic = dialog.getByRole("checkbox", { name: "Check for updates automatically" });
+  const source = dialog.getByRole("button", { name: "Update source", exact: true });
+  const check = dialog.getByRole("button", { name: "Check Now", exact: true });
+  const checked = dialog.getByText("Never", { exact: true });
+  const whatsNew = dialog.getByRole("checkbox", { name: "Show What's New after an update", exact: true });
+  for (const width of [1120, 580, 520]) {
+    await page.setViewportSize({ width, height: 680 });
+    const [automaticBox, sourceBox, checkBox, statusBox, whatsNewBox] = await Promise.all(
+      [automatic, source, check, checked, whatsNew].map((item) => item.boundingBox()),
+    );
+    if (!automaticBox || !sourceBox || !checkBox || !statusBox || !whatsNewBox)
+      throw new Error("Missing Updates controls");
+    expect(checkBox.y).toBeGreaterThan(sourceBox.y + sourceBox.height);
+    expect(sourceBox.y).toBeGreaterThan(automaticBox.y + automaticBox.height);
+    expect(whatsNewBox.y).toBeGreaterThan(checkBox.y + checkBox.height);
+    expect(statusBox.x).toBeGreaterThan(checkBox.x + checkBox.width);
+    expect(Math.abs(statusBox.y + statusBox.height / 2 - checkBox.y - checkBox.height / 2)).toBeLessThan(1.5);
+    await expect(check).toBeInViewport({ ratio: 1 });
+  }
   await expect(automatic).toBeChecked();
   await automatic.uncheck();
+  await expect(source).toBeEnabled();
+  await source.click();
+  await page.getByRole("option", { name: "CNB (China mirror)", exact: true }).click();
   await dialog.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(automatic).not.toBeChecked();
-  await dialog.getByRole("button", { name: "Check Now", exact: true }).click();
+  await expect(source).toHaveText("CNB (China mirror)");
+  await check.click();
   await expect(page.locator("body")).toHaveAttribute("data-update-checked", "true");
 });
 
