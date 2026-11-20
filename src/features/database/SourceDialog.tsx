@@ -502,8 +502,8 @@ export function SourceDialog({
   const sshUsed: DbSsh = effectiveSsh(ssh, sshConfigs) ?? ssh;
   const setSsh = (patch: Partial<DbSsh>) => setS((x) => ({ ...x, ssh: { ...blankSsh(), ...x.ssh, ...patch } }));
   const options: DbOptions = { ...blankOptions(), ...s.options };
-  const connectionTimers = (driver: DataSource["driver"]) => ({
-    keepAliveSecs: driver === "sqlite" ? null : options.keepAliveSecs,
+  const connectionTimers = (targetDriver: DataSource["driver"]) => ({
+    keepAliveSecs: s.driver === "sqlite" || targetDriver === "sqlite" ? null : options.keepAliveSecs,
     autoDisconnectSecs: options.autoDisconnectSecs,
   });
   const setOptions = (patch: Partial<DbOptions>) =>
@@ -672,6 +672,7 @@ export function SourceDialog({
         vendor: v.id === v.driver ? "" : v.id,
         port,
         ssl: v.ssl ?? (v.driver === "clickhouse" ? "disable" : x.ssl),
+        ...(v.driver === "sqlite" && x.driver !== "jdbc" ? { options: { ...x.options, keepAliveSecs: null } } : {}),
         ...(v.driver === "snowflake"
           ? { host: x.host === "localhost" ? "" : x.host, snowflake: { ...blankSnowflake(), ...x.snowflake } }
           : {}),

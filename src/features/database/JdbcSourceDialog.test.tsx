@@ -570,6 +570,57 @@ describe("JDBC drivers for named database types", () => {
     ]);
   });
 
+  it("clears keep-alive when switching from a native network source to built-in SQLite", async () => {
+    render(
+      <SourceDialog
+        initial={{
+          driver: "postgres",
+          options: { keepAliveSecs: 30, autoDisconnectSecs: 90 },
+        }}
+      />,
+    );
+    select("Data source type", "SQLite");
+    fireEvent.change(screen.getByLabelText("File:"), { target: { value: "/fixture/local.db" } });
+    fireEvent.click(screen.getByRole("button", { name: "Test Connection" }));
+    await screen.findByText("Succeeded: Example database");
+    expect(backend.call).toHaveBeenCalledWith([
+      "test",
+      expect.objectContaining({
+        driver: "sqlite",
+        options: expect.objectContaining({ keepAliveSecs: null, autoDisconnectSecs: 90 }),
+      }),
+      null,
+      null,
+    ]);
+  });
+
+  it("leaves a legacy hidden SQLite keep-alive disabled when switching to JDBC", async () => {
+    backend.call.mockImplementation(async ([op]) => (op === "list" ? [sqlite] : "SQLite"));
+    render(
+      <SourceDialog
+        initial={{
+          driver: "sqlite",
+          file: "/fixture/local.db",
+          options: { keepAliveSecs: 30, autoDisconnectSecs: 90 },
+        }}
+      />,
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "Manage Drivers…" })).toBeEnabled());
+    select("Connection driver", sqlite.name);
+    fireEvent.click(screen.getByRole("checkbox", { name: "I have configured JDBC connection security." }));
+    fireEvent.click(screen.getByRole("button", { name: "Test Connection" }));
+    await screen.findByText("Succeeded: SQLite");
+    expect(backend.call).toHaveBeenCalledWith([
+      "test",
+      expect.objectContaining({
+        driver: "jdbc",
+        options: expect.objectContaining({ keepAliveSecs: null, autoDisconnectSecs: 90 }),
+      }),
+      null,
+      null,
+    ]);
+  });
+
   it("keeps shared source options and restores the native draft's password", async () => {
     const pg = { ...driver, name: "PostgreSQL JDBC", vendor: "postgres", urlTemplate: "jdbc:example:local" };
     backend.call.mockImplementation(async ([op]) => (op === "list" ? [pg] : "OK"));
