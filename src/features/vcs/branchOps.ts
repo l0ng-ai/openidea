@@ -757,17 +757,23 @@ export async function rebaseInRepos(branch: string, roots: readonly string[]) {
   );
 }
 
-/** Deletes local branch `name` in every repository of `roots`. */
+/**
+ * Deletes local branch `name` in every repository of `roots` where it is not checked out
+ * (git refuses those; with diverged branches it may be current in some of them).
+ */
 export async function deleteInRepos(name: string, roots: readonly string[]) {
+  const { heads } = useVcs.getState();
+  const deletable = roots.filter((root) => heads[root]?.head !== name);
+  if (!deletable.length) return;
   const ok = await confirmDialog({
     title: "Delete Branch",
-    message: tx`Delete branch '${name}' in ${roots.length} repositories? Unmerged commits are discarded.`,
+    message: tx`Delete branch '${name}' in ${deletable.length} repositories? Unmerged commits are discarded.`,
     okLabel: "Delete",
     danger: true,
   });
   if (!ok) return;
   await eachRepo(
-    roots,
+    deletable,
     (root) =>
       runOp(tx`Delete branch ${name} (${repoName(root)})`, () => call(commands.vcsDeleteBranch(root, name)), {
         refresh: false,
