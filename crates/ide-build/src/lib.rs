@@ -83,10 +83,22 @@ pub fn load_linked(
     settings: &ide_core::settings::MavenSettings,
     gradle_settings: &ide_core::settings::GradleSettings,
 ) -> BuildModel {
+    load_linked_with_jdk(root, cache_dir, maven_repo, settings, gradle_settings, None)
+}
+
+/// [`load_linked`] with the JDK Maven runs on, for JDK-activated Maven profiles.
+pub fn load_linked_with_jdk(
+    root: &Path,
+    cache_dir: &Path,
+    maven_repo: Option<PathBuf>,
+    settings: &ide_core::settings::MavenSettings,
+    gradle_settings: &ide_core::settings::GradleSettings,
+    maven_jdk_version: Option<u32>,
+) -> BuildModel {
     let maven = maven::has_projects(root, settings).then(|| {
         let profiles = settings.profiles(&sync::maven_profiles(cache_dir));
         let repo = maven_repo.or_else(maven::default_local_repo);
-        let mut m = maven::load_with_linked(root, repo, &profiles, &settings.linked_projects);
+        let mut m = maven::load_with_linked_jdk(root, repo, &profiles, maven_jdk_version, &settings.linked_projects);
         maven::UnlinkedProjects::from_model(&m, settings).filter(&mut m);
         // The user settings' profiles can be chosen too (`-P` applies to them as well).
         for p in maven::user_settings_file(root, settings).map(|f| maven::settings_profiles(&f)).unwrap_or_default() {

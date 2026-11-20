@@ -340,10 +340,10 @@ describe("model settings", () => {
     render(<ConfigPickers config={copilotConfig()} onChange={onChange} />);
     const model = screen.getByRole("button", { name: "Model" });
     expect(model).toHaveTextContent("Claude Sonnet 5.5");
-    expect(model).toHaveTextContent("medium");
+    const settings = screen.getByRole("button", { name: "Model settings: medium" });
     expect(screen.getByRole("button", { name: "Mode" })).toHaveTextContent("AgentAllow All");
-    fireEvent.click(model);
-    const dialog = screen.getByRole("dialog", { name: "Model" });
+    fireEvent.click(settings);
+    const dialog = screen.getByRole("dialog", { name: "Model settings" });
     const effort = within(dialog).getByRole("radiogroup", { name: "Effort Level" });
     expect(within(effort).getByRole("radio", { name: "medium" })).toHaveAttribute("aria-checked", "true");
     fireEvent.click(within(effort).getByRole("radio", { name: "XHigh" }));
@@ -364,10 +364,8 @@ describe("model settings", () => {
         : o,
     );
     render(<ConfigPickers config={config} onChange={onChange} />);
-    const model = screen.getByRole("button", { name: "Model" });
-    expect(model).toHaveTextContent("Max");
-    fireEvent.click(model);
-    const dialog = screen.getByRole("dialog", { name: "Model" });
+    fireEvent.click(screen.getByRole("button", { name: "Model settings: Max" }));
+    const dialog = screen.getByRole("dialog", { name: "Model settings" });
     expect(within(dialog).queryByRole("radiogroup", { name: "Effort Level" })).not.toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: /Reasoning Effort/ }));
     fireEvent.click(screen.getByRole("option", { name: /Extra high/ }));
@@ -389,12 +387,12 @@ describe("model settings", () => {
     ];
     render(<ConfigPickers config={config} onChange={vi.fn()} />);
     expect(screen.queryByRole("switch", { name: "Fast" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Model" }));
-    const dialog = screen.getByRole("dialog", { name: "Model" });
+    fireEvent.click(screen.getByRole("button", { name: "Model settings: Fast: Off" }));
+    const dialog = screen.getByRole("dialog", { name: "Model settings" });
     expect(within(dialog).getByRole("switch", { name: "Fast" })).toHaveAttribute("aria-checked", "false");
   });
 
-  it("lists models by name in one page, with context size, cost and pinning", () => {
+  it("opens settings from the selected row without choosing it and returns to a pinnable model list", () => {
     const onChange = vi.fn();
     const cfg = copilotConfig().map((o) =>
       o.id === "model"
@@ -419,14 +417,15 @@ describe("model settings", () => {
     render(<ConfigPickers config={cfg} onChange={onChange} />);
     const model = screen.getByRole("button", { name: "Model" });
     expect(model).toHaveTextContent("Claude Sonnet 5.5");
-    expect(model).toHaveTextContent("medium");
-    expect(model).toHaveTextContent("1M");
-    expect(model).toHaveAttribute("title", expect.stringContaining("Effort Level: medium · Context Size: 1M"));
+    expect(screen.getByRole("button", { name: /^Model settings:/ })).toHaveTextContent("medium · 1M");
 
     fireEvent.click(model);
     const dialog = screen.getByRole("dialog", { name: "Model" });
     expect(within(dialog).queryByText("Balanced")).not.toBeInTheDocument();
     expect(within(dialog).getByText("Medium cost")).toBeVisible();
+    expect(within(dialog).queryByRole("radio")).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Configure Claude Sonnet 5.5…" }));
+    expect(onChange).not.toHaveBeenCalled();
 
     const effortGroup = within(dialog).getByRole("radiogroup", { name: "Effort Level" });
     expect(within(effortGroup).getByRole("radio", { name: "medium" })).toHaveAttribute("aria-checked", "true");
@@ -435,6 +434,7 @@ describe("model settings", () => {
     fireEvent.click(within(contextGroup).getByRole("radio", { name: "200K" }));
     expect(onChange).toHaveBeenCalledWith("contextTier", "default");
 
+    fireEvent.click(within(dialog).getByRole("button", { name: "Back to models" }));
     fireEvent.click(within(dialog).getAllByRole("button", { name: "Pin model" })[0]!);
     const listbox = within(dialog).getByRole("listbox", { name: "Model" });
     expect(within(listbox).getByText("Pinned")).toBeVisible();

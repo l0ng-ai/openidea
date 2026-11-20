@@ -1,8 +1,7 @@
-import { tx } from "@/platform/i18n";
 import { call, commands, nextRequestId, type RunConfig } from "@/platform/ipc";
 import type { RunConfigTypeContribution } from "@/workbench/contributions";
 import { updatePolicyDefaults, updatePolicyFields } from "./updatePolicies";
-import { runUpdateBuild } from "./buildUpdate";
+import { runUpdateBuild, updateBuildError } from "./buildUpdate";
 
 const validatePort = (value: string) =>
   /^\d+$/.test(value) && Number(value) > 0 && Number(value) <= 65535 ? null : "Port must be between 1 and 65535";
@@ -167,7 +166,7 @@ export async function syncTomcatOutputs(config: RunConfig, resourcesOnly: boolea
   );
   if (!info) return false;
   if (info.build === "failed" || info.build === "withErrors" || info.build === "cancelled")
-    throw new Error(tx("Application update build failed"));
+    throw updateBuildError(info);
   return call(commands.runTomcatSync(config, artifact.module, info.classPaths, resourcesOnly));
 }
 
