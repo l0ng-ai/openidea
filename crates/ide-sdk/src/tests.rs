@@ -1725,7 +1725,15 @@ fn typescript_7_runs_its_own_language_server() {
         assert_eq!(Path::new(&cfg.command), native, "{name}");
         assert_eq!(cfg.args, ["--lsp", "--stdio"]);
         assert_eq!(cfg.display_name.as_deref(), Some("TypeScript 7"));
-        assert!(cfg.initialization_options.is_none());
+        // The tsserver-based server's options don't apply; JSX prop completion adds a value.
+        let options = serde_json::to_value(cfg.initialization_options.as_ref().unwrap()).unwrap();
+        for language in ["typescript", "javascript"] {
+            assert_eq!(
+                options[language],
+                serde_json::json!({ "preferences": { "jsxAttributeCompletionStyle": "auto" } })
+            );
+        }
+        assert_eq!(options.as_object().unwrap().len(), 2, "{options}");
     }
     // Picked as a directory (its `lib`, as for older versions), too.
     s.languages.typescript.version = modules.join("typescript/lib").to_string_lossy().into_owned();
