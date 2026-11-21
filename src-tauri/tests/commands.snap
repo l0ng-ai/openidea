@@ -278,6 +278,7 @@ fs_open_with_system                          always             desktop      bin
 fs_probe                                     always             project_host bindings async
 fs_read_dir                                  always             project_host bindings async
 fs_read_image                                always             project_host bindings async
+fs_read_parquet                              always             project_host bindings async
 fs_read_range                                always             project_host bindings async
 fs_read_text                                 always             project_host bindings async
 fs_rename                                    always             project_host bindings async

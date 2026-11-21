@@ -7,6 +7,7 @@ import { useProject } from "@/platform/project";
 
 export const IMAGE_KIND = "image";
 export const BINARY_KIND = "binary";
+export const PARQUET_KIND = "parquet";
 
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "bmp", "avif"]);
 const MARKDOWN_EXTENSIONS = new Set(["md", "markdown", "mdown", "mkd", "mkdn", "mdwn"]);
@@ -42,6 +43,8 @@ export function associatedApplication(
 }
 
 export const imageInput = (path: string): EditorInput => ({ kind: IMAGE_KIND, key: `image:${path}`, path });
+export const parquetInput = (path: string): EditorInput | null =>
+  extension(path) === "parquet" ? { kind: PARQUET_KIND, key: `parquet:${path}`, path } : null;
 
 export interface BinaryInputData {
   size: number;

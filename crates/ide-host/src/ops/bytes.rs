@@ -3,8 +3,8 @@ use crate::Host;
 use ide_command::command;
 
 use crate::ops::doc::blocking;
-use ide_core::IdeResult;
-use ide_vfs::{ByteRange, FileProbe};
+use ide_core::{IdeError, IdeResult};
+use ide_vfs::{ByteRange, FileProbe, ParquetPage};
 use std::path::PathBuf;
 
 /// Size and text/binary classification, from the file's head only.
@@ -28,4 +28,16 @@ pub async fn fs_read_image(host: &Host, path: PathBuf) -> IdeResult<String> {
     blocking(move || ide_vfs::read_data_url(&path, &opened)).await
 }
 
-ide_command::domain!(bytes: fs_probe, fs_read_image, fs_read_range);
+#[command(trust = always)]
+pub async fn fs_read_parquet(host: &Host, path: PathBuf, offset: u64) -> IdeResult<ParquetPage> {
+    let opened: Vec<PathBuf> = host.projects().iter().map(|project| project.root.clone()).collect();
+    blocking(move || {
+        if !ide_vfs::content_path_allowed(&path, &opened) {
+            return Err(IdeError::invalid(format!("{} is not on a local drive or an opened share", path.display())));
+        }
+        ide_vfs::read_parquet_page(&path, offset)
+    })
+    .await
+}
+
+ide_command::domain!(bytes: fs_probe, fs_read_image, fs_read_range, fs_read_parquet);
