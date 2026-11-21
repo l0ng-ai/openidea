@@ -20,6 +20,7 @@ keyring.workspace = true
 keyring-core.workspace = true
 russh = { version = "0.65", default-features = false, features = ["ring", "rsa", "flate2"] }
 russh-sftp = "2.4"
+ssh-key = { version = "0.7.0-rc.11", default-features = false, features = ["mldsa-eddsa"] }
 flate2 = "1"
 suppaftp = { version = "12.2.1", default-features = false, features = ["tokio-rustls-ring"] }
 rustls.workspace = true
@@ -34,3 +35,4 @@ testing = ["keyring-core/sample"]
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 keyring-core = { workspace = true, features = ["sample"] }
+getrandom = { version = "0.4", features = ["sys_rng"] }
