@@ -1324,6 +1324,13 @@ export const commands = {
 	projectTrustSet: (path: string, trusted: boolean, folder: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("project_trust_set", { path, trusted, folder })),
 	projectTrustStatus: (path: string) => typedError<TrustStatus, IdeError>(__TAURI_INVOKE("project_trust_status", { path })),
 	/**
+	 *  Sets a `projectStructure.*` key in the settings of `root`, a project attached to the window's
+	 *  project (Mark Directory as there). Every open window holding that project follows.
+	 */
+	projectWorkspaceMemberSet: (root: string, key: string, value: string) => typedError<null, IdeError>(__TAURI_INVOKE("project_workspace_member_set", { root, key, value })),
+	/**  The workspace projects outside the window's project folder, for Mark Directory as there. */
+	projectWorkspaceMembers: () => typedError<WorkspaceMember[], IdeError>(__TAURI_INVOKE("project_workspace_members")),
+	/**
 	 *  System Settings › HTTP Proxy › Check connection: GETs `url` through `proxy` as
 	 *  edited (not yet applied); the response status, or why there was none.
 	 */
@@ -12871,6 +12878,15 @@ export type WorkspaceEdit = {
 export type WorkspaceEditPrecondition = {
 	path: IpcPath,
 	hash: string,
+};
+
+/**  A project attached to the window's project, with its own Project Structure. */
+export type WorkspaceMember = {
+	root: IpcPath,
+	/**  Its project settings' Project Structure (not merged with the user settings). */
+	structure: ProjectStructureSettings,
+	/**  Roots detected from its build files. */
+	detected: SourceFolder[],
 };
 
 export type WorkspaceSymbol = {

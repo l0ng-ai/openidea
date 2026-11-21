@@ -505,6 +505,8 @@ project_trust_list                           always             project_host bin
 project_trust_remove_location                always             project_host bindings async
 project_trust_set                            always             project_host bindings async
 project_trust_status                         always             project_host bindings sync
+project_workspace_member_set                 always             project_host bindings sync
+project_workspace_members                    always             project_host bindings sync
 proxy_check_connection                       always             desktop      bindings async
 recent_files                                 always             project_host bindings sync
 recent_project_groups                        always             desktop      bindings sync

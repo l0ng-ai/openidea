@@ -112,3 +112,49 @@ async fn attached_projects_keep_their_own_excluded_folders() {
     assert_eq!(indexed(&host, "dist.txt"), expect(&["app/dist/dist.txt"]));
     host.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mark_directory_as_excluded_writes_the_attached_projects_settings() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(temp.path()).unwrap();
+    let (app, lib, other) = (base.join("app"), base.join("lib"), base.join("other"));
+    for dir in [app.join("gen"), lib.join("gen"), other.clone()] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    ide_workspace::workspace::Workspace::attach(&app, "app", vec![app.clone(), lib.clone()]).unwrap();
+    let host = Arc::new(host(&base));
+    host.trust.decide(&app, true, false).unwrap();
+    host.open_project("main", &app).unwrap();
+
+    let members = ops::project::project_workspace_members(&host, "main").unwrap();
+    assert_eq!(members.iter().map(|m| &m.root.0).collect::<Vec<_>>(), [&lib]);
+    assert!(members[0].structure.excluded.is_empty());
+
+    let set = |root: &Path, key: &str, value: &str| {
+        ops::project::project_workspace_member_set(&host, "main", root.to_path_buf(), key.into(), value.into())
+    };
+    set(&lib, "projectStructure.excluded", r#"["gen"]"#).unwrap();
+    // Only Project Structure keys of the workspace's attached projects.
+    assert!(set(&other, "projectStructure.excluded", r#"["gen"]"#).is_err());
+    assert!(set(&lib, "editor.fontSize", "20").is_err());
+
+    let saved = ide_workspace::SettingsStore::load(&base.join("config"), Some(&lib));
+    assert_eq!(saved.effective().project_structure.excluded, ["gen"]);
+    let project = host.project("main").unwrap();
+    for _ in 0..100 {
+        if project.exclude_globs_in(&lib).contains(&"/gen".to_owned()) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(excluded(&host, &lib).await, ["gen"]);
+    assert!(excluded(&host, &app).await.is_empty(), "the open project keeps its own");
+    assert!(
+        ide_workspace::SettingsStore::load(&base.join("config"), Some(&app))
+            .effective()
+            .project_structure
+            .excluded
+            .is_empty()
+    );
+    host.shutdown().await;
+}
