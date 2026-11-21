@@ -9277,5 +9277,7 @@
   "Configure skills for this session": "为此会话配置技能",
   "No skills found in .agents/skills, .openidea/skills, ~/.agents/skills, or the CLI folders of Claude Code, GitHub Copilot, Codex, and Cursor.": "未在 .agents/skills、.openidea/skills、~/.agents/skills 或 Claude Code、GitHub Copilot、Codex 与 Cursor 的 CLI 文件夹中找到技能。",
   "This CLI discovers the folder itself: off hides the skill from OpenIDEA's / menu and applies only where the CLI supports disabling.": "该 CLI 会自己发现这个文件夹：关闭只会让 OpenIDEA 的 / 菜单不再提供该技能，并且只在 CLI 支持禁用时生效。",
-  "Cannot find the source of {0}": "找不到 {0} 的源代码"
+  "Cannot find the source of {0}": "找不到 {0} 的源代码",
+  "JavaScript and TypeScript": "JavaScript 和 TypeScript",
+  "Global function": "全局函数"
 }

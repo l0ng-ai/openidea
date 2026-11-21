@@ -22,6 +22,8 @@ export interface SemanticToken {
   modifiers: readonly string[];
   /** Kind from the language's own `symbolKinds` classification, when present. */
   kind: string | undefined;
+  /** The server's legend has a `local` modifier, so a token without it is not a local. */
+  marksLocals?: boolean;
   /** Classes accumulated so far; the hook appends or removes. */
   classes: string[];
 }
