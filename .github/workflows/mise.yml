@@ -1,0 +1,40 @@
+name: Contributor setup
+on:
+  pull_request:
+    paths:
+      - mise.toml
+      - Cargo.toml
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - .github/workflows/mise.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mise:
+    name: mise (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
+        with:
+          version: 2026.11.11
+      - name: Check the active toolchain against the project pins
+        shell: bash
+        run: |
+          test "$(mise exec -- node -p process.versions.node)" = "$(mise current node)"
+          test "$(mise exec -- pnpm --version)" = "$(mise current npm:pnpm)"
+          test "$(mise exec -- rustc --version | cut -d ' ' -f2)" = "$(mise current rust)"
+          mise exec -- cargo fmt --version
+          mise exec -- cargo clippy --version
+      - run: mise run setup
+      - run: git diff --exit-code -- pnpm-lock.yaml
+      - run: mise exec -- pnpm exec vitest run scripts/dev-session.test.ts src/platform/webkitCompatibility.test.ts
