@@ -825,7 +825,7 @@ fn workspace_scope_excludes_state_from_scans_updates_and_cached_results() {
     let idx = ProjectIndex::open(
         &fx.root,
         &fx.cache,
-        crate::IndexRoots { include_root: false, folders: vec![member.clone()] },
+        crate::IndexRoots { include_root: false, folders: vec![member.clone()], ..Default::default() },
         Vec::new(),
         Arc::new(LanguageRegistry::load(None).unwrap()),
         Arc::new(Syntax::new()),
@@ -841,7 +841,7 @@ fn workspace_scope_excludes_state_from_scans_updates_and_cached_results() {
     assert!(idx.wait_idle(WAIT));
     assert!(symbols(&idx, "hidden", SymbolFilter::All).is_empty());
     assert_eq!(symbols(&idx, "visible", SymbolFilter::All), ["visible"]);
-    idx.set_scope(crate::IndexRoots { include_root: false, folders: Vec::new() }, Vec::new());
+    idx.set_scope(crate::IndexRoots { include_root: false, folders: Vec::new(), ..Default::default() }, Vec::new());
     assert!(idx.wait_idle(WAIT));
     assert!(idx.find_files("", 100).is_empty());
 }
@@ -1104,7 +1104,7 @@ fn repository_rule_changes_refresh_members_of_an_unindexed_container() {
     let idx = ProjectIndex::open(
         &fx.root,
         &fx.cache,
-        IndexRoots { include_root: false, folders: vec![fx.root.join("member")] },
+        IndexRoots { include_root: false, folders: vec![fx.root.join("member")], ..Default::default() },
         vec![],
         Arc::new(LanguageRegistry::load(None).unwrap()),
         Arc::new(Syntax::new()),
