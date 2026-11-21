@@ -200,3 +200,28 @@
 .folder {
   font-weight: 600;
 }
+.select {
+  height: var(--h-control-small);
+  font-size: var(--fs-small);
+}
+.sync {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-small);
+  color: inherit;
+  opacity: 0.7;
+}
+.sync.planned {
+  opacity: 1;
+  --icon-color: var(--accent);
+}
+.sync:not(:disabled):hover {
+  background: var(--bg-toolbar-hover);
+  opacity: 1;
+}
+.sync:disabled {
+  cursor: default;
+}
