@@ -263,7 +263,13 @@ export function refactorThisItems(
       go = () => introduceFallback(view, INTRODUCE[r.id]!, answer.status === "notReady" ? "notReady" : "error");
     if (!go) continue;
     const exec = go;
-    items.push({ id: r.id, label: r.label, shortcut: shortcutLabel(r.action), run: () => void exec() });
+    items.push({
+      id: r.id,
+      label: r.label,
+      section: r.section,
+      shortcut: shortcutLabel(r.action),
+      run: () => void exec(),
+    });
   }
   other.forEach((a, i) =>
     items.push({
@@ -326,6 +332,7 @@ export async function refactorThis(view: EditorView, rename: (view: EditorView) 
     anchor: caretAnchor(view, state.selection.main.head),
     title: "Refactor This",
     items,
+    compact: true,
     numbered: true,
   });
 }
@@ -338,6 +345,7 @@ export function showNothingHere(
     kind: "list",
     anchor,
     title: "Refactor This",
+    compact: true,
     items: [{ id: "nothing", label: "Nothing here", disabled: "No refactoring applies here", run: () => {} }],
   });
 }

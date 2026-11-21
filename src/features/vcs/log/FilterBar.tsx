@@ -17,6 +17,7 @@ import {
   recentFilterValues,
   recentLogFilters,
   reloadLog,
+  recentFilterKey,
   setLogBranches,
   setLogFilters,
   toggleRepository,
@@ -25,7 +26,7 @@ import {
 } from "../logStore";
 import { relTo } from "../model";
 import { branchesByRepo } from "../multiRoot";
-import { chooseLogPaths } from "../PathFilterDialog";
+import { chooseLogPaths, editLogPaths } from "../PathFilterDialog";
 import { openExternalLog } from "../RevisionBrowser";
 import { currentRepo, repoName, useVcs } from "../store";
 import { useDropdownMenu, useLogRepositories, useReadOnlyLog } from "./logHooks";
@@ -79,7 +80,7 @@ function FilterButton({ label, value, onOpen, onClear, hidden }: LogFilter & { h
   );
 }
 
-export function FilterBar() {
+export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
   const scope = useContext(LogIdContext);
   const shown = useGitLog((s) => s.shownLog);
   const active = !scope || scope === shown;
@@ -225,50 +226,83 @@ export function FilterBar() {
       },
     ]);
 
-  const openPaths = (anchor: HTMLElement) =>
+  const paths = filters.paths?.length ? filters.paths : filters.path ? [filters.path] : [];
+  const pathRoots = repositories.length ? repositories : root ? [root] : [];
+  const pathLabel = (path: string) => (root ? relTo(root, path) : path) || ".";
+  const selectedRepositories = filters.repositories?.length ? filters.repositories : repositories;
+  const selectPaths = (paths: string[]) => setLogFilters({ path: null, paths, repositories: [] });
+  const selectRepositories = (selected: string[]) =>
+    setLogFilters({
+      path: null,
+      paths: [],
+      repositories: selected.length === repositories.length ? [] : selected,
+    });
+  const openPaths = (anchor: HTMLElement) => {
+    const modifier = isMacHost() ? "⌘" : "Ctrl";
+    const repositoryItems: MenuItem[] =
+      repositories.length > 1
+        ? [
+            { kind: "header", label: "Repositories" },
+            ...[...repositories]
+              .sort((a, b) => repoName(a).localeCompare(repoName(b)))
+              .map((repo) => {
+                const name = repoName(repo);
+                const checked = !paths.length && selectedRepositories.includes(repo);
+                return {
+                  label: name,
+                  verbatim: true,
+                  checked,
+                  hint: tx`${modifier}+Click to only see "${name}"`,
+                  run: () => {
+                    const selected = paths.length ? [repo] : toggleRepository(selectedRepositories, repo);
+                    if (selected.length) selectRepositories(selected);
+                  },
+                  runWithModifier: () => selectRepositories([repo]),
+                };
+              }),
+          ]
+        : [];
+    const pathKey = recentFilterKey("paths", paths);
+    const history = recentFilterValues("paths");
+    const recentSets = paths.length
+      ? [paths, ...history.filter((recent) => recentFilterKey("paths", recent) !== pathKey)].slice(0, 10)
+      : history;
+    const recentItems: MenuItem[] = recentSets.flatMap((recent) =>
+      recent?.length
+        ? [
+            {
+              label: recent.map(pathLabel).join(", "),
+              verbatim: true,
+              checked: recent.length === paths.length && recent.every((path) => paths.includes(path)),
+              run: () => selectPaths(recent),
+            },
+          ]
+        : [],
+    );
+    if (recentItems.length) recentItems.unshift({ kind: "header", label: "Recent" });
     menuBelow(anchor, [
-      ...recentFilterValues("paths")
-        .filter((paths) => paths?.length)
-        .map((paths) => ({ label: paths!.join(", "), run: () => setLogFilters({ paths, path: null }) })),
       {
-        label: "Select Folders…",
+        label: "Select…",
         run: async () => {
-          const paths = await chooseLogPaths(
-            repositories.length ? repositories : root ? [root] : [],
-            filters.paths ?? (filters.path ? [filters.path] : []),
-            readOnly,
-          );
-          if (paths) setLogFilters({ path: null, paths });
+          const selected = await editLogPaths(pathRoots, paths);
+          if (selected) selectPaths(selected);
         },
       },
+      {
+        label: "Select in Tree…",
+        run: async () => {
+          const selected = await chooseLogPaths(pathRoots, paths, readOnly);
+          if (selected) selectPaths(selected);
+        },
+      },
+      ...(repositories.length > 15 ? [...recentItems, ...repositoryItems] : [...repositoryItems, ...recentItems]),
+      ...(paths.length || filters.repositories?.length
+        ? [{ kind: "separator" as const }, { label: "All", run: () => selectPaths([]) }]
+        : []),
     ]);
+  };
 
   const logFilters: LogFilter[] = [
-    ...(repositories.length > 1
-      ? [
-          {
-            label: "Repository",
-            value: filters.repositories?.map(repoName).join(", ") || null,
-            onOpen: (anchor: HTMLElement) =>
-              menuBelow(
-                anchor,
-                repositories.map((repo) => {
-                  const name = repoName(repo);
-                  const modifier = isMacHost() ? "⌘" : "Ctrl";
-                  return {
-                    label: name,
-                    verbatim: true,
-                    checked: filters.repositories?.includes(repo) ?? false,
-                    run: () => setLogFilters({ repositories: toggleRepository(filters.repositories, repo) }),
-                    runWithModifier: () => setLogFilters({ repositories: [repo] }),
-                    hint: tx`${modifier}+Click to only see "${name}"`,
-                  };
-                }),
-              ),
-            onClear: () => setLogFilters({ repositories: [] }),
-          },
-        ]
-      : []),
     {
       label: "Branch",
       value: filters.range || filters.branches.join(", ") || null,
@@ -289,20 +323,16 @@ export function FilterBar() {
     },
     {
       label: "Paths",
-      value: filters.paths?.length
-        ? filters.paths.map((p) => (root ? relTo(root, p) : p)).join(", ")
-        : filters.path
-          ? (root ? relTo(root, filters.path) : filters.path) || "."
-          : null,
+      value: paths.length ? paths.map(pathLabel).join(", ") : filters.repositories?.map(repoName).join(", ") || null,
       onOpen: openPaths,
-      onClear: () => setLogFilters({ path: null, paths: [] }),
+      onClear: () => selectPaths([]),
     },
   ];
 
   return (
     <div className={styles.filters} role="toolbar" aria-label={tx("Log filters")}>
       <div className={styles.filterControls}>
-        {!showBranches && (
+        {!fileHistory && !showBranches && (
           <IconButton icon="chevron-right" title="Show Branches" size="small" action="vcs.log.showBranches" />
         )}
         <SearchField

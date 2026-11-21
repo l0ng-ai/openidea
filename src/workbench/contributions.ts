@@ -571,13 +571,30 @@ export function registerExternalFileOpenHandler(handler: ExternalFileOpenHandler
   };
 }
 
+/** Default custom editors that should open in the IDE instead of an associated app. */
+const externalOpenSuppressions = new Map<string, (path: string) => boolean>();
+
+/** Skip associated-application open for paths a default custom editor claims. */
+export function registerExternalOpenSuppression(id: string, matches: (path: string) => boolean): () => void {
+  externalOpenSuppressions.set(id, matches);
+  return () => {
+    if (externalOpenSuppressions.get(id) === matches) externalOpenSuppressions.delete(id);
+  };
+}
+
+function externalOpenSuppressed(path: string): boolean {
+  return [...externalOpenSuppressions.values()].some((matches) => matches(path));
+}
+
 /** Whether opening `path` would hand it to another application. */
 export function opensExternally(path: string): boolean {
+  if (externalOpenSuppressed(path)) return false;
   return [...externalFileOpenHandlers.values()].some((h) => h.matches(path));
 }
 
 /** Opens `path` with another application; false when no handler took it. Handler failures fall through. */
 export async function openFileExternally(path: string): Promise<boolean> {
+  if (externalOpenSuppressed(path)) return false;
   const handlers = [...externalFileOpenHandlers.values()].sort(
     (a, b) => (a.order ?? 100) - (b.order ?? 100) || a.id.localeCompare(b.id),
   );

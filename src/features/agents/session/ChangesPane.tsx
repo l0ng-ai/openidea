@@ -3,7 +3,7 @@ import { commitFileDiffData, openDiff, withChain, type DiffData } from "@/featur
 import { repositoryPath } from "@/features/vcs/repositoryPaths";
 import { tx } from "@/platform/i18n";
 import { call, commands, onIdeEvent } from "@/platform/ipc";
-import { basename, relativeDir } from "@/platform/project";
+import { basename, dirname, relativeDir } from "@/platform/project";
 import { fileIconName, Icon, IconButton, showContextMenu, Spinner, T, Tree } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { confirm } from "@/workbench/messages";
@@ -97,7 +97,7 @@ export function useChangesOpen(
 
 const NO_SELECTION: ReadonlySet<string> = new Set();
 
-/** A row of the Changes pane: a group, a commit, or a file. */
+/** A row of the Changes pane: a group, a commit, a repository, or a file. */
 type ChangeRow =
   | {
       key: string;
@@ -109,7 +109,32 @@ type ChangeRow =
       children: ChangeRow[];
     }
   | { key: string; type: "commit"; commit: AgentCommit; children: ChangeRow[] }
+  | { key: string; type: "repo"; root: string; children: ChangeRow[] }
   | { key: string; type: "file"; change: AgentChange; commit?: AgentCommit };
+
+/** `files` under a row per repository, when the task changed files in several. */
+function byRepository(files: ChangeRow[], prefix: string): ChangeRow[] {
+  const roots = new Map<string, ChangeRow[]>();
+  for (const f of files) {
+    const root = f.type === "file" ? f.change.repo : null;
+    if (!root) return files;
+    roots.set(root, [...(roots.get(root) ?? []), f]);
+  }
+  if (roots.size < 2) return files;
+  return [...roots].map(([root, children]) => ({
+    key: `${prefix}repo:${root}`,
+    type: "repo" as const,
+    root,
+    children,
+  }));
+}
+
+/** The keys of the repository rows, at the top or in a group: shown open. */
+function repositoryKeys(rows: readonly ChangeRow[]): string[] {
+  return rows
+    .flatMap((r) => (r.type === "group" ? r.children : [r]))
+    .flatMap((r) => (r.type === "repo" ? [r.key] : []));
+}
 
 function statsOf(changes: readonly AgentChange[]) {
   return changes.reduce((n, c) => ({ added: n.added + c.added, removed: n.removed + c.removed }), {
@@ -124,11 +149,10 @@ function changeRows(
   grouped: boolean,
 ): ChangeRow[] {
   if (!grouped)
-    return uncommitted.map((change) => ({
-      key: change.path,
-      type: "file" as const,
-      change,
-    }));
+    return byRepository(
+      uncommitted.map((change) => ({ key: change.path, type: "file" as const, change })),
+      "",
+    );
   const roots: ChangeRow[] = [];
   if (uncommitted.length) {
     roots.push({
@@ -137,11 +161,10 @@ function changeRows(
       label: "Uncommitted",
       count: uncommitted.length,
       ...statsOf(uncommitted),
-      children: uncommitted.map((change) => ({
-        key: `uncommitted:${change.path}`,
-        type: "file",
-        change,
-      })),
+      children: byRepository(
+        uncommitted.map((change) => ({ key: `uncommitted:${change.path}`, type: "file" as const, change })),
+        "uncommitted:",
+      ),
     });
   }
   if (commits.length) {
@@ -202,15 +225,12 @@ export function ChangesPane({
   // Only the working files roll back; a commit's files are history.
   const rollbackable = useMemo(() => {
     const out = new Map<string, AgentChange>();
-    for (const root of rows) {
-      if (root.type === "file") {
-        if (!root.commit) out.set(root.key, root.change);
-        continue;
-      }
-      for (const child of root.children) {
-        if (child.type === "file" && !child.commit) out.set(child.key, child.change);
-      }
-    }
+    const walk = (row: ChangeRow) => {
+      if (row.type === "file") {
+        if (!row.commit) out.set(row.key, row.change);
+      } else if (row.type !== "commit") row.children.forEach(walk);
+    };
+    rows.forEach(walk);
     return out;
   }, [rows]);
   // Selection keys that no longer name a working file (a commit's file, a stale row) don't count.
@@ -407,11 +427,17 @@ export function ChangesPane({
             roots={rows}
             getKey={(n) => n.key}
             getLabel={(n) =>
-              n.type === "file" ? basename(n.change.path) : n.type === "commit" ? n.commit.summary : n.label
+              n.type === "file"
+                ? basename(n.change.path)
+                : n.type === "commit"
+                  ? n.commit.summary
+                  : n.type === "repo"
+                    ? basename(n.root)
+                    : n.label
             }
             getChildren={(n) => (n.type === "file" ? undefined : n.children)}
             isExpandable={(n) => n.type !== "file" && n.children.length > 0}
-            defaultExpanded={grouped ? ["group:uncommitted", "group:committed"] : undefined}
+            defaultExpanded={[...(grouped ? ["group:uncommitted", "group:committed"] : []), ...repositoryKeys(rows)]}
             activateExpandable={(n) => n.type === "commit"}
             selected={selected}
             onSelectionChange={(sel, lead) => {
@@ -445,6 +471,23 @@ export function ChangesPane({
                   </span>
                 );
               }
+              if (n.type === "repo") {
+                const files = n.children.flatMap((c) => (c.type === "file" ? [c.change] : []));
+                const stats = statsOf(files);
+                return (
+                  <span className={styles.changeGroup} title={n.root}>
+                    <Icon name="folder" size={14} />
+                    <span className={styles.changeGroupName}>{basename(n.root)}</span>
+                    <span
+                      className={styles.muted}
+                    >{`${files.length} ${tx(files.length === 1 ? "file" : "files")}`}</span>
+                    <span className={styles.changeStat}>
+                      {stats.added > 0 && <span className={styles.added}>+{stats.added}</span>}{" "}
+                      {stats.removed > 0 && <span className={styles.removed}>−{stats.removed}</span>}
+                    </span>
+                  </span>
+                );
+              }
               if (n.type === "commit") {
                 const stats = statsOf(n.commit.files);
                 return (
@@ -468,7 +511,13 @@ export function ChangesPane({
                   <span className={styles.changeName} style={{ color: KIND_COLOR[n.change.kind] }}>
                     {basename(n.change.path)}
                   </span>
-                  <span className={styles.changeDir}>{relativeDir(task.cwd, n.change.path)}</span>
+                  <span className={styles.changeDir}>
+                    {n.change.repo
+                      ? n.change.relPath.includes("/")
+                        ? dirname(n.change.relPath)
+                        : ""
+                      : relativeDir(task.cwd, n.change.path)}
+                  </span>
                   <span className={styles.changeStat}>
                     {n.change.added > 0 && <span className={styles.added}>+{n.change.added}</span>}{" "}
                     {n.change.removed > 0 && <span className={styles.removed}>−{n.change.removed}</span>}

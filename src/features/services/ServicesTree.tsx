@@ -120,7 +120,8 @@ export function ServicesTreeView() {
   };
   const moveActions = (item: ServiceTreeItem): ServiceItemAction[] => {
     const located = index.get(item.key);
-    const siblings = located?.parent?.children;
+    // A provider's roots (a run type's group) have no parent row; they reorder among themselves.
+    const siblings = located?.parent?.children ?? (located ? rootsByProvider[located.provider] : undefined);
     if (!located || !siblings || !providers.find((p) => p.id === located.provider)?.reorder) return [];
     const at = siblings.findIndex((s) => s.key === item.key);
     return ([-1, 1] as const).map((delta) => {

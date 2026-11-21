@@ -10,6 +10,13 @@
   opacity: 1;
   animation: popIn var(--dur-fast) var(--ease);
 }
+.centered {
+  position: fixed;
+  inset: 50% auto auto 50%;
+  translate: -50% -50%;
+  max-width: calc(100vw - 12px);
+  max-height: calc(100vh - 12px);
+}
 .popup::-webkit-scrollbar {
   width: 10px;
   height: 10px;

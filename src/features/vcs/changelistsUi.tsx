@@ -1,5 +1,5 @@
 /** Change list dialogs: New / Edit Changelist, Move to Another Changelist, delete. */
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Checkbox, Dialog, Input, Select, T } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import {
@@ -22,6 +22,7 @@ import { isModalCommit, openCommit } from "./commitUi";
 import { confirmDialog, openDialog } from "./dialogs";
 import { fileCount, stripSlash } from "./model";
 import { refreshNow, useVcs } from "./store";
+import formStyles from "./ChangelistForm.module.css";
 import styles from "./common.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -42,30 +43,40 @@ function ChangelistForm({
   error: string | null;
   activeDisabled?: boolean;
 }) {
+  const id = useId();
+  const errorId = value.name && error ? `${id}-error` : undefined;
   return (
-    <div className={styles.form}>
-      <label className={styles.fieldLabel} htmlFor="openidea-cl-name">
+    <div className={formStyles.form}>
+      <label className={formStyles.nameLabel} htmlFor={`${id}-name`}>
         <T>Name:</T>
       </label>
-      <Input
-        id="openidea-cl-name"
-        data-autofocus
-        value={value.name}
-        invalid={!!value.name && !!error}
-        onChange={(e) => onChange({ ...value, name: e.target.value })}
-      />
-      {value.name && error && <div className={styles.error}>{error}</div>}
-      <label className={styles.fieldLabel} htmlFor="openidea-cl-comment">
+      <div className={formStyles.nameField}>
+        <Input
+          id={`${id}-name`}
+          data-autofocus
+          value={value.name}
+          invalid={!!errorId}
+          aria-describedby={errorId}
+          onChange={(e) => onChange({ ...value, name: e.target.value })}
+        />
+        {errorId && (
+          <div className={styles.error} id={errorId}>
+            {error}
+          </div>
+        )}
+      </div>
+      <label className={formStyles.commentLabel} htmlFor={`${id}-comment`}>
         <T>Comment:</T>
       </label>
       <textarea
-        id="openidea-cl-comment"
+        id={`${id}-comment`}
         className={styles.textarea}
-        rows={3}
+        rows={4}
         value={value.comment}
         onChange={(e) => onChange({ ...value, comment: e.target.value })}
       />
       <Checkbox
+        className={formStyles.active}
         checked={value.active}
         disabled={activeDisabled}
         onChange={(active) => onChange({ ...value, active })}
@@ -97,7 +108,7 @@ function NewChangelistDialog({ moveRels, onClose }: { moveRels: readonly string[
       open
       title="New Changelist"
       onClose={onClose}
-      width={420}
+      width={500}
       buttons={[
         { label: "OK", role: "default", disabled: !!error, onClick: create },
         { label: "Cancel", role: "cancel" },
@@ -136,7 +147,7 @@ function EditChangelistDialog({ id, onClose }: { id: string; onClose: () => void
       open
       title="Edit Changelist"
       onClose={onClose}
-      width={420}
+      width={500}
       buttons={[
         { label: "OK", role: "default", disabled: !!error, onClick: save },
         { label: "Cancel", role: "cancel" },
@@ -312,7 +323,7 @@ function TargetListDialog({
       open
       title={title}
       onClose={onClose}
-      width={440}
+      width={500}
       buttons={[
         { label: "OK", role: "default", disabled: !!error, onClick: choose },
         { label: "Cancel", role: "cancel" },

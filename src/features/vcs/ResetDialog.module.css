@@ -1,0 +1,102 @@
+.form {
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--fs-ui);
+}
+
+.fields {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-2) var(--space-3);
+}
+
+.label,
+.fact {
+  align-self: center;
+}
+
+.label {
+  max-inline-size: 12em;
+  overflow-wrap: anywhere;
+}
+
+.modeLabel {
+  display: flex;
+  align-self: start;
+  align-items: center;
+  min-block-size: var(--h-field);
+}
+
+.fact {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modeField,
+.modeText {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.modePicker {
+  width: min(100%, 12rem);
+}
+
+.hint,
+.description,
+.repository {
+  color: var(--fg-secondary);
+}
+
+.confirmation {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.summary,
+.source {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.source,
+.destination {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.summary > svg {
+  flex: none;
+  color: var(--fg-secondary);
+}
+
+.description {
+  margin: 0;
+}
+
+.modes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.choice {
+  align-items: flex-start;
+}
+
+@media (max-width: 440px) {
+  .fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .label {
+    max-inline-size: none;
+  }
+  .modeLabel {
+    min-block-size: 0;
+  }
+}

@@ -211,16 +211,15 @@ const OPERATIONS: MenuItem[] = [
   { kind: "action", action: "vcs.localHistory" },
 ];
 
+const OPERATIONS_WITHOUT_VCS: MenuItem[] = [
+  { kind: "action", action: "vcs.createRepository" },
+  { kind: "separator" },
+  { kind: "action", action: "vcs.localHistory" },
+];
+
 function showOperations() {
-  openDialog((close) => (
-    <Menu
-      open
-      onClose={close}
-      anchor={{ x: Math.max(16, window.innerWidth / 2 - 140), y: Math.round(window.innerHeight * 0.18) }}
-      items={OPERATIONS}
-      aria-label="VCS Operations"
-    />
-  ));
+  const items = getContext().vcsAvailable ? OPERATIONS : OPERATIONS_WITHOUT_VCS;
+  openDialog((close) => <Menu open onClose={close} anchor="center" items={items} title="VCS Operations" numbers />);
 }
 
 export function registerVcsActions(): () => void {

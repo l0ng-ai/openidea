@@ -103,6 +103,7 @@ export const CLIENT_SETTINGS_KEYS = [
   "vcs.git.combineStashAndShelf",
   "vcs.git.stagingArea",
   "vcs.commit.nonModal",
+  "vcs.commit.includeChangesByDefault",
   "vcs.commit.doubleClickOpensDiff",
   "vcs.commit.showRightMargin",
   "agents.showContextUsage",

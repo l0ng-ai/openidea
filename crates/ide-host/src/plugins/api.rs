@@ -3059,6 +3059,10 @@ impl HostApi for PluginApi {
         dunce::canonicalize(files).map_err(failed)
     }
 
+    fn install_dir(&self) -> Result<PathBuf, HostError> {
+        dunce::canonicalize(&self.pkg.dir).map_err(failed)
+    }
+
     fn read_text_file(&self, real: &Path, max: usize) -> Result<String, HostError> {
         // Unsaved editor contents win, as they do for project files.
         if let Some(text) = self.shared.workspace().and_then(|w| w.buffer_text(real)) {
@@ -3747,6 +3751,19 @@ mod tests {
             api.write_bytes_file(&path, b"bytes").unwrap();
             assert_eq!(std::fs::read(&path).unwrap(), b"bytes");
         }
+    }
+
+    #[test]
+    fn install_dir_is_the_canonical_package_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = tmp.path().join("acme.lint");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("readme.pdf"), b"%PDF").unwrap();
+        let api = api(&pkg, Arc::default());
+        let install = api.install_dir().unwrap();
+        assert_eq!(install, dunce::canonicalize(&pkg).unwrap());
+        assert!(install.join("readme.pdf").is_file());
+        assert_ne!(install, api.plugin_dir().unwrap());
     }
 
     #[test]

@@ -422,6 +422,51 @@ describe("terminal open", () => {
   });
 });
 
+describe("deferred terminal focus", () => {
+  function openable(key: string) {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const session = new TerminalSession({ key, cwd: "/tmp", onChange: () => undefined, onFocus: () => undefined });
+    Object.defineProperty(session.host, "offsetWidth", { configurable: true, get: () => 400 });
+    Object.defineProperty(session.host, "offsetHeight", { configurable: true, get: () => 300 });
+    const textarea = document.createElement("textarea");
+    vi.spyOn(session.term, "open").mockImplementation(() => undefined);
+    Object.defineProperty(session.term, "textarea", { configurable: true, get: () => textarea });
+    const focus = vi.spyOn(session.term, "focus").mockImplementation(() => undefined);
+    return { container, session, focus };
+  }
+
+  afterEach(() => vi.useRealTimers());
+
+  it("takes the caret once xterm opens when focus stayed put", () => {
+    vi.useFakeTimers();
+    const { container, session, focus } = openable("s-stay");
+    session.focus();
+    session.attach(container);
+    vi.advanceTimersByTime(FIT_SETTLE_MS);
+    expect(focus).toHaveBeenCalledTimes(1);
+    session.dispose();
+    container.remove();
+  });
+
+  it("leaves focus that moved elsewhere before xterm opened", () => {
+    vi.useFakeTimers();
+    const { container, session, focus } = openable("s-moved");
+    const tree = document.createElement("div");
+    tree.tabIndex = 0;
+    document.body.appendChild(tree);
+    session.focus();
+    tree.focus();
+    session.attach(container);
+    vi.advanceTimersByTime(FIT_SETTLE_MS);
+    expect(focus).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(tree);
+    session.dispose();
+    container.remove();
+    tree.remove();
+  });
+});
+
 describe("terminal font zoom", () => {
   afterEach(() => {
     unbindTerminals();

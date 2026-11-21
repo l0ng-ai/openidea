@@ -413,12 +413,14 @@ export async function quickDefinition(view: EditorView, kind: "definition" | "ty
       showHint(view, "Cannot read the definition's file");
       return;
     }
+    const { fontFamily, fontSize, fontWeight, lineHeight, tabSize } = getComputedStyle(view.contentDOM);
     openPopup({
       kind: "definition",
       anchor: caretAnchor(view, pos),
       targets,
       index: 0,
       themeClasses: view.themeClasses,
+      codeStyle: { fontFamily, fontSize, fontWeight, lineHeight, tabSize },
     });
   } catch (e) {
     if (!stale()) reportLspError(view, e, true);

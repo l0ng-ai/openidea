@@ -7,6 +7,22 @@
 .popup .menu {
   max-width: 420px;
 }
+.titledPopup {
+  scroll-padding-block-start: calc(var(--h-list-row) + var(--space-1));
+}
+.menuHeading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  height: calc(var(--h-list-row) + var(--space-1));
+  padding-inline: var(--space-3);
+  background: var(--bg-popup);
+  color: var(--fg-strong);
+  font-size: var(--fs-ui);
+  font-weight: 600;
+}
 .menu {
   display: flex;
   flex-direction: column;
@@ -91,6 +107,15 @@
   padding: 0 14px;
   color: var(--fg-muted);
   font-size: var(--fs-small);
+}
+.title {
+  display: flex;
+  align-items: center;
+  min-height: var(--h-list-row);
+  margin-bottom: var(--space-1);
+  padding-inline: var(--space-3);
+  color: var(--fg-strong);
+  font-weight: 600;
 }
 
 /* Settings › Appearance › "Display icons in menu items" off: keep the column, drop the icon. */

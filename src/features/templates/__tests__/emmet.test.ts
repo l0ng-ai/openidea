@@ -1,4 +1,8 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { EditorState } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
+import { javascript } from "@codemirror/lang-javascript";
+import { expandEmmetAtCaret } from "../emmet/editor";
 import { enclosingTag, expandAt, loadEmmet, syntaxAt, updateTagEdits, type TextEdit } from "../emmet/model";
 
 beforeAll(() => loadEmmet());
@@ -76,5 +80,47 @@ describe("update tag with emmet", () => {
     );
     expect(apply(doc, updateTagEdits(tag, ".c")!)).toBe('<div class="a c" id="x">\n  <p>hi</p>\n</div>');
     expect(updateTagEdits(tag, "ul>li")).toBeNull();
+  });
+});
+
+describe("emmet in JSX", () => {
+  const views: EditorView[] = [];
+  afterEach(() => views.splice(0).forEach((v) => v.destroy()));
+
+  /** Presses Tab at `|` in a TSX document; returns the text, or null when Tab did not expand. */
+  function tab(text: string): string | null {
+    const at = text.indexOf("|");
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: text.replace("|", ""),
+        selection: { anchor: at },
+        extensions: javascript({ jsx: true, typescript: true }),
+      }),
+      parent: document.body,
+    });
+    views.push(view);
+    return expandEmmetAtCaret(view, "typescriptreact") ? view.state.doc.toString() : null;
+  }
+
+  it("expands among an element's children with className and self-closing void elements", () => {
+    expect(tab("const a = <div>\n  .card|\n</div>;")).toBe('const a = <div>\n  <div className="card"></div>\n</div>;');
+    expect(tab("const a = <div>img|</div>;")).toBe('const a = <div><img src="" alt="" /></div>;');
+    expect(tab("const a = <div>ul>li*2|</div>;")).toBe("const a = <div><ul>\n  <li></li>\n  <li></li>\n</ul></div>;");
+  });
+
+  it("expands markup returned from a function or arrow", () => {
+    expect(tab("function A() {\n  return (\n    div|\n  );\n}")).toBe(
+      "function A() {\n  return (\n    <div></div>\n  );\n}",
+    );
+    expect(tab("const A = () => .row|;")).toBe('const A = () => <div className="row"></div>;');
+    expect(tab("const A = () => Foo|;")).toBe("const A = () => <Foo></Foo>;");
+  });
+
+  it("leaves code, strings, attributes and plain identifiers alone", () => {
+    expect(tab("const div = 1;\nfoo|")).toBeNull();
+    expect(tab("function f() {\n  return value|;\n}")).toBeNull();
+    expect(tab('const s = "div|";')).toBeNull();
+    expect(tab("const a = <div cla|></div>;")).toBeNull();
+    expect(tab("const a = <div>{items|}</div>;")).toBeNull();
   });
 });

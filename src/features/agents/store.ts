@@ -16,6 +16,7 @@ import type {
   AgentModelCatalog,
   AgentPrompt,
   AgentProvider,
+  AgentSkillMode,
   AgentTask,
   ExternalSession,
   Isolation,
@@ -84,6 +85,8 @@ export interface Draft {
   base: string | null;
   /** Per-session MCP server enable/disable overrides (`server_name` -> `enabled`) for the next task. */
   mcpOverrides?: Record<string, boolean>;
+  /** Per-session skill modes (`skill name` -> mode) for the next task. */
+  skillOverrides?: Record<string, AgentSkillMode>;
 }
 
 /** Composer key of the New Task page; sessions use their task id. */
@@ -1228,6 +1231,7 @@ export async function startTask(
         isolation,
         base: isolation === "worktree" ? draft.base : null,
         mcpOverrides: draft.mcpOverrides ?? {},
+        skillOverrides: draft.skillOverrides ?? {},
         // A `!` command runs in the new task before the agent hears anything.
         idle: command !== null,
       }),
@@ -1562,6 +1566,10 @@ export function setDraftMcpOverrides(mcpOverrides: Record<string, boolean>) {
   updateDraft({ mcpOverrides });
 }
 
+export function setDraftSkillOverrides(skillOverrides: Record<string, AgentSkillMode>) {
+  updateDraft({ skillOverrides });
+}
+
 export async function setTaskMcpOverrides(task: string, overrides: Record<string, boolean>): Promise<void> {
   const prev = useAgents.getState().tasks.get(task);
   if (prev) {
@@ -1570,6 +1578,19 @@ export async function setTaskMcpOverrides(task: string, overrides: Record<string
     }));
   }
   const updated = await call(commands.agentSetMcpOverrides(task, overrides));
+  useAgents.setState((s) => ({
+    tasks: new Map(s.tasks).set(task, updated),
+  }));
+}
+
+export async function setTaskSkillOverrides(task: string, overrides: Record<string, AgentSkillMode>): Promise<void> {
+  const prev = useAgents.getState().tasks.get(task);
+  if (prev) {
+    useAgents.setState((s) => ({
+      tasks: new Map(s.tasks).set(task, { ...prev, skillOverrides: overrides }),
+    }));
+  }
+  const updated = await call(commands.agentSetSkillOverrides(task, overrides));
   useAgents.setState((s) => ({
     tasks: new Map(s.tasks).set(task, updated),
   }));

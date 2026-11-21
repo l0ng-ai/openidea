@@ -1,0 +1,61 @@
+.form {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-3) var(--space-4);
+}
+.label,
+.nameLabel,
+.messageLabel {
+  color: var(--fg);
+  font-size: var(--fs-ui);
+  max-inline-size: 12em;
+  overflow-wrap: anywhere;
+}
+.label,
+.context {
+  align-self: center;
+}
+.context {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nameLabel {
+  display: flex;
+  align-items: center;
+  min-block-size: var(--h-field);
+}
+.messageLabel {
+  padding-block-start: var(--space-1);
+}
+.nameField {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.form > textarea {
+  min-width: 0;
+}
+.force {
+  grid-column: 2;
+  justify-self: start;
+}
+@media (max-width: 440px) {
+  .form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .label,
+  .nameLabel,
+  .messageLabel {
+    max-inline-size: none;
+    min-block-size: 0;
+    padding-block-start: 0;
+  }
+  .force {
+    grid-column: 1;
+  }
+}
