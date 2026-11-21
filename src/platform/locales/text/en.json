@@ -556,6 +556,7 @@
   "Repository:": "Repository:",
   "Current branch:": "Current branch:",
   "Detached HEAD": "Detached HEAD",
+  "Reset type:": "Reset type:",
   "Tag value": "Tag value",
   "Attribute": "Attribute",
   "Contents differ only in line separators": "Contents differ only in line separators",
