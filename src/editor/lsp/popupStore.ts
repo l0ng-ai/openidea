@@ -18,6 +18,8 @@ export interface ListPopupItem {
   section?: { id: string; label?: string };
   /** Muted trailing text (file:line, kind…). */
   detail?: string;
+  /** Container beside the symbol name, and the location aligned to the trailing edge. */
+  target?: { container: string | null; path: string };
   /** In its own column before the label (for example, a timestamp). */
   leadingDetail?: string;
   /** Second line / muted text after the label (code preview). */

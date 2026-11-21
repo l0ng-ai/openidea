@@ -5,12 +5,11 @@
  * offers to disable hints of that kind.
  */
 import { StateEffect, StateField, type Extension } from "@codemirror/state";
-import { shownAgain } from "@/editor/api";
+import { openCodeLocation, shownAgain } from "@/editor/api";
 import { Decoration, EditorView, ViewPlugin, WidgetType, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { call, commands, isTauri, type InlayHint } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
 import { isNavigationGesture, navigationModifierHeld, onNavigationModifier } from "@/platform/navigationModifier";
-import { maybeEditorService } from "@/workbench/contributions";
 import { showContextMenu, type MenuItem } from "@/ui";
 import { useProject } from "@/platform/project";
 import { editorPrefs } from "@/platform/editorSettings";
@@ -84,10 +83,7 @@ class InlayWidget extends WidgetType {
             if (e.button !== 0 || !isNavigationGesture(e)) return;
             e.preventDefault();
             e.stopPropagation();
-            void maybeEditorService()?.openFile(loc.path, {
-              selection: { line: loc.range.start.line, col: loc.range.start.col },
-              focus: true,
-            });
+            void openCodeLocation(loc.path, { line: loc.range.start.line, col: loc.range.start.col });
           });
         }
         el.appendChild(span);

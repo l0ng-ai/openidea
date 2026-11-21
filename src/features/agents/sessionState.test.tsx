@@ -1248,6 +1248,22 @@ describe("an asynchronous Codex question", () => {
     );
   });
 
+  it("waits above the composer at its width, while a blocking question sits in the conversation", async () => {
+    freeQuestion();
+    const card = await screen.findByRole("form", { name: "What deadline?" });
+    expect(card).toHaveClass(styles.questionCardPinned!);
+    const blocking = {
+      type: "permission",
+      id: 100,
+      title: "Blocking question",
+      options: [],
+      chosen: null,
+      questions: [{ header: "", question: "Blocking question", multiSelect: false, options: [] }],
+    } as AgentEntry;
+    act(() => useAgents.setState({ entries: new Map([["A", [blocking]]]) }));
+    expect(await screen.findByRole("form", { name: "Blocking question" })).not.toHaveClass(styles.questionCardPinned!);
+  });
+
   it("skips without submitting an answer", async () => {
     freeQuestion();
     const card = await screen.findByRole("form", { name: "What deadline?" });
@@ -1434,11 +1450,10 @@ describe("a pending AskUserQuestion", () => {
     const submit = within(card).getByRole("button", { name: "Submit" });
     fireEvent.click(within(card).getByRole("radio", { name: /^List/ }));
     expect(submit).toHaveProperty("disabled", true);
-    // Paging moves between questions, without losing the answers already given.
-    expect(within(card).getByRole("button", { name: "Previous" })).toHaveProperty("disabled", true);
-    fireEvent.click(within(card).getByRole("button", { name: "Next" }));
+    // Picking an option completes the single-select question: the next one opens, focused.
     expect(within(card).getByRole("tab", { name: "Checks" })).toHaveAttribute("aria-selected", "true");
     expect(within(card).getByRole("tabpanel", { name: "Checks" })).toHaveFocus();
+    // Paging back keeps the answer; picking again stays for review instead of advancing again.
     fireEvent.click(within(card).getByRole("tab", { name: "Layout" }));
     expect(within(card).getByRole("radio", { name: /^List/ })).toHaveProperty("checked", true);
     fireEvent.click(within(card).getByRole("tab", { name: "Checks" }));

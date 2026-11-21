@@ -51,7 +51,14 @@ import {
 import { enterInLineComment, lineCommentStyle, type LineCommentStyle } from "./comments";
 import { enterInBlockComment, enterInDocComment } from "./docComment";
 import { renderDocComments } from "./renderedDocs";
-import { skipClosingQuote, smartAngleBrackets, smartBackspace, smartBackspaceApplies, tabOut } from "./smartKeys";
+import {
+  semicolonAtStatementEnd,
+  skipClosingQuote,
+  smartAngleBrackets,
+  smartBackspace,
+  smartBackspaceApplies,
+  tabOut,
+} from "./smartKeys";
 import { linkedTags } from "./linkedTags";
 import { stringClipboard } from "./stringClipboard";
 import { filterCopiedText } from "./clipboard";
@@ -658,6 +665,7 @@ export function prefsExtension(o: PrefsOptions): Extension {
   if (!k.surroundSelection) out.push(Prec.highest(noSurround));
   if (k.pairQuotes) out.push(Prec.highest(skipClosingQuote));
   if (k.tabOutOfPair) out.push(tabOut);
+  if (!o.readOnly && k.semicolonAtStatementEnd) out.push(semicolonAtStatementEnd(o.language));
   // Simultaneous `<tag></tag>` editing, from the syntax tree: every mode whose outer
   // parser is `@lezer/html` — plain HTML plus the HTML-based modes (Vue SFCs, Angular
   // templates, JSP, Django and Astro; Angular templates carry the `html` backend id),

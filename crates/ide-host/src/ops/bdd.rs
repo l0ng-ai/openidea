@@ -81,12 +81,12 @@ pub(crate) fn sources_in(root: &Path, excludes: &[String]) -> Vec<StepSource> {
 /// Every Cucumber source of the project (its folder and the content roots outside it).
 pub fn cucumber_sources(host: &Host, window: &str) -> IdeResult<Vec<StepSource>> {
     let project = host.project(window)?;
-    let mut excludes = project.search_excludes();
-    // Cucumber's own sources (and every other package's) are not the project's steps.
-    excludes.push("node_modules".to_owned());
-    excludes.push("site-packages".to_owned());
     let mut out = Vec::new();
     for root in std::iter::once(project.root.clone()).chain(project.content_roots()) {
+        let mut excludes = project.search_excludes_in(&root);
+        // Cucumber's own sources (and every other package's) are not the project's steps.
+        excludes.push("node_modules".to_owned());
+        excludes.push("site-packages".to_owned());
         out.extend(sources_in(&root, &excludes));
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));

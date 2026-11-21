@@ -131,11 +131,14 @@
 .listBody > * {
   flex: 1;
 }
-.centeredList {
+.centeredList,
+.targetPopup {
   min-width: min(360px, 90vw);
 }
 .centeredList .listMain,
-.centeredList .listBody {
+.centeredList .listBody,
+.targetPopup .listMain,
+.targetPopup .listBody {
   flex-shrink: 1;
   min-height: 0;
 }
@@ -211,6 +214,28 @@
   text-overflow: ellipsis;
   font-size: var(--fs-small);
   color: var(--fg-subtle);
+}
+.targetIdentity {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  min-width: 0;
+  flex: 1;
+}
+.targetIdentity .label {
+  flex: none;
+  max-width: 100%;
+}
+.targetContainer,
+.targetPath {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-subtle);
+}
+.targetPath {
+  max-width: 44%;
+  direction: rtl;
 }
 .shortcut {
   flex: none;
