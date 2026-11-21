@@ -436,9 +436,9 @@ describe("Diff & Merge colors", () => {
     const tree = screen.getByRole("tree", { name: "Color scheme attributes" });
     expect(within(tree).getByRole("treeitem", { name: "Changed lines" })).toBeInTheDocument();
     expect(within(tree).getByRole("treeitem", { name: "Folded unchanged fragments" })).toBeInTheDocument();
-    // Change-type strips select their attribute; the stripe cell selects the same one.
+    // The preview chips select the attribute; the diff below is the real diff viewer.
     const preview = screen.getByLabelText("Color scheme preview");
-    act(() => fireEvent.click(within(preview).getByText("def MyClass():")));
+    act(() => fireEvent.click(within(preview).getByText("Changed")));
     expect(screen.getByRole("treeitem", { name: "Changed", selected: true })).toBeInTheDocument();
     act(() => fireEvent.click(screen.getByRole("checkbox", { name: "Error stripe mark" })));
     const stripe = screen.getByRole("textbox", { name: "Error stripe mark hex" });
@@ -447,13 +447,16 @@ describe("Diff & Merge colors", () => {
     expect(preview.style.getPropertyValue("--diff-modified-stripe")).toBe("#ff4081");
   });
 
-  it("selects the wave attribute from the folded separator", () => {
+  it("selects the wave attribute from its chip over the real diff viewer", () => {
     _setSchemeSource(readFileSync("src/styles/tokens.css", "utf8"));
     try {
       act(() => stage("editor.colorScheme", "global", "editor.colorScheme", "dark"));
       schemePage("editor.colorScheme.diff-and-merge");
       const preview = screen.getByLabelText("Color scheme preview");
-      act(() => fireEvent.click(within(preview).getByText("6 unchanged lines")));
+      // The real diff viewer is rendered through the `diff` kind, registered when the VCS
+      // feature activates in the app (not in this isolated settings test), so check the chip.
+      expect(within(preview).getByText("Wave")).toBeInTheDocument();
+      act(() => fireEvent.click(within(preview).getByText("Wave")));
       expect(screen.getByRole("treeitem", { name: "Wave", selected: true })).toBeInTheDocument();
       // The default follows the theme's subtle text rather than a hardcoded IDEA colour.
       expect(screen.getByRole("textbox", { name: "Foreground hex" })).toHaveValue("#73767c");

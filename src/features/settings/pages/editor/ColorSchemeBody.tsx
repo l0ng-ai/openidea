@@ -5,7 +5,7 @@ import { SCHEME_SUBPAGES, languagePageId } from "./colorSchemeMeta";
  * italic / effects editor, and a live preview. Edits are staged in
  * `editor.colorOverrides[scheme][attribute]`; `editor/core` injects them.
  */
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
   Button,
   Checkbox,
@@ -39,6 +39,7 @@ import styles from "./Editor.module.css";
 import { executeAction, registerActions } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { ask, confirm, showError } from "@/workbench/messages";
+import { useContributions } from "@/workbench/contributions";
 import { parseIcls, SchemeParseError, importScheme, deleteScheme, exportIcls } from "@/platform/icls";
 import { tx, useTx } from "@/platform/i18n";
 import { selectPage } from "../../model/staging";
@@ -1496,15 +1497,53 @@ function GitPreview({
   );
 }
 
-/** One diff row in the Changed lines preview: a label, a coloured strip and its overview stripe. */
-const DIFF_PREVIEW_ROWS: Array<{ attr: string; code: string; bgVar: string; stripeVar: string }> = [
-  { attr: "diffChanged", code: "def MyClass():", bgVar: "--diff-modified", stripeVar: "--diff-modified-stripe" },
-  { attr: "diffInserted", code: "value = 123", bgVar: "--diff-inserted", stripeVar: "--diff-inserted-stripe" },
-  { attr: "diffDeleted", code: "pass  # old", bgVar: "--diff-deleted", stripeVar: "--diff-deleted-stripe" },
+/** Chips that select each Diff & Merge attribute from the preview, as the shared code preview does. */
+const DIFF_PREVIEW_CHIPS: Array<{ attr: string; colorVar: string; name: string }> = [
+  { attr: "diffChanged", colorVar: "--diff-modified", name: "Changed" },
+  { attr: "diffInserted", colorVar: "--diff-inserted", name: "Inserted" },
+  { attr: "diffDeleted", colorVar: "--diff-deleted", name: "Deleted" },
+  { attr: "diffConflict", colorVar: "--diff-conflict-stripe", name: "Conflict" },
+  { attr: "diffSeparatorWave", colorVar: "--diff-separator-wave", name: "Wave" },
 ];
 
-/** The Diff & Merge page shows the real diff surfaces: change-type strips on a side-by-side
- *  diff and the wavy separator on a folded-unchanged fragment. Each colour selects its attribute. */
+/**
+ * A real, read-only diff rendered through the editor's `diff` contribution (the same viewer
+ * a Git diff uses), so the colours here are the colours users actually get. The chips above
+ * select the attribute; the diff itself is a live example, not a mock-up. The long unchanged
+ * stretch collapses, showing the wavy separator that DIFF_SEPARATOR_WAVE paints.
+ */
+// A long unchanged stretch (more than 6 lines after the 3-line margins) so the diff folds it
+// and paints the DIFF_SEPARATOR_WAVE, exactly as a real folded-unchanged fragment does.
+const DIFF_UNCHANGED = Array.from({ length: 16 }, (_, i) => `        # unchanged context ${i + 1}`);
+const DIFF_SAMPLE_A = [
+  "class MyClazz:",
+  "    def foo(self):",
+  "        print('old')",
+  ...DIFF_UNCHANGED,
+  "        pass",
+].join("\n");
+const DIFF_SAMPLE_B = [
+  "class MyClass:",
+  "    def foo(self):",
+  "        value = 123",
+  ...DIFF_UNCHANGED,
+  "        print(value)",
+  "        return value",
+].join("\n");
+const DIFF_PREVIEW_INPUT = {
+  kind: "diff",
+  key: "color-scheme-diff-preview",
+  path: "untitled:diff-merge-preview.py",
+  data: {
+    path: "untitled:diff-merge-preview.py",
+    left: { type: "text", text: DIFF_SAMPLE_A, label: "Before" },
+    right: { type: "text", text: DIFF_SAMPLE_B, label: "After" },
+    embedded: true,
+    collapse: true,
+    mode: "split",
+  },
+};
+
 function DiffMergePreview({
   vars,
   ids,
@@ -1514,67 +1553,24 @@ function DiffMergePreview({
   ids: Set<string>;
   reveal: (attrId: string) => void;
 }) {
-  const click = (attrId: string) => revealPreviewAttr(attrId, ids, reveal);
-  const stripeCell = (attrId: string, colorVar: string, key: string) => (
-    <span
-      key={key}
-      className={`${styles.diffStripe} ${styles.clickable}`}
-      style={{ background: `var(${colorVar})` }}
-      title={tx("Error stripe mark")}
-      onClick={() => click(attrId)}
-    />
-  );
+  const diffViewer = useContributions((s) => s.editorKinds.get("diff"));
   return (
     <div className={styles.diffPreview} style={vars} aria-label={tx("Color scheme preview")}>
-      <div className={styles.gitSection}>
-        <div className={styles.gitSectionTitle}>{tx("Changed lines")}</div>
-        <div className={styles.diffPane}>
-          {DIFF_PREVIEW_ROWS.map((row, i) => (
-            <div key={row.attr} className={styles.diffLine}>
-              <span className={styles.previewGutter}>{i + 1}</span>
-              <span
-                className={`${styles.diffLineBody} ${styles.clickable}`}
-                style={{ background: `color-mix(in srgb, var(${row.bgVar}) 70%, transparent)` }}
-                onClick={() => click(row.attr)}
-              >
-                {row.code}
-              </span>
-              {stripeCell(row.attr, row.stripeVar, "stripe")}
-            </div>
-          ))}
-          <div className={styles.diffLine} onClick={() => click("diffConflict")}>
-            <span className={styles.previewGutter}>4</span>
-            <span
-              className={`${styles.diffLineBody} ${styles.clickable}`}
-              style={{ background: `color-mix(in srgb, var(--bg-editor) 100%, transparent)` }}
-            >
-              <span
-                className={styles.diffConflictMark}
-                style={{ background: `var(--diff-conflict-stripe)` }}
-                onClick={() => click("diffConflict")}
-              >
-                &lt;&lt;&lt;&lt;&nbsp; HEAD
-              </span>
-            </span>
-            {stripeCell("diffConflict", "--diff-conflict-stripe", "conflict-stripe")}
-          </div>
-        </div>
-      </div>
-      <div className={styles.gitSection}>
-        <div className={styles.gitSectionTitle}>{tx("Folded unchanged fragments")}</div>
-        <div className={styles.diffFold}>
-          <div className={styles.diffFoldCode}>def foo(self):</div>
-          <div
-            className={`${styles.diffFoldWave} ${styles.clickable}`}
-            style={{ background: `var(--diff-separator-wave)`, borderBottomColor: `var(--diff-separator-wave)` }}
-            title={tx("Folded unchanged fragments › Wave")}
-            onClick={() => click("diffSeparatorWave")}
+      <div className={styles.diffChips}>
+        {DIFF_PREVIEW_CHIPS.map((chip) => (
+          <span
+            key={chip.attr}
+            className={`${styles.diffChip} ${styles.clickable}`}
+            onClick={() => revealPreviewAttr(chip.attr, ids, reveal)}
           >
-            <span className={styles.diffFoldChevron}>{tx("6 unchanged lines")}</span>
-          </div>
-          <div className={styles.diffFoldCode}>def bar(self, a, b):</div>
-        </div>
+            <span className={styles.diffChipDot} style={{ background: `var(${chip.colorVar})` }} />
+            {tx(chip.name)}
+          </span>
+        ))}
       </div>
+      <Suspense fallback={<div className={styles.diffLoading}>{tx("Loading preview…")}</div>}>
+        {diffViewer && <diffViewer.component input={DIFF_PREVIEW_INPUT} />}
+      </Suspense>
     </div>
   );
 }

@@ -322,7 +322,12 @@ export function DiffEditor({
   const [error, setError] = useState<string | null>(null);
   const [opts, setOptsState] = useState<DiffViewOptions>(() => {
     const saved = loadDiffOptions();
-    return data.mode ? { ...saved, mode: data.mode } : saved;
+    const overridden = {
+      ...saved,
+      ...(data.mode ? { mode: data.mode } : {}),
+      ...(data.collapse ? { collapse: true } : {}),
+    };
+    return overridden;
   });
   // An added or deleted file shows its one side alone, full width (IDEA's one-side viewer):
   // the unified layout of an empty side is exactly that. The saved mode stays as it is.
