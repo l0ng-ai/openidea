@@ -9,6 +9,25 @@ use tauri::AppHandle;
 
 pub use ide_host::{Host, Project};
 
+#[cfg(test)]
+mod startup_locale_tests {
+    use super::startup_locale;
+
+    #[test]
+    fn selects_a_supported_locale() {
+        for (language, expected) in [
+            ("tr-TR", "tr"),
+            ("fr_CA.UTF-8", "fr"),
+            ("zh-Hant-HK", "zh-TW"),
+            ("zh-Hans-HK", "zh"),
+            ("xx-XX", "en"),
+            ("", "en"),
+        ] {
+            assert_eq!(startup_locale(language), expected);
+        }
+    }
+}
+
 /// Process-wide state shared by all windows: the backend [`Host`] (reachable
 /// through `Deref`) plus what only the desktop shell has.
 pub struct AppState {
@@ -83,6 +102,11 @@ impl AppState {
             tracing::info!("invalidated caches: {removed:?}");
         }
         ide_host::data_dirs::migrate(&data_dir, &local_data_dir);
+        if let Err(error) = ide_workspace::settings::initialize_global_locale(&config_dir, || {
+            startup_locale(&system_ui_language().unwrap_or_default())
+        }) {
+            tracing::warn!(%error, "cannot initialize the UI language");
+        }
         let runtime = tauri::async_runtime::handle().inner().clone();
         let global_sink = coalescing_sink(Arc::new(TauriSink { app: app.clone(), window: None }), runtime.clone());
         let languages = Arc::new(LanguageRegistry::load(Some(&config_dir.join("languages")))?);
@@ -191,6 +215,53 @@ impl AppState {
         self.remote_dev.disconnect(window);
         self.host.close_project_detached(window);
     }
+}
+
+fn startup_locale(language: &str) -> &'static str {
+    let normalized = language.trim().to_ascii_lowercase();
+    let mut parts = normalized.split(['-', '_', '.', '@']);
+    match parts.next().unwrap_or_default() {
+        "zh" if matches!(parts.next(), Some("tw" | "hk" | "mo" | "hant")) => "zh-TW",
+        "zh" => "zh",
+        "ko" => "ko",
+        "fr" => "fr",
+        "pl" => "pl",
+        "pt" => "pt",
+        "es" => "es",
+        "tr" => "tr",
+        _ => "en",
+    }
+}
+
+#[cfg(windows)]
+fn system_ui_language() -> Option<String> {
+    use windows_sys::Win32::Globalization::{GetUserPreferredUILanguages, MUI_LANGUAGE_NAME};
+
+    let mut count = 0;
+    let mut length = 0;
+    if unsafe { GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &mut count, std::ptr::null_mut(), &mut length) } == 0
+        || length == 0
+    {
+        return None;
+    }
+    let mut languages = vec![0; length as usize];
+    if unsafe { GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &mut count, languages.as_mut_ptr(), &mut length) } == 0 {
+        return None;
+    }
+    String::from_utf16(languages.split(|&unit| unit == 0).next()?).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn system_ui_language() -> Option<String> {
+    objc2_foundation::NSLocale::preferredLanguages().firstObject().map(|language| language.to_string())
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn system_ui_language() -> Option<String> {
+    ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .find(|value| !value.is_empty())
 }
 
 /// Serves askpass prompts to the focused window and routes `git`'s prompts there.

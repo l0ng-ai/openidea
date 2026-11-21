@@ -3,6 +3,7 @@ use ide_core::{IdeError, IdeResult, project_dir};
 use parking_lot::RwLock;
 use serde_json::Value as Json;
 use std::collections::BTreeMap;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use toml_edit::{DocumentMut, Item, Table, TableLike};
 
@@ -13,6 +14,37 @@ use toml_edit::{DocumentMut, Item, Table, TableLike};
 /// `[editor]` / `fontSize = 14`. A layer that fails to parse or holds values of
 /// the wrong type is logged and ignored as a whole.
 const PROJECT_FILE: &str = "settings.toml";
+
+/// Seeds the UI language only when the desktop profile has no global settings.
+pub fn initialize_global_locale(config_dir: &Path, locale: impl FnOnce() -> &'static str) -> io::Result<()> {
+    let file = config_dir.join(PROJECT_FILE);
+    match std::fs::symlink_metadata(&file) {
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let mut settings = tempfile::NamedTempFile::new_in(config_dir)?;
+    let mut document = DocumentMut::new();
+    document["appearance"]["locale"] = toml_edit::value(locale());
+    settings.write_all(document.to_string().as_bytes())?;
+    match settings.persist_noclobber(file) {
+        Ok(_) => Ok(()),
+        Err(error) if error.error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(error.error),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn initializes_global_locale_once() {
+    let config = tempfile::tempdir().unwrap();
+    initialize_global_locale(config.path(), || "tr").unwrap();
+    let store = SettingsStore::load(config.path(), None);
+    assert_eq!(store.effective().appearance.locale, "tr");
+    store.set(SettingsScope::Global, "appearance.locale", Json::from("en")).unwrap();
+    initialize_global_locale(config.path(), || panic!("existing profiles must skip detection")).unwrap();
+    assert_eq!(store.reload().appearance.locale, "en");
+}
 
 pub struct SettingsStore {
     global_file: PathBuf,
@@ -257,7 +289,7 @@ fn set_in_document(doc: &mut DocumentMut, segments: &[&str], value: Option<toml_
 impl SettingsStore {
     pub fn load(config_dir: &Path, project_root: Option<&Path>) -> Self {
         let store = Self {
-            global_file: config_dir.join("settings.toml"),
+            global_file: config_dir.join(PROJECT_FILE),
             project_file: project_root.map(|r| project_dir::path(r, PROJECT_FILE)),
             effective: RwLock::new(Settings::default()),
         };
