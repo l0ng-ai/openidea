@@ -183,14 +183,19 @@ function tokenStyle(attr: AttributeDef | undefined): CSSProperties {
   const italic = t === "comment" ? "var(--syn-comment-style)" : attr.defaultItalic ? "italic" : "inherit";
   const bold = attr.defaultBold ? "var(--fw-code-bold, 700)" : "inherit";
   const effect = attr.defaultEffect === "underline" ? "underline" : "none";
+  // An inheriting token shows its parent's values while its own are unset.
+  const v = (suffix: string, fallback?: string) =>
+    attr.inherit
+      ? `var(--syn-${t}${suffix}, var(--syn-${attr.inherit}${suffix}${fallback ? `, ${fallback}` : ""}))`
+      : `var(--syn-${t}${suffix}${fallback ? `, ${fallback}` : ""})`;
   return {
-    color: `var(--syn-${t})`,
-    fontWeight: `var(--syn-${t}-bold, ${bold})` as CSSProperties["fontWeight"],
-    fontStyle: `var(--syn-${t}-italic, ${italic})`,
-    backgroundColor: `var(--syn-${t}-bg, transparent)`,
-    textDecoration: `var(--syn-${t}-effect, ${effect})`,
+    color: v(""),
+    fontWeight: v("-bold", bold) as CSSProperties["fontWeight"],
+    fontStyle: v("-italic", italic),
+    backgroundColor: v("-bg", "transparent"),
+    textDecoration: v("-effect", effect),
     // WebKit takes a decoration with a style or colour only through the prefixed property.
-    ...({ WebkitTextDecoration: `var(--syn-${t}-effect, ${effect})` } as CSSProperties),
+    ...({ WebkitTextDecoration: v("-effect", effect) } as CSSProperties),
   };
 }
 
@@ -372,6 +377,17 @@ const SAMPLES: Record<string, CodeSample> = {
         ["predefined", "predefined"],
         [", ", "operator"],
         ["local", "identifier"],
+        [", ", "operator"],
+        ["true", "literalKeyword"],
+        [")", "operator"],
+      ],
+      [
+        ["    ", "text"],
+        ["String", "predefinedType"],
+        [".", "operator"],
+        ["format", "predefinedFunction"],
+        ["(", "operator"],
+        ["null", "literalKeyword"],
         [")", "operator"],
       ],
       [
@@ -879,6 +895,77 @@ const SAMPLES: Record<string, CodeSample> = {
       [["}", "go.operator"]],
     ],
   },
+  "JavaScript and TypeScript": {
+    code: [
+      [["// TypeScript", "javascript.lineComment"]],
+      [
+        ["const ", "javascript.keyword"],
+        ["KINDS", "javascript.globalVariable"],
+        [" = [", "javascript.operator"],
+        ['"single', "javascript.string"],
+        ["\\n", "javascript.escape"],
+        ['"', "javascript.string"],
+        ["];", "javascript.operator"],
+      ],
+      [
+        ["@Component", "javascript.decorator"],
+        ["({ ", "javascript.operator"],
+        ["selector", "javascript.field"],
+        [": ", "javascript.operator"],
+        ['"app-quiz"', "javascript.string"],
+        [" })", "javascript.operator"],
+      ],
+      [
+        ["export class ", "javascript.keyword"],
+        ["Quiz", "javascript.className"],
+        [" {", "javascript.operator"],
+      ],
+      [
+        ["  ", "text"],
+        ["store", "javascript.field"],
+        [" = ", "javascript.operator"],
+        ["inject", "javascript.globalFunction"],
+        ["(", "javascript.operator"],
+        ["Store", "javascript.className"],
+        [");", "javascript.operator"],
+      ],
+      [
+        ["  ", "text"],
+        ["count", "javascript.functionDeclaration"],
+        ["(", "javascript.operator"],
+        ["n", "javascript.parameter"],
+        [": ", "javascript.operator"],
+        ["number", "javascript.keyword"],
+        [") {", "javascript.operator"],
+      ],
+      [
+        ["    const ", "javascript.keyword"],
+        ["total", "javascript.identifier"],
+        [" = ", "javascript.operator"],
+        ["n", "javascript.parameter"],
+        [" + ", "javascript.operator"],
+        ["KINDS", "javascript.globalVariable"],
+        [".", "javascript.operator"],
+        ["length", "javascript.field"],
+        [" * ", "javascript.operator"],
+        ["2", "javascript.number"],
+        [";", "javascript.operator"],
+      ],
+      [
+        ["    return ", "javascript.keyword"],
+        ["this", "javascript.keyword"],
+        [".", "javascript.operator"],
+        ["store", "javascript.field"],
+        [".", "javascript.operator"],
+        ["add", "javascript.functionCall"],
+        ["(", "javascript.operator"],
+        ["total", "javascript.identifier"],
+        [");", "javascript.operator"],
+      ],
+      [["  }", "javascript.operator"]],
+      [["}", "javascript.operator"]],
+    ],
+  },
   Kotlin: {
     code: [
       [["// Kotlin", "kotlin.lineComment"]],
@@ -890,7 +977,7 @@ const SAMPLES: Record<string, CodeSample> = {
         ["val", "kotlin.keyword"],
         [" name", "kotlin.parameter"],
         [": ", "text"],
-        ["String", "kotlin.className"],
+        ["String", "kotlin.predefinedType"],
         [")", "kotlin.operator"],
         [" {", "kotlin.operator"],
       ],
@@ -921,9 +1008,24 @@ const SAMPLES: Record<string, CodeSample> = {
       ],
       [
         ["    ", "text"],
-        ["println", "kotlin.predefined"],
+        ["println", "kotlin.predefinedFunction"],
         ["(", "kotlin.operator"],
         ["name", "kotlin.identifier"],
+        [" ?: ", "kotlin.operator"],
+        ["null", "kotlin.literalKeyword"],
+        [")", "kotlin.operator"],
+      ],
+      [
+        ["    ", "text"],
+        ["log", "kotlin.packageCall"],
+        ["(", "kotlin.operator"],
+        ["name", "kotlin.identifier"],
+        [".", "kotlin.operator"],
+        ["shout", "kotlin.extensionCall"],
+        ["(), ", "kotlin.operator"],
+        ["Mood", "kotlin.className"],
+        [".", "kotlin.operator"],
+        ["HAPPY", "kotlin.enumEntry"],
         [")", "kotlin.operator"],
       ],
       [["}", "kotlin.operator"]],

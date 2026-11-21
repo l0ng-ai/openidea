@@ -154,6 +154,12 @@ export function interpolationParser<S>(base: StreamParser<S>, dialect: Interpola
       }
       if (dialect === "Kotlin" && result === "keyword" && !kotlinKeywordAt(stream.string, from, stream.pos))
         return "variable";
+      // The clike modes call these atoms, like enum-ish constants; JetBrains colours them as keywords.
+      if (result === "atom") {
+        const word = stream.string.slice(from, stream.pos);
+        if (word === "true" || word === "false") return "bool";
+        if (word === "null") return "null";
+      }
       return result;
     },
   };
