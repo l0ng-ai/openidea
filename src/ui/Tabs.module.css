@@ -172,7 +172,13 @@
   justify-content: flex-end;
 }
 
-/* Tabs that don't fit: squeezed (labels ellipsized) or wrapped into rows. */
+/* A scrolling tab can shorten its label to keep the close button in view. */
+.fit .tab {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* Squeezed tabs share the available width. */
 .squeeze .scroller {
   flex: 0 1 auto;
 }
@@ -187,12 +193,14 @@
 .squeeze .closeSlot {
   flex: none;
 }
-.squeeze .tabButton {
+.squeeze .tabButton,
+.fit .tabButton {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
 }
-.squeeze .tabLabel {
+.squeeze .tabLabel,
+.fit .tabLabel {
   min-width: 0;
 }
 .wrap {
