@@ -49,7 +49,7 @@ import {
   selectHumpRight,
 } from "./editing";
 import { enterInLineComment, lineCommentStyle, type LineCommentStyle } from "./comments";
-import { enterInBlockComment, enterInDocComment } from "./docComment";
+import { enterInBlockComment, enterInDocComment, enterInDocstring } from "./docComment";
 import { renderDocComments } from "./renderedDocs";
 import {
   skipClosingBracket,
@@ -718,6 +718,7 @@ export function prefsExtension(o: PrefsOptions): Extension {
       { mac: "Mod-ArrowLeft", run: cursorLineStart, shift: selectLineStart, preventDefault: true },
     );
   if (!o.readOnly && k.insertDocStub) keys.push({ key: "Enter", run: enterInDocComment(o.language) });
+  if (!o.readOnly && k.insertDocStub && o.language === "python") keys.push({ key: "Enter", run: enterInDocstring });
   if (!o.readOnly)
     keys.push(
       { key: "Enter", run: enterInBlockComment },
