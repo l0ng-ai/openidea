@@ -15,7 +15,15 @@ import type { EditorView } from "@codemirror/view";
 import { getIndentUnit, indentString } from "@codemirror/language";
 import type { Pos, StructuralRanges, SyntaxError, SyntaxErrors, SyntaxNode } from "@/bindings";
 import { offsetToPos, posToOffset } from "@/editor/lsp/positions";
-import { SEMICOLON_LANGS, codeEnd, completeStatementSpec, lineCommentToken } from "./editing";
+import {
+  BARE_CONDITION,
+  SEMICOLON_LANGS,
+  codeEnd,
+  completeStatementSpec,
+  isBlockHead,
+  lineCommentToken,
+  unclosedQuote,
+} from "./editing";
 
 /** The document has a real (Lezer) syntax tree, not a stream mode's flat token list or nothing. */
 export function hasLezerTree(state: EditorState): boolean {
@@ -336,6 +344,16 @@ export function planCompleteStatement(
   }
   const full = line.text.trimEnd();
   const codeTo = line.from + codeEnd(full, lineCommentToken(state, line.from));
+  const lineCode = state.sliceDoc(line.from, codeTo);
+  // A block head gets its body and an open string its quote: the parser's recovery
+  // asks for a `;` there (`if (x);`, `"text;`), which would change what the code means.
+  const nextLine = line.number < state.doc.lines ? state.doc.line(line.number + 1).text.trim() : "";
+  const finishedHead = isBlockHead(lineCode, language) && !unclosedBrackets(lineCode).length && nextLine !== "{";
+  if (
+    SEMICOLON_LANGS.has(language) &&
+    (finishedHead || BARE_CONDITION.test(lineCode) || unclosedQuote(lineCode, language))
+  )
+    return completeStatementSpec(state, language);
   const inserts: ChangeSpec[] = [];
   const lineErrors = errors?.errors.filter((e) => errorTouches(state, e, line.from, line.to)) ?? [];
   let closers = "";

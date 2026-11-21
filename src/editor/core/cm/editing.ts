@@ -567,6 +567,65 @@ const KEYWORD_HEAD =
   /\b(do(\s*\|[^|]*\|)?|then|where|of)$|^\s*(def|defp|defmodule|class|module|function|local function|if|unless|elsif|elseif|else|while|until|for|case|begin)\b/;
 const BLOCK_HEAD =
   /^\s*(if|else|for|while|do|switch|try|catch|finally|fn|fun|func|function|class|struct|enum|impl|trait|interface|object|match|when|loop|unsafe|mod|namespace)\b/;
+/** Languages whose `if` / `for` / `while`… take their condition in parentheses. */
+const PAREN_CONDITION_LANGS = new Set([
+  "java",
+  "c",
+  "cpp",
+  "csharp",
+  "javascript",
+  "javascriptreact",
+  "typescript",
+  "typescriptreact",
+  "php",
+  "dart",
+  "kotlin",
+  "groovy",
+  "objective-c",
+  "objective-cpp",
+]);
+/** A condition keyword with nothing after it yet (`for`, `} else if`). */
+export const BARE_CONDITION = /^\s*(\}\s*)?(else\s+)?(if|for|while|switch|catch|synchronized)$/;
+const MODIFIERS =
+  "public|protected|private|internal|static|final|abstract|sealed|non-sealed|open|data|export|default|async|override|partial|readonly|unsafe|const|extern|inline|virtual|synchronized|native|strictfp|transient";
+const ANNOTATIONS = String.raw`(@[\w.]+(\([^)]*\))?\s+)*`;
+/** A type declaration behind modifiers or annotations (`public final class A`, `@Entity record R(...)`). */
+const DECLARATION_HEAD = new RegExp(
+  String.raw`^\s*${ANNOTATIONS}((${MODIFIERS})\s+)+(class|interface|enum|record|struct|trait|object|function|fun|fn|func|impl|@interface)\b`,
+);
+/** Words that start a statement, not a declaration's type. */
+const STATEMENT_WORDS = /^\s*(return|throw|new|else|yield|assert|case|goto|await|delete|typeof)\b/;
+/** A Java / C# method or constructor header: `[modifiers] [<T>] Type name(params) [throws X]`, or `modifiers Name(params)`. */
+const METHOD_HEAD = new RegExp(
+  String.raw`^\s*${ANNOTATIONS}(((${MODIFIERS})\s+)*(<[^>]*>\s+)?[\w$][\w$.<>\[\],?]*(\s*<[^>]*>)?(\[\])*\s+|((${MODIFIERS})\s+)+)[\w$]+\s*\([^;{}=]*\)(\s*throws\s+[\w$.,\s]+)?$`,
+);
+const METHOD_HEAD_LANGS = new Set(["java", "csharp", "groovy"]);
+
+/** Whether `code` (a line without its comment) opens a block that ⌘⇧↵ completes with `{ }`. */
+export function isBlockHead(code: string, language: string): boolean {
+  if (KEYWORD_BLOCK_LANGS.has(language) || /[{;,]$/.test(code)) return false;
+  if (BLOCK_HEAD.test(code) || DECLARATION_HEAD.test(code)) return true;
+  return (
+    METHOD_HEAD_LANGS.has(language) &&
+    !STATEMENT_WORDS.test(code) &&
+    !/\b(abstract|native)\b/.test(code) &&
+    METHOD_HEAD.test(code)
+  );
+}
+
+/** The quote of a string or char literal `code` leaves open, if any (Rust's `'a` is a lifetime). */
+export function unclosedQuote(code: string, language: string): string | null {
+  const quotes = language === "rust" ? '"' : "\"'`";
+  let open: string | null = null;
+  for (let i = 0; i < code.length; i++) {
+    const c = code[i]!;
+    if (open) {
+      if (c === "\\") i++;
+      else if (c === open) open = null;
+    } else if (quotes.includes(c)) open = c;
+  }
+  return open;
+}
 
 /** Offset in `text` where a trailing line comment starts (outside string literals), else `text.length`. */
 export function codeEnd(text: string, lineComment: string | undefined): number {
@@ -604,7 +663,18 @@ export function completeStatementSpec(state: EditorState, language: string): Tra
   const baseIndent = /^\s*/.exec(line.text)![0];
   const br = state.lineBreak;
   const braces = !KEYWORD_BLOCK_LANGS.has(language);
-  if (braces && !comment && BLOCK_HEAD.test(text) && !/[{;,]$/.test(text)) {
+  if (braces && !comment && PAREN_CONDITION_LANGS.has(language) && BARE_CONDITION.test(text)) {
+    // `for` → `for (|) {` + `}`: the condition comes first.
+    const from = line.from + text.length;
+    const insert = ` () {${br}${baseIndent}}`;
+    return {
+      changes: { from, to: line.to, insert },
+      selection: { anchor: from + 2 },
+      scrollIntoView: true,
+      userEvent: "input.complete",
+    };
+  }
+  if (braces && !comment && isBlockHead(text, language)) {
     const insert = ` {${br}${baseIndent}${unit}${br}${baseIndent}}`;
     const from = line.from + text.length;
     return {
@@ -620,7 +690,8 @@ export function completeStatementSpec(state: EditorState, language: string): Tra
     };
   }
   let insert = "";
-  if (SEMICOLON_LANGS.has(language) && !comment && text.trim() && !/[;{},:]$/.test(text)) insert = ";";
+  if (SEMICOLON_LANGS.has(language) && !comment && text.trim() && !/[;{},:]$/.test(text))
+    insert = (unclosedQuote(text, language) ?? "") + ";";
   if (
     (language === "python" || language === "gdscript") &&
     BLOCK_HEAD.test(text.replace(/^\s*(def|elif|static\s+func)\b/, "if")) &&
