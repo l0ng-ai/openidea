@@ -7,19 +7,22 @@ OpenIDEA 打开 JavaScript（`.js`、`.mjs`、`.cjs`、`.jsx`）和 TypeScript�
 
 ## 语言服务器
 
-| 文件                        | 服务器                                  | 说明                                                                                                     |
-| --------------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| JS、JSX、TS、TSX            | `vtsls`                                 | 默认的 TypeScript 服务器。                                                                               |
-| JS、JSX、TS、TSX            | `typescript-language-server`            | 备选：仅在未安装 `vtsls` 时使用。                                                                        |
-| `.vue`                      | `vue-language-server` + `vtsls`         | Vue 的 hybrid 模式：`.vue` 中的 TypeScript 由加载了 `@vue/typescript-plugin` 的 `vtsls` 处理。           |
-| `.svelte`                   | `svelte-language-server`                |                                                                                                          |
-| `.astro`                    | `astro-ls`                              | 需要 Node.js 和 TypeScript 库。                                                                          |
-| Angular 项目中的 TS 和 HTML | `angular-language-server`（`ngserver`） | 只在 `angular.json` 或 `node_modules/@angular/core` 所在目录之下启用。                                   |
-| 以上全部                    | `oxlint`                                | 只在存在 `.oxlintrc.json`、`.oxlintrc.jsonc`、`oxlint.config.ts` 或 `oxlint.config.mts` 的目录之下启用。 |
+| 文件                        | 服务器                                    | 说明                                                                                                                                 |
+| --------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| JS、JSX、TS、TSX            | `vtsls`                                   | 默认的 TypeScript 服务器。                                                                                                           |
+| JS、JSX、TS、TSX            | `typescript-language-server`              | 备选：仅在未安装 `vtsls` 时使用。                                                                                                    |
+| `.vue`                      | `vue-language-server` + `vtsls`           | Vue 的 hybrid 模式：`.vue` 中的 TypeScript 由加载了 `@vue/typescript-plugin` 的 `vtsls` 处理。                                       |
+| `.svelte`                   | `svelte-language-server`                  |                                                                                                                                      |
+| `.astro`                    | `astro-ls`                                | 需要 Node.js 和 TypeScript 库。                                                                                                      |
+| Angular 项目中的 TS 和 HTML | `angular-language-server`（`ngserver`）   | 只在 `angular.json` 或 `node_modules/@angular/core` 所在目录之下启用。                                                               |
+| 以上全部                    | `oxlint`                                  | 只在存在 `.oxlintrc.json`、`.oxlintrc.jsonc`、`oxlint.config.ts` 或 `oxlint.config.mts` 的目录之下启用。                             |
+| 以上全部                    | `vscode-eslint-language-server`（ESLint） | 只在 ESLint 配置（`eslint.config.*`、`.eslintrc*` 或 `package.json` 中的 `eslintConfig`）所在目录之下启用，运行项目自己的 `eslint`。 |
 
 TypeScript 服务器以 `tsconfig.json`、`jsconfig.json` 或 `package.json` 所在目录为工作区根。不属于任何 `tsconfig.json` / `jsconfig.json` 的文件也会注册给 tsserver，零散脚本同样有代码智能。
 
 有两处行为与服务器默认值不同：重命名符号时不会生成 `import { a as b }` 这样的别名；移动文件时服务器不会自行改写 import，而是由 IDE 先给出需要更新的 import，以预览形式展示，并可撤销。
+
+嵌入提示会显示字面量实参的参数名、推断出的变量类型和枚举成员的值；可以在 **设置 › 编辑器 › 嵌入提示** 中按类型关闭。
 
 ### TypeScript 版本
 
@@ -91,6 +94,7 @@ Jest 和 Vitest 的输出会解析成测试树，支持 **重新运行失败的�
 - **调试** 适用于 npm 脚本配置、Node.js 文件以及 `deno run` / `deno test`，子进程会自动附加。
 - **附加到 Node.js** 是一种运行配置类型，用于附加到本机或其他机器上以 `--inspect` 启动的进程（默认端口 9229），可设置本地与远程根目录映射。
 - 运行菜单中的 **附加到进程…** 会列出正在运行的 Node.js 进程。
+- **JavaScript 调试** 是一种运行配置类型：在 Chrome 或 Edge 中打开一个 URL，通过 source map 调试页面中的 JavaScript 和 TypeScript。先启动页面的服务（例如 `dev` npm 脚本）；**Web 根目录** 是该 URL 对应的文件夹，默认为项目根目录。
 
 开启 **不要步入库脚本**（**设置 › 构建、执行、部署 › 调试器 › 单步执行**，默认开启）后，单步调试会跳过 Node.js 内部代码和 `node_modules`。更多内容见[调试](/zh/guide/debugging)。
 
@@ -104,8 +108,6 @@ Jest 和 Vitest 的输出会解析成测试树，支持 **重新运行失败的�
 
 ## 已知限制
 
-- 没有内置 ESLint 集成，内置的 linter 是 oxlint。可以在语言服务器页面通过 **添加语言服务器…** 自行添加其他服务器。
-- 不支持浏览器（Chrome/Edge）调试，只能调试 Node.js 和 Deno。
-- Bun 可以运行但无法调试：它的 inspector 使用 WebKit 协议，vscode-js-debug 无法附加。
+- 调试 Bun 需要 `bun-dap`，它还没有发布版本：需从 `morf-bls/bun-dap` 自行构建并放到 `PATH` 中（缺少时 IDE 会给出步骤）。vscode-js-debug 无法附加到 Bun 使用 WebKit 协议的 inspector。
 - Deno 支持运行和调试，但没有 Deno 语言服务器，Deno 文件使用 TypeScript 服务器。
 - 不支持 Deno task 的覆盖率。
