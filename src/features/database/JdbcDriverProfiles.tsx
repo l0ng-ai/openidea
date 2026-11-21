@@ -4,20 +4,14 @@ import { useTx } from "@/platform/i18n";
 import { Button, Dialog, IconButton, Input, Select, T } from "@/ui";
 import { baseName } from "./dumpTools";
 import { newSourceId } from "./model";
+import { VENDORS, vendorById } from "./vendors";
 import styles from "./Database.module.css";
 
-export function useJdbcDrivers(enabled: boolean) {
+export function useJdbcDrivers() {
   const [drivers, setDrivers] = useState<DbJdbcDriver[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
-  const [wasEnabled, setWasEnabled] = useState(enabled);
-  if (wasEnabled !== enabled) {
-    setWasEnabled(enabled);
-    setDrivers(null);
-    setError(null);
-  }
   useEffect(() => {
-    if (!enabled) return;
     let active = true;
     void call(commands.dbJdbcDrivers()).then(
       (value) => {
@@ -30,7 +24,7 @@ export function useJdbcDrivers(enabled: boolean) {
     return () => {
       active = false;
     };
-  }, [enabled, attempt]);
+  }, [attempt]);
   const retry = () => {
     setDrivers(null);
     setError(null);
@@ -41,9 +35,15 @@ export function useJdbcDrivers(enabled: boolean) {
 
 const blankDriver = (): DbJdbcDriver => ({ id: newSourceId(), name: "", jars: [], className: "", urlTemplate: "" });
 
+const DRIVER_TYPES = [
+  { value: "", label: "Custom JDBC only" },
+  ...VENDORS.filter((v) => v.driver !== "jdbc").map((v) => ({ value: v.id, label: v.label, icon: v.icon })),
+];
+
 export function JdbcDriverProfiles({
   drivers,
   selected,
+  sourceVendor,
   onSave,
   onUse,
   onRemove,
@@ -51,21 +51,24 @@ export function JdbcDriverProfiles({
 }: {
   drivers: DbJdbcDriver[];
   selected: string;
+  sourceVendor?: string;
   onSave: (driver: DbJdbcDriver) => void;
   onUse?: (driver: DbJdbcDriver) => void;
   onRemove: (id: string) => void;
   onClose: () => void;
 }) {
   const tx = useTx();
+  const profiles = sourceVendor ? drivers.filter((d) => d.vendor === sourceVendor) : drivers;
   const [selection, setSelection] = useState(
-    drivers.some((d) => d.id === selected) ? selected : (drivers[0]?.id ?? ""),
+    profiles.some((d) => d.id === selected) ? selected : (profiles[0]?.id ?? ""),
   );
   const [draft, setDraft] = useState<DbJdbcDriver | null>(null);
   const [confirm, setConfirm] = useState<"trust" | "delete" | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [classes, setClasses] = useState<string[]>([]);
-  const current = drivers.find((d) => d.id === selection);
+  const current = profiles.find((d) => d.id === selection);
+  const changedType = draft && profiles.some((d) => d.id === draft.id && d.vendor && d.vendor !== draft.vendor);
   const name = current?.name ?? "";
   const set = (patch: Partial<DbJdbcDriver>) => setDraft((d) => d && { ...d, ...patch });
   const classValid =
@@ -107,7 +110,12 @@ export function JdbcDriverProfiles({
     if (!draft || !valid || busy) return;
     setBusy(true);
     setError(null);
-    const driver = { ...draft, name: draft.name.trim(), className: draft.className.trim() };
+    const driver = {
+      ...draft,
+      ...(sourceVendor && { vendor: sourceVendor }),
+      name: draft.name.trim(),
+      className: draft.className.trim(),
+    };
     try {
       await call(commands.dbSaveJdbcDriver(driver));
       onSave(driver);
@@ -129,7 +137,7 @@ export function JdbcDriverProfiles({
     try {
       await call(commands.dbRemoveJdbcDriver(current.id));
       onRemove(current.id);
-      setSelection(drivers.find((d) => d.id !== current.id)?.id ?? "");
+      setSelection(profiles.find((d) => d.id !== current.id)?.id ?? "");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -144,7 +152,7 @@ export function JdbcDriverProfiles({
         open
         title={
           draft
-            ? drivers.some((d) => d.id === draft.id)
+            ? profiles.some((d) => d.id === draft.id)
               ? "Edit JDBC Driver"
               : "Add JDBC Driver"
             : "JDBC Driver Profiles"
@@ -183,6 +191,16 @@ export function JdbcDriverProfiles({
                 value={draft.name}
                 disabled={busy}
                 onChange={(e) => set({ name: e.target.value })}
+              />
+              <span className={styles.formLabel}>
+                <T>Data source type:</T>
+              </span>
+              <Select
+                aria-label="Data source type"
+                options={sourceVendor ? DRIVER_TYPES.filter((type) => type.value === sourceVendor) : DRIVER_TYPES}
+                value={draft.vendor ?? ""}
+                disabled={busy || !!sourceVendor}
+                onChange={(vendor) => set({ vendor: vendor || null })}
               />
               <span className={styles.formLabel}>
                 <T>Driver and dependency JARs:</T>
@@ -252,14 +270,18 @@ export function JdbcDriverProfiles({
               </span>
               <Select
                 aria-label="JDBC driver profiles"
-                value={selection}
-                options={drivers.map((d) => ({ value: d.id, label: d.name, verbatim: true }))}
+                value={current?.id ?? ""}
+                options={profiles.map((d) => ({ value: d.id, label: d.name, verbatim: true }))}
                 placeholder="No JDBC driver profiles"
+                disabled={!profiles.length}
                 onChange={setSelection}
               />
               <span />
               <div className={styles.formRow}>
-                <Button icon="plus" onClick={() => edit(blankDriver())}>
+                <Button
+                  icon="plus"
+                  onClick={() => edit({ ...blankDriver(), ...(sourceVendor && { vendor: sourceVendor }) })}
+                >
                   <T>Add…</T>
                 </Button>
                 <Button disabled={!current} onClick={() => current && edit(current)}>
@@ -271,6 +293,10 @@ export function JdbcDriverProfiles({
               </div>
               {current && (
                 <dl className={styles.jdbcDetails}>
+                  <dt>
+                    <T>Data source type:</T>
+                  </dt>
+                  <dd>{tx(vendorById(current.vendor ?? "")?.label ?? "Custom JDBC only")}</dd>
                   <dt>
                     <T>Driver class:</T>
                   </dt>
@@ -328,6 +354,14 @@ export function JdbcDriverProfiles({
                   )
                 : tx`Delete driver profile ${name}? Data sources using it will need another driver profile.`}
             </p>
+            {confirm === "trust" && changedType && (
+              <p className={styles.formFull}>
+                <T>
+                  Sources that use this profile for its previous type will need a matching profile the next time they
+                  connect, including sources in other projects.
+                </T>
+              </p>
+            )}
             {confirm === "trust" && (
               <ul className={styles.formFull}>
                 {draft?.jars.map((jar) => (

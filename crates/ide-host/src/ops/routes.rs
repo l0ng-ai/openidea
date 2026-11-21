@@ -70,15 +70,14 @@ fn scan_roots(root: &Path, content_roots: Vec<PathBuf>) -> Vec<PathBuf> {
 /// Every mapping source of the project, for the request-path index.
 pub fn spring_route_sources(host: &Host, window: &str) -> IdeResult<Vec<RouteSource>> {
     let project = host.project(window)?;
-    let excludes = project.search_excludes();
     let mut out = Vec::new();
     for root in scan_roots(&project.root, project.content_roots()) {
-        out.extend(sources_in(&root, &excludes));
+        out.extend(sources_in(&root, &project.search_excludes_in(&root)));
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));
     out.dedup_by(|a, b| a.path == b.path);
     match out.len() {
-        0 => tracing::warn!("spring routes: no mapping source under {:?} (excludes: {})", project.root, excludes.len()),
+        0 => tracing::warn!("spring routes: no mapping source under {:?}", project.root),
         n => tracing::info!("spring routes: {n} mapping sources under {:?}", project.root),
     }
     Ok(out)

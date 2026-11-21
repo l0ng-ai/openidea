@@ -6,8 +6,7 @@
  */
 import { RangeSet, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, type ViewUpdate } from "@codemirror/view";
-import { iconAreaSource, registerEditorContribution } from "@/editor/api";
-import { rangeToOffsets } from "@/editor/lsp/positions";
+import { iconAreaSource, rangeToOffsets, registerEditorContribution } from "@/editor/api";
 import { editorPrefs } from "@/platform/editorSettings";
 import { useProject } from "@/platform/project";
 import type { FileMarkers, IndexedMarker, Location } from "@/platform/ipc";

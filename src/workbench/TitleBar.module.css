@@ -22,6 +22,9 @@
   background: var(--bg-elev);
   box-shadow: inset 0 -1px 0 var(--border);
 }
+.minimal .windowTitle {
+  margin-left: var(--space-2);
+}
 /* Dialog window (Settings): the title sits on the dialog surface, no hairline. */
 .dialogBar {
   background: var(--bg-dialog, var(--bg-elev));

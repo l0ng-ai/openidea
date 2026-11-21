@@ -117,6 +117,7 @@ export const ICLS_COLORS: Record<string, string[]> = {
   ADDED_LINES_COLOR: ["--gutter-added"],
   DELETED_LINES_COLOR: ["--gutter-deleted"],
   CONSOLE_BACKGROUND_KEY: ["--bg-console"],
+  DIFF_SEPARATOR_WAVE: ["--diff-separator-wave"],
 };
 
 type Part = "FOREGROUND" | "BACKGROUND" | "EFFECT_COLOR" | "ERROR_STRIPE_COLOR";

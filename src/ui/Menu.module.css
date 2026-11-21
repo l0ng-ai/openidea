@@ -55,6 +55,7 @@
 }
 .danger {
   color: var(--danger);
+  --icon-color: var(--danger);
 }
 .icon {
   width: 16px;

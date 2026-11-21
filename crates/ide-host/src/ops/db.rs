@@ -8,8 +8,8 @@ use ide_command::command;
 use ide_core::{IdeError, IdeResult, IpcPath, RequestId};
 use ide_db::split::SqlStatement;
 use ide_db::{
-    CompletionModel, DataSource, Databases, DbObjectKind, DbRowEdit, HistoryEntry, PlanNode, QueryResult,
-    SchemaObjects, SortKey, TableDetails, TableInfo, TablePage,
+    CompletionModel, DataSource, Databases, DbObjectKind, DbRowEdit, DbVisibilityChange, HistoryEntry, PlanNode,
+    QueryResult, SchemaObjects, SortKey, TableDetails, TableInfo, TablePage,
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -72,6 +72,25 @@ pub async fn db_save_sources(host: &Host, window: &str, sources: Vec<DataSource>
     // Replaces the project's data sources with `sources`.
     let db = host.project(window)?.db.clone();
     db.save_sources(sources).await?;
+    sources_changed(host, window)
+}
+
+#[command(trust = trusted)]
+pub async fn db_save_source_visibility(
+    host: &Host,
+    window: &str,
+    id: String,
+    available: Vec<String>,
+    change: DbVisibilityChange,
+) -> IdeResult<()> {
+    let db = host.project(window)?.db.clone();
+    tokio::task::spawn_blocking(move || db.save_source_visibility(&id, &available, change))
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))??;
+    sources_changed(host, window)
+}
+
+fn sources_changed(host: &Host, window: &str) -> IdeResult<()> {
     let root = host.project(window)?.root.clone();
     for project in host.projects().into_iter().filter(|p| p.root == root) {
         project.sink.emit(ide_core::IdeEvent::DbSourcesChanged);
@@ -603,6 +622,7 @@ ide_command::domain!(
     db_object_ddl,
     db_remove_history,
     db_retain_catalog,
+    db_save_source_visibility,
     db_save_sources,
     db_saved_catalog,
     db_schema_objects,

@@ -96,6 +96,18 @@ describe("Git Log branches pane", () => {
     expect(screen.getByText("feature").closest("[data-row]")).toHaveAttribute("aria-selected", "true");
   });
 
+  it("passes the selected branch to New Worktree", async () => {
+    render(
+      <>
+        <BranchesPanel />
+        <ContextMenuHost />
+      </>,
+    );
+    fireEvent.contextMenu(screen.getByText("feature"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "New Worktree from 'feature'…" }));
+    expect(execute).toHaveBeenCalledWith("vcs.newWorktree", { repo: "/p", branch: branches[1] });
+  });
+
   it.each([
     [2, 0],
     [0, 3],
@@ -206,7 +218,7 @@ describe("Git Log branches pane with several repositories", () => {
       branches: aBranches,
     });
   });
-  afterEach(() => useVcs.setState({ roots: [], heads: {} }));
+  afterEach(() => useVcs.setState({ roots: [], branchRoots: {}, heads: {} }));
 
   it("lists branches once, naming the repositories of partial ones", async () => {
     render(<BranchesPanel />);
@@ -233,6 +245,31 @@ describe("Git Log branches pane with several repositories", () => {
     act(() => useGitLog.setState({ filters: emptyFilters() }));
     expect(screen.getByText("solo")).toBeInTheDocument();
     expect(screen.getByText("other")).toBeInTheDocument();
+  });
+
+  it("groups linked worktrees together and honors an explicit worktree path filter", async () => {
+    const linked = "/p/linked";
+    const worktreeBranches = aBranches.map((branch) => ({ ...branch, current: branch.name === "dev" }));
+    repoData.branches[linked] = worktreeBranches;
+    useVcs.setState({ roots: [linked, "/p/a", "/p/b"], branchRoots: { [linked]: "/p/a" } });
+    render(
+      <>
+        <BranchesPanel />
+        <ContextMenuHost />
+      </>,
+    );
+    expect((await screen.findByText("solo")).closest("[data-row]")).toHaveTextContent("(a)");
+    expect(screen.queryByText("(a, linked)")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Group by Repository" }));
+    expect(await screen.findAllByText("dev")).toHaveLength(2);
+    expect(screen.queryByText("linked")).toBeNull();
+
+    act(() => useGitLog.setState({ filters: { ...emptyFilters(), paths: [linked] } }));
+    expect(await screen.findByText("solo")).toBeInTheDocument();
+    expect(screen.queryByText("other")).toBeNull();
+    expect(screen.getByText("dev").closest("[data-row]")).toHaveTextContent(/dev\s*current/);
+    fireEvent.doubleClick(screen.getByText("dev"));
+    expect(useGitLog.getState().filters).toMatchObject({ branches: ["dev"], paths: [linked], repositories: [linked] });
   });
 
   it("keeps the current marker ahead of the repository names, which may be cut off", async () => {
