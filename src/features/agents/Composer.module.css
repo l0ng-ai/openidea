@@ -392,15 +392,6 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  /* The agent picker keeps its icon and truncates its name instead of taking the row. */
-  .toolbar > :first-child {
-    flex: 0 1 auto;
-    min-width: 0;
-    max-width: 110px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
   .chipDetail {
     display: none;
   }
