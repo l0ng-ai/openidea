@@ -475,7 +475,7 @@ export function registerVcsActions(): () => void {
         }
         for (const target of targets.slice(0, 5)) {
           const data = typeof target === "string" ? groupDiffData(tree, target) : changeNodeDiffData(tree, target);
-          await openDiff({ ...data, line }, { preview: targets.length === 1 });
+          await openVcsDiff({ ...data, line }, { preview: targets.length === 1 });
         }
       },
     },
