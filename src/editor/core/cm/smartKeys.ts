@@ -12,7 +12,14 @@ import {
   type Transaction,
 } from "@codemirror/state";
 import { EditorView, keymap, type Command } from "@codemirror/view";
-import { getIndentUnit, getIndentation, indentString, indentUnit, syntaxTree } from "@codemirror/language";
+import {
+  getIndentUnit,
+  getIndentation,
+  indentString,
+  indentUnit,
+  matchBrackets,
+  syntaxTree,
+} from "@codemirror/language";
 import { indentMore } from "@codemirror/commands";
 import { visibleColumn } from "./visibleColumn";
 
@@ -187,6 +194,52 @@ export const skipClosingQuote = EditorView.inputHandler.of((view, _from, _to, te
   const { state } = view;
   const sel = state.selection;
   if (!sel.ranges.every((r) => r.empty && closesStringAt(state, r.head, text))) return false;
+  view.dispatch({
+    selection: EditorSelection.create(
+      sel.ranges.map((r) => EditorSelection.cursor(r.head + 1)),
+      sel.mainIndex,
+    ),
+    scrollIntoView: true,
+    userEvent: "input.type",
+  });
+  return true;
+});
+
+// --- closing bracket -------------------------------------------------------------------------
+
+const OPENER: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
+
+/** Count of `ch` in `text` outside string literals. */
+function countOutsideStrings(text: string, ch: string): number {
+  let n = 0;
+  let quote: string | null = null;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!;
+    if (quote) {
+      if (c === "\\") i++;
+      else if (c === quote) quote = null;
+    } else if (c === '"' || c === "'" || c === "`") quote = c;
+    else if (c === ch) n++;
+  }
+  return n;
+}
+
+/**
+ * Typing `)` `]` `}` right before the same bracket steps over it when it already closes a pair
+ * (typed or not), as in IDEA; a line still missing a closer of that kind gets the new one.
+ */
+export const skipClosingBracket = EditorView.inputHandler.of((view, _from, _to, text) => {
+  const open = OPENER[text];
+  if (!open || view.state.readOnly) return false;
+  const { state } = view;
+  const sel = state.selection;
+  const steps = sel.ranges.every((r) => {
+    if (!r.empty || state.sliceDoc(r.head, r.head + 1) !== text) return false;
+    if (!matchBrackets(state, r.head + 1, -1)?.matched) return false;
+    const line = state.doc.lineAt(r.head).text;
+    return countOutsideStrings(line, open) <= countOutsideStrings(line, text);
+  });
+  if (!steps) return false;
   view.dispatch({
     selection: EditorSelection.create(
       sel.ranges.map((r) => EditorSelection.cursor(r.head + 1)),
