@@ -582,6 +582,13 @@ async function gotoResolved(
     )
       return;
     if (superseded()) return;
+    // ⌘B on a declaration's own name shows its usages also when the server has no definition
+    // there instead of answering the declaration itself (kotlin-language-server).
+    if (kind === "definition" && !fromSyntax && (await onDeclarationName(view, offset))) {
+      if (superseded()) return;
+      if (!(await executeAction("find.showUsages"))) showHint(view, "No usages found");
+      return;
+    }
     // The server only resolves what it sees: answer from the project index, which also
     // covers attached dependency projects (an unresolved import into them). Never for a
     // module path: a segment is not a symbol name.
