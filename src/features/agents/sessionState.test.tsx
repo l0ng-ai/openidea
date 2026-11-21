@@ -1434,11 +1434,10 @@ describe("a pending AskUserQuestion", () => {
     const submit = within(card).getByRole("button", { name: "Submit" });
     fireEvent.click(within(card).getByRole("radio", { name: /^List/ }));
     expect(submit).toHaveProperty("disabled", true);
-    // Paging moves between questions, without losing the answers already given.
-    expect(within(card).getByRole("button", { name: "Previous" })).toHaveProperty("disabled", true);
-    fireEvent.click(within(card).getByRole("button", { name: "Next" }));
+    // Picking an option completes the single-select question: the next one opens, focused.
     expect(within(card).getByRole("tab", { name: "Checks" })).toHaveAttribute("aria-selected", "true");
     expect(within(card).getByRole("tabpanel", { name: "Checks" })).toHaveFocus();
+    // Paging back keeps the answer; picking again stays for review instead of advancing again.
     fireEvent.click(within(card).getByRole("tab", { name: "Layout" }));
     expect(within(card).getByRole("radio", { name: /^List/ })).toHaveProperty("checked", true);
     fireEvent.click(within(card).getByRole("tab", { name: "Checks" }));

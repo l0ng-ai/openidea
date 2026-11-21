@@ -47,10 +47,6 @@
 .fitWidth .composerArea {
   max-width: none;
 }
-.fitWidth .questionCard {
-  width: calc(100% - var(--space-3) * 2);
-  max-width: none;
-}
 
 /* Under the composer: where the task works on the left; changes, meters and terminal on the right. */
 .statusBar {
@@ -209,6 +205,10 @@
   display: flex;
   flex-direction: column;
   font-size: var(--agent-fs-ui, var(--fs-ui));
+}
+/* A short conversation hugs the composer like any chat: the free space goes above the first row. */
+.stream > :first-child {
+  margin-top: auto;
 }
 /* Actual row heights keep WebKit's scrollbar and cross-message selections anchored. */
 .stream > * {
@@ -1559,18 +1559,11 @@
   text-overflow: ellipsis;
 }
 
-/* An open AskUserQuestion: every question with its options, answered at once above the composer. */
+/* An open AskUserQuestion: every question with its options, answered at once in the conversation. */
 .questionCard {
-  flex: none;
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  max-height: 50vh;
-  overflow-y: auto;
-  /* The composer's width, so the card sits exactly over the box it belongs to. */
-  width: 100%;
-  max-width: var(--session-content-width);
-  margin: 0 auto 8px;
   padding: 12px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-control);
@@ -1587,10 +1580,6 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   min-width: 0;
-}
-.questionPanelsPaged {
-  min-height: 0;
-  overflow-y: auto;
 }
 .questionPanel {
   grid-area: 1 / 1;

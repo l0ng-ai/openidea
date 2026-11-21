@@ -25,7 +25,7 @@ import {
 } from "./model";
 import { ChangesPane, useChangesOpen, useLocalHead } from "./session/ChangesPane";
 import { FoldedContent } from "./session/Folds";
-import { QuestionCard } from "./session/QuestionForm";
+import { QuestionCard, type QuestionAnswer } from "./session/QuestionForm";
 import { SessionComposer } from "./session/SessionComposer";
 import { Stream } from "./session/Stream";
 import { focusedSession, registerReachableSession, setFocusedSession, type FocusedSession } from "./sessionFocus";
@@ -98,6 +98,8 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
     }
   }, [id, view, connected]);
   const openSubagent = useCallback((sub: string) => setPath((p) => [...p, sub]), []);
+  // Answers in flight, kept across entry reloads so a refresh doesn't lose what was typed.
+  const drafts = useRef(new Map<string, QuestionAnswer[]>());
   const [finding, setFinding] = useState(false);
   const [findFocus, setFindFocus] = useState(0);
   const [inputFocus, setInputFocus] = useState(0);
@@ -164,6 +166,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
             findFocus={findFocus}
             fontZoom={fontZoom}
             onCloseFind={() => setFinding(false)}
+            drafts={drafts}
           />
         </FoldedContent.Provider>
         {view ? (
@@ -172,7 +175,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
           </div>
         ) : (
           <>
-            <QuestionCard task={task} entries={entries ?? null} />
+            <QuestionCard task={task} entries={entries ?? null} drafts={drafts} />
             <SessionComposer
               task={task}
               focusRequest={inputFocus}
