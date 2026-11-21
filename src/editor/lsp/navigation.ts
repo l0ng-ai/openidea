@@ -207,7 +207,7 @@ export async function locationItems(locs: readonly DeclarationTarget[]): Promise
   return rows.map(({ l, where, label, container, indexSymbol }, i) => ({
     id: `${i}`,
     label: byContainer ? container! : label,
-    detail: (byContainer ? [where] : [container, where]).filter(Boolean).join(" · "),
+    target: { container: byContainer ? null : container, path: where },
     ...(indexSymbol ? { symbol: l.kind! } : { icon: fileIconName(basename(l.path), l.path) }),
     location: { path: l.path, line: l.range.start.line },
     run: () => navigateTo(l),
