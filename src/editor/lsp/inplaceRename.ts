@@ -104,9 +104,14 @@ const sessionField = StateField.define<InplaceSession | null>({
                   const li = document.createElement("li");
                   li.textContent = name;
                   if (name === current) li.className = "cm-lsp-inplace-suggestion-active";
+                  // A click puts the name in; a double click also finishes, like Enter.
                   li.addEventListener("mousedown", (e) => {
                     e.preventDefault();
                     putSuggestion(view, name);
+                    if (e.detail >= 2) endInplaceRename(view, "commit");
+                  });
+                  li.addEventListener("dblclick", () => {
+                    if (putSuggestion(view, name)) endInplaceRename(view, "commit");
                   });
                   list.appendChild(li);
                 }
