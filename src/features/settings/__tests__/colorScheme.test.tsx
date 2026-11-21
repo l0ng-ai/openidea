@@ -455,7 +455,8 @@ describe("Diff & Merge colors", () => {
       const preview = screen.getByLabelText("Color scheme preview");
       act(() => fireEvent.click(within(preview).getByText("6 unchanged lines")));
       expect(screen.getByRole("treeitem", { name: "Wave", selected: true })).toBeInTheDocument();
-      expect(screen.getByRole("textbox", { name: "Foreground hex" })).toHaveValue("#555555");
+      // The default follows the theme's subtle text rather than a hardcoded IDEA colour.
+      expect(screen.getByRole("textbox", { name: "Foreground hex" })).toHaveValue("#73767c");
     } finally {
       _setSchemeSource("");
     }
