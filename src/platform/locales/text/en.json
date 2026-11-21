@@ -1,4 +1,10 @@
 {
+  "$ unchanged lines": "$ unchanged lines",
+  "Expand unchanged lines": "Expand unchanged lines",
+  "Matching scope": "Matching scope",
+  "Generate": "Generate",
+  "Suggested names": "Suggested names",
+  "Choose the Statement to Unwrap/Remove": "Choose the Statement to Unwrap/Remove",
   "Choose Test for {stem} ({count} found)": "Choose Test for {stem} ({count} found)",
   "Choose Test Subject for {stem} ({count} found)": "Choose Test Subject for {stem} ({count} found)",
   "Code Style": "Code Style",

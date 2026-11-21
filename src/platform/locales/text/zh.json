@@ -1,4 +1,7 @@
 {
+  "$ unchanged lines": "$ 行未改动",
+  "Expand unchanged lines": "展开未改动的行",
+  "Matching scope": "匹配的代码块",
   "At breakpoint": "停在断点",
   "Build and Run": "构建和运行",
   "Gradle runtime": "Gradle 运行环境",
