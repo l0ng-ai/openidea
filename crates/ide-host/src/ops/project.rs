@@ -378,7 +378,14 @@ pub fn set_settings(
     // Content roots and excludes (files.exclude, ignored names, excluded folders) reach the
     // index and the watchers without reopening the project (the rescan runs in the background).
     if roots_changed || key == "files" || key.starts_with("files.") {
-        let affected = affected();
+        let mut affected = affected();
+        // A workspace open in another window may hold this project: its excluded folders apply there.
+        if roots_changed
+            && project_scope
+            && let Some(own) = &current
+        {
+            affected.extend(host.projects().into_iter().filter(|p| p.member_excludes.read().contains_key(&own.root)));
+        }
         host.runtime.spawn_blocking(move || {
             for project in affected {
                 project.refresh_index_scope();
