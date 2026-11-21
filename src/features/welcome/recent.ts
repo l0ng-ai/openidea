@@ -92,13 +92,12 @@ function withRemotes(local: RecentProject[]): RecentProject[] {
   return [...local, ...remote].sort((a, b) => (b.openedAtMs ?? 0) - (a.openedAtMs ?? 0));
 }
 
-/** `host:path` of a remote project location, else `null`. */
-export function remoteDisplay(location: string): string | null {
+function remoteDetails(location: string): { host: string; path: string } | null {
   const r = parseRemoteLocation(location);
   if (!r) return null;
   const host =
     recentRemotes().find((x) => sameTarget(x.target, r.target) && x.path === r.path)?.host || targetName(r.target);
-  return `${host}:${r.path}`;
+  return { host, path: r.path };
 }
 
 export async function removeRecent(path: string) {
@@ -214,9 +213,10 @@ export interface RecentMatch {
   project: RecentProject;
   /** Matched indices in the name, if the name matched. */
   nameMatch: number[] | null;
-  /** Matched indices in the displayed (tildified) path. */
+  /** Matched indices in displayPath, including the host for remote projects. */
   pathMatch: number[] | null;
   displayPath: string;
+  remote: ReturnType<typeof remoteDetails>;
 }
 
 /**
@@ -225,12 +225,16 @@ export interface RecentMatch {
  */
 export function filterRecent(projects: readonly RecentProject[], query: string, home?: string | null): RecentMatch[] {
   const q = query.trim();
-  const all = projects.map((project) => ({
-    project,
-    nameMatch: null as number[] | null,
-    pathMatch: null as number[] | null,
-    displayPath: remoteDisplay(project.path) ?? tildify(project.path, home),
-  }));
+  const all = projects.map<RecentMatch>((project) => {
+    const remote = remoteDetails(project.path);
+    return {
+      project,
+      nameMatch: null,
+      pathMatch: null,
+      displayPath: remote ? `${remote.host}:${remote.path}` : tildify(project.path, home),
+      remote,
+    };
+  });
   if (!q) return all;
   const byName: RecentMatch[] = [];
   const byPath: RecentMatch[] = [];
