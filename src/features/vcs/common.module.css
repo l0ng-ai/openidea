@@ -772,6 +772,15 @@
 .comparisonWindowBody > .comparison {
   flex: 1 1 auto;
 }
+.comparisonWindowToolbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  padding: var(--space-2) var(--space-3) var(--space-1);
+}
+.comparisonWindowToolbar > button {
+  font-size: var(--fs-small);
+}
 .comparisonWindowFooter {
   display: flex;
   justify-content: flex-end;
