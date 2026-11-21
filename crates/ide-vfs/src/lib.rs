@@ -27,8 +27,8 @@ pub use bytes::{
     read_data_url, read_range, same_share,
 };
 pub use compare::{
-    DirectoryCompareEntry, DirectoryCompareMode, DirectoryCompareProgress, DirectoryCompareStatus, compare_directories,
-    copy_merge,
+    DirectoryCompareEntry, DirectoryCompareMode, DirectoryCompareProgress, DirectoryCompareStatus, DirectorySyncAction,
+    DirectorySyncFailure, DirectorySyncOperation, DirectorySyncProgress, compare_directories, copy_merge,
 };
 use encoding::SNIFF_LEN;
 pub use encoding::{

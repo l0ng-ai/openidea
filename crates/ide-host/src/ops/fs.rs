@@ -1,5 +1,5 @@
 use super::Channel;
-use crate::Host;
+use crate::{Host, Project};
 use ide_command::command;
 use ide_core::{IdeError, IdeResult, RequestId};
 use ide_vfs::FileEntry;
@@ -51,6 +51,37 @@ pub async fn fs_compare_directories(
     result
 }
 
+fn comparison_entry_path(path: &Path) -> IdeResult<()> {
+    if path.as_os_str().is_empty() || path.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
+        return Err(IdeError::invalid("expected a relative comparison entry path"));
+    }
+    Ok(())
+}
+
+fn copy_entry(
+    project: &Project,
+    source_root: &Path,
+    destination_root: &Path,
+    path: &Path,
+    overwrite: bool,
+) -> IdeResult<()> {
+    let from = source_root.join(path);
+    let to = destination_root.join(path);
+    if overwrite {
+        project.history.record_deletion(&to, DELETE_SNAPSHOT_LIMIT);
+    }
+    project.with_disk_sync(|| {
+        ide_vfs::copy_merge(
+            &from,
+            &to,
+            overwrite,
+            Some(&project.root),
+            &project.exclude_globs(),
+            (source_root, destination_root),
+        )
+    })
+}
+
 #[command(trust = always)]
 pub async fn fs_copy_merge(
     host: &Host,
@@ -60,28 +91,63 @@ pub async fn fs_copy_merge(
     path: PathBuf,
     overwrite: bool,
 ) -> IdeResult<()> {
-    if path.as_os_str().is_empty() || path.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
-        return Err(ide_core::IdeError::invalid("expected a relative comparison entry path"));
+    comparison_entry_path(&path)?;
+    let project = host.project(window)?;
+    host.blocking(move || copy_entry(&project, &source_root, &destination_root, &path, overwrite)).await
+}
+
+/// Runs Compare Directories' synchronisation operations in order. A failed operation is
+/// reported and the rest still run; cancellation stops before the next one.
+#[command(trust = always)]
+pub async fn fs_synchronize_directories(
+    host: &Host,
+    window: &str,
+    left: PathBuf,
+    right: PathBuf,
+    operations: Vec<ide_vfs::DirectorySyncOperation>,
+    request: RequestId,
+    on_progress: Channel<ide_vfs::DirectorySyncProgress>,
+) -> IdeResult<Vec<ide_vfs::DirectorySyncFailure>> {
+    for op in &operations {
+        comparison_entry_path(Path::new(&op.path))?;
     }
     let project = host.project(window)?;
-    host.blocking(move || {
-        let from = source_root.join(&path);
-        let to = destination_root.join(&path);
-        if overwrite {
-            project.history.record_deletion(&to, DELETE_SNAPSHOT_LIMIT);
-        }
-        project.with_disk_sync(|| {
-            ide_vfs::copy_merge(
-                &from,
-                &to,
-                overwrite,
-                Some(&project.root),
-                &project.exclude_globs(),
-                (&source_root, &destination_root),
-            )
+    let cancel = host.begin_request(request);
+    let result = host
+        .blocking(move || {
+            use ide_vfs::DirectorySyncAction::*;
+            let total = operations.len() as u32;
+            let mut failures = Vec::new();
+            for (done, op) in operations.into_iter().enumerate() {
+                if cancel.is_cancelled() {
+                    return Err(IdeError::cancelled());
+                }
+                let _ = on_progress.send(ide_vfs::DirectorySyncProgress {
+                    done: done as u32,
+                    total,
+                    path: op.path.clone(),
+                });
+                let path = Path::new(&op.path);
+                let result = match op.action {
+                    CopyToLeft => copy_entry(&project, &right, &left, path, op.overwrite),
+                    CopyToRight => copy_entry(&project, &left, &right, path, op.overwrite),
+                    DeleteLeft => delete_recorded(Some(&project), &left.join(path), false).map(|_| ()),
+                    DeleteRight => delete_recorded(Some(&project), &right.join(path), false).map(|_| ()),
+                };
+                if let Err(e) = result {
+                    failures.push(ide_vfs::DirectorySyncFailure {
+                        path: op.path,
+                        action: op.action,
+                        message: e.message,
+                    });
+                }
+            }
+            let _ = on_progress.send(ide_vfs::DirectorySyncProgress { done: total, total, path: String::new() });
+            Ok(failures)
         })
-    })
-    .await
+        .await;
+    host.end_request(request);
+    result
 }
 
 /// Files of a deleted folder snapshotted in Local History.
@@ -186,26 +252,27 @@ pub async fn fs_delete_with_undo(host: &Host, window: &str, path: PathBuf) -> Id
 
 async fn delete_with_history(host: &Host, window: &str, path: PathBuf, undoable: bool) -> IdeResult<DeletionUndo> {
     let project = if undoable { Some(host.project(window)?) } else { host.project(window).ok() };
-    host.blocking(move || {
-        let paths = ide_workspace::file_ops::deletion_paths(&path)?;
-        let mut undo = DeletionUndo::default();
-        if let Some(p) = &project {
-            if undoable {
-                undo = p.history.capture_deletion_undo(&paths, DELETE_SNAPSHOT_LIMIT);
-            } else {
-                for pth in &paths {
-                    p.history.record_deletion(pth, DELETE_SNAPSHOT_LIMIT);
-                }
+    host.blocking(move || delete_recorded(project.as_deref(), &path, undoable)).await
+}
+
+fn delete_recorded(project: Option<&Project>, path: &Path, undoable: bool) -> IdeResult<DeletionUndo> {
+    let paths = ide_workspace::file_ops::deletion_paths(path)?;
+    let mut undo = DeletionUndo::default();
+    if let Some(p) = project {
+        if undoable {
+            undo = p.history.capture_deletion_undo(&paths, DELETE_SNAPSHOT_LIMIT);
+        } else {
+            for pth in &paths {
+                p.history.record_deletion(pth, DELETE_SNAPSHOT_LIMIT);
             }
         }
-        ide_workspace::file_ops::delete(&path)?;
-        // A checkout backend opens the paths for delete; Git's hook is a no-op.
-        if let Some(p) = project {
-            let _ = p.with_backend_of(&path, |r| r.files_deleted(&paths));
-        }
-        Ok(undo)
-    })
-    .await
+    }
+    ide_workspace::file_ops::delete(path)?;
+    // A checkout backend opens the paths for delete; Git's hook is a no-op.
+    if let Some(p) = project {
+        let _ = p.with_backend_of(path, |r| r.files_deleted(&paths));
+    }
+    Ok(undo)
 }
 
 #[command(trust = always)]
@@ -317,5 +384,6 @@ ide_command::domain!(
     fs_read_text,
     fs_rename,
     fs_set_writable,
+    fs_synchronize_directories,
     fs_undo_delete,
 );

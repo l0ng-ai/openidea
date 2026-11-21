@@ -6,8 +6,11 @@ import type {
   DirectoryCompareMode,
   DirectoryCompareProgress,
   DirectoryCompareStatus,
+  DirectorySyncAction,
+  DirectorySyncOperation,
+  DirectorySyncProgress,
 } from "@/bindings";
-import { call, commands, emitLocalIdeEvent, IpcError, isCancelled, nextRequestId } from "@/platform/ipc";
+import { call, commands, emitLocalIdeEvent, isCancelled, nextRequestId } from "@/platform/ipc";
 import { notifyFileOperation } from "@/platform/fileOps";
 import { tx, useTx } from "@/platform/i18n";
 import {
@@ -51,11 +54,6 @@ const FILTERS: { status: DirectoryCompareStatus; title: string; icon: IconName }
   { status: "equal", title: "Show identical files", icon: "check" },
   { status: "rightOnly", title: "Show files only on right", icon: "diff-arrow-left" },
 ];
-const MARKER: Partial<Record<DirectoryCompareStatus, IconName>> = {
-  leftOnly: "diff-arrow-right",
-  rightOnly: "diff-arrow-left",
-  different: "diff",
-};
 /** IDEA's "Compare by" choices; the last one picked is kept for the next comparison. */
 export const COMPARE_MODES: ReadonlyArray<{ value: DirectoryCompareMode; label: string }> = [
   { value: "content", label: "Binary content" },
@@ -79,6 +77,44 @@ function saveMode(mode: DirectoryCompareMode) {
     // ignore
   }
 }
+/** A row's synchronisation (IDEA's "*" column); `none` leaves the entry alone. */
+export type SyncAction = DirectorySyncAction | "none";
+const SYNC_ICON: Record<DirectorySyncAction, IconName> = {
+  copyToRight: "diff-arrow-right",
+  copyToLeft: "diff-arrow-left",
+  deleteLeft: "trash",
+  deleteRight: "trash",
+};
+const SYNC_LABEL: Record<SyncAction, string> = {
+  copyToRight: "Copy to Right",
+  copyToLeft: "Copy to Left",
+  deleteLeft: "Delete",
+  deleteRight: "Delete",
+  none: "Do nothing",
+};
+
+/** The operations a row cycles through with Space or a click, its default first. */
+export function syncChoices(e: DirectoryCompareEntry): SyncAction[] {
+  if (!e.rightKind) return ["copyToRight", "deleteLeft", "none"];
+  if (!e.leftKind) return ["copyToLeft", "deleteRight", "none"];
+  return ["none", "copyToRight", "copyToLeft"];
+}
+
+/** The batch for these rows, skipping `none`; a copy onto an existing entry overwrites it. */
+export function syncOperations(
+  entries: readonly DirectoryCompareEntry[],
+  actionOf: (e: DirectoryCompareEntry) => SyncAction,
+): DirectorySyncOperation[] {
+  const ops: DirectorySyncOperation[] = [];
+  for (const e of entries) {
+    const action = actionOf(e);
+    if (action === "none") continue;
+    const target = action === "copyToRight" ? e.rightKind : action === "copyToLeft" ? e.leftKind : null;
+    ops.push({ path: e.path, action, overwrite: !!target });
+  }
+  return ops;
+}
+
 const DEFAULT_SHOWN: ReadonlySet<DirectoryCompareStatus> = new Set(["leftOnly", "rightOnly", "different"]);
 
 const join = (root: string, path: string) => `${root.replace(/\/$/, "")}/${path}`;
@@ -199,6 +235,45 @@ function Side({ entry, side, folder }: { entry: DirectoryCompareEntry; side: "le
   ));
 }
 
+/** The status marker, and a button that changes the row's operation (IDEA's "*" column). */
+function SyncCell({
+  entry,
+  action,
+  disabled,
+  onCycle,
+}: {
+  entry: DirectoryCompareEntry;
+  action: SyncAction;
+  disabled: boolean;
+  onCycle: () => void;
+}) {
+  const t = useTx();
+  // Rows left alone keep only the "differ" marker, so a skipped one-sided row shows no arrow.
+  const icon = action !== "none" ? SYNC_ICON[action] : entry.status === "different" ? "diff" : null;
+  const label = `${t(STATUS[entry.status])}: ${t(SYNC_LABEL[action])}`;
+  return (
+    <span role="gridcell" className={clsx(styles.cell, styles.marker)}>
+      <button
+        type="button"
+        className={clsx(styles.sync, action !== "none" && styles.planned)}
+        aria-label={label}
+        title={label}
+        tabIndex={-1}
+        disabled={disabled}
+        // Keep the focus in the table, so Space keeps cycling the selected row.
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={(e) => {
+          e.stopPropagation();
+          onCycle();
+        }}
+        onDoubleClick={(e) => e.stopPropagation()}
+      >
+        {icon && <Icon name={icon} size={14} />}
+      </button>
+    </span>
+  );
+}
+
 export function DirectoryCompare({ left, right }: { left: string; right: string }) {
   const rowHeight = useRowHeight(22);
   const t = useTx();
@@ -207,6 +282,7 @@ export function DirectoryCompare({ left, right }: { left: string; right: string 
   const [shown, setShown] = useState<ReadonlySet<DirectoryCompareStatus>>(DEFAULT_SHOWN);
   const [filter, setFilter] = useState("");
   const [mode, setMode] = useState(loadMode);
+  const [actions, setActions] = useState<ReadonlyMap<string, SyncAction>>(new Map());
   const [generation, setGeneration] = useState(0);
   const [busy, setBusy] = useState(true);
   const [operating, setOperating] = useState(false);
@@ -249,6 +325,7 @@ export function DirectoryCompare({ left, right }: { left: string; right: string 
       .then((rows) => {
         if (!alive) return;
         setEntries(rows);
+        setActions(new Map());
         setCurrent((prev) => rows.find((e) => e.path === prev?.path) ?? null);
       })
       .catch((e) => {
@@ -292,57 +369,91 @@ export function DirectoryCompare({ left, right }: { left: string; right: string 
     if (data) void openVcsDiff(data);
   };
 
-  const operate = async (side: "left" | "right" | "delete") => {
-    if (!selected || busy || operating) return;
+  const actionOf = (e: DirectoryCompareEntry) => actions.get(e.path) ?? syncChoices(e)[0]!;
+  const cycle = (e: DirectoryCompareEntry) => {
+    if (busy || operating) return;
+    const choices = syncChoices(e);
+    const next = choices[(choices.indexOf(actionOf(e)) + 1) % choices.length]!;
+    setActions((m) => new Map(m).set(e.path, next));
+  };
+  const visible = rows.flatMap((r) => ("entry" in r ? [r.entry] : []));
+
+  const synchronize = async (targets: readonly DirectoryCompareEntry[]) => {
+    const ops = syncOperations(targets, actionOf);
+    if (!ops.length || busy || operating) return;
+    const deletes = ops.filter((o) => o.action === "deleteLeft" || o.action === "deleteRight").length;
+    const overwrites = ops.filter((o) => o.overwrite).length;
+    const count = ops.length;
+    if (
+      (deletes || overwrites) &&
+      !(await confirmDialog({
+        title: "Synchronize",
+        message: tx`Synchronize ${count} entries? ${deletes} will be deleted and ${overwrites} overwritten.`,
+        okLabel: "Synchronize",
+        danger: true,
+      }))
+    )
+      return;
     setOperating(true);
     setOperationError(null);
-    let attempted = false;
-    const targetRoot = side === "left" ? left : right;
+    const request = nextRequestId();
+    const task = {
+      id: `directory-sync-${request}`,
+      title: tx("Synchronizing directories"),
+      message: null as string | null,
+      fraction: null as number | null,
+      cancel: () => {
+        void commands.cancelRequest(request);
+      },
+    };
+    upsertTask({ ...task, done: false });
+    const channel = new Channel<DirectorySyncProgress>();
+    channel.onmessage = (p) => {
+      task.message = p.path;
+      task.fraction = p.total ? p.done / p.total : null;
+      upsertTask({ ...task, done: false });
+    };
     try {
-      if (side === "delete") {
-        if (!!selected.leftKind === !!selected.rightKind) return;
-        const path = join(selected.leftKind ? left : right, selected.path);
-        if (!(await confirmDialog({ title: "Delete", message: tx`Delete ${path}?`, okLabel: "Delete", danger: true })))
-          return;
-        attempted = true;
-        await call(commands.fsDelete(path));
-        notifyFileOperation({ kind: "deleted", paths: [path] });
-        emitLocalIdeEvent({ type: "fsChanged", created: [], modified: [], removed: [path] });
-      } else {
-        const sourceRoot = side === "left" ? right : left;
-        const to = join(targetRoot, selected.path);
-        try {
-          attempted = true;
-          await call(commands.fsCopyMerge(sourceRoot, targetRoot, selected.path, false));
-        } catch (e) {
-          if (!(e instanceof IpcError) || e.kind !== "alreadyExists") throw e;
-          if (
-            !(await confirmDialog({
-              title: "Overwrite files?",
-              message: tx`Copy to ${to} and overwrite existing files?`,
-              okLabel: "Overwrite",
-              danger: true,
-            }))
-          )
-            return;
-          await call(commands.fsCopyMerge(sourceRoot, targetRoot, selected.path, true));
-        }
-        notifyFileOperation({ kind: "created", paths: [to] });
-        emitLocalIdeEvent({ type: "fsChanged", created: [to], modified: [to], removed: [] });
+      const failures = await call(commands.fsSynchronizeDirectories(left, right, ops, request, channel));
+      const failed = new Set(failures.map((f) => f.path));
+      const created: string[] = [];
+      const removed: string[] = [];
+      for (const o of ops) {
+        if (failed.has(o.path)) continue;
+        if (o.action === "copyToLeft") created.push(join(left, o.path));
+        else if (o.action === "copyToRight") created.push(join(right, o.path));
+        else removed.push(join(o.action === "deleteLeft" ? left : right, o.path));
       }
+      if (created.length) notifyFileOperation({ kind: "created", paths: created });
+      if (removed.length) notifyFileOperation({ kind: "deleted", paths: removed });
+      if (created.length || removed.length)
+        emitLocalIdeEvent({ type: "fsChanged", created, modified: created, removed });
+      if (failures.length && mounted.current)
+        setOperationError(failures.map((f) => `${f.path}: ${tx(f.message)}`).join("\n"));
     } catch (e) {
-      if (mounted.current) setOperationError(e instanceof Error ? e.message : String(e));
+      if (mounted.current && !isCancelled(e)) setOperationError(e instanceof Error ? e.message : String(e));
     } finally {
+      upsertTask({ ...task, done: true });
       if (mounted.current) {
         setOperating(false);
-        if (attempted) refresh();
+        refresh();
       }
     }
   };
 
   const idle = !busy && !operating;
   const table = (
-    <div className={styles.table} role="grid" aria-label={t("Compared files")} aria-rowcount={rows.length + 1}>
+    <div
+      className={styles.table}
+      role="grid"
+      aria-label={t("Compared files")}
+      aria-rowcount={rows.length + 1}
+      onKeyDown={(e) => {
+        if (e.key !== " " || !selected) return;
+        e.preventDefault();
+        cycle(selected);
+      }}
+    >
       <div role="rowgroup">
         <div className={styles.head} role="row" aria-rowindex={1}>
           <SideHeaders side="left" />
@@ -388,14 +499,7 @@ export function DirectoryCompare({ left, right }: { left: string; right: string 
               onDoubleClick={() => open(r.entry)}
             >
               <Side entry={r.entry} side="left" folder={r.folder} />
-              <span
-                role="gridcell"
-                className={clsx(styles.cell, styles.marker)}
-                aria-label={t(STATUS[r.entry.status])}
-                title={t(STATUS[r.entry.status])}
-              >
-                {MARKER[r.entry.status] && <Icon name={MARKER[r.entry.status]!} size={14} />}
-              </span>
+              <SyncCell entry={r.entry} action={actionOf(r.entry)} disabled={!idle} onCycle={() => cycle(r.entry)} />
               <Side entry={r.entry} side="right" folder={r.folder} />
             </div>
           )
@@ -434,18 +538,19 @@ export function DirectoryCompare({ left, right }: { left: string; right: string 
           ))}
         </div>
         <div className={styles.toolbarGroup}>
-          <Button size="small" disabled={!selected?.rightKind || !idle} onClick={() => void operate("left")}>
-            Copy to Left
-          </Button>
-          <Button size="small" disabled={!selected?.leftKind || !idle} onClick={() => void operate("right")}>
-            Copy to Right
+          <Button
+            size="small"
+            disabled={!idle || !selected || actionOf(selected) === "none"}
+            onClick={() => void synchronize(selected ? [selected] : [])}
+          >
+            Synchronize Selected
           </Button>
           <Button
             size="small"
-            disabled={!selected || !!selected.leftKind === !!selected.rightKind || !idle}
-            onClick={() => void operate("delete")}
+            disabled={!idle || !visible.some((e) => actionOf(e) !== "none")}
+            onClick={() => void synchronize(visible)}
           >
-            Delete
+            Synchronize All
           </Button>
         </div>
         <Input
