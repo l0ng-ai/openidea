@@ -398,6 +398,42 @@ describe(".icls schemes", () => {
     for (const [name, value] of names) expect(attrs[name]?.foreground).toBe(`#${value}`);
   });
 
+  it("imports PyCharm's function call, class, parameter and f-string keys and exports them by those keys", () => {
+    const keys = [
+      ["PY.FUNCTION_CALL", "pyFunctionCall", "d56075"],
+      ["PY.CLASS_DEFINITION", "pyClassDefinition", "7bcbff"],
+      ["PY.PARAMETER", "pyParameter", "101010"],
+      ["PY.LOCAL_VARIABLE", "pyLocalVariable", "202020"],
+      ["PY.TYPE_PARAMETER", "pyTypeParameter", "303030"],
+      ["PY.INVALID_STRING_ESCAPE", "pyInvalidEscape", "404040"],
+      ["PY.FSTRING_FRAGMENT_BRACES", "pyFString", "e89c45"],
+      ["PY.FSTRING_FORMAT_SPEC_NUMBER", "pyFormat", "505050"],
+    ] as const;
+    const xml = `<scheme name="PyCharm" parent_scheme="Darcula"><attributes>${keys
+      .map(
+        ([key, , value]) =>
+          `<option name="${key}"><value><option name="FOREGROUND" value="${value}"/></value></option>`,
+      )
+      .join("")}<option name="JS.GLOBAL_FUNCTION"><value><option name="FOREGROUND" value="6dacff"/></value></option>
+    </attributes></scheme>`;
+    const { scheme, skipped } = parseIcls(xml);
+    expect(skipped).toBe(0);
+    for (const [, id, value] of keys) expect(scheme.attributes[id]?.foreground).toBe(`#${value}`);
+    // A WebStorm function colour still sets the shared call colour; Python calls keep PyCharm's.
+    expect(scheme.attributes.functionCall?.foreground).toBe("#6dacff");
+    const { id, customs } = importScheme({}, scheme);
+    const exported = exportIcls(id, customs);
+    for (const [key] of keys) expect(exported).toContain(`name="${key}"`);
+    expect(exported).not.toContain('name="PY.STRING.F"');
+  });
+
+  it("still reads Python attributes that earlier versions exported under OPENIDEA_ names", () => {
+    const xml =
+      '<scheme name="Old"><attributes><option name="OPENIDEA_pyFunctionCall"><value>' +
+      '<option name="FOREGROUND" value="d56075"/></value></option></attributes></scheme>';
+    expect(parseIcls(xml).scheme.attributes.pyFunctionCall?.foreground).toBe("#d56075");
+  });
+
   it("imports the Python f-string colour", () => {
     const xml =
       '<scheme name="F"><attributes><option name="PY.STRING.F"><value>' +
