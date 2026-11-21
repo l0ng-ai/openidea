@@ -12199,6 +12199,8 @@ export type TextAttributesOverride_Deserialize = {
 	/**  `underline` | `wave` | `strikeout` | `none`. */
 	effect?: string | null,
 	effectColor?: string | null,
+	/**  IDEA's `ERROR_STRIPE_COLOR`: the diff overview-lane marker of a change type. */
+	errorStripeColor?: string | null,
 };
 
 /**  Editor › Color Scheme override of one text attribute. */
@@ -12210,6 +12212,8 @@ export type TextAttributesOverride_Serialize = {
 	/**  `underline` | `wave` | `strikeout` | `none`. */
 	effect?: string | null,
 	effectColor?: string | null,
+	/**  IDEA's `ERROR_STRIPE_COLOR`: the diff overview-lane marker of a change type. */
+	errorStripeColor?: string | null,
 };
 
 /**
