@@ -51,6 +51,8 @@ export interface InplaceSession {
   dialog: (typed: string) => void;
   /** Name suggestions listed under the name; ↑ / ↓ put the previous / next one in (Introduce Variable). */
   suggestions?: readonly string[];
+  /** Runs when the session ends, however it ends (after `commit`). */
+  onEnd?: () => void;
 }
 
 const startSession = StateEffect.define<InplaceSession>();
@@ -104,9 +106,14 @@ const sessionField = StateField.define<InplaceSession | null>({
                   const li = document.createElement("li");
                   li.textContent = name;
                   if (name === current) li.className = "cm-lsp-inplace-suggestion-active";
+                  // A click puts the name in; a double click also finishes, like Enter.
                   li.addEventListener("mousedown", (e) => {
                     e.preventDefault();
                     putSuggestion(view, name);
+                    if (e.detail >= 2) endInplaceRename(view, "commit");
+                  });
+                  li.addEventListener("dblclick", () => {
+                    if (putSuggestion(view, name)) endInplaceRename(view, "commit");
                   });
                   list.appendChild(li);
                 }
@@ -211,6 +218,7 @@ export function endInplaceRename(view: EditorView, how: "commit" | "cancel" | "r
     annotations: [inplaceEdit.of(true), Transaction.addToHistory.of(false)],
   });
   if (how === "commit") s.commit(typed);
+  s.onEnd?.();
   return typed;
 }
 

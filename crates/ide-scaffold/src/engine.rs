@@ -132,6 +132,20 @@ pub fn name_error(name: &str) -> Option<&'static str> {
     }
 }
 
+/// Whether `dir` cannot take a new project: something other than an empty folder is there.
+pub fn target_taken(dir: &Path) -> bool {
+    dir.exists() && std::fs::read_dir(dir).map(|mut d| d.next().is_some()).unwrap_or(true)
+}
+
+/// The first of `base`, `base1`, `base2`, … that names nothing in `location` yet.
+pub fn free_name(location: &Path, base: &str) -> String {
+    let base = base.trim();
+    std::iter::once(base.to_owned())
+        .chain((1..10_000).map(|i| format!("{base}{i}")))
+        .find(|n| !location.join(n).exists())
+        .unwrap_or_else(|| base.to_owned())
+}
+
 /// The staging directory; removed on drop unless the project was moved out of it.
 struct Staging(PathBuf);
 
@@ -388,7 +402,7 @@ pub(crate) fn create_with(
         std::fs::create_dir_all(&location)?;
     }
     let target = location.join(name);
-    if target.exists() && std::fs::read_dir(&target).map(|mut d| d.next().is_some()).unwrap_or(true) {
+    if target_taken(&target) {
         return Err(IdeError::invalid(format!("{} already exists and is not empty", target.display())));
     }
     let values = with_defaults(def, name, &req.values);

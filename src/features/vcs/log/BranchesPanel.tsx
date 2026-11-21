@@ -24,7 +24,7 @@ import { LogIdContext } from "../logContext";
 import { canUpdateBranch, useBranchesPane, type BranchTarget } from "../logPaneActions";
 import { reloadLog, scopedLogRepositories, setLogBranches, setLogFilters, useGitLog } from "../logStore";
 import { branchesByRepo } from "../multiRoot";
-import { commonBranches } from "../repoBranches";
+import { branchRepositoryRoots, commonBranches } from "../repoBranches";
 import { currentRepo, loadBranches, repoName, useVcs } from "../store";
 import { useLogRepositories, useReadOnlyLog } from "./logHooks";
 
@@ -79,13 +79,26 @@ export function BranchesPanel() {
   const active = !scope || scope === shown;
   const logGeneration = useGitLog((s) => s.generation);
   const selectedBranches = useVcs((s) => s.branches);
-  const availableRepositories = useLogRepositories();
-  const filters = useGitLog((s) => s.filters);
-  const repositories = useMemo(
-    () => scopedLogRepositories(availableRepositories, filters, availableRepositories),
-    [availableRepositories, filters],
+  const logRepositories = useLogRepositories();
+  const branchRoots = useVcs((s) => s.branchRoots);
+  const availableRepositories = useMemo(
+    () => branchRepositoryRoots(logRepositories, branchRoots),
+    [logRepositories, branchRoots],
   );
-  const scopedRepo = availableRepositories.length > 1 && repositories.length === 1 ? repositories[0] : undefined;
+  const filters = useGitLog((s) => s.filters);
+  const { path, paths, repositories: repositoryFilter } = filters;
+  const repositories = useMemo(
+    () =>
+      branchRepositoryRoots(
+        scopedLogRepositories(logRepositories, { path, paths, repositories: repositoryFilter }, logRepositories),
+        branchRoots,
+      ),
+    [logRepositories, path, paths, repositoryFilter, branchRoots],
+  );
+  const queriedRepositories = useMemo(
+    () => [...new Set([...availableRepositories, ...repositories])],
+    [availableRepositories, repositories],
+  );
   const readOnly = useReadOnlyLog();
   const version = useVcs((s) => s.version);
   const [allBranches, setAllBranches] = useState<Record<string, Branch[]>>({});
@@ -100,6 +113,10 @@ export function BranchesPanel() {
     }
   };
   const currentRepository = currentRepo();
+  const scopedRepo =
+    repositories.length === 1 && (logRepositories.length > 1 || repositories[0] !== currentRepository)
+      ? repositories[0]
+      : undefined;
   const branches = useMemo(
     () =>
       repositories.length === 1 && repositories[0] !== currentRepository
@@ -128,16 +145,16 @@ export function BranchesPanel() {
   }, [root, selectedBranches, availableRepositories]);
   useEffect(() => {
     let live = true;
-    void branchesByRepo(availableRepositories)
+    void branchesByRepo(queriedRepositories)
       .then((value) => live && setAllBranches(value))
       .catch(() => undefined);
-    void Promise.all(availableRepositories.map(async (r) => [r, await call(commands.vcsTags(r))] as const))
+    void Promise.all(queriedRepositories.map(async (r) => [r, await call(commands.vcsTags(r))] as const))
       .then((value) => live && setAllTags(Object.fromEntries(value)))
       .catch(() => undefined);
     return () => {
       live = false;
     };
-  }, [availableRepositories, version, logGeneration]);
+  }, [queriedRepositories, version, logGeneration]);
   const merged = repositories.length > 1 && !grouped;
   const allRoots = useMemo(() => {
     if (!repositories.length && availableRepositories.length) return [];
@@ -145,7 +162,7 @@ export function BranchesPanel() {
       return buildBranchTree(branches, favorites, scopedRepo ? (allTags[scopedRepo] ?? []) : tags);
     const list = repositories.map((repo) => ({
       root: repo,
-      name: repoName(repo),
+      name: repoName(branchRoots[repo] ?? repo),
       branches: allBranches[repo] ?? [],
       tags: allTags[repo] ?? [],
     }));
@@ -155,6 +172,7 @@ export function BranchesPanel() {
   }, [
     repositories,
     availableRepositories,
+    branchRoots,
     allBranches,
     allTags,
     branches,

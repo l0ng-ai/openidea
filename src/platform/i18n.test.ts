@@ -279,6 +279,7 @@ describe("catalogs", () => {
     "16384 MB",
     "Docker",
     "URL",
+    "ID:",
     "Code Vision",
     "JUnit",
     "⌘Enter",

@@ -70,6 +70,13 @@ async fn command_added_worktree_joins_the_repository_set() {
     let roots = f.project.repos().roots();
     assert!(roots.contains(&linked), "worktree below the project did not join the repository set: {roots:?}");
     assert_eq!(roots.len(), 2);
+    let roots = vcs::vcs_roots(&f.host, "main").unwrap();
+    assert_eq!(roots[0].root, f.root);
+    assert_eq!(roots[0].branch_root, f.root);
+    assert_eq!(roots[0].head.as_deref(), Some("main"));
+    assert_eq!(roots[1].root, linked);
+    assert_eq!(roots[1].branch_root, f.root);
+    assert_eq!(roots[1].head.as_deref(), Some("topic"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

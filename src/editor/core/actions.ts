@@ -628,6 +628,7 @@ function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
   const popup: Extract<LspPopup, { kind: "list" }> = {
     kind: "list",
     title: tx("Copy Path/Reference…"),
+    layout: "copyPath",
     anchor: caretAnchor(view, view.state.selection.main.head),
     items: [
       ...flavours
@@ -1027,7 +1028,7 @@ export function registerEditorActions(): () => void {
       title: "Reset Font Size",
       category: "View",
       keywords: ["zoom", "font size", "mouse wheel"],
-      when: "projectOpen",
+      when: "projectOpen || lightEdit",
       run: resetFontSize,
     },
     {

@@ -24,7 +24,9 @@ import {
 } from "@codemirror/language";
 import type { FoldRange } from "@/platform/ipc";
 import type { FoldingOutlineVisibility } from "@/bindings";
+import { tx } from "@/platform/i18n";
 import { enclosingCodeBlock } from "./caretCommands";
+import { foldPreviewExtension } from "./foldPreview";
 import { regionMarkerAt, regionNameAt } from "./regions";
 
 export interface BackendFold {
@@ -489,6 +491,7 @@ export function foldingExtension(showOutline = true, visibility: FoldingOutlineV
       : [],
     backendFolds,
     backendFoldService,
+    foldPreviewExtension,
     codeFolding({
       // A folded custom region shows its name, as in IDEA.
       preparePlaceholder: (state, range) => {
@@ -506,8 +509,7 @@ export function foldingExtension(showOutline = true, visibility: FoldingOutlineV
         const el = document.createElement("span");
         el.className = "cm-foldPlaceholder";
         el.textContent = name ?? "…";
-        el.title = "Expand";
-        el.setAttribute("aria-label", "folded code");
+        el.setAttribute("aria-label", tx("Folded code"));
         // The chip is a button, not a text anchor. Letting the mousedown through
         // starts a mouse selection that moves the caret to the chip's line; a caret
         // change re-runs the inline blame refresh, which replaces this line's DOM

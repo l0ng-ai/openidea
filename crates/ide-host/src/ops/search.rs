@@ -123,6 +123,10 @@ pub(crate) fn search_project(
         if let Some(prefix) = &prefix {
             remaining.include = rebase_masks(&query.include, prefix);
             remaining.exclude = rebase_masks(&query.exclude, prefix);
+            // An attached project's own excluded folders: the project's were rebased away.
+            if !query.include_excluded && project.member_excludes.read().contains_key(dir) {
+                remaining.exclude.extend(project.search_excludes_in(dir));
+            }
             // Only paths elsewhere were asked for.
             if remaining.include.is_empty() && !query.include.is_empty() {
                 continue;

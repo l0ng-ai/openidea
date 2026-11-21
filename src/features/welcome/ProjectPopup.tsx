@@ -18,7 +18,7 @@ const ACTIONS: { id: string; label: string; icon: IconName }[] = [
   { id: "file.newProject", label: "New Project…", icon: "plus" },
   { id: "file.openProject", label: "Open…", icon: "folder" },
   { id: "vcs.clone", label: "Clone Repository…", icon: "branch" },
-  { id: "remote.connect", label: "Remote Development…", icon: "terminal" },
+  { id: "remote.connect", label: "Remote Development…", icon: "remote" },
 ];
 
 function useOpenProjects(): OpenProject[] {
@@ -223,6 +223,12 @@ function GroupBoundary({
 }
 
 function ProjectRow({ m, active }: { m: RecentMatch; active: boolean }) {
+  const { remote, pathMatch } = m;
+  const pathStart = remote ? remote.host.length + 1 : 0;
+  const hostMatch = remote && pathMatch ? pathMatch.filter((i) => i < remote.host.length) : null;
+  const locationMatch =
+    remote && pathMatch ? pathMatch.filter((i) => i >= pathStart).map((i) => i - pathStart) : pathMatch;
+
   return (
     <>
       <ProjectBadge
@@ -232,21 +238,25 @@ function ProjectRow({ m, active }: { m: RecentMatch; active: boolean }) {
         missing={!!m.project.missing}
       />
       <span className={styles.text} title={unavailableTitle(m.project)}>
-        <span className={styles.top}>
-          <HighlightedText
-            className={clsx(styles.name, m.project.missing && styles.unavailable)}
-            text={m.project.name}
-            indices={m.nameMatch}
-            tone={active ? "accent" : "strong"}
-          />
-          {m.project.branch && (
-            <span className={styles.branch}>
-              <Icon name="branch" size={11} />
-              {m.project.branch}
-            </span>
-          )}
-        </span>
-        <HighlightedText className={styles.path} text={m.displayPath} indices={m.pathMatch} />
+        <HighlightedText
+          className={clsx(styles.name, m.project.missing && styles.unavailable)}
+          text={m.project.name}
+          indices={m.nameMatch}
+          tone={active ? "accent" : "strong"}
+        />
+        {remote && (
+          <span className={styles.metadata}>
+            <Icon name="terminal" size={12} />
+            <HighlightedText className={styles.ellipsis} text={remote.host} indices={hostMatch} />
+          </span>
+        )}
+        <HighlightedText className={styles.path} text={remote?.path ?? m.displayPath} indices={locationMatch} />
+        {m.project.branch && (
+          <span className={styles.metadata}>
+            <Icon name="branch" size={12} />
+            <span className={styles.ellipsis}>{m.project.branch}</span>
+          </span>
+        )}
       </span>
     </>
   );

@@ -45,7 +45,7 @@ function GearButton() {
         title="Manage"
         aria-haspopup="menu"
         aria-expanded={open}
-        iconSize={16}
+        iconSize={18}
         className={styles.gear}
         onClick={() => setOpen((v) => !v)}
       />

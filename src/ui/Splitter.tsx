@@ -33,7 +33,7 @@ function savedLayout(storageKey: string | undefined): Record<string, number> | u
 
 /**
  * `storageKey` remembers the sizes the user drags to. A group whose panels come and go (a
- * preview pane) passes a key per panel set; when it changes, that set's sizes are applied.
+ * preview pane) passes a key per panel set; when it changes, the saved or default sizes are applied.
  */
 export function SplitGroup({
   className,
@@ -67,10 +67,10 @@ export function SplitGroup({
   useEffect(() => {
     if (storageKey === mountedKey.current) return;
     mountedKey.current = storageKey;
-    pending.current = savedLayout(storageKey) ?? null;
+    pending.current = storageKey ? (savedLayout(storageKey) ?? defaultLayout ?? null) : null;
     const current = group.current?.getLayout();
     if (current) applyPending(current);
-  }, [storageKey]);
+  }, [storageKey, defaultLayout]);
   useImperativeHandle(
     groupRef,
     () => ({

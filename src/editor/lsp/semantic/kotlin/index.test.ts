@@ -44,6 +44,53 @@ describe("Kotlin semantic tokens", () => {
     ).toBe("cm-sem-property");
   });
 
+  it("tells extension and package-level function calls and enum entries apart (#4059)", () => {
+    // JetBrains Kotlin LSP's legend; top-level functions carry `static`, library ones `defaultLibrary`.
+    const types = ["function", "method", "enumMember", "class"];
+    const modifiers = ["declaration", "static", "defaultLibrary"];
+    const lines = [
+      "fun Book.summary() = shelfLabel(Genre.NOVEL)",
+      "val s = book.summary() + book?.let { it } + local() + name.toString()",
+      "@Outer.Inner fun f() = emptyMap<String, Int>()",
+    ];
+    const doc = Text.of(lines);
+    const tok = (line: number, word: string, type: string, mods: string[] = [], nth = 0) => {
+      let col = -1;
+      for (let i = 0; i <= nth; i++) col = lines[line]!.indexOf(word, col + 1);
+      return [line, col, word.length, types.indexOf(type), mods.reduce((m, n) => m | (1 << modifiers.indexOf(n)), 0)];
+    };
+    const data = [
+      tok(0, "summary", "function", ["declaration", "static"]),
+      tok(0, "shelfLabel", "function", ["static"]),
+      tok(0, "NOVEL", "enumMember"),
+      tok(1, "summary", "function", ["static"]),
+      tok(1, "let", "function", ["static", "defaultLibrary"]),
+      tok(1, "local", "function"),
+      tok(1, "toString", "method", ["defaultLibrary"]),
+      tok(2, "Inner", "class"),
+      tok(2, "emptyMap", "function", ["static", "defaultLibrary"]),
+    ].flat();
+    const ranges = semanticRanges(
+      doc,
+      { tokenTypes: types, tokenModifiers: modifiers, data },
+      false,
+      "kotlin",
+      Tree.empty,
+    );
+    const at = (line: number, word: string) =>
+      ranges.find((r) => r.from === doc.line(line + 1).from + lines[line]!.indexOf(word))?.className.split(" ");
+    expect(at(0, "summary")).not.toContain("cm-sem-kotlin-extension-call");
+    expect(at(0, "shelfLabel")).toContain("cm-sem-kotlin-package-call");
+    expect(at(0, "NOVEL")).toEqual(["cm-sem-constant", "cm-sem-kotlin-enum-entry"]);
+    expect(at(1, "summary")).toContain("cm-sem-kotlin-extension-call");
+    // Library functions keep their Predefined function class, which the theme lets win.
+    expect(at(1, "let")).toEqual(expect.arrayContaining(["cm-sem-builtin", "cm-sem-kotlin-extension-call"]));
+    expect(at(1, "local")).toEqual(["cm-sem-function"]);
+    expect(at(1, "toString")).toEqual(["cm-sem-function", "cm-sem-builtin"]);
+    expect(at(2, "Inner")).toEqual(["cm-sem-annotation"]);
+    expect(at(2, "emptyMap")).toContain("cm-sem-kotlin-package-call");
+  });
+
   it("colours annotation names as annotations, not as the constructor calls the server reports", () => {
     const lines = [
       '@Column(name = "x")',

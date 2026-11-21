@@ -4,8 +4,8 @@
  * `http-client.private.env.json` and `http-client.env.json` — the variable lookup order.
  */
 import type { Text } from "@codemirror/state";
+import { registerNavigationProvider } from "@/editor/api";
 import { docOf } from "@/editor/lsp/lsp";
-import { registerNavigationProvider } from "@/editor/navigationProviders";
 import { call, commands, type Location } from "@/platform/ipc";
 import { HTTP_LANGUAGE } from "./editor";
 

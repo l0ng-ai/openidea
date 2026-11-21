@@ -265,6 +265,11 @@ impl SettingsStore {
         store
     }
 
+    /// The settings of the project at `root` under the same user settings.
+    pub fn for_project(&self, root: &Path) -> Self {
+        Self::load(self.global_file.parent().unwrap_or(Path::new("")), Some(root))
+    }
+
     pub fn file(&self, scope: SettingsScope) -> Option<&Path> {
         match scope {
             SettingsScope::Global => Some(&self.global_file),

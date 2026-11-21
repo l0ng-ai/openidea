@@ -54,6 +54,10 @@ pub type SecurityHook = Arc<dyn Fn() -> ide_core::settings::AgentSecuritySetting
 /// Returns the user's choice of the approvals new tasks start with.
 pub type NewTaskApprovalsHook = Arc<dyn Fn() -> ide_core::settings::NewTaskApprovals + Send + Sync>;
 
+/// Returns the roots of the project's workspace an agent may work in: the project and the
+/// attached projects the user trusts.
+pub type WorkspaceRootsHook = Arc<dyn Fn() -> Vec<PathBuf> + Send + Sync>;
+
 /// Entry changes are batched for this long before they are sent.
 const FLUSH_DELAY: Duration = Duration::from_millis(40);
 /// Updates that arrive this late after `session/load` returns are still replayed history.
@@ -159,6 +163,7 @@ struct Shared {
     sinks: RwLock<HashMap<String, AgentSink>>,
     security: RwLock<Option<SecurityHook>>,
     new_task_approvals: RwLock<Option<NewTaskApprovalsHook>>,
+    workspace_roots: RwLock<Option<WorkspaceRootsHook>>,
     known: Arc<Mutex<HashMap<String, Known>>>,
     providers: RwLock<Vec<provider::ProviderSpec>>,
     /// Last probe of each provider.
@@ -186,6 +191,24 @@ struct Known {
 }
 
 impl Shared {
+    /// The workspace roots offered to a session besides its own directory and project, for an
+    /// agent that takes them (`sessionCapabilities.additionalDirectories`).
+    fn additional_directories(&self, init: &acp::Negotiated, cwd: &Path, project_root: Option<&Path>) -> Vec<String> {
+        let Some(hook) = self.workspace_roots.read().clone().filter(|_| init.session("additionalDirectories")) else {
+            return Vec::new();
+        };
+        let canonical = |p: &Path| dunce::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        let own: Vec<PathBuf> = std::iter::once(cwd).chain(project_root).map(canonical).collect();
+        let mut roots = Vec::new();
+        for root in hook().iter().map(|r| canonical(r)) {
+            let root = root.to_string_lossy().into_owned();
+            if !own.iter().any(|o| o.to_string_lossy() == root) && !roots.contains(&root) {
+                roots.push(root);
+            }
+        }
+        roots
+    }
+
     fn spec(&self, id: &str) -> Option<provider::ProviderSpec> {
         self.providers.read().iter().find(|p| p.id == id).cloned()
     }
@@ -554,6 +577,7 @@ impl AgentManager {
             sinks: RwLock::new(HashMap::new()),
             security: RwLock::new(None),
             new_task_approvals: RwLock::new(None),
+            workspace_roots: RwLock::new(None),
             known,
             providers,
             probes: Mutex::new(HashMap::new()),
@@ -619,6 +643,11 @@ impl AgentManager {
     /// Sets the callback that reads which approvals new tasks start with.
     pub fn set_new_task_approvals_hook(&self, hook: NewTaskApprovalsHook) {
         *self.shared.new_task_approvals.write() = Some(hook);
+    }
+
+    /// Sets the callback that lists the workspace roots offered to agents besides a task's own.
+    pub fn set_workspace_roots_hook(&self, hook: WorkspaceRootsHook) {
+        *self.shared.workspace_roots.write() = Some(hook);
     }
 
     /// The agents (custom ones re-read), whether each is installed, and what they offered last time.
@@ -1341,11 +1370,13 @@ impl AgentManager {
         if !live.capabilities.fork || (keep < total && !live.capabilities.rollback) {
             return Err(IdeError::invalid("this agent can't copy a conversation from there"));
         }
-        let (cwd, provider_id, mcp_overrides) = {
+        let (cwd, provider_id, mcp_overrides, project_root) = {
             let s = source.state.lock();
-            (s.task.cwd.0.clone(), s.task.provider.clone(), s.task.mcp_overrides.clone())
+            let t = &s.task;
+            (t.cwd.0.clone(), t.provider.clone(), t.mcp_overrides.clone(), t.project_root.clone().map(|p| p.0))
         };
         let mcp_servers = source.shared.mcp_servers_for_session(&provider_id, &live.init, &mcp_overrides);
+        let roots = source.shared.additional_directories(&live.init, &cwd, project_root.as_deref());
         let skills_delivery = source.stage_skills(stage_key(live.driver), &cwd).await;
         let cwd_s = dunce::canonicalize(&cwd).unwrap_or(cwd).to_string_lossy().into_owned();
         let reply: Value = live
@@ -1353,7 +1384,7 @@ impl AgentManager {
             .request(
                 "session/fork",
                 {
-                    let mut params = session_params(&cwd_s, &mcp_servers, skills_delivery.as_ref());
+                    let mut params = session_params(&cwd_s, &mcp_servers, skills_delivery.as_ref(), &roots);
                     params["sessionId"] = json!(live.session);
                     params
                 },
@@ -2993,8 +3024,12 @@ impl Task {
         let sign_in_message = spec.sign_in_message(&init.auth_methods);
         let can_load = init.load_session();
         let (capabilities, embedded) = capabilities_of(&init);
-        let mcp_overrides = self.state.lock().task.mcp_overrides.clone();
+        let (mcp_overrides, project_root) = {
+            let s = self.state.lock();
+            (s.task.mcp_overrides.clone(), s.task.project_root.clone().map(|p| p.0))
+        };
         let mcp_servers = self.shared.mcp_servers_for_session(provider_id, &init, &mcp_overrides);
+        let roots = self.shared.additional_directories(&init, cwd, project_root.as_deref());
         let skills_delivery = self.stage_skills(stage_key(spec.driver), cwd).await;
         // Agents that compare canonical paths fail in a symlinked directory (macOS `/tmp`).
         let cwd_s = dunce::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf()).to_string_lossy().into_owned();
@@ -3010,7 +3045,7 @@ impl Task {
         }
         if let (Some(id), true, false) = (saved, can_load, start_fresh) {
             self.replaying.store(true, Ordering::Release);
-            let mut params = session_params(&cwd_s, &mcp_servers, skills_delivery.as_ref());
+            let mut params = session_params(&cwd_s, &mcp_servers, skills_delivery.as_ref(), &roots);
             params["sessionId"] = json!(&id);
             let loaded = self.request_with_auth(&peer, &init, &mut tried_auth, "session/load", params).await;
             tokio::time::sleep(REPLAY_GRACE).await;
@@ -3050,7 +3085,7 @@ impl Task {
         let (session_id, result) = match session {
             Some(s) => s,
             None => {
-                let params = session_params(&cwd_s, &mcp_servers, skills_delivery.as_ref());
+                let params = session_params(&cwd_s, &mcp_servers, skills_delivery.as_ref(), &roots);
                 let v = self.request_with_auth(&peer, &init, &mut tried_auth, "session/new", params).await.map_err(
                     |e| match self.sign_in_error(&e, Some(&sign_in_message)) {
                         Some(msg) => SessionOpenError { message: msg, allow_acp_fallback: false },
@@ -4040,9 +4075,12 @@ fn stage_key(driver: provider::Driver) -> &'static str {
 /// The session parameters `session/new`, `session/load` and `session/fork` share: the MCP
 /// servers, and the ones off for this session, so an agent that also loads its own
 /// configuration (Claude Code) can keep a same-named server of it off too — plus the
-/// session's staged skills for the drivers that take them.
-fn session_params(cwd: &str, mcp: &McpForSession, skills: Option<&skills::Delivery>) -> Value {
+/// session's staged skills for the drivers that take them, and the workspace's other roots.
+fn session_params(cwd: &str, mcp: &McpForSession, skills: Option<&skills::Delivery>, roots: &[String]) -> Value {
     let mut params = json!({ "cwd": cwd, "mcpServers": mcp.servers });
+    if !roots.is_empty() {
+        params["additionalDirectories"] = json!(roots);
+    }
     let mut meta = json!({});
     if !mcp.off.is_empty() {
         meta["mcpServersOff"] = json!(mcp.off);

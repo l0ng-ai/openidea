@@ -1,23 +1,25 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { insertNewlineAndIndent } from "@codemirror/commands";
-import { indentService, indentUnit, ensureSyntaxTree } from "@codemirror/language";
+import { history, insertNewlineAndIndent, redo, undo } from "@codemirror/commands";
+import { indentOnInput, indentService, indentUnit, ensureSyntaxTree } from "@codemirror/language";
 import {
   addCaretsToLineEnds,
   commentLine,
   completeStatement,
+  deleteLine,
   joinLines,
   startNewLine,
   startNewLineBefore,
   toggleCase,
   unselectOccurrence,
 } from "./editing";
-import { batchLanguage, commentTokens, findLanguageDescription } from "./languages";
+import { batchLanguage, commentTokens, findLanguageDescription, loadSupport } from "./languages";
 import { toggleCaret } from "./multiCaret";
 import { restructuredtextLanguage } from "./restructuredtext";
 import { commentBlock, enterInLineComment, lineCommentStyle } from "./comments";
 import { languages } from "@codemirror/language-data";
+import { java } from "@codemirror/lang-java";
 
 /** Brace languages in miniature: one unit deeper after a line ending in `{`. */
 const javascript = () =>
@@ -87,6 +89,19 @@ describe("start new line", () => {
     const v = make("  x|y");
     startNewLineBefore(v);
     expect(show(v)).toBe("  |\n  xy");
+  });
+});
+
+describe("delete line", () => {
+  it("puts the caret back where the deletion left it on Redo", () => {
+    const v = make("class A {\n    void m() {\n        int count = 1;|\n        print(count);\n    }\n}\n", history());
+    deleteLine(v);
+    const after = show(v);
+    undo(v);
+    expect(show(v)).toBe("class A {\n    void m() {\n        int count = 1;|\n        print(count);\n    }\n}\n");
+    redo(v);
+    expect(show(v)).toBe(after);
+    expect(v.state.doc.toString()).not.toContain("count = 1");
   });
 });
 
@@ -264,6 +279,36 @@ describe("enter in a line comment", async () => {
   });
 });
 
+describe("Python indentation", async () => {
+  const py = (await loadSupport(languages.find((l) => l.name === "Python")!))!;
+  const ext = [py, indentUnit.of("    ")];
+
+  it("dedents the line after return, pass, raise, break and continue", () => {
+    for (const stmt of ["return 1", "pass", "raise ValueError(x)", "break", "continue"]) {
+      const v = make(`def f():\n    while x:\n        ${stmt}|`, ext);
+      insertNewlineAndIndent(v);
+      expect(show(v)).toBe(`def f():\n    while x:\n        ${stmt}\n    |`);
+    }
+  });
+
+  it("keeps the indentation inside an unfinished return", () => {
+    const v = make("def f():\n    return foo(|", ext);
+    insertNewlineAndIndent(v);
+    expect(show(v).split("\n")[2]).not.toBe("|");
+    const w = make("def f():\n    value = 1|", ext);
+    insertNewlineAndIndent(w);
+    expect(show(w)).toBe("def f():\n    value = 1\n    |");
+  });
+
+  it("aligns a bare except: with its try as it is typed", () => {
+    const v = make("try:\n    load()\n    except|", [ext, indentOnInput()]);
+    const r = v.state.selection.main;
+    const insert = () => v.state.update(v.state.replaceSelection(":"), { userEvent: "input.type" });
+    if (!v.state.facet(EditorView.inputHandler).some((h) => h(v, r.from, r.to, ":", insert))) v.dispatch(insert());
+    expect(show(v)).toBe("try:\n    load()\nexcept:|");
+  });
+});
+
 describe("fallback indentation for GDScript", () => {
   const gd = [
     EditorState.tabSize.of(4),
@@ -311,6 +356,14 @@ describe("fallback indentation for GDScript", () => {
     const v = make("func test() -> void|", gd);
     completeStatement("gdscript")(v);
     expect(show(v)).toBe("func test() -> void:\n\t|");
+  });
+});
+
+describe("complete current statement", () => {
+  it("indents the line after an added semicolon like the statement, not as its continuation", () => {
+    const v = make('class A {\n  void f() {\n    String a = "1"|\n    g();\n  }\n}\n', java());
+    completeStatement("java")(v);
+    expect(show(v)).toBe('class A {\n  void f() {\n    String a = "1";\n    |\n    g();\n  }\n}\n');
   });
 });
 

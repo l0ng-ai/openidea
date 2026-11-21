@@ -17,12 +17,14 @@ async fn jdbc_profiles_persist_and_project_files_cannot_start_drivers() -> IdeRe
     db.save_jdbc_driver(DbJdbcDriver {
         id: "fixture".into(),
         name: "Test".into(),
+        vendor: None,
         jars: vec![jar.display().to_string()],
         class_name: "test.Driver".into(),
         url_template: "jdbc:test:".into(),
     })?;
     let reopened = manager(tmp.path());
     assert_eq!(reopened.jdbc_drivers()?[0].class_name, "test.Driver");
+    assert_eq!(reopened.jdbc_drivers()?[0].vendor, None);
     let source = DataSource {
         id: "local".into(),
         name: "local".into(),
@@ -54,6 +56,40 @@ async fn jdbc_profiles_persist_and_project_files_cannot_start_drivers() -> IdeRe
 }
 
 #[tokio::test]
+async fn named_jdbc_sources_persist_the_type_and_reject_a_profile_for_another_type() -> IdeResult<()> {
+    let tmp = tempfile::tempdir()?;
+    let jar = tmp.path().join("fixture.jar");
+    std::fs::write(&jar, [])?;
+    let db = manager(tmp.path());
+    db.save_jdbc_driver(DbJdbcDriver {
+        id: "fixture".into(),
+        name: "Test".into(),
+        vendor: Some("tidb".into()),
+        jars: vec![jar.display().to_string()],
+        class_name: "test.Driver".into(),
+        url_template: String::new(),
+    })?;
+    let source = DataSource {
+        id: "local".into(),
+        name: "local".into(),
+        driver: DbDriver::Jdbc,
+        vendor: "mariadb".into(),
+        jdbc_driver: "fixture".into(),
+        url: "jdbc:test:".into(),
+        ..Default::default()
+    };
+    db.save_sources(vec![source]).await?;
+    let reopened = manager(tmp.path());
+    let source = reopened.source("local")?;
+    assert_eq!(reopened.jdbc_drivers()?[0].vendor.as_deref(), Some("tidb"));
+    assert_eq!(source.driver, DbDriver::Jdbc);
+    assert_eq!(source.vendor, "mariadb");
+    let err = reopened.test(&source, None, None).await.unwrap_err();
+    assert!(err.message.contains("not associated with this data source type"));
+    Ok(())
+}
+
+#[tokio::test]
 #[ignore = "requires DUCKDB_JDBC_JAR and a local Java 17+ runtime"]
 async fn duckdb_custom_driver_through_database_manager() -> IdeResult<()> {
     let tmp = tempfile::tempdir()?;
@@ -63,6 +99,7 @@ async fn duckdb_custom_driver_through_database_manager() -> IdeResult<()> {
     db.save_jdbc_driver(DbJdbcDriver {
         id: "duck".into(),
         name: "DuckDB".into(),
+        vendor: None,
         jars: vec![jar],
         class_name: "org.duckdb.DuckDBDriver".into(),
         url_template: "jdbc:duckdb:".into(),
@@ -135,6 +172,7 @@ async fn clickhouse_vendor_driver_reads_catalog_and_results() -> IdeResult<()> {
     db.save_jdbc_driver(DbJdbcDriver {
         id: "clickhouse".into(),
         name: "ClickHouse JDBC".into(),
+        vendor: Some("clickhouse".into()),
         jars,
         class_name: "com.clickhouse.jdbc.ClickHouseDriver".into(),
         url_template: "jdbc:clickhouse://".into(),
@@ -143,6 +181,7 @@ async fn clickhouse_vendor_driver_reads_catalog_and_results() -> IdeResult<()> {
         id: "test".into(),
         name: "ClickHouse JDBC".into(),
         driver: DbDriver::Jdbc,
+        vendor: "clickhouse".into(),
         jdbc_driver: "clickhouse".into(),
         url: format!("jdbc:clickhouse://127.0.0.1:{port}/default"),
         user: "fixture".into(),
@@ -181,6 +220,7 @@ async fn unresponsive_driver_closes_before_reconnect() -> IdeResult<()> {
     db.save_jdbc_driver(DbJdbcDriver {
         id: "fixture".into(),
         name: "Fixture".into(),
+        vendor: None,
         jars: vec![std::env::var("JDBC_FIXTURE_JAR").unwrap()],
         class_name: "ai.openidea.jdbc.SelfTest$Fixture".into(),
         url_template: String::new(),
@@ -229,6 +269,7 @@ async fn a_lost_session_reconnects_on_the_next_statement() -> IdeResult<()> {
     db.save_jdbc_driver(DbJdbcDriver {
         id: "fixture".into(),
         name: "Fixture".into(),
+        vendor: None,
         jars: vec![std::env::var("JDBC_FIXTURE_JAR").unwrap()],
         class_name: "ai.openidea.jdbc.SelfTest$Fixture".into(),
         url_template: String::new(),

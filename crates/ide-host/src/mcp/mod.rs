@@ -16,6 +16,8 @@ mod search;
 pub mod service;
 mod symbols;
 mod tool;
+
+pub(crate) use tool::trusted_attachments;
 mod util;
 
 use crate::Host;
