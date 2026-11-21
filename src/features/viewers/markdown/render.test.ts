@@ -345,6 +345,19 @@ describe("markdown preview rendering", () => {
     expect(previewLineAtOffset([], 50)).toBe(0);
   });
 
+  it("reads only the offsets needed to locate the last block at the viewport top", () => {
+    let reads = 0;
+    const blocks = Array.from({ length: 1024 }, (_, line) => ({
+      line,
+      get top() {
+        reads++;
+        return Math.floor(line / 2) * 20;
+      },
+    }));
+    expect(previewLineAtOffset(blocks, 999)).toBe(101);
+    expect(reads).toBe(10);
+  });
+
   it("renders LaTeX math blocks with source lines and inline math", () => {
     const root = document.createElement("div");
     root.innerHTML = renderMarkdown("# Heading\n\n$$\nx^2 + y^2 = z^2\n$$\n\nInline $a_1 + b_2$.\n");
