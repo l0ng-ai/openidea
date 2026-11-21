@@ -457,6 +457,8 @@ export const commands = {
 	/**  Field watchpoints; states aligned with `breakpoints`. */
 	debugSetDataBreakpoints: (breakpoints: DataBreakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_data_breakpoints", { breakpoints })),
 	debugSetExceptionBreakpoints: (choices: { [key in string]: boolean }) => typedError<null, IdeError>(__TAURI_INVOKE("debug_set_exception_breakpoints", { choices })),
+	/**  Exception breakpoints on chosen classes (all sessions that take them, and later ones). */
+	debugSetExceptionClassBreakpoints: (breakpoints: ExceptionClassBreakpoint[]) => typedError<null, IdeError>(__TAURI_INVOKE("debug_set_exception_class_breakpoints", { breakpoints })),
 	/**  Method breakpoints (all files); states aligned with `breakpoints`. */
 	debugSetFunctionBreakpoints: (breakpoints: FunctionBreakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_function_breakpoints", { breakpoints })),
 	debugSetVariable: (session: DebugSessionId, container: number, name: string, evaluateName: string | null, frameId: number | null, value: string) => typedError<Variable_Serialize, IdeError>(__TAURI_INVOKE("debug_set_variable", { session, container, name, evaluateName, frameId, value })),
@@ -6005,6 +6007,28 @@ export type EventKind = "document-changed" | "websocket-ready" | "file-closed" |
 /**  Problems of the window's files changed (a language server or a report). */
 "problems-changed" | "scheduled";
 
+export type ExceptionClassBreakpoint = {
+	id: string,
+	/**  Fully qualified binary name (`com.acme.Outer$Inner`); its subclasses stop too. */
+	className: string,
+	caught: boolean,
+	uncaught: boolean,
+	enabled: boolean,
+	/**  Patterns (`com.acme.*`, `*Test`, a full name) for the class whose code throws. */
+	classFilters: string[],
+	classExclusionFilters: string[],
+};
+
+/**  What a session's exception class breakpoints can do. */
+export type ExceptionClassSupport = {
+	/**  Whose class names the session takes: `java`. */
+	family: string,
+	condition: boolean,
+	classFilters: boolean,
+	/**  Filters on the class whose code catches the exception. */
+	catchFilters: boolean,
+};
+
 /**  An exception breakpoint filter offered by an adapter (`exceptionBreakpointFilters`). */
 export type ExceptionFilter = {
 	filter: string,
@@ -11345,6 +11369,8 @@ export type SessionExceptionFilters = {
 	session: DebugSessionId,
 	adapter: string,
 	filters: ExceptionFilter[],
+	/**  Set when the session takes exception breakpoints on a chosen class. */
+	classes: ExceptionClassSupport | null,
 };
 
 /**  A live session, as listed by [`DebugManager::sessions`]. */

@@ -187,6 +187,7 @@ debug_sessions                               always             project_host bin
 debug_set_breakpoints                        trusted            project_host bindings async
 debug_set_data_breakpoints                   trusted            project_host bindings async
 debug_set_exception_breakpoints              trusted            project_host bindings async
+debug_set_exception_class_breakpoints        trusted            project_host bindings async
 debug_set_function_breakpoints               trusted            project_host bindings async
 debug_set_variable                           trusted            project_host bindings async
 debug_stack_trace                            trusted            project_host bindings async

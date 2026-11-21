@@ -206,3 +206,19 @@ it("disables dialog entries for a multi-selection", () => {
   expect(one.disabled).toBeFalsy();
   expect(many.disabled).toBe(true);
 });
+
+it("F4 jumps to the source of a provider's node instead of activating it", () => {
+  const jump = vi.fn();
+  const activate = vi.fn();
+  const provider = useServiceProviders.getState().providers.get("test")!;
+  useServiceProviders.setState({
+    providers: new Map([
+      ["test", { ...provider, activate: (item) => activate(item.key), jumpToSource: (item) => jump(item.key) }],
+    ]),
+  });
+  const { tree, row } = setup();
+  fireEvent.mouseDown(row("two"));
+  fireEvent.keyDown(tree, { key: "F4" });
+  expect(jump.mock.calls).toEqual([["two"]]);
+  expect(activate).not.toHaveBeenCalled();
+});

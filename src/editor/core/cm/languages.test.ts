@@ -1,4 +1,6 @@
-import { EditorState } from "@codemirror/state";
+import { EditorSelection, EditorState } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
+import { insertNewlineAndIndent } from "@codemirror/commands";
 import { LanguageDescription, type Language } from "@codemirror/language";
 import { describe, expect, it } from "vitest";
 import { getIndentation } from "@codemirror/language";
@@ -344,6 +346,43 @@ describe("language modes", () => {
     const state = EditorState.create({ doc, extensions: [support!, EditorState.tabSize.of(2)] });
     const indent = (line: number) => getIndentation(state, state.doc.line(line).from);
     expect([2, 3, 4, 5, 6, 7, 9, 10, 12, 13].map(indent)).toEqual([0, 2, 0, 0, 0, 2, 0, 0, 0, 0]);
+  });
+
+  it("keeps an annotation above a declaration on its own indentation after Enter", async () => {
+    const support = await loadSupport(findLanguageDescription("Java", "/p/A.java")!);
+    const enter = (doc: string, at = doc.length) => {
+      const view = new EditorView({
+        state: EditorState.create({
+          doc,
+          selection: EditorSelection.cursor(at),
+          extensions: [support!],
+        }),
+        parent: document.body,
+      });
+      insertNewlineAndIndent(view);
+      const out = view.state.doc.toString();
+      view.destroy();
+      return out;
+    };
+    // An annotation ends the declaration it annotates: the next line keeps its indentation.
+    expect(enter("@RestController")).toBe("@RestController\n");
+    expect(enter("@RestController\npublic class A {}", 15)).toBe("@RestController\n\npublic class A {}");
+    expect(enter('@RequestMapping("/zhyz/zhyzposition")')).toBe('@RequestMapping("/zhyz/zhyzposition")\n');
+    expect(enter('@Api(value = "PositionController", tags = "职位")')).toBe(
+      '@Api(value = "PositionController", tags = "职位")\n',
+    );
+    expect(enter('@Api(\n    value = "x"\n)')).toBe('@Api(\n    value = "x"\n)\n');
+    expect(enter("class A {\n    @Override")).toBe("class A {\n    @Override\n    ");
+    expect(enter("class A {\n    @Override\n    void f() {}\n}", 23)).toBe(
+      "class A {\n    @Override\n    \n    void f() {}\n}",
+    );
+    expect(enter('class A {\n    void f() {\n        @SuppressWarnings("x")')).toBe(
+      'class A {\n    void f() {\n        @SuppressWarnings("x")\n        ',
+    );
+    // An incomplete annotation still continues onto an indented line, and code indents as usual.
+    expect(enter("@Api(")).toBe("@Api(\n  ");
+    expect(enter("class A {\n  void f() {\n    if (x) {")).toBe("class A {\n  void f() {\n    if (x) {\n      ");
+    expect(enter("@interface Foo {")).toBe("@interface Foo {\n  ");
   });
 
   it("colours `this`, `super` and Rust's `self` as keywords", async () => {

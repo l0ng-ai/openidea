@@ -12,6 +12,7 @@ pub mod adapter;
 pub mod attach;
 mod cargo;
 pub mod connection;
+mod exception_classes;
 pub mod jdwp;
 mod js_cdp;
 mod js_debug;
@@ -24,6 +25,7 @@ pub mod unity;
 
 use adapter::{AdapterLauncher, AdapterSpec, ProcessLauncher};
 use connection::{Connection, DapError};
+pub use exception_classes::{ExceptionClassBreakpoint, ExceptionClassSupport};
 use futures::future::join_all;
 use ide_core::{DebugSessionId, IdeError, IdeResult, SharedSink};
 use ide_language::LanguageRegistry;
@@ -283,6 +285,8 @@ pub struct SessionExceptionFilters {
     pub session: DebugSessionId,
     pub adapter: String,
     pub filters: Vec<ExceptionFilter>,
+    /// Set when the session takes exception breakpoints on a chosen class.
+    pub classes: Option<ExceptionClassSupport>,
 }
 
 /// What triggered a hot reload; `flutter debug_adapter` takes it as `reason`.
@@ -336,6 +340,7 @@ pub struct DebugManager {
     states: Mutex<HashMap<PathBuf, Vec<BreakpointState>>>,
     /// Explicit exception filter choices (filter id → enabled); unset filters use the adapter default.
     exception_choices: Mutex<BTreeMap<String, bool>>,
+    exception_classes: Mutex<Vec<ExceptionClassBreakpoint>>,
     function_breakpoints: Mutex<Vec<FunctionBreakpoint>>,
     data_breakpoints: Mutex<Vec<DataBreakpoint>>,
     /// In-flight stops, by session: a second Stop sets `stop_force`, the waiting one kills.
@@ -788,6 +793,7 @@ impl DebugManager {
             breakpoints: Mutex::default(),
             states: Mutex::default(),
             exception_choices: Mutex::default(),
+            exception_classes: Mutex::default(),
             function_breakpoints: Mutex::default(),
             data_breakpoints: Mutex::default(),
             stopping: Mutex::default(),
@@ -836,6 +842,18 @@ impl DebugManager {
         config: LaunchConfig,
         owner: SessionOwner,
         custom_command: impl FnOnce(&str) -> Option<String>,
+    ) -> IdeResult<DebugSessionId> {
+        self.start_with_exception_classes(config, owner, custom_command, None).await
+    }
+
+    /// [`start_with`](Self::start_with), the session arming [`Self::set_exception_class_breakpoints`]
+    /// through `exception_classes`.
+    pub async fn start_with_exception_classes(
+        &self,
+        config: LaunchConfig,
+        owner: SessionOwner,
+        custom_command: impl FnOnce(&str) -> Option<String>,
+        exception_classes: Option<Arc<dyn ide_jvm_inspect::ExceptionClassBreakpoints>>,
     ) -> IdeResult<DebugSessionId> {
         let mut arguments = launch_arguments(&config)?;
         // An IDE-side marker (never sent to the adapter): the session is a Flutter
@@ -977,7 +995,19 @@ impl DebugManager {
             }
         }
         let port = debug_server.map(|s| s.port);
-        self.start_session(id, owner, config.name, config.adapter, None, config.request, arguments, spec, port).await
+        self.start_session(
+            id,
+            owner,
+            config.name,
+            config.adapter,
+            None,
+            config.request,
+            arguments,
+            spec,
+            port,
+            exception_classes,
+        )
+        .await
     }
 
     /// `startDebugging` reverse request: a child session on the same adapter.
@@ -1002,6 +1032,7 @@ impl DebugManager {
             configuration,
             parent.spec.clone(),
             parent.port,
+            None,
         )
         .await
         .map(|_| ())
@@ -1019,6 +1050,7 @@ impl DebugManager {
         arguments: Value,
         spec: AdapterSpec,
         reuse_port: Option<u16>,
+        exception_classes: Option<Arc<dyn ide_jvm_inspect::ExceptionClassBreakpoints>>,
     ) -> IdeResult<DebugSessionId> {
         if request != "launch" && request != "attach" {
             return Err(IdeError::invalid(format!("request must be `launch` or `attach`, got `{request}`")));
@@ -1033,8 +1065,9 @@ impl DebugManager {
         let rdbg_pid = (adapter_name == "rdbg" && request == "launch")
             .then(|| io.child.as_ref().and_then(tokio::process::Child::id))
             .flatten();
-        let session =
-            Arc::new(Session::new(id, owner, name, adapter_name, parent, request, conn, spec, io.port, io.child));
+        let mut session = Session::new(id, owner, name, adapter_name, parent, request, conn, spec, io.port, io.child);
+        session.exception_classes = exception_classes;
+        let session = Arc::new(session);
         if let Some(launch_type) = arguments.get("type").and_then(Value::as_str) {
             let _ = session.launch_type.set(launch_type.to_owned());
         }
@@ -1259,8 +1292,12 @@ impl DebugManager {
             tracing::debug!("setDataBreakpoints failed: {e}");
         }
         let has_filters = s.caps.lock().get("exceptionBreakpointFilters").and_then(Value::as_array).is_some();
-        if has_filters {
-            let _ = self.send_exception_breakpoints(s).await;
+        {
+            let _turn = s.exception_turn.lock().await;
+            if has_filters {
+                let _ = self.send_exception_breakpoints(s).await;
+            }
+            self.arm_exception_classes(s, false).await;
         }
         if s.supports("supportsConfigurationDoneRequest") {
             if s.adapter == kotlin::ADAPTER {
@@ -1481,6 +1518,7 @@ impl DebugManager {
                 session: s.id,
                 adapter: s.adapter.clone(),
                 filters: exception_filters_from(&s.caps.lock()),
+                classes: exception_classes::support(s),
             })
             .collect()
     }
@@ -1496,9 +1534,11 @@ impl DebugManager {
             if exception_filters_from(&s.caps.lock()).is_empty() {
                 continue;
             }
+            let _turn = s.exception_turn.lock().await;
             if let Err(e) = self.send_exception_breakpoints(&s).await {
                 tracing::debug!("setExceptionBreakpoints on session {} failed: {e}", s.id.0);
             }
+            self.arm_exception_classes(&s, false).await;
         }
         Ok(())
     }
