@@ -270,7 +270,7 @@ fn same_window(a: &NSWindow, b: &NSWindow) -> bool {
 
 /// This window's reveal strip, or nothing. Never another window's.
 fn strip_for(window: &NSWindow) -> Option<Retained<NSWindow>> {
-    let Some(mtm) = MainThreadMarker::new() else { return None };
+    let mtm = MainThreadMarker::new()?;
     let frame = window.frame();
     let found = NSApplication::sharedApplication(mtm)
         .windows()
