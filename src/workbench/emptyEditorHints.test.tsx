@@ -12,7 +12,6 @@ const rows = (container: HTMLElement) =>
     keys: row.querySelector("dd")?.textContent,
   }));
 
-// The hint grid has two auto-placed columns; a row missing its key cell pulls the next label into it.
 describe("empty editor hints", () => {
   const { os } = usePlatform.getState();
   const { preset: initialPreset } = useKeymap.getState();
