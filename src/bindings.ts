@@ -1488,6 +1488,8 @@ export const commands = {
 	 *  trusted. Cancellable with `cancel_request(request)`; a failed or cancelled run leaves nothing.
 	 */
 	scaffoldCreate: (req: CreateRequest, request: RequestId, onEvent: Channel<ScaffoldEvent>) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("scaffold_create", { req, request, onEvent })),
+	/**  The first of `base`, `base1`, `base2`, … that names nothing in `location` yet. */
+	scaffoldFreeName: (location: string, base: string) => typedError<string, IdeError>(__TAURI_INVOKE("scaffold_free_name", { location, base })),
 	/**
 	 *  The fields a generator's project service adds for `values`; cancellable with
 	 *  `cancel_request(request)`.
@@ -1495,6 +1497,11 @@ export const commands = {
 	scaffoldOptions: (generator: string, values: { [key in string]: string }, request: RequestId) => typedError<Field[], IdeError>(__TAURI_INVOKE("scaffold_options", { generator, values, request })),
 	/**  The programs a generator needs for `values`, and whether they are installed. */
 	scaffoldRequirements: (generator: string, values: { [key in string]: string }) => typedError<Requirement[], IdeError>(__TAURI_INVOKE("scaffold_requirements", { generator, values })),
+	/**
+	 *  Whether a project named `name` cannot be created in `location`: something other than an
+	 *  empty folder is already there.
+	 */
+	scaffoldTargetTaken: (location: string, name: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("scaffold_target_taken", { location, name })),
 	scopeFiles: (pattern: string, limit: number) => typedError<ScopeFiles, IdeError>(__TAURI_INVOKE("scope_files", { pattern, limit })),
 	/**  The project interpreter when it is a Docker or Compose run target's, with its snapshot. */
 	sdkContainerPython: () => typedError<{
