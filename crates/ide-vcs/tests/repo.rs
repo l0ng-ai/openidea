@@ -2288,3 +2288,30 @@ fn status_from_the_git_command_line_matches_the_in_process_one() {
     assert_eq!(from_git, in_process);
     assert_eq!(from_git.len(), 4, "{from_git:#?}");
 }
+
+#[test]
+fn a_worktree_diff_refreshing_the_index_is_not_reported_as_a_repository_change() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "a\n");
+    fx.write("b.txt", "b\n");
+    fx.git(&["add", "."]);
+    fx.git(&["commit", "-qm", "init"]);
+    let base = fx.git(&["rev-parse", "HEAD"]);
+    let index = fx.dir.join(".git/index");
+    let backdate = |rel: &str| {
+        let file = std::fs::File::options().write(true).open(fx.dir.join(rel)).unwrap();
+        file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(100)).unwrap();
+    };
+    // Same content, stale stat data: `git diff` refreshes and rewrites the index while reading.
+    backdate("a.txt");
+    let before = std::fs::read(&index).unwrap();
+    let repo = fx.repo();
+    assert!(repo.numstat_with_worktree(&base).unwrap().is_empty());
+    assert_ne!(std::fs::read(&index).unwrap(), before, "git rewrote the index");
+    assert!(is_own_index_write(&index));
+
+    // A write by someone else is still a change.
+    fx.write("b.txt", "changed\n");
+    fx.git(&["add", "b.txt"]);
+    assert!(!is_own_index_write(&index));
+}
