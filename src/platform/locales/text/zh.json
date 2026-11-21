@@ -8212,6 +8212,8 @@
   "The user's default role when empty": "留空则使用用户的默认角色",
   "Token:": "令牌：",
   "Simultaneous <tag></tag> editing": "同时编辑 <tag></tag>",
+  "Move ';' typed before ')' to the end of the statement": "在 ')' 前输入的 ';' 移到语句末尾",
+  "In foo(bar|), typing ; gives foo(bar);|. Only when nothing but ) follows the caret; not in for headers, strings or comments.": "在 foo(bar|) 中输入 ; 会得到 foo(bar);|。仅当光标后只剩 ) 时生效；for 语句头、字符串和注释中不生效。",
   "Single sign-on (web browser)": "单点登录（网页浏览器）",
   "Opens your web browser to sign in with your identity provider when connecting.": "连接时打开网页浏览器，通过身份提供方登录。",
   "Execute Script": "执行脚本",

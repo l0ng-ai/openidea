@@ -11663,6 +11663,8 @@ export type SmartKeysSettings = {
 	pairQuotes?: boolean,
 	surroundSelection?: boolean,
 	tabOutOfPair?: boolean,
+	/**  A `;` typed before the closing `)` of a statement goes to the end of the statement. */
+	semicolonAtStatementEnd?: boolean,
 	/**  Simultaneous `<tag></tag>` editing: renaming a tag renames its matching tag. */
 	simultaneousTagEditing?: boolean,
 	/**  Reformat on paste: `none` | `indentBlock` | `indentEachLine`. */
