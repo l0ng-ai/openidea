@@ -42,7 +42,8 @@ export function scrollbarThumb(
   minThumb = MIN_THUMB,
 ): { top: number; bottom: number } | null {
   const max = scrollHeight - clientHeight;
-  if (max <= 0 || clientHeight <= 0) return null;
+  // WebKit can report 1px of overflow from rounding when the horizontal scrollbar is present.
+  if (max <= 1 || clientHeight <= 0) return null;
   const length = Math.min(clientHeight, Math.max(minThumb, (clientHeight * clientHeight) / scrollHeight));
   const top = (Math.min(Math.max(scrollTop, 0), max) / max) * (clientHeight - length);
   return { top, bottom: top + length };

@@ -62,6 +62,14 @@ async function askServer(view: EditorView, signal?: AbortSignal, only?: string[]
   }
 }
 
+/** typescript-language-server returns refactorings only when `only` names `refactor` itself. */
+const WHOLE_REFACTOR_KIND = new Set(["javascript", "javascriptreact", "typescript", "typescriptreact"]);
+
+/** The code action kind to ask `language`'s server for, to get the refactorings of `kind`. */
+export function requestKind(kind: string, language: string): string {
+  return WHOLE_REFACTOR_KIND.has(language) && kind.startsWith("refactor.") ? "refactor" : kind;
+}
+
 /** Server actions per IDEA refactoring, plus the unmapped refactorings (by title). */
 export function groupActions(actions: readonly CodeAction[]): {
   mapped: Map<RefactoringId, CodeAction[]>;
@@ -173,7 +181,7 @@ export async function runRefactoring(view: EditorView, id: RefactoringId): Promi
   const state = view.state;
   let answer: ServerAnswer;
   try {
-    answer = await askServer(view, run.signal, r.kind ? [r.kind] : undefined);
+    answer = await askServer(view, run.signal, r.kind ? [requestKind(r.kind, ctx.language)] : undefined);
   } catch (e) {
     if (isCancelled(e)) return;
     throw e;
