@@ -1778,6 +1778,8 @@
   "The user's default role when empty": "The user's default role when empty",
   "Token:": "Token:",
   "Simultaneous <tag></tag> editing": "Simultaneous <tag></tag> editing",
+  "Move ';' typed before ')' to the end of the statement": "Move ';' typed before ')' to the end of the statement",
+  "In foo(bar|), typing ; gives foo(bar);|. Only when nothing but ) follows the caret; not in for headers, strings or comments.": "In foo(bar|), typing ; gives foo(bar);|. Only when nothing but ) follows the caret; not in for headers, strings or comments.",
   "Single sign-on (web browser)": "Single sign-on (web browser)",
   "Opens your web browser to sign in with your identity provider when connecting.": "Opens your web browser to sign in with your identity provider when connecting.",
   "Execute Script": "Execute Script",

@@ -3,6 +3,7 @@ import { EditorSelection, EditorState, type Extension } from "@codemirror/state"
 import { EditorView } from "@codemirror/view";
 import { indentService, indentUnit, LanguageSupport, StreamLanguage } from "@codemirror/language";
 import { closeBrackets, insertBracket } from "@codemirror/autocomplete";
+import { history, undo } from "@codemirror/commands";
 import { java } from "@codemirror/lang-java";
 import { javascript } from "@codemirror/lang-javascript";
 import { languages as cmLanguages } from "@codemirror/language-data";
@@ -333,5 +334,144 @@ describe("smart angle brackets", () => {
     // Once out, Tab inserts whitespace again.
     insertTab(v);
     expect(show(v)).toBe("class A {\n  java.util.List<>  |\n}");
+  });
+});
+
+describe("semicolon at statement end", () => {
+  const prefs = (language: string | undefined, smartKeys: Record<string, unknown> = {}) =>
+    prefsExtension({
+      prefs: validateEditorExtras({ smartKeys }),
+      path: "",
+      softWrap: false,
+      showWhitespace: false,
+      hardWrapAt: 120,
+      readOnly: false,
+      language,
+    });
+
+  const type = (v: EditorView, ch: string) => {
+    const r = v.state.selection.main;
+    const insert = () => v.state.update(v.state.replaceSelection(ch), { userEvent: "input.type" });
+    if (!v.state.facet(EditorView.inputHandler).some((h) => h(v, r.from, r.to, ch, insert)))
+      v.dispatch(v.state.replaceSelection(ch), { userEvent: "input.type" });
+  };
+
+  const JAVA = java();
+  const JS = javascript();
+  const CSHARP = StreamLanguage.define(interpolationParser(csharp, "C#"));
+  /** A Java statement inside a method body. */
+  const inJava = (body: string) => `class A {\n  void f() {\n    ${body}\n  }\n}`;
+
+  const semi = (language: string | undefined, support: Extension, text: string, expected: string, keys = {}) => {
+    const v = make(text, [support, prefs(language, keys)]);
+    type(v, ";");
+    expect(show(v)).toBe(expected);
+  };
+  const stmt = (body: string, expected: string) => semi("java", JAVA, inJava(body), inJava(expected));
+
+  it("moves ; typed before the closing parenthesis to the end of the statement", () => {
+    stmt('System.out.println("hello world"|)', 'System.out.println("hello world");|');
+    stmt("foo(|)", "foo();|");
+    stmt("int n = size(list|)", "int n = size(list);|");
+    stmt("return compute(a, b|)", "return compute(a, b);|");
+  });
+
+  it("steps over every closing parenthesis of nested calls", () => {
+    stmt("foo(bar(baz|))", "foo(bar(baz));|");
+    stmt("foo(bar(baz)|)", "foo(bar(baz));|");
+    stmt("list.forEach(x -> use(x|))", "list.forEach(x -> use(x));|");
+  });
+
+  it("puts ; right after the parenthesis, before trailing whitespace", () => {
+    stmt("foo(x|)   ", "foo(x);|   ");
+  });
+
+  it("completes a call whose arguments span lines", () => {
+    stmt("foo(a,\n        b|)", "foo(a,\n        b);|");
+  });
+
+  it("completes a do-while condition", () => {
+    stmt("do {\n    } while (more(|))", "do {\n    } while (more());|");
+  });
+
+  it("works in JavaScript and TypeScript", () => {
+    semi("javascript", JS, "console.log(x|)", "console.log(x);|");
+    semi("typescript", javascript({ typescript: true }), "const n: number = f(a|)", "const n: number = f(a);|");
+  });
+
+  it("works with stream parsers and without a syntax tree", () => {
+    semi("csharp", CSHARP, "Console.WriteLine(x|)", "Console.WriteLine(x);|");
+    semi("c", [], 'printf("%d", n|)', 'printf("%d", n);|');
+  });
+
+  it("types a plain ; in comments, literals and directives without a Lezer tree", () => {
+    const lineComments = EditorState.languageData.of(() => [{ commentTokens: { line: "//" } }]);
+    semi("c", lineComments, "f(); // call(x|)", "f(); // call(x;|)");
+    semi("c", [], "#define CALL(x|)", "#define CALL(x;|)");
+    semi("c", [], " * call(x|)", " * call(x;|)");
+    semi("java", [], "@Deprecated(x|)", "@Deprecated(x;|)");
+    semi("csharp", CSHARP, 'var s = @"call(x|)\n";', 'var s = @"call(x;|)\n";');
+  });
+
+  it("types a plain ; at the end of the line or before other code", () => {
+    stmt("foo(x)|", "foo(x);|");
+    stmt("foo(x|);", "foo(x;|);");
+    stmt("foo(a|, b)", "foo(a;|, b)");
+    stmt("foo(x|) + 1", "foo(x;|) + 1");
+    stmt("foo(x|) // note", "foo(x;|) // note");
+  });
+
+  it("types a plain ; in strings and comments", () => {
+    stmt("// call(x|)", "// call(x;|)");
+    semi("java", JAVA, "class A {\n  /**\n   * call(x|)\n   */\n}", "class A {\n  /**\n   * call(x;|)\n   */\n}");
+    semi("javascript", JS, "const s = `call(x|)\n`", "const s = `call(x;|)\n`");
+  });
+
+  it("types a plain ; in for headers, try-with-resources and other control statements", () => {
+    stmt("for (int i = 0|)", "for (int i = 0;|)");
+    stmt("for (int i = size(a|))", "for (int i = size(a;|))");
+    stmt("try (var r = open(path|))", "try (var r = open(path;|))");
+    stmt("if (ready(x|))", "if (ready(x;|))");
+    stmt("} else if (ready(x|))", "} else if (ready(x;|))");
+    stmt("while (next(|))", "while (next(;|))");
+    stmt("switch (kind(x|))", "switch (kind(x;|))");
+    stmt("synchronized (lock(|))", "synchronized (lock(;|))");
+  });
+
+  it("types a plain ; in declarations and annotations", () => {
+    semi("java", JAVA, "class A {\n  void run(int a|)\n  {\n  }\n}", "class A {\n  void run(int a;|)\n  {\n  }\n}");
+    semi(
+      "java",
+      JAVA,
+      "class A {\n  @SuppressWarnings(x|)\n  void f() {}\n}",
+      "class A {\n  @SuppressWarnings(x;|)\n  void f() {}\n}",
+    );
+    semi("javascript", JS, "function f(a|)", "function f(a;|)");
+  });
+
+  it("types a plain ; when the statement continues on the next line", () => {
+    stmt("builder.add(x|)\n        .build();", "builder.add(x;|)\n        .build();");
+    stmt("boolean ok = check(a|)\n        && check(b);", "boolean ok = check(a;|)\n        && check(b);");
+  });
+
+  it("only applies to languages that end statements with ;", () => {
+    semi("python", [], "print(x|)", "print(x;|)");
+  });
+
+  it("is off when the Smart Keys option is cleared", () => {
+    semi("java", JAVA, inJava("foo(x|)"), inJava("foo(x;|)"), { semicolonAtStatementEnd: false });
+  });
+
+  it("moves ; for every caret", () => {
+    const v = make(inJava("foo(a|)\n    bar(b|)"), [JAVA, prefs("java")]);
+    type(v, ";");
+    expect(show(v)).toBe(inJava("foo(a);|\n    bar(b);|"));
+  });
+
+  it("is one undoable step", () => {
+    const v = make(inJava("foo(x|)"), [JAVA, prefs("java"), history()]);
+    type(v, ";");
+    undo(v);
+    expect(show(v)).toBe(inJava("foo(x|)"));
   });
 });
