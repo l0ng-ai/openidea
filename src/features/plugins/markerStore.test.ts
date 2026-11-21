@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { watchPluginMarkers, usePluginMarkers, invalidatePluginMarkers } from "./markerStore";
-import { invalidateNavigationProviders } from "@/editor/navigationProviders";
+import { invalidateNavigationProviders } from "@/editor/api";
 const mock = vi.hoisted(() => vi.fn());
 vi.mock("@/platform/ipc", async (original) => ({
   ...(await original<typeof import("@/platform/ipc")>()),

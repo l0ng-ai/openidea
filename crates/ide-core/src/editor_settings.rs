@@ -438,6 +438,9 @@ pub struct TextAttributesOverride {
     pub effect: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effect_color: Option<String>,
+    /// IDEA's `ERROR_STRIPE_COLOR`: the diff overview-lane marker of a change type.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_stripe_color: Option<String>,
 }
 
 /// Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit).
