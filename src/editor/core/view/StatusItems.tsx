@@ -297,9 +297,8 @@ export function Breadcrumbs({ className, inStatusBar = false }: { className?: st
   const path = lead?.path ?? activeTabPath ?? statusPath;
   const currentProject = useProject((s) => s.project);
   const project = projectFolder(currentProject, path ?? "");
-  const language = useDocMeta((s) => (path ? s[path]?.language : undefined));
   const outline = useOutline((s) => (path ? s[path] : undefined));
-  const chain = useCaretSymbols(language === "markdown" ? null : path, outline) ?? NO_SYMBOLS;
+  const chain = useCaretSymbols(path, outline) ?? NO_SYMBOLS;
   const position = useProject((s) => s.settings?.appearance?.navigationBar);
   // The status bar is the default (where the bar lived before the three-state
   // choice), so the footer instance shows unless the user moved the bar to the
@@ -363,7 +362,6 @@ export function CodeBreadcrumbs({
   if (
     !prefs.show ||
     prefs.placement !== position ||
-    language === "markdown" ||
     (language && prefs.disabledLanguages.includes(language)) ||
     !chain.length
   )

@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { OutlineItem, Settings } from "@/platform/ipc";
 import type { EditorStatus } from "../controller";
-import type { DocMeta } from "../model/document";
 
 vi.mock("../controller", async () => {
   const { create } = await import("zustand");
@@ -17,7 +16,7 @@ vi.mock("../controller", async () => {
 });
 
 const { useEditorStatus, useTabs } = await import("../controller");
-const { useDocMeta, useOutline } = await import("../model/document");
+const { useOutline } = await import("../model/document");
 const { useProject } = await import("@/platform/project");
 const { clearProjectViewLead, setProjectViewLead } = await import("@/workbench/contributions");
 const { Breadcrumbs, CodeBreadcrumbs } = await import("./StatusItems");
@@ -120,36 +119,6 @@ it("shows the member and its directories in workspace breadcrumbs", async () => 
   expect(screen.getByRole("navigation", { name: "Breadcrumbs" }).textContent).toBe("bsrcfile.ts");
   view.unmount();
   useProject.setState({ project: null });
-});
-
-it("keeps the Markdown file path but omits its headings from both breadcrumb bars", () => {
-  const path = "/p/paper.md";
-  const metadata = useDocMeta.getState();
-  const outline = useOutline.getState();
-  const status = useEditorStatus.getState();
-  const settings = useProject.getState().settings;
-  useDocMeta.setState({ [path]: { language: "markdown" } as DocMeta });
-  useOutline.setState({ [path]: [item("Paper title", 0, 10)] });
-  useEditorStatus.setState({ status: { ...caret(2, 0), path } });
-  useProject.setState({ settings: null });
-  const view = render(
-    <>
-      <Breadcrumbs inStatusBar />
-      <CodeBreadcrumbs path={path} tabId="paper" position="bottom" />
-    </>,
-  );
-  try {
-    const pathBar = screen.getByRole("navigation", { name: /^Breadcrumbs$/ });
-    expect(pathBar).toHaveTextContent("paper.md");
-    expect(pathBar).not.toHaveTextContent("Paper title");
-    expect(screen.queryByRole("navigation", { name: "Code breadcrumbs" })).toBeNull();
-  } finally {
-    view.unmount();
-    useDocMeta.setState(metadata, true);
-    useOutline.setState(outline, true);
-    useEditorStatus.setState(status);
-    useProject.setState({ settings });
-  }
 });
 
 it("keeps the top bar on the project node when no editor is active", async () => {
