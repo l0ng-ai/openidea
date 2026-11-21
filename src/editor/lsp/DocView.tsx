@@ -2,12 +2,13 @@
  * The documentation view with its history toolbar, as IDEA's one documentation
  * component: the F1 popup, the hover and the Documentation tool window show it.
  */
-import { useLayoutEffect, useRef, type KeyboardEvent } from "react";
+import { useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import clsx from "clsx";
 import { useStore } from "zustand";
-import { IconButton, selectableText } from "@/ui";
+import { IconButton, Menu, selectableText } from "@/ui";
+import { useTx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
 import {
   docLinkHandler,
@@ -40,8 +41,13 @@ export function DomContent({ build, className }: { build: () => HTMLElement; cla
 
 export function DocView({ host, history, themeClasses }: { host: DocHost; history: DocHistory; themeClasses: string }) {
   const entry = history.entries[history.index];
+  const tx = useTx();
+  const moreButton = useRef<HTMLButtonElement>(null);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const atStart = history.index === 0;
+  const atEnd = history.index >= history.entries.length - 1;
   const onKeyDown = (e: KeyboardEvent) => {
-    if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+    if (!e.currentTarget.contains(e.target as Node) || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
     if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
       e.preventDefault();
       docStep(host, e.key === "ArrowLeft" ? -1 : 1);
@@ -69,23 +75,27 @@ export function DocView({ host, history, themeClasses }: { host: DocHost; histor
         />
       )}
       <div className={styles.docToolbar}>
-        <IconButton
-          icon="arrow-left"
-          size="small"
-          title="Back"
-          shortcut="←"
-          disabled={history.index === 0}
-          onClick={() => docStep(host, -1)}
-        />
-        <IconButton
-          icon="arrow-right"
-          size="small"
-          title="Forward"
-          shortcut="→"
-          disabled={history.index >= history.entries.length - 1}
-          onClick={() => docStep(host, 1)}
-        />
-        <span className={styles.spacer} />
+        {host !== "popup" && (
+          <>
+            <IconButton
+              icon="arrow-left"
+              size="small"
+              title="Back"
+              shortcut="←"
+              disabled={atStart}
+              onClick={() => docStep(host, -1)}
+            />
+            <IconButton
+              icon="arrow-right"
+              size="small"
+              title="Forward"
+              shortcut="→"
+              disabled={atEnd}
+              onClick={() => docStep(host, 1)}
+            />
+            <span className={styles.spacer} />
+          </>
+        )}
         {entry?.source && (
           <IconButton
             icon="edit"
@@ -95,15 +105,56 @@ export function DocView({ host, history, themeClasses }: { host: DocHost; histor
             onClick={() => void editDocSource(host)}
           />
         )}
-        {host !== "window" && (
+        {host === "popup" ? (
+          <>
+            <IconButton
+              ref={moreButton}
+              icon="more-horizontal"
+              size="small"
+              title="More Actions"
+              aria-haspopup="menu"
+              aria-expanded={moreOpen}
+              onClick={() => setMoreOpen((open) => !open)}
+            />
+            <Menu
+              open={moreOpen}
+              onClose={() => setMoreOpen(false)}
+              anchor={moreButton}
+              placement="bottom-end"
+              aria-label={tx("More Actions")}
+              items={[
+                {
+                  label: "Show in Documentation Tool Window",
+                  icon: "open-in-tool-window",
+                  shortcut: shortcutLabel("code.quickDocumentation") || undefined,
+                  run: () => moveDocPopupToWindow(host),
+                },
+                { kind: "separator" },
+                {
+                  label: "Back",
+                  icon: "arrow-left",
+                  shortcut: "←",
+                  disabled: atStart,
+                  run: () => docStep(host, -1),
+                },
+                {
+                  label: "Forward",
+                  icon: "arrow-right",
+                  shortcut: "→",
+                  disabled: atEnd,
+                  run: () => docStep(host, 1),
+                },
+              ]}
+            />
+          </>
+        ) : host !== "window" ? (
           <IconButton
             icon="open-in-tool-window"
             size="small"
             title="Show in Documentation Tool Window"
-            shortcut={(host === "popup" && shortcutLabel("code.quickDocumentation")) || undefined}
             onClick={() => moveDocPopupToWindow(host)}
           />
-        )}
+        ) : null}
       </div>
     </div>
   );
