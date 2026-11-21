@@ -12609,6 +12609,8 @@ export type VcsMappings = {
 export type VcsRoot = {
 	/**  Worktree root. */
 	root: IpcPath,
+	/**  Root representing all mapped worktrees of the same Git repository in branch lists. */
+	branchRoot: IpcPath,
 	/**  Merge / rebase / cherry-pick / revert in progress. */
 	operation: string | null,
 	/**  Current branch; `None` when HEAD is detached (or unreadable). */
