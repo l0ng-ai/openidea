@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { codeLenses } from "@/editor/api";
+import { codeLenses, setLibraryRoots } from "@/editor/api";
 const ipc = vi.hoisted(() => ({
   lspCodeLens: vi.fn(),
   lspExecuteCommand: vi.fn(async () => ({ status: "ok", data: null })),
@@ -39,6 +39,27 @@ it("renders LSP and plugin lens commands in the shared facet and invokes their c
   expect(lenses.map((l) => l.title)).toEqual(["Run fixture"]);
   lenses[0]!.run!(view, new MouseEvent("click"));
   expect(ipc.lspExecuteCommand).toHaveBeenCalledWith(1, command);
+});
+
+it("asks nothing in library sources, where resolving a lens searches the whole project", async () => {
+  vi.useFakeTimers();
+  const off = setLibraryRoots("test", ["/venv/site-packages"]);
+  try {
+    for (const ctx of [
+      { doc: 1, path: "/venv/site-packages/m/a.ts", language: "typescript", uiMode: null, readOnly: true },
+      { doc: 2, path: "jdt://contents/A.class", language: "java", uiMode: null, readOnly: true, virtual: true },
+    ]) {
+      const view = new EditorView({
+        state: EditorState.create({ doc: "x", extensions: serverCodeLenses(ctx) }),
+        parent: document.body,
+      });
+      views.push(view);
+    }
+    await vi.advanceTimersByTimeAsync(400);
+    expect(ipc.lspCodeLens).not.toHaveBeenCalled();
+  } finally {
+    off();
+  }
 });
 
 it("keeps mapped lenses across edits instead of clearing them (#2710)", async () => {

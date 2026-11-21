@@ -13,11 +13,12 @@
  * The cache outlives the editor view (switching tabs remounts it) until other
  * files change or a language server settles: on some servers (jdtls) every
  * implementation search walks the whole workspace, so asking again is costly.
+ * Library sources ask no inheritors from the server (`isLibrarySource`).
  */
 import { RangeSet, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { iconAreaSource, mapLineStart } from "@/editor/core/cm/iconArea";
-import { shownAgain, type EditorDocContext } from "@/editor/api";
+import { isLibrarySource, shownAgain, type EditorDocContext } from "@/editor/api";
 import { docOf, debounce, isUnavailable, lspRequest } from "@/editor/lsp/lsp";
 import { featureBackoff, onServerSettled } from "@/editor/lsp/availability";
 import { readManyFileLines, withDocument } from "@/editor/lsp/files";
@@ -736,14 +737,24 @@ class MarkersPlugin {
 }
 
 /** LSP access for one pass: this document's outline as known, others' opened on demand, each asked once. */
-function markerDeps(ctx: EditorDocContext, items: OutlineItem[], request: RequestId, cache: MarkerCache): MarkerDeps {
+export function markerDeps(
+  ctx: EditorDocContext,
+  items: OutlineItem[],
+  request: RequestId,
+  cache: MarkerCache,
+): MarkerDeps {
   const supertypes = new Map<string, Promise<HierarchyItem[]>>();
   const subtypes = new Map<string, Promise<HierarchyItem[]>>();
   const outlines = new Map<string, Promise<OutlineItem[]>>([[ctx.path, Promise.resolve(items)]]);
   const hierarchy = (doc: number, pos: Pos, direction: "incoming" | "outgoing") =>
     lspRequest(() => commands.lspTypeHierarchy(doc, pos, direction));
+  // In a library the server would search the whole project for each declaration's inheritors;
+  // ↓ there comes from the Python inheritance graph only, ↑ (supertypes) stays.
+  const library = isLibrarySource(ctx);
   return {
-    implementations: (positions) => lspRequest(() => commands.lspImplementations(request, ctx.doc, positions)),
+    implementations: library
+      ? async (positions) => positions.map(() => [])
+      : (positions) => lspRequest(() => commands.lspImplementations(request, ctx.doc, positions)),
     supers: {
       supertypes: (path, pos) => {
         const key = `${path}:${pos.line}:${pos.col}`;
@@ -761,18 +772,20 @@ function markerDeps(ctx: EditorDocContext, items: OutlineItem[], request: Reques
         }
         return p;
       },
-      subtypes: (path, pos) => {
-        const key = `${path}:${pos.line}:${pos.col}`;
-        let p = subtypes.get(key);
-        if (!p) {
-          p =
-            path === ctx.path
-              ? hierarchy(ctx.doc, pos, "outgoing")
-              : withDocument(path, (doc) => hierarchy(doc, pos, "outgoing"));
-          subtypes.set(key, p);
-        }
-        return p;
-      },
+      subtypes: library
+        ? undefined
+        : (path, pos) => {
+            const key = `${path}:${pos.line}:${pos.col}`;
+            let p = subtypes.get(key);
+            if (!p) {
+              p =
+                path === ctx.path
+                  ? hierarchy(ctx.doc, pos, "outgoing")
+                  : withDocument(path, (doc) => hierarchy(doc, pos, "outgoing"));
+              subtypes.set(key, p);
+            }
+            return p;
+          },
       outline: (path) => {
         let p = outlines.get(path);
         if (!p) outlines.set(path, (p = withDocument(path, (doc) => lspRequest(() => commands.docOutline(doc)))));

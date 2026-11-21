@@ -30,12 +30,14 @@ import {
   enabledGroups,
   fillMarkers,
   markerBatches,
+  markerDeps,
   markersOf,
   noteOtherChanges,
   openMarkerTargets,
   type MarkerDeps,
 } from "./implementationGutter";
 import { importBindings } from "./inheritanceGraph";
+import { setLibraryRoots } from "@/editor/api";
 
 const ALL = enabledGroups({ showGutterIcons: true, gutterIconsDisabled: [] });
 
@@ -486,6 +488,29 @@ describe("settings", () => {
       "inheritors",
     ]);
     expect(enabledGroups({ showGutterIcons: false, gutterIconsDisabled: [] }).size).toBe(0);
+  });
+});
+
+describe("library sources", () => {
+  it("ask the server for no inheritors, which would search the whole project per declaration", async () => {
+    const off = setLibraryRoots("test", ["/venv/site-packages"]);
+    const ctx = { doc: 1, path: "/p/a.py", language: "python", uiMode: null, readOnly: false };
+    try {
+      for (const library of [
+        { ...ctx, path: "/venv/site-packages/m/a.py", readOnly: true },
+        { ...ctx, path: "jdt://contents/A.class", virtual: true },
+      ]) {
+        const deps = markerDeps(library, [], 1, emptyCache());
+        expect(await deps.implementations([{ line: 0, col: 4 }])).toEqual([[]]);
+        expect(deps.supers.subtypes).toBeUndefined();
+      }
+      // The project's own files still ask (no server in tests: unavailable).
+      const own = markerDeps(ctx, [], 1, emptyCache());
+      await expect(own.implementations([{ line: 0, col: 4 }])).rejects.toMatchObject({ kind: "unavailable" });
+      expect(own.supers.subtypes).toBeDefined();
+    } finally {
+      off();
+    }
   });
 });
 
