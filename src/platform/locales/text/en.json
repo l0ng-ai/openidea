@@ -2964,5 +2964,8 @@
   "Decorator": "Decorator",
   "Literal keyword": "Literal keyword",
   "Predefined type": "Predefined type",
-  "Predefined function": "Predefined function"
+  "Predefined function": "Predefined function",
+  "Extension function call": "Extension function call",
+  "Package-level function call": "Package-level function call",
+  "Enum entry": "Enum entry"
 }

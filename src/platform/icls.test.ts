@@ -164,6 +164,21 @@ describe(".icls schemes", () => {
     expect([applied, skipped]).toEqual([16, 2]);
   });
 
+  it("imports IntelliJ's Kotlin call and enum entry keys into their own entries (#4059)", () => {
+    const opt = (name: string, value: string, font = "0") =>
+      `<option name="${name}"><value><option name="FOREGROUND" value="${value}"/><option name="FONT_TYPE" value="${font}"/></value></option>`;
+    const { scheme } = parseIcls(
+      `<scheme name="K"><attributes>${opt("KOTLIN_FUNCTION_CALL", "bcbec4")}${opt(
+        "KOTLIN_EXTENSION_FUNCTION_CALL",
+        "56a8f5",
+      )}${opt("KOTLIN_PACKAGE_FUNCTION_CALL", "57aaf7", "2")}${opt("KOTLIN_ENUM_ENTRY", "c77dbb", "2")}</attributes></scheme>`,
+    );
+    expect(scheme.attributes["kotlin.functionCall"]?.foreground).toBe("#bcbec4");
+    expect(scheme.attributes["kotlin.extensionCall"]?.foreground).toBe("#56a8f5");
+    expect(scheme.attributes["kotlin.packageCall"]).toEqual({ foreground: "#57aaf7", bold: false, italic: true });
+    expect(scheme.attributes["kotlin.enumEntry"]).toEqual({ foreground: "#c77dbb", bold: false, italic: true });
+  });
+
   it("maps WebStorm's JavaScript and TypeScript keys to their page, TypeScript first, then JavaScript", () => {
     const { scheme, applied, skipped } = parseIcls(fixture("webstorm-darcula"));
     const fg = (id: string) => scheme.attributes[id]?.foreground;

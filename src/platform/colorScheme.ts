@@ -432,6 +432,18 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
     }),
     language: JS,
   },
+  // IntelliJ's Kotlin page: calls of top-level functions, and enum entries (IntelliJ falls back to
+  // static method and static field, which are a function call and a constant here).
+  ...(
+    [
+      ["extensionCall", "Identifiers › Extension function call", "kotlin-extension-call", "function-call"],
+      ["packageCall", "Identifiers › Package-level function call", "kotlin-package-call", "function-call"],
+      ["enumEntry", "Classes › Enum entry", "kotlin-enum-entry", "constant"],
+    ] as const
+  ).map(([id, name, token, inherit]) => ({
+    ...syn(`kotlin.${id}`, name, ["Kotlin"], token, { inherit, defaultItalic: id === "enumEntry" }),
+    language: "Kotlin",
+  })),
   ...[
     ["brackets", "Brackets", "bracket"],
     ["separator", "Comma and semicolon", "separator"],
