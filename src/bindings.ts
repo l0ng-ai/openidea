@@ -8613,8 +8613,11 @@ export type MarkdownCommandDirectory =
 /**  The Markdown file's parent folder. */
 "file";
 
+export type MarkdownPreviewLayout = "sideBySide" | "stacked";
+
 /**  Languages & Frameworks › Markdown. Like IDEA's, it is application-level only. */
 export type MarkdownSettings = {
+	previewLayout?: MarkdownPreviewLayout,
 	/**  Preview (and notebook Markdown cell) font size in px; unset follows the editor font size. */
 	previewFontSize?: number | null,
 	/**
