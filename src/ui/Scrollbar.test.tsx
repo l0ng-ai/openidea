@@ -43,4 +43,25 @@ describe("Scrollbar", () => {
     expect(onScroll).toHaveBeenCalledTimes(1);
     expect(onScroll).toHaveBeenLastCalledWith(top);
   });
+
+  it.each([
+    [318, 318, false],
+    // WebKit after a splitter drag: one commit row, scrollHeight a pixel over the viewport.
+    [318, 319, false],
+    [318, 320, true],
+    [100, 1000, true],
+  ])("shows the track for clientHeight %i and scrollHeight %i: %s", (clientHeight, scrollHeight, shown) => {
+    const { getByTestId, container } = render(<Harness onScroll={() => {}} />);
+    const scroller = getByTestId("scroller");
+    Object.defineProperties(scroller, {
+      clientHeight: { value: clientHeight },
+      scrollHeight: { value: scrollHeight },
+      scrollTop: { value: 0 },
+    });
+    act(() => {
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    const track = container.querySelector<HTMLElement>("[aria-hidden]")!;
+    expect(track.style.display !== "none").toBe(shown);
+  });
 });

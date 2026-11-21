@@ -60,7 +60,6 @@ const introduceFallback = vi.fn(async () => true);
 vi.mock("./introduce", () => ({
   introduceFallback,
   expressionCandidates: (_doc: unknown, at: { candidates?: unknown[] }) => at.candidates ?? [],
-  expressionPreview: (text: string) => text,
 }));
 const safeDelete = vi.fn();
 vi.mock("./safeDelete", () => ({ safeDelete }));
