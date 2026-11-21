@@ -140,8 +140,8 @@ describe("in-place rename edits elsewhere", () => {
       dialog: vi.fn(),
     });
     const item = (name: string) =>
-      [...view.dom.querySelectorAll<HTMLElement>(".cm-lsp-inplace-suggestions li")].find(
-        (li) => li.textContent === name,
+      [...view.dom.querySelectorAll<HTMLButtonElement>(".cm-lsp-inplace-suggestions button")].find(
+        (button) => button.textContent === name,
       )!;
     item("total").dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, detail: 1 }));
     expect(view.state.doc.toString()).toBe("let total = 1; total + foo;");
