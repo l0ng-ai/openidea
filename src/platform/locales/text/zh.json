@@ -3044,6 +3044,8 @@
   "Tabs and Indents": "制表符和缩进",
   "Tag": "标签",
   "Tag name:": "标签名称：",
+  "Current branch:": "当前分支：",
+  "Detached HEAD": "分离的 HEAD",
   "Tag value": "标签值",
   "Tags to push": "要推送的标签",
   "Target changelist": "目标更改列表",

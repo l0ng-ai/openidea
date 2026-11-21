@@ -4,7 +4,7 @@ import { commitKey, commitRepo } from "./multiRoot";
  * cherry-pick or revert, and the Git Log commit actions (Cherry-Pick, Revert
  * Commit, Reset Current Branch to Here, New Tag, Compare with Local).
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import type { ChangedFile, Commit, CompareResult, ResetMode, WorkingTreeChange } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands, isTauri, nextRequestId } from "@/platform/ipc";
@@ -22,6 +22,7 @@ import { showLocalChanges } from "./commitUi";
 import { reloadLog, useGitLog } from "./logStore";
 import { conflictedFiles, currentRepo, currentRepoRoot, refreshNow, repoName, repoOf, useVcs } from "./store";
 import styles from "./common.module.css";
+import tagStyles from "./TagDialog.module.css";
 import { ComparisonTree } from "./ComparisonTree";
 import { showWorktreeComparison } from "./compareTool";
 import { buildFileTree, type FileTreeNode } from "./fileTree";
@@ -452,7 +453,15 @@ export function showTagDialog() {
 }
 
 function TagDialog({ onClose }: { onClose: () => void }) {
+  const id = useId();
   const [repo, setRepo] = useState(currentRepo);
+  const roots = useVcs((s) => s.roots);
+  const projectRoot = useVcs((s) => s.root);
+  const root = repo ?? roots[0] ?? projectRoot;
+  const head = useVcs(
+    (s) => (root ? s.heads[root] : undefined) ?? ((s.repo ?? s.roots[0] ?? s.root) === root ? s.branch : null),
+  );
+  const branch = head?.head ?? (head?.headCommit ? tx("Detached HEAD") : "—");
   const [name, setName] = useState("");
   const [commit, setCommit] = useState("HEAD");
   const [message, setMessage] = useState("");
@@ -474,6 +483,7 @@ function TagDialog({ onClose }: { onClose: () => void }) {
     setExisting([]);
   };
   const error = validateTagName(name, force ? [] : existing);
+  const errorId = name && error ? `${id}-error` : undefined;
   const run = async () => {
     if (error) return;
     onClose();
@@ -490,36 +500,62 @@ function TagDialog({ onClose }: { onClose: () => void }) {
       open
       title="Tag"
       onClose={onClose}
-      width={460}
+      width={500}
       buttons={[
         { label: "Create Tag", role: "default", disabled: !!error, onClick: () => void run() },
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div className={styles.form}>
-        <RepoPicker repo={repo} onChange={chooseRepo} />
-        <label className={styles.fieldLabel} htmlFor="openidea-tag-name">
+      <div className={tagStyles.form}>
+        {roots.length > 1 ? (
+          <>
+            <label className={tagStyles.label} htmlFor={`${id}-repository`}>
+              <T>Repository:</T>
+            </label>
+            <RepoPicker id={`${id}-repository`} repo={repo} onChange={chooseRepo} />
+          </>
+        ) : (
+          <>
+            <span className={tagStyles.label}>
+              <T>Repository:</T>
+            </span>
+            <span className={tagStyles.context}>{root ? repoName(root) : "—"}</span>
+          </>
+        )}
+        <span className={tagStyles.label}>
+          <T>Current branch:</T>
+        </span>
+        <span className={tagStyles.context} title={branch}>
+          {branch}
+        </span>
+        <label className={tagStyles.nameLabel} htmlFor={`${id}-name`}>
           <T>Tag name:</T>
         </label>
-        <Input
-          id="openidea-tag-name"
-          data-autofocus
-          mono
-          value={name}
-          invalid={!!name && !!error}
-          onChange={(e) => setName(e.target.value)}
-        />
-        {name && error && <div className={styles.error}>{error}</div>}
-        <Checkbox checked={force} onChange={setForce} label="Force" />
-        <label className={styles.fieldLabel} htmlFor="openidea-tag-commit">
+        <div className={tagStyles.nameField}>
+          <Input
+            id={`${id}-name`}
+            data-autofocus
+            value={name}
+            invalid={!!errorId}
+            aria-describedby={errorId}
+            onChange={(e) => setName(e.target.value)}
+          />
+          {errorId && (
+            <div className={styles.error} id={errorId}>
+              {error}
+            </div>
+          )}
+        </div>
+        <Checkbox className={tagStyles.force} checked={force} onChange={setForce} label="Force" />
+        <label className={tagStyles.label} htmlFor={`${id}-commit`}>
           <T>Commit:</T>
         </label>
-        <Input id="openidea-tag-commit" mono value={commit} onChange={(e) => setCommit(e.target.value)} />
-        <label className={styles.fieldLabel} htmlFor="openidea-tag-message">
+        <Input id={`${id}-commit`} value={commit} onChange={(e) => setCommit(e.target.value)} />
+        <label className={tagStyles.messageLabel} htmlFor={`${id}-message`}>
           <T>Message:</T>
         </label>
         <textarea
-          id="openidea-tag-message"
+          id={`${id}-message`}
           className={styles.textarea}
           rows={4}
           value={message}
