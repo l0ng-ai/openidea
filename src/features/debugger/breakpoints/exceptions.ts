@@ -107,6 +107,26 @@ export function isFilterEnabled(filter: ExceptionFilter, choices: Record<string,
   return choices[choiceKey(adapter, filter.filter)] ?? choices[filter.filter] ?? filter.default;
 }
 
+/** The adapter whose all-exception filters are IDEA's "Any exception" Java exception breakpoint. */
+export const ANY_EXCEPTION_ADAPTER = "java-debug";
+
+/** "Any exception": java-debug's `caught` / `uncaught` filters, under the choices they always had. */
+export function anyException(
+  known: Record<string, ExceptionFilter[]>,
+  choices: Record<string, boolean>,
+): { caught: boolean; uncaught: boolean } {
+  const filters = known[ANY_EXCEPTION_ADAPTER] ?? BUILTIN_FILTERS[ANY_EXCEPTION_ADAPTER]!;
+  const on = (id: string) => {
+    const filter = filters.find((f) => f.filter === id);
+    return !!filter && isFilterEnabled(filter, choices, ANY_EXCEPTION_ADAPTER);
+  };
+  return { caught: on("caught"), uncaught: on("uncaught") };
+}
+
+export function setAnyException(kind: "caught" | "uncaught", enabled: boolean) {
+  setExceptionFilter(ANY_EXCEPTION_ADAPTER, kind, enabled);
+}
+
 export interface ExceptionGroup {
   adapter: string;
   filters: Array<ExceptionFilter & { enabled: boolean }>;

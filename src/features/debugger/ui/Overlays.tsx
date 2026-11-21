@@ -52,12 +52,23 @@ import {
 import { attachConfig, attachDetail, attachRows, type AttachRow } from "../attach";
 import { openAttachPopup, installAttachAdapter } from "../attachPopup";
 import {
+  ANY_EXCEPTION_ADAPTER,
+  anyException,
   exceptionGroups,
   filterHint,
   refreshExceptionFilters,
+  setAnyException,
   setExceptionFilter,
   useExceptionBreakpoints,
 } from "../breakpoints/exceptions";
+import {
+  addExceptionClass,
+  removeAllExceptionClasses,
+  updateExceptionClass,
+  useExceptionClasses,
+  type ExceptionClassEntry,
+} from "../breakpoints/exceptionClasses";
+import { AnyExceptionDetail, ExceptionClassDetail } from "./ExceptionClassDetail";
 import { EventBreakpointsSection } from "../js/EventBreakpointsSection";
 import { StreamChainChooser } from "../streams/StreamChainChooser";
 import { StreamAbortDialog } from "../streams/StreamAbortDialog";
@@ -388,7 +399,11 @@ interface BpRow {
 type DialogRow =
   | { type: "section"; key: string; label: string }
   | ({ type: "line"; key: string } & BpRow)
-  | { type: "special"; key: string; bp: SpecialBreakpoint };
+  | { type: "special"; key: string; bp: SpecialBreakpoint }
+  | { type: "anyException"; key: string }
+  | { type: "exceptionClass"; key: string; bp: ExceptionClassEntry };
+
+const ANY_EXCEPTION_KEY = "any-exception";
 
 function BreakpointLocation({ path, line }: { path: string; line: number }) {
   return (
@@ -407,6 +422,10 @@ function BreakpointsDialog() {
   const methods = useSpecialBreakpoints((s) => s.methods);
   const fields = useSpecialBreakpoints((s) => s.fields);
   const specialStatus = useSpecialBreakpoints((s) => s.status);
+  const exceptionClasses = useExceptionClasses((s) => s.list);
+  const knownFilters = useExceptionBreakpoints((s) => s.known);
+  const filterChoices = useExceptionBreakpoints((s) => s.choices);
+  const any = anyException(knownFilters, filterChoices);
   const root = useProject((s) => s.project?.root ?? "");
   const rows = useMemo<DialogRow[]>(() => {
     const lines: DialogRow[] = Object.keys(byFile)
@@ -425,8 +444,12 @@ function BreakpointsDialog() {
       "Field Watchpoints",
       fields.map((bp) => ({ type: "special" as const, key: bp.id, bp })),
     );
+    section("Java Exception Breakpoints", [
+      { type: "anyException", key: ANY_EXCEPTION_KEY },
+      ...exceptionClasses.map((bp) => ({ type: "exceptionClass" as const, key: bp.id, bp })),
+    ]);
     return out;
-  }, [byFile, methods, fields]);
+  }, [byFile, methods, fields, exceptionClasses]);
   const items = rows.filter((r) => r.type !== "section");
   const [selected, setSelected] = useState<string | null>(null);
   // The shown breakpoint's typed fields, saved before it is closed or another one is shown:
@@ -461,6 +484,7 @@ function BreakpointsDialog() {
   const removeAll = () => {
     removeAllBreakpoints();
     removeAllSpecial();
+    removeAllExceptionClasses();
   };
 
   return (
@@ -493,10 +517,16 @@ function BreakpointsDialog() {
                 onClick={() => setSelected(addMethodBreakpoint("").id)}
               />
               <IconButton
+                icon="breakpoint-exception"
+                title="Add Java Exception Breakpoint"
+                size="small"
+                onClick={() => setSelected(addExceptionClass("").id)}
+              />
+              <IconButton
                 icon="trash"
                 title="Remove All Breakpoints"
                 size="small"
-                disabled={!items.length}
+                disabled={!items.some((r) => r.type !== "anyException")}
                 onClick={removeAll}
               />
             </div>
@@ -505,7 +535,9 @@ function BreakpointsDialog() {
             items={rows}
             getKey={(r) => r.key}
             isSection={(r) => r.type === "section"}
-            renderSection={(r) => <div className={styles.exceptionAdapter}>{r.type === "section" ? r.label : ""}</div>}
+            renderSection={(r) => (
+              <div className={styles.exceptionAdapter}>{r.type === "section" ? tx(r.label) : ""}</div>
+            )}
             activeIndex={current ? rows.indexOf(current) : -1}
             onActiveChange={(i) => {
               commitRef.current?.();
@@ -524,6 +556,40 @@ function BreakpointsDialog() {
             }
             renderItem={(r) => {
               if (r.type === "section") return null;
+              if (r.type === "anyException") {
+                return (
+                  <div className={styles.bpRow}>
+                    <Checkbox
+                      checked={any.caught || any.uncaught}
+                      onChange={(on) => {
+                        setAnyException("caught", on);
+                        setAnyException("uncaught", on);
+                      }}
+                      aria-label={tx("Enable Any exception")}
+                    />
+                    <Icon name="breakpoint-exception" size={14} />
+                    <span className={styles.bpName}>
+                      <T>Any exception</T>
+                    </span>
+                  </div>
+                );
+              }
+              if (r.type === "exceptionClass") {
+                const name = r.bp.className || tx("No class chosen");
+                return (
+                  <div className={styles.bpRow}>
+                    <Checkbox
+                      checked={r.bp.enabled}
+                      onChange={(enabled) => updateExceptionClass(r.bp.id, { enabled })}
+                      aria-label={tx`Enable ${name}`}
+                    />
+                    <Icon name="breakpoint-exception" size={14} />
+                    <span className={styles.bpName} title={name}>
+                      {name}
+                    </span>
+                  </div>
+                );
+              }
               if (r.type === "special") {
                 const st = specialStatus[r.bp.id];
                 return (
@@ -594,6 +660,10 @@ function BreakpointsDialog() {
               <BreakpointDetail key={current.key} row={current} onGo={() => goTo(current)} commitRef={commitRef} />
             ) : current?.type === "special" ? (
               <SpecialDetail key={current.key} bp={current.bp} onGo={() => goTo(current)} commitRef={commitRef} />
+            ) : current?.type === "exceptionClass" ? (
+              <ExceptionClassDetail key={current.key} bp={current.bp} commitRef={commitRef} />
+            ) : current?.type === "anyException" ? (
+              <AnyExceptionDetail />
             ) : null}
           </div>
         </SplitPanel>
@@ -606,7 +676,11 @@ function BreakpointsDialog() {
 function ExceptionBreakpoints({ open }: { open: boolean }) {
   const known = useExceptionBreakpoints((s) => s.known);
   const choices = useExceptionBreakpoints((s) => s.choices);
-  const groups = useMemo(() => exceptionGroups(known, choices), [known, choices]);
+  // java-debug's filters are "Any exception" in the list above.
+  const groups = useMemo(
+    () => exceptionGroups(known, choices).filter((g) => g.adapter !== ANY_EXCEPTION_ADAPTER),
+    [known, choices],
+  );
   useEffect(() => {
     if (open) void refreshExceptionFilters();
   }, [open]);

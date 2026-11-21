@@ -1,5 +1,6 @@
 //! Protocol flow against an in-memory fake adapter.
 
+mod exception_classes;
 mod jvm_inspect;
 mod stream_trace;
 

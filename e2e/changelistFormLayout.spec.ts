@@ -37,7 +37,15 @@ test("changelist forms align the fields and preserve multiline comments through 
     const listModule = "/src/features/vcs/changelists.ts";
     const { initialChangelists, useChangelists } = await import(/* @vite-ignore */ listModule);
     useChangelists.setState({
-      state: { ...initialChangelists(), files: { "build.gradle.kts": "default" } },
+      state: {
+        ...initialChangelists(),
+        lists: [
+          ...initialChangelists().lists,
+          { id: "inbox", name: "Review inbox", comment: "Choose a reviewer before merging." },
+          { id: "unsorted", name: "Unsorted" },
+        ],
+        files: { "build.gradle.kts": "default" },
+      },
       loaded: true,
     });
     window.__ipc.handlers.vcs_changelists_save = () => null;
@@ -94,16 +102,41 @@ test("changelist forms align the fields and preserve multiline comments through 
 
   await action(page, "vcs.changelist.move", ["/dev/acme-api/build.gradle.kts"]);
   const move = page.getByRole("dialog", { name: "Move Changes to Another Changelist" });
-  await move.getByRole("radio", { name: "New changelist:" }).check();
-  await page.setViewportSize({ width: 400, height: 540 });
   const newName = move.getByRole("textbox", { name: "Name:", exact: true });
+  const targetComment = move.getByRole("textbox", { name: "Comment:", exact: true });
+  const moveOk = move.getByRole("button", { name: "OK", exact: true });
+  await expect(newName).toBeFocused();
+  await expect(newName).toHaveValue("Release review");
+  await expect(targetComment).toHaveAttribute("readonly", "");
+  await newName.press("ArrowDown");
+  const options = page.getByRole("listbox", { name: "Target changelist" });
+  await expect(options).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(options).toBeHidden();
+  await expect(newName).toBeFocused();
+  await newName.press("ArrowDown");
+  await expect(options.getByRole("option", { name: "Changes", exact: true })).toHaveCount(0);
+  await options.getByRole("option", { name: "Review inbox", exact: true }).click();
+  await expect(newName).toHaveValue("Review inbox");
+  await expect(targetComment).toHaveValue("Choose a reviewer before merging.");
+  await newName.fill("Changes");
+  await expect(newName).toHaveAccessibleDescription(/already exists/);
+  await expect(moveOk).toBeDisabled();
+
+  await page.setViewportSize({ width: 400, height: 540 });
   const stackedName = (await newName.boundingBox())!;
   const stackedLabel = (await move.getByText("Name:", { exact: true }).boundingBox())!;
   expect(stackedLabel.y + stackedLabel.height).toBeLessThanOrEqual(stackedName.y);
   expect(Math.abs(stackedLabel.x - stackedName.x)).toBeLessThan(1);
   await newName.fill("Ready to ship");
-  await move.getByRole("textbox", { name: "Comment:", exact: true }).fill("Move the reviewed change here.");
-  await move.getByRole("button", { name: "OK", exact: true }).click();
+  await expect(targetComment).toBeEditable();
+  await targetComment.fill("Move the reviewed change here.");
+  await newName.fill("Unsorted");
+  await expect(targetComment).toHaveAttribute("readonly", "");
+  await expect(targetComment).toHaveValue("");
+  await newName.fill("Ready to ship");
+  await expect(targetComment).toHaveValue("Move the reviewed change here.");
+  await moveOk.click();
   await expect
     .poll(async () => {
       const state = await savedLists(page);
