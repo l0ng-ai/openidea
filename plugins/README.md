@@ -1294,6 +1294,7 @@ log/blame return empty lists and diff returns `None`.
 | `editor-focused`     | `events`       | the focused editor changes (path, or none)                                                                                                 |
 | `vcs-changed`        | `events`       | a repository's state changed (commit, checkout, fetch…; its root)                                                                          |
 | `action-performed`   | `events.input` | an IDE action ran: id, title, source (keyboard, menu, toolbar…), shortcut                                                                  |
+| `project-closed`     | `events`       | API 1.14: a project was closed or detached; JSON root path string (`Event::ProjectClosed`)                                                 |
 | `scheduled`          | —              | the `on-schedule` period elapsed                                                                                                           |
 
 Events are batched: a running plugin gets them within a fraction of a second,
@@ -1327,6 +1328,20 @@ its own project, which the event names in `project` (the root's absolute path):
 two open projects can hold the same relative path, so key per-document state by
 both. IDEs before this field omit it. For `files-changed`, each category is filtered and an empty batch
 is omitted; replacing or pausing a filter also affects batches already queued.
+API 1.14 adds `project` (the project root path) and `generation` (the monotonic project workspace generation)
+to `FilesChanged`.
+
+API 1.14 adds `host::subscribe_paths_with_options(kind, &SubscriptionOptions)` (`events.subscribe-paths-with-options`)
+with an optional `debounce_ms` setting. When configured, incoming filesystem events for `files-changed` are debounced on the
+host side across rapid edits, coalescing deltas and avoiding redundant plugin invocations (with a maximum delay cap of 5 s
+during continuous changes). In-flight `files-changed` discovery work is cooperatively cancelled via `cancel_soft()` when a newer
+delta arrives for the same project.
+
+Each project maintains an internal monotonic `generation` incremented on filesystem changes and project transitions. Plugins
+can read it via `project.generation()` (API 1.14). If a plugin attempts to publish run targets or run configurations discovered
+with an older generation after the project generation has moved forward, the registration is rejected with `Error::Stale`. When
+a project closes, in-flight work and queued events for that project are cancelled and dropped, run targets and configurations
+under that root are withdrawn, and `project-closed` (`Event::ProjectClosed`) is delivered to subscribed plugins.
 Patterns use `/`, `*` stays within a directory, and `**` crosses
 directories. Up to 64 patterns of 1024 bytes each are accepted; absolute paths,
 parent traversal and malformed patterns fail without replacing the old filter.

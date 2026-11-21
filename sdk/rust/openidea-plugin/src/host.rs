@@ -565,6 +565,14 @@ mod imp {
         wit::events::subscribe_paths(kind, &globs.iter().map(|g| (*g).to_owned()).collect::<Vec<_>>()).map_err(error)
     }
 
+    pub fn subscribe_paths_with_options(kind: &str, options: &crate::SubscriptionOptions) -> Result<(), Error> {
+        let opts = wit::events::SubscriptionOptions {
+            globs: options.globs.clone(),
+            debounce_ms: options.debounce_ms,
+        };
+        wit::events::subscribe_paths_with_options(kind, &opts).map_err(error)
+    }
+
     pub fn subscribe(k: EventKind) -> Result<(), Error> {
         wit::events::subscribe(k.name()).map_err(error)
     }
@@ -611,6 +619,10 @@ mod imp {
 
     pub fn project_stat(p: &ProjectRes, path: &str) -> Result<FileStat, Error> {
         p.stat(path).map(file_stat).map_err(error)
+    }
+
+    pub fn project_generation(p: &ProjectRes) -> Result<u64, Error> {
+        p.generation().map_err(error)
     }
 
     fn file_kind(kind: wit::workspace::FileKind) -> FileKind {
@@ -1127,6 +1139,12 @@ impl Project {
     /// Lists only this plugin's private source ids.
     pub fn data_sources(&self) -> Result<Vec<String>, Error> {
         imp::database_sources(&self.inner)
+    }
+
+    /// Returns the monotonic generation of this project workspace (API 1.14).
+    /// Incremented whenever the project's filesystem or structure changes.
+    pub fn generation(&self) -> Result<u64, Error> {
+        imp::project_generation(&self.inner)
     }
     /// Writes directly to the Database secure store, without a read API.
     pub fn set_data_source_credential(&self, id: &str, password: &str) -> Result<(), Error> {
@@ -1741,6 +1759,12 @@ pub fn locale() -> String {
 /// Requires `events`. Register during activation before the events you want to observe.
 pub fn subscribe_paths(kind: &str, globs: &[&str]) -> Result<(), Error> {
     imp::subscribe_paths(kind, globs)
+}
+
+/// Subscribe to project-relative path globs with options (including debounce_ms).
+/// Requires `events`. Register during activation before the events you want to observe (API 1.14).
+pub fn subscribe_paths_with_options(kind: &str, options: &crate::SubscriptionOptions) -> Result<(), Error> {
+    imp::subscribe_paths_with_options(kind, options)
 }
 
 /// Delivers `kind` events to [`crate::Plugin::handle_events`] for the rest of
