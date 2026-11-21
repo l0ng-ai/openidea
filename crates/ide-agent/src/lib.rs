@@ -611,6 +611,15 @@ impl AgentManager {
         self.shared.sinks.write().remove(subscriber);
     }
 
+    pub fn has_live_work(&self) -> bool {
+        self.tasks.read().values().any(|task| {
+            let state = task.state.lock();
+            state.busy
+                || !state.background_tasks.is_empty()
+                || matches!(state.task.status, AgentStatus::Starting | AgentStatus::Running | AgentStatus::NeedsInput)
+        })
+    }
+
     /// Sets the callback used to read the active command execution security policy.
     pub fn set_security_hook(&self, hook: SecurityHook) {
         *self.shared.security.write() = Some(hook);

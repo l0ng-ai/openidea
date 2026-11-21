@@ -60,6 +60,7 @@ pub struct Settings {
     pub spelling: SpellingSettings,
     /// Tools › SSH Configurations.
     pub ssh: SshSettings,
+    pub remote_development: RemoteDevelopmentSettings,
     /// Build, Execution, Deployment › Deployment.
     pub deployment: DeploymentSettings,
     /// Build, Execution, Deployment › Run Targets.
@@ -578,6 +579,7 @@ impl Default for Settings {
             inspections: InspectionSettings::default(),
             spelling: SpellingSettings::default(),
             ssh: SshSettings::default(),
+            remote_development: RemoteDevelopmentSettings::default(),
             deployment: DeploymentSettings::default(),
             run_targets: Vec::new(),
             cmake: CMakeSettings::default(),

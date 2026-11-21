@@ -41,6 +41,7 @@ import {
   type NotificationsValid,
 } from "./behaviorSchema";
 import { isThemeChoiceId, type ThemeChoiceId } from "@/platform/themes";
+import { DEFAULT_REMOTE_IDLE_MINUTES, validRemoteIdleMinutes } from "@/platform/remoteIdle";
 
 /** Agents › IDE MCP Server › Port: its default (`ide-core::settings::DEFAULT_MCP_PORT`) and range. */
 export const DEFAULT_MCP_PORT = 26371;
@@ -115,6 +116,7 @@ export interface ValidSettings extends WorkflowSettings {
   notifications: NotificationsValid;
   /** System Settings › HTTP Proxy (global). */
   proxy: ProxySettingsValid;
+  remoteDevelopment: { idleTimeoutMinutes: number };
   /** Tools › Download sources: a mirror prefix for the installer's release downloads. */
   toolDownloads: { githubMirror: string };
   languages: LanguagesValid;
@@ -221,6 +223,7 @@ export const DEFAULT_SETTINGS: ValidSettings = {
   customKeymaps: {},
   notifications: DEFAULT_NOTIFICATIONS,
   proxy: DEFAULT_PROXY,
+  remoteDevelopment: { idleTimeoutMinutes: DEFAULT_REMOTE_IDLE_MINUTES },
   toolDownloads: { githubMirror: "" },
   languages: DEFAULT_LANGUAGES,
   cmake: {},
@@ -422,6 +425,9 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
     customKeymaps,
     notifications: validateNotifications(root.notifications),
     proxy: validateProxy(root.proxy),
+    remoteDevelopment: {
+      idleTimeoutMinutes: validRemoteIdleMinutes(obj(root.remoteDevelopment).idleTimeoutMinutes),
+    },
     toolDownloads: {
       githubMirror:
         typeof obj(root.toolDownloads).githubMirror === "string"

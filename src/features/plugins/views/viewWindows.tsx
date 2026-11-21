@@ -10,7 +10,7 @@ import {
   useToolWindowShown,
   type ToolWindowAnchor,
 } from "@/workbench/contributions";
-import { pluginToolWindowId, viewKey } from "./viewStore";
+import { currentViewLocation, pluginToolWindowId, useViewLocation, viewKey } from "./viewStore";
 import styles from "./PluginView.module.css";
 
 export interface WindowView {
@@ -47,21 +47,47 @@ interface WindowGroup {
 const groups = new Map<string, WindowGroup>();
 const windowsByView = new Map<string, { window: string; group: WindowGroup }>();
 
+const GROUP_TAB_PREFIX = "openidea.plugins.groupTab.v1:";
+
+function readSelectedView(groupId: string, location: string | null = currentViewLocation()): string | null {
+  try {
+    return localStorage.getItem(`${GROUP_TAB_PREFIX}${location ?? ""}:${groupId}`);
+  } catch {
+    return null;
+  }
+}
+
+function writeSelectedView(groupId: string, viewId: string, location: string | null = currentViewLocation()) {
+  try {
+    localStorage.setItem(`${GROUP_TAB_PREFIX}${location ?? ""}:${groupId}`, viewId);
+  } catch {
+    /* storage unavailable */
+  }
+}
+
 function GroupView({ group, id }: { group: WindowGroup; id: string }) {
   const { members, selected } = group.state();
-  const active = members.find((m) => m.decl.id === selected) ?? members[0];
+  const location = useViewLocation();
+  const saved = readSelectedView(id, location);
+  const [fallback, setFallback] = useState<{ location: string | null; id: string | undefined }>();
+  const member = (id: string | null | undefined) => members.find((m) => m.decl.id === id);
+  const active =
+    member(selected) ?? member(saved) ?? member(fallback?.location === location ? fallback.id : null) ?? members[0];
   const activeId = active?.decl.id;
   const shown = useToolWindowShown();
   // Like separate tool windows, opened tabs retain their local state until withdrawn.
   const [visited, setVisited] = useState<ReadonlySet<string>>(() => new Set());
   useEffect(() => {
+    setFallback((previous) =>
+      previous?.location === location && previous.id === activeId ? previous : { location, id: activeId },
+    );
     setVisited((previous) => {
       const next = new Set(
         members.filter((m) => previous.has(m.decl.id) || m.decl.id === activeId).map((m) => m.decl.id),
       );
       return next.size === previous.size && [...next].every((id) => previous.has(id)) ? previous : next;
     });
-  }, [members, activeId]);
+  }, [members, activeId, location]);
   if (!active) return null;
   return (
     <VerbatimTextContext.Provider value={true}>
@@ -71,7 +97,10 @@ function GroupView({ group, id }: { group: WindowGroup; id: string }) {
           panelIdPrefix={id}
           items={members.map(({ decl }) => ({ id: decl.id, label: decl.title }))}
           activeId={active.decl.id}
-          onSelect={(id) => group.state.setState({ selected: id })}
+          onSelect={(viewId) => {
+            writeSelectedView(id, viewId, location);
+            group.state.setState({ selected: viewId });
+          }}
         />
         {members
           .filter((m) => visited.has(m.decl.id) || m.decl.id === activeId)
@@ -105,7 +134,7 @@ function refresh(id: string, group: WindowGroup) {
   const selected = group.state.getState().selected;
   group.state.setState({
     members,
-    selected: selected ?? members[0]?.decl.id ?? null,
+    selected: selected && members.some((m) => m.decl.id === selected) ? selected : null,
   });
   const secondary = first?.decl.secondary === true;
   const signature =
@@ -179,6 +208,7 @@ export function registerWindowView(
 export function revealWindowView(pluginId: string, view: string) {
   const entry = windowsByView.get(viewKey(pluginId, view));
   if (!entry?.group.state.getState().members.some((m) => m.decl.id === view)) return;
+  writeSelectedView(entry.window, view);
   entry.group.state.setState({ selected: view });
   toolWindowService().show(entry.window, true);
 }

@@ -4,11 +4,12 @@
  * its own. The session lives in `cliSessions.ts`; this only attaches its host while the
  * tab is the one shown.
  */
-import { useLayoutEffect, useRef, type FocusEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, type FocusEvent } from "react";
 import { useProject } from "@/platform/project";
+import { useRemote } from "@/platform/remote";
 import { useEditorShown, type EditorInput } from "@/workbench/contributions";
 import { Button, EmptyState, T } from "@/ui";
-import { cliData, startTab, useClis } from "./cli";
+import { cliData, reattachCliTab, startTab, useClis } from "./cli";
 import { cliSession } from "./cliSessions";
 import styles from "./Cli.module.css";
 // The pane is the terminal tool window's own: same xterm layout, cursor and scrollbar.
@@ -19,7 +20,14 @@ export function CliEditor({ input }: { input: EditorInput }) {
   const live = useClis((s) => !!s.sessions[input.key]);
   const shown = useEditorShown();
   const project = useProject((s) => s.project);
+  const remote = useRemote((s) => s.session !== null);
   const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!live && remote && project?.root && data?.terminalId) {
+      void reattachCliTab(input);
+    }
+  }, [live, remote, project?.root, data?.terminalId, input]);
 
   // Hidden tabs stay unopened (xterm opened at 0×0 never takes keys); the session keeps running.
   useLayoutEffect(() => {

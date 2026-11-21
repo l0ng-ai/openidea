@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import clsx from "clsx";
 import { useProject } from "@/platform/project";
+import { isRemoteWindow, projectLocation, useRemote } from "@/platform/remote";
 import { toolWindowService } from "@/workbench/contributions";
 import { ToolWindowHeader, useOwnToolWindowHeader } from "@/workbench/toolwindows/ToolWindows";
 import { usePlatform } from "@/platform/platformInfo";
@@ -45,6 +46,7 @@ import {
   tabTitle,
   topRightGroup,
   useTerminals,
+  waitForTerminalRestore,
   type GroupLayout,
   type TerminalTab,
 } from "./store";
@@ -267,6 +269,8 @@ function RenamePopup({ tab, anchor, onClose }: { tab: TerminalTab; anchor: Eleme
 export function TerminalView() {
   const layout = useTerminals((s) => s.layout);
   const root = useProject((s) => s.project?.root);
+  const remoteSession = useRemote((s) => s.session);
+  const scope = projectLocation(root);
   const rootRef = useRef<HTMLDivElement>(null);
   const split = typeof layout !== "string";
   // Split, each group shows a header of its own, as in IDEA.
@@ -278,12 +282,23 @@ export function TerminalView() {
   useEffect(() => {
     const el = rootRef.current;
     if (!root || !el) return;
+    let alive = true;
     const ensureTab = () => {
-      if (el.clientHeight <= 0) return;
+      if (!alive || el.clientHeight <= 0) return;
       // Restore this project's tabs once the pane is actually visible. A project
       // switch while the runtime is loaded restores from the project subscription.
-      syncTerminalProject(root);
-      if (useTerminals.getState().tabs.length === 0) newTab(root);
+      syncTerminalProject(root, scope);
+      if (useTerminals.getState().tabs.length === 0) {
+        if (isRemoteWindow()) {
+          void waitForTerminalRestore().then(() => {
+            if (!alive || el.clientHeight <= 0 || useProject.getState().project?.root !== root) return;
+            if (useTerminals.getState().tabs.length === 0) newTab(root);
+            refitSessions();
+          });
+          return;
+        }
+        newTab(root);
+      }
       // Sessions created while this window was hidden open once it actually has a box.
       refitSessions();
     };
@@ -291,8 +306,11 @@ export function TerminalView() {
     if (typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(ensureTab);
     ro.observe(el);
-    return () => ro.disconnect();
-  }, [root]);
+    return () => {
+      alive = false;
+      ro.disconnect();
+    };
+  }, [root, scope, remoteSession]);
 
   return (
     <div
