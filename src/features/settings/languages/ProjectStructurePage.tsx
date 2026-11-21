@@ -3,7 +3,7 @@
  * IntelliJ IDEA-style Project Structure configuration across Project, Modules
  * (Sources, Paths, Dependencies), Libraries, Facets, Artifacts, and SDKs.
  */
-import { useCallback, useEffect, useId, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import { Channel } from "@tauri-apps/api/core";
 import {
@@ -243,7 +243,7 @@ function useBuildModelData(root: string | null): BuildModel | null {
 }
 
 /** "+ Add Content Root" and the content roots, the project folder first (IDEA's module Sources tab). */
-function ContentRoots({ root }: { root: string }) {
+function ContentRoots({ root, children }: { root: string; children: ReactNode }) {
   const [roots, setRoots] = useProjectSetting<string[] | undefined>("projectStructure.contentRoots");
   const list = roots ?? [];
   const add = async () => {
@@ -252,17 +252,22 @@ function ContentRoots({ root }: { root: string }) {
     setRoots([...list, picked]);
   };
   return (
-    <div className={styles.rootGroup}>
-      <Button size="small" variant="ghost" icon="plus" onClick={() => void add()}>
-        <T>Add Content Root</T>
-      </Button>
+    <>
+      <div className={styles.contentRootToolbar}>
+        <Button size="small" variant="ghost" icon="plus" onClick={() => void add()}>
+          <T>Add Content Root</T>
+        </Button>
+      </div>
       <div className={clsx(styles.rootItem, styles.contentRoot)}>
+        <Icon name="module" size={14} />
         <span className={styles.rootPath} title={root}>
           {root}
         </span>
       </div>
+      {children}
       {list.map((r) => (
         <div key={r} className={clsx(styles.rootItem, styles.contentRoot)}>
+          <Icon name="module" size={14} />
           <span className={styles.rootPath} title={r}>
             {r}
           </span>
@@ -275,7 +280,7 @@ function ContentRoots({ root }: { root: string }) {
           />
         </div>
       ))}
-    </div>
+    </>
   );
 }
 
@@ -412,6 +417,19 @@ function ModuleSourcesTab({ moduleKey }: { moduleKey: string }) {
   const moduleRoot = root ? (moduleKey === "." ? root : `${root}/${moduleKey}`) : null;
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(moduleRoot ? [moduleRoot] : []));
   const [selected, setSelected] = useState<DirNode | null>(null);
+  const container = useRef<HTMLDivElement>(null);
+  const [stacked, setStacked] = useState(false);
+
+  useLayoutEffect(() => {
+    const view = container.current;
+    if (!view) return;
+    const measure = () => setStacked(view.clientWidth < 420);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(view);
+    return () => observer.disconnect();
+  }, [moduleRoot]);
 
   const load = useCallback(
     async (node: DirNode) => {
@@ -480,111 +498,115 @@ function ModuleSourcesTab({ moduleKey }: { moduleKey: string }) {
   const unmarkedDetected = unmarkedRoots(moduleDetected, ps);
   const restore = () => setPs(restoreDetected(ps, moduleDetected));
 
-  return (
-    <div className={styles.structure}>
-      <div className={styles.structureTree}>
-        <div className={styles.markBar} role="toolbar" aria-label={tx("Mark as")}>
-          <span>
-            <T>Mark as:</T>
-          </span>
-          {ROLES.map((r) => (
-            <button
-              key={r.role}
-              type="button"
-              className={styles.markButton}
-              aria-pressed={role === r.role}
-              disabled={markable === null || (!markable && r.role === "excluded")}
-              onClick={() => mark(r.role)}
-            >
-              <Icon name={folderIconName(r.kind)} size={14} />
-              {r.label}
-            </button>
-          ))}
+  const markedFolders = ROLES.map((r) => {
+    const list = roots.filter(
+      (x) => x.kind === r.role && (moduleKey === "." || x.path === moduleKey || x.path.startsWith(moduleKey + "/")),
+    );
+    if (!list.length) return null;
+    return (
+      <div key={r.role} className={styles.rootGroup}>
+        <div className={clsx(styles.rootTitle, r.cls)}>
+          <Icon name={folderIconName(r.kind)} size={14} />
+          {tx(r.title)}
         </div>
-        <div className={styles.treeScroll}>
-          <Tree<DirNode>
-            aria-label="Content root"
-            roots={treeRoots}
-            getKey={(n) => n.path}
-            getLabel={(n) => n.name}
-            getChildren={(n) => children.get(n.path)}
-            isExpandable={() => true}
-            loadChildren={load}
-            expanded={expanded}
-            onExpandedChange={(set) => setExpanded(set)}
-            multiSelect={false}
-            selected={selected ? new Set([selected.path]) : new Set()}
-            onSelectionChange={(_s, lead) => setSelected(lead)}
-            getIcon={(n) => {
-              if (n.rel === null) return n.contentRoot ? "module" : folderIconName("plain");
-              const r = rootRole(roots, n.rel);
-              if (!n.rel && !r) return "module";
-              return folderIconName(r ? ROLES.find((x) => x.role === r)!.kind : "plain");
-            }}
-            getDetail={(n) => (n.rel === "" ? (root ?? undefined) : n.contentRoot ? n.path : undefined)}
-          />
-        </div>
-        {moduleKey === "." && <ExcludeFiles />}
-      </div>
-      <div className={styles.roots} aria-label={tx("Marked folders")}>
-        {moduleKey === "." && <ContentRoots root={rootNode.path} />}
-        {ROLES.map((r) => {
-          const list = roots.filter(
-            (x) =>
-              x.kind === r.role && (moduleKey === "." || x.path === moduleKey || x.path.startsWith(moduleKey + "/")),
-          );
+        {list.map((x) => {
+          const shown = x.path || name || ".";
           return (
-            <div key={r.role} className={styles.rootGroup}>
-              <div className={clsx(styles.rootTitle, r.cls)}>
-                <Icon name={folderIconName(r.kind)} size={14} />
-                {r.title}
-              </div>
-              {list.length === 0 && (
-                <div className={clsx(styles.rootItem, styles.note)}>
-                  <T>None</T>
-                </div>
-              )}
-              {list.map((x) => {
-                const shown = x.path || name || ".";
-                return (
-                  <div key={x.path} className={styles.rootItem}>
-                    <span className={styles.rootPath} title={x.path || root || undefined}>
-                      {shown}
-                      {x.detectedFrom && (
-                        <span className={styles.rootHint}> {tx`detected from ${x.detectedFrom}`}</span>
-                      )}
-                    </span>
-                    <IconButton
-                      icon="close"
-                      size="small"
-                      iconSize={12}
-                      title={tx`Unmark ${shown}`}
-                      onClick={() => setPs(markFolder(ps, x.path, null, detected))}
-                    />
-                  </div>
-                );
-              })}
+            <div key={x.path} className={styles.rootItem}>
+              <span className={styles.rootPath} title={x.path || root || undefined}>
+                {shown}
+                {x.detectedFrom && <span className={styles.rootHint}> {tx`detected from ${x.detectedFrom}`}</span>}
+              </span>
+              <IconButton
+                icon="close"
+                size="small"
+                iconSize={12}
+                title={tx`Unmark ${shown}`}
+                onClick={() => setPs(markFolder(ps, x.path, null, detected))}
+              />
             </div>
           );
         })}
-        {unmarkedDetected.length > 0 && (
-          <div className={styles.note}>
-            {unmarkedDetected.length === 1
-              ? tx("1 detected folder is unmarked.")
-              : tx`${unmarkedDetected.length} detected folders are unmarked.`}{" "}
-            <button type="button" className={styles.linkButton} onClick={restore}>
-              <T>Restore detected roots</T>
-            </button>
-          </div>
-        )}
-        <div className={styles.note}>
-          <T>
-            {
-              "Folders are detected from build files (pom.xml, build.gradle, Cargo.toml, go.mod, pyproject.toml, package.json, composer.json); marking or unmarking a folder overrides detection. Excluded folders are skipped by the Project view, Find in Files and the index (reopen the project to re-index)."
-            }
-          </T>
-        </div>
       </div>
+    );
+  });
+
+  return (
+    <div ref={container} className={clsx(styles.structure, stacked && styles.structureStacked)}>
+      <SplitGroup key={stacked ? "stacked" : "side-by-side"} orientation={stacked ? "vertical" : "horizontal"}>
+        <SplitPanel
+          id="module-source-tree"
+          minSize={stacked ? 212 : 190}
+          defaultSize={stacked ? "52%" : "60%"}
+          className={styles.structureTree}
+        >
+          <div className={styles.markBar} role="toolbar" aria-label={tx("Mark as")}>
+            <span>
+              <T>Mark as:</T>
+            </span>
+            {ROLES.map((r) => (
+              <button
+                key={r.role}
+                type="button"
+                className={styles.markButton}
+                aria-pressed={role === r.role}
+                disabled={markable === null || (!markable && r.role === "excluded")}
+                onClick={() => mark(r.role)}
+              >
+                <Icon name={folderIconName(r.kind)} size={14} />
+                {tx(r.label)}
+              </button>
+            ))}
+          </div>
+          <div className={styles.treeScroll}>
+            <Tree<DirNode>
+              aria-label="Content root"
+              roots={treeRoots}
+              getKey={(n) => n.path}
+              getLabel={(n) => n.name}
+              getChildren={(n) => children.get(n.path)}
+              isExpandable={() => true}
+              loadChildren={load}
+              expanded={expanded}
+              onExpandedChange={(set) => setExpanded(set)}
+              multiSelect={false}
+              selected={selected ? new Set([selected.path]) : new Set()}
+              onSelectionChange={(_s, lead) => setSelected(lead)}
+              getIcon={(n) => {
+                if (n.rel === null) return n.contentRoot ? "module" : folderIconName("plain");
+                const r = rootRole(roots, n.rel);
+                if (!n.rel && !r) return "module";
+                return folderIconName(r ? ROLES.find((x) => x.role === r)!.kind : "plain");
+              }}
+              getDetail={(n) => (n.rel === "" ? (root ?? undefined) : n.contentRoot ? n.path : undefined)}
+            />
+          </div>
+          {moduleKey === "." && <ExcludeFiles />}
+        </SplitPanel>
+        <SplitHandle aria-label={tx("Marked folders")} />
+        <SplitPanel id="module-marked-folders" minSize={stacked ? 160 : 175}>
+          <section className={styles.roots} aria-label={tx("Marked folders")}>
+            {moduleKey === "." ? <ContentRoots root={rootNode.path}>{markedFolders}</ContentRoots> : markedFolders}
+            {unmarkedDetected.length > 0 && (
+              <div className={styles.note}>
+                {unmarkedDetected.length === 1
+                  ? tx("1 detected folder is unmarked.")
+                  : tx`${unmarkedDetected.length} detected folders are unmarked.`}{" "}
+                <button type="button" className={styles.linkButton} onClick={restore}>
+                  <T>Restore detected roots</T>
+                </button>
+              </div>
+            )}
+            <div className={styles.note}>
+              <T>
+                {
+                  "Folders are detected from build files (pom.xml, build.gradle, Cargo.toml, go.mod, pyproject.toml, package.json, composer.json); marking or unmarking a folder overrides detection. Excluded folders are skipped by the Project view, Find in Files and the index (reopen the project to re-index)."
+                }
+              </T>
+            </div>
+          </section>
+        </SplitPanel>
+      </SplitGroup>
     </div>
   );
 }
@@ -874,7 +896,7 @@ function ModulesSection() {
           </T>
         </div>
       )}
-      <div className={styles.splitLayout}>
+      <div className={clsx(styles.splitLayout, styles.modulesLayout)}>
         <div className={styles.sideList}>
           <div className={styles.tableToolbar}>
             <IconButton
