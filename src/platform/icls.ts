@@ -165,7 +165,16 @@ Object.assign(ATTRIBUTE_NAMES, {
   "PY.STRING.U": "pyString",
   "PY.FUNC_DEFINITION": "pyFunctionDeclaration",
   "PY.NESTED_FUNC_DEFINITION": "pyNestedFunction",
+  "PY.FUNCTION_CALL": "pyFunctionCall",
   "PY.METHOD_CALL": "pyMethodCall",
+  "PY.CLASS_DEFINITION": "pyClassDefinition",
+  "PY.PARAMETER": "pyParameter",
+  "PY.LOCAL_VARIABLE": "pyLocalVariable",
+  "PY.TYPE_PARAMETER": "pyTypeParameter",
+  "PY.INVALID_STRING_ESCAPE": "pyInvalidEscape",
+  // PyCharm's own f-string keys come first, so exports use them; PY.STRING.F is still read.
+  "PY.FSTRING_FRAGMENT_BRACES": "pyFString",
+  "PY.FSTRING_FORMAT_SPEC_NUMBER": "pyFormat",
   "PY.DOC_COMMENT": "pyDocstring",
   "PY.BUILTIN_NAME": "pyBuiltin",
   "PY.DECORATOR": "pyDecorator",
@@ -260,6 +269,17 @@ Object.assign(ATTRIBUTE_NAMES, {
 // Preserve editor attributes without a standard exchange name on our own round trip.
 for (const attr of ATTRIBUTES)
   if (!Object.values(ATTRIBUTE_NAMES).includes(attr.id)) ATTRIBUTE_NAMES[`OPENIDEA_${attr.id}`] = attr.id;
+// Earlier versions exported these under OPENIDEA_ names, before their PyCharm keys were mapped.
+for (const id of [
+  "pyFunctionCall",
+  "pyClassDefinition",
+  "pyParameter",
+  "pyLocalVariable",
+  "pyTypeParameter",
+  "pyInvalidEscape",
+  "pyFormat",
+])
+  ATTRIBUTE_NAMES[`OPENIDEA_${id}`] ??= id;
 
 // One key colours an attribute, as IntelliJ shows it in the file the user sees: an explicit value replaces
 // its fallback's. TypeScript keys win over JavaScript (TS.* falls back to JS.*), then Python, then the

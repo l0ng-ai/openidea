@@ -16,5 +16,8 @@
       <command id="openidea.jvm.stream.collect"/>
       <command id="openidea.jvm.stream.release"/>
     </delegateCommandHandler>
+    <delegateCommandHandler class="ai.openidea.jvminspect.ExceptionCommand">
+      <command id="openidea.jvm.exceptions.set"/>
+    </delegateCommandHandler>
   </extension>
 </plugin>

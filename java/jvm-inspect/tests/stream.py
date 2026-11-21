@@ -1095,6 +1095,61 @@ def real_run_uncaught_throw_user_filter():
         dbg.end()
 
 
+def exception_breakpoints(dbg, *breakpoints):
+    """`openidea.jvm.exceptions.set`; returns breakpoint id → state."""
+    return {s['id']: s['state'] for s in ok(lsp.command('openidea.jvm.exceptions.set', dbg.target, {'breakpoints': list(breakpoints)}))}
+
+
+def exception_breakpoint(id, class_name, exclude=()):
+    return {'id': id, 'className': class_name, 'caught': True, 'uncaught': True, 'enabled': True,
+            'classFilters': [], 'classExclusionFilters': list(exclude)}
+
+
+@case
+def real_run_uncaught_throw_exception_breakpoint():
+    # A caught+uncaught breakpoint on the thrown class: silenced while the terminal runs (a stop inside
+    # its invoke would hang the trace), then the uncaught throw stops once, not once per request.
+    dbg = real('U')
+    try:
+        states = exception_breakpoints(dbg, exception_breakpoint('ae', 'java.lang.ArithmeticException'))
+        check('U-class: armed or pending', states['ae'] in ('armed', 'pending'), states)
+        trace, state, _ = run_until_parked(dbg, 'U', steps=(spec('map', 1),), step_kinds=('sync',))
+        check('U-class: parked after the lambda threw', state['state'] == 'parked', state)
+        uncaught_stop(dbg, 'U-class', trace, 'java.lang.ArithmeticException')
+    finally:
+        dbg.end()
+
+
+@case
+def real_run_uncaught_throw_filtered_exception_breakpoint():
+    # The breakpoint's class filter leaves out where the lambda throws: the trace still watches the throw.
+    dbg = real('U')
+    try:
+        exception_breakpoints(dbg, exception_breakpoint('ae', 'java.lang.ArithmeticException', exclude=['Real']))
+        trace, state, _ = run_until_parked(dbg, 'U', steps=(spec('map', 1),), step_kinds=('sync',))
+        check('U-class-filtered: parked after the lambda threw', state['state'] == 'parked', state)
+        uncaught_stop(dbg, 'U-class-filtered', trace, 'java.lang.ArithmeticException')
+    finally:
+        dbg.end()
+
+
+@case
+def exception_breakpoints_set_during_a_trace_wait_for_its_end():
+    # Set while the trace silences breakpoints: nothing is armed inside it; the list is applied once the
+    # breakpoints are back on, before the trace decides whether to watch the uncaught throw itself.
+    dbg = real('U')
+    try:
+        trace = ok(arm(dbg, at='U', steps=(spec('map', 1),), step_kinds=('sync',)))['traceId']
+        states = exception_breakpoints(dbg, exception_breakpoint('ae', 'java.lang.ArithmeticException'))
+        check('U-deferred: deferred while the trace silences', states == {'ae': 'deferred'}, states)
+        resume(dbg)
+        state = wait_until_done(dbg, trace)
+        check('U-deferred: parked after the lambda threw', state['state'] == 'parked', state)
+        uncaught_stop(dbg, 'U-deferred', trace, 'java.lang.ArithmeticException')
+    finally:
+        dbg.end()
+
+
 @case
 def real_run_uncaught_abort():
     dbg = real('Ua')

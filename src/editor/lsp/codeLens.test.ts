@@ -2,7 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import type { OutlineItem, References } from "@/platform/ipc";
-import { _addEditor, _emitEditorEvent, _removeEditor, codeLenses, documentSynced, viewShown } from "@/editor/api";
+import {
+  _addEditor,
+  _emitEditorEvent,
+  _removeEditor,
+  codeLenses,
+  documentSynced,
+  setLibraryRoots,
+  viewShown,
+  type EditorDocContext,
+} from "@/editor/api";
 
 const ipc = vi.hoisted(() => ({
   docOutline: vi.fn(),
@@ -27,6 +36,7 @@ const { lensTargets, usagesLensExtension } = await import("./codeLens");
 const { lspDoc } = await import("./lsp");
 const { useProject } = await import("@/platform/project");
 const { emitLocalIdeEvent } = await import("@/platform/ipc");
+const { useProjectRoots } = await import("@/platform/projectRoots");
 
 const ctx = { doc: 7, path: "/p/a.rs", language: "rust", uiMode: "Rust", readOnly: false };
 const views: EditorView[] = [];
@@ -43,11 +53,11 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function editor(count = 1, sync?: () => Promise<void>) {
+function editor(count = 1, sync?: () => Promise<void>, docCtx: EditorDocContext = ctx) {
   const view = new EditorView({
     state: EditorState.create({
       doc: Array.from({ length: count }, (_, i) => `fn f${i}() {}`).join("\n"),
-      extensions: [lspDoc.of(ctx), usagesLensExtension(), ...(sync ? [documentSynced.of(sync)] : [])],
+      extensions: [lspDoc.of(docCtx), usagesLensExtension(), ...(sync ? [documentSynced.of(sync)] : [])],
     }),
     parent: document.body,
   });
@@ -155,6 +165,65 @@ describe("background usage counts", () => {
     expect(titles(view)).toEqual(["2 usages"]);
     view.state.facet(codeLenses)[0]!.run!(view, new MouseEvent("click"));
     expect(executeAction).toHaveBeenCalledWith("find.showUsages");
+  });
+
+  it("counts nothing in library sources, where every count searches the whole project", async () => {
+    const off = setLibraryRoots("test", ["/venv/lib/site-packages"]);
+    try {
+      const library = editor(1, undefined, { ...ctx, path: "/venv/lib/site-packages/m/a.rs" });
+      const virtual = editor(1, undefined, { ...ctx, doc: 8, path: "jdt://contents/A.class", virtual: true });
+      await settle();
+      expect(ipc.lspReferences).not.toHaveBeenCalled();
+      expect([titles(library), titles(virtual)]).toEqual([[], []]);
+    } finally {
+      off();
+    }
+  });
+
+  it("counts nothing outside the project's own code: a server's stubs, a node_modules package", async () => {
+    useProject.setState({ project: { root: "/p" } as never });
+    try {
+      const stub = editor(1, undefined, { ...ctx, doc: 9, path: "/opt/server/typeshed/stdlib/typing.pyi" });
+      // A transitive dependency in the package manager's store, inside the project folder.
+      const store = editor(1, undefined, {
+        ...ctx,
+        doc: 10,
+        path: "/p/node_modules/.pnpm/react@18.3.1/node_modules/react/index.d.ts",
+      });
+      await settle();
+      expect(ipc.lspReferences).not.toHaveBeenCalled();
+      expect([titles(stub), titles(store)]).toEqual([[], []]);
+      const own = editor();
+      await settle();
+      expect(ipc.lspReferences).toHaveBeenCalledTimes(1);
+      expect(titles(own)).toEqual(["2 usages"]);
+    } finally {
+      useProject.setState({ project: null });
+    }
+  });
+
+  it("counts nothing in a folder marked Excluded, unless a source folder inside it holds the file", async () => {
+    useProject.setState({ project: { root: "/p" } as never });
+    useProjectRoots.setState({
+      root: "/p",
+      detected: [
+        { path: "vendor", kind: "excluded", detectedFrom: null },
+        { path: "vendor/own/src", kind: "source", detectedFrom: null },
+      ],
+    });
+    try {
+      const vendored = editor(1, undefined, { ...ctx, doc: 11, path: "/p/vendor/lib/a.rs" });
+      await settle();
+      expect(ipc.lspReferences).not.toHaveBeenCalled();
+      expect(titles(vendored)).toEqual([]);
+      const own = editor(1, undefined, { ...ctx, doc: 12, path: "/p/vendor/own/src/a.rs" });
+      await settle();
+      expect(ipc.lspReferences).toHaveBeenCalledTimes(1);
+      expect(titles(own)).toEqual(["2 usages"]);
+    } finally {
+      useProject.setState({ project: null });
+      useProjectRoots.setState({ root: null, detected: [] });
+    }
   });
 
   it("allows a full search even when the server's current scope has no usages", async () => {

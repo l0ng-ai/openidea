@@ -5,6 +5,9 @@ import clsx from "clsx";
 import { call, commands, type DebugSessionId, type Variable } from "@/platform/ipc";
 import { Dialog, Icon, Tree, acquirePopup, showContextMenu, type MenuItem, type TreeHandle } from "@/ui";
 import { formatMessage, tx } from "@/platform/i18n";
+import { fontWeightOf } from "@/platform/editorSettings";
+import { resolveMonoFont } from "@/platform/fonts";
+import { useProject } from "@/platform/project";
 import { activeEditor } from "@/editor/api";
 import { notifications } from "@/workbench/contributions";
 import { addFieldWatchpoint } from "../breakpoints/special";
@@ -490,6 +493,8 @@ function ValueDialog({
   onClose: () => void;
 }) {
   const [value, setValue] = useState(node.value);
+  const editor = useProject((s) => s.settings?.editor);
+  const { family, size } = resolveMonoFont(undefined, editor);
   useEffect(() => {
     const s = session != null ? useDebug.getState().sessions[session] : undefined;
     if (!s || s.status !== "paused" || !node.evaluateName || node.reference > 0) return;
@@ -510,15 +515,29 @@ function ValueDialog({
       dismissOnBackdrop
       onClose={onClose}
       title={`${node.name}${node.typeName ? ` {${node.typeName}}` : ""}`}
-      width={720}
-      minHeight={260}
-      maxHeight={560}
+      width="clamp(420px, 50vw, 820px)"
+      minWidth={320}
+      minHeight={200}
       resizable="both"
       aria-label={formatMessage(tx("Value of {label}"), { label: node.name })}
+      className={styles.valuePopup}
     >
-      <div className={styles.valuePopupContent}>
-        <pre className={styles.valuePopupValue}>{text}</pre>
-      </div>
+      <pre
+        className={styles.valuePopupValue}
+        role="region"
+        aria-label={tx("Value")}
+        tabIndex={0}
+        data-autofocus=""
+        style={{
+          fontFamily: family,
+          fontSize: size,
+          fontWeight: fontWeightOf(editor?.fontWeight, 400),
+          lineHeight: editor?.lineHeight ? `${editor.lineHeight}px` : undefined,
+          tabSize: editor?.tabSize || 4,
+        }}
+      >
+        {text}
+      </pre>
     </Dialog>
   );
 }

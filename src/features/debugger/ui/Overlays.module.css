@@ -221,6 +221,17 @@
   font-size: var(--fs-small);
 }
 
+.unsupportedField {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+/* A disabled control gets no pointer events in WebKit: the field shows the tooltip instead. */
+.unsupportedField > * {
+  pointer-events: none;
+}
+
 /* evaluate dialog */
 .evalDialog {
   height: min(440px, 100%);
@@ -292,6 +303,38 @@
 
 .chooser {
   height: 260px;
+}
+
+.stepPopup {
+  display: flex;
+  flex-direction: column;
+  width: min(460px, calc(100vw - 12px));
+  padding-block-end: var(--space-0-5);
+  overflow: hidden;
+  font-size: var(--fs-ui);
+}
+
+.stepHeading {
+  flex: none;
+  padding: var(--space-1-5) var(--space-3);
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+
+.stepTargets {
+  display: flex;
+  min-height: 0;
+}
+
+.stepList {
+  flex: 1;
+  min-width: 0;
+}
+
+.stepLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .exceptions {
