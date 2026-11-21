@@ -23,7 +23,6 @@ import {
   widgetTitle,
 } from "./mainToolbar";
 import { WindowControls } from "./WindowControls";
-import { MacWindowButtons } from "./MacWindowButtons";
 import { captionButtons } from "./windowButtons";
 import { usePlatform } from "@/platform/platformInfo";
 import { projectInitials } from "./projectColor";
@@ -337,7 +336,6 @@ export function TitleBar({
         {...windowDragRegion}
         data-titlebar={compact ? "compact" : "bare"}
       >
-        {overlay && <MacWindowButtons />}
         {frameless && <WindowControls side="left" />}
         {frameless && <MainMenu />}
         {compact ? <CompactTitle title={title} /> : frameless && <div className={styles.drag} {...windowDragRegion} />}
@@ -358,7 +356,6 @@ export function TitleBar({
         showContextMenu(e, menu);
       }}
     >
-      {overlay && <MacWindowButtons />}
       {frameless && <WindowControls side="left" dialog={dialog} />}
       {frameless && !minimal && !separateMenu && <MainMenu onExpandedChange={setMenuExpanded} />}
       {title && (

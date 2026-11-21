@@ -506,20 +506,13 @@ html {
   --file-tint-strength: 9%;
 }
 
-/* Windows caption buttons (frameless title bar): the system close red in every theme.
- * macOS full-screen title-bar buttons: the system traffic-light colours in every theme. */
+/* Windows caption buttons (frameless title bar): the system close red in every theme. */
 :root,
 :root[data-theme="light"],
 :root[data-theme="dark-hc"] {
   --caption-close-hover: #c42b1c;
   --caption-close-pressed: #b3271a;
   --fg-caption-close-hover: #ffffff;
-  --mac-window-close: #ff5f57;
-  --mac-window-minimize: #febc2e;
-  --mac-window-zoom: #28c840;
-  --mac-window-glyph: rgb(0 0 0 / 55%);
-  --mac-window-edge: rgb(0 0 0 / 12%);
-  --mac-window-inactive: color-mix(in srgb, var(--fg-strong) 22%, transparent);
 }
 
 /*
