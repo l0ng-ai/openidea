@@ -305,6 +305,38 @@
   height: 260px;
 }
 
+.stepPopup {
+  display: flex;
+  flex-direction: column;
+  width: min(460px, calc(100vw - 12px));
+  padding-block-end: var(--space-0-5);
+  overflow: hidden;
+  font-size: var(--fs-ui);
+}
+
+.stepHeading {
+  flex: none;
+  padding: var(--space-1-5) var(--space-3);
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+
+.stepTargets {
+  display: flex;
+  min-height: 0;
+}
+
+.stepList {
+  flex: 1;
+  min-width: 0;
+}
+
+.stepLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .exceptions {
   border-top: 1px solid var(--border-popup);
   padding: 6px 12px 8px;
@@ -471,10 +503,10 @@
   border: 0;
   background: none;
   color: var(--fg-strong);
-  font-family: var(--font-mono);
-  font-size: var(--fs-code);
+  font-family: var(--evaluate-font, var(--font-mono));
+  font-size: var(--evaluate-font-size, var(--fs-code));
   font-weight: var(--fw-code);
-  line-height: var(--lh-code);
+  line-height: var(--evaluate-line-height, var(--lh-code));
   outline: none;
   -webkit-user-select: text;
   user-select: text;
@@ -485,4 +517,16 @@
 .evalHistory {
   align-self: flex-start;
   margin: var(--space-1);
+}
+
+.evalHistoryPopup {
+  width: 0;
+  padding-block: var(--space-1);
+}
+
+.evalHistoryPopup [role="menuitem"] {
+  height: max(var(--h-list-row), var(--evaluate-line-height, var(--lh-code)));
+  font-family: var(--evaluate-font, var(--font-mono));
+  font-size: var(--evaluate-font-size, var(--fs-code));
+  font-weight: var(--fw-code);
 }

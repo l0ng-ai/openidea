@@ -30,6 +30,7 @@ import {
   untitledTitle,
 } from "@/platform/virtualDocs";
 import { editorController, isTextInput, useEditorStatus, useGotoLine, useTabs } from "../controller";
+import { languageInfo } from "../cm/languages";
 import { useDocMeta, useOutline, type DocMeta } from "../model/document";
 import { symbolChain } from "./outline";
 import { NavChildrenPopup } from "./NavBarPopup";
@@ -625,13 +626,18 @@ export function IndentStatus() {
   const ref = useRef<HTMLButtonElement>(null);
   if (!meta) return null;
   const { tabSize, insertSpaces } = meta.indent;
-  const label = insertSpaces ? `${tabSize} spaces` : `Tab (${tabSize})`;
+  const language = languageInfo(meta.language)?.name;
+  const title = language ? tx`${language} Code Style` : tx("Code Style");
+  const spaces = (width: number) => (width === 1 ? tx`${width} space` : tx`${width} spaces`);
+  const tabs = tx`Tab (${tabSize})`;
+  const widths = [...new Set(insertSpaces ? [2, 4, 8, tabSize] : [2, 4, 8])].sort((a, b) => a - b);
+  const label = insertSpaces ? spaces(tabSize) : tabs;
   const set = (indent: { tabSize: number; insertSpaces: boolean }) =>
     editorController().manager.get(meta.path)?.setIndent(indent);
   const choice = (id: string, text: string, indent: { tabSize: number; insertSpaces: boolean }) => ({
     id,
     label: text,
-    checked: indent.tabSize === tabSize && indent.insertSpaces === insertSpaces ? true : undefined,
+    checked: indent.tabSize === tabSize && indent.insertSpaces === insertSpaces,
     run: () => set(indent),
   });
   return (
@@ -650,12 +656,11 @@ export function IndentStatus() {
         onClose={() => setOpen(false)}
         anchor={ref}
         placement="top-end"
+        title={title}
         aria-label="Indentation"
         items={[
-          choice("s2", "2 spaces", { tabSize: 2, insertSpaces: true }),
-          choice("s4", "4 spaces", { tabSize: 4, insertSpaces: true }),
-          choice("s8", "8 spaces", { tabSize: 8, insertSpaces: true }),
-          choice("tab", `Tab (${tabSize})`, { tabSize, insertSpaces: false }),
+          ...widths.map((width) => choice(`s${width}`, spaces(width), { tabSize: width, insertSpaces: true })),
+          choice("tab", tabs, { tabSize, insertSpaces: false }),
           { kind: "separator" },
           {
             id: "configure",

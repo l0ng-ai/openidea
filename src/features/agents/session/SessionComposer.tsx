@@ -162,7 +162,6 @@ export function SessionComposer({
   const provider = useAgents((s) => s.providers.find((p) => p.id === task.provider));
   const catalog = useAgents((s) => s.modelCatalogs.get(task.provider));
   const requestingModels = useAgents((s) => s.modelRequests.has(task.provider));
-  const requestTarget = useAgents((s) => s.modelRequestTargets.get(task.provider));
   const model = task.config.find((o) => o.category === "model");
   const catalogModel = (catalog?.config ?? provider?.config)?.find((o) => o.category === "model");
   const canRefreshModels =
@@ -230,28 +229,17 @@ export function SessionComposer({
       )
       .finally(() => setSending(false));
   };
-  const setOption = (id: string, value: string, forModel?: string) => {
+  const setOption = (id: string, value: string) => {
     const pickerModel = pickerConfig.find((o) => o.category === "model");
     const changingModel = id === pickerModel?.id;
-    const loadingModel = !!forModel || (changingModel && !model?.values.some((v) => v.value === value));
+    const loadingModel = changingModel && !model?.values.some((v) => v.value === value);
     const pendingModel = model?.current != null && model.current !== task.model;
     const change = loadingModel || (changingModel && configChange.current) || pendingModel ? { loadingModel } : null;
     if (change) {
       configChange.current = change;
       setConfiguring(change);
     }
-    const apply = async () => {
-      if (forModel && pickerModel) {
-        await setTaskConfig(task.id, pickerModel.id, forModel);
-        // A later model choice supersedes both halves of this edit.
-        const latest = useAgents.getState().tasks.get(task.id);
-        const selected = latest?.config.find((o) => o.category === "model")?.current ?? latest?.model;
-        if (configChange.current !== change) return;
-        if (selected !== forModel) throw new Error(tx("The model changed before its setting could be applied."));
-      }
-      await setTaskConfig(task.id, id, value);
-    };
-    void apply()
+    void setTaskConfig(task.id, id, value)
       .catch((e: unknown) =>
         notifications().notify({
           level: "error",
@@ -333,11 +321,6 @@ export function SessionComposer({
                       error: requestingModels ? null : (catalog?.error ?? null),
                       onOpen: () => void refreshTaskModels(task.id, false),
                       onRefresh: () => void executeAction("agents.refreshModels", task.id),
-                      preview: {
-                        settingsFor: (id) => (catalog ?? provider)?.thoughtLevels?.[id],
-                        load: (id) => void refreshTaskModels(task.id, false, id),
-                        errorFor: (id) => (requestTarget === id ? catalog?.error : null),
-                      },
                     }
                   : undefined
               }

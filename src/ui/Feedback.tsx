@@ -81,6 +81,7 @@ export type ToastLevel = "info" | "warning" | "error" | "success";
 export interface ToastProps {
   level: ToastLevel;
   title: ReactNode;
+  variant?: "balloon" | "history";
   body?: ReactNode;
   actions?: Array<{ label: string; run: () => void }>;
   onClose?: () => void;
@@ -93,10 +94,11 @@ export interface ToastProps {
 
 const LEVEL_ICON: Record<ToastLevel, IconName> = { info: "info", warning: "warning", error: "error", success: "check" };
 
-/** IDEA-style notification balloon. */
+/** Notification balloon or entry in a notification history list. */
 export function Toast({
   level,
   title,
+  variant = "balloon",
   body,
   actions,
   onClose,
@@ -108,7 +110,7 @@ export function Toast({
   const tx = useTx();
   return (
     <div
-      className={clsx(styles.toast, className)}
+      className={clsx(styles.toast, variant === "history" && styles.toastHistory, className)}
       role={level === "error" ? "alert" : "status"}
       data-level={level}
       onPointerEnter={onPointerEnter}

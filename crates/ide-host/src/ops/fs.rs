@@ -21,6 +21,7 @@ pub async fn fs_compare_directories(
     window: &str,
     left: PathBuf,
     right: PathBuf,
+    mode: ide_vfs::DirectoryCompareMode,
     request: RequestId,
     on_progress: Channel<ide_vfs::DirectoryCompareProgress>,
 ) -> IdeResult<Vec<ide_vfs::DirectoryCompareEntry>> {
@@ -29,13 +30,21 @@ pub async fn fs_compare_directories(
     let result = host
         .blocking(move || {
             let last = std::cell::Cell::new(std::time::Instant::now() - std::time::Duration::from_secs(1));
-            ide_vfs::compare_directories(&left, &right, Some(&project.root), &project.exclude_globs(), &cancel, |p| {
-                // Bound IPC traffic even when hashing multi-gigabyte files.
-                if last.get().elapsed() >= std::time::Duration::from_millis(80) || p.total == Some(p.compared) {
-                    let _ = on_progress.send(p);
-                    last.set(std::time::Instant::now());
-                }
-            })
+            ide_vfs::compare_directories(
+                &left,
+                &right,
+                mode,
+                Some(&project.root),
+                &project.exclude_globs(),
+                &cancel,
+                |p| {
+                    // Bound IPC traffic even when hashing multi-gigabyte files.
+                    if last.get().elapsed() >= std::time::Duration::from_millis(80) || p.total == Some(p.compared) {
+                        let _ = on_progress.send(p);
+                        last.set(std::time::Instant::now());
+                    }
+                },
+            )
         })
         .await;
     host.end_request(request);

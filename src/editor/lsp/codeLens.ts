@@ -7,13 +7,13 @@
  * panel runs (including the plugin indexers' anchors), scoped to what the
  * server analyses: opening candidate files or the libraries for every count
  * would trigger expensive server analysis, so only an explicit Find Usages
- * widens the server's scope, and a widened search can find more. Beside each
- * count, the declaration's last author from VCS blame (`authorLens`).
+ * widens the server's scope, and a widened search can find more. Library
+ * sources get no counts (`isLibrarySource`). Beside each count, the declaration's last author from VCS blame (`authorLens`).
  */
 import { Channel } from "@tauri-apps/api/core";
 import { EditorSelection, MapMode, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
-import { codeLenses, onEditorEvent, shownAgain, type CodeLens } from "@/editor/api";
+import { codeLenses, isLibrarySource, onEditorEvent, shownAgain, type CodeLens } from "@/editor/api";
 import { onNavigationProvidersChanged } from "@/editor/navigationProviders";
 import { executeAction } from "@/platform/actions";
 import { commands, nextRequestId, onIdeEvent, type OutlineItem, type RequestId, type SymbolKind } from "@/platform/ipc";
@@ -214,7 +214,7 @@ class UsagesLensPlugin {
     const doc = docOf(view);
     if (!doc) return;
     const gen = this.generation;
-    const usagesWanted = usagesEnabled();
+    const usagesWanted = usagesEnabled() && !isLibrarySource(doc);
     const usages = usagesWanted && !usagesBackoff.active(doc.doc);
     const authors = authorEnabled() && !doc.virtual;
     if (!usagesWanted && !authors) {

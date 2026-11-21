@@ -51,6 +51,7 @@ import { FindBar } from "./FindBar";
 import { OpenFolds, RevealFold } from "./Folds";
 import { Entry } from "./messages";
 import { ProcessRun, TurnFold } from "./ProcessRows";
+import { type QuestionAnswer } from "./QuestionForm";
 import { providerName } from "./shared";
 import { WorkingRow } from "./WorkingRow";
 
@@ -157,6 +158,8 @@ interface StreamProps {
   findFocus: number;
   fontZoom: number;
   onCloseFind: () => void;
+  /** Answers in flight, kept across entry reloads so a refresh doesn't lose what was typed. */
+  drafts: RefObject<Map<string, QuestionAnswer[]>>;
 }
 
 /** Entries rendered at a time when a conversation opens at its end. */
@@ -181,6 +184,7 @@ export function Stream({
   findFocus,
   fontZoom,
   onCloseFind,
+  drafts,
 }: StreamProps) {
   const ref = useRef<HTMLDivElement>(null);
   useSelectionBoundary(ref);
@@ -416,11 +420,12 @@ export function Stream({
         time={times?.get(row.index) ?? null}
         thoughtMs={thinking?.get(row.index) ?? null}
         working={row.index === lastIndex && busy}
+        drafts={drafts}
         onOpenSubagent={onOpenSubagent}
         onDiagramDrawn={onDiagramDrawn}
       />
     ),
-    [task, turns, replies, times, thinking, lastIndex, busy, onOpenSubagent, onDiagramDrawn],
+    [task, turns, replies, times, thinking, lastIndex, busy, drafts, onOpenSubagent, onDiagramDrawn],
   );
   const renderConversationRow = (row: ConversationRow): ReactNode =>
     row.kind === "turn" ? (

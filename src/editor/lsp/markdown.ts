@@ -6,12 +6,12 @@
  * The Markdown parser (marked + DOMPurify, ~40 KB gzip) loads on first use and
  * is prefetched when the app goes idle; until then markup shows as plain text.
  */
+import { openCodeLocation } from "@/editor/api";
 import { useMemo, useSyncExternalStore } from "react";
 import { LanguageDescription, type Language } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
 import { classHighlighter, highlightTree } from "@lezer/highlight";
 import type { Markup } from "@/bindings";
-import { maybeEditorService } from "@/workbench/contributions";
 import { isTauri } from "@/platform/ipc";
 import { onOtherShare } from "@/platform/paths";
 import { useProject } from "@/platform/project";
@@ -247,10 +247,7 @@ export function sourceLink(href: string): { path: string; line: number; col: num
 export function openDocLink(href: string) {
   const target = sourceLink(href);
   if (target) {
-    void maybeEditorService()?.openFile(target.path, {
-      selection: { line: target.line, col: target.col },
-      focus: true,
-    });
+    void openCodeLocation(target.path, { line: target.line, col: target.col });
   } else if (/^https?:\/\//.test(href) && isTauri()) {
     void import("@tauri-apps/plugin-opener").then((m) => m.openUrl(href)).catch(() => {});
   }

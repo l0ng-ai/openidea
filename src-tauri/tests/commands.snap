@@ -111,6 +111,7 @@ db_disconnect                                trusted            project_host bin
 db_drop_database                             trusted            project_host bindings async
 db_dump_info                                 trusted            desktop      bindings async
 db_execute                                   trusted            project_host bindings async
+db_execute_stream                            trusted            project_host bindings async
 db_explain                                   trusted            project_host bindings async
 db_export_file                               always             desktop      bindings async
 db_finish_transaction                        trusted            project_host bindings async
