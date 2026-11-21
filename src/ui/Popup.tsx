@@ -96,6 +96,29 @@ const measureNaturalHeight: Middleware = {
   },
 };
 
+function watchResizablePopup(reference: Element | VirtualElement, floating: HTMLElement, update: () => void) {
+  // Positioning writes the popup's size limits. Defer those writes outside the resize observer's delivery.
+  let frame = 0;
+  let placed = false;
+  const stop = autoUpdate(reference, floating, () => {
+    // The first placement runs at once, so the popup opens where it stays.
+    if (!placed) {
+      placed = true;
+      update();
+      return;
+    }
+    if (frame) return;
+    frame = requestAnimationFrame(() => {
+      frame = 0;
+      update();
+    });
+  });
+  return () => {
+    stop();
+    cancelAnimationFrame(frame);
+  };
+}
+
 function toReference(anchor: PopupAnchor): Element | VirtualElement | null {
   if (!anchor || anchor === "center") return null;
   if ("current" in anchor) return anchor.current;
@@ -165,7 +188,7 @@ function PopupInner({
     transform: false,
     middleware,
     elements: { reference },
-    whileElementsMounted: autoUpdate,
+    whileElementsMounted: resizable ? watchResizablePopup : autoUpdate,
   });
   const elRef = useRef<HTMLDivElement | null>(null);
   const onCloseRef = useRef(onClose);

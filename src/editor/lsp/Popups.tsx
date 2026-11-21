@@ -1,4 +1,5 @@
 /** React popups for LSP editor features, rendered as a workbench overlay. */
+import { openCodeLocation } from "@/editor/api";
 import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import {
@@ -22,7 +23,6 @@ import {
   T,
 } from "@/ui";
 import { basename, relativePath, useProject } from "@/platform/project";
-import { editorService } from "@/workbench/contributions";
 import {
   closePopup,
   updatePopup,
@@ -122,6 +122,7 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
   const activeRow = rows[activeIndex];
   const activeItem = activeRow?.kind === "action" ? activeRow.item : undefined;
   const showIcons = !popup.compact || popup.items.some((item) => item.icon || item.symbol);
+  const hasTargets = popup.items.some((item) => item.target);
 
   // Choosers highlight what the selected row would act on.
   useEffect(() => {
@@ -207,6 +208,7 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
           (i.leadingDetail?.length ?? 0) +
           (i.preview?.length ?? 0) +
           (i.detail?.length ?? 0) +
+          (i.target ? i.target.path.length + (i.target.container?.length ?? 0) + 3 : 0) +
           (i.shortcut?.length ?? 0),
       ),
     );
@@ -257,6 +259,7 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
       aria-label={popup.title}
       className={clsx(
         styles.listPopup,
+        hasTargets && styles.targetPopup,
         popup.compact && styles.compactListPopup,
         hasPreview && styles.withPreview,
         previewBelow && styles.previewBelow,
@@ -313,6 +316,7 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
               if (row.kind !== "action") return null;
               const { item, match } = row;
               const n = popup.numbered && !query ? indexOf(item) + 1 : 0;
+              const name = <HighlightedText className={styles.label} text={item.label} indices={match} tone="accent" />;
               return (
                 <div
                   className={clsx(styles.item, item.disabled && styles.disabled, item.emphasis && styles.emphasis)}
@@ -328,13 +332,29 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
                   )}
                   {popup.numbered && <span className={styles.mnemonic}>{n > 0 && n <= 9 ? n : ""}</span>}
                   {showIcons && <ItemIcon item={item} />}
-                  <HighlightedText className={styles.label} text={item.label} indices={match} tone="accent" />
+                  {item.target ? (
+                    <span className={styles.targetIdentity}>
+                      {name}
+                      {item.target.container && (
+                        <span className={styles.targetContainer} title={item.target.container}>
+                          ({item.target.container})
+                        </span>
+                      )}
+                    </span>
+                  ) : (
+                    name
+                  )}
                   {item.preview && (
                     <span className={styles.preview} title={item.preview}>
                       {item.preview}
                     </span>
                   )}
-                  <span className={styles.spacer} />
+                  {!item.target && <span className={styles.spacer} />}
+                  {item.target && (
+                    <span className={styles.targetPath} title={item.target.path}>
+                      <bdi>{item.target.path}</bdi>
+                    </span>
+                  )}
                   {item.detail && <span className={styles.detail}>{item.detail}</span>}
                   {item.shortcut && <span className={styles.shortcut}>{item.shortcut}</span>}
                   {item.submenu?.length ? (
@@ -564,10 +584,7 @@ function DefinitionPopup({ popup }: { popup: Extract<LspPopup, { kind: "definiti
   const targetIcon = (path: string) => fileIconName(basename(path), path);
   const open = () => {
     closePopup();
-    void editorService().openFile(location.path, {
-      selection: { line: location.range.start.line, col: location.range.start.col },
-      focus: true,
-    });
+    void openCodeLocation(location.path, { line: location.range.start.line, col: location.range.start.col });
   };
   const select = (index: number) =>
     updatePopup("definition", { index: (index + popup.targets.length) % popup.targets.length });

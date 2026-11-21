@@ -62,10 +62,11 @@ function signatureTooltip(s: SigState): Tooltip {
     above: true,
     strictSide: false,
     create: (view) => {
+      const { signatures, activeSignature, activeParameter } = s.help;
       const dom = document.createElement("div");
       dom.className = "cm-lsp-signature";
+      dom.classList.toggle("cm-lsp-signature-overloads", signatures.length > 1);
       dom.setAttribute("role", "tooltip");
-      const { signatures, activeSignature, activeParameter } = s.help;
       let active: HTMLElement | null = null;
       signatures.forEach((sig, i) => {
         const row = document.createElement("div");
@@ -94,13 +95,9 @@ function signatureTooltip(s: SigState): Tooltip {
       }
       const fit = ({ left, right }: { left: number; right: number }) => {
         const width = `${Math.max(0, Math.floor(right - left))}px`;
-        const fontSize = getComputedStyle(view.contentDOM).fontSize;
-        const changed = dom.style.getPropertyValue("--cm-signature-width") !== width || dom.style.fontSize !== fontSize;
-        if (changed) {
-          dom.style.setProperty("--cm-signature-width", width);
-          dom.style.fontSize = fontSize;
-        }
-        return changed;
+        if (dom.style.getPropertyValue("--cm-signature-width") === width) return false;
+        dom.style.setProperty("--cm-signature-width", width);
+        return true;
       };
       // Reveal the current parameter after wrapping or a vertical clamp. Leave manual scrolling alone.
       let fittedWidth = 0;

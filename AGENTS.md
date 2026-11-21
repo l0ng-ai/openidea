@@ -73,7 +73,9 @@ Shared agent skills live in `.agents/skills/` (`.claude/skills/` links to them):
 
 ## Commands
 
-- `pnpm tauri dev` — run the app with worktree isolation (Node 22.18+).
+- Optional: `mise install` provisions the contributor toolchain; `mise tasks` lists the task aliases.
+  See [Development setup](docs/en/contribute/setup.mdx). The direct commands below still work without mise.
+- `pnpm tauri dev` — run the app with worktree isolation. Use Node 22.22.2 or later on the 22.x line.
   `pnpm dev:app` also enables the global Tauri API. `pnpm dev:status` reports
   this worktree's running MCP bridges and actual ports.
 - `pnpm build` — typecheck + bundle frontend.

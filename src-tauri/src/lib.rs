@@ -44,6 +44,8 @@ mod windows;
 #[cfg(windows)]
 mod windows_error_mode;
 #[cfg(windows)]
+mod windows_webview_keys;
+#[cfg(windows)]
 mod windows_webview_recovery;
 
 use parking_lot::Mutex;
@@ -139,6 +141,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init());
+    #[cfg(windows)]
+    let app = app.plugin(windows_webview_keys::init());
     #[cfg(windows)]
     let app = app.plugin(windows_webview_recovery::init());
     #[cfg(target_os = "linux")]

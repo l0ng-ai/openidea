@@ -92,15 +92,18 @@ pub struct ProjectIndex {
 }
 
 /// Folders indexed alongside the internal state root.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Default, PartialEq)]
 pub struct IndexRoots {
     pub include_root: bool,
     pub folders: Vec<PathBuf>,
+    /// Folders with exclude globs of their own (an attached project's), relative to the folder;
+    /// the other folders share the project's.
+    pub excludes: std::collections::BTreeMap<PathBuf, Vec<String>>,
 }
 
 impl From<Vec<PathBuf>> for IndexRoots {
     fn from(folders: Vec<PathBuf>) -> Self {
-        Self { include_root: true, folders }
+        Self { include_root: true, folders, ..Default::default() }
     }
 }
 

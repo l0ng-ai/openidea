@@ -129,30 +129,72 @@ pub fn module_classpath(
     cache: &Path,
     cancel: &ide_core::CancellationToken,
 ) -> IdeResult<String> {
-    let target = module_target(root, model, module, test)?;
-    let fingerprint = launch_fingerprint(root, model, &target.module, test, local_repo, cancel)?;
-    let cache_path = classpath_cache_path(root, cache, &target.module, test);
-    if let (Some(fingerprint), Some(path)) = (&fingerprint, &cache_path)
-        && let Ok(bytes) = fs::read(path)
-        && let Ok(cached) = serde_json::from_slice::<CachedClasspath>(&bytes)
-        && cached.version == CLASSPATH_CACHE_VERSION
-        && cached.fingerprint == *fingerprint
-        && classpath_entries_exist(root, &cached.classpath)
-    {
-        return Ok(cached.classpath);
+    module_classpaths(root, model, &[module.to_path_buf()], test, local_repo, cache, cancel)
+}
+
+/// [`module_classpath`] of `modules[0]`. The other modules, launched together with it
+/// (#3971), share its Maven probe when they have no cached classpath, which leaves
+/// theirs cached for their own launches.
+pub fn module_classpaths(
+    root: &Path,
+    model: &BuildModel,
+    modules: &[PathBuf],
+    test: bool,
+    local_repo: Option<PathBuf>,
+    cache: &Path,
+    cancel: &ide_core::CancellationToken,
+) -> IdeResult<String> {
+    let mut probes: Vec<Probe> = Vec::new();
+    for (i, module) in modules.iter().enumerate() {
+        let target = match module_target(root, model, module, test) {
+            Ok(target) => target,
+            Err(e) if i == 0 => return Err(e),
+            Err(_) => continue,
+        };
+        if i > 0 && (target.top.dir != probes[0].0.top.dir || probes.iter().any(|p| p.0.module == target.module)) {
+            continue;
+        }
+        let fingerprint = launch_fingerprint(root, model, &target.module, test, local_repo.clone(), cancel)?;
+        let cache_path = classpath_cache_path(root, cache, &target.module, test);
+        if let (Some(fingerprint), Some(path)) = (&fingerprint, &cache_path)
+            && let Ok(bytes) = fs::read(path)
+            && let Ok(cached) = serde_json::from_slice::<CachedClasspath>(&bytes)
+            && cached.version == CLASSPATH_CACHE_VERSION
+            && cached.fingerprint == *fingerprint
+            && classpath_entries_exist(root, &cached.classpath)
+        {
+            if i == 0 {
+                return Ok(cached.classpath);
+            }
+            continue;
+        }
+        probes.push(Probe(target, fingerprint, cache_path));
     }
-    let classpath = classpath(root, model, &target, if test { "test" } else { "runtime" }, true)?;
+    let scope = if test { "test" } else { "runtime" };
+    let targets: Vec<&SingleFileTarget> = probes.iter().map(|p| &p.0).collect();
+    let classpaths = match classpaths(root, model, &targets, scope, true) {
+        Ok(classpaths) => classpaths,
+        // Another module's failure must not cost this launch its own probe.
+        Err(_) if targets.len() > 1 && !cancel.is_cancelled() => classpaths(root, model, &targets[..1], scope, true)?,
+        Err(e) => return Err(e),
+    };
     if cancel.is_cancelled() {
         return Err(IdeError::cancelled());
     }
-    if let (Some(fingerprint), Some(path)) = (fingerprint, cache_path) {
-        let cached = CachedClasspath { version: CLASSPATH_CACHE_VERSION, fingerprint, classpath: classpath.clone() };
-        if let Err(error) = cache_classpath(&path, &cached) {
-            tracing::debug!(path = %path.display(), %error, "Cannot cache the Java launch classpath");
+    for (Probe(_, fingerprint, cache_path), classpath) in probes.into_iter().zip(&classpaths) {
+        if let (Some(fingerprint), Some(path)) = (fingerprint, cache_path) {
+            let cached =
+                CachedClasspath { version: CLASSPATH_CACHE_VERSION, fingerprint, classpath: classpath.clone() };
+            if let Err(error) = cache_classpath(&path, &cached) {
+                tracing::debug!(path = %path.display(), %error, "Cannot cache the Java launch classpath");
+            }
         }
     }
-    Ok(classpath)
+    Ok(classpaths.into_iter().next().unwrap())
 }
+
+/// A module whose classpath the Maven probe resolves, with its cache key and file.
+struct Probe(SingleFileTarget, Option<LaunchFingerprint>, Option<PathBuf>);
 
 /// One cache file per module and scope. Mirroring the module path keeps nested
 /// modules and their different dependency scopes from overwriting each other.
@@ -195,6 +237,62 @@ fn classpath(
     scope: &str,
     compile_first: bool,
 ) -> IdeResult<String> {
+    Ok(classpaths(root, model, &[target], scope, compile_first)?.pop().unwrap())
+}
+
+/// The classpath of each of `targets` (modules of one reactor) from one Maven probe.
+fn classpaths(
+    root: &Path,
+    model: &BuildModel,
+    targets: &[&SingleFileTarget],
+    scope: &str,
+    compile_first: bool,
+) -> IdeResult<Vec<String>> {
+    let top = &targets[0].top;
+    let probe = CP_FILE;
+    let mut args = vec!["-B", "-Dstyle.color=never", maven::LOCAL_REPO_TRACKING_ARG];
+    args.extend(top.options.iter().map(String::as_str));
+    // The reactor root among them builds every module.
+    let selection = if targets.iter().any(|t| t.pl.is_empty()) {
+        String::new()
+    } else {
+        let mut pl: Vec<&str> = targets.iter().map(|t| t.pl.as_str()).collect();
+        pl.sort();
+        pl.dedup();
+        pl.join(",")
+    };
+    if !selection.is_empty() {
+        args.extend(["-pl", selection.as_str(), "-am"]);
+    }
+    let output_arg = format!("-Dmdep.outputFile={probe}");
+    let scope_arg = format!("-Dmdep.includeScope={scope}");
+    // A launch build may only have reached `compile`. Running `compile` in this
+    // same Maven session lets the dependency plugin resolve Reactor siblings from
+    // their target/classes without paying for package-phase plugins.
+    if compile_first {
+        args.push("compile");
+    }
+    args.extend(["dependency:build-classpath", output_arg.as_str(), scope_arg.as_str(), "-q"]);
+    let top_dir = subdir(root, &top.dir);
+    let mut command = ProcCommand::new(&top.command);
+    command.args(&args).envs(&top.env).current_dir(&top_dir);
+    let status = ide_core::process::prepare(&mut command)
+        .output()
+        .map_err(|e| IdeError::internal(format!("cannot resolve the compile classpath: {e}")))?;
+    if !status.status.success() {
+        let stdout = String::from_utf8_lossy(&status.stdout);
+        let stderr = String::from_utf8_lossy(&status.stderr);
+        // Maven reports reactor/dependency failures on stdout, not only stderr.
+        let tail: Vec<&str> = stdout.lines().chain(stderr.lines()).filter(|l| !l.trim().is_empty()).collect();
+        let tail = tail.iter().rev().take(5).rev().cloned().collect::<Vec<_>>().join("\n");
+        return Err(IdeError::internal(format!("cannot resolve the compile classpath:\n{tail}")));
+    }
+    targets.iter().map(|target| target_classpath(root, model, target)).collect()
+}
+
+/// The classpath of `target` after a probe: its reactor class directories, then
+/// the dependencies Maven wrote to the module's probe file.
+fn target_classpath(root: &Path, model: &BuildModel, target: &SingleFileTarget) -> IdeResult<String> {
     let mut entries: Vec<String> = Vec::new();
     // The module's own classes first: the file almost always uses classes next to it.
     let own: &[&str] = if target.test { &["target/test-classes", "target/classes"] } else { &["target/classes"] };
@@ -220,37 +318,8 @@ fn classpath(
             }
         }
     }
-    let probe = CP_FILE;
-    let mut args = vec!["-B", "-Dstyle.color=never", maven::LOCAL_REPO_TRACKING_ARG];
-    args.extend(target.top.options.iter().map(String::as_str));
-    if !target.pl.is_empty() {
-        args.extend(["-pl", target.pl.as_str(), "-am"]);
-    }
-    let output_arg = format!("-Dmdep.outputFile={probe}");
-    let scope_arg = format!("-Dmdep.includeScope={scope}");
-    // A launch build may only have reached `compile`. Running `compile` in this
-    // same Maven session lets the dependency plugin resolve Reactor siblings from
-    // their target/classes without paying for package-phase plugins.
-    if compile_first {
-        args.push("compile");
-    }
-    args.extend(["dependency:build-classpath", output_arg.as_str(), scope_arg.as_str(), "-q"]);
-    let top_dir = subdir(root, &target.top.dir);
-    let mut command = ProcCommand::new(&target.top.command);
-    command.args(&args).envs(&target.top.env).current_dir(&top_dir);
-    let status = ide_core::process::prepare(&mut command)
-        .output()
-        .map_err(|e| IdeError::internal(format!("cannot resolve the compile classpath: {e}")))?;
-    if !status.status.success() {
-        let stdout = String::from_utf8_lossy(&status.stdout);
-        let stderr = String::from_utf8_lossy(&status.stderr);
-        // Maven reports reactor/dependency failures on stdout, not only stderr.
-        let tail: Vec<&str> = stdout.lines().chain(stderr.lines()).filter(|l| !l.trim().is_empty()).collect();
-        let tail = tail.iter().rev().take(5).rev().cloned().collect::<Vec<_>>().join("\n");
-        return Err(IdeError::internal(format!("cannot resolve the compile classpath:\n{tail}")));
-    }
     // With `-am` every visited module writes its own file; only this module's counts.
-    let cp_file = target.module.join(probe);
+    let cp_file = target.module.join(CP_FILE);
     let content = fs::read_to_string(&cp_file).map_err(|e| {
         IdeError::internal(format!("cannot resolve the compile classpath: {} ({e})", cp_file.display()))
     })?;
@@ -526,6 +595,47 @@ mod tests {
         assert!(paths.contains(&PathBuf::from("/repo/fixture/target/test-classes")), "{test}");
         let args = fs::read_to_string(root.join("args.txt")).unwrap();
         assert!(args.lines().any(|a| a == "-Dmdep.includeScope=test"), "{args}");
+    }
+
+    /// Modules launched together resolve their classpaths in one Maven probe and leave
+    /// the others' cached; a probe another module breaks still resolves the first one.
+    #[cfg(unix)]
+    #[test]
+    fn launch_modules_share_one_classpath_probe() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fixture(root);
+        write(root, "lib/src/main/java/demo/Lib.java", "class Lib {}");
+        let script = root.join("mvnw");
+        fs::write(
+            &script,
+            "#!/bin/sh\necho \"$@\" >> calls.txt\npl='.'\nwhile [ $# -gt 0 ]; do\nif [ \"$1\" = \"-pl\" ]; then pl=\"$2\"; shift 2; else shift; fi\ndone\ncase \"$pl\" in *lib*) [ -f lib/broken ] && exit 1;; esac\nfor m in $(echo \"$pl\" | tr ',' ' '); do mkdir -p \"$m/target\" repo; touch \"repo/$m.jar\"; printf \"$PWD/repo/$m.jar\" > \"$m/target/ide-compile-cp.txt\"; done\n",
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let model = crate::load(root, &root.join("cache"), None);
+        let cache = root.join("cache");
+        let cancel = CancellationToken::new();
+        let calls = || fs::read_to_string(root.join("calls.txt")).unwrap_or_default().lines().count();
+        let modules = [root.join("app"), root.join("lib"), root.join("app")];
+        let app = module_classpaths(root, &model, &modules, false, None, &cache, &cancel).unwrap();
+        assert!(app.contains("/repo/app.jar") && !app.contains("repo/lib.jar"), "{app}");
+        assert_eq!(calls(), 1);
+        assert!(fs::read_to_string(root.join("calls.txt")).unwrap().contains("-pl app,lib -am compile"));
+        let lib = module_classpath(root, &model, &root.join("lib"), false, None, &cache, &cancel).unwrap();
+        assert!(lib.contains("/repo/lib.jar"), "{lib}");
+        assert_eq!(calls(), 1, "lib's classpath came from the shared probe");
+        // A probe another module breaks is retried for the first module alone.
+        write(root, "lib/src/main/java/demo/Lib.java", "class Lib { int changed; }");
+        write(root, "lib/broken", "");
+        let app = module_classpaths(root, &model, &[root.join("app"), root.join("lib")], false, None, &cache, &cancel)
+            .unwrap();
+        assert!(app.contains("/repo/app.jar"), "{app}");
+        assert_eq!(calls(), 3, "the shared probe failed, then app was probed alone");
+        // The first module's own failure stays its failure.
+        assert!(module_classpath(root, &model, &root.join("lib"), false, None, &cache, &cancel).is_err());
     }
 
     /// The launch classpath follows the Maven runner JDK and is reused until that

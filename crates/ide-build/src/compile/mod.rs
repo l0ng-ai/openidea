@@ -15,8 +15,8 @@ pub use fingerprint::{LaunchFingerprint, launch_fingerprint, menu_fingerprint};
 pub use launch_resources::process_launch_resources;
 pub use modules::record_module_build;
 pub use single::{
-    SingleFileTarget, compile_file_plan, find_javac, javac_step, module_classpath, single_file_classpath,
-    single_file_target,
+    SingleFileTarget, compile_file_plan, find_javac, javac_step, module_classpath, module_classpaths,
+    single_file_classpath, single_file_target,
 };
 pub use structure::{
     StructureJdk, StructureRoots, artifact_file, artifact_output, language_release, structure_outputs, structure_plan,
@@ -916,6 +916,47 @@ fn launch_plan(
     Ok(plan)
 }
 
+/// Directory of the linked Maven reactor that builds the launch module at `module`;
+/// launches of one reactor can share a build ([`build_for_launches`]).
+pub fn launch_reactor(root: &Path, model: &BuildModel, module: &Path) -> Option<String> {
+    maven_reactor(model.maven.as_ref()?, &rel_str(root, module)).map(|top| top.dir.clone())
+}
+
+/// One Maven step building every module of `modules` (all of one reactor) with what they
+/// depend on: `-pl a,b -am`, so their shared upstream modules build once (#3971).
+fn merged_launch_plan(
+    root: &Path,
+    model: &BuildModel,
+    modules: &[PathBuf],
+    test: bool,
+    kind: BuildKind,
+    cancel: &CancellationToken,
+) -> IdeResult<BuildPlan> {
+    let mut plan = launch_plan(root, model, &modules[0], test, kind, cancel)?;
+    if plan.system != BuildSystem::Maven || modules.len() == 1 {
+        return Ok(plan);
+    }
+    let mut selection = Vec::new();
+    for module in modules {
+        let one = launch_plan(root, model, module, test, kind, cancel)?;
+        if one.steps.len() != 1 || one.steps[0].cwd != plan.steps[0].cwd {
+            return Err(IdeError::invalid("launch modules belong to different Maven reactors"));
+        }
+        match one.steps[0].args.iter().position(|a| a == "-pl") {
+            Some(i) => selection.push(one.steps[0].args[i + 1].clone()),
+            // The reactor root itself builds every module.
+            None => return Ok(one),
+        }
+    }
+    selection.sort();
+    selection.dedup();
+    let step = &mut plan.steps[0];
+    if let Some(i) = step.args.iter().position(|a| a == "-pl") {
+        step.args[i + 1] = selection.join(",");
+    }
+    Ok(plan)
+}
+
 #[derive(Debug)]
 pub struct LaunchBuild {
     pub class_dirs: Vec<PathBuf>,
@@ -932,7 +973,21 @@ pub fn build_for_launch(
     kind: BuildKind,
     cancel: &CancellationToken,
 ) -> IdeResult<LaunchBuild> {
-    let plan = launch_plan(root, model, module, test, kind, cancel)?;
+    let mut built = build_for_launches(root, model, &[module.to_path_buf()], test, kind, cancel)?;
+    Ok(built.pop().unwrap())
+}
+
+/// [`build_for_launch`] of several modules of one Maven reactor in a single Maven run:
+/// one result per module, in order, sharing the build's failure.
+pub fn build_for_launches(
+    root: &Path,
+    model: &BuildModel,
+    modules: &[PathBuf],
+    test: bool,
+    kind: BuildKind,
+    cancel: &CancellationToken,
+) -> IdeResult<Vec<LaunchBuild>> {
+    let plan = merged_launch_plan(root, model, modules, test, kind, cancel)?;
     let result = run(root, &plan, cancel, &|_| {})?;
     let failure = if !result.success {
         let errors: Vec<String> = result
@@ -949,17 +1004,21 @@ pub fn build_for_launch(
     } else {
         None
     };
-    let class_dirs = if plan.system == BuildSystem::Maven
-        && let Some(m) = &model.maven
-    {
-        maven_launch_projects(root, m, module, test)
-            .iter()
-            .flat_map(|p| launch_class_dirs(plan.system, &subdir(root, &p.dir), test && subdir(root, &p.dir) == module))
-            .collect()
-    } else {
-        launch_class_dirs(plan.system, module, test)
+    let class_dirs = |module: &Path| {
+        if plan.system == BuildSystem::Maven
+            && let Some(m) = &model.maven
+        {
+            maven_launch_projects(root, m, module, test)
+                .iter()
+                .flat_map(|p| {
+                    launch_class_dirs(plan.system, &subdir(root, &p.dir), test && subdir(root, &p.dir) == module)
+                })
+                .collect()
+        } else {
+            launch_class_dirs(plan.system, module, test)
+        }
     };
-    Ok(LaunchBuild { class_dirs, failure })
+    Ok(modules.iter().map(|m| LaunchBuild { class_dirs: class_dirs(m), failure: failure.clone() }).collect())
 }
 
 fn launch_class_dirs(system: BuildSystem, module: &Path, test: bool) -> Vec<PathBuf> {
@@ -1657,6 +1716,46 @@ mod tests {
                 ]
             );
         }
+    }
+
+    #[test]
+    fn launches_of_one_reactor_merge_into_one_module_selection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for dir in ["app", "lib", "unrelated"] {
+            write(root, &format!("{dir}/pom.xml"), "<project/>");
+        }
+        let mut model = reactor_model();
+        let cancel = CancellationToken::new();
+        let modules = |dirs: &[&str]| dirs.iter().map(|d| root.join(d)).collect::<Vec<_>>();
+        let selection = |plan: BuildPlan| {
+            let args = &plan.steps[0].args;
+            args.iter().position(|a| a == "-pl").map(|i| (args[i + 1].clone(), args[i + 2].clone(), args.len()))
+        };
+        assert_eq!(launch_reactor(root, &model, &root.join("lib")).as_deref(), Some(""));
+        let plan = merged_launch_plan(root, &model, &modules(&["lib", "app", "lib"]), false, BuildKind::Build, &cancel)
+            .unwrap();
+        assert_eq!(plan.steps.len(), 1);
+        assert_eq!(plan.steps[0].args.last().unwrap(), "compile");
+        assert_eq!(selection(plan), Some(("app,lib".into(), "-am".into(), 10)));
+        // One module: exactly the single launch's step.
+        let single = merged_launch_plan(root, &model, &modules(&["app"]), true, BuildKind::Rebuild, &cancel).unwrap();
+        let expected = launch_plan(root, &model, &root.join("app"), true, BuildKind::Rebuild, &cancel).unwrap();
+        assert_eq!(single.steps[0].args, expected.steps[0].args);
+        // The reactor root among them builds the whole reactor.
+        model.maven.as_mut().unwrap().projects[0].packaging = "jar".into();
+        let whole = merged_launch_plan(root, &model, &modules(&["app", ""]), false, BuildKind::Build, &cancel).unwrap();
+        assert_eq!(selection(whole), None);
+        // Another linked reactor can't join the step.
+        let m = model.maven.as_mut().unwrap();
+        m.projects[4].aggregated = false;
+        m.projects[4].command = "other".into();
+        m.projects[0].modules.retain(|p| p != "unrelated/pom.xml");
+        assert_eq!(launch_reactor(root, &model, &root.join("unrelated")).as_deref(), Some("unrelated"));
+        assert!(
+            merged_launch_plan(root, &model, &modules(&["app", "unrelated"]), false, BuildKind::Build, &cancel)
+                .is_err()
+        );
     }
 
     #[cfg(unix)]

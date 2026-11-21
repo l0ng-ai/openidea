@@ -6,10 +6,11 @@
  * F1's documentation instead of a popup while it is open. The hover's
  * documentation is the same view with its own history.
  */
+import { openCodeLocation } from "@/editor/api";
 import { create, createStore, type StoreApi } from "zustand";
 import { commands, nextRequestId, type Location } from "@/platform/ipc";
 import { hasPrimaryModifier } from "@/platform/keymap";
-import { editorService, maybeEditorService, toolWindowService } from "@/workbench/contributions";
+import { toolWindowService } from "@/workbench/contributions";
 import { closePopup, updatePopup, useLspPopup, type DocEntry } from "./popupStore";
 import { isEmptyMarkup, languageForPath, openDocLink, sourceLink, type DocLinkHandler } from "./markdown";
 import { resolveGoRef, signatureRef } from "./docLinks/go";
@@ -144,10 +145,7 @@ export async function editDocSource(host: DocHost): Promise<boolean> {
   const loc = (await entry?.source?.().catch(() => null)) ?? null;
   if (!loc) return false;
   closeHost(host);
-  await editorService().openFile(loc.path, {
-    selection: { line: loc.range.start.line, col: loc.range.start.col },
-    focus: true,
-  });
+  await openCodeLocation(loc.path, { line: loc.range.start.line, col: loc.range.start.col });
   return true;
 }
 
@@ -199,10 +197,7 @@ async function followTo(host: DocHost, target: DocTarget) {
   const h = history(host);
   if (!entry || !h) {
     closeHost(host);
-    void maybeEditorService()?.openFile(target.path, {
-      selection: { line: target.line, col: target.col },
-      focus: true,
-    });
+    void openCodeLocation(target.path, { line: target.line, col: target.col });
     return;
   }
   setHistory(host, pushHistory(h, entry));

@@ -1,4 +1,4 @@
-package openidea:plugin@1.13.0;
+package openidea:plugin@1.14.0;
 
 /// Problems in files, shown in the editor and the Problems view.
 interface diagnostics {
@@ -150,7 +150,8 @@ interface process {
     }
 
     /// What a kept-running program printed since the last call, and its exit
-    /// code once it ended (`none` while it still runs).
+    /// code with the last of its output (`none` while it still runs or output
+    /// is left to read, so the first chunk with a status is the final one).
     record chunk {
         /// Up to 1 MiB per stream; unpolled output keeps the last 1 MiB.
         /// `poll` takes up to `max-bytes`, or one whole character when that
@@ -165,10 +166,13 @@ interface process {
     /// (the ninth `start` is `invalid`). They also end with the plugin:
     /// stopping, disabling or reclaiming it kills what it started.
     resource child {
-        /// What it printed since the last call, and its status once it ends.
+        /// What it printed since the last call; the status comes with the
+        /// chunk that holds the last of its output.
         poll: func(max-bytes: u32) -> result<chunk, error>;
-        /// Waits up to `timeout-ms` for it to end (0 only checks), then
-        /// reports what it printed since the last call.
+        /// Waits up to `timeout-ms` for it to end and its output to reach the
+        /// end (0 only checks), then reports what it printed since the last
+        /// call. When more is left than one chunk holds, the status comes
+        /// with a later `poll`.
         wait: func(timeout-ms: u32) -> result<chunk, error>;
         /// Writes to its stdin; fails once it ended or stdin was closed.
         write: func(text: string) -> result<_, error>;

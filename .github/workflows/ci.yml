@@ -65,8 +65,9 @@ jobs:
           plugin_web='^plugins/official/[^/]+/web-src/'
           # Paths the frontend checks never read...
           backend='^(crates/|src-tauri/|sdk/|wit/|java/|fixtures/|Cargo\.(toml|lock)$|deny\.toml$|rustfmt\.toml$|rust-toolchain(\.toml)?$|\.cargo/)'
-          # ...except these, which frontend tests and e2e fixtures load.
-          read_by_web='^(fixtures/(folding|django-app)/|crates/ide-plugin/tests/fixtures/|crates/ide-db/(src|tests/fixtures)/snowflake/|src-tauri/(icons|capabilities)/|src-tauri/tauri\.conf\.json$)'
+          # ...except these, which frontend tests and e2e fixtures load (the crate manifests:
+          # scripts/smoke-paths.test.ts, through cargo metadata).
+          read_by_web='^(fixtures/(folding|django-app)/|(crates/[^/]+/)?Cargo\.toml$|crates/ide-plugin/tests/fixtures/|crates/ide-db/(src|tests/fixtures)/snowflake/|src-tauri/(icons|capabilities)/|src-tauri/tauri\.conf\.json$)'
           # What the browser app and its e2e tests are built from.
           app='^(src/|e2e/|public/|index\.html$|vite\.config\.ts$|tsconfig\.json$|playwright\.config\.ts$|package\.json$|pnpm-(lock|workspace)\.yaml$|crates/ide-plugin/tests/fixtures/|src-tauri/(icons|capabilities)/|src-tauri/tauri\.conf\.json$)'
           # The plugin workspaces: the SDK, the plugins, their interface and the host's fixture plugins.

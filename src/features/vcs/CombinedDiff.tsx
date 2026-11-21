@@ -63,7 +63,13 @@ function Block({
   const root = useProject((s) => s.project?.root ?? "");
   const dir = relativeDir(root, item.path);
   return (
-    <section ref={ref} className={styles.block} data-combined-block={item.path} aria-label={name}>
+    <section
+      ref={ref}
+      className={styles.block}
+      data-combined-block={item.path}
+      data-collapsed={collapsed || undefined}
+      aria-label={name}
+    >
       <div className={styles.header}>
         <IconButton
           icon={collapsed ? "chevron-right" : "chevron-down"}
@@ -72,16 +78,6 @@ function Block({
           aria-expanded={!collapsed}
           onClick={onToggle}
         />
-        <Icon name={fileIconName(name)} size={16} />
-        <span className={styles.name} style={{ color: KIND_COLOR[kind] }} title={tx(KIND_LABEL[kind])}>
-          {name}
-        </span>
-        {dir && (
-          <span className={styles.dir} title={item.path}>
-            {dir}
-          </span>
-        )}
-        <span className={styles.grow} />
         <IconButton
           icon="diff"
           title="Open in Separate Tab"
@@ -97,6 +93,14 @@ function Block({
             onClick={() => void editorService().openFile(item.path, { focus: true })}
           />
         )}
+        <span className={styles.sep} aria-hidden="true" />
+        <div className={styles.file} title={`${item.path}\n${tx(KIND_LABEL[kind])}`}>
+          <Icon name={fileIconName(name)} size={16} />
+          <span className={styles.name} style={{ color: KIND_COLOR[kind] }}>
+            {name}
+          </span>
+          {dir && <span className={styles.dir}>{dir}</span>}
+        </div>
       </div>
       {/* A collapsed block keeps its loaded diff, hidden: unmounting it would release the
           working-tree document and, with autosave off, drop its unsaved edits. */}
@@ -129,7 +133,10 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
   const scrollTo = (path: string) => {
     const el = blocks().find((b) => b.dataset.combinedBlock === path);
     const scroller = scrollRef.current;
-    if (el && scroller) scroller.scrollTop += el.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+    if (el && scroller) {
+      const inset = Number.parseFloat(getComputedStyle(scroller).paddingTop) || 0;
+      scroller.scrollTop += el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - inset;
+    }
   };
   const step = (dir: 1 | -1) => {
     const next = items[current() + dir];
