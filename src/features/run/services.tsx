@@ -53,6 +53,7 @@ import {
   type ServiceSession,
 } from "./serviceSessions";
 import { isDebugOnly } from "./types";
+import { hasSource, jumpToConfigSource } from "./configSource";
 import {
   currentServiceOrder,
   moveServiceOrder,
@@ -756,6 +757,13 @@ function menu(item: ServiceTreeItem): MenuItem[] {
       },
       { label: "Edit Configuration…", icon: "edit", run: () => void executeAction("run.editConfigs", config.id) },
       {
+        label: "Jump to Source",
+        icon: "external-link",
+        shortcut: "F4",
+        disabled: !hasSource(config),
+        run: () => void jumpToConfigSource(config),
+      },
+      {
         label: "Remove from Services",
         icon: "close",
         run: () => void executeAction("run.services.hideConfig", config.id),
@@ -919,6 +927,10 @@ export const runServiceProvider: ServiceProviderContribution = {
   activate: (item) => {
     const r = resolve(item);
     if (r.config && !(r.session && liveServiceSession(r.session)) && !isDebugOnly(r.config)) run(r);
+  },
+  jumpToSource: (item) => {
+    const { config } = resolve(item);
+    if (config && hasSource(config)) void jumpToConfigSource(config);
   },
   detail: RunDetail,
   addMenu,

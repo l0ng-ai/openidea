@@ -259,6 +259,11 @@ export function ServicesTreeView() {
                   const p = index.get(n.key);
                   providers.find((x) => x.id === p?.provider)?.activate?.(n);
                 }}
+                onJumpToSource={(n) => {
+                  const p = providers.find((x) => x.id === index.get(n.key)?.provider);
+                  if (p?.jumpToSource) p.jumpToSource(n);
+                  else p?.activate?.(n);
+                }}
                 onContextMenu={(n, keys, e) => {
                   e.preventDefault();
                   if (!n) {
