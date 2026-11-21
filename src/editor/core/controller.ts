@@ -10,7 +10,7 @@ import type { ReactNode } from "react";
 import { EditorSelection } from "@codemirror/state";
 import { create } from "zustand";
 import { setContext } from "@/platform/context";
-import { shortcutLabel } from "@/platform/keymap";
+import { formatBinding, hostBinding, shortcutLabel } from "@/platform/keymap";
 import { isSameOrInside } from "@/platform/paths";
 import { basename, dirname, useProject } from "@/platform/project";
 import { editorPrefs } from "@/platform/editorSettings";
@@ -895,7 +895,7 @@ export class EditorController implements SlotHost {
             {
               label: "Cut",
               icon: "cut",
-              shortcut: "⌘X",
+              shortcut: formatBinding(hostBinding("Meta+X")),
               disabled: view.state.readOnly,
               run: () => {
                 view.focus();
@@ -905,7 +905,7 @@ export class EditorController implements SlotHost {
             {
               label: "Copy",
               icon: "copy",
-              shortcut: "⌘C",
+              shortcut: formatBinding(hostBinding("Meta+C")),
               run: () => {
                 view.focus();
                 document.execCommand("copy");
@@ -916,11 +916,10 @@ export class EditorController implements SlotHost {
       {
         label: "Paste",
         icon: "paste",
-        shortcut: "⌘V",
+        shortcut: formatBinding(hostBinding("Meta+V")),
         disabled: view.state.readOnly,
         run: () => void pasteEditorClipboard(view),
       },
-      { kind: "separator" },
       {
         label: "Copy / Paste Special",
         submenu: [
@@ -932,6 +931,7 @@ export class EditorController implements SlotHost {
       },
       { kind: "action", action: "editor.toggleColumnSelection", label: "Column Selection Mode" },
       { kind: "separator" },
+      ...(hasSel && useProject.getState().project ? [{ kind: "action" as const, action: "find.inPath" }] : []),
       { kind: "action", action: "find.usages", label: "Find Usages" },
       // IDEA's editor popup: secondary commands live in submenus.
       {
@@ -986,7 +986,7 @@ export class EditorController implements SlotHost {
       ...menuGroupItems("editor", {
         paths: [slot.model.path],
         text: view.state.doc.toString(),
-        line: view.state.doc.lineAt(view.state.selection.main.head).number - 1,
+        line: caretLine,
       }),
       ...(slot.model.virtual
         ? ([
@@ -995,6 +995,7 @@ export class EditorController implements SlotHost {
           ] as MenuItem[])
         : ([
             { kind: "separator" },
+            { kind: "action", action: "editor.splitRight" },
             openInMenu(slot.model.path, selectedLineContext(view.state)),
             { kind: "separator" },
             localHistoryMenu(slot.model.path),

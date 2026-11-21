@@ -38,8 +38,8 @@ export interface ListPopupItem {
   run: () => void | Promise<void>;
   /** IDEA's right-arrow menu of the row (inspection options of a fix). */
   submenu?: MenuItem[];
-  /** Called when the row becomes the selected one (e.g. highlight what it would act on). */
-  onActive?: () => void;
+  /** Called on selection. May return a cleanup for when the row is no longer active. */
+  onActive?: () => void | (() => void);
 }
 
 /** Side panel content for the selected row of a list popup (intention preview). */

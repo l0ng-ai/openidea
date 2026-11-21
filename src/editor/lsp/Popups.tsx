@@ -126,9 +126,7 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
   const hasTargets = popup.items.some((item) => item.target);
 
   // Choosers highlight what the selected row would act on.
-  useEffect(() => {
-    activeItem?.onActive?.();
-  }, [activeItem]);
+  useEffect(() => activeItem?.onActive?.(), [activeItem]);
 
   const [preview, setPreview] = useState<{ id: string; data: ListPreview | null } | null>(null);
   const fetchPreview = popup.preview;

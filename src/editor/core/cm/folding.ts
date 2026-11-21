@@ -46,7 +46,7 @@ export const setBackendFolds = StateEffect.define<FoldRange[]>();
  * folds from the declaration line above it, so the fold and the sticky line
  * show `namespace Demo` / `void F()` rather than a bare brace.
  */
-function allmanHeader(state: EditorState, line: Line): Line {
+export function allmanHeader(state: EditorState, line: Line): Line {
   if (line.text.trim() !== "{" || line.number === 1) return line;
   const prev = state.doc.line(line.number - 1);
   const code = prev.text.trim();

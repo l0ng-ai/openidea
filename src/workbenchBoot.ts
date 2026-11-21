@@ -1,12 +1,22 @@
 import { activateFeatures } from "./features";
+import { setLocale } from "./platform/i18n";
 import { isTauri } from "./platform/ipc";
 import { installKeyboardDispatcher } from "./platform/keymap";
+import { loadSettings, useProject } from "./platform/project";
 import { mountWindowRoot } from "./windowBoot";
 import { activateWorkbench } from "./workbench/activate";
 import { installFullscreenEscapeGuard } from "./workbench/fullscreenEscape";
 import { Workbench } from "./workbench/Workbench";
 
 export async function bootWorkbenchWindow(): Promise<void> {
+  if (isTauri()) {
+    try {
+      await loadSettings();
+      await setLocale(useProject.getState().settings?.appearance?.locale);
+    } catch (error) {
+      console.warn("cannot load startup settings", error);
+    }
+  }
   // Before the features' and the dispatcher's key handlers: it wraps the Escape they see.
   installFullscreenEscapeGuard();
   activateWorkbench();
