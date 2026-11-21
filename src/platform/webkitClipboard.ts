@@ -37,3 +37,19 @@ export function installWebKitClipboardGuard(): () => void {
     window.removeEventListener("cut", onClipboard, true);
   };
 }
+
+/**
+ * WebKitGTK pastes the primary selection on a middle-button release into the focused editable,
+ * wherever the release lands: a middle click that closes a tab or hits any other control pasted
+ * into the editor. Only a release over editable content pastes, as in native GTK apps.
+ */
+export function installMiddleClickPasteGuard(target: Window = window): () => void {
+  const onMouseUp = (event: MouseEvent) => {
+    if (event.button !== 1) return;
+    const element = event.target instanceof Element ? event.target : null;
+    if (element?.closest('input, textarea, [contenteditable]:not([contenteditable="false"])')) return;
+    event.preventDefault();
+  };
+  target.addEventListener("mouseup", onMouseUp, true);
+  return () => target.removeEventListener("mouseup", onMouseUp, true);
+}
