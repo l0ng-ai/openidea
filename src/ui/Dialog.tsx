@@ -272,6 +272,21 @@ function DialogInner({
     };
   }, []);
 
+  useEffect(() => {
+    if (!popup || !resizable) return;
+    const fitPopup = () => {
+      const rect = ref.current?.getBoundingClientRect();
+      if (!rect) return;
+      const left = Math.max(0, Math.min(rect.left, window.innerWidth - rect.width));
+      const top = Math.max(0, Math.min(rect.top, window.innerHeight - rect.height));
+      if (left !== rect.left || top !== rect.top) {
+        setOffset({ x: offset.x + left - rect.left, y: offset.y + top - rect.top });
+      }
+    };
+    window.addEventListener("resize", fitPopup);
+    return () => window.removeEventListener("resize", fitPopup);
+  }, [popup, resizable, offset]);
+
   const cancelOnDeactivate = closeOnDeactivate ?? popup;
   useEffect(() => {
     if (!cancelOnDeactivate) return;
