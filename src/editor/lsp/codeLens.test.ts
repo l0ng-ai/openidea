@@ -36,6 +36,7 @@ const { lensTargets, usagesLensExtension } = await import("./codeLens");
 const { lspDoc } = await import("./lsp");
 const { useProject } = await import("@/platform/project");
 const { emitLocalIdeEvent } = await import("@/platform/ipc");
+const { useProjectRoots } = await import("@/platform/projectRoots");
 
 const ctx = { doc: 7, path: "/p/a.rs", language: "rust", uiMode: "Rust", readOnly: false };
 const views: EditorView[] = [];
@@ -198,6 +199,30 @@ describe("background usage counts", () => {
       expect(titles(own)).toEqual(["2 usages"]);
     } finally {
       useProject.setState({ project: null });
+    }
+  });
+
+  it("counts nothing in a folder marked Excluded, unless a source folder inside it holds the file", async () => {
+    useProject.setState({ project: { root: "/p" } as never });
+    useProjectRoots.setState({
+      root: "/p",
+      detected: [
+        { path: "vendor", kind: "excluded", detectedFrom: null },
+        { path: "vendor/own/src", kind: "source", detectedFrom: null },
+      ],
+    });
+    try {
+      const vendored = editor(1, undefined, { ...ctx, doc: 11, path: "/p/vendor/lib/a.rs" });
+      await settle();
+      expect(ipc.lspReferences).not.toHaveBeenCalled();
+      expect(titles(vendored)).toEqual([]);
+      const own = editor(1, undefined, { ...ctx, doc: 12, path: "/p/vendor/own/src/a.rs" });
+      await settle();
+      expect(ipc.lspReferences).toHaveBeenCalledTimes(1);
+      expect(titles(own)).toEqual(["2 usages"]);
+    } finally {
+      useProject.setState({ project: null });
+      useProjectRoots.setState({ root: null, detected: [] });
     }
   });
 
