@@ -188,7 +188,8 @@ Object.assign(ATTRIBUTE_NAMES, {
   "PY.OPERATION_SIGN": "pyOperationSign",
 });
 
-// WebStorm's JavaScript keys; TypeScript repeats them with a TS. prefix. Language Defaults serve both.
+// WebStorm's JavaScript keys; TypeScript repeats them with a TS. prefix. Both colour the JavaScript and
+// TypeScript page.
 const SCRIPT_KEYS: Record<string, string> = {
   KEYWORD: "keyword",
   NUMBER: "number",
@@ -210,7 +211,7 @@ const SCRIPT_KEYS: Record<string, string> = {
   "EXPORTED.VARIABLE": "globalVariable",
   INSTANCE_MEMBER_VARIABLE: "field",
   STATIC_MEMBER_VARIABLE: "constant",
-  GLOBAL_FUNCTION: "functionDeclaration",
+  GLOBAL_FUNCTION: "globalFunction",
   LOCAL_FUNCTION: "functionDeclaration",
   EXPORTED_FUNCTION: "functionDeclaration",
   INSTANCE_MEMBER_FUNCTION: "functionDeclaration",
@@ -220,14 +221,15 @@ const SCRIPT_KEYS: Record<string, string> = {
   INTERFACE: "className",
   "TYPE.ALIAS": "className",
   TYPE_PARAMETER: "className",
-  DECORATOR: "metadata",
+  DECORATOR: "decorator",
   OPERATION_SIGN: "operator",
 };
 // WebStorm colours a function's calls with its declaration's key.
 const ALSO_CALLS = new Set<string>();
 for (const prefix of ["JS.", "TS."])
   for (const [name, id] of Object.entries(SCRIPT_KEYS)) {
-    ATTRIBUTE_NAMES[prefix + name] = id;
+    // Bad character and RegExp have no page of their own here.
+    ATTRIBUTE_NAMES[prefix + name] = ATTRIBUTES.some((a) => a.id === `javascript.${id}`) ? `javascript.${id}` : id;
     if (id === "functionDeclaration") ALSO_CALLS.add(prefix + name);
   }
 
@@ -294,7 +296,7 @@ const precedence = (name: string) => {
 const targets = (name: string): string[] =>
   Object.hasOwn(ATTRIBUTE_NAMES, name)
     ? ALSO_CALLS.has(name)
-      ? [ATTRIBUTE_NAMES[name]!, "functionCall"]
+      ? [ATTRIBUTE_NAMES[name]!, "javascript.functionCall"]
       : [ATTRIBUTE_NAMES[name]!]
     : [];
 
@@ -558,7 +560,8 @@ export function exportIcls(
   }
   const text = values(ATTRIBUTES.find((a) => a.id === "text")!);
   for (const attr of ATTRIBUTES) {
-    if (attr.language && !custom?.attributes[attr.id] && !overrides[attr.id]) continue;
+    // Language and inheriting attributes left unset follow another key, as they do in IntelliJ.
+    if ((attr.language || attr.inherit) && !custom?.attributes[attr.id] && !overrides[attr.id]) continue;
     const key = Object.keys(ATTRIBUTE_NAMES).find((key) => ATTRIBUTE_NAMES[key] === attr.id);
     if (!key) continue;
     const v = values(attr);
