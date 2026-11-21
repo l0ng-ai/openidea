@@ -128,6 +128,44 @@ async fn serves_projects_files_documents_search_and_runs() {
     let current = invoke(&peer, "project_current", json!({})).await.unwrap();
     assert_eq!(current["name"], "demo");
 
+    // A SQL batch sends each outcome precisely once before the request reply.
+    let file = project.join("test.sqlite");
+    std::fs::File::create(&file).unwrap();
+    let source = ide_db::DataSource {
+        id: "test-db".into(),
+        name: "Test database".into(),
+        file: Some(file.into()),
+        ..Default::default()
+    };
+    invoke(&peer, "db_save_sources", json!({ "sources": [source] })).await.unwrap();
+    let sql = "SELECT 1 AS n; SELECT 'second' AS n";
+    let statements =
+        invoke(&peer, "db_statements", json!({ "id": "test-db", "text": sql, "from": 0, "to": sql.len() }))
+            .await
+            .unwrap();
+    let done = invoke(
+        &peer,
+        "db_execute_stream",
+        json!({ "request": 21, "id": "test-db", "statements": statements, "maxRows": 10,
+            "schema": null, "onProgress": { "$channel": 521 } }),
+    )
+    .await
+    .unwrap();
+    assert!(done.is_null());
+    let events = client
+        .channels
+        .lock()
+        .iter()
+        .filter(|frame| frame.id == 521)
+        .map(|frame| frame.data.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(events.len(), 5);
+    assert_eq!(events[0], json!({ "type": "started", "index": 0 }));
+    assert_eq!(events[1]["outcome"]["result"]["rows"], json!([["1"]]));
+    assert_eq!(events[2], json!({ "type": "started", "index": 1 }));
+    assert_eq!(events[3]["outcome"]["result"]["rows"], json!([["second"]]));
+    assert_eq!(events[4], json!({ "type": "done", "error": null }));
+
     // The built-in web server runs where the project is; the client forwards its port.
     let root = std::path::PathBuf::from(opened["root"].as_str().unwrap());
     let url = invoke(&peer, "web_url", json!({ "path": root.join("src/main.py") })).await.unwrap();
