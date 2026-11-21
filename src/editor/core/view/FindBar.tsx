@@ -30,6 +30,7 @@ import {
   setFindOpen,
   setFindScope,
   setQuery,
+  setReplacePreview,
   type FindOptions,
   type FindScope,
 } from "../cm/find";
@@ -440,14 +441,16 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
     shown.current = { target, version, opts, inChanges };
     const valid = !opts.regexp || regexValid(opts.search);
     setQuery(view, valid ? { ...opts, inChanges } : { ...opts, search: "" });
-    view.dispatch({ effects: setFindOpen.of(true) });
+    view.dispatch({
+      effects: [setFindOpen.of(true), setReplacePreview.of(replace && opts.regexp ? !!opts.preserveCase : null)],
+    });
     if (changed && valid && opts.search && useFindPreferences.getState().scrollToResults) {
       const from = view.state.selection.main.from;
       view.dispatch({ selection: { anchor: from } });
       findNext(view);
     }
     recount(target);
-  }, [opts, target, version, inChanges]);
+  }, [opts, target, version, inChanges, replace]);
 
   // Keep the counter current while the document / selection changes.
   useEffect(() => {

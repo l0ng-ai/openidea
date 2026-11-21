@@ -2576,6 +2576,8 @@
   "Replace template": "替换模板",
   "Replace this occurrence only": "仅替换此匹配项",
   "Replace with": "替换为",
+  "Replacement preview": "替换预览",
+  "Empty replacement": "替换为空",
   "Replacements": "替换项",
   "Reports errors and warnings from language servers.": "报告来自语言服务器的错误和警告。",
   "Repository": "仓库",

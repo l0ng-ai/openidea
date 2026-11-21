@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { EditorSelection, EditorState, Prec } from "@codemirror/state";
+import { EditorSelection, EditorState, Prec, StateEffect } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType } from "@codemirror/view";
 import { setSearchQuery } from "@codemirror/search";
 import { StreamLanguage } from "@codemirror/language";
@@ -23,6 +23,7 @@ import {
   replaceNext,
   setFindScope,
   setFindOpen,
+  setReplacePreview,
   type FindOptions,
 } from "./find";
 
@@ -168,6 +169,30 @@ describe("find in selection", () => {
     expect(mapScope({ from: 2, to: 5 }, ins(2))).toEqual({ from: 4, to: 7 });
     expect(mapScope({ from: 2, to: 5 }, ins(5))).toEqual({ from: 2, to: 5 });
     expect(mapScope({ from: 2, to: 5 }, s.changes({ from: 2, to: 5 }))).toBeNull();
+  });
+});
+
+describe("replacement preview", () => {
+  it("uses the scoped match, hides excluded matches, and respects the editor becoming read-only", () => {
+    const line = "unposted:\n";
+    const v = make(
+      "posted:USD\n" + line,
+      { search: "posted:([A-Z]*)", regexp: true, replace: "$1" },
+      { from: 11, to: 11 + line.length },
+    );
+    const preview = () => v.dom.querySelector('[aria-label="Replacement preview"]')?.textContent;
+    v.dispatch({ effects: [setFindOpen.of(true), setReplacePreview.of(false)] });
+    findNext(v);
+    expect(preview()).toBe("Empty replacement");
+
+    const { from, to } = v.state.selection.main;
+    v.dispatch({ effects: toggleFindExcluded.of({ from, to }) });
+    expect(preview()).toBeUndefined();
+    v.dispatch({ effects: toggleFindExcluded.of({ from, to }) });
+    expect(preview()).toBe("Empty replacement");
+
+    v.dispatch({ effects: StateEffect.appendConfig.of(EditorState.readOnly.of(true)) });
+    expect(preview()).toBeUndefined();
   });
 });
 

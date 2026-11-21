@@ -1,5 +1,7 @@
 {
   "At breakpoint": "At breakpoint",
+  "Replacement preview": "Replacement preview",
+  "Empty replacement": "Empty replacement",
   "Build and Run": "Build and Run",
   "Gradle runtime": "Gradle runtime",
   "Open diff as editor tab": "Open diff as editor tab",

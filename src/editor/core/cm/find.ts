@@ -19,7 +19,15 @@ import {
   type Extension,
   type SelectionRange,
 } from "@codemirror/state";
-import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
+import {
+  Decoration,
+  EditorView,
+  showTooltip,
+  ViewPlugin,
+  type DecorationSet,
+  type Tooltip,
+  type ViewUpdate,
+} from "@codemirror/view";
 import {
   SearchQuery,
   findNext as cmFindNext,
@@ -30,12 +38,15 @@ import {
   setSearchQuery,
 } from "@codemirror/search";
 import { scrollbarMarks, type ScrollbarMark } from "@/editor/api";
+import { tx } from "@/platform/i18n";
 import type { LineMatch } from "@/platform/ipc";
 import { contextAccepts, preserveCase, type SearchContext } from "@/platform/search";
 import { literalKindAt, literalsExtension } from "./literals";
+import styles from "./FindPreview.module.css";
 
 export const setFindOpen = StateEffect.define<boolean>();
 export const setFindMarks = StateEffect.define<number[]>();
+export const setReplacePreview = StateEffect.define<boolean | null>();
 
 /** "In Selection": the range Find / Replace is limited to (IDEA's selection scope). */
 export interface FindScope {
@@ -217,6 +228,7 @@ export function findExtension(): Extension {
     findScope,
     findExcluded,
     findMarks,
+    replacePreview,
     literalsExtension,
     Prec.highest(findHighlighter),
   ];
@@ -380,6 +392,76 @@ function insertFor(state: EditorState, query: SearchQuery, m: Match, preserve: b
   const insert = replacementFor(query, m);
   return preserve ? preserveCase(state.sliceDoc(m.from, m.to), insert) : insert;
 }
+
+function previewAtSelection(state: EditorState, preserve: boolean): Tooltip | null {
+  const query = getSearchQuery(state);
+  const { from, to } = state.selection.main;
+  const scope = state.field(findScope, false);
+  if (!query.valid || !query.regexp || state.readOnly || from === to) return null;
+  if (scope && (from < scope.from || to > scope.to)) return null;
+
+  // Replace Next starts at the selection in the unscoped CodeMirror path. The
+  // scoped and preserve-case paths use the non-overlapping matches in the scope.
+  const start = scope?.from ?? (preserve ? 0 : from);
+  const cursor = query.getCursor(state, start, scope?.to ?? state.doc.length);
+  const deadline = performance.now() + 8;
+  let scanned = 0;
+  for (let next = cursor.next(); !next.done; next = cursor.next()) {
+    const match = next.value as Match;
+    if (match.from > from) return null;
+    if (match.from === from && match.to === to) {
+      const text = insertFor(state, query, match, preserve);
+      return text !== query.replace ? replacementTooltip(from, text) : null;
+    }
+    if (++scanned % 128 === 0 && performance.now() > deadline) return null;
+  }
+  return null;
+}
+
+function replacementTooltip(pos: number, text: string): Tooltip {
+  return {
+    pos,
+    arrow: true,
+    create(view) {
+      const dom = document.createElement("div");
+      dom.className = styles.preview!;
+      dom.setAttribute("role", "tooltip");
+      dom.setAttribute("aria-label", tx("Replacement preview"));
+      const code = document.createElement("code");
+      code.className = styles.code!;
+      const clipped = Array.from(text.slice(0, 1000)).slice(0, 500).join("");
+      code.textContent = !text ? tx("Empty replacement") : clipped.length < text.length ? `${clipped}…` : clipped;
+      dom.append(code);
+      const fit = () => dom.style.setProperty("--find-preview-width", `${view.dom.clientWidth}px`);
+      fit();
+      const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(fit);
+      observer?.observe(view.dom);
+      return { dom, destroy: () => observer?.disconnect() };
+    },
+  };
+}
+
+const replacePreview = StateField.define<{ preserve: boolean | null; tooltip: Tooltip | null }>({
+  create: () => ({ preserve: null, tooltip: null }),
+  update(value, tr) {
+    let preserve = value.preserve;
+    let refresh = tr.docChanged || !!tr.selection || tr.reconfigured;
+    for (const effect of tr.effects) {
+      if (effect.is(setReplacePreview)) {
+        preserve = effect.value;
+        refresh = true;
+      } else if (effect.is(setFindOpen) && !effect.value) {
+        preserve = null;
+        refresh = true;
+      } else if (effect.is(setSearchQuery) || effect.is(setFindScope) || effect.is(toggleFindExcluded)) {
+        refresh = true;
+      }
+    }
+    if (!refresh || (preserve === null && value.preserve === null)) return value;
+    return { preserve, tooltip: preserve === null ? null : previewAtSelection(tr.state, preserve) };
+  },
+  provide: (field) => showTooltip.from(field, (value) => value.tooltip),
+});
 
 /** Replaces the selected match (if it is one) and selects the next match. */
 export function replaceNext(view: EditorView, preserve = false): boolean {
