@@ -1,9 +1,11 @@
 //! Types and the [`JvmInspector`] trait for reading live JVM objects while a debug session is
 //! suspended. Implementations live elsewhere (jdtls bundle for Java, JDWP link for Kotlin).
 
+mod exceptions;
 mod names;
 mod stream;
 
+pub use exceptions::{ExceptionArmState, ExceptionClassBreakpoints, ExceptionClassSpec};
 pub use names::{is_boxed, name_to_signature, signature_to_name, string_length};
 pub use stream::{AbortState, CollectedTerminal, StreamTracer, TraceCollected, TraceId, TraceState};
 

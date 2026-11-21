@@ -4,6 +4,7 @@ import "./styles/global.css";
 import { installRepeatedDoubleClick } from "./platform/doubleClick";
 import { installErrorLogging, logError } from "./platform/errorLog";
 import { installImeKeyGuard } from "./platform/ime";
+import { installMiddleClickLinks } from "./platform/openUrl";
 import { call, commands, isTauri } from "./platform/ipc";
 import { installPageSwipeTracking } from "./platform/pageSwipe";
 import { guessOs } from "./platform/platformInfo";
@@ -49,6 +50,7 @@ export async function installCommonWindowBoot(): Promise<void> {
     toggleMaximize: () => call(commands.windowToggleZoom()).catch((e) => console.warn("cannot zoom the window", e)),
   });
   installPointerFocus();
+  installMiddleClickLinks();
   installImeKeyGuard();
   installErrorLogging();
   installPageSwipeTracking(window);

@@ -48,6 +48,7 @@ mod xml_catalog;
 
 pub use injections::{InjectedRange, InjectionProvider, MAX_INJECTED_DOCUMENT_BYTES};
 pub use inspect::{CheckedServer, DocumentCheck, FileInspection, InspectHost, InspectOptions};
+pub use jdtls::exception_breakpoints::JdtExceptionBreakpoints;
 pub use jdtls::jvm_inspect::JdtJvmInspector;
 pub use jdtls::stream_trace::JdtStreamTracer;
 pub use kotlin_lsp::{KotlinDebugServer, KotlinDebugUnavailable};

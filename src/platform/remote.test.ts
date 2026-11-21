@@ -1,6 +1,6 @@
 import { Channel } from "@tauri-apps/api/core";
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import type { ProjectInfo, Settings } from "./ipc";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { call, commands, type ChannelFrame, type ExecutionEvent, type ProjectInfo, type Settings } from "./ipc";
 import { useProject } from "./project";
 import { disableRemote, enableRemote, useRemote } from "./remote";
 import { encodeArgs, remoteRouting } from "./remote";
@@ -18,6 +18,40 @@ describe("remote invoke", () => {
     expect(parsed.path).toBe("/a");
     expect(parsed.requestId).toBe(3);
     expect(channels.get(parsed.onEvent.$channel)).toBe(events);
+  });
+
+  it("routes SQL batch progress after releasing the unused local callback", async () => {
+    let next = 1;
+    const unregisterCallback = vi.fn();
+    const done: ExecutionEvent = { type: "done", error: null };
+    vi.stubGlobal("__TAURI_INTERNALS__", {
+      transformCallback: () => next++,
+      unregisterCallback,
+      async invoke(command: string, call: { cmd: string; args: string; onChannel: Channel<ChannelFrame> }) {
+        expect(command).toBe("remote_invoke");
+        expect(call.cmd).toBe("db_execute_stream");
+        const { onProgress } = JSON.parse(call.args) as { onProgress: { $channel: number } };
+        call.onChannel.onmessage({ id: onProgress.$channel, data: JSON.stringify(done) });
+        return "null";
+      },
+    });
+    enableRemote({
+      target: { kind: "wsl", distro: "Ubuntu" },
+      root: "/remote",
+      host: "Ubuntu",
+      os: "linux",
+      commands: ["db_execute_stream"],
+    });
+    const progress = vi.fn();
+    const channel = new Channel<ExecutionEvent>(progress);
+    try {
+      expect(await call(commands.dbExecuteStream(1, "test-db", [], 10, null, channel))).toBeNull();
+      expect(unregisterCallback).toHaveBeenCalledExactlyOnceWith(channel.id);
+      expect(progress).toHaveBeenCalledExactlyOnceWith(done);
+    } finally {
+      disableRemote();
+      vi.unstubAllGlobals();
+    }
   });
 
   it("routes served commands, keeps opening / closing local and sets global settings on both sides", () => {

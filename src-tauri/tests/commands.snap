@@ -111,6 +111,7 @@ db_disconnect                                trusted            project_host bin
 db_drop_database                             trusted            project_host bindings async
 db_dump_info                                 trusted            desktop      bindings async
 db_execute                                   trusted            project_host bindings async
+db_execute_stream                            trusted            project_host bindings async
 db_explain                                   trusted            project_host bindings async
 db_export_file                               always             desktop      bindings async
 db_finish_transaction                        trusted            project_host bindings async
@@ -186,6 +187,7 @@ debug_sessions                               always             project_host bin
 debug_set_breakpoints                        trusted            project_host bindings async
 debug_set_data_breakpoints                   trusted            project_host bindings async
 debug_set_exception_breakpoints              trusted            project_host bindings async
+debug_set_exception_class_breakpoints        trusted            project_host bindings async
 debug_set_function_breakpoints               trusted            project_host bindings async
 debug_set_variable                           trusted            project_host bindings async
 debug_stack_trace                            trusted            project_host bindings async
@@ -281,6 +283,7 @@ fs_read_text                                 always             project_host bin
 fs_rename                                    always             project_host bindings async
 fs_resolve_reference                         always             project_host bindings async
 fs_set_writable                              always             project_host bindings sync
+fs_synchronize_directories                   always             project_host bindings async
 fs_undo_delete                               always             project_host bindings async
 gh_account_repos                             trusted            desktop      bindings async
 gh_api                                       trusted            desktop      bindings async
@@ -503,6 +506,8 @@ project_trust_list                           always             project_host bin
 project_trust_remove_location                always             project_host bindings async
 project_trust_set                            always             project_host bindings async
 project_trust_status                         always             project_host bindings sync
+project_workspace_member_set                 always             project_host bindings sync
+project_workspace_members                    always             project_host bindings sync
 proxy_check_connection                       always             desktop      bindings async
 recent_files                                 always             project_host bindings sync
 recent_project_groups                        always             desktop      bindings sync

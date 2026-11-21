@@ -7,6 +7,8 @@
 import { useState } from "react";
 import { create } from "zustand";
 import { registerActions } from "@/platform/actions";
+import { fontWeightOf } from "@/platform/editorSettings";
+import { resolveMonoFont } from "@/platform/fonts";
 import { useProject } from "@/platform/project";
 import { registerOverlay, toolWindowService } from "@/workbench/contributions";
 import { Dialog, T } from "@/ui";
@@ -99,6 +101,8 @@ function StackTraceDialogOverlay() {
 
 function StackTraceDialog({ initial }: { initial: string }) {
   const [text, setText] = useState(initial);
+  const editor = useProject((s) => s.settings?.editor);
+  const { family, size } = resolveMonoFont(undefined, editor);
   const close = () => useStackTraces.setState({ dialog: null });
   const ok = () => {
     if (!addStackTrace(text)) return;
@@ -110,7 +114,11 @@ function StackTraceDialog({ initial }: { initial: string }) {
       open
       title="Analyze Stack Trace"
       onClose={close}
-      width={720}
+      width={634}
+      minWidth={340}
+      minHeight={220}
+      resizable="both"
+      className={styles.dialog}
       buttons={[
         { label: "Analyze", role: "default", disabled: !text.trim(), onClick: ok },
         { label: "Cancel", role: "cancel" },
@@ -124,6 +132,13 @@ function StackTraceDialog({ initial }: { initial: string }) {
           id="stacktrace-text"
           className={styles.text}
           spellCheck={false}
+          style={{
+            fontFamily: family,
+            fontSize: size,
+            fontWeight: fontWeightOf(editor?.fontWeight, 400),
+            lineHeight: editor?.lineHeight ? `${editor.lineHeight}px` : undefined,
+            tabSize: editor?.tabSize || 4,
+          }}
           value={text}
           onChange={(e) => setText(e.target.value)}
           data-autofocus=""

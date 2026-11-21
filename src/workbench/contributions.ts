@@ -288,6 +288,8 @@ export interface ServiceProviderContribution {
   menu?(item: ServiceTreeItem): MenuItem[];
   /** Double click / Enter. */
   activate?(item: ServiceTreeItem): void;
+  /** Jump to Source (F4 / ⌘↓); a provider without it activates the node instead. */
+  jumpToSource?(item: ServiceTreeItem): void;
   /** A node of this provider became the lead selection. */
   select?(item: ServiceTreeItem): void;
   /** A node of this provider was expanded or collapsed. */
@@ -620,6 +622,8 @@ export interface TextEditorWrapperContribution {
   component: ComponentType<{ path: string; tabId: string; children: ReactNode; actionsInTabs?: boolean }>;
   /** Layout controls in the tab strip; the wrapper supplies a floating fallback when tabs are hidden. */
   tabActions?: ComponentType<{ path: string; tabId: string }>;
+  /** Hook: true while the wrapper hides the source editor of `tabId` (a preview-only layout), which drops its code breadcrumbs. */
+  useSourceHidden?: (tabId: string) => boolean;
 }
 
 export const useTextEditorWrappers = create<{ wrappers: Map<string, TextEditorWrapperContribution> }>(() => ({

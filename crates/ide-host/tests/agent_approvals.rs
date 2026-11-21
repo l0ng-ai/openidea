@@ -6,15 +6,21 @@ use serde_json::json;
 use std::path::Path;
 use std::sync::Arc;
 
-/// Codex's modes as it reported them last time, in "ask".
-fn remember_codex_modes(data: &Path) {
+/// Codex's modes as its catalog for `root` listed them last time, in "ask".
+fn remember_codex_modes(data: &Path, root: &Path) {
     std::fs::create_dir_all(data.join("agents")).unwrap();
-    let modes = json!({ "codex": { "config": [ {
+    let config = json!([ {
         "id": "mode", "name": "Mode", "description": null, "category": "mode", "current": "ask",
         "values": [ { "value": "read-only", "name": "Read Only", "description": null },
                     { "value": "ask", "name": "Ask", "description": null },
                     { "value": "full-access", "name": "Full Access", "description": null } ],
-        "via": "option" } ] } });
+        "via": "option" } ]);
+    let mut catalogs = serde_json::Map::new();
+    catalogs.insert(
+        root.to_string_lossy().into_owned(),
+        json!({ "fingerprint": "test", "config": config, "thoughtLevels": {} }),
+    );
+    let modes = json!({ "codex": { "projectCatalogs": catalogs } });
     std::fs::write(data.join("agents/models.json"), modes.to_string()).unwrap();
 }
 
@@ -30,7 +36,7 @@ async fn new_tasks_start_asking_for_approval_when_the_user_chose_so() {
     let root = dunce::canonicalize(tmp.path()).unwrap().join("project");
     std::fs::create_dir_all(root.join(".openidea")).unwrap();
     let (config, data) = (tmp.path().join("config"), tmp.path().join("data"));
-    remember_codex_modes(&data);
+    remember_codex_modes(&data, &root);
     std::fs::create_dir_all(&config).unwrap();
     std::fs::write(config.join("settings.toml"), "[agents]\nnewTaskApprovals = \"ask\"\n").unwrap();
     // A project's own settings don't choose this.

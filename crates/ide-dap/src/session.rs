@@ -118,6 +118,11 @@ pub(crate) struct Session {
     pub kotlin_mirror: Mutex<Option<crate::kotlin::SourceMirror>>,
     pub jvm_memory: tokio::sync::Mutex<crate::JvmMemoryState>,
     pub stream_tracer: parking_lot::Mutex<Option<Arc<dyn ide_jvm_inspect::StreamTracer>>>,
+    /// Given at start: the class breakpoints must be armed before `configurationDone`.
+    pub(crate) exception_classes: Option<Arc<dyn ide_jvm_inspect::ExceptionClassBreakpoints>>,
+    /// Held from `setExceptionBreakpoints`, which drops the class breakpoints, until they are
+    /// armed again, so that the last list armed is the manager's.
+    pub(crate) exception_turn: tokio::sync::Mutex<()>,
     pub(crate) stream_trace: parking_lot::Mutex<Option<crate::stream_trace::ActiveTrace>>,
     /// The last trace that finished, until the stop its records were read in ends.
     pub(crate) stream_trace_done: parking_lot::Mutex<Option<crate::stream_trace::DoneTrace>>,
@@ -286,6 +291,8 @@ impl Session {
             kotlin_mirror: Mutex::new(None),
             jvm_memory: tokio::sync::Mutex::default(),
             stream_tracer: parking_lot::Mutex::new(None),
+            exception_classes: None,
+            exception_turn: tokio::sync::Mutex::default(),
             stream_trace: parking_lot::Mutex::new(None),
             stream_trace_done: parking_lot::Mutex::new(None),
             quirks: kotlin_lsp::Quirks::default(),

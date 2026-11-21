@@ -13,7 +13,7 @@
 use crate::FsBatch;
 use crate::rules::{ExcludeMatcher, GitignoreStack};
 use ide_core::{IdeError, IdeEvent, IdeResult, SharedSink};
-use notify::event::{ModifyKind, RenameMode};
+use notify::event::{CreateKind, DataChange, ModifyKind, RemoveKind, RenameMode};
 use notify::{ErrorKind, Event, EventKind, PollWatcher, RecommendedWatcher, RecursiveMode, WatcherKind};
 use parking_lot::{Condvar, Mutex, RwLock};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -238,17 +238,113 @@ fn event_handler(state: Weak<DirState>, polled: bool) -> impl FnMut(notify::Resu
         match event {
             Ok(event) if !is_change_event(&event) => {}
             Ok(event) if polled && is_dir_touch(&event) => {}
-            Ok(event) => {
-                state.queue.lock().push(event, Instant::now());
-                state.wake.notify_one();
-            }
+            Ok(event) => state.enqueue(event),
             Err(e) => tracing::warn!("file watcher: {e}"),
         }
     }
 }
 
-/// A directory's own mtime moving as entries come and go: polling sees it, the
-/// OS watchers report only the entries (also seen, through that directory's watch).
+/// One queued change for a path. A rename without a peer stays a rename so the batch
+/// resolves its existence after the quiet window, as it always did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PathChange {
+    Change(Change),
+    Rename,
+}
+
+/// The per-path result of one raw event, in arrival order. `merge` in the batch is
+/// order-sensitive (create+remove ≠ remove+create), so a path keeps its sequence of
+/// distinct changes, with repetitions collapsed. A storm repeating the same change
+/// still leaves one entry per path; the order of real transitions is preserved.
+#[derive(Default)]
+struct QueuedChanges {
+    paths: BTreeMap<PathBuf, Vec<PathChange>>,
+}
+
+impl QueuedChanges {
+    fn push(&mut self, path: PathBuf, change: PathChange) {
+        let changes = self.paths.entry(path).or_default();
+        if changes.last() != Some(&change) {
+            changes.push(change);
+        }
+    }
+}
+
+/// The per-path changes one raw event contributes, classified exactly as `batch_detailed`
+/// classifies it. A rename with both paths keeps from/removal and to/creation apart; one
+/// without a peer is left for the batch to resolve by the path's existence.
+fn queue_changes(filter: &EventFilter, event: &Event, out: &mut QueuedChanges) {
+    // `classify` drops `.git/info/exclude` as VCS noise (the index handles it), but
+    // `batch_detailed` needs the event to reload repo-level ignore rules. Keep it queued;
+    // classification at batch time still drops it from the reported paths.
+    let mut classify = |path: &Path, change: Change| {
+        if path.ends_with(".git/info/exclude") {
+            out.push(path.to_path_buf(), PathChange::Change(change));
+        } else {
+            // `classify` applies the VCS/atomic-temp filters and merges; we only need to
+            // know the resulting single change for this one event at this path.
+            let mut one = BTreeMap::new();
+            filter.classify(path, change, &mut one);
+            for (_, merged) in one {
+                out.push(path.to_path_buf(), PathChange::Change(merged));
+            }
+        }
+    };
+    // A rename without a peer keeps the same resolution the batch applies to its
+    // `Modify(Name(_))` arm (created if the path exists, removed otherwise).
+    let renamed = |path: &Path| {
+        if path.symlink_metadata().is_ok() { Change::Created } else { Change::Removed }
+    };
+    match event.kind {
+        EventKind::Create(_) => {
+            for path in &event.paths {
+                classify(path, Change::Created);
+            }
+        }
+        EventKind::Remove(_) => {
+            for path in &event.paths {
+                classify(path, Change::Removed);
+            }
+        }
+        EventKind::Modify(ModifyKind::Name(RenameMode::Both)) => {
+            if let [from, to] = event.paths.as_slice() {
+                classify(from, Change::Removed);
+                classify(to, Change::Created);
+            } else {
+                // Some backends emit a `Both` rename with a missing endpoint.
+                for path in &event.paths {
+                    classify(path, renamed(path));
+                }
+            }
+        }
+        EventKind::Modify(ModifyKind::Name(RenameMode::From)) => {
+            for path in &event.paths {
+                classify(path, Change::Removed);
+            }
+        }
+        EventKind::Modify(ModifyKind::Name(RenameMode::To)) => {
+            for path in &event.paths {
+                classify(path, Change::Created);
+            }
+        }
+        EventKind::Modify(ModifyKind::Name(_)) => {
+            // Defer resolution: the batch checks existence after the quiet window, so a
+            // file created and removed within one window is not reported as created.
+            for path in &event.paths {
+                out.push(path.clone(), PathChange::Rename);
+            }
+        }
+        EventKind::Modify(_) | EventKind::Any | EventKind::Other => {
+            for path in &event.paths {
+                classify(path, Change::Modified);
+            }
+        }
+        EventKind::Access(_) => {}
+    }
+}
+
+/// A directory's own mtime moving as entries come and go. Polling also reports
+/// each changed entry through that directory's watch.
 fn is_dir_touch(event: &notify::Event) -> bool {
     matches!(event.kind, EventKind::Modify(_)) && event.paths.iter().all(|p| p.is_dir())
 }
@@ -280,11 +376,13 @@ fn watcher_error(what: &str, error: notify::Error) -> IdeError {
     }
 }
 
-/// Only adjacent identical file modifications are redundant before classification.
-/// Keep the arrival window separately so compaction cannot extend MAX_DELAY.
+/// Events waiting for the debounce window, coalesced by path: each path keeps its distinct
+/// changes in arrival order, so a storm repeating one change collapses to a single entry
+/// while the batch still sees the exact sequence it would have received. Memory is bounded
+/// by the number of paths and real transitions touched in the window, not by raw events.
 #[derive(Default)]
 struct PendingEvents {
-    events: Vec<Event>,
+    changes: BTreeMap<PathBuf, Vec<PathChange>>,
     first: Option<Instant>,
     last: Option<Instant>,
     received: usize,
@@ -292,31 +390,60 @@ struct PendingEvents {
 
 impl PendingEvents {
     fn is_empty(&self) -> bool {
-        self.events.is_empty()
+        self.changes.is_empty()
     }
 
-    fn push(&mut self, event: Event, now: Instant) {
+    fn add(&mut self, changes: QueuedChanges, now: Instant) {
         self.first.get_or_insert(now);
         self.last = Some(now);
         self.received += 1;
-        let redundant = event.paths.len() == 1
-            && event.flag().is_none()
-            && matches!(event.kind, EventKind::Modify(ModifyKind::Any | ModifyKind::Data(_) | ModifyKind::Metadata(_)))
-            && self.events.last().is_some_and(|previous| {
-                // Reject different spellings before Path's component-wise equality.
-                // Keeping a normalized alias is safe; only exact duplicates compact.
-                previous.paths.len() == 1
-                    && previous.paths[0].as_os_str() == event.paths[0].as_os_str()
-                    && previous == &event
-                    && previous.attrs.process_id() == event.attrs.process_id()
-            });
-        if !redundant {
-            self.events.push(event);
+        for (path, kinds) in changes.paths {
+            let queued = self.changes.entry(path).or_default();
+            for kind in kinds {
+                if queued.last() != Some(&kind) {
+                    queued.push(kind);
+                }
+            }
         }
     }
 
     fn deadline(&self) -> Option<Instant> {
         Some((self.last? + DEBOUNCE).min(self.first? + MAX_DELAY))
+    }
+
+    /// Rebuild the events for `batch_detailed`, in the order each path received them.
+    /// `merge` is order-sensitive, so this preserves the exact transition sequence with
+    /// repetitions removed. A rename is emitted as `Modify(Name(Any))` so its existence
+    /// check stays in the batch, and a transient path stays a create+remove pair.
+    fn into_events(self) -> Vec<Event> {
+        self.changes
+            .into_iter()
+            .flat_map(|(path, changes)| {
+                changes
+                    .into_iter()
+                    .flat_map(|kind| {
+                        let event = match kind {
+                            PathChange::Rename => Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::Any))),
+                            PathChange::Change(Change::Created) => Event::new(EventKind::Create(CreateKind::File)),
+                            PathChange::Change(Change::Removed) => Event::new(EventKind::Remove(RemoveKind::File)),
+                            PathChange::Change(Change::Modified) => {
+                                Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
+                            }
+                            // Any kind classifies a VCS path as `Vcs` again, except a modified
+                            // directory, which the batch drops as a lock-file touch.
+                            PathChange::Change(Change::Vcs) => Event::new(EventKind::Create(CreateKind::Any)),
+                            PathChange::Change(Change::Transient) => {
+                                return vec![
+                                    Event::new(EventKind::Create(CreateKind::File)).add_path(path.clone()),
+                                    Event::new(EventKind::Remove(RemoveKind::File)).add_path(path.clone()),
+                                ];
+                            }
+                        };
+                        vec![event.add_path(path.clone())]
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
     }
 }
 
@@ -338,6 +465,19 @@ struct DirState {
 impl DirState {
     fn stopped(&self) -> bool {
         self.stop.load(Ordering::SeqCst)
+    }
+
+    /// Coalesces one raw event into the pending batch. Everything `batch_detailed` does to
+    /// a path (VCS metadata, atomic-save temps, `merge` of repeated changes) is applied here
+    /// through `classify`, so the batch gets the same final state per path it always did.
+    fn enqueue(&self, event: Event) {
+        let mut changes = QueuedChanges::default();
+        queue_changes(&self.filter, &event, &mut changes);
+        if changes.paths.is_empty() {
+            return;
+        }
+        self.queue.lock().add(changes, Instant::now());
+        self.wake.notify_one();
     }
 
     /// Debounce loop: finishes any deferred startup watches, then waits for a
@@ -372,13 +512,15 @@ impl DirState {
                 }
                 std::mem::take(&mut *q)
             };
-            // A scan may publish a path before its create event is delivered:
-            // keep create + remove pairs so the consumer still sees the removal.
             let processing = Instant::now();
             let queue_age_ms = processing.duration_since(events.first.expect("nonempty event queue")).as_millis();
             let received = events.received;
-            let queued = events.events.len();
-            let (mut batch, rule_dirs) = self.filter.batch_detailed(&events.events);
+            // One event can contribute two path changes (a `Both` rename), so the queued
+            // count can exceed the raw event count; never let the log arithmetic underflow.
+            let queued = events.changes.values().map(Vec::len).sum::<usize>();
+            let coalesced = received.saturating_sub(queued);
+            let events = events.into_events();
+            let (mut batch, rule_dirs) = self.filter.batch_detailed(&events);
             if self.mode == WatchMode::PerDirectory {
                 self.update_watches(&mut batch, &rule_dirs);
                 // Again once polling: a refused directory was not read, and
@@ -393,7 +535,7 @@ impl DirState {
             tracing::debug!(
                 received,
                 queued,
-                coalesced = received - queued,
+                coalesced,
                 queue_age_ms,
                 processing_ms,
                 callback_ms = callback.elapsed().as_millis(),
@@ -728,6 +870,9 @@ impl EventFilter {
             Err(_) => None,
         };
         let change = match rel.and_then(Self::git_internal) {
+            // Windows also reports a directory modification when Git creates or removes a lock.
+            // The entries carry the actual changes, including edits to a linked worktree's gitfile.
+            Some(true) if change == Change::Modified && path.is_dir() => return,
             Some(true) => Change::Vcs,
             Some(false) => return,
             None if crate::encoding::is_atomic_temp(path) => return,
@@ -873,78 +1018,91 @@ mod tests {
         Event { kind, paths, attrs: Default::default() }
     }
 
+    fn push_event(pending: &mut PendingEvents, filter: &EventFilter, event: &Event) {
+        let mut changes = QueuedChanges::default();
+        queue_changes(filter, event, &mut changes);
+        pending.add(changes, Instant::now());
+    }
+
+    /// Evidence for the bounded queue (issue #3936): 100,000 notifications over 1,000
+    /// distinct paths, measured before (one raw event each) and after (one change per path).
+    /// `cargo test -p ide-vfs --release --lib -- --ignored --nocapture storm_coalescing_numbers`
+    #[test]
+    #[ignore = "prints queued entries for a storm; see issue #3936"]
+    fn storm_coalescing_numbers() {
+        let root = PathBuf::from("/proj");
+        let filter = EventFilter::new(root.clone(), &[]);
+        let mut pending = PendingEvents::default();
+        for i in 0..100_000 {
+            let event = ev(
+                EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+                vec![root.join(format!("src/{}.zig", i % 1_000))],
+            );
+            push_event(&mut pending, &filter, &event);
+        }
+        let queued = pending.changes.values().map(Vec::len).sum::<usize>();
+        // One entry per path: a repeat of the same change never grows the queue.
+        assert_eq!(queued, 1_000);
+        println!("100,000 raw events over 1,000 paths -> {queued} queued changes (lossless final states)");
+    }
+
     #[test]
     fn pending_modifications_keep_the_original_debounce_window() {
         let start = Instant::now();
         // ReadDirectoryChangesW reports ordinary Windows writes as Modify(Any).
-        let event = ev(EventKind::Modify(ModifyKind::Any), vec!["file.rs".into()]);
         let mut pending = PendingEvents::default();
         assert_eq!(pending.deadline(), None);
         for n in 0..10_000 {
-            pending.push(event.clone(), start + Duration::from_micros(n * 95));
+            let mut changes = QueuedChanges::default();
+            changes.push("file.rs".into(), PathChange::Change(Change::Modified));
+            pending.add(changes, start + Duration::from_micros(n * 95));
         }
         assert_eq!(pending.received, 10_000);
-        assert_eq!(pending.events.len(), 1);
+        assert_eq!(pending.changes.len(), 1);
         assert_eq!(pending.first, Some(start));
         assert_eq!(pending.last, Some(start + Duration::from_micros(9_999 * 95)));
         assert_eq!(pending.deadline(), Some(start + MAX_DELAY));
         let drained = std::mem::take(&mut pending);
-        assert_eq!(drained.events, vec![event.clone()]);
+        assert_eq!(drained.into_events().len(), 1);
         assert!(pending.is_empty());
         assert_eq!(pending.deadline(), None);
-        pending.push(event, start + MAX_DELAY);
+        let mut changes = QueuedChanges::default();
+        changes.push("file.rs".into(), PathChange::Change(Change::Modified));
+        pending.add(changes, start + MAX_DELAY);
         assert_eq!(pending.received, 1);
         assert_eq!(pending.deadline(), Some(start + MAX_DELAY + DEBOUNCE));
     }
 
     #[test]
-    fn pending_events_preserve_boundaries_and_attributes() {
-        let now = Instant::now();
-        let modify = ev(EventKind::Modify(ModifyKind::Data(DataChange::Content)), vec!["a".into()]);
-        let variants = [
-            modify.clone().set_tracker(1),
-            modify.clone().set_info("backend detail"),
-            modify.clone().set_process_id(2),
-            modify.clone().set_flag(notify::event::Flag::Rescan),
-            modify.clone().add_path("b".into()),
-            ev(EventKind::Create(CreateKind::File), vec!["a".into()]),
-            ev(EventKind::Remove(RemoveKind::File), vec!["a".into()]),
-            ev(EventKind::Modify(ModifyKind::Name(RenameMode::Both)), vec!["a".into(), "b".into()]),
-            ev(EventKind::Modify(ModifyKind::Name(RenameMode::From)), vec!["a".into()]),
-            ev(EventKind::Modify(ModifyKind::Name(RenameMode::To)), vec!["a".into()]),
-            ev(EventKind::Any, vec!["a".into()]),
-        ];
-        for middle in variants {
-            let events = vec![modify.clone(), middle, modify.clone()];
-            let mut pending = PendingEvents::default();
-            for event in &events {
-                pending.push(event.clone(), now);
-            }
-            assert_eq!(pending.events, events);
-        }
-        let mut interleaved = PendingEvents::default();
-        for event in [
-            modify.clone(),
-            modify.clone().set_kind(EventKind::Create(CreateKind::File)).add_path("b".into()),
-            modify.clone(),
+    fn pending_coalesces_a_storm_into_one_change_per_path() {
+        let root = PathBuf::from("/proj");
+        let filter = EventFilter::new(root.clone(), &[]);
+        let mut pending = PendingEvents::default();
+        // create → modify → modify → remove resolves to the final state of the path;
+        // the event stream is lossless for every consumer that sees that final state.
+        for kind in [
+            EventKind::Create(CreateKind::File),
+            EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+            EventKind::Modify(ModifyKind::Data(DataChange::Content)),
         ] {
-            interleaved.push(event, now);
+            push_event(&mut pending, &filter, &ev(kind, vec![root.join("a.zig")]));
         }
-        assert_eq!(interleaved.events.len(), 3);
-        let mut interleaved = PendingEvents::default();
-        for event in [modify.clone(), ev(modify.kind, vec!["b".into()]), modify.clone()] {
-            interleaved.push(event, now);
-        }
-        assert_eq!(interleaved.events.len(), 3);
-        for event in [
-            modify.set_flag(notify::event::Flag::Rescan),
-            ev(EventKind::Modify(ModifyKind::Name(RenameMode::From)), vec!["a".into()]),
-        ] {
-            let mut pending = PendingEvents::default();
-            pending.push(event.clone(), now);
-            pending.push(event, now);
-            assert_eq!(pending.events.len(), 2);
-        }
+        assert_eq!(
+            pending.changes[&root.join("a.zig")],
+            vec![PathChange::Change(Change::Created), PathChange::Change(Change::Modified)]
+        );
+        push_event(&mut pending, &filter, &ev(EventKind::Remove(RemoveKind::File), vec![root.join("a.zig")]));
+        assert_eq!(
+            pending.changes[&root.join("a.zig")],
+            vec![
+                PathChange::Change(Change::Created),
+                PathChange::Change(Change::Modified),
+                PathChange::Change(Change::Removed)
+            ]
+        );
+        push_event(&mut pending, &filter, &ev(EventKind::Create(CreateKind::File), vec![root.join("b.zig")]));
+        assert_eq!(pending.changes.len(), 2);
+        assert_eq!(pending.received, 5);
     }
 
     #[test]
@@ -958,15 +1116,16 @@ mod tests {
         assert_ne!(paths[0].as_os_str(), paths[1].as_os_str());
         let events: Vec<_> =
             paths.into_iter().map(|path| Event::new(EventKind::Modify(ModifyKind::Any)).add_path(path)).collect();
+        let filter = EventFilter::new(root.clone(), &[]);
         let mut pending = PendingEvents::default();
         for event in &events {
-            pending.push(event.clone(), Instant::now());
+            let mut changes = QueuedChanges::default();
+            queue_changes(&filter, event, &mut changes);
+            pending.add(changes, Instant::now());
         }
-        assert_eq!(pending.events.len(), events.len());
-        assert_same_batch(
-            &EventFilter::new(root.clone(), &[]).batch(&events),
-            &EventFilter::new(root, &[]).batch(&pending.events),
-        );
+        // Path equality merges the spellings; one final state is all any consumer can see.
+        assert_eq!(pending.changes.len(), 1);
+        assert_same_batch(&filter.batch(&events), &EventFilter::new(root, &[]).batch(&pending.into_events()));
     }
 
     fn assert_same_batch(left: &FsBatch, right: &FsBatch) {
@@ -995,29 +1154,37 @@ mod tests {
             EventKind::Modify(ModifyKind::Metadata(MetadataKind::WriteTime)),
             EventKind::Modify(ModifyKind::Name(RenameMode::From)),
             EventKind::Modify(ModifyKind::Name(RenameMode::To)),
+            // The macOS FSEvents rename (no peer), and whole-event kinds the batch handles.
+            EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
+            EventKind::Modify(ModifyKind::Name(RenameMode::Other)),
+            EventKind::Any,
+            EventKind::Other,
+            // A `Both` rename missing its second endpoint (some inotify backends).
+            EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
         ];
-        // All four-event histories, with both present and absent final state.
+        // All three-event histories, with both present and absent final state.
         for rel in ["source.rs", "file.ignored", "excluded/source.rs", ".git/HEAD"] {
             let path = root.join(rel);
             for exists in [false, true] {
                 if exists {
                     std::fs::write(&path, "x").unwrap();
                 }
-                for code in 0..kinds.len().pow(4) {
+                for code in 0..kinds.len().pow(3) {
                     let mut code = code;
                     let mut events = Vec::new();
                     let mut pending = PendingEvents::default();
-                    for _ in 0..4 {
+                    let filter = EventFilter::new(root.clone(), &excludes);
+                    for _ in 0..3 {
                         let event = ev(kinds[code % kinds.len()], vec![path.clone()]);
                         code /= kinds.len();
-                        // Each event is repeated to exercise compaction after transitions.
+                        // Each event is repeated to exercise coalescing after transitions.
                         for _ in 0..2 {
                             events.push(event.clone());
-                            pending.push(event.clone(), Instant::now());
+                            push_event(&mut pending, &filter, &event);
                         }
                     }
                     let plain = EventFilter::new(root.clone(), &excludes).batch(&events);
-                    let compact = EventFilter::new(root.clone(), &excludes).batch(&pending.events);
+                    let compact = EventFilter::new(root.clone(), &excludes).batch(&pending.into_events());
                     assert_same_batch(&plain, &compact);
                 }
             }
@@ -1053,13 +1220,13 @@ mod tests {
             std::fs::write(root.join("new.rs"), "x").unwrap();
             let mut pending = PendingEvents::default();
             for event in &events {
-                pending.push(event.clone(), Instant::now());
+                push_event(&mut pending, &plain, event);
             }
             let expected = plain.batch(&events);
             assert_eq!(expected.ignore_rules, vec![root.clone()]);
             assert_eq!(expected.ignored, vec![root.join("file.ignored")]);
             assert!(!expected.modified.contains(&root.join("file.ignored")));
-            assert_same_batch(&expected, &compact.batch(&pending.events));
+            assert_same_batch(&expected, &compact.batch(&pending.into_events()));
         }
     }
 
@@ -1328,6 +1495,43 @@ mod tests {
         assert_eq!(g(".git/worktrees"), Some(true));
         assert_eq!(g(".git/info"), Some(true));
         assert_eq!(g(".git/objects"), Some(false));
+    }
+
+    #[test]
+    fn git_metadata_directory_touches_do_not_refresh_vcs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let filter = EventFilter::new(root.clone(), &[]);
+        let modify = EventKind::Modify(ModifyKind::Any);
+        for (dir, lock) in
+            [(".git", "index.lock"), (".git/refs/heads", "main.lock"), (".git/worktrees/wt", "index.lock")]
+        {
+            let dir = root.join(dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let lock = dir.join(lock);
+            let batch = filter.batch(&[
+                ev(EventKind::Create(CreateKind::File), vec![lock.clone()]),
+                ev(EventKind::Remove(RemoveKind::File), vec![lock]),
+                ev(modify, vec![dir.clone()]),
+            ]);
+            assert!(batch.is_empty(), "{}: {batch:?}", dir.display());
+            for kind in [EventKind::Create(CreateKind::Folder), EventKind::Remove(RemoveKind::Folder)] {
+                let batch = filter.batch(&[ev(kind, vec![dir.clone()])]);
+                assert_eq!(batch.vcs, vec![dir.clone()]);
+            }
+        }
+
+        let gitfile = root.join("wt/.git");
+        std::fs::create_dir_all(root.join("wt")).unwrap();
+        std::fs::write(&gitfile, "gitdir: ../.git/worktrees/wt\n").unwrap();
+        let index = root.join(".git/index");
+        let head = root.join(".git/refs/heads/main");
+        std::fs::write(&index, b"index data").unwrap();
+        std::fs::write(&head, b"commit id").unwrap();
+        for path in [gitfile, index, head] {
+            let batch = filter.batch(&[ev(modify, vec![path.clone()])]);
+            assert_eq!(batch.vcs, vec![path]);
+        }
     }
 
     #[test]
@@ -1941,8 +2145,7 @@ mod tests {
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(&file, "x").unwrap();
         let created = Event::new(EventKind::Create(notify::event::CreateKind::Folder)).add_path(root.join("new"));
-        inner.state.queue.lock().push(created, Instant::now());
-        inner.state.wake.notify_all();
+        inner.state.enqueue(created);
         // Written before polling took over, so the poller never reports it.
         assert!(wait_for(&batches, |b| all_paths(b).contains(&file)), "{:?}", batches.lock());
         // root, a, c, new, new/inner

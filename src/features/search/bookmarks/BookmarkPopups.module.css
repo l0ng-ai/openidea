@@ -72,32 +72,21 @@
 }
 
 .listDialog {
-  max-height: 80vh;
+  height: min(460px, 100%);
 }
 .listBody {
-  display: flex;
-  height: 420px;
-  min-height: 0;
-  border-top: 1px solid var(--border-popup);
+  height: 100%;
+  border-block-start: 1px solid var(--border-popup);
 }
-.listPane {
-  flex: 0 0 300px;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  border-right: 1px solid var(--border-popup);
-}
-.listPane > * {
+.listPane > *,
+.previewPane > * {
   flex: 1;
-}
-.previewPane {
-  flex: 1;
-  display: flex;
-  min-width: 0;
+  min-height: 0;
 }
 .fileRow,
 .markRow {
   display: flex;
+  flex: 1;
   align-items: center;
   gap: var(--space-1-5);
   min-width: 0;
@@ -114,6 +103,12 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: pre;
+}
+.lineNumber {
+  flex: none;
+  margin-inline-start: auto;
+  color: var(--fg-subtle);
+  font-variant-numeric: tabular-nums;
 }
 .dim {
   min-width: 0;

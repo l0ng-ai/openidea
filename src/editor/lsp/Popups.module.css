@@ -131,6 +131,17 @@
 .listBody > * {
   flex: 1;
 }
+.centeredList,
+.targetPopup {
+  min-width: min(360px, 90vw);
+}
+.centeredList .listMain,
+.centeredList .listBody,
+.targetPopup .listMain,
+.targetPopup .listBody {
+  flex-shrink: 1;
+  min-height: 0;
+}
 .item {
   display: flex;
   align-items: center;
@@ -190,6 +201,12 @@
   min-width: 200px;
   max-width: 420px;
 }
+.leadingDetail {
+  flex: 0 0 min(var(--list-leading-detail-width), 42%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
 .detail {
   flex: 0 1 auto;
   min-width: 0;
@@ -197,6 +214,28 @@
   text-overflow: ellipsis;
   font-size: var(--fs-small);
   color: var(--fg-subtle);
+}
+.targetIdentity {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  min-width: 0;
+  flex: 1;
+}
+.targetIdentity .label {
+  flex: none;
+  max-width: 100%;
+}
+.targetContainer,
+.targetPath {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-subtle);
+}
+.targetPath {
+  max-width: 44%;
+  direction: rtl;
 }
 .shortcut {
   flex: none;
@@ -339,9 +378,6 @@
   margin: 0 var(--space-2) var(--space-1);
   padding: 0;
   border: 0;
-}
-.docPopup .docToolbar .spacer {
-  display: none;
 }
 .docWindowFrame {
   height: 100%;

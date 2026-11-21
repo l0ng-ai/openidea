@@ -327,6 +327,7 @@ export const commands = {
 	/**  What made the dump at `path` and whether it creates its own database (from its first bytes). */
 	dbDumpInfo: (path: string) => typedError<DbDumpInfo, IdeError>(__TAURI_INVOKE("db_dump_info", { path })),
 	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], skip: number, maxRows: number, schema: string | null) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, skip, maxRows, schema })),
+	dbExecuteStream: (request: RequestId, id: string, statements: SqlStatement[], maxRows: number, schema: string | null, onProgress: Channel<ExecutionEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("db_execute_stream", { request, id, statements, maxRows, schema, onProgress })),
 	dbExplain: (request: RequestId, id: string, statement: string, schema: string | null) => typedError<DbPlanNode[], IdeError>(__TAURI_INVOKE("db_explain", { request, id, statement, schema })),
 	/**
 	 *  Writes exported result data (CSV, JSON, SQL…) to `path`. Stays in the
@@ -456,6 +457,8 @@ export const commands = {
 	/**  Field watchpoints; states aligned with `breakpoints`. */
 	debugSetDataBreakpoints: (breakpoints: DataBreakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_data_breakpoints", { breakpoints })),
 	debugSetExceptionBreakpoints: (choices: { [key in string]: boolean }) => typedError<null, IdeError>(__TAURI_INVOKE("debug_set_exception_breakpoints", { choices })),
+	/**  Exception breakpoints on chosen classes (all sessions that take them, and later ones). */
+	debugSetExceptionClassBreakpoints: (breakpoints: ExceptionClassBreakpoint[]) => typedError<null, IdeError>(__TAURI_INVOKE("debug_set_exception_class_breakpoints", { breakpoints })),
 	/**  Method breakpoints (all files); states aligned with `breakpoints`. */
 	debugSetFunctionBreakpoints: (breakpoints: FunctionBreakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_function_breakpoints", { breakpoints })),
 	debugSetVariable: (session: DebugSessionId, container: number, name: string, evaluateName: string | null, frameId: number | null, value: string) => typedError<Variable_Serialize, IdeError>(__TAURI_INVOKE("debug_set_variable", { session, container, name, evaluateName, frameId, value })),
@@ -654,7 +657,7 @@ export const commands = {
 	 *  exited is only started again by the next request.
 	 */
 	flutterDevtoolsUrl: () => typedError<string, IdeError>(__TAURI_INVOKE("flutter_devtools_url")),
-	fsCompareDirectories: (left: string, right: string, request: RequestId, onProgress: Channel<DirectoryCompareProgress>) => typedError<DirectoryCompareEntry[], IdeError>(__TAURI_INVOKE("fs_compare_directories", { left, right, request, onProgress })),
+	fsCompareDirectories: (left: string, right: string, mode: DirectoryCompareMode, request: RequestId, onProgress: Channel<DirectoryCompareProgress>) => typedError<DirectoryCompareEntry[], IdeError>(__TAURI_INVOKE("fs_compare_directories", { left, right, mode, request, onProgress })),
 	fsCopy: (from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy", { from, to })),
 	fsCopyMerge: (sourceRoot: string, destinationRoot: string, path: string, overwrite: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy_merge", { sourceRoot, destinationRoot, path, overwrite })),
 	fsCreateDir: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_create_dir", { path })),
@@ -695,6 +698,11 @@ export const commands = {
 	 *  state). Returns whether the file is read-only now.
 	 */
 	fsSetWritable: (path: string, writable: boolean) => typedError<boolean, IdeError>(__TAURI_INVOKE("fs_set_writable", { path, writable })),
+	/**
+	 *  Runs Compare Directories' synchronisation operations in order. A failed operation is
+	 *  reported and the rest still run; cancellation stops before the next one.
+	 */
+	fsSynchronizeDirectories: (left: string, right: string, operations: DirectorySyncOperation[], request: RequestId, onProgress: Channel<DirectorySyncProgress>) => typedError<DirectorySyncFailure[], IdeError>(__TAURI_INVOKE("fs_synchronize_directories", { left, right, operations, request, onProgress })),
 	fsUndoDelete: (undo: DeletionUndo) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("fs_undo_delete", { undo })),
 	/**  The repositories of the account gh is signed in to ("Get from Version Control" › GitHub); needs no project. */
 	ghAccountRepos: () => typedError<GhAccountRepos, IdeError>(__TAURI_INVOKE("gh_account_repos")),
@@ -1320,6 +1328,13 @@ export const commands = {
 	projectTrustRemoveLocation: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("project_trust_remove_location", { path })),
 	projectTrustSet: (path: string, trusted: boolean, folder: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("project_trust_set", { path, trusted, folder })),
 	projectTrustStatus: (path: string) => typedError<TrustStatus, IdeError>(__TAURI_INVOKE("project_trust_status", { path })),
+	/**
+	 *  Sets a `projectStructure.*` key in the settings of `root`, a project attached to the window's
+	 *  project (Mark Directory as there). Every open window holding that project follows.
+	 */
+	projectWorkspaceMemberSet: (root: string, key: string, value: string) => typedError<null, IdeError>(__TAURI_INVOKE("project_workspace_member_set", { root, key, value })),
+	/**  The workspace projects outside the window's project folder, for Mark Directory as there. */
+	projectWorkspaceMembers: () => typedError<WorkspaceMember[], IdeError>(__TAURI_INVOKE("project_workspace_members")),
 	/**
 	 *  System Settings › HTTP Proxy › Check connection: GETs `url` through `proxy` as
 	 *  edited (not yet applied); the response status, or why there was none.
@@ -5321,6 +5336,13 @@ export type DirectoryCompareEntry = {
 	rightModified?: number | null,
 };
 
+/**  What makes two files equal (IDEA's "Compare by"). */
+export type DirectoryCompareMode = 
+/**  Identical bytes. */
+"content" | 
+/**  The same text once decoded, whatever the encoding, BOM or line separators. */
+"text" | "size" | "sizeAndTimestamp";
+
 export type DirectoryCompareProgress = {
 	scanned: number,
 	compared: number,
@@ -5348,6 +5370,29 @@ export type DirectoryHistory_Serialize = {
 	entries: HistoryEntry_Serialize[],
 	/**  Files with history that no longer exist on disk. */
 	deleted: IpcPath[],
+};
+
+/**  One row's synchronisation, applied by [`DirectorySyncOperation`] batches. */
+export type DirectorySyncAction = "copyToLeft" | "copyToRight" | "deleteLeft" | "deleteRight";
+
+export type DirectorySyncFailure = {
+	path: string,
+	action: DirectorySyncAction,
+	message: string,
+};
+
+export type DirectorySyncOperation = {
+	/**  Relative to both comparison roots. */
+	path: string,
+	action: DirectorySyncAction,
+	/**  A copy may replace what is already at the destination (confirmed by the user). */
+	overwrite: boolean,
+};
+
+export type DirectorySyncProgress = {
+	done: number,
+	total: number,
+	path: string,
 };
 
 /**  See [`IdeEvent::Direnv`]. */
@@ -5973,6 +6018,28 @@ export type EventKind = "document-changed" | "websocket-ready" | "file-closed" |
 /**  Problems of the window's files changed (a language server or a report). */
 "problems-changed" | "scheduled";
 
+export type ExceptionClassBreakpoint = {
+	id: string,
+	/**  Fully qualified binary name (`com.acme.Outer$Inner`); its subclasses stop too. */
+	className: string,
+	caught: boolean,
+	uncaught: boolean,
+	enabled: boolean,
+	/**  Patterns (`com.acme.*`, `*Test`, a full name) for the class whose code throws. */
+	classFilters: string[],
+	classExclusionFilters: string[],
+};
+
+/**  What a session's exception class breakpoints can do. */
+export type ExceptionClassSupport = {
+	/**  Whose class names the session takes: `java`. */
+	family: string,
+	condition: boolean,
+	classFilters: boolean,
+	/**  Filters on the class whose code catches the exception. */
+	catchFilters: boolean,
+};
+
 /**  An exception breakpoint filter offered by an adapter (`exceptionBreakpointFilters`). */
 export type ExceptionFilter = {
 	filter: string,
@@ -5982,6 +6049,8 @@ export type ExceptionFilter = {
 	default: boolean,
 	supportsCondition: boolean,
 };
+
+export type ExecutionEvent = { type: "started"; index: number } | { type: "completed"; index: number; outcome: DbStatementOutcome } | { type: "done"; error: IdeError | null };
 
 /**  Result of `expression_at` (Extract Variable / Introduce … fallback). */
 export type ExpressionAt = {
@@ -11313,6 +11382,8 @@ export type SessionExceptionFilters = {
 	session: DebugSessionId,
 	adapter: string,
 	filters: ExceptionFilter[],
+	/**  Set when the session takes exception breakpoints on a chosen class. */
+	classes: ExceptionClassSupport | null,
 };
 
 /**  A live session, as listed by [`DebugManager::sessions`]. */
@@ -11634,6 +11705,8 @@ export type SmartKeysSettings = {
 	pairQuotes?: boolean,
 	surroundSelection?: boolean,
 	tabOutOfPair?: boolean,
+	/**  A `;` typed before the closing `)` of a statement goes to the end of the statement. */
+	semicolonAtStatementEnd?: boolean,
 	/**  Simultaneous `<tag></tag>` editing: renaming a tag renames its matching tag. */
 	simultaneousTagEditing?: boolean,
 	/**  Reformat on paste: `none` | `indentBlock` | `indentEachLine`. */
@@ -12584,6 +12657,8 @@ export type VcsMappings = {
 export type VcsRoot = {
 	/**  Worktree root. */
 	root: IpcPath,
+	/**  Root representing all mapped worktrees of the same Git repository in branch lists. */
+	branchRoot: IpcPath,
 	/**  Merge / rebase / cherry-pick / revert in progress. */
 	operation: string | null,
 	/**  Current branch; `None` when HEAD is detached (or unreadable). */
@@ -12835,6 +12910,15 @@ export type WorkspaceEdit = {
 export type WorkspaceEditPrecondition = {
 	path: IpcPath,
 	hash: string,
+};
+
+/**  A project attached to the window's project, with its own Project Structure. */
+export type WorkspaceMember = {
+	root: IpcPath,
+	/**  Its project settings' Project Structure (not merged with the user settings). */
+	structure: ProjectStructureSettings,
+	/**  Roots detected from its build files. */
+	detected: SourceFolder[],
 };
 
 export type WorkspaceSymbol = {

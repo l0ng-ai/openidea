@@ -20,6 +20,7 @@ pub(crate) const SERVER: &str = "jdtls";
 const GENERATED_SOURCES: &str = "openidea.java.generatedSources";
 
 pub(crate) mod configuration;
+pub(crate) mod exception_breakpoints;
 mod extract_interface;
 mod formatter;
 mod generated;

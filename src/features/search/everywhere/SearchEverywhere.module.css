@@ -296,22 +296,71 @@
   gap: var(--space-1);
   padding: 4px 12px 8px;
 }
-.filterGroup + .filterGroup {
-  border-top: 1px solid var(--border-popup);
-  padding-top: 8px;
-}
 .filterTitle {
   color: var(--fg-secondary);
   font-size: var(--fs-small);
 }
-.filterAll {
-  font-weight: 600;
-}
-.filterItems {
+.checklistPopup {
   display: flex;
   flex-direction: column;
-  gap: var(--space-0-5);
-  padding-left: 4px;
+  width: min(280px, calc(100vw - 12px));
+  max-height: min(460px, 70vh);
+  overflow: hidden;
+  font-size: var(--fs-ui);
+}
+.checklistGroup {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.checklistGroup + .checklistGroup {
+  border-block-start: 1px solid var(--border-popup);
+}
+.checklistTitle {
+  flex: none;
+  padding: var(--space-2) var(--space-3) var(--space-1);
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+.checklistRows {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  padding: 0 var(--space-1) var(--space-1);
+}
+.checklistRow {
+  flex: none;
+  min-height: var(--h-row);
+  padding-inline: var(--space-2);
+  border-radius: var(--radius-selection);
+}
+.checklistRow:hover {
+  background: var(--bg-tree-hover);
+}
+.checklistRow:focus-within {
+  background: var(--bg-tree-selected);
+}
+.checklistLabel {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+}
+.checklistName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.checklistActions {
+  display: flex;
+  flex: none;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: var(--space-1-5);
+  padding: var(--space-1-5) var(--space-2);
+  border-block-start: 1px solid var(--border-popup);
 }
 .filterMasks {
   display: flex;

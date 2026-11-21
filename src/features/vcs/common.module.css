@@ -8,6 +8,39 @@
   color: var(--fg-secondary);
   font-size: var(--fs-small);
 }
+.inlinePrompt {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: start;
+  column-gap: var(--space-3);
+}
+.inlinePrompt > .fieldLabel {
+  align-self: center;
+  max-inline-size: 12em;
+  color: var(--fg);
+  font-size: var(--fs-ui);
+  overflow-wrap: anywhere;
+}
+.inlinePrompt > :not(.fieldLabel) {
+  grid-column: 2;
+  min-width: 0;
+}
+.inlinePromptOptions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+}
+@media (max-width: 440px) {
+  .inlinePrompt {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .inlinePrompt > :not(.fieldLabel) {
+    grid-column: 1;
+  }
+  .inlinePrompt > .fieldLabel {
+    max-inline-size: none;
+  }
+}
 .error {
   color: var(--danger);
   font-size: var(--fs-small);
@@ -682,40 +715,10 @@
   gap: var(--space-1-5);
   min-width: 0;
 }
-.optionGrid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-1) var(--space-3);
-}
 .manageBar {
   display: flex;
   align-items: center;
   gap: var(--space-0-5);
-}
-/* Worktrees dialog: the tree needs a height of its own inside the auto-sized body. */
-.worktreeListDialog {
-  height: 340px;
-  min-height: 0;
-}
-/* Worktrees tree rows: the worktree name keeps its width, the path is what gets cut short. */
-.worktreeIcon {
-  flex: none;
-  margin-right: 2px;
-  color: var(--fg-muted);
-}
-.worktreeLabel {
-  flex: none;
-  max-width: 45%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.worktreeDetail {
-  min-width: 0;
-  margin-left: 4px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--fg-muted);
 }
 
 .comparisonDialog > [data-dialog-body] {
@@ -768,6 +771,15 @@
 }
 .comparisonWindowBody > .comparison {
   flex: 1 1 auto;
+}
+.comparisonWindowToolbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  padding: var(--space-2) var(--space-3) var(--space-1);
+}
+.comparisonWindowToolbar > button {
+  font-size: var(--fs-small);
 }
 .comparisonWindowFooter {
   display: flex;

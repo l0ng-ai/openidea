@@ -8,24 +8,24 @@
 }
 .toolbar {
   flex: none;
-  height: var(--h-header);
   display: flex;
   align-items: center;
   gap: var(--space-0-5);
-  padding: 0 6px;
+  padding: var(--space-1) 10px;
   border-bottom: 1px solid var(--border);
 }
-.toolbar > * {
-  flex-shrink: 0;
-}
 .sep {
+  flex: none;
   width: 1px;
   height: 14px;
-  margin: 0 4px;
+  margin-inline: var(--space-1);
   background: var(--border-strong);
 }
 .count {
-  padding: 0 6px;
+  min-width: 0;
+  margin-inline: var(--space-1-5);
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--fg-subtle);
   font-size: var(--fs-small);
   white-space: nowrap;
@@ -37,9 +37,15 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  padding: var(--space-2) var(--space-3);
 }
 .block {
-  border-bottom: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-popup-large);
+  background: var(--bg-editor);
+}
+.block + .block {
+  margin-top: 10px;
 }
 /* The file's header stays at the top while its diff scrolls by. */
 .header {
@@ -49,27 +55,47 @@
   display: flex;
   align-items: center;
   gap: var(--space-1);
-  height: var(--h-header);
-  padding: 0 6px;
-  background: var(--bg-elev);
+  padding: var(--space-3) 10px;
+  background: var(--bg-editor);
   border-bottom: 1px solid var(--border);
+  border-start-start-radius: inherit;
+  border-start-end-radius: inherit;
+  font-size: var(--fs-ui);
 }
-.name {
+.block[data-collapsed] .header {
+  border-radius: inherit;
+  border-bottom: 0;
+}
+.file {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-width: 0;
+  flex: 1;
+}
+.file > svg {
   flex: none;
-  font-weight: 500;
-  white-space: nowrap;
 }
+.name,
 .dir {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.name {
+  font-weight: 600;
+}
+.dir {
+  flex: 1;
   color: var(--fg-subtle);
-  font-size: var(--fs-small);
 }
 .body {
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+  border-end-start-radius: inherit;
+  border-end-end-radius: inherit;
 }
 .body[hidden] {
   display: none;
@@ -83,4 +109,17 @@
   align-items: center;
   justify-content: center;
   color: var(--fg-subtle);
+}
+
+:global(:root[data-compact]) .toolbar {
+  padding-block: 1px;
+}
+:global(:root[data-compact]) .scroll {
+  padding: var(--space-1) var(--space-1-5);
+}
+:global(:root[data-compact]) .header {
+  padding-block: 7px;
+}
+:global(:root[data-compact]) .block + .block {
+  margin-top: var(--space-1);
 }

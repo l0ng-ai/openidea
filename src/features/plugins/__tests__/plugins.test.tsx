@@ -1110,14 +1110,42 @@ describe("PluginsPage", () => {
     await waitFor(() => expect(usePlugins.getState().plugins[0]).toMatchObject({ enabled: true, status: "inactive" }));
   });
 
-  it("uninstalls after confirmation", async () => {
+  it("offers reinstall in the marketplace after confirmed uninstall", async () => {
+    backend = createMemoryPluginsBackend([plugin({ id: "hello", name: "Hello" })]);
+    setPluginsBackend({
+      ...backend,
+      catalog: async () => [],
+      marketUrl: async () => "https://plugins.example/index.json",
+      market: async () => [
+        {
+          id: "hello",
+          name: "Hello",
+          version: "1.0.0",
+          description: "",
+          authors: [],
+          publisher: "acme",
+          download: "hello.oiplugin",
+          digest: "x",
+          capabilities: [],
+          engine: "^1.0",
+          installed: (await backend.list()).plugins.find((p) => p.id === "hello")?.version ?? null,
+          compatible: true,
+        },
+      ],
+    });
     const user = userEvent.setup();
-    render(<PluginsPage initialTab="installed" />);
-    await screen.findByRole("heading", { level: 2 });
+    render(<PluginsPage />);
+    const marketplace = await screen.findByRole("list", { name: "Available plugins" });
+    expect(await within(marketplace).findByText("Installed")).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: /Installed/ }));
+    const installed = await screen.findByRole("list", { name: "Installed plugins" });
+    await user.click(within(installed).getByText("Hello"));
     await user.click(screen.getByRole("button", { name: "Uninstall…" }));
     await user.click(screen.getByRole("button", { name: "Confirm uninstall Hello" }));
-    await waitFor(() => expect(screen.getByRole("heading", { level: 2 })).not.toHaveTextContent("Hello"));
+    await waitFor(() => expect(within(installed).queryByText("Hello")).not.toBeInTheDocument());
     expect(notes.at(-1)).toMatchObject({ title: "Uninstalled Hello" });
+    await user.click(screen.getByRole("tab", { name: "Marketplace" }));
+    expect(await screen.findByRole("button", { name: "Install Hello" })).toBeInTheDocument();
   });
 
   it("keeps failed cleanup visible and lets Uninstall retry", async () => {

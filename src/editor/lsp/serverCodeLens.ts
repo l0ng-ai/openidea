@@ -1,7 +1,14 @@
 /** Language-server and plugin lenses in the shared editor code-vision renderer. */
 import { MapMode, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { ViewPlugin, type ViewUpdate } from "@codemirror/view";
-import { codeLenses, shownAgain, whenSynced, type CodeLens, type EditorDocContext } from "@/editor/api";
+import {
+  codeLenses,
+  isLibrarySource,
+  shownAgain,
+  whenSynced,
+  type CodeLens,
+  type EditorDocContext,
+} from "@/editor/api";
 import { call, commands } from "@/platform/ipc";
 import { onNavigationProvidersChanged } from "@/editor/navigationProviders";
 import { posToOffset } from "./positions";
@@ -68,7 +75,8 @@ export function serverCodeLenses(ctx: EditorDocContext): Extension {
             const gen = this.generation;
             const text = view.state.doc;
             this.enabled = editorPrefs().inlay.codeVision;
-            if (!this.enabled) {
+            // Resolving a server's lenses counts references / implementations over the whole project.
+            if (!this.enabled || isLibrarySource(ctx)) {
               if (view.state.field(field).length) view.dispatch({ effects: set.of([]) });
               return;
             }

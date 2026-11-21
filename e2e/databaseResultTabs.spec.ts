@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import { expect, openFromTree, test } from "./fixtures";
+import { expect, openFromTree, stubDesktop, test } from "./fixtures";
 
 test("managed console tabs identify their data source and ordinary SQL tabs keep the file name", async ({
   workbench: page,
@@ -495,8 +495,10 @@ async function runConsole(page: Page, path: string, text: string) {
     async ({ path, text }) => {
       const bindingsPath = "/src/bindings.ts";
       const storePath = "/src/features/database/store.ts";
+      const streamFixturePath = "/src/features/database/executeStream.fixture.ts";
       const { commands } = await import(bindingsPath);
       const { executeConsole } = await import(storePath);
+      const { streamExecution } = await import(streamFixturePath);
       commands.dbStatements = async (_id: string, sql: string) => {
         let from = 0;
         const data = sql.split(";").flatMap((part) => {
@@ -523,6 +525,7 @@ async function runConsole(page: Page, path: string, text: string) {
           },
         })),
       });
+      commands.dbExecuteStream = streamExecution(commands.dbExecute);
       await executeConsole(path, text, 0, text.length);
     },
     { path, text },
@@ -532,6 +535,7 @@ async function runConsole(page: Page, path: string, text: string) {
 test("console runs replace their unpinned results; pinned results stay until Close All but Pinned", async ({
   workbench: page,
 }) => {
+  await stubDesktop(page);
   await seedResults(page);
   const strip = page.getByRole("tablist", { name: "Results", exact: true }).getByRole("tab");
   await choose(page, "Result 1", "Close All");
