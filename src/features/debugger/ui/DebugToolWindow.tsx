@@ -22,6 +22,7 @@ import {
   type TabItem,
   T,
 } from "@/ui";
+import type { SelectOption } from "@/ui/Select";
 import { revealVertically } from "@/ui/Tabs";
 import { setMuted, useBreakpoints } from "../breakpoints/store";
 import { frameLabel, groupFrames } from "../frames";
@@ -374,6 +375,37 @@ function ThreadsAndVariables({ session }: { session: DebugSession }) {
   );
 }
 
+function ThreadSelector({ session }: { session: DebugSession }) {
+  const tr = useTx();
+  const value = session.selectedThread == null ? null : String(session.selectedThread);
+  const options = session.threads.map<SelectOption>(({ id, name }) => {
+    const option = { value: String(id), label: name, verbatim: true };
+    if (!isLive(session)) return option;
+    if (!isThreadSuspended(session, id)) return { ...option, icon: "thread-running", detail: "Running" };
+    const reason =
+      id === session.stoppedThread ? session.stopReason : session.suspendedThreads?.find((t) => t.id === id)?.reason;
+    return reason === "breakpoint" || reason?.endsWith(" breakpoint")
+      ? { ...option, icon: "thread-breakpoint", detail: "At breakpoint" }
+      : { ...option, icon: "thread-suspended", detail: "Suspended" };
+  });
+  const selected = options.find((option) => option.value === value);
+  const summary = selected?.detail ? `${selected.label} (${tr(selected.detail)})` : selected?.label;
+  return (
+    <div className={styles.threadHeader}>
+      <Select
+        value={value}
+        options={options}
+        onChange={(v) => void selectThread(session.id, Number(v))}
+        aria-label="Thread"
+        aria-description={summary}
+        title={summary}
+        variant="ghost"
+        className={styles.threadSelect}
+      />
+    </div>
+  );
+}
+
 function FramesPane({ session }: { session: DebugSession }) {
   const root = useProject((s) => s.project?.root ?? null);
   const [showAll, setShowAll] = useState(false);
@@ -399,23 +431,7 @@ function FramesPane({ session }: { session: DebugSession }) {
   };
   return (
     <div className={styles.frames}>
-      {session.threads.length > 0 && (
-        <div className={styles.threadHeader}>
-          <Select
-            value={session.selectedThread != null ? String(session.selectedThread) : null}
-            options={session.threads.map((t) => ({
-              value: String(t.id),
-              label: t.name,
-              verbatim: true,
-              detail: isThreadSuspended(session, t.id) ? "suspended" : undefined,
-            }))}
-            onChange={(v) => void selectThread(session.id, +v)}
-            aria-label="Thread"
-            variant="ghost"
-            className={styles.threadSelect}
-          />
-        </div>
-      )}
+      {session.threads.length > 0 && <ThreadSelector session={session} />}
       <div
         ref={list}
         className={styles.frameList}
