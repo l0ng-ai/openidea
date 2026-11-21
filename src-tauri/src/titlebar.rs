@@ -15,17 +15,25 @@
 use objc2::{
     MainThreadMarker, msg_send,
     rc::{Retained, Weak},
-    runtime::ProtocolObject,
+    runtime::{AnyClass, ProtocolObject},
     sel,
 };
 use objc2_app_kit::{
     NSApplication, NSAutoresizingMaskOptions, NSToolbar, NSView, NSWindow, NSWindowButton,
-    NSWindowDidBecomeKeyNotification, NSWindowDidEnterFullScreenNotification, NSWindowDidExitFullScreenNotification,
+    NSWindowDidBecomeKeyNotification, NSWindowDidChangeOcclusionStateNotification,
+    NSWindowDidEnterFullScreenNotification, NSWindowDidExitFullScreenNotification, NSWindowDidUpdateNotification,
     NSWindowOrderingMode, NSWindowStyleMask, NSWindowTitleVisibility, NSWindowToolbarStyle,
     NSWindowWillEnterFullScreenNotification, NSWindowWillExitFullScreenNotification,
 };
 use objc2_foundation::{NSNotificationCenter, NSObjectProtocol, NSPoint, NSRect, NSSize};
-use std::{cell::Cell, cell::RefCell, collections::HashMap, rc::Rc};
+use std::{
+    cell::Cell,
+    cell::RefCell,
+    collections::HashMap,
+    ffi::CStr,
+    rc::Rc,
+    sync::atomic::{AtomicBool, Ordering},
+};
 use tauri::Manager;
 
 /// The native chrome around the window buttons: the plain title bar (28pt), or an empty unified
@@ -101,18 +109,31 @@ impl Drop for Observer {
     }
 }
 
+/// `DidUpdate` on the one strip window belonging to a fullscreen window.
+struct StripBinding {
+    strip: Weak<NSWindow>,
+    _update: Observer,
+}
+
 struct Tracked {
     state: Rc<Fullscreen>,
     height: Rc<Cell<f64>>,
     buttons: Rc<RefCell<Option<ButtonHost>>>,
-    _observers: [Observer; 5],
+    strip: Rc<RefCell<Option<StripBinding>>>,
+    _observers: [Observer; 6],
 }
 
 thread_local! {
     static WINDOWS: RefCell<HashMap<String, Tracked>> = RefCell::default();
 }
 
-fn sync_chrome(window: &NSWindow, state: &Fullscreen, height: f64, buttons: &RefCell<Option<ButtonHost>>) {
+fn sync_chrome(
+    window: &NSWindow,
+    state: &Rc<Fullscreen>,
+    height: f64,
+    buttons: &RefCell<Option<ButtonHost>>,
+    strip: &RefCell<Option<StripBinding>>,
+) {
     if let Some(toolbar) = window.toolbar() {
         let visible = state.toolbar_visible();
         if toolbar.isVisible() != visible {
@@ -122,10 +143,10 @@ fn sync_chrome(window: &NSWindow, state: &Fullscreen, height: f64, buttons: &Ref
     if state.hosts_buttons() {
         transparent_titlebar(window);
         host_buttons(window, height, buttons);
-        set_fullscreen_toolbar_hidden(true);
+        bind_strip(window, state, strip);
     } else {
         restore_buttons(buttons);
-        set_fullscreen_toolbar_hidden(false);
+        release_strip(strip);
     }
 }
 
@@ -166,8 +187,6 @@ fn host_buttons(window: &NSWindow, height: f64, buttons: &RefCell<Option<ButtonH
     // Above the layer-backed web view. A non-layer sibling paints behind it.
     slot.setWantsLayer(true);
     content.addSubview_positioned_relativeTo(slot, NSWindowOrderingMode::Above, None);
-    // AppKit fades the strip back in when the pointer hits the top. Keep putting it away.
-    arm_strip_timer();
 }
 
 /// System buttons at the same size and spacing as the window's own, wired to that window.
@@ -205,68 +224,145 @@ fn fullscreen_buttons(window: &NSWindow, mtm: MainThreadMarker) -> Option<Retain
     Some(slot)
 }
 
-/// The window AppKit slides in with the menu bar. Its content is the second set of buttons.
-fn set_fullscreen_toolbar_hidden(hidden: bool) {
-    let Some(mtm) = MainThreadMarker::new() else { return };
-    for window in NSApplication::sharedApplication(mtm).windows() {
-        let name = window.class().name().to_string_lossy();
-        // The reveal strip is a short auxiliary window. The transition overlay is the whole screen.
-        let strip = name.contains("ToolbarFullScreen")
-            || name.contains("MenuBarCompanion")
-            || (name.contains("FullScreen") && window.frame().size.height < 80.0);
-        if !strip {
-            continue;
-        }
-        // Hiding the content view leaves the window's own black backing, which is the strip.
-        window.setOpaque(!hidden);
-        window.setAlphaValue(if hidden { 0.0 } else { 1.0 });
-        if let Some(content) = window.contentView() {
-            content.setHidden(hidden);
-        }
-        window.setIgnoresMouseEvents(hidden);
-    }
-}
+/// AppKit's private fullscreen title-bar window. Matched exactly; the KVO subclass AppKit
+/// interposes still counts, a name that merely contains this text does not.
+const STRIP_CLASS: &CStr = c"NSToolbarFullScreenWindow";
 
-// `dispatch_get_main_queue()` is a macro for this queue.
-unsafe extern "C" {
-    static _dispatch_main_q: u8;
-    fn dispatch_time(when: u64, delta: i64) -> u64;
-    fn dispatch_after_f(
-        when: u64,
-        queue: *mut std::ffi::c_void,
-        context: *mut std::ffi::c_void,
-        work: unsafe extern "C" fn(*mut std::ffi::c_void),
-    );
-}
-
-fn main_queue() -> *mut std::ffi::c_void {
-    (&raw const _dispatch_main_q).cast_mut().cast()
-}
-
-thread_local! {
-    static STRIP_TIMER: Cell<bool> = const { Cell::new(false) };
-}
-
-fn arm_strip_timer() {
-    STRIP_TIMER.with(|armed| {
-        if armed.get() {
-            return;
-        }
-        armed.set(true);
-        unsafe {
-            dispatch_after_f(dispatch_time(0, 8_000_000), main_queue(), std::ptr::null_mut(), hide_strip_tick);
-        }
-    });
-}
-
-unsafe extern "C" fn hide_strip_tick(_: *mut std::ffi::c_void) {
-    let hosting = WINDOWS.with_borrow(|windows| windows.values().any(|tracked| tracked.state.hosts_buttons()));
-    if !hosting {
-        STRIP_TIMER.with(|armed| armed.set(false));
+fn warn_once(slot: &AtomicBool, message: &str) {
+    if slot.swap(true, Ordering::Relaxed) {
         return;
     }
-    set_fullscreen_toolbar_hidden(true);
-    unsafe { dispatch_after_f(dispatch_time(0, 8_000_000), main_queue(), std::ptr::null_mut(), hide_strip_tick) };
+    tracing::warn!("{message}");
+}
+
+fn strip_class() -> Option<&'static AnyClass> {
+    static MISSING: AtomicBool = AtomicBool::new(false);
+    match AnyClass::get(STRIP_CLASS) {
+        Some(class) => Some(class),
+        None => {
+            warn_once(
+                &MISSING,
+                "NSToolbarFullScreenWindow is not registered; the fullscreen title-bar strip is left alone",
+            );
+            None
+        }
+    }
+}
+
+fn is_strip(window: &NSWindow) -> bool {
+    let Some(class) = strip_class() else { return false };
+    let kind: bool = unsafe { msg_send![window, isKindOfClass: class] };
+    kind
+}
+
+/// The strip sits on the top edge of the fullscreen window it belongs to. A strip on another
+/// display does not overlap that window.
+fn overlaps(a: NSRect, b: NSRect) -> bool {
+    a.origin.x < b.origin.x + b.size.width
+        && b.origin.x < a.origin.x + a.size.width
+        && a.origin.y < b.origin.y + b.size.height
+        && b.origin.y < a.origin.y + a.size.height
+}
+
+fn same_window(a: &NSWindow, b: &NSWindow) -> bool {
+    std::ptr::from_ref(a) == std::ptr::from_ref(b)
+}
+
+/// This window's reveal strip, or nothing. Never another window's.
+fn strip_for(window: &NSWindow) -> Option<Retained<NSWindow>> {
+    let Some(mtm) = MainThreadMarker::new() else { return None };
+    let frame = window.frame();
+    let found = NSApplication::sharedApplication(mtm)
+        .windows()
+        .iter()
+        .find(|candidate| is_strip(candidate) && overlaps(candidate.frame(), frame));
+    if found.is_none() && window.styleMask().contains(NSWindowStyleMask::FullScreen) {
+        static MISSING: AtomicBool = AtomicBool::new(false);
+        warn_once(
+            &MISSING,
+            "no NSToolbarFullScreenWindow overlaps this fullscreen window; the title-bar strip is left alone",
+        );
+    }
+    found
+}
+
+fn conceal(strip: &NSWindow) {
+    thread_local! {
+        static BUSY: Cell<bool> = const { Cell::new(false) };
+    }
+    if strip.alphaValue() == 0.0 && strip.contentView().is_some_and(|view| view.isHidden()) {
+        return;
+    }
+    // Setting alpha posts `DidUpdate` on this same window.
+    if BUSY.with(|busy| busy.replace(true)) {
+        return;
+    }
+    strip.setOpaque(false);
+    strip.setAlphaValue(0.0);
+    if let Some(content) = strip.contentView() {
+        content.setHidden(true);
+    }
+    strip.setIgnoresMouseEvents(true);
+    BUSY.with(|busy| busy.set(false));
+}
+
+fn reveal(strip: &NSWindow) {
+    strip.setOpaque(true);
+    strip.setAlphaValue(1.0);
+    if let Some(content) = strip.contentView() {
+        content.setHidden(false);
+    }
+    strip.setIgnoresMouseEvents(false);
+}
+
+fn bind_strip(window: &NSWindow, state: &Rc<Fullscreen>, strip: &RefCell<Option<StripBinding>>) {
+    let Some(found) = strip_for(window) else { return };
+    let bound = strip
+        .borrow()
+        .as_ref()
+        .and_then(|binding| binding.strip.load())
+        .is_some_and(|bound| same_window(&bound, &found));
+    if !bound {
+        *strip.borrow_mut() =
+            Some(StripBinding { strip: Weak::new(&found), _update: watch_strip_updates(&found, state) });
+    }
+    conceal(&found);
+}
+
+fn release_strip(strip: &RefCell<Option<StripBinding>>) {
+    if let Some(binding) = strip.borrow_mut().take()
+        && let Some(strip) = binding.strip.load()
+    {
+        reveal(&strip);
+    }
+}
+
+/// Re-hide when AppKit brings this strip back (pointer at the top of the screen).
+fn watch_strip_updates(strip: &NSWindow, state: &Rc<Fullscreen>) -> Observer {
+    let weak = Weak::new(strip);
+    let state = state.clone();
+    let block = block2::RcBlock::new(move |_| {
+        if !state.hosts_buttons() {
+            return;
+        }
+        if let Some(strip) = weak.load() {
+            conceal(&strip);
+        }
+    });
+    let observer = unsafe {
+        NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+            Some(NSWindowDidUpdateNotification),
+            Some(strip),
+            None,
+            &block,
+        )
+    };
+    Observer(observer)
+}
+
+fn noted_window(note: std::ptr::NonNull<objc2_foundation::NSNotification>) -> Option<Retained<NSWindow>> {
+    let note = unsafe { note.as_ref() };
+    note.object()?.downcast().ok()
 }
 
 fn restore_buttons(buttons: &RefCell<Option<ButtonHost>>) {
@@ -282,16 +378,18 @@ fn track(window: &NSWindow, app: &tauri::AppHandle) -> Tracked {
     }
     let height = Rc::new(Cell::new(0.0));
     let buttons = Rc::new(RefCell::new(None));
+    let strip = Rc::new(RefCell::new(None));
     let observe = |name, change: fn(&Fullscreen)| {
         let weak = Weak::new(window);
         let state = state.clone();
         let height = height.clone();
         let buttons = buttons.clone();
+        let strip = strip.clone();
         let app = app.clone();
         let block = block2::RcBlock::new(move |_| {
             change(&state);
             if let Some(window) = weak.load() {
-                sync_chrome(&window, &state, height.get(), &buttons);
+                sync_chrome(&window, &state, height.get(), &buttons, &strip);
                 crate::macos::hide_tab_bar(&window);
             }
             // Closing a window posts this while the runtime still holds its window table, and an
@@ -311,6 +409,31 @@ fn track(window: &NSWindow, app: &tauri::AppHandle) -> Tracked {
         };
         Observer(observer)
     };
+    let owner = Weak::new(window);
+    let occlusion_state = state.clone();
+    let occlusion_strip = strip.clone();
+    let occlusion = block2::RcBlock::new(move |note| {
+        if !occlusion_state.hosts_buttons() {
+            return;
+        }
+        let Some(owner) = owner.load() else { return };
+        let Some(candidate) = noted_window(note) else { return };
+        if !is_strip(&candidate) || !overlaps(candidate.frame(), owner.frame()) {
+            return;
+        }
+        let bound = occlusion_strip
+            .borrow()
+            .as_ref()
+            .and_then(|binding| binding.strip.load())
+            .is_some_and(|bound| same_window(&bound, &candidate));
+        if !bound {
+            *occlusion_strip.borrow_mut() = Some(StripBinding {
+                strip: Weak::new(&candidate),
+                _update: watch_strip_updates(&candidate, &occlusion_state),
+            });
+        }
+        conceal(&candidate);
+    });
     let observers = unsafe {
         [
             observe(NSWindowWillEnterFullScreenNotification, Fullscreen::will_enter),
@@ -319,9 +442,17 @@ fn track(window: &NSWindow, app: &tauri::AppHandle) -> Tracked {
             observe(NSWindowDidExitFullScreenNotification, Fullscreen::did_exit),
             // A tab shown in its group: AppKit's tab bar moves to it, and it may be in full screen.
             observe(NSWindowDidBecomeKeyNotification, |_| {}),
+            // The strip is another window. When one appears, the block keeps only the strip
+            // that overlaps this window.
+            Observer(NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+                Some(NSWindowDidChangeOcclusionStateNotification),
+                None,
+                None,
+                &occlusion,
+            )),
         ]
     };
-    Tracked { state, height, buttons, _observers: observers }
+    Tracked { state, height, buttons, strip, _observers: observers }
 }
 
 pub fn set_height(window: &tauri::WebviewWindow, height: f64) -> tauri::Result<()> {
@@ -331,10 +462,10 @@ pub fn set_height(window: &tauri::WebviewWindow, height: f64) -> tauri::Result<(
     window.with_webview(move |webview| unsafe {
         let Some(mtm) = MainThreadMarker::new() else { return };
         let native = &*webview.ns_window().cast::<NSWindow>();
-        let (state, buttons) = WINDOWS.with_borrow_mut(|windows| {
+        let (state, buttons, strip) = WINDOWS.with_borrow_mut(|windows| {
             let tracked = windows.entry(label).or_insert_with(|| track(native, &app));
             tracked.height.set(height);
-            (tracked.state.clone(), tracked.buttons.clone())
+            (tracked.state.clone(), tracked.buttons.clone(), tracked.strip.clone())
         });
         match chrome_for(height) {
             Chrome::Plain => {
@@ -354,7 +485,7 @@ pub fn set_height(window: &tauri::WebviewWindow, height: f64) -> tauri::Result<(
                 }
             }
         }
-        sync_chrome(native, &state, height, &buttons);
+        sync_chrome(native, &state, height, &buttons, &strip);
     })
 }
 
@@ -453,5 +584,14 @@ mod tests {
         assert_eq!((x, y), (7.0, 872.0));
         let (_, short) = button_origin(900.0, 30.0, 40.0);
         assert_eq!(short, 870.0);
+    }
+
+    #[test]
+    fn a_strip_on_another_display_is_not_this_windows() {
+        let window = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1920.0, 1080.0));
+        let own = NSRect::new(NSPoint::new(0.0, 1048.0), NSSize::new(1920.0, 32.0));
+        let other = NSRect::new(NSPoint::new(-1080.0, 1888.0), NSSize::new(1080.0, 32.0));
+        assert!(overlaps(own, window));
+        assert!(!overlaps(other, window));
     }
 }
