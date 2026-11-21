@@ -2067,6 +2067,7 @@
   "No usages of '{name}' found": "未找到 '{name}' 的用法",
   "Node interpreter": "Node 解释器",
   "None": "无",
+  "Invert": "反选",
   "None configured": "未配置",
   "Not debugging": "未在调试",
   "Not logged in to GitHub": "未登录 GitHub",

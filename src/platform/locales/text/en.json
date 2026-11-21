@@ -1659,6 +1659,7 @@
   "A Phoenix application from mix phx.new.": "A Phoenix application from mix phx.new.",
   "Database:": "Database:",
   "None": "None",
+  "Invert": "Invert",
   "Installing the Phoenix generator": "Installing the Phoenix generator",
   "Running mix phx.new": "Running mix phx.new",
   "A Composer project with PSR-4 autoloading.": "A Composer project with PSR-4 autoloading.",
