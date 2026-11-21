@@ -1638,11 +1638,6 @@
   border-radius: var(--radius-row);
 }
 /* Each option is a card of its own: separate targets, not one list with hairlines. */
-.questionChoices {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1-5);
-}
 .question .questionChoices > * {
   border: 1px solid var(--border);
   border-radius: var(--radius-row);

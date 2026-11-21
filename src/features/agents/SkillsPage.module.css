@@ -34,19 +34,6 @@
   line-height: 1.45;
 }
 
-.link {
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--link);
-  font: inherit;
-  cursor: pointer;
-}
-
-.link:hover {
-  text-decoration: underline;
-}
-
 .topControls {
   display: flex;
   flex-direction: column;
