@@ -121,10 +121,6 @@
 .modelControl {
   align-items: center;
 }
-.modelDetail {
-  box-shadow: inset 1px 0 var(--border);
-  color: var(--fg-muted);
-}
 .configPicker > button {
   max-width: 100%;
 }
@@ -163,6 +159,11 @@
   color: var(--fg-secondary);
   white-space: nowrap;
   transition: background var(--dur-fast) var(--ease);
+}
+.chip.chipLoading,
+.chip.chipLoading:hover {
+  color: var(--fg-muted);
+  background: none;
 }
 .chip:hover,
 .chip[aria-expanded="true"] {
@@ -258,8 +259,7 @@
 }
 .modelEffortPopup [role="option"]:hover .modelRowConfigure,
 .modelEffortPopup [role="option"][aria-selected="true"] .modelRowConfigure,
-.modelEffortPopup [role="option"]:focus-within .modelRowConfigure,
-.modelEffortPopup [role="option"] .currentRowSettings {
+.modelEffortPopup [role="option"]:focus-within .modelRowConfigure {
   opacity: 1;
 }
 .modelRowConfigure {
