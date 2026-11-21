@@ -2409,6 +2409,7 @@
   "Move": "Move",
   "Extract Interface…": "Extract Interface…",
   "Extract Interface": "Extract Interface",
+  "Expressions": "Expressions",
   "Extract interface from:": "Extract interface from:",
   "Interface name:": "Interface name:",
   "Package for new interface:": "Package for new interface:",
