@@ -1,10 +1,12 @@
 import { EditorView } from "@codemirror/view";
+import { StateEffect } from "@codemirror/state";
 import type { InlayHint, Range } from "../src/bindings";
 import { commands } from "../src/platform/ipc";
 import { setInvokeRoute } from "../src/platform/tauriCore";
 import { lspDoc } from "../src/editor/lsp/lsp";
 import { inlayExtension } from "../src/editor/lsp/inlay";
 import { lspTheme } from "../src/editor/lsp/theme";
+import "../src/styles/tokens.css";
 
 const requests: { range: Range; resolve: (hints: InlayHint[]) => void }[] = [];
 setInvokeRoute(() => null);
@@ -25,12 +27,12 @@ const view = new EditorView({
 Object.assign(window, {
   inlayTest: {
     count: () => requests.length,
-    resolve(index: number) {
+    resolve(index: number, label = `hint-${index}`) {
       const request = requests[index]!;
       request.resolve([
         {
           position: { line: request.range.start.line + 1, col: 4 },
-          label: `hint-${index}`,
+          label,
           kind: "type",
           paddingLeft: false,
           paddingRight: false,
@@ -39,6 +41,7 @@ Object.assign(window, {
         },
       ]);
     },
+    wrap: () => view.dispatch({ effects: StateEffect.appendConfig.of(EditorView.lineWrapping) }),
     destroy: () => view.destroy(),
   },
 });
