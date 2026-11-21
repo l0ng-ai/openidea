@@ -89,6 +89,39 @@ describe("color schemes", () => {
     expect(css).toContain("--syn-constant: #224466 !important");
   });
 
+  it("offers a JavaScript and TypeScript page whose Decorator leaves other languages' Metadata alone (#4059)", () => {
+    const page = ATTRIBUTES.filter((a) => a.path[0] === "JavaScript and TypeScript").map((a) => a.id);
+    expect(page).toEqual(
+      expect.arrayContaining(["javascript.decorator", "javascript.globalVariable", "javascript.globalFunction"]),
+    );
+    expect(page).not.toContain("javascript.metadata");
+    const css = schemeCss("dark", {
+      dark: { "javascript.decorator": { foreground: "#224466" }, "javascript.globalFunction": { italic: true } },
+    });
+    for (const editor of ["JavaScript", "JSX", "TypeScript", "TSX", "Angular TypeScript"])
+      expect(css).toContain(`.cm-editor[data-language="${editor}"]`);
+    expect(css).not.toContain('data-language="Kotlin"');
+    expect(css).toContain("--syn-decorator: #224466 !important");
+    expect(css).toContain("--syn-global-function-italic: italic !important");
+    expect(css).not.toMatch(/:root \{[^}]*--syn-decorator/);
+  });
+
+  it("shows an unset Global function in the function declaration style, then its own (#4059)", () => {
+    const fn = resolvedAttribute("dark", "functionDeclaration");
+    expect(resolvedAttribute("dark", "javascript.globalFunction")).toEqual(fn);
+    const customs = {
+      "custom-g": {
+        name: "G",
+        parent: "dark" as const,
+        attributes: { functionDeclaration: { foreground: "#123456" }, "javascript.globalFunction": { italic: true } },
+      },
+    };
+    expect(resolvedAttribute("custom-g", "javascript.globalFunction", customs)).toMatchObject({
+      foreground: "#123456",
+      italic: true,
+    });
+  });
+
   it("offers a C# scheme page and scopes its overrides to C# editors", () => {
     expect(ATTRIBUTES.find((a) => a.id === "csharp.className")?.path).toEqual(["C#"]);
     const css = schemeCss("dark", { dark: { "csharp.keyword": { foreground: "#224466" } } });
