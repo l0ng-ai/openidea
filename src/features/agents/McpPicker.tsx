@@ -103,7 +103,7 @@ export function McpPicker({
   return (
     <SessionPicker
       icon="plugin"
-      label="MCP"
+      brand="MCP"
       triggerTitles={{
         plain: tx("MCP servers ({active}/{total} active)"),
         withOverrides: tx("MCP servers ({active}/{total} active · {overrides} session overrides)"),

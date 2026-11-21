@@ -80,7 +80,7 @@ export function SkillsPicker({
   return (
     <SessionPicker
       icon="bulb"
-      label="Skills"
+      brand="Skills"
       triggerTitles={{
         plain: tx("Skills ({active}/{total} active)"),
         withOverrides: tx("Skills ({active}/{total} active · {overrides} session overrides)"),

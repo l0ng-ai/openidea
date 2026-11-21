@@ -23,8 +23,8 @@ export interface SessionPickerControls {
 
 interface SessionPickerProps {
   icon: IconName;
-  /** Visible trigger label (a brand name, so not translated). */
-  label: string;
+  /** Visible trigger text: a product name, shown as written in every locale. */
+  brand: string;
   /** Translated trigger tooltips; `{active}`, `{total}` and `{overrides}` are filled in. */
   triggerTitles: { plain: string; withOverrides: string };
   triggerAriaLabel: string;
@@ -48,7 +48,7 @@ interface SessionPickerProps {
 
 export function SessionPicker({
   icon,
-  label,
+  brand,
   triggerTitles,
   triggerAriaLabel,
   popupTitle,
@@ -132,7 +132,7 @@ export function SessionPicker({
           onClick={toggleOpen}
         >
           <Icon name={icon} size={13} />
-          <span className={styles.triggerLabel}>{label}</span>
+          <span className={styles.triggerLabel}>{brand}</span>
           <span className={styles.triggerCount}>{countLabel}</span>
           {counts.overrides > 0 && <span className={styles.overrideDot} aria-hidden />}
         </button>
