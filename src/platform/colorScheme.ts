@@ -532,14 +532,7 @@ export function schemeTokens(id: SchemeId, css: string = source, redGreen = fals
   const key = redGreen ? `${id}+red-green` : id;
   const cached = css === source ? resolvedCache.get(key) : undefined;
   if (cached) return cached;
-  const all = css === source ? (parsed ??= blocks(css)) : blocks(css);
-  const own = themeSelectors(id);
-  const merged: Vars = new Map();
-  for (const b of all) if (b.selectors.includes(":root")) for (const [k, v] of b.decls) merged.set(k, v);
-  for (const b of all) if (b.selectors.some((s) => own.includes(s))) for (const [k, v] of b.decls) merged.set(k, v);
-  if (redGreen)
-    for (const b of all)
-      if (b.selectors.some((s) => redGreenApplies(id, s))) for (const [k, v] of b.decls) merged.set(k, v);
+  const merged = declaredSchemeTokens(id, css, redGreen);
   const resolve = (value: string, depth = 0): string =>
     depth > 8
       ? value
@@ -557,6 +550,51 @@ export function schemeTokens(id: SchemeId, css: string = source, redGreen = fals
   const out: Vars = new Map();
   for (const [k, v] of merged) out.set(k, resolve(v));
   if (css === source) resolvedCache.set(key, out);
+  return out;
+}
+
+/** The tokens of a theme as tokens.css declares them, `var()` references kept. */
+function declaredSchemeTokens(id: SchemeId, css: string = source, redGreen = false): Vars {
+  const all = css === source ? (parsed ??= blocks(css)) : blocks(css);
+  const own = themeSelectors(id);
+  const merged: Vars = new Map();
+  for (const b of all) if (b.selectors.includes(":root")) for (const [k, v] of b.decls) merged.set(k, v);
+  for (const b of all) if (b.selectors.some((s) => own.includes(s))) for (const [k, v] of b.decls) merged.set(k, v);
+  if (redGreen)
+    for (const b of all)
+      if (b.selectors.some((s) => redGreenApplies(id, s))) for (const [k, v] of b.decls) merged.set(k, v);
+  return merged;
+}
+
+/**
+ * Python tokens that fall back to another token (`--syn-python-method-call: var(--syn-function-call)`)
+ * get their value on `:root`, so a Python block overriding that token alone never reaches them.
+ * Returns `[token, fallback]` pairs to re-declare there, in dependency order, for the tokens of
+ * scheme `id` whose fallback `declared` overrides and that `declared` does not set itself: a
+ * Python Function call override then also colours method calls, as PY.METHOD_CALL falls back to
+ * PY.FUNCTION_CALL in PyCharm.
+ */
+function pythonFallbacks(
+  id: string,
+  customs: CustomColorSchemes,
+  redGreen: boolean,
+  declared: Iterable<string>,
+): Array<[string, string]> {
+  const builtin = isBuiltinTheme(id);
+  const base = builtin ? id : (customs[id]?.parent ?? "light");
+  const tokens = declaredSchemeTokens(base, source, redGreen && builtin);
+  const set = new Set(declared);
+  const out: Array<[string, string]> = [];
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const [key, value] of tokens) {
+      const fallback = /^var\((--syn-[\w-]+)\)$/.exec(value.trim())?.[1];
+      if (!key.startsWith("--syn-python-") || set.has(key) || !fallback || !set.has(fallback)) continue;
+      out.push([key, fallback]);
+      set.add(key);
+      grew = true;
+    }
+  }
   return out;
 }
 
@@ -762,8 +800,18 @@ export function resolvedAttribute(
   const custom = customSchemes(customs)[id];
   const own = custom?.attributes[attr.id];
   const vars = resolvedSchemeTokens(id, customs, redGreen);
-  if (attr.language)
-    for (const [key, value] of overrideDeclarations(custom?.attributes, attr.language)) vars.set(key, value);
+  if (attr.language) {
+    const scoped = overrideDeclarations(custom?.attributes, attr.language);
+    for (const [key, value] of scoped) vars.set(key, value);
+    if (attr.language === "Python")
+      for (const [key, fallback] of pythonFallbacks(
+        id,
+        customSchemes(customs),
+        redGreen,
+        scoped.map(([k]) => k),
+      ))
+        vars.set(key, vars.get(fallback)!);
+  }
 
   const token = attr.token;
   const foreground = attr.fg ? vars.get(attr.fg) : undefined;
@@ -837,10 +885,21 @@ export function schemeCss(
     .map(([k, v]) => `  ${k}: ${v} !important;`);
   let css = body.length ? `:root {\n${body.join("\n")}\n}\n` : "";
   for (const language of Object.values(SCHEME_LANGUAGE_SCOPES)) {
-    const languageBody = [
+    const scoped = [
       ...overrideDeclarations(valid[id]?.attributes, language),
       ...overrideDeclarations(overrides?.[id], language),
-    ]
+    ];
+    if (language === "Python" && scoped.length) {
+      const redGreen = !!el?.hasAttribute("data-red-green");
+      for (const [key, fallback] of pythonFallbacks(
+        id,
+        valid,
+        redGreen,
+        scoped.map(([k]) => k),
+      ))
+        scoped.push([key, `var(${fallback})`]);
+    }
+    const languageBody = scoped
       .filter(([k, v]) => /^--[\w-]+$/.test(k) && SAFE.test(v))
       .map(([k, v]) => `  ${k}: ${v} !important;`);
     // The editor of that language, and a block of it in another editor (a Markdown code fence).
