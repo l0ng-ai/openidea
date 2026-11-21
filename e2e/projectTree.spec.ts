@@ -37,6 +37,21 @@ test("type-ahead jumps to a matching node", async ({ workbench: page }) => {
   await expect(tree.locator('[role="treeitem"][aria-selected="true"]')).toHaveText("README.md");
 });
 
+test("Rename targets a file or folder directly from its context menu", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 720, height: 480 });
+  const menu = page.getByRole("menu", { name: "Context menu" });
+  const dialog = page.getByRole("dialog", { name: "Rename", exact: true });
+  for (const name of ["README.md", "src"]) {
+    const row = page.getByRole("treeitem", { name, exact: true });
+    await row.click({ button: "right" });
+    await menu.getByRole("menuitem", { name: /^Rename…/ }).click();
+    await expect(dialog.getByRole("textbox", { name: "New name" })).toHaveValue(name);
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(row).toBeVisible();
+  }
+});
+
 test("the file deletion form keeps its option and buttons visible in a narrow window", async ({ workbench: page }) => {
   const file = page.getByRole("treeitem", { name: "README.md", exact: true });
   await file.click({ button: "right" });
