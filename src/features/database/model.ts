@@ -309,7 +309,16 @@ export function effectiveSsh(ssh: DbSsh | null | undefined, configs: readonly Ss
   if (!ssh) return null;
   const c = sshConfigOf(ssh, configs);
   return c
-    ? { ...ssh, host: c.host, port: c.port, user: c.user, auth: c.auth, keyFile: c.keyFile, saveSecret: c.saveSecret }
+    ? {
+        ...ssh,
+        host: c.host,
+        port: c.port,
+        user: c.user,
+        auth: c.auth,
+        keyFile: c.keyFile,
+        agentSocket: c.agentSocket,
+        saveSecret: c.saveSecret,
+      }
     : ssh;
 }
 

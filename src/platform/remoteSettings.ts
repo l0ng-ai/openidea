@@ -13,6 +13,8 @@ export interface SshConfigValid {
   user: string;
   auth: SshAuthValid;
   keyFile: string;
+  /** SSH agent socket for `openSsh`. Empty: this app's `SSH_AUTH_SOCK`. */
+  agentSocket: string;
   saveSecret: boolean;
 }
 
@@ -98,6 +100,7 @@ export const DEFAULT_SSH_CONFIG: SshConfigValid = {
   user: "",
   auth: "openSsh",
   keyFile: "",
+  agentSocket: "",
   saveSecret: false,
 };
 
@@ -185,6 +188,7 @@ export function validateSshConfigs(raw: unknown): SshConfigValid[] {
     user: text(o.user, ""),
     auth: oneOf(o.auth, ["password", "keyPair", "openSsh"] as const, d.auth),
     keyFile: text(o.keyFile, ""),
+    agentSocket: text(o.agentSocket, ""),
     saveSecret: bool(o.saveSecret, d.saveSecret),
   }));
 }

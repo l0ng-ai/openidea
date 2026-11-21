@@ -37,11 +37,11 @@ through the app-wide SSH configurations.
   </Step>
 </Steps>
 
-| Authentication type                         | What it uses                                                                                                                                                         |
-| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Password**                                | A password. Tick **Save password** to keep it in the OS credential store.                                                                                            |
-| **Key pair (OpenSSH or PuTTY)**             | A **Private key file** (for example `~/.ssh/id_ed25519`) and its **Passphrase**, which **Save passphrase** keeps in the credential store.                            |
-| **OpenSSH config and authentication agent** | `HostName`, `User`, `Port`, `IdentityFile` and `ProxyJump` from `~/.ssh/config`, and the keys of the SSH agent. **Host** can be a `Host` alias from `~/.ssh/config`. |
+| Authentication type                         | What it uses                                                                                                                                                                                                                                                                  |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Password**                                | A password. Tick **Save password** to keep it in the OS credential store.                                                                                                                                                                                                     |
+| **Key pair (OpenSSH or PuTTY)**             | A **Private key file** (for example `~/.ssh/id_ed25519`) and its **Passphrase**, which **Save passphrase** keeps in the credential store.                                                                                                                                     |
+| **OpenSSH config and authentication agent** | `HostName`, `User`, `Port`, `IdentityFile` and `ProxyJump` from `~/.ssh/config`, and the keys of the SSH agent. **SSH agent socket** overrides `SSH_AUTH_SOCK` (a path set only in the shell is not visible to the app). **Host** can be a `Host` alias from `~/.ssh/config`. |
 
 Saved passwords and passphrases go to the macOS Keychain, Windows Credential Manager or the Secret Service on Linux,
 never to a settings file. The **+**, **−** and copy buttons above the list add, remove and duplicate configurations.

@@ -148,6 +148,7 @@ const blankSsh = (): DbSsh => ({
   user: "",
   auth: "openSsh",
   keyFile: "",
+  agentSocket: "",
   saveSecret: false,
 });
 
@@ -1175,6 +1176,21 @@ export function SourceDialog({
               title="Private Key File"
               onChange={(keyFile) => setSsh({ keyFile })}
             />
+          )}
+          {ssh.auth === "openSsh" && (
+            <>
+              <label className={styles.formLabel} htmlFor="db-ssh-agent">
+                <T>SSH agent socket:</T>
+              </label>
+              <Input
+                id="db-ssh-agent"
+                mono
+                disabled={!sshOn}
+                value={ssh.agentSocket ?? ""}
+                placeholder="SSH_AUTH_SOCK"
+                onChange={(e) => setSsh({ agentSocket: e.target.value })}
+              />
+            </>
           )}
         </>
       )}

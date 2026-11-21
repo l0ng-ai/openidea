@@ -21,11 +21,20 @@ pub struct SshTarget {
     pub auth: SshAuth,
     /// Private key for [`SshAuth::KeyPair`]; `~/` is the home directory.
     pub key_file: String,
+    /// SSH agent socket for [`SshAuth::OpenSsh`]. Empty: the process environment.
+    pub agent_socket: String,
 }
 
 impl From<&SshConfiguration> for SshTarget {
     fn from(c: &SshConfiguration) -> Self {
-        Self { host: c.host.clone(), port: c.port, user: c.user.clone(), auth: c.auth, key_file: c.key_file.clone() }
+        Self {
+            host: c.host.clone(),
+            port: c.port,
+            user: c.user.clone(),
+            auth: c.auth,
+            key_file: c.key_file.clone(),
+            agent_socket: c.agent_socket.clone(),
+        }
     }
 }
 
@@ -82,6 +91,14 @@ pub fn expand(path: &str) -> PathBuf {
         (Some(rest), Some(h)) => h.join(rest),
         _ => PathBuf::from(path),
     }
+}
+
+/// A configured agent socket, or `None` to use the process environment
+/// (`SSH_AUTH_SOCK` on Unix, the OpenSSH pipe on Windows). A socket exported
+/// only in a shell rc is not in a GUI app's environment (#4934).
+pub(crate) fn agent_socket(configured: &str) -> Option<PathBuf> {
+    let path = configured.trim();
+    if path.is_empty() { None } else { Some(expand(path)) }
 }
 
 fn local_user() -> String {
@@ -682,6 +699,18 @@ mod tests {
         assert_eq!(policy("ask"), HostKeyPolicy::Ask);
         assert_eq!(policy("null"), HostKeyPolicy::Off);
         assert_eq!(policy("other"), HostKeyPolicy::Ask);
+    }
+
+    #[test]
+    fn an_empty_agent_socket_uses_the_process_environment() {
+        assert_eq!(agent_socket("  "), None);
+        let home = home().unwrap();
+        // Bitwarden's Mac App Store agent (#4934).
+        let path = "~/Library/Containers/com.bitwarden.desktop/Data/.bitwarden-ssh-agent.sock";
+        assert_eq!(
+            agent_socket(path),
+            Some(home.join("Library/Containers/com.bitwarden.desktop/Data/.bitwarden-ssh-agent.sock"))
+        );
     }
 
     #[test]

@@ -5191,6 +5191,8 @@
   "Authentication type": "身份验证类型",
   "Key pair (OpenSSH or PuTTY)": "密钥对（OpenSSH 或 PuTTY）",
   "Private key file": "私钥文件",
+  "SSH agent socket": "SSH 代理套接字",
+  "SSH agent socket:": "SSH 代理套接字：",
   "Save passphrase": "保存密码短语",
   "SSH Password": "SSH 密码",
   "Yes": "是",
