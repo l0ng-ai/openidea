@@ -12,7 +12,7 @@ import {
 } from "react";
 import { basename, relativePath, useProject } from "@/platform/project";
 import { executeAction, getAction } from "@/platform/actions";
-import { call, commands, type AttachableProcess, type RunConfig, type Variable } from "@/platform/ipc";
+import type { AttachableProcess, RunConfig, Variable } from "@/platform/ipc";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
 import {
   Button,
@@ -31,6 +31,7 @@ import {
   Toggle,
   T,
 } from "@/ui";
+import { useRowHeight } from "@/ui/density";
 import { isConditional, suspends, type BreakpointEntry } from "../breakpoints/model";
 import {
   removeAllBreakpoints,
@@ -39,7 +40,8 @@ import {
   updateBreakpoint,
   useBreakpoints,
 } from "../breakpoints/store";
-import { activeSession, addWatch, evaluate, isLive, startSession, useDebug, resumeExecution } from "../state";
+import { activeSession, addWatch, evaluate, isLive, startSession, useDebug } from "../state";
+import { cancelSmartStep, chooseStepTarget, smartStepAnchor } from "../editor/smartStep";
 import { AmbiguousClassError, rememberImport } from "../classImports";
 import {
   addMethodBreakpoint,
@@ -1310,34 +1312,44 @@ function AttachPopup() {
 
 function SmartStepChooser() {
   const all = useOverlays((s) => s.smartStep);
-  // Picked in the editor instead.
   const state = all?.inline ? null : all;
-  const close = () => useOverlays.setState({ smartStep: null });
-  const pick = (targetId: number) => {
-    if (!state) return;
-    close();
-    void resumeExecution(state.session, () =>
-      call(commands.debugStepInTarget(state.session, state.thread, targetId)),
-    ).catch((e) =>
-      notifications().notify({ group: "run", level: "error", title: "Smart Step Into failed", body: errorText(e) }),
-    );
-  };
+  const anchor = useMemo(() => (state ? smartStepAnchor() : "center"), [state]);
+  const rowHeight = useRowHeight();
+  if (!state) return null;
+
   return (
-    <Dialog open={!!state} onClose={close} title="Step Into" width={420} position="top" aria-label="Smart Step Into">
-      <List
-        items={state?.targets ?? []}
-        getKey={(t) => String(t.id)}
-        defaultActiveIndex={0}
-        onActivate={(t) => pick(t.id)}
-        aria-label="Calls on the current line"
-        className={styles.chooser}
-        renderItem={(t) => (
-          <div className={styles.chooserRow}>
-            <Icon name="method" size={14} />
-            <span className={styles.bpName}>{t.label}</span>
-          </div>
-        )}
-      />
-    </Dialog>
+    <Popup
+      open
+      anchor={anchor}
+      placement="top-start"
+      onClose={cancelSmartStep}
+      trapFocus
+      className={styles.stepPopup}
+      aria-label={tx("Smart Step Into")}
+    >
+      <div className={styles.stepHeading}>
+        <T>Step Into</T>
+      </div>
+      <div className={styles.stepTargets} style={{ height: Math.min(state.targets.length, 8) * rowHeight }}>
+        <List
+          items={state.targets}
+          getKey={(t) => String(t.id)}
+          rowHeight={rowHeight}
+          autoFocus
+          hoverSelects
+          onActivate={(t) => chooseStepTarget(t.id)}
+          aria-label={tx("Calls on the current line")}
+          className={styles.stepList}
+          renderItem={(t) => (
+            <>
+              <Icon name="method" size={16} />
+              <span className={styles.stepLabel} title={t.label}>
+                {t.label}
+              </span>
+            </>
+          )}
+        />
+      </div>
+    </Popup>
   );
 }
