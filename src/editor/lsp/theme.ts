@@ -423,6 +423,7 @@ export const lspTheme = EditorView.theme({
   },
   // Chooser highlight (tempHighlight.ts): the expression / occurrences a choice would take.
   ".cm-lsp-chooser-highlight": { backgroundColor: "var(--bg-text-search-result)" },
+  ".cm-lsp-chooser-removed": { backgroundColor: "var(--diff-deleted)" },
 
   // --- in-place rename (inplaceRename.ts) ------------------------------------
   ".cm-lsp-inplace": {
