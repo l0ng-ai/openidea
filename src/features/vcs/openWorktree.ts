@@ -8,10 +8,10 @@ import { notifications } from "@/workbench/contributions";
  * Opens worktree `path` in a new window. In an SSH or WSL session the path is on that
  * machine, so the window connects there instead of opening it as a local folder.
  */
-export async function openWorktree(path: string): Promise<void> {
+export async function openWorktree(path: string, newWindow = false): Promise<void> {
   const target = useRemote.getState().session?.target;
   if (target?.kind !== "ssh" && target?.kind !== "wsl") {
-    await executeAction("file.openProjectPath", path);
+    await executeAction("file.openProjectPath", newWindow ? { path, newWindow } : path);
     return;
   }
   try {
