@@ -712,7 +712,11 @@ function ToolWindowActionsBar({ tw, className }: { tw: ToolWindowContribution; c
   return (
     <>
       <div className={clsx(styles.headerActions, className)}>
-        {Actions && <Actions id={tw.id} />}
+        {Actions && (
+          <div className={styles.headerContributedActions}>
+            <Actions id={tw.id} />
+          </div>
+        )}
         <IconButton
           ref={moreRef}
           icon="more"
@@ -766,6 +770,8 @@ function HeaderRow({
   const useTitleMenu = tw.titleMenu ?? noTitleMenu;
   const titleMenu = useTitleMenu(tw.id);
   const titleItems = titleMenu?.items ?? (tw.plainTitle ? [] : own);
+  const windowTitle = toolWindowTitle(tw);
+  const titleLabel = titleMenu ? tx(titleMenu.label) : windowTitle;
 
   return (
     <header
@@ -789,11 +795,12 @@ function HeaderRow({
             ref={titleRef}
             type="button"
             className={styles.titleButton}
+            title={titleLabel}
             aria-haspopup="menu"
             aria-expanded={titleOpen}
             onClick={() => setTitleOpen((v) => !v)}
           >
-            <span className={styles.title}>{titleMenu ? tx(titleMenu.label) : toolWindowTitle(tw)}</span>
+            <span className={styles.title}>{titleLabel}</span>
             <Icon name="chevron-down" size={12} className={styles.titleChevron} />
           </button>
           <Menu
@@ -805,10 +812,11 @@ function HeaderRow({
           />
         </>
       ) : (
-        <span className={clsx(styles.title, styles.titlePlain)}>{toolWindowTitle(tw)}</span>
+        <span className={clsx(styles.title, styles.titlePlain)} title={windowTitle}>
+          {windowTitle}
+        </span>
       )}
       {children && <div className={clsx(styles.headerContent, !showTitle && styles.headerContentOnly)}>{children}</div>}
-      <div className={styles.headerSpacer} />
       {actions && <ToolWindowActionsBar tw={tw} />}
     </header>
   );
