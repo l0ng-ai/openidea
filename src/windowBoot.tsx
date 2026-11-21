@@ -42,7 +42,11 @@ export async function installCommonWindowBoot(): Promise<void> {
   // second press like the release before it, which the shim would take for a reordered tap and
   // click twice.
   if (guessOs() === "macos" && !/Chrome|Firefox/.test(navigator.userAgent)) installReorderedTapClick();
-  if (guessOs() === "linux" && isTauri()) installWebKitClipboardGuard();
+  if (guessOs() === "linux" && isTauri()) {
+    installWebKitClipboardGuard();
+    // WebKitGTK-only rendering rules in global.css.
+    document.documentElement.dataset.webkitgtk = "";
+  }
   // A double click on the title bar fills the work area; the backend steps the frame once per
   // presented webview frame, because AppKit's own zoom hides the page until the resize ends.
   installWindowDrag({
