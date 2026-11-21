@@ -1,7 +1,8 @@
 /**
  * Smart Keys › Enter › Insert documentation comment stub: Enter right after a `/**` that opens a
  * new comment closes it, the caret on the summary line. In PHP the stub of a function lists its
- * parameters (`@param`) and return type (`@return`), as PhpStorm does.
+ * parameters (`@param`) and return type (`@return`), as PhpStorm does; in Java a method's,
+ * constructor's or generic type's parameters, return value and exceptions, as IDEA does.
  */
 import { syntaxTree } from "@codemirror/language";
 import { EditorSelection, type EditorState } from "@codemirror/state";
@@ -38,14 +39,109 @@ export function phpDocTags(text: string): string[] {
   return tags;
 }
 
-function splitTopLevel(params: string): string[] {
+/** Index just past the bracket matching the one at `open` (`(` / `<`), else -1. */
+function closing(text: string, open: number): number {
+  const pairs: Record<string, string> = { "(": ")", "<": ">", "[": "]" };
+  const stack: string[] = [];
+  for (let i = open; i < text.length; i++) {
+    const c = text[i]!;
+    if (pairs[c]) stack.push(pairs[c]!);
+    else if (c === stack[stack.length - 1]) {
+      stack.pop();
+      if (!stack.length) return i + 1;
+    }
+  }
+  return -1;
+}
+
+const JAVA_MODIFIERS =
+  /^(public|protected|private|static|final|abstract|synchronized|native|default|strictfp|sealed|non-sealed|transient|volatile)\s+/;
+
+/** Drops leading annotations (`@Override`, `@SuppressWarnings("x")`) and modifiers. */
+function javaDeclaration(text: string): string {
+  let s = text.trimStart();
+  for (;;) {
+    const a = /^@(?!interface\b)[\w.]+\s*/.exec(s);
+    if (a) {
+      s = s.slice(a[0].length);
+      if (s.startsWith("(")) {
+        const end = closing(s, 0);
+        if (end < 0) return "";
+        s = s.slice(end);
+      }
+      s = s.trimStart();
+      continue;
+    }
+    const m = JAVA_MODIFIERS.exec(s);
+    if (!m) return s;
+    s = s.slice(m[0].length);
+  }
+}
+
+/** Type parameter names of `<T extends A, U>`. */
+function typeParams(list: string): string[] {
+  return splitTopLevel(list.slice(1, -1), true).flatMap((p) => /^\s*(\w+)/.exec(p)?.[1] ?? []);
+}
+
+/** Parameter names of `(final int a, Map<K, V>... b)`. */
+function paramNames(list: string): string[] {
+  return splitTopLevel(list.slice(1, -1), true).flatMap((p) => /(\w+)\s*(\[\s*\])*\s*$/.exec(p.trim())?.[1] ?? []);
+}
+
+/** `@param` / `@return` / `@throws` lines for the Java declaration in `text` (the code below the `/**`). */
+export function javaDocTags(text: string): string[] {
+  const s = javaDeclaration(text);
+  const type = /^(class|interface|record|enum|@interface)\s+\w+\s*/.exec(s);
+  if (type) {
+    let rest = s.slice(type[0].length);
+    const tags: string[] = [];
+    let generics: string[] = [];
+    if (rest.startsWith("<")) {
+      const end = closing(rest, 0);
+      if (end < 0) return [];
+      generics = typeParams(rest.slice(0, end));
+      rest = rest.slice(end).trimStart();
+    }
+    // A record's components come first, as IDEA lists them.
+    if (type[1] === "record" && rest.startsWith("(")) {
+      const end = closing(rest, 0);
+      if (end > 0) tags.push(...paramNames(rest.slice(0, end)).map((n) => `@param ${n}`));
+    }
+    return [...tags, ...generics.map((g) => `@param <${g}>`)];
+  }
+  let rest = s;
+  let generics: string[] = [];
+  if (rest.startsWith("<")) {
+    const end = closing(rest, 0);
+    if (end < 0) return [];
+    generics = typeParams(rest.slice(0, end));
+    rest = rest.slice(end).trimStart();
+  }
+  const open = rest.indexOf("(");
+  if (open < 0) return [];
+  const head = rest.slice(0, open).trim();
+  // `Type name` for a method, a lone `Name` for a constructor; anything else is not a declaration.
+  const m = /^(?:([\w$.]+(?:\s*<.*>)?(?:\s*\[\s*\])*)\s+)?([\w$]+)$/.exec(head);
+  if (!m || /^(return|throw|new|else|case|yield|assert)$/.test(m[1] ?? "")) return [];
+  const end = closing(rest, open);
+  if (end < 0) return [];
+  const returnType = m[1];
+  const tags = paramNames(rest.slice(open, end)).map((n) => `@param ${n}`);
+  tags.push(...generics.map((g) => `@param <${g}>`));
+  if (returnType && returnType !== "void") tags.push("@return");
+  const throws = /^\s*throws\s+([\w$.,\s<>]+?)\s*(?:\{|;|$)/.exec(rest.slice(end));
+  if (throws) tags.push(...splitTopLevel(throws[1]!, true).map((t) => `@throws ${t.trim()}`));
+  return tags;
+}
+
+function splitTopLevel(params: string, angles = false): string[] {
   const out: string[] = [];
   let depth = 0;
   let start = 0;
   for (let i = 0; i < params.length; i++) {
     const c = params[i];
-    if (c === "(" || c === "[") depth++;
-    else if (c === ")" || c === "]") depth--;
+    if (c === "(" || c === "[" || (angles && c === "<")) depth++;
+    else if (c === ")" || c === "]" || (angles && c === ">")) depth--;
     else if (c === "," && depth === 0) {
       out.push(params.slice(start, i));
       start = i + 1;
@@ -73,7 +169,8 @@ export function enterInDocComment(language: string | undefined): Command {
     const indent = /^[ \t]*/.exec(before)![0];
     const br = state.lineBreak;
     const below = line.number < state.doc.lines ? state.sliceDoc(state.doc.line(line.number + 1).from) : "";
-    const tags = language === "php" ? phpDocTags(below.slice(0, 4000)) : [];
+    const head = below.slice(0, 4000);
+    const tags = language === "php" ? phpDocTags(head) : language === "java" ? javaDocTags(head) : [];
     const summary = `${br}${indent} * `;
     const insert = summary + tags.map((t) => `${br}${indent} * ${t}`).join("") + `${br}${indent} */`;
     view.dispatch(
