@@ -31,6 +31,7 @@ import {
   useTextEditorWrappers,
   type EditorInput,
   type EditorKindContribution,
+  type TextEditorWrapperContribution,
 } from "@/workbench/contributions";
 import { useDistractionFree } from "@/workbench/distractionFree";
 import { useFileColors } from "@/workbench/fileColors";
@@ -458,6 +459,26 @@ function virtualTooltip(input: EditorInput): string | null {
   return [d?.description, input.path].filter(Boolean).join("\n");
 }
 
+const sourceShown = () => false;
+
+/** Code breadcrumbs of a text editor, unless its wrapper hides the source (Markdown Preview Only). */
+function PaneBreadcrumbs({
+  wrapper,
+  path,
+  tabId,
+  position,
+}: {
+  wrapper: TextEditorWrapperContribution | undefined;
+  path: string;
+  tabId: string;
+  position: "top" | "bottom";
+}) {
+  // Keyed by the wrapper id, so the hook stays the same for the component's life.
+  const useSourceHidden = wrapper?.useSourceHidden ?? sourceShown;
+  if (useSourceHidden(tabId)) return null;
+  return <CodeBreadcrumbs path={path} tabId={tabId} position={position} />;
+}
+
 function PaneContent({ paneId, tab, tabsVisible }: { paneId: string; tab: Tab; tabsVisible: boolean }) {
   const crumbs = !useDistractionFree((s) => s.active);
   const wrappers = useTextEditorWrappers((s) => s.wrappers);
@@ -473,7 +494,9 @@ function PaneContent({ paneId, tab, tabsVisible }: { paneId: string; tab: Tab; t
           <EditorBanners path={tab.input.path} />
         )}
         <FindBar paneId={paneId} />
-        {crumbs && <CodeBreadcrumbs path={tab.input.path!} tabId={tab.id} position="top" />}
+        {crumbs && (
+          <PaneBreadcrumbs key={wrapper?.id} wrapper={wrapper} path={tab.input.path!} tabId={tab.id} position="top" />
+        )}
         {wrapper ? (
           <wrapper.component
             key={tab.id}
@@ -486,7 +509,15 @@ function PaneContent({ paneId, tab, tabsVisible }: { paneId: string; tab: Tab; t
         ) : (
           host
         )}
-        {crumbs && <CodeBreadcrumbs path={tab.input.path!} tabId={tab.id} position="bottom" />}
+        {crumbs && (
+          <PaneBreadcrumbs
+            key={wrapper?.id}
+            wrapper={wrapper}
+            path={tab.input.path!}
+            tabId={tab.id}
+            position="bottom"
+          />
+        )}
       </>
     );
   }

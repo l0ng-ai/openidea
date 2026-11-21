@@ -350,7 +350,7 @@ describe("model settings", () => {
     expect(onChange).toHaveBeenCalledExactlyOnceWith("reasoning_effort", "xhigh");
   });
 
-  it("offers more effort levels than fit the segmented control as a dropdown", () => {
+  it("lists more effort levels than fit the segmented control, one click away", () => {
     const onChange = vi.fn();
     const config = copilotConfig().map((o) =>
       o.category === "thought_level"
@@ -367,9 +367,13 @@ describe("model settings", () => {
     fireEvent.click(screen.getByRole("button", { name: "Model settings: Max" }));
     const dialog = screen.getByRole("dialog", { name: "Model settings" });
     expect(within(dialog).queryByRole("radiogroup", { name: "Effort Level" })).not.toBeInTheDocument();
-    fireEvent.click(within(dialog).getByRole("button", { name: /Reasoning Effort/ }));
-    fireEvent.click(screen.getByRole("option", { name: /Extra high/ }));
-    expect(onChange).toHaveBeenCalledWith("reasoning_effort", "extra-high");
+    expect(within(dialog).queryByRole("button", { name: /Reasoning Effort/ })).not.toBeInTheDocument();
+    const levels = within(dialog).getByRole("listbox", { name: "Effort Level" });
+    expect(within(levels).getByRole("option", { name: /Max/ })).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(within(levels).getByRole("option", { name: /Extra high/ }));
+    expect(onChange).toHaveBeenCalledExactlyOnceWith("reasoning_effort", "extra-high");
+    // The only setting: choosing it is done.
+    expect(screen.queryByRole("dialog", { name: "Model settings" })).not.toBeInTheDocument();
   });
 
   it("tucks Fast into the model popup", () => {
@@ -392,7 +396,7 @@ describe("model settings", () => {
     expect(within(dialog).getByRole("switch", { name: "Fast" })).toHaveAttribute("aria-checked", "false");
   });
 
-  it("opens settings from the selected row without choosing it and returns to a pinnable model list", () => {
+  it("keeps the model list to models and the settings chip to every model setting", () => {
     const onChange = vi.fn();
     const cfg = copilotConfig().map((o) =>
       o.id === "model"
@@ -417,32 +421,35 @@ describe("model settings", () => {
     render(<ConfigPickers config={cfg} onChange={onChange} />);
     const model = screen.getByRole("button", { name: "Model" });
     expect(model).toHaveTextContent("Claude Sonnet 5.5");
-    expect(screen.getByRole("button", { name: /^Model settings:/ })).toHaveTextContent("medium · 1M");
+    const settings = screen.getByRole("button", { name: /^Model settings:/ });
+    expect(settings).toHaveTextContent("medium · 1M");
 
     fireEvent.click(model);
-    const dialog = screen.getByRole("dialog", { name: "Model" });
-    expect(within(dialog).queryByText("Balanced")).not.toBeInTheDocument();
-    expect(within(dialog).getByText("Medium cost")).toBeVisible();
-    expect(within(dialog).queryByRole("radio")).not.toBeInTheDocument();
-    fireEvent.click(within(dialog).getByRole("button", { name: "Configure Claude Sonnet 5.5…" }));
-    expect(onChange).not.toHaveBeenCalled();
+    const models = screen.getByRole("dialog", { name: "Model" });
+    expect(within(models).queryByText("Balanced")).not.toBeInTheDocument();
+    expect(within(models).getByText("Medium cost")).toBeVisible();
+    expect(within(models).queryByRole("radio")).not.toBeInTheDocument();
+    expect(within(models).queryByRole("button", { name: /^Configure/ })).not.toBeInTheDocument();
+    fireEvent.click(within(models).getAllByRole("button", { name: "Pin model" })[0]!);
+    const listbox = within(models).getByRole("listbox", { name: "Model" });
+    expect(within(listbox).getByText("Pinned")).toBeVisible();
+    expect(within(listbox).getByText("Models")).toBeVisible();
+    fireEvent.click(within(models).getByRole("option", { name: /GPT-6 Sol/ }));
+    expect(onChange).toHaveBeenCalledExactlyOnceWith("model", "gpt-6-sol");
+    expect(screen.queryByRole("dialog", { name: "Model" })).not.toBeInTheDocument();
 
+    onChange.mockClear();
+    fireEvent.click(settings);
+    const dialog = screen.getByRole("dialog", { name: "Model settings" });
+    expect(within(dialog).queryByRole("button", { name: "Back to models" })).not.toBeInTheDocument();
     const effortGroup = within(dialog).getByRole("radiogroup", { name: "Effort Level" });
     expect(within(effortGroup).getByRole("radio", { name: "medium" })).toHaveAttribute("aria-checked", "true");
     const contextGroup = within(dialog).getByRole("radiogroup", { name: "Context Size" });
     expect(within(contextGroup).getByRole("radio", { name: "1M" })).toHaveAttribute("aria-checked", "true");
     fireEvent.click(within(contextGroup).getByRole("radio", { name: "200K" }));
-    expect(onChange).toHaveBeenCalledWith("contextTier", "default");
-
-    fireEvent.click(within(dialog).getByRole("button", { name: "Back to models" }));
-    fireEvent.click(within(dialog).getAllByRole("button", { name: "Pin model" })[0]!);
-    const listbox = within(dialog).getByRole("listbox", { name: "Model" });
-    expect(within(listbox).getByText("Pinned")).toBeVisible();
-    expect(within(listbox).getByText("Models")).toBeVisible();
-
-    fireEvent.click(within(dialog).getByRole("option", { name: /GPT-6 Sol/ }));
-    expect(onChange).toHaveBeenCalledWith("model", "gpt-6-sol");
-    expect(screen.queryByRole("dialog", { name: "Model" })).not.toBeInTheDocument();
+    expect(onChange).toHaveBeenCalledExactlyOnceWith("contextTier", "default");
+    // Several settings: the popup stays for the next one.
+    expect(screen.getByRole("dialog", { name: "Model settings" })).toBeInTheDocument();
   });
 
   it("filters the model list and picks the highlighted model with the keyboard", () => {

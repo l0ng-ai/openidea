@@ -301,19 +301,30 @@ fn finish_launch(
     // The module/project JDK, else the JDK the Java language server builds the module with, else one
     // matching its Java version.
     let project_jdk = ide_sdk::apply::module_jdk(root, module, settings);
-    let from_server = info.java_home.as_deref().map(ide_sdk::java::java_executable).filter(|p| p.is_file());
-    let java = project_jdk.map(|j| ide_sdk::java::java_executable(&j.home)).or(from_server).or_else(|| {
-        // The build model's level includes what the module inherits from its parent POMs.
-        let release = model
+    // The build model's level includes what the module inherits from its parent POMs.
+    let release = || {
+        model
             .maven
             .as_ref()
             .and_then(|m| m.projects.iter().find(|p| root.join(&p.dir) == module))
             .and_then(|p| p.java_version)
-            .or_else(|| ide_sdk::java::project_java_version(module));
-        let jdks = ide_sdk::java::installed_jdks();
-        info.hints.extend(ide_sdk::java::missing_jdk_message(&jdks, release));
-        ide_sdk::java::pick_jdk(&jdks, release).map(|j| ide_sdk::java::java_executable(&j.home))
-    });
+            .or_else(|| ide_sdk::java::project_java_version(module))
+    };
+    let java = match project_jdk {
+        Some(j) => Some(ide_sdk::java::java_executable(&j.home)),
+        None => {
+            let release = release();
+            let server = info.java_home.as_deref().and_then(|home| server_java(home, release));
+            match server {
+                Some(java) => Some(java),
+                None => {
+                    let jdks = ide_sdk::java::installed_jdks();
+                    info.hints.extend(ide_sdk::java::missing_jdk_message(&jdks, release));
+                    ide_sdk::java::pick_jdk(&jdks, release).map(|j| ide_sdk::java::java_executable(&j.home))
+                }
+            }
+        }
+    };
     info.java_exec = Some(java.map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "java".to_owned()));
     let exec = PathBuf::from(info.java_exec.as_deref().unwrap_or("java"));
     let shorten = ide_run::java_cmdline::shortening_for(&exec, &info.class_paths, &info.module_paths, cfg!(windows));
@@ -325,6 +336,19 @@ fn finish_launch(
         // Detection may read the project's sources.
         let lombok = ide_sdk::lombok::lombok_agent(root, own, managed, repo);
         info.hints.extend(lombok.problem());
+    }
+}
+
+/// The `java` of the JDK a Java language server reports, when it can run classes compiled for
+/// `release`: that JDK is the one the server runs on or defaults to, not necessarily one the
+/// module's bytecode loads on. A home whose version is unknown is used only when `release` is too.
+fn server_java(home: &Path, release: Option<u32>) -> Option<PathBuf> {
+    match ide_sdk::java::jdk_at(home) {
+        Some(jdk) if release.is_none_or(|release| jdk.major >= release) => {
+            Some(ide_sdk::java::java_executable(&jdk.home))
+        }
+        Some(_) => None,
+        None => Some(ide_sdk::java::java_executable(home)).filter(|java| release.is_none() && java.is_file()),
     }
 }
 
@@ -556,6 +580,38 @@ fn drop_processor_recreate_errors(info: &mut JavaLaunchInfo) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fake_jdk(dir: &Path, version: Option<&str>) -> PathBuf {
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join(if cfg!(windows) { "java.exe" } else { "java" }), "").unwrap();
+        if let Some(version) = version {
+            std::fs::write(dir.join("release"), format!("JAVA_VERSION=\"{version}\"\n")).unwrap();
+        }
+        dir.to_path_buf()
+    }
+
+    #[test]
+    fn a_server_jdk_older_than_the_module_release_is_not_used() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jdk17 = fake_jdk(&tmp.path().join("17"), Some("17.0.12"));
+        let jdk21 = fake_jdk(&tmp.path().join("21"), Some("21.0.4"));
+        let unknown = fake_jdk(&tmp.path().join("unknown"), None);
+        // (server JDK, module release, used?)
+        let cases = [
+            (&jdk17, Some(21), false),
+            (&jdk17, Some(17), true),
+            (&jdk17, Some(11), true),
+            (&jdk17, None, true),
+            (&jdk21, Some(21), true),
+            (&unknown, None, true),
+            (&unknown, Some(21), false),
+        ];
+        for (home, release, used) in cases {
+            assert_eq!(server_java(home, release).is_some(), used, "{} for release {release:?}", home.display());
+        }
+        assert!(server_java(&tmp.path().join("missing"), None).is_none());
+    }
 
     #[test]
     fn recognises_a_processor_recreating_its_output() {

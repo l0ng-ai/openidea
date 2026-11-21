@@ -163,7 +163,9 @@ export function MarkdownEditor({
 const blocksOf = (root: HTMLElement) =>
   [...root.querySelectorAll<HTMLElement>(":scope > [data-line]")].map((el) => ({
     line: Number(el.dataset.line),
-    top: el.offsetTop,
+    get top() {
+      return el.offsetTop;
+    },
   }));
 
 function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
@@ -182,6 +184,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   const [render] = useState(createMarkdownRenderer);
   const html = useMemo(() => render(deferred), [render, deferred]);
   const ref = useRef<HTMLDivElement>(null);
+  const blocks = useRef<ReturnType<typeof blocksOf>>([]);
   const theme = useSyncExternalStore(subscribeTheme, themeKey, () => "");
   const diagrams = useRef<Node[]>([]);
   const [diagramsDrawn, setDiagramsDrawn] = useState(0);
@@ -207,6 +210,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   useLayoutEffect(() => {
     if (!ref.current) return;
     renderMath(ref.current);
+    blocks.current = blocksOf(ref.current);
     invalidatePreviewIndex(ref.current);
   }, [html]);
 
@@ -287,7 +291,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   useLayoutEffect(() => {
     const root = ref.current;
     if (!root || !sync) return;
-    root.scrollTop = topLine <= 0 ? 0 : previewOffsetForLine(blocksOf(root), topLine, root.scrollHeight);
+    root.scrollTop = topLine <= 0 ? 0 : previewOffsetForLine(blocks.current, topLine, root.scrollHeight);
   }, [html, topLine, scrollSeq, sync, diagramsDrawn, fontZoom, fontSize]);
 
   // Keep the split preview anchored to `topLine` as dragging the divider or resizing the window reflows text.
@@ -299,7 +303,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       if (root.clientWidth === width) return;
       width = root.clientWidth;
       const top = useLiveMarkdown.getState()[path]?.topLine ?? 0;
-      root.scrollTop = top <= 0 ? 0 : previewOffsetForLine(blocksOf(root), top, root.scrollHeight);
+      root.scrollTop = top <= 0 ? 0 : previewOffsetForLine(blocks.current, top, root.scrollHeight);
     });
     ro.observe(root);
     return () => ro.disconnect();
@@ -366,10 +370,9 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
         }
       }
     }
-    const blocks = blocksOf(root);
     // Back / Forward return to the line on screen: keep the restored offset within it.
-    if (previewLineAtOffset(blocks, root.scrollTop) !== caretLine) {
-      root.scrollTop = previewOffsetForLine(blocks, caretLine, root.scrollHeight);
+    if (previewLineAtOffset(blocks.current, root.scrollTop) !== caretLine) {
+      root.scrollTop = previewOffsetForLine(blocks.current, caretLine, root.scrollHeight);
       scrolledTo.current = root.scrollTop;
       restoreRetry.current = null;
     }
@@ -483,7 +486,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   useEffect(() => {
     const root = ref.current;
     if (!root || sync) return;
-    setShownLine(path, previewLineAtOffset(blocksOf(root), root.scrollTop));
+    setShownLine(path, previewLineAtOffset(blocks.current, root.scrollTop));
     return () => setShownLine(path, null);
   }, [sync, path]);
   useEffect(() => () => cancelAnimationFrame(scrollFrame.current), []);
@@ -497,7 +500,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       if (own) return;
       scrolledTo.current = null;
       restoreRetry.current = null;
-      setShownLine(path, previewLineAtOffset(blocksOf(root), root.scrollTop));
+      setShownLine(path, previewLineAtOffset(blocks.current, root.scrollTop));
     });
   };
 
@@ -513,8 +516,15 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     e.preventDefault();
     const target = resolveLink(path, a.getAttribute("href") ?? "");
     if (!target) return;
-    const scrollTo = (id: string) =>
-      ref.current?.querySelector(`[id="${CSS.escape(ANCHOR_PREFIX + slugify(id))}"]`)?.scrollIntoView();
+    const scrollTo = (id: string) => {
+      const root = ref.current;
+      if (!root) return;
+      const heading = root.querySelector(`[id="${CSS.escape(ANCHOR_PREFIX + slugify(id))}"]`);
+      const footnote = id.startsWith(ANCHOR_PREFIX)
+        ? root.querySelector(`[id="${CSS.escape(id)}"]:is([role="doc-footnote"], [role="doc-noteref"])`)
+        : null;
+      (footnote ?? heading)?.scrollIntoView();
+    };
     if (target.kind === "external") openExternal(target.url);
     else if (target.kind === "anchor") scrollTo(target.id);
     else if (target.path === path && target.anchor) scrollTo(target.anchor);

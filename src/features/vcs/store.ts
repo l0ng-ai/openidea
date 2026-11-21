@@ -28,6 +28,7 @@ export interface VcsState {
   root: string | null;
   /** Repository roots, the project's own repository first. */
   roots: string[];
+  branchRoots: Record<string, string>;
   /** Root → merge / rebase / cherry-pick / revert in progress there. */
   operations: Record<string, string>;
   /** Root → its current branch (`head` null when detached) and HEAD commit. */
@@ -56,6 +57,7 @@ const initial: VcsState = {
   available: false,
   root: null,
   roots: [],
+  branchRoots: {},
   operations: {},
   heads: {},
   repo: null,
@@ -267,8 +269,10 @@ export function refreshNow(): Promise<void> {
       const shown = s.repo && roots.includes(s.repo) ? s.repo : (roots[0] ?? null);
       const repo = attentionRepo(shown, s.operations, operations) ?? shown;
       const heads = Object.fromEntries(vcsRoots.map((r) => [r.root, { head: r.head, headCommit: r.headCommit }]));
-      useVcs.setState({ operations, heads });
       const sameRoots = roots.join("\n") === s.roots.join("\n");
+      const branchRoots = Object.fromEntries(vcsRoots.map((r) => [r.root, r.branchRoot]));
+      const sameBranchRoots = sameRoots && roots.every((root) => branchRoots[root] === s.branchRoots[root]);
+      useVcs.setState({ operations, heads, branchRoots: sameBranchRoots ? s.branchRoots : branchRoots });
       if (repo !== s.repo || !sameRoots) useVcs.setState({ roots: sameRoots ? s.roots : roots, repo });
       applyStatus(status.files, branch);
       useVcs.setState({ branches, stashes, error: null });

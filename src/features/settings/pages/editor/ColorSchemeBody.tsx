@@ -126,7 +126,7 @@ function previewVars(
   redGreen = false,
 ): CSSProperties {
   const vars: Record<string, string> = {};
-  const tokens = resolvedSchemeTokens(id, customs, redGreen);
+  const tokens = resolvedSchemeTokens(id, customs, redGreen, o);
   for (const [k, v] of tokens)
     if (
       k.startsWith("--syn-") ||

@@ -11663,6 +11663,8 @@ export type SmartKeysSettings = {
 	pairQuotes?: boolean,
 	surroundSelection?: boolean,
 	tabOutOfPair?: boolean,
+	/**  A `;` typed before the closing `)` of a statement goes to the end of the statement. */
+	semicolonAtStatementEnd?: boolean,
 	/**  Simultaneous `<tag></tag>` editing: renaming a tag renames its matching tag. */
 	simultaneousTagEditing?: boolean,
 	/**  Reformat on paste: `none` | `indentBlock` | `indentEachLine`. */
@@ -12609,6 +12611,8 @@ export type VcsMappings = {
 export type VcsRoot = {
 	/**  Worktree root. */
 	root: IpcPath,
+	/**  Root representing all mapped worktrees of the same Git repository in branch lists. */
+	branchRoot: IpcPath,
 	/**  Merge / rebase / cherry-pick / revert in progress. */
 	operation: string | null,
 	/**  Current branch; `None` when HEAD is detached (or unreadable). */

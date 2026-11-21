@@ -2,6 +2,7 @@
  * "usages" tool window: Find Usages results grouped by file with line
  * previews, one tab per search (pinnable, as the Find tool window's tabs).
  */
+import { openCodeLocation } from "@/editor/api";
 import { useCallback, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
@@ -11,7 +12,7 @@ import { useEditorPrefs } from "@/platform/editorSettings";
 import { BUNDLED_MONO_FAMILY, monoFontFamily } from "@/platform/fonts";
 import { shortcutLabel } from "@/platform/keymap";
 import { basename, relativeDir, useProject } from "@/platform/project";
-import { maybeEditorService, useOccurrenceNavigator } from "@/workbench/contributions";
+import { useOccurrenceNavigator } from "@/workbench/contributions";
 import {
   EmptyState,
   Icon,
@@ -143,7 +144,7 @@ export function toggleExcludedUsages(excluded: ReadonlySet<string>, usages: read
 }
 
 function openUsage(u: Usage, focus: boolean) {
-  void maybeEditorService()?.openFile(u.path, { selection: { line: u.line, col: u.col }, focus });
+  void openCodeLocation(u.path, { line: u.line, col: u.col }, { focus });
 }
 
 export function UsagesView() {
