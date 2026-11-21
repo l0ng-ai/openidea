@@ -6,6 +6,7 @@ import { serverCodeLenses } from "./serverCodeLens";
  * through `editor/api` as CodeMirror extensions plus actions; editor/core is
  * never imported.
  */
+import { historyGroupExtension } from "./historyGroup";
 import type { Extension } from "@codemirror/state";
 import { registerEditorContribution, type EditorDocContext } from "@/editor/api";
 import {
@@ -63,6 +64,7 @@ export function lspExtensions(ctx: EditorDocContext): Extension[] {
     signatureExtension(),
     completionExtension(),
     inplaceRenameExtension(),
+    historyGroupExtension,
     navigationExtension(),
     intentionsExtension(),
     inlayExtension(),

@@ -51,6 +51,8 @@ export interface InplaceSession {
   dialog: (typed: string) => void;
   /** Name suggestions listed under the name; ↑ / ↓ put the previous / next one in (Introduce Variable). */
   suggestions?: readonly string[];
+  /** Runs when the session ends, however it ends (after `commit`). */
+  onEnd?: () => void;
 }
 
 const startSession = StateEffect.define<InplaceSession>();
@@ -211,6 +213,7 @@ export function endInplaceRename(view: EditorView, how: "commit" | "cancel" | "r
     annotations: [inplaceEdit.of(true), Transaction.addToHistory.of(false)],
   });
   if (how === "commit") s.commit(typed);
+  s.onEnd?.();
   return typed;
 }
 
