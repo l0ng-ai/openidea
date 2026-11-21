@@ -58,7 +58,7 @@ use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
 
 /// The API version of the world above, `major.minor` of [`host_api`].
-pub const API_VERSION: &str = "1.14";
+pub const API_VERSION: &str = "1.15";
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 pub(crate) const MAX_TEXT: usize = 1 << 20;
 /// The most text, and the most PNG bytes, `ui.read-clipboard` returns.
@@ -141,8 +141,13 @@ pub trait HostApi: Send + Sync {
     }
 
     /// Registers a project-scoped wrapper after validating its process grant and pin.
-    fn register_run_target(&self, root: &Path, target: crate::PluginRunTarget) -> Result<(), HostError> {
-        let _ = (root, target);
+    fn register_run_target(
+        &self,
+        root: &Path,
+        target: crate::PluginRunTarget,
+        generation: Option<u64>,
+    ) -> Result<(), HostError> {
+        let _ = (root, target, generation);
         Err(HostError::Failed("run targets unavailable".into()))
     }
     /// Withdraws this plugin's target, preserving the user's remembered prompt answer.
@@ -586,7 +591,21 @@ pub trait HostApi: Send + Sync {
     /// Delivers every event of `kind`, dropping its path filter.
     fn subscribe(&self, kind: EventKind);
     /// Delivers `kind` (`file-opened`, `file-saved`, `files-changed`) only for matching paths.
-    fn subscribe_paths(&self, kind: &str, globs: Vec<String>) -> Result<(), HostError>;
+    fn subscribe_paths(&self, kind: &str, globs: Vec<String>) -> Result<(), HostError> {
+        self.subscribe_paths_with_options(kind, globs, None)
+    }
+    /// Delivers `kind` with optional debounce window in milliseconds (API 1.14).
+    fn subscribe_paths_with_options(
+        &self,
+        kind: &str,
+        globs: Vec<String>,
+        debounce_ms: Option<u32>,
+    ) -> Result<(), HostError>;
+    /// Monotonically increasing project generation (API 1.14).
+    fn project_generation(&self, root: &Path) -> Result<u64, HostError> {
+        let _ = root;
+        Ok(0)
+    }
     fn unsubscribe(&self, kind: &str);
     /// Starts `cmd` and returns the handle to it without waiting.
     fn start_process(&self, cmd: ProcessCommand, cwd: Option<&Path>, client: Option<&str>) -> Result<u64, HostError>;
@@ -1116,6 +1135,10 @@ fn event_to_wit(e: WorkbenchEvent) -> wit_events::Event {
         WorkbenchEvent::ProblemsChanged => {
             wit_events::Event::Other(wit_types::Extension { kind: "problems-changed".into(), data: "{}".into() })
         }
+        WorkbenchEvent::ProjectClosed(p) => wit_events::Event::Other(wit_types::Extension {
+            kind: "project-closed".into(),
+            data: serde_json::to_string(&p).expect("path serializes"),
+        }),
         WorkbenchEvent::Scheduled => wit_events::Event::Scheduled,
         WorkbenchEvent::ActionPerformed(a) => wit_events::Event::ActionPerformed(wit_events::ActionPerformed {
             action: a.action,
