@@ -300,6 +300,8 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   },
 
   syn("keyword", "Keyword", [LD], "keyword"),
+  // `true`, `false`, `null`: keywords in JetBrains schemes, which have no key of their own for them.
+  syn("literalKeyword", "Literal keyword", [LD], "literal", { inherit: "keyword" }),
   syn("identifier", "Identifiers › Local variable", [LD], "variable"),
   syn("parameter", "Identifiers › Parameter", [LD], "param"),
   syn("globalVariable", "Identifiers › Global variable", [LD], "global"),
@@ -317,6 +319,9 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   syn("functionDeclaration", "Identifiers › Function declaration", [LD], "function"),
   syn("functionCall", "Identifiers › Function call", [LD], "function-call"),
   syn("predefined", "Identifiers › Predefined symbol", [LD], "builtin"),
+  // A standard library's types and functions (String, let), apart from its other symbols.
+  syn("predefinedType", "Identifiers › Predefined type", [LD], "builtin-type", { inherit: "builtin" }),
+  syn("predefinedFunction", "Identifiers › Predefined function", [LD], "builtin-function", { inherit: "builtin" }),
   syn("className", "Classes › Class name", [LD], "type"),
   syn("number", "Number", [LD], "number"),
   syn("string", "String › String text", [LD], "string"),

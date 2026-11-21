@@ -2961,5 +2961,8 @@
   "Cannot find the source of {0}": "Cannot find the source of {0}",
   "JavaScript and TypeScript": "JavaScript and TypeScript",
   "Global function": "Global function",
-  "Decorator": "Decorator"
+  "Decorator": "Decorator",
+  "Literal keyword": "Literal keyword",
+  "Predefined type": "Predefined type",
+  "Predefined function": "Predefined function"
 }

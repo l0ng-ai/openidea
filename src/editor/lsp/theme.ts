@@ -518,7 +518,8 @@ export const lspTheme = EditorView.theme({
   ".cm-sem-function": semanticStyle("function-call", "function"),
   // Keep role selectors at one class so static/deprecated modifiers can override their styles.
   ".cm-sem-function:where(.cm-sem-declaration)": semanticStyle("function", "function"),
-  ".cm-sem-function:where(.cm-sem-builtin)": semanticStyle("builtin", "function"),
+  // Predefined function / type: unset, they keep the Predefined symbol style.
+  ".cm-sem-function:where(.cm-sem-builtin)": inheritedStyle("builtin-function", "builtin"),
   ".cm-sem-function.cm-sem-python-method-call": semanticStyle("python-method-call", "function-call"),
   // WebStorm's Global function: a module-level function, its declaration and its calls.
   ".cm-sem-global-function": inheritedStyle("global-function", "function"),
@@ -535,6 +536,7 @@ export const lspTheme = EditorView.theme({
   // Before the builtin rule: library globals (`print`, `string`) keep the predefined colour.
   ".cm-sem-global:where(:not(.cm-sem-function))": semanticStyle("global", "variable"),
   ".cm-sem-builtin:where(:not(.cm-sem-function))": semanticStyle("builtin", "variable"),
+  ".cm-sem-builtin:where(.cm-sem-type)": inheritedStyle("builtin-type", "builtin"),
   ".cm-sem-builtin.cm-sem-python-builtin": semanticStyle("python-builtin", "builtin"),
   ".cm-sem-static": { fontStyle: "var(--syn-static-italic, italic)" },
   ".cm-sem-property.cm-sem-static, .cm-sem-property.cm-sem-static *": {
