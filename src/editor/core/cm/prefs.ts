@@ -398,6 +398,17 @@ const richCopy = EditorView.domEventHandlers({
  */
 let sharedFontZoom = 0;
 
+const fontZoomListeners = new WeakMap<EditorView, (zoom: number | null) => void>();
+let activeFontZoomListener: ((zoom: number | null) => void) | undefined;
+
+export function observeEditorFontZoom(view: EditorView, listener: (zoom: number | null) => void) {
+  fontZoomListeners.set(view, listener);
+  return () => {
+    fontZoomListeners.delete(view);
+    if (activeFontZoomListener === listener) activeFontZoomListener = undefined;
+  };
+}
+
 /** Font zoom of one editor (⌘ + wheel), in px relative to the configured size. */
 export const setFontZoom = StateEffect.define<number>();
 export const fontZoom = StateField.define<number>({
@@ -443,6 +454,11 @@ export function stepAllEditorsFontZoom(origin: EditorView, delta: number): void 
 /** Resets one editor's font zoom to 0. */
 export function resetEditorFontZoom(view: EditorView): void {
   if (view.state.field(fontZoom, false)) view.dispatch({ effects: setFontZoom.of(0) });
+  const listener = fontZoomListeners.get(view);
+  if (listener && activeFontZoomListener === listener) {
+    activeFontZoomListener = undefined;
+    listener(null);
+  }
 }
 
 /** Resets every open editor's font zoom, and the value new editors start from. */
@@ -453,8 +469,15 @@ export function resetAllEditorsFontZoom(): void {
 
 /** Steps font zoom according to `editor.general.wheelZoomScope` (`active` editor by default, or `all` editors). */
 export function stepConfiguredEditorsFontZoom(origin: EditorView, delta: number): void {
+  const before = origin.state.field(fontZoom, false);
   if (editorPrefs().general.wheelZoomScope === "all") stepAllEditorsFontZoom(origin, delta);
   else stepFontZoom(origin, delta);
+  const zoom = origin.state.field(fontZoom, false);
+  const listener = fontZoomListeners.get(origin);
+  if (zoom === undefined || zoom === before || !listener) return;
+  if (activeFontZoomListener !== listener) activeFontZoomListener?.(null);
+  activeFontZoomListener = listener;
+  listener(zoom);
 }
 
 /** Resets font zoom according to `editor.general.wheelZoomScope` (`active` editor by default, or `all` editors). */
