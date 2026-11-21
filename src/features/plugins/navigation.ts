@@ -1,10 +1,15 @@
 /** Background navigation indexing. Opening a project discovers files once;
  * edits and filesystem events then enqueue only affected paths. */
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
-import { registerEditorContribution, whenSynced } from "@/editor/api";
-import { invalidateNavigationProviders, registerNavigationProvider } from "@/editor/navigationProviders";
+import {
+  invalidateNavigationProviders,
+  offsetToPos,
+  rangeToOffsets,
+  registerEditorContribution,
+  registerNavigationProvider,
+  whenSynced,
+} from "@/editor/api";
 import { docOf } from "@/editor/lsp/lsp";
-import { offsetToPos, rangeToOffsets } from "@/editor/lsp/positions";
 import { call, commands, isCancelled, isTauri, nextRequestId, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { notifications, registerDocumentIndexSync } from "@/workbench/contributions";

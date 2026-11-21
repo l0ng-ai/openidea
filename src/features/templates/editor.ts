@@ -31,9 +31,8 @@ import {
 import { EditorView, keymap, type Command } from "@codemirror/view";
 import { executeAction, getAction } from "@/platform/actions";
 import { useProject } from "@/platform/project";
-import { whenSynced, type EditorDocContext } from "@/editor/api";
+import { offsetToPos, posToOffset, whenSynced, type EditorDocContext } from "@/editor/api";
 import { structure, type StructuralRanges } from "@/editor/structure";
-import { offsetToPos, posToOffset } from "@/editor/lsp/positions";
 import { calledFunctions, expandTemplate, applicableTemplates, usesSelection, type LiveTemplate } from "./live/model";
 import { surroundEntries, surroundersFor, type Surrounder } from "./live/surrounders";
 import { liveTemplates, useLiveTemplateOptions } from "./live/store";

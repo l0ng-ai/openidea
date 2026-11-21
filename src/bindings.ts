@@ -338,7 +338,7 @@ export const commands = {
 	dbFinishTransaction: (id: string, commit: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("db_finish_transaction", { id, commit })),
 	dbHistory: (id: string) => typedError<DbHistoryEntry[], IdeError>(__TAURI_INVOKE("db_history", { id })),
 	dbJdbcDriverClasses: (jars: string[]) => typedError<string[], IdeError>(__TAURI_INVOKE("db_jdbc_driver_classes", { jars })),
-	dbJdbcDrivers: () => typedError<DbJdbcDriver[], IdeError>(__TAURI_INVOKE("db_jdbc_drivers")),
+	dbJdbcDrivers: () => typedError<DbJdbcDriver_Serialize[], IdeError>(__TAURI_INVOKE("db_jdbc_drivers")),
 	dbObjectDdl: (id: string, schema: string, kind: DbObjectKind, name: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_object_ddl", { id, schema, kind, name })),
 	dbRemoveHistory: (id: string, texts: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_remove_history", { id, texts })),
 	dbRemoveJdbcDriver: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_remove_jdbc_driver", { id })),
@@ -348,7 +348,8 @@ export const commands = {
 	 *  in the desktop shell like [`db_export_file`]: the paths in `job` are local.
 	 */
 	dbRunTool: (request: RequestId, id: string, executable: string, job: DbToolJob, onOutput: Channel<DbToolLine[]>) => typedError<number | null, IdeError>(__TAURI_INVOKE("db_run_tool", { request, id, executable, job, onOutput })),
-	dbSaveJdbcDriver: (driver: DbJdbcDriver) => typedError<null, IdeError>(__TAURI_INVOKE("db_save_jdbc_driver", { driver })),
+	dbSaveJdbcDriver: (driver: DbJdbcDriver_Deserialize) => typedError<null, IdeError>(__TAURI_INVOKE("db_save_jdbc_driver", { driver })),
+	dbSaveSourceVisibility: (id: string, available: string[], change: DbVisibilityChange) => typedError<null, IdeError>(__TAURI_INVOKE("db_save_source_visibility", { id, available, change })),
 	dbSaveSources: (sources: DataSource_Deserialize[]) => typedError<null, IdeError>(__TAURI_INVOKE("db_save_sources", { sources })),
 	dbSavedCatalog: (id: string) => typedError<{
 	databases?: DbCatalogDatabase[],
@@ -4403,7 +4404,7 @@ export type DataSource_Deserialize = {
 	sslCertFile?: string,
 	sslKeyFile?: string,
 	options?: DbOptions,
-	introspection?: DbIntrospection,
+	introspection?: DbIntrospection_Deserialize,
 	properties?: DbProperty[],
 	/**  Snowflake settings (`None`: not a Snowflake data source, or all defaults). */
 	snowflake?: DbSnowflake | null,
@@ -4449,7 +4450,7 @@ export type DataSource_Serialize = {
 	sslCertFile: string,
 	sslKeyFile: string,
 	options: DbOptions,
-	introspection: DbIntrospection,
+	introspection: DbIntrospection_Serialize,
 	properties: DbProperty[],
 	/**  Snowflake settings (`None`: not a Snowflake data source, or all defaults). */
 	snowflake: DbSnowflake | null,
@@ -4609,11 +4610,16 @@ export type DbIndexInfo = {
 };
 
 /**  Schemas tab: the databases / schemas the tree shows. Names may use `*` and `?`. */
-export type DbIntrospection = {
+export type DbIntrospection = DbIntrospection_Serialize | DbIntrospection_Deserialize;
+
+/**  Schemas tab: the databases / schemas the tree shows. Names may use `*` and `?`. */
+export type DbIntrospection_Deserialize = {
 	allDatabases?: boolean,
 	databases?: string[],
 	allSchemas?: boolean,
 	schemas?: string[],
+	/**  A database can replace the source's schema rules with all schemas or a list of exact names. */
+	schemasByDatabase?: { [key in string]: DbSchemaSelection },
 	/**  `pg_catalog`, `information_schema`, `mysql`…, and service databases (`rdsadmin`…). */
 	showSystem?: boolean,
 	/**  PostgreSQL template databases (`template0`, `template1`). */
@@ -4625,9 +4631,42 @@ export type DbIntrospection = {
 	objectFilter?: string,
 };
 
-export type DbJdbcDriver = {
+/**  Schemas tab: the databases / schemas the tree shows. Names may use `*` and `?`. */
+export type DbIntrospection_Serialize = {
+	allDatabases: boolean,
+	databases: string[],
+	allSchemas: boolean,
+	schemas: string[],
+	/**  A database can replace the source's schema rules with all schemas or a list of exact names. */
+	schemasByDatabase?: { [key in string]: DbSchemaSelection },
+	/**  `pg_catalog`, `information_schema`, `mysql`…, and service databases (`rdsadmin`…). */
+	showSystem: boolean,
+	/**  PostgreSQL template databases (`template0`, `template1`). */
+	showTemplates: boolean,
+	/**
+	 *  Object filter: the tree lists only tables, views, routines and sequences matching
+	 *  one of these patterns (`*`, `?`; separated by commas or spaces). Empty: all.
+	 */
+	objectFilter: string,
+};
+
+export type DbJdbcDriver = DbJdbcDriver_Serialize | DbJdbcDriver_Deserialize;
+
+export type DbJdbcDriver_Deserialize = {
 	id: string,
 	name: string,
+	/**  Data source preset id; absent for a generic JDBC profile. */
+	vendor?: string | null,
+	jars: string[],
+	className: string,
+	urlTemplate: string,
+};
+
+export type DbJdbcDriver_Serialize = {
+	id: string,
+	name: string,
+	/**  Data source preset id; absent for a generic JDBC profile. */
+	vendor?: string | null,
 	jars: string[],
 	className: string,
 	urlTemplate: string,
@@ -4803,6 +4842,11 @@ export type DbSchemaObjects = {
 	others?: DbSchemaObject[],
 };
 
+export type DbSchemaSelection = {
+	all?: boolean,
+	names?: string[],
+};
+
 export type DbSequenceInfo = {
 	name: string,
 	dataType: string,
@@ -4939,6 +4983,8 @@ export type DbTriggerInfo = {
 
 /**  Transaction control of the data source's consoles. */
 export type DbTxMode = "auto" | "manual";
+
+export type DbVisibilityChange = { kind: "databases"; selection: DbSchemaSelection } | { kind: "schemas"; selection: DbSchemaSelection } | { kind: "databaseSchemas"; database: string; selection: DbSchemaSelection | null };
 
 /**  What a session's adapter supports, for enabling actions. */
 export type DebugCapabilities = {
@@ -12272,6 +12318,8 @@ export type TextAttributesOverride_Deserialize = {
 	/**  `underline` | `wave` | `strikeout` | `none`. */
 	effect?: string | null,
 	effectColor?: string | null,
+	/**  IDEA's `ERROR_STRIPE_COLOR`: the diff overview-lane marker of a change type. */
+	errorStripeColor?: string | null,
 };
 
 /**  Editor › Color Scheme override of one text attribute. */
@@ -12283,6 +12331,8 @@ export type TextAttributesOverride_Serialize = {
 	/**  `underline` | `wave` | `strikeout` | `none`. */
 	effect?: string | null,
 	effectColor?: string | null,
+	/**  IDEA's `ERROR_STRIPE_COLOR`: the diff overview-lane marker of a change type. */
+	errorStripeColor?: string | null,
 };
 
 /**

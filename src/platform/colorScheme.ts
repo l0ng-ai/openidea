@@ -29,6 +29,8 @@ export interface AttributeDef {
   fgOverlay?: true;
   bg?: string;
   effect?: string;
+  /** CSS variable of the diff overview-lane marker (IDEA ERROR_STRIPE_COLOR), if editable. */
+  stripe?: string;
   /** Syntax token: bold / italic / background / effect come from `--syn-<token>-*`. */
   token?: string;
   /** A semantic modifier whose only configurable attribute is italic. */
@@ -299,6 +301,45 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
     fontStyle: true,
   },
 
+  // Color Scheme › Diff & Merge: IDEA's DiffColors attributes (the four change types) and
+  // the DIFF_SEPARATOR_WAVE color key. The change types paint the diff line strips (`--diff-*`)
+  // and their overview-lane markers (`--diff-*-stripe`); the wave is the separator drawn where
+  // IDEA folds an unchanged fragment. Names/keys mirror DiffColorsPageFactory + DiffBundle.
+  {
+    id: "diffChanged",
+    name: "Changed lines › Changed",
+    path: ["Diff & Merge"],
+    bg: "--diff-modified",
+    stripe: "--diff-modified-stripe",
+  },
+  {
+    // IDEA's DIFF_CONFLICT carries only ERROR_STRIPE_COLOR (no line strip of its own).
+    id: "diffConflict",
+    name: "Changed lines › Conflict",
+    path: ["Diff & Merge"],
+    stripe: "--diff-conflict-stripe",
+  },
+  {
+    id: "diffDeleted",
+    name: "Changed lines › Deleted",
+    path: ["Diff & Merge"],
+    bg: "--diff-deleted",
+    stripe: "--diff-deleted-stripe",
+  },
+  {
+    id: "diffInserted",
+    name: "Changed lines › Inserted",
+    path: ["Diff & Merge"],
+    bg: "--diff-inserted",
+    stripe: "--diff-inserted-stripe",
+  },
+  {
+    id: "diffSeparatorWave",
+    name: "Folded unchanged fragments › Wave",
+    path: ["Diff & Merge"],
+    fg: "--diff-separator-wave",
+  },
+
   syn("keyword", "Keyword", [LD], "keyword"),
   // `true`, `false`, `null`: keywords in JetBrains schemes, which have no key of their own for them.
   syn("literalKeyword", "Literal keyword", [LD], "literal", { inherit: "keyword" }),
@@ -459,7 +500,7 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
 
 /** Variables a scheme sets: every attribute variable plus the editor tokens derived from them. */
 const SCHEME_VARS = new Set<string>([
-  ...ATTRIBUTES.flatMap((a) => [a.fg, a.bg, a.effect].filter((v): v is string => !!v)),
+  ...ATTRIBUTES.flatMap((a) => [a.fg, a.bg, a.effect, a.stripe].filter((v): v is string => !!v)),
   // Font style of token-less attributes (`overrideDeclarations` writes them for custom schemes too).
   ...ATTRIBUTES.flatMap((a) => {
     const base = a.fg ?? a.effect;
@@ -718,6 +759,7 @@ export function overrideDeclarations(
       if (attr.fg.startsWith("--ansi-")) out.push([`--terminal-ansi-${attr.fg.slice("--ansi-".length)}`, fg]);
     }
     if (setOrCleared(o.background) && attr.bg) out.push([attr.bg, o.background]);
+    if (setOrCleared(o.errorStripeColor) && attr.stripe) out.push([attr.stripe, o.errorStripeColor]);
     if (setOrCleared(o.effectColor) && attr.effect) out.push([attr.effect, o.effectColor]);
     if (attr.effect && (setOrCleared(o.effectColor) || o.effect)) {
       const style = o.effect ?? attr.defaultEffect ?? "wave";
@@ -776,7 +818,7 @@ export function customSchemes(raw: unknown): CustomColorSchemes {
         const a = (v.attributes as Record<string, TextAttributesOverride>)[attr.id];
         if (!a || typeof a !== "object") continue;
         const safe: TextAttributesOverride = {};
-        for (const key of ["foreground", "background", "effectColor"] as const)
+        for (const key of ["foreground", "background", "effectColor", "errorStripeColor"] as const)
           if (isHexColor(a[key])) safe[key] = a[key];
         for (const key of ["bold", "italic"] as const) if (typeof a[key] === "boolean") safe[key] = a[key];
         if (a.effect && Object.hasOwn(EFFECT_CSS, a.effect)) safe.effect = a.effect;
@@ -871,11 +913,20 @@ export function resolvedAttribute(
     vars.get(`--syn-${token}${suffix}`) ?? (attr.inherit ? vars.get(`--syn-${attr.inherit}${suffix}`) : undefined);
   const foreground = attr.fg ? (attr.inherit ? syn("") : vars.get(attr.fg)) : undefined;
   const background = attr.bg ? vars.get(attr.bg) : token ? syn("-bg") : undefined;
+  const stripe = attr.stripe ? vars.get(attr.stripe) : undefined;
   const effectCss = attr.effect ? vars.get(attr.effect) : token ? syn("-effect") : undefined;
   const effect = own?.effect ?? effectFromCss(effectCss) ?? attr.defaultEffect;
   const out: TextAttributesOverride = {};
   if (isHexColor(foreground)) out.foreground = foreground.toLowerCase();
   if (isHexColor(background)) out.background = background.toLowerCase();
+  if (attr.stripe) {
+    if (own?.errorStripeColor && isHexColor(own.errorStripeColor))
+      out.errorStripeColor = own.errorStripeColor.toLowerCase();
+    else {
+      const stripeColor = hexIn(stripe);
+      if (stripeColor) out.errorStripeColor = stripeColor;
+    }
+  }
   if (own?.effectColor && isHexColor(own.effectColor)) out.effectColor = own.effectColor.toLowerCase();
   else {
     const effectColor = hexIn(effectCss);

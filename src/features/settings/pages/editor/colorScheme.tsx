@@ -140,12 +140,21 @@ export const COLOR_SCHEME_PAGES: PageSpec[] = [
     },
     "Git",
   ),
+  colorSchemePage(
+    {
+      id: languagePageId("Diff & Merge"),
+      title: "Diff & Merge",
+      order: 6,
+      keywords: ["diff", "merge", "conflict", "changed lines", "inserted", "deleted", "wave", "folded"],
+    },
+    "Diff & Merge",
+  ),
   ...LANGUAGES.map((language, i) =>
     colorSchemePage(
       {
         id: languagePageId(language),
         title: language,
-        order: 6 + i,
+        order: 7 + i,
       },
       language,
     ),

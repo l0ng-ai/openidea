@@ -127,6 +127,12 @@ Object.assign(ATTRIBUTE_NAMES, {
   KDOC_TAG_NAME: "kotlin.docCommentTag",
   KDOC_LINK: "kotlin.docCommentTagValue",
   CLASS_NAME_ATTRIBUTES: "className",
+  // IDEA DiffColors (Diff & Merge page): Import/export the four change types by their
+  // exchange names, so a scheme exported here carries the same keys IDEA reads.
+  DIFF_MODIFIED: "diffChanged",
+  DIFF_INSERTED: "diffInserted",
+  DIFF_DELETED: "diffDeleted",
+  DIFF_CONFLICT: "diffConflict",
   PHP_KEYWORD: "php.keyword",
   PHP_VAR: "php.identifier",
   PHP_PARAMETER: "php.parameter",
@@ -249,6 +255,7 @@ const COLOR_NAMES: Record<string, [string, "foreground" | "background"]> = {
   RIGHT_MARGIN_COLOR: ["rightMargin", "foreground"],
   METHOD_SEPARATORS_COLOR: ["methodSeparator", "foreground"],
   CONSOLE_BACKGROUND_KEY: ["consoleBackground", "background"],
+  DIFF_SEPARATOR_WAVE: ["diffSeparatorWave", "foreground"],
 };
 
 Object.assign(ATTRIBUTE_NAMES, {
@@ -436,13 +443,17 @@ export function parseIcls(
                   ? "background"
                   : name === "EFFECT_COLOR"
                     ? "effectColor"
-                    : undefined;
+                    : name === "ERROR_STRIPE_COLOR"
+                      ? "errorStripeColor"
+                      : undefined;
             const supported =
               field === "foreground"
                 ? !!attr.fg
                 : field === "background"
                   ? !!attr.bg || !!attr.token
-                  : !!attr.effect || !!attr.token;
+                  : field === "errorStripeColor"
+                    ? !!attr.stripe
+                    : !!attr.effect || !!attr.token;
             if (field && c && supported) {
               merge(id, { [field]: c });
               applied++;
@@ -549,6 +560,7 @@ export function exportIcls(
     ...(attr.fg && isHexColor(tokens.get(attr.fg)) ? { foreground: tokens.get(attr.fg) } : {}),
     ...(attr.bg && isHexColor(tokens.get(attr.bg)) ? { background: tokens.get(attr.bg) } : {}),
     ...(attr.effect && isHexColor(tokens.get(attr.effect)) ? { effectColor: tokens.get(attr.effect) } : {}),
+    ...(attr.stripe && isHexColor(tokens.get(attr.stripe)) ? { errorStripeColor: tokens.get(attr.stripe) } : {}),
     ...tokenEffect(attr),
     ...custom?.attributes[attr.id],
     ...overrides[attr.id],
@@ -575,6 +587,7 @@ export function exportIcls(
       ["FOREGROUND", "foreground"],
       ["BACKGROUND", "background"],
       ["EFFECT_COLOR", "effectColor"],
+      ["ERROR_STRIPE_COLOR", "errorStripeColor"],
     ] as const)
       if (isHexColor(v[field])) opts.push(`<option name="${key}" value="${exportColor(v[field]!)}" />`);
     if (attr.token) opts.push(`<option name="FONT_TYPE" value="${(v.bold ? 1 : 0) + (v.italic ? 2 : 0)}" />`);
