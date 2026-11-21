@@ -34,7 +34,7 @@ use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_FILE: &str = "plugin.toml";
 /// The plugin API (engine) version this host implements.
-pub const ENGINE_VERSION: &str = "1.14.0";
+pub const ENGINE_VERSION: &str = "1.15.0";
 /// The 0.1 API, still accepted for contribution-only packages and 0.1 components.
 pub const LEGACY_API: &str = "0.1";
 /// Marketplace categories, in the order they are shown.
@@ -167,6 +167,7 @@ pub const EVENT_KINDS: &[&str] = &[
     "action-performed",
     "vcs-changed",
     "problems-changed",
+    "project-closed",
 ];
 
 impl std::fmt::Display for ActivationEvent {
@@ -401,6 +402,9 @@ impl Manifest {
             }
             if matches!(event, ActivationEvent::Event(kind) if kind == "files-changed") {
                 self.needs_api("`on-event:files-changed`", 3)?;
+            }
+            if matches!(event, ActivationEvent::Event(kind) if kind == "project-closed") {
+                self.needs_api("`on-event:project-closed`", 15)?;
             }
             if !seen.insert(event) {
                 return Err(format!("duplicate activation event {event}"));

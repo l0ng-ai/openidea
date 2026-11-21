@@ -324,10 +324,12 @@ impl Host {
         // After the cancels: a capture or open still running then discards what it registers.
         ops::heap::close_window_snapshots(self, window);
         let project = self.projects.write().remove(window)?;
-        if self.windows_for_root(&project.root).is_empty()
-            && let Some(plugins) = self.plugin_host()
-        {
-            plugins.withdraw_project_run_targets(&project.root);
+        if let Some(plugins) = self.plugin_host() {
+            if self.windows_for_root(&project.root).is_empty() {
+                plugins.project_closed(&project.root, window);
+            } else {
+                plugins.forget_client(window);
+            }
         }
         project.files_events_active.store(false, std::sync::atomic::Ordering::Release);
         project.plugin_diagnostics.close();

@@ -274,7 +274,7 @@ pub mod search_bindings {
 }
 
 /// The plugin API version this SDK targets.
-pub const API_VERSION: &str = "1.14";
+pub const API_VERSION: &str = "1.15";
 
 /// A plugin. One instance lives as long as the plugin's Wasm instance (until
 /// it is disabled, crashes or is reclaimed when idle).

@@ -244,12 +244,16 @@ impl PluginHost {
         if self.shared.client_closed(client) {
             return;
         }
-        self.queues
-            .lock()
-            .entry((plugin.into(), Some(client.into())))
-            .or_insert_with(|| EventQueue { since: Instant::now(), events: Vec::new(), files_source: None })
-            .events
-            .push(event);
+        let now = Instant::now();
+        let mut queues = self.queues.lock();
+        let queue = queues.entry((plugin.into(), Some(client.into()))).or_insert_with(|| EventQueue {
+            since: now,
+            last_event: now,
+            events: Vec::new(),
+            files_source: None,
+        });
+        queue.last_event = now;
+        queue.events.push(event);
     }
 }
 
@@ -298,6 +302,7 @@ impl PluginHost {
         self.shared.run_configurations.write().retain(|(p, r), _| r != root || owners.contains(p));
         for plugin in owners {
             let project = root.to_path_buf();
+            let generation = self.shared.project_generation(root).ok();
             let invocation = ide_plugin::Invocation { workspace_root: Some(project.clone()), ..Default::default() };
             let result = self.code_call(&plugin, invocation, "run-configurations", |rt, ctx| {
                 rt.run_configurations(
@@ -306,6 +311,12 @@ impl PluginHost {
                 )
             });
             let Ok(items) = result else { continue };
+            if let Some(expected) = generation
+                && self.shared.project_generation(root).is_ok_and(|cur| cur != expected)
+            {
+                tracing::debug!(%plugin, "dropping stale run configurations");
+                continue;
+            }
             if let Err(error) = validate_configurations(root, &items) {
                 tracing::warn!(%plugin, %error, "invalid run configurations");
                 continue;
