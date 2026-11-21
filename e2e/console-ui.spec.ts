@@ -1,7 +1,7 @@
 import { expect, test } from "./fixtures";
 
 for (const kind of ["run", "debug", "services-run", "services-debug", "stacktrace"] as const) {
-  for (const width of [220, 280, 520]) {
+  for (const width of [156, 220, 280, 520]) {
     test(`${kind} console controls fit ${width}px and retain their native icon size`, async ({ workbench: page }) => {
       await page.evaluate(
         async ({ kind, width }) => {
@@ -68,7 +68,8 @@ for (const kind of ["run", "debug", "services-run", "services-debug", "stacktrac
       const search = host.getByRole("search", { name: "Find in console" });
       const input = search.getByRole("textbox", { name: "Find in console" });
       await input.fill("beta");
-      await expect(search.locator("[aria-live=polite]")).toHaveText("1/3");
+      const counter = search.locator("[aria-live=polite]");
+      await expect(counter).toHaveText("1/3");
       if (process.env.OPENIDEA_CONSOLE_SHOTS)
         await host.screenshot({ path: `${process.env.OPENIDEA_CONSOLE_SHOTS}/${kind}-${width}.png` });
 
@@ -80,9 +81,20 @@ for (const kind of ["run", "debug", "services-run", "services-debug", "stacktrac
         expect(rect.x).toBeGreaterThanOrEqual(bounds.x);
         expect(rect.x + rect.width).toBeLessThanOrEqual(bounds.x + bounds.width + 1);
       }
-      expect((await input.boundingBox())!.width).toBeGreaterThan(40);
+      const query = (await input.boundingBox())!;
+      const compact = bounds.width < 224;
+      expect(query.width).toBeGreaterThan(compact ? bounds.width - 64 : 40);
+      if (compact) {
+        for (const name of ["Match Case", "Words", "Regex"]) {
+          const option = (await search.getByRole("button", { name, exact: true }).boundingBox())!;
+          expect(option.y).toBeGreaterThanOrEqual(query.y + query.height);
+        }
+      }
+      await expect(counter).toHaveCSS("font-variant-numeric", "tabular-nums");
+      await input.press("Enter");
+      await expect(counter).toHaveText("2/3");
       await input.fill("missing");
-      await expect(search.locator("[aria-live=polite]")).toHaveText("0 results");
+      await expect(counter).toHaveText("0 results");
       await expect(search.getByRole("button", { name: "Next Occurrence", exact: true })).toBeDisabled();
       await search.getByRole("button", { name: "Close", exact: true }).focus();
       await page.keyboard.press("Enter");
