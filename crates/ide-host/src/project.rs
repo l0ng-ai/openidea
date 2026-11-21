@@ -1331,6 +1331,11 @@ impl Project {
         own.unwrap_or_else(|| self.exclude_globs())
     }
 
+    /// The workspace projects outside this one's folder, which have exclusions of their own.
+    pub fn attached_roots(&self) -> Vec<PathBuf> {
+        self.member_excludes.read().keys().filter(|r| !r.starts_with(&self.root)).cloned().collect()
+    }
+
     /// Where `path`'s exclusions are matched from: the workspace project outside this one holding
     /// it, else the project folder (whose globs cover the projects inside it, anchored there).
     pub fn root_of(&self, path: &Path) -> PathBuf {
