@@ -461,7 +461,7 @@ while True:
     initialize(&peer1).await;
     invoke(&peer1, "open_project", json!({ "path": project })).await.unwrap();
     invoke(&peer1, "project_trust_set", json!({ "path": project, "trusted": true, "folder": false })).await.unwrap();
-    let _ = invoke(&peer1, "agent_subscribe", json!({ "onEvent": { "$channel": 301 } })).await.unwrap();
+    invoke(&peer1, "agent_subscribe", json!({ "subscriber": "main", "onEvent": { "$channel": 301 } })).await.unwrap();
 
     let created = invoke(
         &peer1,
@@ -512,7 +512,9 @@ while True:
     }
 
     for _ in 0..200 {
-        let tasks = invoke(&peer2, "agent_subscribe", json!({ "onEvent": { "$channel": 401 } })).await.unwrap();
+        let tasks = invoke(&peer2, "agent_subscribe", json!({ "subscriber": "main", "onEvent": { "$channel": 401 } }))
+            .await
+            .unwrap();
         let task = tasks.as_array().unwrap().iter().find(|t| t["id"] == task_id).expect("persisted agent task");
         if task["status"] == "ready" {
             break;
@@ -520,7 +522,9 @@ while True:
         assert_ne!(task["status"], "failed", "{task:?}");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    let tasks = invoke(&peer2, "agent_subscribe", json!({ "onEvent": { "$channel": 401 } })).await.unwrap();
+    let tasks = invoke(&peer2, "agent_subscribe", json!({ "subscriber": "main", "onEvent": { "$channel": 401 } }))
+        .await
+        .unwrap();
     let task = tasks.as_array().unwrap().iter().find(|t| t["id"] == task_id).expect("persisted agent task");
     assert_eq!(task["status"], "ready", "{task:?}");
 
