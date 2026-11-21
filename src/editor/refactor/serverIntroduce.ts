@@ -25,7 +25,8 @@ import { applyCodeAction } from "@/editor/lsp/intentions";
 import { putSuggestion, startInplaceRename, type Span } from "@/editor/lsp/inplaceRename";
 import { clearTemporaryHighlight, highlightRanges } from "@/editor/lsp/tempHighlight";
 import type { RefactoringId } from "./catalog";
-import { expressionCandidates, expressionPreview } from "./introduce";
+import { expressionCandidates } from "./introduce";
+import { showExpressionChooser } from "./expressionChooser";
 import { findTextOccurrences } from "./occurrences";
 import { isIdentifier, isKeyword, suggestNames, uniqueNames } from "./names";
 import { tx } from "@/platform/i18n";
@@ -85,18 +86,7 @@ export async function chooseExpressionFirst(view: EditorView, then: () => unknow
     select(candidates[0]!);
     return true;
   }
-  openPopup({
-    kind: "list",
-    anchor: caretAnchor(view, sel.head),
-    title: "Expressions",
-    items: candidates.map((c, i) => ({
-      id: `${i}`,
-      label: expressionPreview(doc.sliceString(rangeToOffsets(doc, c.range).from, rangeToOffsets(doc, c.range).to)),
-      onActive: () => highlightRanges(view, [rangeToOffsets(doc, c.range)]),
-      run: () => select(c),
-    })),
-    onClose: () => clearTemporaryHighlight(view),
-  });
+  showExpressionChooser(view, doc, sel.head, candidates, select);
   return true;
 }
 
