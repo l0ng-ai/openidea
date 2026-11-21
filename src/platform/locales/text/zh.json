@@ -2578,6 +2578,7 @@
   "Line comment at first column": "在第一列添加行注释",
   "Add a space at line comment start": "在行注释开头添加空格",
   "Reset type": "重置类型",
+  "Reset type:": "重置类型：",
   "Resize": "调整大小",
   "Resize right tool window bar": "调整右侧工具窗口栏大小",
   "Resize tool window bar": "调整工具窗口栏大小",
