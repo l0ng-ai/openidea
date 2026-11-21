@@ -3719,6 +3719,7 @@
   "Choose a scope": "选择范围",
   "Enter a project name": "请输入项目名称",
   "The name contains characters a folder name cannot have": "名称包含文件夹名称中不能使用的字符",
+  "A folder with this name already exists and is not empty": "已存在同名文件夹且不为空",
   "Project Location": "项目位置",
   "New Project": "新建项目",
   "New Project…": "新建项目…",

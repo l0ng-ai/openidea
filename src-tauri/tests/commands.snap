@@ -572,8 +572,10 @@ run_tomcat_update                            trusted            project_host bin
 run_without_derived                          trusted            project_host bindings async
 scaffold_catalog                             always             project_host bindings sync
 scaffold_create                              always             project_host bindings async
+scaffold_free_name                           always             project_host bindings async
 scaffold_options                             always             project_host bindings async
 scaffold_requirements                        always             project_host bindings async
+scaffold_target_taken                        always             project_host bindings async
 scope_files                                  always             project_host bindings async
 sdk_container_python                         trusted            project_host bindings sync
 sdk_container_python_refresh                 trusted            project_host bindings async
