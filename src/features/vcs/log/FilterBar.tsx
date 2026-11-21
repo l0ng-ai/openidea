@@ -80,7 +80,7 @@ function FilterButton({ label, value, onOpen, onClear, hidden }: LogFilter & { h
   );
 }
 
-export function FilterBar() {
+export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
   const scope = useContext(LogIdContext);
   const shown = useGitLog((s) => s.shownLog);
   const active = !scope || scope === shown;
@@ -332,7 +332,7 @@ export function FilterBar() {
   return (
     <div className={styles.filters} role="toolbar" aria-label={tx("Log filters")}>
       <div className={styles.filterControls}>
-        {!showBranches && (
+        {!fileHistory && !showBranches && (
           <IconButton icon="chevron-right" title="Show Branches" size="small" action="vcs.log.showBranches" />
         )}
         <SearchField
