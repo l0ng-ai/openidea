@@ -552,6 +552,34 @@
   gap: 10px;
   min-width: 0;
 }
+.librariesLayout {
+  display: flex;
+  flex-wrap: wrap;
+  min-height: 0;
+}
+.librariesLayout > .sideList {
+  flex: 1 1 128px;
+  min-width: 0;
+}
+.librariesLayout > .detailPane {
+  flex: 3 1 250px;
+}
+.librariesLayout .sideItems {
+  max-height: min(280px, 30vh);
+}
+.libraryRootsTree {
+  height: clamp(144px, 27vh, 240px);
+  font-size: var(--fs-ui);
+}
+.libraryRootNotes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  margin-top: var(--space-1);
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  line-height: 1.4;
+}
 .sdkLayout {
   display: flex;
   flex-wrap: wrap;
