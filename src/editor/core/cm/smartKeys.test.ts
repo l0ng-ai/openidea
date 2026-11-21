@@ -8,9 +8,11 @@ import { java } from "@codemirror/lang-java";
 import { javascript } from "@codemirror/lang-javascript";
 import { languages as cmLanguages } from "@codemirror/language-data";
 import { kotlin, csharp } from "@codemirror/legacy-modes/mode/clike";
+import { python } from "@codemirror/legacy-modes/mode/python";
 import { validateEditorExtras } from "@/platform/editorSettings";
 import {
   autoIndentBackspace,
+  skipClosingBracket,
   enterInStringLiteral,
   insertTab,
   smartBackspace,
@@ -208,6 +210,69 @@ describe("tab out of pairs", () => {
     v.dispatch({ selection: { anchor: 0 } });
     v.dispatch({ changes: { from: 0, insert: "c" }, selection: { anchor: 6 } });
     expect(tabOutOfScope(v)).toBe(false);
+  });
+});
+
+describe("quote pairs per language", () => {
+  const typed = (language: string, support: Extension, text: string, chars: string) => {
+    const v = make(text, [
+      support,
+      closeBrackets(),
+      prefsExtension({
+        prefs: validateEditorExtras({}),
+        path: "",
+        softWrap: false,
+        showWhitespace: false,
+        hardWrapAt: 120,
+        readOnly: false,
+        language,
+      }),
+    ]);
+    for (const ch of chars) {
+      const tr = insertBracket(v.state, ch);
+      if (tr) v.dispatch(tr);
+      else v.dispatch(v.state.update(v.state.replaceSelection(ch), { userEvent: "input.type" }));
+    }
+    return show(v);
+  };
+
+  it("pairs template literal backticks in TypeScript", () => {
+    expect(typed("typescript", javascript({ typescript: true }), "const g = |", "`")).toBe("const g = `|`");
+  });
+
+  it("pairs Python's prefixed and triple-quoted strings", () => {
+    const py = StreamLanguage.define(python);
+    expect(typed("python", py, "label = f|", '"')).toBe('label = f"|"');
+    expect(typed("python", py, "p = rb|", "'")).toBe("p = rb'|'");
+    expect(typed("python", py, "    |", '"""')).toBe('    """|"""');
+  });
+
+  it("keeps plain quotes for other languages and respects the options", () => {
+    expect(typed("java", java(), "String s = |", '"')).toBe('String s = "|"');
+    expect(typed("java", java(), "String s = |", "`")).toBe("String s = `|");
+  });
+});
+
+describe("typing over a closing bracket", () => {
+  const typed = (support: Extension, text: string, ch: string) => {
+    const v = make(text, [support, skipClosingBracket]);
+    const r = v.state.selection.main;
+    const insert = () => v.state.update(v.state.replaceSelection(ch), { userEvent: "input.type" });
+    if (!v.state.facet(EditorView.inputHandler).some((h) => h(v, r.from, r.to, ch, insert))) v.dispatch(insert());
+    return show(v);
+  };
+  const py = StreamLanguage.define(python);
+
+  it("steps over a bracket that already closes a pair, typed or not", () => {
+    expect(typed(java(), "int v = (1 + 2|);", ")")).toBe("int v = (1 + 2)|;");
+    expect(typed(java(), "var a = new int() {1, 2|};", "}")).toBe("var a = new int() {1, 2}|;");
+    expect(typed(py, "value = f(1, 2|)", ")")).toBe("value = f(1, 2)|");
+    expect(typed(java(), "foo(\n  a\n|);", ")")).toBe("foo(\n  a\n)|;");
+  });
+
+  it("inserts the bracket where the line still lacks one", () => {
+    expect(typed(java(), "f(g(x|);", ")")).toBe("f(g(x)|);");
+    expect(typed(java(), "x = |)", ")")).toBe("x = )|)");
   });
 });
 

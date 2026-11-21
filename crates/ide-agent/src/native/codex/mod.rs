@@ -357,6 +357,13 @@ fn apply_thread_config(params: &Value, request: &mut Value) {
     if !config.as_object().is_some_and(|m| m.is_empty()) {
         request["config"] = config;
     }
+    // The workspace's other roots join the thread's own: they are where `workspace-write`
+    // may write and what the model is told the workspace holds.
+    if let Some(extra) = params.get("additionalDirectories").and_then(Value::as_array).filter(|a| !a.is_empty())
+        && let Some(cwd) = params.get("cwd").filter(|c| c.is_string())
+    {
+        request["runtimeWorkspaceRoots"] = std::iter::once(cwd).chain(extra).cloned().collect();
+    }
 }
 
 impl CodexShim {
@@ -406,7 +413,7 @@ impl CodexShim {
                 "loadSession": true,
                 "promptCapabilities": { "image": true, "audio": false, "embeddedContext": true },
                 "mcpCapabilities": { "http": false, "sse": false, "stdio": true },
-                "sessionCapabilities": { "fork": {}, "close": {} },
+                "sessionCapabilities": { "fork": {}, "close": {}, "additionalDirectories": {} },
                 "_meta": { "openidea": { "rollback": true, "steer": true } },
             },
             "agentInfo": { "name": "codex", "title": "Codex", "version": version },

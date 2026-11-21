@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
 /// Listing and lifecycle commands normally answer in well under a second; a
@@ -315,9 +315,56 @@ pub fn container_stats(ep: &DockerEndpoint, id: &str) -> IdeResult<DockerContain
     parse_container_stats(&out).ok_or_else(|| IdeError::not_found("no container stats returned"))
 }
 
+/// How long log lines collect before they are handed on together.
+const LOG_BATCH: Duration = Duration::from_millis(30);
+
 /// Streams a container's logs (`tail` last lines, then follows while `follow`)
-/// until it ends or `cancel` fires.
+/// until it ends or `cancel` fires. Lines arrive in batches, at most one per
+/// [`LOG_BATCH`]: a webview delivers each IPC message on its own, so a message
+/// per line made a 1000-line tail take tens of seconds on Windows.
 pub fn logs(
+    ep: &DockerEndpoint,
+    id: &str,
+    tail: u32,
+    follow: bool,
+    timestamps: bool,
+    cancel: &CancellationToken,
+    on_lines: &(dyn Fn(Vec<DockerLogLine>) + Sync),
+) -> IdeResult<()> {
+    batched(LOG_BATCH, on_lines, |on_line| stream_logs(ep, id, tail, follow, timestamps, cancel, on_line))
+}
+
+/// Runs `produce` with a per-item callback and hands the items to `emit` in order,
+/// collected over `every`, from a second thread so a quiet stream still flushes.
+fn batched<T: Send, R>(every: Duration, emit: &(dyn Fn(Vec<T>) + Sync), produce: impl FnOnce(&dyn Fn(T)) -> R) -> R {
+    let pending = Mutex::new(Vec::new());
+    let finished = (Mutex::new(false), Condvar::new());
+    let flush = || {
+        let items = std::mem::take(&mut *pending.lock().unwrap_or_else(|e| e.into_inner()));
+        if !items.is_empty() {
+            emit(items);
+        }
+    };
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let (done, wake) = &finished;
+            let mut stop = done.lock().unwrap_or_else(|e| e.into_inner());
+            loop {
+                stop = wake.wait_timeout(stop, every).unwrap_or_else(|e| e.into_inner()).0;
+                flush();
+                if *stop {
+                    break;
+                }
+            }
+        });
+        let result = produce(&|item| pending.lock().unwrap_or_else(|e| e.into_inner()).push(item));
+        *finished.0.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        finished.1.notify_one();
+        result
+    })
+}
+
+fn stream_logs(
     ep: &DockerEndpoint,
     id: &str,
     tail: u32,
@@ -605,6 +652,22 @@ pub fn cli(
 #[cfg(test)]
 mod local_tests {
     use super::*;
+
+    #[test]
+    fn log_lines_arrive_in_order_as_few_batches() {
+        let batches = Mutex::new(Vec::<Vec<u32>>::new());
+        let result = batched(Duration::from_millis(30), &|b| batches.lock().unwrap().push(b), |line| {
+            (0..1000).for_each(line);
+            std::thread::sleep(Duration::from_millis(80));
+            line(1000);
+            "done"
+        });
+        assert_eq!(result, "done");
+        let batches = batches.into_inner().unwrap();
+        assert_eq!(batches.concat(), (0..=1000).collect::<Vec<_>>(), "every line once, in order");
+        assert!(batches.len() <= 3, "a burst is one message, not one per line: {} batches", batches.len());
+        assert_eq!(batches.last().unwrap(), &[1000], "a line after a quiet spell is flushed on its own");
+    }
 
     #[test]
     fn the_selected_context_overrides_docker_host() {

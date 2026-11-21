@@ -1275,3 +1275,10 @@ fn mcp_servers_become_an_mcp_config() {
     drop(path);
     assert!(!kept.exists());
 }
+
+#[test]
+fn additional_directories_are_read_from_the_session_params() {
+    let params = json!({ "cwd": "/w/api", "additionalDirectories": ["/w/web", 3, "/w/docs"] });
+    assert_eq!(additional_dirs(&params), ["/w/web", "/w/docs"]);
+    assert!(additional_dirs(&json!({ "cwd": "/w/api" })).is_empty());
+}

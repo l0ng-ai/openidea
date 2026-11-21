@@ -4649,10 +4649,43 @@ done
 #[test]
 fn session_params_name_the_servers_off() {
     let mcp = McpForSession { servers: vec![json!({ "name": "docs" })], off: vec!["github".into()] };
-    let params = session_params("/p", &mcp, None);
+    let params = session_params("/p", &mcp, None, &[]);
     assert_eq!(params["cwd"], "/p");
     assert_eq!(params["mcpServers"][0]["name"], "docs");
     assert_eq!(params["_meta"]["openidea"]["mcpServersOff"], json!(["github"]));
     let none = McpForSession { servers: Vec::new(), off: Vec::new() };
-    assert!(session_params("/p", &none, None).get("_meta").is_none());
+    assert!(session_params("/p", &none, None, &[]).get("_meta").is_none());
+}
+
+#[test]
+fn session_params_offer_the_workspace_roots() {
+    let none = McpForSession { servers: Vec::new(), off: Vec::new() };
+    let params = session_params("/w/api", &none, None, &["/w/web".to_owned()]);
+    assert_eq!(params["additionalDirectories"], json!(["/w/web"]));
+    assert!(session_params("/w/api", &none, None, &[]).get("additionalDirectories").is_none());
+}
+
+#[tokio::test]
+async fn workspace_roots_go_to_agents_that_take_them() {
+    let tmp = tempfile::tempdir().unwrap();
+    let [api, web, worktree] = ["api", "web", "worktree"].map(|d| tmp.path().join(d));
+    for d in [&api, &web, &worktree] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let hook_roots = [api.clone(), web.clone(), web.clone()];
+    mgr.set_workspace_roots_hook(Arc::new(move || hook_roots.to_vec()));
+    let init = |capabilities: Value| acp::Negotiated {
+        generation: 1,
+        capabilities,
+        agent_info: None,
+        auth_methods: Vec::new(),
+        meta: None,
+    };
+    let takes = init(json!({ "sessionCapabilities": { "additionalDirectories": {} } }));
+    let web = dunce::canonicalize(&web).unwrap().to_string_lossy().into_owned();
+    assert_eq!(mgr.shared.additional_directories(&takes, &api, None), vec![web.clone()]);
+    // A task in a worktree of `api` isn't offered the project's own checkout.
+    assert_eq!(mgr.shared.additional_directories(&takes, &worktree, Some(&api)), vec![web]);
+    assert!(mgr.shared.additional_directories(&init(json!({})), &api, None).is_empty());
 }

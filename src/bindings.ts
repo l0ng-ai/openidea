@@ -599,8 +599,8 @@ export const commands = {
 	dockerImageHistory: (endpoint: DockerEndpoint, id: string) => typedError<DockerImageLayer[], IdeError>(__TAURI_INVOKE("docker_image_history", { endpoint, id })),
 	/**  Pretty-printed `docker inspect` JSON. */
 	dockerInspect: (endpoint: DockerEndpoint, object: DockerObject, id: string) => typedError<string, IdeError>(__TAURI_INVOKE("docker_inspect", { endpoint, object, id })),
-	/**  Streams a container's log lines until it stops or the request is cancelled. */
-	dockerLogs: (request: RequestId, endpoint: DockerEndpoint, id: string, tail: number, follow: boolean, timestamps: boolean, onLine: Channel<DockerLogLine>) => typedError<null, IdeError>(__TAURI_INVOKE("docker_logs", { request, endpoint, id, tail, follow, timestamps, onLine })),
+	/**  Streams a container's log lines, in batches, until it stops or the request is cancelled. */
+	dockerLogs: (request: RequestId, endpoint: DockerEndpoint, id: string, tail: number, follow: boolean, timestamps: boolean, onLines: Channel<DockerLogLine[]>) => typedError<null, IdeError>(__TAURI_INVOKE("docker_logs", { request, endpoint, id, tail, follow, timestamps, onLines })),
 	dockerPrune: (request: RequestId, endpoint: DockerEndpoint, target: PruneTarget, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("docker_prune", { request, endpoint, target, onOutput })),
 	/**  `docker pull`, logging in first when a saved registry with a password serves the image. */
 	dockerPull: (request: RequestId, endpoint: DockerEndpoint, reference: string, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("docker_pull", { request, endpoint, reference, onOutput })),
