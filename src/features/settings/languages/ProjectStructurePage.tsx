@@ -17,6 +17,7 @@ import {
   SplitGroup,
   SplitHandle,
   SplitPanel,
+  Toolbar,
   Tree,
   folderIconName,
   showContextMenu,
@@ -1059,6 +1060,124 @@ function ModulesSection() {
 // ---------------------------------------------------------------------------
 // 3. Libraries Section
 
+type LibraryRootKind = "classes" | "sources";
+
+interface LibraryRootNode {
+  key: string;
+  label: string;
+  icon: IconName;
+  kind: LibraryRootKind;
+  children?: LibraryRootNode[];
+}
+
+function LibraryRoots({
+  library,
+  onAttach,
+  onRemove,
+}: {
+  library: ProjectLibraryValid;
+  onAttach: (kind: LibraryRootKind, directory: boolean, title: string) => Promise<void>;
+  onRemove: (kind: LibraryRootKind, path: string) => void;
+}) {
+  const [selectedRoot, setSelectedRoot] = useState<LibraryRootNode | null>(null);
+  const selected = selectedRoot && library[selectedRoot.kind].includes(selectedRoot.label) ? selectedRoot : null;
+
+  const groups: { kind: LibraryRootKind; label: string; icon: IconName }[] = [
+    { kind: "classes", label: tx("Classes"), icon: "folder-compiled" },
+    { kind: "sources", label: tx("Sources"), icon: "folder-source" },
+  ];
+  const roots = groups
+    .filter(({ kind }) => library[kind].length > 0)
+    .map(({ kind, label, icon }): LibraryRootNode => ({
+      key: kind,
+      kind,
+      label,
+      icon,
+      children: library[kind].map((path) => ({
+        key: `${kind}:${path}`,
+        kind,
+        label: path,
+        icon: /\.(jar|zip)$/i.test(path) ? "file-archive" : "folder",
+      })),
+    }));
+
+  return (
+    <Row label="Library Roots" stacked>
+      <div className={styles.tablePanel}>
+        <Toolbar aria-label="Library Roots" className={styles.tableToolbar}>
+          <IconButton
+            icon="plus"
+            size="small"
+            title="Attach Library Root"
+            aria-haspopup="menu"
+            onClick={(e) => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              showContextMenu({ x: rect.left, y: rect.bottom + 2 }, [
+                {
+                  label: tx("Add JAR…"),
+                  icon: "file-archive",
+                  run: () => void onAttach("classes", false, "Select Library JAR"),
+                },
+                {
+                  label: tx("Add Folder…"),
+                  icon: "folder-open",
+                  run: () => void onAttach("classes", true, "Select Classes Directory"),
+                },
+                {
+                  label: tx("Attach Sources…"),
+                  icon: "file-archive",
+                  run: () => void onAttach("sources", false, "Select Source Archive"),
+                },
+                {
+                  label: tx("Attach Source Folder…"),
+                  icon: "folder-source",
+                  run: () => void onAttach("sources", true, "Select Source Directory"),
+                },
+              ]);
+            }}
+          />
+          <IconButton
+            icon="minus"
+            size="small"
+            title="Remove Library Root"
+            disabled={!selected}
+            onClick={() => {
+              if (!selected) return;
+              onRemove(selected.kind, selected.label);
+              setSelectedRoot(null);
+            }}
+          />
+        </Toolbar>
+        <Tree
+          roots={roots}
+          getKey={(node) => node.key}
+          getLabel={(node) => node.label}
+          getChildren={(node) => node.children}
+          isExpandable={(node) => !!node.children}
+          getIcon={(node) => node.icon}
+          defaultExpanded={["classes", "sources"]}
+          multiSelect={false}
+          horizontalScroll
+          onSelectionChange={(_, lead) => setSelectedRoot(lead && !lead.children ? lead : null)}
+          aria-label="Library Roots"
+          className={styles.libraryRootsTree}
+          empty={<T>None</T>}
+        />
+      </div>
+      <div className={styles.libraryRootNotes}>
+        <div>
+          <T>
+            Binary JAR archives support Java code assistance and Run/Debug. Class folders are used by Run/Debug only.
+          </T>
+        </div>
+        <div>
+          <T>Source archives (-sources.jar, .zip) or folders used for Go to Declaration.</T>
+        </div>
+      </div>
+    </Row>
+  );
+}
+
 function LibrariesSection() {
   const root = useProject((s) => s.project?.root ?? null);
   const [rawLibs, setRawLibs] = useProjectSetting<ProjectLibraryValid[] | undefined>("projectStructure.libraries");
@@ -1142,7 +1261,7 @@ function LibrariesSection() {
     setSelectedIdx(Math.max(0, activeIdx - 1));
   };
 
-  const appendPath = async (field: "classes" | "sources" | "javadocs", directory: boolean, title: string) => {
+  const appendPath = async (field: LibraryRootKind, directory: boolean, title: string) => {
     if (!current) return;
     const picked = await choosePath({ directory, title, defaultPath: root ?? undefined });
     if (!picked) return;
@@ -1154,7 +1273,7 @@ function LibrariesSection() {
 
   return (
     <div className={styles.page}>
-      <div className={styles.splitLayout}>
+      <div className={clsx(styles.splitLayout, styles.librariesLayout)}>
         <div className={styles.sideList}>
           <div className={styles.tableToolbar}>
             <IconButton
@@ -1219,94 +1338,12 @@ function LibrariesSection() {
                   aria-label="Library scope"
                 />
               </Row>
-              <Row
-                label="Classes"
-                stacked
-                hint="Binary JAR archives support Java code assistance and Run/Debug. Class folders are used by Run/Debug only."
-              >
-                <div className={styles.entryList}>
-                  <div className={styles.entryActions}>
-                    <Button
-                      size="small"
-                      variant="ghost"
-                      icon="plus"
-                      onClick={() => void appendPath("classes", false, "Select Library JAR")}
-                    >
-                      <T>Add JAR…</T>
-                    </Button>
-                    <Button
-                      size="small"
-                      variant="ghost"
-                      icon="folder-open"
-                      onClick={() => void appendPath("classes", true, "Select Classes Directory")}
-                    >
-                      <T>Add Folder…</T>
-                    </Button>
-                  </div>
-                  {current.classes.length === 0 && (
-                    <div className={styles.note}>
-                      <T>None</T>
-                    </div>
-                  )}
-                  {current.classes.map((c) => (
-                    <div key={c} className={styles.entryRow}>
-                      <Icon name="file-archive" size={14} />
-                      <span className={styles.rootPath}>{c}</span>
-                      <IconButton
-                        icon="close"
-                        size="small"
-                        iconSize={12}
-                        title={tx`Remove ${c}`}
-                        onClick={() => updateCurrent({ classes: current.classes.filter((x) => x !== c) })}
-                      />
-                    </div>
-                  ))}
-                </div>
-              </Row>
-              <Row
-                label="Sources"
-                stacked
-                hint="Source archives (-sources.jar, .zip) or folders used for Go to Declaration."
-              >
-                <div className={styles.entryList}>
-                  <div className={styles.entryActions}>
-                    <Button
-                      size="small"
-                      variant="ghost"
-                      icon="plus"
-                      onClick={() => void appendPath("sources", false, "Select Source Archive")}
-                    >
-                      <T>Attach Sources…</T>
-                    </Button>
-                    <Button
-                      size="small"
-                      variant="ghost"
-                      icon="folder-open"
-                      onClick={() => void appendPath("sources", true, "Select Source Directory")}
-                    >
-                      <T>Attach Source Folder…</T>
-                    </Button>
-                  </div>
-                  {current.sources.length === 0 && (
-                    <div className={styles.note}>
-                      <T>None</T>
-                    </div>
-                  )}
-                  {current.sources.map((s) => (
-                    <div key={s} className={styles.entryRow}>
-                      <Icon name="folder-source" size={14} />
-                      <span className={styles.rootPath}>{s}</span>
-                      <IconButton
-                        icon="close"
-                        size="small"
-                        iconSize={12}
-                        title={tx`Remove ${s}`}
-                        onClick={() => updateCurrent({ sources: current.sources.filter((x) => x !== s) })}
-                      />
-                    </div>
-                  ))}
-                </div>
-              </Row>
+              <LibraryRoots
+                key={`${libs.length}:${activeIdx}`}
+                library={current}
+                onAttach={appendPath}
+                onRemove={(kind, path) => updateCurrent({ [kind]: current[kind].filter((entry) => entry !== path) })}
+              />
             </Section>
           ) : (
             <Section title="Project Libraries">
