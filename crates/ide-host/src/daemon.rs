@@ -382,8 +382,7 @@ pub async fn serve(
                     break Ok(());
                 }
                 if requested_build != build {
-                    let busy = active.is_some() || has_live_work(&host)
-                        || host.projects().iter().any(|project| project.documents.has_unsaved_changes());
+                    let busy = active.is_some() || has_live_work(&host);
                     if busy {
                         let _ = stream.write_u8(BUSY).await;
                     } else if stream.write_u8(RETIRING).await.is_ok() {
@@ -470,9 +469,14 @@ async fn disconnected_timeout(host: &Arc<Host>, policy: RemoteIdlePolicy) -> io:
     Ok((minutes != 0).then(|| Duration::from_secs(u64::from(minutes) * 60)))
 }
 
+/// Keeps a disconnected daemon alive: expiring would end this work, or lose the unsaved
+/// edits a dropped connection left behind.
 fn has_live_work(host: &Host) -> bool {
     !host.terminals.list().is_empty()
         || host.processes.has_live_runs()
         || !host.debugger.sessions(None).is_empty()
-        || host.projects().iter().any(|project| project.agents.has_live_work())
+        || host
+            .projects()
+            .iter()
+            .any(|project| project.agents.has_live_work() || project.documents.has_unsaved_changes())
 }
