@@ -657,7 +657,7 @@ export const commands = {
 	 *  exited is only started again by the next request.
 	 */
 	flutterDevtoolsUrl: () => typedError<string, IdeError>(__TAURI_INVOKE("flutter_devtools_url")),
-	fsCompareDirectories: (left: string, right: string, request: RequestId, onProgress: Channel<DirectoryCompareProgress>) => typedError<DirectoryCompareEntry[], IdeError>(__TAURI_INVOKE("fs_compare_directories", { left, right, request, onProgress })),
+	fsCompareDirectories: (left: string, right: string, mode: DirectoryCompareMode, request: RequestId, onProgress: Channel<DirectoryCompareProgress>) => typedError<DirectoryCompareEntry[], IdeError>(__TAURI_INVOKE("fs_compare_directories", { left, right, mode, request, onProgress })),
 	fsCopy: (from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy", { from, to })),
 	fsCopyMerge: (sourceRoot: string, destinationRoot: string, path: string, overwrite: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy_merge", { sourceRoot, destinationRoot, path, overwrite })),
 	fsCreateDir: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_create_dir", { path })),
@@ -5323,6 +5323,13 @@ export type DirectoryCompareEntry = {
 	leftModified?: number | null,
 	rightModified?: number | null,
 };
+
+/**  What makes two files equal (IDEA's "Compare by"). */
+export type DirectoryCompareMode = 
+/**  Identical bytes. */
+"content" | 
+/**  The same text once decoded, whatever the encoding, BOM or line separators. */
+"text" | "size" | "sizeAndTimestamp";
 
 export type DirectoryCompareProgress = {
 	scanned: number,

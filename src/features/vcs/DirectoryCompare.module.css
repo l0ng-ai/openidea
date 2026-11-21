@@ -200,3 +200,7 @@
 .folder {
   font-weight: 600;
 }
+.select {
+  height: var(--h-control-small);
+  font-size: var(--fs-small);
+}

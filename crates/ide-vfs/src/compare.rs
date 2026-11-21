@@ -17,6 +17,19 @@ pub enum DirectoryCompareStatus {
     Equal,
 }
 
+/// What makes two files equal (IDEA's "Compare by").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DirectoryCompareMode {
+    /// Identical bytes.
+    #[default]
+    Content,
+    /// The same text once decoded, whatever the encoding, BOM or line separators.
+    Text,
+    Size,
+    SizeAndTimestamp,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct DirectoryCompareEntry {
@@ -159,11 +172,31 @@ fn hash(
     hash.try_finalize().map_err(|e| IdeError::internal(e.to_string()))
 }
 
-/// Size checks avoid reading unequal files. Equal-sized files are hashed in bounded,
-/// cancellable chunks; symlinks compare their link text and are never traversed.
+/// Modification times this close count as equal: FAT and some network filesystems store
+/// them to the second or two, and copies may round them.
+const TIMESTAMP_TOLERANCE_MS: f64 = 2000.0;
+
+/// Text mode decodes both files; larger ones are compared by their bytes only.
+const TEXT_COMPARE_LIMIT: u64 = crate::encoding::LARGE_FILE_THRESHOLD;
+
+fn same_text(a: &Path, b: &Path, cancel: &CancellationToken) -> IdeResult<bool> {
+    let decode = |path: &Path| -> IdeResult<Option<String>> {
+        check(cancel)?;
+        let (text, _, _, binary) = crate::encoding::decode_owned(fs::read(path)?);
+        Ok((!binary).then(|| text.replace("\r\n", "\n").replace('\r', "\n")))
+    };
+    Ok(match decode(a)? {
+        Some(a) => decode(b)?.is_some_and(|b| a == b),
+        None => false,
+    })
+}
+
+/// Content checks compare sizes before reading anything, then hash equal-sized files in
+/// bounded, cancellable chunks; symlinks compare their link text and are never traversed.
 pub fn compare_directories(
     left: &Path,
     right: &Path,
+    mode: DirectoryCompareMode,
     project: Option<&Path>,
     excludes: &[String],
     cancel: &CancellationToken,
@@ -191,9 +224,26 @@ pub fn compare_directories(
                         EntryKind::Dir => true,
                         EntryKind::Symlink => a.link == b.link,
                         EntryKind::File => {
-                            a.size == b.size
-                                && hash(&left.join(&path), cancel, &mut progress, &emit)?
-                                    == hash(&right.join(&path), cancel, &mut progress, &emit)?
+                            let (l, r) = (left.join(&path), right.join(&path));
+                            let same_bytes = |progress: &mut DirectoryCompareProgress| -> IdeResult<bool> {
+                                Ok(a.size == b.size
+                                    && hash(&l, cancel, progress, &emit)? == hash(&r, cancel, progress, &emit)?)
+                            };
+                            match mode {
+                                DirectoryCompareMode::Content => same_bytes(&mut progress)?,
+                                DirectoryCompareMode::Size => a.size == b.size,
+                                DirectoryCompareMode::SizeAndTimestamp => {
+                                    a.size == b.size
+                                        && match (a.modified, b.modified) {
+                                            (Some(x), Some(y)) => (x - y).abs() <= TIMESTAMP_TOLERANCE_MS,
+                                            _ => false,
+                                        }
+                                }
+                                DirectoryCompareMode::Text => {
+                                    same_bytes(&mut progress)?
+                                        || a.size.max(b.size) <= TEXT_COMPARE_LIMIT && same_text(&l, &r, cancel)?
+                                }
+                            }
                         }
                     };
                 if equal { DirectoryCompareStatus::Equal } else { DirectoryCompareStatus::Different }
@@ -397,7 +447,16 @@ mod tests {
         }
         fs::create_dir(left.join("empty")).unwrap();
         fs::create_dir(right.join("empty")).unwrap();
-        let rows = compare_directories(&left, &right, None, &[], &CancellationToken::new(), |_| {}).unwrap();
+        let rows = compare_directories(
+            &left,
+            &right,
+            DirectoryCompareMode::Content,
+            None,
+            &[],
+            &CancellationToken::new(),
+            |_| {},
+        )
+        .unwrap();
         let status = |path| rows.iter().find(|r| r.path == path).unwrap().status;
         assert_eq!(status("same"), DirectoryCompareStatus::Equal);
         assert_eq!(status("empty"), DirectoryCompareStatus::Equal);
@@ -416,7 +475,16 @@ mod tests {
         put(&left, "dir/file", b"four");
         put(&right, "dir/file", b"sixsix");
         put(&right, "only-right", b"");
-        let rows = compare_directories(&left, &right, None, &[], &CancellationToken::new(), |_| {}).unwrap();
+        let rows = compare_directories(
+            &left,
+            &right,
+            DirectoryCompareMode::Content,
+            None,
+            &[],
+            &CancellationToken::new(),
+            |_| {},
+        )
+        .unwrap();
         let row = |path| rows.iter().find(|r| r.path == path).unwrap();
         assert_eq!((row("dir/file").left_size, row("dir/file").right_size), (Some(4.0), Some(6.0)));
         assert_eq!((row("only-right").left_size, row("only-right").right_size), (None, Some(0.0)));
@@ -442,8 +510,16 @@ mod tests {
             put(root, "kept", b"kept");
         }
         let excludes = ["**/node_modules", "**/target", "/left/generated", "/right/generated"].map(String::from);
-        let rows =
-            compare_directories(&left, &right, Some(tmp.path()), &excludes, &CancellationToken::new(), |_| {}).unwrap();
+        let rows = compare_directories(
+            &left,
+            &right,
+            DirectoryCompareMode::Content,
+            Some(tmp.path()),
+            &excludes,
+            &CancellationToken::new(),
+            |_| {},
+        )
+        .unwrap();
         assert!(
             rows.iter()
                 .all(|r| !["node_modules", "target", ".git/", "generated", ".log"].iter().any(|p| r.path.contains(p)))
@@ -463,7 +539,7 @@ mod tests {
             if phase == 0 {
                 cancel.cancel();
             }
-            let result = compare_directories(&left, &right, None, &[], &cancel, |p| {
+            let result = compare_directories(&left, &right, DirectoryCompareMode::Content, None, &[], &cancel, |p| {
                 if phase == 1 && p.scanned > 0 || phase == 2 && p.bytes_read > 0.0 {
                     cancel.cancel();
                 }
@@ -480,11 +556,47 @@ mod tests {
         put(&left, "nested/file", b"a");
         put(&right, "nested/file", b"ab");
         let bytes = std::cell::Cell::new(0.0);
-        let rows =
-            compare_directories(&left, &right, None, &[], &CancellationToken::new(), |p| bytes.set(p.bytes_read))
-                .unwrap();
+        let rows = compare_directories(
+            &left,
+            &right,
+            DirectoryCompareMode::Content,
+            None,
+            &[],
+            &CancellationToken::new(),
+            |p| bytes.set(p.bytes_read),
+        )
+        .unwrap();
         assert_eq!(bytes.get(), 0.0);
         assert!(rows.iter().all(|r| r.status == DirectoryCompareStatus::Different));
+    }
+
+    #[test]
+    fn compare_modes_decide_which_files_are_equal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (left, right) = (tmp.path().join("left"), tmp.path().join("right"));
+        put(&left, "same-size", b"abc");
+        put(&right, "same-size", b"xyz");
+        put(&left, "nested/line-endings.txt", b"a\r\nb\r\n");
+        put(&right, "nested/line-endings.txt", b"a\nb\n");
+        put(&left, "bom.txt", "\u{feff}文本".as_bytes());
+        put(&right, "bom.txt", "文本".as_bytes());
+        put(&left, "binary", &[0, 1, 2, 0]);
+        put(&right, "binary", &[0, 1, 3, 0]);
+        put(&left, "only-left", b"x");
+        let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        fs::File::options().write(true).open(right.join("same-size")).unwrap().set_modified(old).unwrap();
+        let statuses = |mode| {
+            let rows = compare_directories(&left, &right, mode, None, &[], &CancellationToken::new(), |_| {}).unwrap();
+            ["same-size", "nested/line-endings.txt", "nested", "bom.txt", "binary", "only-left"]
+                .map(|path| rows.iter().find(|r| r.path == path).unwrap().status)
+        };
+        use DirectoryCompareStatus::{Different as D, Equal as E, LeftOnly as L};
+        assert_eq!(statuses(DirectoryCompareMode::Content), [D, D, D, D, D, L]);
+        assert_eq!(statuses(DirectoryCompareMode::Text), [D, E, E, E, D, L]);
+        assert_eq!(statuses(DirectoryCompareMode::Size), [E, D, D, D, E, L]);
+        assert_eq!(statuses(DirectoryCompareMode::SizeAndTimestamp), [D, D, D, D, E, L]);
+        let mode: DirectoryCompareMode = serde_json::from_str("\"sizeAndTimestamp\"").unwrap();
+        assert_eq!(mode, DirectoryCompareMode::SizeAndTimestamp);
     }
 
     #[test]
@@ -571,7 +683,16 @@ mod tests {
         fs::create_dir(&right).unwrap();
         symlink(".", left.join("loop")).unwrap();
         symlink("missing", right.join("loop")).unwrap();
-        let rows = compare_directories(&left, &right, None, &[], &CancellationToken::new(), |_| {}).unwrap();
+        let rows = compare_directories(
+            &left,
+            &right,
+            DirectoryCompareMode::Content,
+            None,
+            &[],
+            &CancellationToken::new(),
+            |_| {},
+        )
+        .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].status, DirectoryCompareStatus::Different);
         copy_merge(&left.join("loop"), &right.join("copied"), false, None, &[], (&left, &right)).unwrap();
