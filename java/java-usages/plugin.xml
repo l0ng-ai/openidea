@@ -30,5 +30,8 @@
       <command id="openidea.java.hierarchy.members"/>
       <command id="openidea.java.hierarchy.refactor"/>
     </delegateCommandHandler>
+    <delegateCommandHandler class="ai.openidea.breakpoints.ExceptionTypeCommand">
+      <command id="openidea.java.exceptionType"/>
+    </delegateCommandHandler>
   </extension>
 </plugin>
