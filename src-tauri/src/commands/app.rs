@@ -43,9 +43,10 @@ pub fn app_info(state: State<'_, AppState>) -> AppInfo {
         #[cfg(not(target_os = "linux"))]
         wayland: false,
         #[cfg(target_os = "linux")]
-        window_buttons: crate::linux_window_state::decoration_layout()
-            .and_then(|layout| ide_core::platform::WindowButtonLayout::from_gtk_decoration_layout(&layout))
-            .unwrap_or_default(),
+        window_buttons: ide_core::platform::WindowButtonLayout::for_linux(
+            crate::linux_window_state::decoration_layout().as_deref(),
+            |key| std::env::var(key).ok(),
+        ),
         #[cfg(not(target_os = "linux"))]
         window_buttons: Default::default(),
     }
