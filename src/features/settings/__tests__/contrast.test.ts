@@ -125,7 +125,7 @@ describe("theme tokens", () => {
  * the selection and caret identifier foregrounds, whose base default preserves syntax colours.
  */
 const INHERITED_FROM_BASE =
-  /^--(project-color-|db-color-|file-color-|caption-close-|fg-caption-close-|tint-strength$|file-tint-strength$|fg-editor-selection$|fg-identifier-under-caret(-write)?$)/;
+  /^--(project-color-|db-color-|file-color-|caption-close-|fg-caption-close-|mac-window-|tint-strength$|file-tint-strength$|fg-editor-selection$|fg-identifier-under-caret(-write)?$)/;
 
 describe("palette themes", () => {
   const ISLANDS = ["light", "dark", "dark-hc"];

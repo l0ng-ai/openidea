@@ -23,8 +23,8 @@ import {
   widgetTitle,
 } from "./mainToolbar";
 import { WindowControls } from "./WindowControls";
+import { MacWindowButtons } from "./MacWindowButtons";
 import { captionButtons } from "./windowButtons";
-import { useFullscreen } from "./useFullscreen";
 import { usePlatform } from "@/platform/platformInfo";
 import { projectInitials } from "./projectColor";
 import { keymapItems, themeItems, themePreview, type ThemePreview, VIEW_MODE_ITEMS } from "./quickSwitch";
@@ -313,7 +313,6 @@ export function TitleBar({
   title?: string;
 }) {
   const overlay = usePlatform((s) => s.overlayTitleBar);
-  const fullscreen = useFullscreen();
   const frameless = usePlatform((s) => s.framelessTitleBar);
   const windowButtons = usePlatform((s) => s.windowButtons);
   const { map, shown, menu } = useToolbar();
@@ -324,7 +323,6 @@ export function TitleBar({
   const className = clsx(
     styles.bar,
     overlay && styles.overlay,
-    overlay && fullscreen && styles.overlayFullscreen,
     frameless && styles.frameless,
     frameless && captionButtons(windowButtons, "left", dialog).length > 0 && styles.captionsAtLeft,
     frameless && captionButtons(windowButtons, "right", dialog).length === 0 && styles.noCaptionsAtRight,
@@ -339,6 +337,7 @@ export function TitleBar({
         {...windowDragRegion}
         data-titlebar={compact ? "compact" : "bare"}
       >
+        {overlay && <MacWindowButtons />}
         {frameless && <WindowControls side="left" />}
         {frameless && <MainMenu />}
         {compact ? <CompactTitle title={title} /> : frameless && <div className={styles.drag} {...windowDragRegion} />}
@@ -359,6 +358,7 @@ export function TitleBar({
         showContextMenu(e, menu);
       }}
     >
+      {overlay && <MacWindowButtons />}
       {frameless && <WindowControls side="left" dialog={dialog} />}
       {frameless && !minimal && !separateMenu && <MainMenu onExpandedChange={setMenuExpanded} />}
       {title && (
