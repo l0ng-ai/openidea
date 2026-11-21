@@ -106,6 +106,31 @@ describe("color schemes", () => {
     expect(css).not.toMatch(/:root \{[^}]*--syn-decorator/);
   });
 
+  it("splits Predefined symbol into types and functions and keeps literals apart from Constant (#4059)", () => {
+    for (const [child, parent] of [
+      ["predefinedType", "predefined"],
+      ["predefinedFunction", "predefined"],
+      ["literalKeyword", "keyword"],
+      ["kotlin.predefinedType", "kotlin.predefined"],
+      ["kotlin.literalKeyword", "kotlin.keyword"],
+    ] as const)
+      expect(resolvedAttribute("dark", child)).toEqual(resolvedAttribute("dark", parent));
+    expect(resolvedAttribute("dark", "kotlin.literalKeyword")).not.toEqual(
+      resolvedAttribute("dark", "kotlin.constant"),
+    );
+    // A language's Predefined symbol still reaches unset types and functions: they are not set on :root.
+    const css = schemeCss("dark", { dark: { "kotlin.predefined": { foreground: "#224466" } } });
+    expect(css).not.toContain("--syn-builtin-type");
+    const split = schemeCss("dark", {
+      dark: {
+        "kotlin.predefinedType": { foreground: "#bcbec4" },
+        "kotlin.predefinedFunction": { foreground: "#56a8f5" },
+      },
+    });
+    expect(split).toContain("--syn-builtin-type: #bcbec4 !important");
+    expect(split).toContain("--syn-builtin-function: #56a8f5 !important");
+  });
+
   it("shows an unset Global function in the function declaration style, then its own (#4059)", () => {
     const fn = resolvedAttribute("dark", "functionDeclaration");
     expect(resolvedAttribute("dark", "javascript.globalFunction")).toEqual(fn);
