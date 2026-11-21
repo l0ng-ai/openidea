@@ -7864,6 +7864,7 @@
   "Open while it streams": "生成时展开",
   "Always open": "始终展开",
   "Folded": "折叠",
+  "Folded code": "折叠的代码",
   "Sending": "发送",
   "Send messages with": "发送消息",
   "While the agent works, sending": "agent 工作时发送",

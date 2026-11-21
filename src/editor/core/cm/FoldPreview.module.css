@@ -1,0 +1,33 @@
+.preview {
+  display: grid;
+  grid-template-columns: max-content;
+  align-content: start;
+  max-width: min(88ch, var(--fold-preview-width, 100vw));
+  max-height: min(40vh, 16em);
+  padding: var(--space-2) var(--space-3);
+  overflow: auto;
+  overscroll-behavior: contain;
+  white-space: pre;
+  box-sizing: border-box;
+}
+
+.numbered {
+  grid-template-columns: max-content max-content;
+  column-gap: var(--space-3);
+}
+
+.number {
+  color: var(--fg-gutter);
+  text-align: right;
+  user-select: none;
+}
+
+.preview code {
+  min-height: var(--fold-preview-line-height);
+  font: inherit;
+}
+
+.more {
+  grid-column: 1 / -1;
+  color: var(--fg-muted);
+}
