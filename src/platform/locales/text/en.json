@@ -3007,5 +3007,11 @@
   "Predefined function": "Predefined function",
   "Extension function call": "Extension function call",
   "Package-level function call": "Package-level function call",
-  "Enum entry": "Enum entry"
+  "Enum entry": "Enum entry",
+  "Code:": "Code:",
+  "Signed by:": "Signed by:",
+  "Location:": "Location:",
+  "ID:": "ID:",
+  "Homepage:": "Homepage:",
+  "Mail:": "Mail:"
 }

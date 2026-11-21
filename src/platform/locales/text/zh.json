@@ -6831,7 +6831,6 @@
   "Recent calls p95 {toFixed} ms; {crashes} crashes, {slowCalls} editor results too late, reclaimed {reclaims}× when idle": "近期调用 p95 {toFixed} 毫秒；崩溃 {crashes} 次，编辑器结果超时 {slowCalls} 次，空闲回收 {reclaims} 次",
   "Linked plugin": "链接的插件",
   "Project plugin": "项目插件",
-  "Signed by {publisher}": "由 {publisher} 签名",
   "Unsigned": "未签名",
   "Roll Back to {previousVersion}": "回滚到 {previousVersion}",
   "Install Plugin from Package File…": "从插件包文件安装…",
@@ -9336,5 +9335,10 @@
   "Predefined function": "预定义函数",
   "Extension function call": "扩展函数调用",
   "Package-level function call": "包级函数调用",
-  "Enum entry": "枚举项"
+  "Enum entry": "枚举项",
+  "Code:": "代码：",
+  "Signed by:": "签名者：",
+  "ID:": "ID：",
+  "Homepage:": "主页：",
+  "Mail:": "邮件："
 }
