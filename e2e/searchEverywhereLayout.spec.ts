@@ -190,3 +190,71 @@ test("mixed file and action rows align icons and names and keep shortcuts readab
   expect(keys.x).toBeGreaterThanOrEqual(actionName.x + actionName.width);
   expect(await shortcut.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
 });
+
+test("file and class results keep distinguishing folders visible in a narrow popup", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 520, height: 608 });
+  await stubDesktop(page);
+  const prefix = "packages/commerce-platform/customer-account-management/src/main/typescript/customer";
+  const folders = ["renewal", "retention"];
+  await page.evaluate(
+    ({ prefix, folders }) => {
+      const files = folders.map((folder, index) => {
+        const relPath = `${prefix}/${folder}/OrderService.ts`;
+        return {
+          path: `/dev/acme-api/${relPath}`,
+          relPath,
+          score: 100 - index,
+          indices: Array.from("OrderService", (_, i) => i),
+        };
+      });
+      window.__ipc.handlers.find_files = () => files;
+      window.__ipc.handlers.find_symbols = () =>
+        files.map((file) => ({
+          ...file,
+          name: "OrderService",
+          kind: "class",
+          container: null,
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 12 } },
+        }));
+    },
+    { prefix, folders },
+  );
+
+  await doubleShift(page);
+  const dialog = page.getByRole("dialog", { name: "Search Everywhere" });
+  const query = dialog.getByRole("combobox", { name: "Search query" });
+  await query.fill("OrderService");
+  for (const tab of ["Files", "Classes"]) {
+    await dialog.getByRole("tab", { name: tab, exact: true }).click();
+    for (const folder of folders) {
+      const path = `${prefix}/${folder}`;
+      const result = dialog.getByRole("option", { name: new RegExp(folder) });
+      const label = result.getByText(path, { exact: true });
+      await expect(label).toBeVisible();
+      expect(
+        await label.evaluate((el, folder) => {
+          const text = el.lastChild?.nodeType === Node.TEXT_NODE ? el.lastChild : el.lastElementChild?.firstChild;
+          if (!text?.textContent?.endsWith(folder)) return false;
+          const range = document.createRange();
+          range.setStart(text, text.textContent.length - folder.length);
+          range.setEnd(text, text.textContent.length);
+          const label = el.getBoundingClientRect();
+          const clip = text.parentElement!.getBoundingClientRect();
+          const visible = range.getBoundingClientRect();
+          return visible.left >= Math.max(label.left, clip.left) && visible.right <= Math.min(label.right, clip.right);
+        }, folder),
+      ).toBe(true);
+      await expect(label).toHaveAttribute("title", path);
+      if (tab === "Files") {
+        const name = result.getByText("OrderService.ts", { exact: true });
+        expect(
+          await name.evaluate((el) => {
+            const range = document.createRange();
+            range.selectNodeContents(el);
+            return range.getBoundingClientRect().right <= el.getBoundingClientRect().right;
+          }),
+        ).toBe(true);
+      }
+    }
+  }
+});
