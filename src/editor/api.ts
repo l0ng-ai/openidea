@@ -572,6 +572,31 @@ export function contributedIntentions(view: EditorView): ContributedIntention[] 
   });
 }
 
+/**
+ * Providers of context actions that need an answer from the language server first. ⌥↵ waits for
+ * them along with the server's code actions; the light bulb does too. `signal` aborts when the
+ * answer is no longer wanted (the caret moved on).
+ */
+export const asyncIntentionProviders =
+  Facet.define<(view: EditorView, signal: AbortSignal) => Promise<ContributedIntention[]>>();
+
+export async function contributedIntentionsAsync(
+  view: EditorView,
+  signal: AbortSignal,
+): Promise<ContributedIntention[]> {
+  const found = await Promise.all(
+    view.state.facet(asyncIntentionProviders).map((p) =>
+      Promise.resolve()
+        .then(() => p(view, signal))
+        .catch((e: unknown) => {
+          if (!signal.aborted) console.error("intention provider failed", e);
+          return [];
+        }),
+    ),
+  );
+  return found.flat();
+}
+
 // --- navigation history ------------------------------------------------------
 
 /** One entry of the Back/Forward (⌘[ / ⌘]) history. 0-based line, UTF-16 col. */
