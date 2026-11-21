@@ -53,3 +53,9 @@
   font-family: var(--font-mono);
   font-size: var(--fs-small);
 }
+
+.message {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
