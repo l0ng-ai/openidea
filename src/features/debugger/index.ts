@@ -22,6 +22,7 @@ import { registerDevToolsWindows } from "./flutter/devTools";
 import { registerDebugTabActions } from "./tabActions";
 import { loadBreakpoints } from "./breakpoints/store";
 import { loadExceptionBreakpoints } from "./breakpoints/exceptions";
+import { loadExceptionClasses } from "./breakpoints/exceptionClasses";
 import { loadJsBreakpoints, watchPageSessions } from "./js/eventBreakpoints";
 import { watchNetworkSessions } from "./js/networkSessions";
 import { loadResponseOverrides, watchOverrideSessions } from "./js/responseOverrides";
@@ -85,6 +86,7 @@ export function activate(): () => void {
   publishContext();
   loadBreakpoints(useProject.getState().project?.root ?? null);
   loadExceptionBreakpoints(useProject.getState().project?.root ?? null);
+  loadExceptionClasses(useProject.getState().project?.root ?? null);
   loadSpecialBreakpoints(useProject.getState().project?.root ?? null);
   loadJsBreakpoints(useProject.getState().project?.root ?? null);
   loadResponseOverrides(useProject.getState().project?.root ?? null);
@@ -180,6 +182,7 @@ export function activate(): () => void {
         loadWatches(root);
         loadBreakpoints(root);
         loadExceptionBreakpoints(root);
+        loadExceptionClasses(root);
         loadSpecialBreakpoints(root);
         loadJsBreakpoints(root);
         loadResponseOverrides(root);
