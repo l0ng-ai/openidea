@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 const { list, move, remove, open, confirm, windowOpenRemote } = vi.hoisted(() => ({
   list: vi.fn(),
@@ -43,6 +43,9 @@ const wsl = { kind: "wsl", distro: "Ubuntu" } as const;
 const ok = <T,>(data: T) => ({ status: "ok" as const, data });
 const fail = (message: string) => ({ status: "error", error: { kind: "invalidInput", message, detail: null } });
 
+const rowAt = async (path: string) =>
+  within((await screen.findByText(path)).closest<HTMLElement>('[role="treeitem"]')!);
+
 beforeEach(() => {
   useProject.setState({ project: { root: "/work/app-feature" } as never });
   list.mockReset().mockResolvedValue(ok(worktrees));
@@ -55,15 +58,15 @@ beforeEach(() => {
 
 it("marks the linked project root current when its main worktree is also listed", async () => {
   render(<WorktreesPanel />);
-  expect(await screen.findByText("current /work/app-feature")).toBeInTheDocument();
-  expect(screen.getByText("main /work/app")).toBeInTheDocument();
+  expect((await rowAt("/work/app-feature")).getByRole("img", { name: "current" })).toBeInTheDocument();
+  expect((await rowAt("/work/app")).queryByRole("img", { name: "current" })).toBeNull();
 });
 
 it("marks both opened roots current while grouping their repository once", async () => {
   useVcs.setState({ roots: ["/work/app-feature", "/work/app"] });
   render(<WorktreesPanel />);
-  expect(await screen.findByText("current /work/app-feature")).toBeInTheDocument();
-  expect(screen.getByText("current /work/app")).toBeInTheDocument();
+  expect((await rowAt("/work/app-feature")).getByRole("img", { name: "current" })).toBeInTheDocument();
+  expect((await rowAt("/work/app")).getByRole("img", { name: "current" })).toBeInTheDocument();
   expect(screen.getAllByRole("treeitem")).toHaveLength(3);
 });
 
