@@ -618,6 +618,27 @@ export function caretExtension(prefs: EditorExtras): Extension {
   ];
 }
 
+/** Template literals and raw strings open with a backtick. */
+const BACKTICK_LANGS = new Set([
+  "javascript",
+  "javascriptreact",
+  "typescript",
+  "typescriptreact",
+  "vue",
+  "svelte",
+  "astro",
+  "go",
+]);
+const PYTHON_PREFIXES = ["f", "r", "u", "b", "fr", "rf", "br", "rb"].flatMap((p) =>
+  p.length === 1 ? [p, p.toUpperCase()] : [p, p.toUpperCase(), p[0]!.toUpperCase() + p[1], p[0] + p[1]!.toUpperCase()],
+);
+
+/** The quotes that pair in `language`, and the string prefixes that may come before them. */
+function languageQuotes(language: string | undefined): { quotes: string[]; prefixes?: string[] } {
+  if (language === "python") return { quotes: ["'", '"', "'''", '"""'], prefixes: PYTHON_PREFIXES };
+  return { quotes: BACKTICK_LANGS.has(language ?? "") ? ["'", '"', "`"] : ["'", '"'] };
+}
+
 export function prefsExtension(o: PrefsOptions): Extension {
   const { prefs } = o;
   const g = prefs.general;
@@ -659,8 +680,10 @@ export function prefsExtension(o: PrefsOptions): Extension {
     out.push(pasteReindentFilter(k.reformatOnPaste));
 
   // Pairing: closeBrackets() reads the brackets list from language data; ours comes first.
-  const brackets = [...(k.pairBrackets ? ["(", "[", "{"] : []), ...(k.pairQuotes ? ["'", '"'] : [])];
-  out.push(Prec.highest(EditorState.languageData.of(() => [{ closeBrackets: { brackets } }])));
+  const quotes = k.pairQuotes ? languageQuotes(o.language) : null;
+  const brackets = [...(k.pairBrackets ? ["(", "[", "{"] : []), ...(quotes?.quotes ?? [])];
+  const pairing = { brackets, ...(quotes?.prefixes ? { stringPrefixes: quotes.prefixes } : {}) };
+  out.push(Prec.highest(EditorState.languageData.of(() => [{ closeBrackets: pairing }])));
   // `<` pairs where the syntax says a generic type list starts, as in IDEA — no separate option.
   if (k.pairBrackets && !o.readOnly) out.push(smartAngleBrackets(o.language));
   if (!k.surroundSelection) out.push(Prec.highest(noSurround));

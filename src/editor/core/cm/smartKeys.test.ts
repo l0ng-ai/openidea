@@ -8,6 +8,7 @@ import { java } from "@codemirror/lang-java";
 import { javascript } from "@codemirror/lang-javascript";
 import { languages as cmLanguages } from "@codemirror/language-data";
 import { kotlin, csharp } from "@codemirror/legacy-modes/mode/clike";
+import { python } from "@codemirror/legacy-modes/mode/python";
 import { validateEditorExtras } from "@/platform/editorSettings";
 import {
   autoIndentBackspace,
@@ -208,6 +209,46 @@ describe("tab out of pairs", () => {
     v.dispatch({ selection: { anchor: 0 } });
     v.dispatch({ changes: { from: 0, insert: "c" }, selection: { anchor: 6 } });
     expect(tabOutOfScope(v)).toBe(false);
+  });
+});
+
+describe("quote pairs per language", () => {
+  const typed = (language: string, support: Extension, text: string, chars: string) => {
+    const v = make(text, [
+      support,
+      closeBrackets(),
+      prefsExtension({
+        prefs: validateEditorExtras({}),
+        path: "",
+        softWrap: false,
+        showWhitespace: false,
+        hardWrapAt: 120,
+        readOnly: false,
+        language,
+      }),
+    ]);
+    for (const ch of chars) {
+      const tr = insertBracket(v.state, ch);
+      if (tr) v.dispatch(tr);
+      else v.dispatch(v.state.update(v.state.replaceSelection(ch), { userEvent: "input.type" }));
+    }
+    return show(v);
+  };
+
+  it("pairs template literal backticks in TypeScript", () => {
+    expect(typed("typescript", javascript({ typescript: true }), "const g = |", "`")).toBe("const g = `|`");
+  });
+
+  it("pairs Python's prefixed and triple-quoted strings", () => {
+    const py = StreamLanguage.define(python);
+    expect(typed("python", py, "label = f|", '"')).toBe('label = f"|"');
+    expect(typed("python", py, "p = rb|", "'")).toBe("p = rb'|'");
+    expect(typed("python", py, "    |", '"""')).toBe('    """|"""');
+  });
+
+  it("keeps plain quotes for other languages and respects the options", () => {
+    expect(typed("java", java(), "String s = |", '"')).toBe('String s = "|"');
+    expect(typed("java", java(), "String s = |", "`")).toBe("String s = `|");
   });
 });
 
