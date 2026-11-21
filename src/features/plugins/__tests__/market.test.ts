@@ -63,7 +63,9 @@ describe("groupMarket", () => {
 describe("helpers", () => {
   it("formats downloads compactly", () => {
     expect(formatDownloads(42)).toBe("42");
-    expect(formatDownloads(1234)).toMatch(/^1\.2\s?K$/);
+    expect(formatDownloads(1234, "en")).toBe("1.2K");
+    expect(formatDownloads(1500, "tr")).toBe("1,5B");
+    expect(formatDownloads(1_500_000, "tr")).toBe("1,5M");
   });
 
   it("gives a plugin without an icon a stable initial and tone", () => {
