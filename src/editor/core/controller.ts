@@ -2275,65 +2275,23 @@ export class EditorController implements SlotHost {
     return [
       { label: "Close", shortcut: shortcutLabel("editor.closeTab"), run: () => void this.closeTab(paneId, tab.id) },
       { label: "Close Other Tabs", disabled: tabs.length < 2, run: () => void this.closeOthers(paneId, tab.id) },
+      { label: "Close All Tabs", run: () => void this.closeAll(paneId) },
+      { label: "Close Unmodified Tabs", run: () => void this.closeUnmodified(paneId) },
+      ...(tabs.some((t) => t.pinned)
+        ? ([{ label: "Close All but Pinned", run: () => void this.closeAll(paneId, true) }] as MenuItem[])
+        : []),
       { label: "Close Tabs to the Left", disabled: index <= 0, run: () => void this.closeToLeft(paneId, tab.id) },
       {
         label: "Close Tabs to the Right",
         disabled: index < 0 || index >= tabs.length - 1,
         run: () => void this.closeToRight(paneId, tab.id),
       },
-      { label: "Close All Tabs", run: () => void this.closeAll(paneId) },
-      { label: "Close Unmodified Tabs", run: () => void this.closeUnmodified(paneId) },
-      ...(tabs.some((t) => t.pinned)
-        ? ([{ label: "Close All but Pinned", run: () => void this.closeAll(paneId, true) }] as MenuItem[])
-        : []),
       ...(tabs.some((t) => !t.pinned && !!t.input.path && useDocMeta.getState()[t.input.path]?.readOnly)
         ? ([{ label: "Close All Read-Only Tabs", run: () => void this.closeReadOnly(paneId) }] as MenuItem[])
         : []),
       { kind: "separator" },
-      { label: tab.pinned ? "Unpin Tab" : "Pin Tab", icon: "pin", run: () => this.togglePin(paneId, tab.id) },
-      ...(tab.preview ? ([{ label: "Keep Tab Open", run: () => this.keepTab(paneId, tab.id) }] as MenuItem[]) : []),
-      { kind: "separator" },
-      { label: "Split and Move Right", run: () => this.moveTabToSplit(paneId, tab.id, paneId, "right") },
-      { label: "Split and Move Down", run: () => this.moveTabToSplit(paneId, tab.id, paneId, "bottom") },
-      {
-        label: "Split Right",
-        icon: "split",
-        shortcut: shortcutLabel("editor.splitRight"),
-        run: activateThen(() => this.split(paneId, "row")),
-      },
-      {
-        label: "Split Down",
-        icon: "split-horizontal",
-        shortcut: shortcutLabel("editor.splitDown"),
-        run: activateThen(() => this.split(paneId, "column")),
-      },
-      ...(split
-        ? ([
-            { label: "Move to Opposite Group", run: () => this.moveToOpposite(paneId, tab.id) },
-            { label: "Open in Opposite Group", run: () => this.openInOpposite(paneId, tab.id) },
-            { label: "Change Splitter Orientation", run: () => this.changeSplitOrientation(paneId) },
-            { label: "Unsplit", run: () => void this.unsplit(paneId) },
-            { label: "Unsplit All", run: () => void this.unsplitAll(paneId) },
-          ] as MenuItem[])
-        : []),
-      ...(useContributions.getState().editorKinds.get(tab.input.kind)?.openInWindow ||
-      (tab.input.path &&
-        (tab.input.kind === "file" || documentLifecycle(tab.input, useContributions.getState().editorKinds)))
-        ? ([{ label: "Open in New Window", run: () => void this.detachTab(paneId, tab.id) }] as MenuItem[])
-        : []),
-      { kind: "separator" },
       ...(path
         ? ([
-            // Contributed groups (Run / Debug '…', More Run/Debug ›), each followed by a separator.
-            ...menuGroupItems("editorTab", { paths: [path], text: this.slots.get(tab.id)?.view?.state.doc.toString() }),
-            openInMenu(path),
-            { kind: "separator" },
-            localHistoryMenu(path),
-            ...(inProject ? [gitMenu(path)] : []),
-            { kind: "separator" },
-            { kind: "action", action: "diff.compareWith", arg: path, label: "Compare With…" },
-            { kind: "action", action: "diff.compareWithClipboard", arg: { path }, label: "Compare with Clipboard" },
-            { kind: "separator" },
             {
               label: "Copy Path/Reference…",
               submenu: [
@@ -2351,14 +2309,60 @@ export class EditorController implements SlotHost {
                   : []),
               ],
             },
-            { kind: "action", action: "project.rename", arg: path, label: "Rename File…" },
             { kind: "separator" },
+          ] as MenuItem[])
+        : []),
+      {
+        label: "Split Right",
+        icon: "split",
+        shortcut: shortcutLabel("editor.splitRight"),
+        run: activateThen(() => this.split(paneId, "row")),
+      },
+      { label: "Split and Move Right", run: () => this.moveTabToSplit(paneId, tab.id, paneId, "right") },
+      {
+        label: "Split Down",
+        icon: "split-horizontal",
+        shortcut: shortcutLabel("editor.splitDown"),
+        run: activateThen(() => this.split(paneId, "column")),
+      },
+      { label: "Split and Move Down", run: () => this.moveTabToSplit(paneId, tab.id, paneId, "bottom") },
+      ...(split
+        ? ([
+            { label: "Move to Opposite Group", run: () => this.moveToOpposite(paneId, tab.id) },
+            { label: "Open in Opposite Group", run: () => this.openInOpposite(paneId, tab.id) },
+            { label: "Change Splitter Orientation", run: () => this.changeSplitOrientation(paneId) },
+            { label: "Unsplit", run: () => void this.unsplit(paneId) },
+            { label: "Unsplit All", run: () => void this.unsplitAll(paneId) },
+          ] as MenuItem[])
+        : []),
+      { kind: "separator" },
+      { label: tab.pinned ? "Unpin Tab" : "Pin Tab", icon: "pin", run: () => this.togglePin(paneId, tab.id) },
+      ...(tab.preview ? ([{ label: "Keep Tab Open", run: () => this.keepTab(paneId, tab.id) }] as MenuItem[]) : []),
+      ...(useContributions.getState().editorKinds.get(tab.input.kind)?.openInWindow ||
+      (tab.input.path &&
+        (tab.input.kind === "file" || documentLifecycle(tab.input, useContributions.getState().editorKinds)))
+        ? ([{ label: "Open in New Window", run: () => void this.detachTab(paneId, tab.id) }] as MenuItem[])
+        : []),
+      { kind: "action", action: "file.settings", arg: "editor.general.editorTabs", label: "Configure Editor Tabs…" },
+      { kind: "separator" },
+      ...(path
+        ? ([
+            // Contributed groups (Run / Debug '…', More Run/Debug ›), each followed by a separator.
+            ...menuGroupItems("editorTab", { paths: [path], text: this.slots.get(tab.id)?.view?.state.doc.toString() }),
+            openInMenu(path),
+            { kind: "separator" },
+            localHistoryMenu(path),
+            ...(inProject ? [gitMenu(path)] : []),
+            { kind: "separator" },
+            { kind: "action", action: "diff.compareWith", arg: path, label: "Compare With…" },
+            { kind: "action", action: "diff.compareWithClipboard", arg: { path }, label: "Compare with Clipboard" },
+            { kind: "separator" },
+            { kind: "action", action: "project.rename", arg: path, label: "Rename File…" },
           ] as MenuItem[])
         : [
             // Contributed groups for tabs without a file (e.g. "Open in Tool Window").
             ...menuGroupItems("editorTab", { paths: [], input: tab.input }),
           ]),
-      { kind: "action", action: "file.settings", arg: "editor.general.editorTabs", label: "Configure Editor Tabs…" },
     ];
   }
 }

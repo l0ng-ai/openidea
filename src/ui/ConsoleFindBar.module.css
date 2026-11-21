@@ -9,39 +9,64 @@
   display: flex;
   align-items: center;
   gap: var(--space-1);
-  padding: 4px 8px;
+  padding: var(--space-1) var(--space-2);
   background: var(--bg-elev);
   border-bottom: 1px solid var(--border);
 }
 .findField {
-  flex: 0 1 360px;
-  min-width: 160px;
+  flex: 0 1 420px;
+  min-width: 0;
+}
+.findActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-0-5);
+  min-width: 0;
 }
 .findCount {
-  font-family: var(--font-mono);
+  min-inline-size: 5ch;
+  padding-inline: var(--space-1);
   font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
   color: var(--fg-subtle);
-  padding: 0 6px;
+  text-align: center;
   white-space: nowrap;
-  min-width: 56px;
 }
 .findCountNone {
   color: var(--danger);
 }
-.findSpacer {
-  flex: 1;
+.findClose {
+  margin-inline-start: auto;
 }
 
 @container console-find (max-width: 360px) {
   .find {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) repeat(3, 20px);
+    grid-template-columns: minmax(0, 1fr) auto;
   }
   .findField {
     grid-column: 1 / -1;
-    min-width: 0;
   }
-  .findSpacer {
-    display: none;
+  .findCount {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+
+@container console-find (width < 224px) {
+  .findField {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(var(--h-control-small), 1fr));
+    height: auto;
+    padding-block: var(--space-1);
+  }
+  .findField > :is(input, textarea) {
+    grid-column: 2 / -1;
+  }
+  .findField > input {
+    height: var(--h-control-small);
+  }
+  .findField > textarea {
+    height: auto;
   }
 }

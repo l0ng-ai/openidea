@@ -48,7 +48,7 @@ import {
   type GroupLayout,
   type TerminalTab,
 } from "./store";
-import { TerminalFindBar } from "./FindBar";
+import { openTerminalFind, TerminalFindBar } from "./FindBar";
 import styles from "./Terminal.module.css";
 
 const TAB_PREFIX = "openidea-terminal";
@@ -106,6 +106,20 @@ function paneMenu(e: MouseEvent, key: string) {
   const exited = session.state.status === "exited" || session.state.status === "error";
   const mac = usePlatform.getState().os === "macos";
   const items: MenuItem[] = [
+    { label: "Find in Terminal", icon: "search", shortcut: mac ? "⌘F" : undefined, run: openTerminalFind },
+    { kind: "action", action: "terminal.new" },
+    ...(exited ? [{ label: "Restart Session", icon: "rerun", run: () => session.restart() }] : []),
+    {
+      label: "Close Session",
+      icon: "close",
+      run: () =>
+        void requestCloseSession(key).then((closed) => {
+          if (!closed) return;
+          if (useTerminals.getState().tabs.length === 0) toolWindowService().hide("terminal");
+          else requestAnimationFrame(() => activeSession()?.focus());
+        }),
+    },
+    { kind: "separator" },
     {
       label: "Copy",
       icon: "copy",
@@ -124,24 +138,7 @@ function paneMenu(e: MouseEvent, key: string) {
     { kind: "separator" },
     { kind: "action", action: "terminal.splitRight" },
     { kind: "action", action: "terminal.splitDown" },
-    {
-      label: "Close Session",
-      icon: "close",
-      run: () =>
-        void requestCloseSession(key).then((closed) => {
-          if (!closed) return;
-          if (useTerminals.getState().tabs.length === 0) toolWindowService().hide("terminal");
-          else requestAnimationFrame(() => activeSession()?.focus());
-        }),
-    },
   ];
-  if (exited)
-    items.splice(
-      0,
-      0,
-      { label: "Restart Session", icon: "rerun", run: () => session.restart() },
-      { kind: "separator" },
-    );
   showContextMenu(e, items);
 }
 
