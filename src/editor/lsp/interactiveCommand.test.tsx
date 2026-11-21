@@ -143,7 +143,7 @@ describe("interactive code actions", () => {
   it("resolves a lazy action's edit even when it carries a follow-up command", async () => {
     // vtsls' Extract to constant: no edit, resolve data, and a command its client runs after the edit.
     const followUp = { title: "", command: "_typescript.didApplyRefactoring", arguments: [] };
-    const lazy: CodeAction = { ...action, command: followUp, data: { cacheId: 1 } };
+    const lazy: CodeAction = { ...action, command: followUp, data: '{"cacheId":1}' };
     const full: CodeAction = { ...lazy, edit: { files: [] } };
     resolveAction.mockResolvedValueOnce(ok(full));
     resolve.mockResolvedValue(ok(null));
