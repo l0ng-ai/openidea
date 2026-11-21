@@ -337,6 +337,12 @@ describe("catalogs", () => {
     expect(Object.keys(texts).sort()).toEqual([...SUPPORTED_LOCALES].sort());
   });
 
+  it("are the locales the backend picks from the OS language on first launch", () => {
+    const rust = readFileSync(join(LOCALES_DIR, "../../../crates/ide-workspace/src/settings.rs"), "utf8");
+    const list = /pub const UI_LOCALES: &\[&str\] = &\[([^\]]*)\]/.exec(rust)?.[1] ?? "";
+    expect([...list.matchAll(/"([^"]+)"/g)].map((m) => m[1]).sort()).toEqual([...SUPPORTED_LOCALES].sort());
+  });
+
   it("list every key once", () => {
     // JSON.parse keeps the last of two equal keys, so a merge that adds a key twice goes unnoticed.
     for (const dir of [LOCALES_DIR, join(LOCALES_DIR, "text")]) {
