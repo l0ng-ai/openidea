@@ -1,5 +1,5 @@
 /** Actions of the LSP editor layer (ids from keymaps/intellij-macos.ts). */
-import { isGenerateAction } from "./generate";
+import { generateActionIcon, isGenerateAction } from "./generate";
 import type { EditorView } from "@codemirror/view";
 import { executeAction, registerActions, type Action } from "@/platform/actions";
 import { activeEditor, editorsFor, registerSaveParticipant, whenSynced, type TextEditorHandle } from "@/editor/api";
@@ -29,6 +29,7 @@ import {
   startHierarchyRefactoring,
 } from "@/editor/refactor";
 import { evaluateWhen } from "@/platform/context";
+import { tx } from "@/platform/i18n";
 
 /** Editor actions apply to the active text editor unless a tool window or popup owns the keyboard. */
 export const EDITOR_WHEN = "textEditorActive && (editorFocus || !toolWindowFocus)";
@@ -374,7 +375,9 @@ export function registerLspActions(): () => void {
         runKindAction(v, "", {
           predicate: isGenerateAction,
           none: "Nothing to generate here",
-          label: "Generate",
+          label: tx("Generate"),
+          compact: true,
+          actionIcon: generateActionIcon,
         }),
       { keyWhen: GENERATE_KEY_WHEN },
     ),
