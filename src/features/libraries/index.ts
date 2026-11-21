@@ -12,8 +12,12 @@ import { commands, type LibraryGroup, type RequestId } from "@/bindings";
 import { mergeLibraryGroups } from "@/platform/libraries";
 import { isGradleBuildInput } from "@/platform/buildFiles";
 import { registerActions } from "@/platform/actions";
-import { isLibraryPath, registerEditorContribution, setLibraryRoots } from "@/editor/api";
-import { invalidateNavigationProviders } from "@/editor/navigationProviders";
+import {
+  invalidateNavigationProviders,
+  isLibraryPath,
+  registerEditorContribution,
+  setLibraryRoots,
+} from "@/editor/api";
 import { call, isCancelled, isTauri, nextRequestId, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { registerProjectViewRoot, type ProjectViewRootContribution } from "@/workbench/contributions";

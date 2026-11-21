@@ -4,6 +4,7 @@ import type { CompletionContext, CompletionResult } from "@codemirror/autocomple
 import {
   intentionProviders,
   intentionsChanged,
+  offsetsToRange,
   quickFixProviders,
   registerEditorContribution,
   whenSynced,
@@ -11,7 +12,6 @@ import {
   type EditorDocContext,
 } from "@/editor/api";
 import { setFileDiagnostics } from "@/editor/lsp/diagnostics";
-import { offsetsToRange } from "@/editor/lsp/positions";
 import { call, commands, isTauri, nextRequestId, type DependencyVersions, type RequestId } from "@/platform/ipc";
 import {
   DEPENDENCY_INSPECTION,

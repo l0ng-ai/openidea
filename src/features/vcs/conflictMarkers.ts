@@ -5,9 +5,8 @@
  */
 import { ViewPlugin } from "@codemirror/view";
 import type { Text } from "@codemirror/state";
-import { registerEditorContribution } from "@/editor/api";
+import { offsetsToRange, registerEditorContribution } from "@/editor/api";
 import { setFileDiagnostics } from "@/editor/lsp/diagnostics";
-import { offsetsToRange } from "@/editor/lsp/positions";
 import type { Diagnostic } from "@/bindings";
 import { tx } from "@/platform/i18n";
 import { CONFLICT_MARKERS_PRODUCER } from "@/platform/inspections";
