@@ -49,10 +49,15 @@ const rows = () => screen.getAllByRole("treeitem").map((r) => r.textContent);
 const selected = () => screen.queryByRole("treeitem", { selected: true });
 const functionsPath = "/p/functions.ts";
 
+function disableNarrowing() {
+  fireEvent.click(screen.getByRole("button", { name: "View Options" }));
+  fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Narrow down on typing", checked: true }));
+}
+
 function openFunctions(narrowDown: boolean) {
   useTracking.setState({ caret: { path: functionsPath, doc: 1, line: 6, col: 5, offset: 128 } });
   const input = open([item("process", "function", 0), item("separate", "function", 6)], functionsPath);
-  if (!narrowDown) fireEvent.click(screen.getByLabelText("Narrow down on typing"));
+  if (!narrowDown) disableNarrowing();
   return input;
 }
 
@@ -77,7 +82,7 @@ describe("File Structure popup", () => {
     const input = open();
     fireEvent.change(input, { target: { value: "creat" } });
     expect(rows()).toEqual(["OrderController", "create"]);
-    fireEvent.click(screen.getByLabelText("Narrow down on typing"));
+    disableNarrowing();
     expect(useStructureOptions.getState().narrowDown).toBe(false);
     expect(rows()).toEqual(["OrderController", "list", "create", "helper"]);
   });
