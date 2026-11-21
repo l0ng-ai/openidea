@@ -211,9 +211,25 @@ describe("disk directory comparison", () => {
     await waitFor(() => expect(mocks.remove).toHaveBeenCalledWith("/p/left/only-left.txt"));
   });
 
+  it("compares by the chosen mode, recomparing and remembering it", async () => {
+    localStorage.removeItem("openidea.directoryCompare.mode");
+    const view = setup();
+    await waitFor(() => expect(mocks.compare).toHaveBeenCalledTimes(1));
+    expect(mocks.compare.mock.calls[0]![2]).toBe("content");
+    fireEvent.click(screen.getByRole("button", { name: "Compare by" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Size and timestamp" }));
+    await waitFor(() => expect(mocks.compare).toHaveBeenCalledTimes(2));
+    expect(mocks.compare.mock.calls[1]![2]).toBe("sizeAndTimestamp");
+    view.unmount();
+    setup();
+    await waitFor(() => expect(mocks.compare).toHaveBeenCalledTimes(3));
+    expect(mocks.compare.mock.calls[2]![2]).toBe("sizeAndTimestamp");
+    localStorage.removeItem("openidea.directoryCompare.mode");
+  });
+
   it("streams progress, cancels on demand and on close, and ignores stale results after refresh", async () => {
     let resolve!: (value: unknown) => void;
-    mocks.compare.mockImplementationOnce((_l, _r, _request, channel) => {
+    mocks.compare.mockImplementationOnce((_l, _r, _mode, _request, channel) => {
       channel.onmessage({ scanned: 20, compared: 5, total: 10, bytesRead: 100, path: "big" });
       return new Promise((r) => {
         resolve = r;
@@ -221,7 +237,7 @@ describe("disk directory comparison", () => {
     });
     const view = setup();
     expect(await screen.findByText("Compared 5 of 10 entries")).toBeInTheDocument();
-    const request = mocks.compare.mock.calls[0]![2];
+    const request = mocks.compare.mock.calls[0]![3];
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(mocks.cancel).toHaveBeenCalledWith(request);
     view.unmount();
