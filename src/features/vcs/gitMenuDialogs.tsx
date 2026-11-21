@@ -140,10 +140,12 @@ export function showPullDialog(repo?: string | null) {
 
 /** IDEA's Git Root choice: shown only when the project holds several repositories. */
 export function RepoPicker({
+  id,
   repo,
   onChange,
   className,
 }: {
+  id?: string;
   repo: string | null;
   onChange: (root: string) => void;
   className?: string;
@@ -152,6 +154,7 @@ export function RepoPicker({
   if (roots.length < 2) return null;
   return (
     <Select
+      id={id}
       aria-label="Repository"
       className={className}
       value={repo ?? roots[0] ?? null}
