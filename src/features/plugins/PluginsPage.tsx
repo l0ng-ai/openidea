@@ -166,11 +166,13 @@ function PluginIcon({
   id,
   icon,
   name,
+  detail,
 }: {
   id: string;
   icon: PluginIconData | null | undefined;
   /** Without an icon: its first letter on a tint of its own instead of the generic icon. */
   name?: string;
+  detail?: boolean;
 }) {
   if (!icon && name) {
     const { letter, tone } = monogram(id, name);
@@ -183,7 +185,7 @@ function PluginIcon({
   // A plugin's own icon fills the tile, as the initials do; the generic one sits on a plate.
   return (
     <span className={clsx(styles.icon, icon && styles.ownIcon)} aria-hidden>
-      <Icon name={pluginIconName(id, icon)} size={icon ? 40 : 20} />
+      <Icon name={pluginIconName(id, icon)} size={icon ? (detail ? 48 : 40) : 20} />
     </span>
   );
 }
@@ -258,7 +260,6 @@ function InstalledRow({ plugin, selected, onSelect }: { plugin: PluginInfo; sele
             {plugin.source === "installed" && isExample(plugin) && <ExampleTag />}
           </span>
           <span className={styles.rowMeta}>
-            <span>{plugin.version}</span>
             <span className={styles.rowVendor}>{vendorOf(plugin.authors) || plugin.id}</span>
             {plugin.source !== "installed" && (
               <span className={styles.devTag}>{plugin.source === "linked" ? tx("linked") : tx("dev")}</span>
@@ -327,7 +328,6 @@ function CatalogRow({ entry, selected, onSelect }: { entry: CatalogPlugin; selec
         <span className={styles.rowText}>
           <span className={styles.rowName}>{entry.name}</span>
           <span className={styles.rowMeta}>
-            <span>{entry.version}</span>
             <span className={styles.rowVendor}>{vendorOf(entry.authors) || entry.id}</span>
           </span>
         </span>
@@ -659,32 +659,52 @@ function NetHostRow({ plugin, host, disabled }: { plugin: PluginInfo; host: stri
   );
 }
 
-function Homepage({ value }: { value: string }) {
+function HomepageLink({ value, children }: { value?: string | null; children: ReactNode }) {
   let isWebUrl = false;
-  try {
-    const { protocol } = new URL(value);
-    isWebUrl = protocol === "http:" || protocol === "https:";
-  } catch {
-    // Malformed manifest values remain readable as plain text.
+  if (value) {
+    try {
+      const { protocol } = new URL(value);
+      isWebUrl = value === value.trim() && (protocol === "http:" || protocol === "https:");
+    } catch {
+      // Malformed manifest values remain readable as plain text.
+    }
   }
+  if (!value || !isWebUrl) return children;
+  return (
+    <a
+      href={value}
+      className={styles.homepageLink}
+      onClick={(event) => {
+        event.preventDefault();
+        void openExternalUrl(value);
+      }}
+    >
+      {children}
+    </a>
+  );
+}
+
+function Homepage({ value }: { value: string }) {
   return (
     <dd className={clsx(styles.mono, styles.homepage)}>
-      {isWebUrl ? (
-        <a
-          href={value}
-          className={styles.homepageLink}
-          onClick={(event) => {
-            event.preventDefault();
-            void openExternalUrl(value);
-          }}
-        >
-          {value}
-        </a>
-      ) : (
-        value
-      )}
+      <HomepageLink value={value}>{value}</HomepageLink>
     </dd>
   );
+}
+
+function authorContacts(entries: readonly string[]) {
+  const emails = new Set<string>();
+  const authors = entries
+    .map((author) =>
+      author
+        .replace(/(?:^|\s+|<)([^\s<>@]+@[^\s<>@]+\.[^\s<>@]+)>?(?=\s|$)/g, (_, email: string) => {
+          emails.add(email);
+          return "";
+        })
+        .trim(),
+    )
+    .filter(Boolean);
+  return { authors, emails };
 }
 
 function InstalledDetails({ plugin }: { plugin: PluginInfo }) {
@@ -694,6 +714,17 @@ function InstalledDetails({ plugin }: { plugin: PluginInfo }) {
   const homepage = useHomepage(plugin);
   const status = STATUS[plugin.status];
   const [confirmUninstall, setConfirmUninstall] = useState(false);
+  const { authors, emails } = authorContacts(plugin.authors);
+  const author = vendorOf(authors) || plugin.publisher;
+  const toggle = (
+    <Button
+      variant={plugin.enabled ? "secondary" : "primary"}
+      disabled={busy}
+      onClick={() => void toggleEnabled(plugin)}
+    >
+      {plugin.enabled ? (plugin.status === "failed" ? "Restart" : "Disable") : "Enable"}
+    </Button>
+  );
 
   const overview = (
     <>
@@ -706,25 +737,41 @@ function InstalledDetails({ plugin }: { plugin: PluginInfo }) {
 
       <dl className={styles.facts}>
         <dt>
-          <T>Id</T>
+          <T>ID:</T>
         </dt>
         <dd className={styles.mono}>{plugin.id}</dd>
         <dt>
-          <T>Location</T>
+          <T>Location:</T>
         </dt>
         <dd className={styles.mono} title={plugin.path}>
           {plugin.path}
         </dd>
         <dt>
-          <T>Code</T>
+          <T>Code:</T>
         </dt>
         <dd>{plugin.hasCode ? tx("WebAssembly component (sandboxed)") : tx("None — contributions only")}</dd>
         {homepage && (
           <>
             <dt>
-              <T>Homepage</T>
+              <T>Homepage:</T>
             </dt>
             <Homepage value={homepage} />
+          </>
+        )}
+        {emails.size > 0 && (
+          <>
+            <dt>
+              <T>Mail:</T>
+            </dt>
+            <dd className={clsx(styles.homepage, styles.mono)}>{[...emails].join(", ")}</dd>
+          </>
+        )}
+        {plugin.source === "installed" && (
+          <>
+            <dt>
+              <T>Signed by:</T>
+            </dt>
+            <dd className={styles.mono}>{plugin.publisher || tx("Unsigned")}</dd>
           </>
         )}
       </dl>
@@ -774,75 +821,79 @@ function InstalledDetails({ plugin }: { plugin: PluginInfo }) {
   return (
     <div className={styles.details} aria-label={`${plugin.name} details`}>
       <header className={styles.header}>
-        <div className={styles.titleLine}>
-          <Badge tone={status.tone}>{status.label}</Badge>
-          {plugin.source !== "installed" && (
-            <Badge tone="warning">{plugin.source === "linked" ? tx("Linked plugin") : tx("Project plugin")}</Badge>
-          )}
-          {plugin.source === "installed" && isExample(plugin) && <ExampleTag />}
-          {plugin.source === "installed" &&
-            (plugin.publisher ? (
-              <Badge tone="success">{tx`Signed by ${plugin.publisher}`}</Badge>
-            ) : (
-              <Badge tone="neutral">{tx("Unsigned")}</Badge>
-            ))}
+        <div className={clsx(styles.detailHeader, styles.installedHeader)}>
+          <div className={styles.detailIdentity}>
+            <PluginIcon id={plugin.id} icon={plugin.icon} name={plugin.name} detail />
+            <div className={styles.detailSummary}>
+              <h2 className={styles.title}>{plugin.name}</h2>
+              <div className={styles.detailMetadata}>
+                <span className={styles.version}>
+                  <Icon name="tag" size={12} />
+                  {plugin.version}
+                </span>
+                {author && (
+                  <span className={styles.detailAuthor}>
+                    <Icon name="review-default-avatar" size={12} />
+                    <HomepageLink value={homepage}>{author}</HomepageLink>
+                  </span>
+                )}
+              </div>
+              <div className={styles.titleLine}>
+                <Badge tone={status.tone}>{status.label}</Badge>
+                {plugin.source !== "installed" && (
+                  <Badge tone="warning">
+                    {plugin.source === "linked" ? tx("Linked plugin") : tx("Project plugin")}
+                  </Badge>
+                )}
+                {plugin.source === "installed" && isExample(plugin) && <ExampleTag />}
+              </div>
+            </div>
+          </div>
+          <div className={styles.installedActions}>
+            {plugin.source === "installed" &&
+              (confirmUninstall ? (
+                <>
+                  <Button
+                    variant="primary"
+                    disabled={busy}
+                    onClick={() => void uninstallPlugin(plugin.id)}
+                    aria-label={tx`Confirm uninstall ${plugin.name}`}
+                  >
+                    <T>Uninstall</T>
+                  </Button>
+                  <Button variant="ghost" onClick={() => setConfirmUninstall(false)}>
+                    <T>Cancel</T>
+                  </Button>
+                </>
+              ) : (
+                <Button disabled={busy} onClick={() => setConfirmUninstall(true)}>
+                  <T>Uninstall…</T>
+                </Button>
+              ))}
+            {toggle}
+            <IconButton
+              icon="refresh"
+              title="Reload from disk"
+              disabled={busy}
+              onClick={() => void reloadPlugin(plugin.id)}
+            />
+          </div>
         </div>
-        <h2 className={styles.title}>{plugin.name}</h2>
-        {plugin.authors.length > 0 && <div className={styles.authors}>{vendorOf(plugin.authors)}</div>}
-        <div className={styles.headerActions}>
-          {update && (
-            <Button
-              size="small"
-              variant="primary"
-              disabled={busy || installing}
-              onClick={() => void installFromMarket(update.id)}
-            >
-              {tx`Update to ${update.version}`}
-            </Button>
-          )}
-          <Button
-            size="small"
-            variant={plugin.enabled ? "secondary" : "primary"}
-            disabled={busy}
-            onClick={() => void toggleEnabled(plugin)}
-          >
-            {plugin.enabled ? (plugin.status === "failed" ? "Restart" : "Disable") : "Enable"}
-          </Button>
-          <IconButton
-            icon="refresh"
-            title="Reload from disk"
-            disabled={busy}
-            onClick={() => void reloadPlugin(plugin.id)}
-          />
-          {plugin.previousVersion && (
-            <Button size="small" disabled={busy} onClick={() => void rollBackPlugin(plugin.id)}>
-              {tx`Roll Back to ${plugin.previousVersion}`}
-            </Button>
-          )}
-          {plugin.source === "installed" &&
-            (confirmUninstall ? (
-              <>
-                <Button
-                  size="small"
-                  variant="primary"
-                  disabled={busy}
-                  onClick={() => void uninstallPlugin(plugin.id)}
-                  aria-label={tx`Confirm uninstall ${plugin.name}`}
-                >
-                  <T>Uninstall</T>
-                </Button>
-                <Button size="small" variant="ghost" onClick={() => setConfirmUninstall(false)}>
-                  <T>Cancel</T>
-                </Button>
-              </>
-            ) : (
-              <Button size="small" disabled={busy} onClick={() => setConfirmUninstall(true)}>
-                <T>Uninstall…</T>
+        {(update || plugin.previousVersion || busy) && (
+          <div className={styles.installedActions}>
+            {update && (
+              <Button variant="primary" disabled={busy || installing} onClick={() => void installFromMarket(update.id)}>
+                {tx`Update to ${update.version}`}
               </Button>
-            ))}
-          <span className={styles.version}>{plugin.version}</span>
-          {busy && <Spinner size={14} label="Working" />}
-        </div>
+            )}
+            {plugin.previousVersion && (
+              <Button size="small" disabled={busy} onClick={() => void rollBackPlugin(plugin.id)}>
+                {tx`Roll Back to ${plugin.previousVersion}`}
+              </Button>
+            )}
+            {busy && <Spinner size={14} label="Working" />}
+          </div>
+        )}
       </header>
       <DetailTabs notes={plugin.changeNotes} overview={overview} />
     </div>
@@ -861,7 +912,7 @@ function CatalogDetails({ entry }: { entry: CatalogPlugin }) {
       {entry.description && <p className={styles.description}>{entry.description}</p>}
       <dl className={styles.facts}>
         <dt>
-          <T>Id</T>
+          <T>ID:</T>
         </dt>
         <dd className={styles.mono}>{entry.id}</dd>
         <dt>
@@ -871,13 +922,13 @@ function CatalogDetails({ entry }: { entry: CatalogPlugin }) {
           {entry.path}
         </dd>
         <dt>
-          <T>Code</T>
+          <T>Code:</T>
         </dt>
         <dd>{entry.hasCode ? tx("WebAssembly component (sandboxed)") : tx("None — contributions only")}</dd>
         {entry.homepage && (
           <>
             <dt>
-              <T>Homepage</T>
+              <T>Homepage:</T>
             </dt>
             <Homepage value={entry.homepage} />
           </>
@@ -1079,10 +1130,12 @@ const publisherOf = (m: MarketPlugin) => m.publisherName || m.publisher;
 function MarketAction({
   entry,
   compact,
+  selected,
   onInstalled,
 }: {
   entry: MarketPlugin;
   compact?: boolean;
+  selected?: boolean;
   onInstalled?: (id: string) => void;
 }) {
   const installing = usePlugins((s) => s.installing);
@@ -1096,8 +1149,9 @@ function MarketAction({
   const label = update ? (compact ? tx("Update") : tx`Update to ${entry.version}`) : tx("Install");
   return (
     <Button
-      size="small"
-      variant={update || !compact ? "primary" : "secondary"}
+      size={compact ? "small" : "normal"}
+      variant={update || !compact || selected ? "primary" : "secondary"}
+      className={selected && !update ? styles.selectedInstall : undefined}
       disabled={installing}
       aria-label={compact ? `${update ? tx("Update") : tx("Install")} ${entry.name}` : undefined}
       onClick={(e) => {
@@ -1111,6 +1165,7 @@ function MarketAction({
 }
 
 function MarketRow({ entry, selected, onSelect }: { entry: MarketPlugin; selected: boolean; onSelect: () => void }) {
+  const example = isExample(entry);
   return (
     <li className={clsx(styles.row, selected && styles.rowSelected)}>
       <button
@@ -1124,21 +1179,22 @@ function MarketRow({ entry, selected, onSelect }: { entry: MarketPlugin; selecte
         <span className={styles.rowText}>
           <span className={styles.rowTitle}>
             <span className={styles.rowName}>{entry.name}</span>
-            {isExample(entry) && <ExampleTag />}
+            {example && <ExampleTag />}
           </span>
-          <span className={styles.rowMeta}>
-            {entry.downloads != null && (
-              <span className={styles.downloads} title={tx`${entry.downloads} downloads`}>
-                <Icon name="download" size={12} />
-                {formatDownloads(entry.downloads)}
-              </span>
-            )}
-            <span>{entry.version}</span>
-            {!isExample(entry) && <span className={styles.rowVendor}>{publisherOf(entry)}</span>}
-          </span>
+          {(entry.downloads != null || !example) && (
+            <span className={styles.rowMeta}>
+              {entry.downloads != null && (
+                <span className={styles.downloads} title={tx`${entry.downloads} downloads`}>
+                  <Icon name="download" size={12} />
+                  {formatDownloads(entry.downloads)}
+                </span>
+              )}
+              {!example && <span className={styles.rowVendor}>{publisherOf(entry)}</span>}
+            </span>
+          )}
         </span>
       </button>
-      <MarketAction entry={entry} compact />
+      <MarketAction entry={entry} compact selected={selected} />
     </li>
   );
 }
@@ -1190,26 +1246,35 @@ function MarketDetails({
   onInstalled: (id: string) => void;
 }) {
   const example = isExample(entry);
+  const { authors, emails } = authorContacts(entry.authors ?? []);
   const overview = (
     <>
       {entry.description && <p className={styles.description}>{entry.description}</p>}
       <dl className={styles.facts}>
         <dt>
-          <T>Id</T>
+          <T>ID:</T>
         </dt>
         <dd className={styles.mono}>{entry.id}</dd>
-        <dt>
-          <T>Category</T>
-        </dt>
-        <dd>{categoriesOf(entry).map(categoryLabel).join(", ")}</dd>
         {entry.homepage && (
           <>
             <dt>
-              <T>Homepage</T>
+              <T>Homepage:</T>
             </dt>
             <Homepage value={entry.homepage} />
           </>
         )}
+        {emails.size > 0 && (
+          <>
+            <dt>
+              <T>Mail:</T>
+            </dt>
+            <dd className={clsx(styles.homepage, styles.mono)}>{[...emails].join(", ")}</dd>
+          </>
+        )}
+        <dt>
+          <T>Signed by:</T>
+        </dt>
+        <dd className={styles.mono}>{publisherOf(entry)}</dd>
         {entry.installed && (
           <>
             <dt>
@@ -1234,23 +1299,36 @@ function MarketDetails({
   );
   return (
     <div className={styles.details} aria-label={`${entry.name} details`}>
-      <header className={styles.header}>
-        <div className={styles.titleLine}>
-          {example && <ExampleTag />}
-          <Badge tone="success">{tx`Signed by ${publisherOf(entry)}`}</Badge>
-          {entry.downloads != null && (
-            <span className={styles.downloads}>
-              <Icon name="download" size={12} />
-              {tx`${formatDownloads(entry.downloads)} downloads`}
-            </span>
-          )}
+      <header className={styles.detailHeader}>
+        <div className={styles.detailIdentity}>
+          <PluginIcon id={entry.id} icon={entry.icon} name={entry.name} detail />
+          <div className={styles.detailSummary}>
+            <h2 className={styles.title}>{entry.name}</h2>
+            <div className={styles.detailMetadata}>
+              {entry.downloads != null && (
+                <span className={styles.downloads} title={tx`${entry.downloads} downloads`}>
+                  <Icon name="download" size={12} />
+                  {formatDownloads(entry.downloads)}
+                </span>
+              )}
+              <span className={styles.version}>
+                <Icon name="tag" size={12} />
+                {entry.version}
+              </span>
+              <span className={styles.detailAuthor}>
+                <Icon name="review-default-avatar" size={12} />
+                <HomepageLink value={entry.homepage}>{vendorOf(authors) || publisherOf(entry)}</HomepageLink>
+              </span>
+            </div>
+            <div className={styles.titleLine}>
+              {categoriesOf(entry).map((category) => (
+                <Badge key={category}>{categoryLabel(category)}</Badge>
+              ))}
+              {example && <ExampleTag />}
+            </div>
+          </div>
         </div>
-        <h2 className={styles.title}>{entry.name}</h2>
-        <div className={styles.authors}>{entry.authors?.length ? vendorOf(entry.authors) : publisherOf(entry)}</div>
-        <div className={styles.headerActions}>
-          <MarketAction entry={entry} onInstalled={onInstalled} />
-          <span className={styles.version}>{entry.version}</span>
-        </div>
+        <MarketAction entry={entry} onInstalled={onInstalled} />
       </header>
       {!entry.compatible && (
         <p className={clsx(styles.notice, styles.detailsNotice)} role="note">

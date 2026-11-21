@@ -184,10 +184,9 @@ marked directory are not marked again.",
             }
             let deadline = Instant::now() + Duration::from_millis(timeout.max(0) as u64);
             let cancel = call.cancel.clone();
-            let marks = Marks {
-                root: call.root().to_path_buf(),
-                excludes: FileMask::new(&[], &call.project().search_excludes()).ok(),
-            };
+            // Matched from the root holding the directory: an attached project has its own exclusions.
+            let root = call.project().root_of(&dir);
+            let marks = Marks { excludes: FileMask::new(&[], &call.project().search_excludes_in(&root)).ok(), root };
             // The directory itself, when it or one above it is left out.
             let root_mark = marker(ide_index::walk_skips(call.root(), &dir), marks.ide_excluded(&dir, true));
             let mut tree = TreeRender {

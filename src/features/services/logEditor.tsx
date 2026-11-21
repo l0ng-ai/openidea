@@ -398,10 +398,10 @@ function DockerLogEditorBody({ input, data }: { input: EditorInput; data: Docker
     };
 
     const request = nextRequestId();
-    const channel = new Channel<DockerLogLine>();
-    channel.onmessage = (line) => {
+    const channel = new Channel<DockerLogLine[]>();
+    channel.onmessage = (lines) => {
       if (stopped) return;
-      buffer.push(line.text.replace(ANSI, ""));
+      for (const line of lines) buffer.push(line.text.replace(ANSI, ""));
       frame ||= requestAnimationFrame(flush);
     };
     call(

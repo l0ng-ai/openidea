@@ -398,6 +398,10 @@ export const viewerTheme = EditorView.theme(
       fontFamily: "var(--font-ui)",
       fontSize: "var(--fs-small)",
       cursor: "pointer",
+      // IDEA draws a wave where an unchanged fragment is folded (DiffLineSeparatorRenderer).
+      textDecoration: "underline wavy var(--diff-separator-wave)",
+      WebkitTextDecoration: "underline wavy var(--diff-separator-wave)",
+      textUnderlineOffset: "3px",
     },
     ".cm-collapsedLines:before": { content: "none" },
     ".cm-collapsedLines:after": { content: "none" },

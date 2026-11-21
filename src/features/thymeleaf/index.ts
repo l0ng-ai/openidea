@@ -4,9 +4,8 @@
  * expression's key that key in each of the message bundle's `.properties` files.
  */
 import { Text } from "@codemirror/state";
+import { offsetsToRange, registerNavigationProvider } from "@/editor/api";
 import { docOf } from "@/editor/lsp/lsp";
-import { offsetsToRange } from "@/editor/lsp/positions";
-import { registerNavigationProvider } from "@/editor/navigationProviders";
 import { call, commands, type Location } from "@/platform/ipc";
 import {
   fragmentDefinition,

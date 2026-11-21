@@ -47,10 +47,14 @@ pub struct Project {
     pub structure: Arc<StructureService>,
     /// Roots auto-detected from build files; see [`Project::roots`].
     pub detected_roots: Arc<RwLock<Vec<SourceFolder>>>,
+    /// The excluded folders of the workspace's other projects; see [`member_excludes`].
+    pub(crate) member_excludes: MemberExcludes,
     /// Per-project cache directory (build tool sync results…).
     pub cache_dir: PathBuf,
     /// Superseded launch snapshots retained until this project session ends.
     pub(crate) java_launch_snapshots: Mutex<crate::ops::java::cache::Session>,
+    /// Java launches waiting for their build, which can share one Maven run.
+    pub(crate) java_launches_waiting: crate::ops::java::cache::Waiting,
     /// Reasons this window was already told why Kotlin is debugged with kotlin-debug-adapter.
     pub(crate) kotlin_debug_notices: Mutex<HashSet<&'static str>>,
     /// Database tool window: data sources and their connections.
@@ -121,7 +125,8 @@ impl Host {
         }
         let settings = SettingsStore::load(&self.config_dir, Some(&root));
         let detected_roots = Arc::new(RwLock::new(ide_workspace::roots::detect(&root)));
-        let excludes = exclude_globs(&root, &settings.effective(), &detected_roots.read());
+        let member_excludes: MemberExcludes = Arc::new(RwLock::new(member_excludes(&settings, &root)));
+        let excludes = exclude_globs(&root, &settings.effective(), &detected_roots.read(), &member_excludes.read());
         let build_cache = self.local_data_dir.join("cache").join(project_key(&root)).join("build");
         let extra_roots = content_roots(&settings.effective(), &root, &build_cache, trusted.load(Ordering::Acquire));
         mark("roots");
@@ -145,7 +150,7 @@ impl Host {
         let index = ProjectIndex::open(
             &root,
             &self.local_data_dir.join("index").join(&project_key),
-            index_roots(&root, extra_roots.clone()),
+            index_roots(&root, extra_roots.clone(), &settings.effective(), &member_excludes.read()),
             excludes.clone(),
             languages.clone(),
             self.syntax(),
@@ -385,6 +390,7 @@ impl Host {
             let sink = sink.clone();
             let root = root.clone();
             let detected_roots = detected_roots.clone();
+            let member_excludes = member_excludes.clone();
             let history = history.clone();
             let remote = self.remote.clone();
             let runtime = self.runtime.clone();
@@ -447,12 +453,15 @@ impl Host {
                         if *detected_roots.read() != fresh {
                             // Detected excluded folders (`target`, `build`) leave the index too.
                             let effective = settings.effective();
+                            let members = member_excludes.read();
                             index.set_scope(
                                 index_roots(
                                     &root,
                                     content_roots(&effective, &root, &build_cache, trusted.load(Ordering::Acquire)),
+                                    &effective,
+                                    &members,
                                 ),
-                                exclude_globs(&root, &effective, &fresh),
+                                exclude_globs(&root, &effective, &fresh, &members),
                             );
                             *detected_roots.write() = fresh;
                             sink.emit(IdeEvent::ProjectRootsChanged { root: root.clone().into() });
@@ -569,9 +578,10 @@ impl Host {
         let content_watchers = extra_roots
             .iter()
             .filter_map(|r| {
+                let globs = root_globs(&settings.effective(), &member_excludes.read(), r);
                 let w = content_root_watcher(
                     r,
-                    &excludes,
+                    globs.as_deref().unwrap_or(&excludes),
                     &sink,
                     &index,
                     &documents,
@@ -625,10 +635,12 @@ impl Host {
             structure: Arc::new(StructureService::new(syntax.clone())),
             syntax,
             detected_roots,
+            member_excludes,
             cache_dir: self.local_data_dir.join("cache").join(&project_key),
             java_launch_snapshots: Mutex::new(crate::ops::java::cache::Session::new(
                 self.local_data_dir.join("cache").join(&project_key).join("build"),
             )),
+            java_launches_waiting: Default::default(),
             kotlin_debug_notices: Mutex::default(),
             db,
             http_history,
@@ -851,10 +863,12 @@ impl Host {
             structure: Arc::new(StructureService::new(syntax.clone())),
             syntax,
             detected_roots: Arc::default(),
+            member_excludes: Arc::default(),
             cache_dir: self.local_data_dir.join("cache").join(&project_key),
             java_launch_snapshots: Mutex::new(crate::ops::java::cache::Session::new(
                 self.local_data_dir.join("cache").join(&project_key).join("build"),
             )),
+            java_launches_waiting: Default::default(),
             kotlin_debug_notices: Mutex::default(),
             db,
             http_history,
@@ -1244,8 +1258,23 @@ impl Project {
     /// excluded roots, the ignored names and the "Exclude files" patterns (files,
     /// and everything under such folders).
     pub fn search_excludes(&self) -> Vec<String> {
-        let mut out: Vec<String> =
-            self.roots().excluded_globs().iter().map(|d| format!("{}/**", d.trim_start_matches('/'))).collect();
+        let mut folders = self.roots().excluded_globs();
+        folders.extend(nested_member_globs(&self.root, &self.member_excludes.read()));
+        self.search_masks(&folders)
+    }
+
+    /// [`Self::search_excludes`] for paths below `dir` (the project folder or a content root),
+    /// relative to it: an attached project's own excluded folders apply there, not this project's.
+    pub fn search_excludes_in(&self, dir: &Path) -> Vec<String> {
+        let own = self.member_excludes.read().get(dir).cloned();
+        match own {
+            Some(own) => self.search_masks(&own),
+            None => self.search_excludes(),
+        }
+    }
+
+    fn search_masks(&self, folders: &[String]) -> Vec<String> {
+        let mut out: Vec<String> = folders.iter().map(|d| format!("{}/**", d.trim_start_matches('/'))).collect();
         let settings = self.settings.effective();
         let names =
             settings.files.ignored_names.iter().cloned().chain(settings.project_structure.exclude_file_patterns());
@@ -1277,7 +1306,7 @@ impl Project {
         let Some(root) = root else {
             return ide_lsp::CandidateFiles::default();
         };
-        let mut exclude = self.search_excludes();
+        let mut exclude = self.search_excludes_in(&root);
         // Directories the server analyses fully: their files are never read.
         exclude.extend(q.skip.iter().filter_map(|dir| {
             let rel = dir.strip_prefix(&root).ok()?.to_str()?.replace('\\', "/");
@@ -1296,7 +1325,28 @@ impl Project {
 
     /// `files.exclude`, the ignored names and the effective excluded roots (user-marked and detected).
     pub fn exclude_globs(&self) -> Vec<String> {
-        exclude_globs(&self.root, &self.settings.effective(), &self.detected_roots.read())
+        exclude_globs(&self.root, &self.settings.effective(), &self.detected_roots.read(), &self.member_excludes.read())
+    }
+
+    /// The exclude globs below `dir` (the project folder or a content root), relative to it: a
+    /// project attached to this one has its own excluded folders, the other roots share these.
+    pub fn exclude_globs_in(&self, dir: &Path) -> Vec<String> {
+        let own = root_globs(&self.settings.effective(), &self.member_excludes.read(), dir);
+        own.unwrap_or_else(|| self.exclude_globs())
+    }
+
+    /// The workspace projects outside this one's folder, which have exclusions of their own.
+    pub fn attached_roots(&self) -> Vec<PathBuf> {
+        self.member_excludes.read().keys().filter(|r| !r.starts_with(&self.root)).cloned().collect()
+    }
+
+    /// Where `path`'s exclusions are matched from: the workspace project outside this one holding
+    /// it, else the project folder (whose globs cover the projects inside it, anchored there).
+    pub fn root_of(&self, path: &Path) -> PathBuf {
+        let members = self.member_excludes.read();
+        let outside = members.keys().filter(|r| !r.starts_with(&self.root) && path.starts_with(r));
+        let member = outside.max_by_key(|r| r.components().count());
+        member.cloned().unwrap_or_else(|| self.root.clone())
     }
 
     /// Project Structure content roots besides the project folder (existing directories).
@@ -1321,6 +1371,7 @@ impl Project {
         if self.light {
             return;
         }
+        *self.member_excludes.write() = member_excludes(&self.settings, &self.root);
         let (roots, excludes) = (self.content_roots(), self.exclude_globs());
         self.lsp.set_content_roots(language_server_roots(&self.root, roots.clone()));
         self.lsp.set_jdtls_import_roots(ide_build::maven_external_roots(
@@ -1329,12 +1380,16 @@ impl Project {
             &self.settings.effective().languages.java.maven,
             self.is_trusted(),
         ));
-        self.index.set_scope(index_roots(&self.root, roots.clone()), excludes.clone());
+        let settings = self.settings.effective();
+        self.index.set_scope(
+            index_roots(&self.root, roots.clone(), &settings, &self.member_excludes.read()),
+            excludes.clone(),
+        );
         self.watcher.set_excludes(&excludes);
         let mut watchers = self.content_watchers.lock();
         watchers.retain(|(p, _)| roots.contains(p));
-        for (_, w) in watchers.iter() {
-            w.set_excludes(&excludes);
+        for (p, w) in watchers.iter() {
+            w.set_excludes(&self.exclude_globs_in(p));
         }
         for r in roots {
             if watchers.iter().any(|(p, _)| *p == r) {
@@ -1342,7 +1397,7 @@ impl Project {
             }
             if let Some(w) = content_root_watcher(
                 &r,
-                &excludes,
+                &self.exclude_globs_in(&r),
                 &self.sink,
                 &self.index,
                 &self.documents,
@@ -1426,10 +1481,68 @@ pub fn history_retention(settings: &ide_core::settings::Settings) -> ide_workspa
 }
 
 /// Only explicit workspace containers exclude their root from indexed content.
-fn index_roots(root: &Path, folders: Vec<PathBuf>) -> ide_index::IndexRoots {
+fn index_roots(
+    root: &Path,
+    folders: Vec<PathBuf>,
+    settings: &ide_core::settings::Settings,
+    members: &BTreeMap<PathBuf, Vec<String>>,
+) -> ide_index::IndexRoots {
     let container =
         ide_workspace::workspace::Workspace::load(root).ok().flatten().is_some_and(|w| w.is_container(root));
-    ide_index::IndexRoots { include_root: !container, folders: folders.into_iter().filter(|p| p != root).collect() }
+    let folders: Vec<PathBuf> = folders.into_iter().filter(|p| p != root).collect();
+    let excludes = folders.iter().filter_map(|f| Some((f.clone(), root_globs(settings, members, f)?))).collect();
+    ide_index::IndexRoots { include_root: !container, folders, excludes }
+}
+
+/// Excluded folders (as `/`-anchored globs) by workspace project.
+type MemberExcludes = Arc<RwLock<BTreeMap<PathBuf, Vec<String>>>>;
+
+/// The excluded folders of the workspace's projects besides `root`, each from its own Project
+/// Structure settings and build files (as when it is opened alone), relative to its folder.
+fn member_excludes(settings: &SettingsStore, root: &Path) -> BTreeMap<PathBuf, Vec<String>> {
+    let Ok(Some(workspace)) = ide_workspace::workspace::Workspace::load(root) else { return BTreeMap::new() };
+    // A workspace folder is no project of its own: its excluded folders apply in every member.
+    let shared = match workspace.is_container(root) {
+        true => linked_roots(root, &settings.effective(), &[]).excluded_globs(),
+        false => Vec::new(),
+    };
+    workspace
+        .projects
+        .into_iter()
+        .filter(|p| p != root && p.is_dir())
+        .map(|p| {
+            let own = settings.for_project(&p).effective();
+            let mut globs = shared.clone();
+            globs.extend(linked_roots(&p, &own, &ide_workspace::roots::detect(&p)).excluded_globs());
+            (p, globs)
+        })
+        .collect()
+}
+
+/// The exclude globs below the workspace project `dir`: the ignored names and "Exclude files"
+/// patterns apply everywhere, excluded folders only in the project that marked them.
+fn root_globs(
+    settings: &ide_core::settings::Settings,
+    members: &BTreeMap<PathBuf, Vec<String>>,
+    dir: &Path,
+) -> Option<Vec<String>> {
+    let own = members.get(dir)?;
+    let mut globs = settings.file_excludes();
+    globs.extend(own.iter().cloned());
+    Some(globs)
+}
+
+/// The excluded folders of the workspace projects inside `root` (those its walk covers),
+/// anchored at `root`.
+fn nested_member_globs(root: &Path, members: &BTreeMap<PathBuf, Vec<String>>) -> Vec<String> {
+    let mut out = Vec::new();
+    for (dir, own) in members {
+        if let Ok(rel) = dir.strip_prefix(root) {
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            out.extend(own.iter().map(|g| format!("/{rel}{g}")));
+        }
+    }
+    out
 }
 
 /// The member roots of an explicit workspace container (empty for a plain
@@ -1828,9 +1941,15 @@ fn linked_roots(root: &Path, settings: &ide_core::settings::Settings, detected: 
     ProjectRoots::compute(detected, &settings.project_structure)
 }
 
-fn exclude_globs(root: &Path, settings: &ide_core::settings::Settings, detected: &[SourceFolder]) -> Vec<String> {
+fn exclude_globs(
+    root: &Path,
+    settings: &ide_core::settings::Settings,
+    detected: &[SourceFolder],
+    members: &BTreeMap<PathBuf, Vec<String>>,
+) -> Vec<String> {
     let mut globs = settings.file_excludes();
     globs.extend(linked_roots(root, settings, detected).excluded_globs());
+    globs.extend(nested_member_globs(root, members));
     globs
 }
 
@@ -2316,7 +2435,8 @@ mod composer_tests {
 
 #[cfg(test)]
 mod content_roots_tests {
-    use super::content_roots;
+    use super::{SettingsStore, content_roots, exclude_globs, member_excludes, root_globs};
+    use std::path::Path;
 
     #[test]
     #[cfg(windows)]
@@ -2404,5 +2524,47 @@ mod content_roots_tests {
         assert_eq!(roots, vec![other.clone()]);
         // ... while its files go to a language server of its own.
         assert_eq!(super::language_server_roots(&root, roots), vec![other, nested]);
+    }
+
+    #[test]
+    fn each_workspace_project_excludes_its_own_folders() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(tmp.path()).unwrap();
+        let (config, root, nested, other) =
+            (base.join("config"), base.join("app"), base.join("app/mod"), base.join("lib"));
+        for dir in [&nested, &other] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let store = |dir: &Path| SettingsStore::load(&config, Some(dir));
+        let exclude = |dir: &Path, folders: serde_json::Value| {
+            store(dir)
+                .set(ide_workspace::settings::SettingsScope::Project, "projectStructure.excluded", folders)
+                .unwrap();
+        };
+        exclude(&root, serde_json::json!(["target"]));
+        exclude(&nested, serde_json::json!(["out"]));
+        exclude(&other, serde_json::json!(["gen/"]));
+        assert!(member_excludes(&store(&root), &root).is_empty(), "a plain project has no members");
+
+        ide_workspace::workspace::Workspace::attach(&root, "app", vec![root.clone(), nested.clone(), other.clone()])
+            .unwrap();
+        let members = member_excludes(&store(&root), &root);
+        assert_eq!(members[&other], ["/gen"]);
+        let settings = store(&root).effective();
+        let globs = exclude_globs(&root, &settings, &[], &members);
+        // The project's own folders, and those of the project its walk covers, anchored there.
+        assert!(globs.contains(&"/target".to_owned()) && globs.contains(&"/mod/out".to_owned()));
+        assert!(!globs.contains(&"/gen".to_owned()));
+        let own = root_globs(&settings, &members, &other).unwrap();
+        assert!(own.contains(&"/gen".to_owned()) && !own.contains(&"/target".to_owned()));
+        assert_eq!(root_globs(&settings, &members, &root), None, "the project folder has the project's");
+
+        // A workspace folder's own excluded folders apply in every member, as before.
+        let ws = base.join("ws");
+        ide_workspace::workspace::Workspace::save(&ws, "ws", vec![root.clone(), other.clone()], true).unwrap();
+        exclude(&ws, serde_json::json!(["dist"]));
+        let members = member_excludes(&store(&ws), &ws);
+        assert_eq!(members[&other], ["/dist", "/gen"]);
+        assert_eq!(members[&root], ["/dist", "/target"]);
     }
 }

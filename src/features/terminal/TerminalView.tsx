@@ -58,11 +58,11 @@ const TAB_PREFIX = "openidea-terminal";
  */
 const TAB_MIME = "application/x-openidea-terminal-tab";
 
-/** Full title when the label is trimmed, then the working directory. */
+/** Session title and working directory, even when available space trims the label. */
 function tabTooltip(tab: TerminalTab, sessions: Parameters<typeof tabTitle>[1]): string | undefined {
   const full = tabFullTitle(tab, sessions);
   const cwd = sessions?.[tab.session]?.cwd;
-  if (full === tabTitle(tab, sessions)) return cwd;
+  if (full === tab.name) return cwd;
   return cwd ? `${full}\n${cwd}` : full;
 }
 
@@ -457,6 +457,7 @@ function GroupTabs({ group }: { group: string }) {
     >
       <Tabs
         variant="compact"
+        layout="fit"
         className={styles.tabStrip}
         aria-label="Terminal sessions"
         items={items}

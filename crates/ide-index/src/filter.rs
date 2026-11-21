@@ -30,6 +30,8 @@ struct ExtraRoot {
     path: PathBuf,
     /// Shown before the paths inside it (`shared-lib/src/x.rs`).
     name: String,
+    /// Its own exclude globs (an attached project's); `None` shares the project's.
+    excludes: Option<GlobSet>,
 }
 
 /// Whether an ignore-aware content walk of `root` leaves out `dir` or an ancestor.
@@ -53,6 +55,32 @@ pub fn walk_skips(root: &Path, dir: &Path) -> bool {
         .filter_entry(move |e| target.starts_with(e.path()))
         .build();
     !walker.flatten().any(|e| e.path() == dir)
+}
+
+/// Exclude globs as gitignore reads them: a leading `/` anchors at the root, a bare name matches at any depth.
+fn glob_set(exclude_globs: &[String]) -> GlobSet {
+    let mut set = GlobSetBuilder::new();
+    for raw in exclude_globs {
+        let p = raw.trim().trim_end_matches('/');
+        let anchored = p.starts_with('/');
+        let p = p.trim_start_matches("./").trim_start_matches('/');
+        if p.is_empty() {
+            continue;
+        }
+        let mut patterns = vec![p.to_owned()];
+        if !anchored && !p.contains('/') {
+            patterns.push(format!("**/{p}"));
+        }
+        for pat in patterns {
+            match GlobBuilder::new(&pat).literal_separator(true).build() {
+                Ok(g) => {
+                    set.add(g);
+                }
+                Err(e) => tracing::warn!("invalid exclude glob {raw:?}: {e}"),
+            }
+        }
+    }
+    set.build().unwrap_or_else(|_| GlobSet::empty())
 }
 
 fn rel_string(rel: &Path) -> String {
@@ -93,28 +121,7 @@ pub(crate) fn mtime_of(meta: &std::fs::Metadata) -> u64 {
 
 impl PathFilter {
     pub(crate) fn new(root: &Path, extra_roots: &crate::IndexRoots, exclude_globs: &[String]) -> Self {
-        let mut set = GlobSetBuilder::new();
-        for raw in exclude_globs {
-            let p = raw.trim().trim_end_matches('/');
-            let anchored = p.starts_with('/');
-            let p = p.trim_start_matches("./").trim_start_matches('/');
-            if p.is_empty() {
-                continue;
-            }
-            let mut patterns = vec![p.to_owned()];
-            if !anchored && !p.contains('/') {
-                patterns.push(format!("**/{p}"));
-            }
-            for pat in patterns {
-                match GlobBuilder::new(&pat).literal_separator(true).build() {
-                    Ok(g) => {
-                        set.add(g);
-                    }
-                    Err(e) => tracing::warn!("invalid exclude glob {raw:?}: {e}"),
-                }
-            }
-        }
-        let excludes = set.build().unwrap_or_else(|_| GlobSet::empty());
+        let excludes = glob_set(exclude_globs);
         let mut extra: Vec<ExtraRoot> = Vec::new();
         for r in &extra_roots.folders {
             let path = dunce::canonicalize(r).unwrap_or_else(|_| r.clone());
@@ -130,7 +137,8 @@ impl PathFilter {
                 Ok(rel) if extra_roots.include_root => rel_string(rel),
                 _ => path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
             };
-            extra.push(ExtraRoot { name, path });
+            let excludes = extra_roots.excludes.get(r).map(|globs| glob_set(globs));
+            extra.push(ExtraRoot { name, path, excludes });
         }
         Self {
             root: root.to_owned(),
@@ -158,6 +166,13 @@ impl PathFilter {
         for exclude in &self.config.1 {
             stamp.push_str(exclude);
             stamp.push('\n');
+        }
+        for (folder, excludes) in &self.config.0.excludes {
+            stamp.push_str(&format!("-- {}\n", folder.to_string_lossy()));
+            for exclude in excludes {
+                stamp.push_str(exclude);
+                stamp.push('\n');
+            }
         }
         stamp
     }
@@ -229,8 +244,9 @@ impl PathFilter {
         })
     }
 
-    fn excluded_rel(&self, rel: &str) -> bool {
-        self.excludes.is_match(rel)
+    /// The exclude globs below `base` (a root): its own, or the project's.
+    fn excludes_of(&self, base: &Path) -> &GlobSet {
+        self.extra.iter().find(|e| e.path == base).and_then(|e| e.excludes.as_ref()).unwrap_or(&self.excludes)
     }
 
     fn skip_name(name: &str) -> bool {
@@ -245,6 +261,7 @@ impl PathFilter {
         if rel.is_empty() {
             return true;
         }
+        let excludes = self.excludes_of(base);
         let mut prefix = String::new();
         for seg in rel.split('/') {
             if Self::skip_name(seg) {
@@ -254,7 +271,7 @@ impl PathFilter {
                 prefix.push('/');
             }
             prefix.push_str(seg);
-            if self.excluded_rel(&prefix) {
+            if excludes.is_match(&prefix) {
                 return true;
             }
         }
@@ -268,8 +285,8 @@ impl PathFilter {
         if dir != root && self.is_excluded(dir) {
             return None;
         }
+        let excludes = self.excludes_of(root).clone();
         let root = root.to_path_buf();
-        let excludes = self.excludes.clone();
         let extra: Vec<PathBuf> = self.extra.iter().filter(|e| e.path != dir).map(|e| e.path.clone()).collect();
         let mut builder = WalkBuilder::new(dir);
         builder.standard_filters(false).follow_links(false).filter_entry(move |e| {
@@ -522,6 +539,34 @@ src/local/
         assert!(!filter.is_excluded(&shared.join("out/y.rs")));
         assert!(filter.same_config(&vec![shared.clone(), root.join("src")].into(), &["target".into()]));
         assert!(!filter.same_config(&vec![shared].into(), &["target".into()]));
+    }
+
+    #[test]
+    fn each_root_applies_its_own_excluded_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(dir.path()).unwrap();
+        let (root, attached, shared) = (base.join("app"), base.join("lib"), base.join("shared"));
+        for f in ["app/target/a.rs", "app/gen/b.rs", "lib/target/c.rs", "lib/gen/d.rs", "shared/target/e.rs"] {
+            touch(&base, f);
+        }
+        let roots = crate::IndexRoots {
+            include_root: true,
+            folders: vec![attached.clone(), shared.clone()],
+            excludes: [(attached.clone(), vec!["/gen".to_owned()])].into(),
+        };
+        let filter = PathFilter::new(&root, &roots, &["/target".into()]);
+        let mut found: Vec<String> = filter
+            .roots()
+            .flat_map(|r| filter.walk(r, &AtomicBool::new(false)))
+            .filter_map(|f| filter.rel(&f.path))
+            .collect();
+        found.sort();
+        // `lib` has exclusions of its own; `shared` shares the project's.
+        assert_eq!(found, ["gen/b.rs", "lib/target/c.rs"]);
+        assert!(filter.is_excluded(&attached.join("gen/new.rs")));
+        assert!(!filter.is_excluded(&root.join("gen/new.rs")));
+        assert!(filter.stamp().contains("/gen"));
+        assert!(!filter.same_config(&vec![attached, shared].into(), &["/target".into()]));
     }
 
     #[test]

@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { insertNewlineAndIndent } from "@codemirror/commands";
+import { history, insertNewlineAndIndent, redo, undo } from "@codemirror/commands";
 import { indentOnInput, indentService, indentUnit, ensureSyntaxTree } from "@codemirror/language";
 import {
   addCaretsToLineEnds,
   commentLine,
   completeStatement,
+  deleteLine,
   joinLines,
   startNewLine,
   startNewLineBefore,
@@ -18,6 +19,7 @@ import { toggleCaret } from "./multiCaret";
 import { restructuredtextLanguage } from "./restructuredtext";
 import { commentBlock, enterInLineComment, lineCommentStyle } from "./comments";
 import { languages } from "@codemirror/language-data";
+import { java } from "@codemirror/lang-java";
 
 /** Brace languages in miniature: one unit deeper after a line ending in `{`. */
 const javascript = () =>
@@ -87,6 +89,19 @@ describe("start new line", () => {
     const v = make("  x|y");
     startNewLineBefore(v);
     expect(show(v)).toBe("  |\n  xy");
+  });
+});
+
+describe("delete line", () => {
+  it("puts the caret back where the deletion left it on Redo", () => {
+    const v = make("class A {\n    void m() {\n        int count = 1;|\n        print(count);\n    }\n}\n", history());
+    deleteLine(v);
+    const after = show(v);
+    undo(v);
+    expect(show(v)).toBe("class A {\n    void m() {\n        int count = 1;|\n        print(count);\n    }\n}\n");
+    redo(v);
+    expect(show(v)).toBe(after);
+    expect(v.state.doc.toString()).not.toContain("count = 1");
   });
 });
 
@@ -341,6 +356,14 @@ describe("fallback indentation for GDScript", () => {
     const v = make("func test() -> void|", gd);
     completeStatement("gdscript")(v);
     expect(show(v)).toBe("func test() -> void:\n\t|");
+  });
+});
+
+describe("complete current statement", () => {
+  it("indents the line after an added semicolon like the statement, not as its continuation", () => {
+    const v = make('class A {\n  void f() {\n    String a = "1"|\n    g();\n  }\n}\n', java());
+    completeStatement("java")(v);
+    expect(show(v)).toBe('class A {\n  void f() {\n    String a = "1";\n    |\n    g();\n  }\n}\n');
   });
 });
 

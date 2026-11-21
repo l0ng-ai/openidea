@@ -108,6 +108,7 @@ function listPopupRows(items: ListPopupItem[], query: string): ListPopupRow[] {
 }
 
 function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
+  const copyPath = popup.layout === "copyPath";
   const [query, setQuery] = useState("");
   const rows = useMemo(() => listPopupRows(popup.items, query), [popup.items, query]);
   const firstEnabled = rows.findIndex((row) => row.kind === "action" && !row.item.disabled);
@@ -246,7 +247,7 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
   }, [fetchPreview, point, popup.anchor, previewLeft]);
   const leadingDetailChars = Math.max(0, ...popup.items.map((item) => item.leadingDetail?.length ?? 0));
   const popupSize = {
-    width: hasPreview ? width + LIST_PREVIEW_WIDTH : width,
+    ...(!copyPath && { width: hasPreview ? width + LIST_PREVIEW_WIDTH : width }),
     "--list-preview-width": `${LIST_PREVIEW_WIDTH}px`,
     "--list-leading-detail-width": `${leadingDetailChars + 1}ch`,
   } as CSSProperties;
@@ -257,9 +258,11 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
       anchor={anchor}
       onClose={closePopup}
       aria-label={popup.title}
+      resizable={copyPath ? "both" : undefined}
       className={clsx(
         styles.listPopup,
         hasTargets && styles.targetPopup,
+        copyPath && styles.copyPathPopup,
         popup.compact && styles.compactListPopup,
         hasPreview && styles.withPreview,
         previewBelow && styles.previewBelow,
@@ -317,6 +320,7 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
               const { item, match } = row;
               const n = popup.numbered && !query ? indexOf(item) + 1 : 0;
               const name = <HighlightedText className={styles.label} text={item.label} indices={match} tone="accent" />;
+              const shortcut = item.shortcut && <span className={styles.shortcut}>{item.shortcut}</span>;
               return (
                 <div
                   className={clsx(styles.item, item.disabled && styles.disabled, item.emphasis && styles.emphasis)}
@@ -344,19 +348,20 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
                   ) : (
                     name
                   )}
+                  {copyPath && shortcut}
                   {item.preview && (
                     <span className={styles.preview} title={item.preview}>
-                      {item.preview}
+                      {copyPath ? <bdi>{item.preview}</bdi> : item.preview}
                     </span>
                   )}
-                  {!item.target && <span className={styles.spacer} />}
+                  {!item.target && !copyPath && <span className={styles.spacer} />}
                   {item.target && (
                     <span className={styles.targetPath} title={item.target.path}>
                       <bdi>{item.target.path}</bdi>
                     </span>
                   )}
                   {item.detail && <span className={styles.detail}>{item.detail}</span>}
-                  {item.shortcut && <span className={styles.shortcut}>{item.shortcut}</span>}
+                  {!copyPath && shortcut}
                   {item.submenu?.length ? (
                     <button
                       type="button"

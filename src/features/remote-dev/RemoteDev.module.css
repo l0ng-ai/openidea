@@ -1,8 +1,13 @@
+/* Fields fill the first column; their side buttons share the second, so both rows end at the same edge. */
 .form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1-5);
-  padding: 14px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-1-5) var(--space-2);
+  align-items: center;
+  padding: 14px var(--space-4);
+}
+.form > * {
+  grid-column: 1 / -1;
 }
 .hint {
   margin: 0 0 6px;
@@ -14,12 +19,15 @@
   margin-top: 4px;
 }
 .row {
-  display: flex;
-  gap: var(--space-2);
-  align-items: center;
+  display: contents;
+}
+.row > * {
+  grid-column: auto;
+}
+.row > :only-child {
+  grid-column: 1 / -1;
 }
 .grow {
-  flex: 1;
   min-width: 0;
 }
 .folders {

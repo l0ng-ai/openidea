@@ -7,19 +7,22 @@ OpenIDEA edits JavaScript (`.js`, `.mjs`, `.cjs`, `.jsx`) and TypeScript (`.ts`,
 
 ## Language servers
 
-| Files                           | Server                                 | Notes                                                                                               |
-| ------------------------------- | -------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| JS, JSX, TS, TSX                | `vtsls`                                | Default TypeScript server.                                                                          |
-| JS, JSX, TS, TSX                | `typescript-language-server`           | Fallback: used only while `vtsls` is not installed.                                                 |
-| `.vue`                          | `vue-language-server` + `vtsls`        | Vue's hybrid mode: TypeScript inside `.vue` files comes from `vtsls` with `@vue/typescript-plugin`. |
-| `.svelte`                       | `svelte-language-server`               |                                                                                                     |
-| `.astro`                        | `astro-ls`                             | Needs Node.js and a TypeScript library.                                                             |
-| TS and HTML in Angular projects | `angular-language-server` (`ngserver`) | Only below `angular.json` or `node_modules/@angular/core`.                                          |
-| All of the above                | `oxlint`                               | Only below an `.oxlintrc.json`, `.oxlintrc.jsonc`, `oxlint.config.ts` or `oxlint.config.mts`.       |
+| Files                           | Server                                   | Notes                                                                                                                                      |
+| ------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| JS, JSX, TS, TSX                | `vtsls`                                  | Default TypeScript server.                                                                                                                 |
+| JS, JSX, TS, TSX                | `typescript-language-server`             | Fallback: used only while `vtsls` is not installed.                                                                                        |
+| `.vue`                          | `vue-language-server` + `vtsls`          | Vue's hybrid mode: TypeScript inside `.vue` files comes from `vtsls` with `@vue/typescript-plugin`.                                        |
+| `.svelte`                       | `svelte-language-server`                 |                                                                                                                                            |
+| `.astro`                        | `astro-ls`                               | Needs Node.js and a TypeScript library.                                                                                                    |
+| TS and HTML in Angular projects | `angular-language-server` (`ngserver`)   | Only below `angular.json` or `node_modules/@angular/core`.                                                                                 |
+| All of the above                | `oxlint`                                 | Only below an `.oxlintrc.json`, `.oxlintrc.jsonc`, `oxlint.config.ts` or `oxlint.config.mts`.                                              |
+| All of the above                | `vscode-eslint-language-server` (ESLint) | Only below an ESLint configuration (`eslint.config.*`, `.eslintrc*` or `eslintConfig` in `package.json`); runs the project's own `eslint`. |
 
 The TypeScript servers start for a workspace marked by `tsconfig.json`, `jsconfig.json` or `package.json`. Files outside any `tsconfig.json` / `jsconfig.json` are still registered with tsserver, so loose scripts get code insight too.
 
 Two behaviours differ from the servers' defaults: renaming a symbol never introduces an `import { a as b }` alias, and moving a file does not make the server rewrite imports on its own; the IDE asks for the import updates first and shows them as a preview you can undo.
+
+Inlay hints show parameter names at literal arguments, inferred variable types and enum member values; turn kinds off in **Settings › Editor › Inlay Hints**.
 
 ### TypeScript version
 
@@ -91,6 +94,7 @@ Debugging uses the JavaScript Debugger (vscode-js-debug); if it is missing, the 
 - **Debug** works for npm script configurations, Node.js files and `deno run` / `deno test`. Child processes are attached automatically.
 - **Attach to Node.js** is a run configuration type for a process started with `--inspect` on this or another machine (default port 9229), with local and remote root mapping.
 - **Attach to Process…** in the Run menu lists running Node.js processes.
+- **JavaScript Debug** is a run configuration type that opens a URL in Chrome or Edge and debugs the page's JavaScript and TypeScript through source maps. Start the page's server first (for example with the `dev` npm script); **Web root** is the folder the URL serves, the project root by default.
 
 With **Do not step into library scripts** (**Settings › Build, Execution, Deployment › Debugger › Stepping**, on by default), stepping skips Node.js internals and `node_modules`. More in [Debugging](/en/guide/debugging).
 
@@ -104,8 +108,6 @@ With **Do not step into library scripts** (**Settings › Build, Execution, Depl
 
 ## Limitations
 
-- No built-in ESLint integration; oxlint is the bundled linter. You can still add any server with **Add Language Server…** on the Language Servers page.
-- No browser (Chrome/Edge) debugging; only Node.js and Deno are debugged.
-- Bun runs but can't be debugged: its inspector uses the WebKit protocol, which vscode-js-debug can't attach to.
+- Debugging Bun needs `bun-dap`, which has no release yet: build it from `morf-bls/bun-dap` and put it on `PATH` (the IDE shows the steps when it is missing). vscode-js-debug can't attach to Bun's WebKit-protocol inspector.
 - Deno has run and debug support but no Deno language server; Deno files use the TypeScript servers.
 - Coverage of Deno tasks is not supported.
