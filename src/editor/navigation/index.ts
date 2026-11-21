@@ -143,9 +143,9 @@ function testDeps(view: EditorView, ctx: EditorDocContext): TestNavDeps {
         items: items.map((it, i) => ({
           id: `${i}`,
           label: it.label,
-          detail: it.detail,
-          emphasis: it.emphasis,
-          icon: it.emphasis ? "plus" : fileIconName(it.label),
+          ...(it.kind === "create"
+            ? { icon: "plus", section: { id: "create-test" } }
+            : { icon: fileIconName(it.label), target: { container: null, path: it.detail } }),
           run: it.run,
         })),
       }),

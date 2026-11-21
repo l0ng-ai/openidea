@@ -56,7 +56,7 @@ describe("Go to Test / Test Subject", () => {
     expect(d.open).toHaveBeenCalledWith("/p/src/main/java/a/Foo.java");
   });
 
-  it("shows a chooser with Create New Test… for several tests, mirrored package first", async () => {
+  it("shows the mirrored test first and the creation action last", async () => {
     const d = deps([
       "/p/src/test/java/b/FooTest.java",
       "/p/src/test/java/a/FooTests.java",
@@ -64,7 +64,8 @@ describe("Go to Test / Test Subject", () => {
     ]);
     await gotoTestOrSubject("/p/src/main/java/a/Foo.java", "", d);
     expect(d.chosen[0]!.title).toBe("Choose Test for Foo (2 found)");
-    expect(d.chosen[0]!.items.map((i) => i.label)).toEqual(["Create New Test…", "FooTests.java", "FooTest.java"]);
+    expect(d.chosen[0]!.items.map((i) => i.label)).toEqual(["FooTests.java", "FooTest.java", "Create New Test…"]);
+    expect(d.chosen[0]!.items.map((i) => i.kind)).toEqual(["target", "target", "create"]);
   });
 
   it("offers Create New Test… in the mirrored test package when there is none", async () => {
@@ -104,10 +105,10 @@ describe("Go to Test / Test Subject", () => {
     const text = "pub fn lex() {}\n#[cfg(test)]\nmod tests {}\n";
     const d = deps(["/p/src/lexer.rs", "/p/tests/lexer.rs"], []);
     await gotoTestOrSubject("/p/src/lexer.rs", text, d);
-    expect(d.chosen[0]!.items.map((i) => i.label)).toEqual(["Create New Test…", "mod tests", "lexer.rs"]);
-    await d.chosen[0]!.items[1]!.run();
-    expect(d.open).toHaveBeenCalledWith("/p/src/lexer.rs", text.indexOf("#[cfg"));
+    expect(d.chosen[0]!.items.map((i) => i.label)).toEqual(["mod tests", "lexer.rs", "Create New Test…"]);
     await d.chosen[0]!.items[0]!.run();
+    expect(d.open).toHaveBeenCalledWith("/p/src/lexer.rs", text.indexOf("#[cfg"));
+    await d.chosen[0]!.items[2]!.run();
     expect(d.createRustTestModule).toHaveBeenCalled();
     await gotoTestOrSubject("/p/tests/lexer.rs", "", d);
     expect(d.open).toHaveBeenLastCalledWith("/p/src/lexer.rs");
