@@ -1,0 +1,18 @@
+[package]
+name = "ide-p4"
+description = "Perforce (Helix Core / P4) integration built on the installed p4 CLI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ide-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+specta.workspace = true
+tracing.workspace = true
+which = "8"
+regex-lite = "0.1"
+
+[dev-dependencies]
+tempfile.workspace = true
