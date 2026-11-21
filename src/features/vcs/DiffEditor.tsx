@@ -53,6 +53,7 @@ import {
   languageFor,
   viewerBase,
 } from "./cm";
+import { collapsedDiffLines } from "./collapsedDiffLines";
 import { applyChunk, arrowControls, chunkAt, hoverRevert, onHunkButtonClick, revertUnifiedChunk } from "./diffControls";
 import {
   HIGHLIGHT_OPTIONS,
@@ -558,6 +559,7 @@ export function DiffEditor({
     const side = (att: DocumentAttachment | null, editable: boolean, notes?: "left" | "right"): Extension[] => [
       // The left pane of a side-by-side diff has its line numbers next to the divider, as in IDEA.
       viewerBase({ readOnly: !editable, findBar: true, lineNumbers: notes === "left" ? "after" : true }),
+      collapseUnchanged ? collapsedDiffLines() : [],
       changedRanges,
       wrapSlot.of(softWrapRef.current ? EditorView.lineWrapping : []),
       // Esc closes the find bar before it collapses the selection (a found match); open popups go first.

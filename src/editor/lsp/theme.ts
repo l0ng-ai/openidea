@@ -11,12 +11,13 @@ const tooltipSurface = {
 };
 
 const completionInsets = { edge: 4, padding: 6, icon: 16, gap: 6 };
+const lookupRowHeight = "max(var(--h-list-row), calc(var(--openidea-editor-font-size, var(--fs-code)) * 1.7))";
 export const completionLabelOffset =
   1 + completionInsets.edge + completionInsets.padding + completionInsets.icon + completionInsets.gap;
 
 const completionRowMetrics = {
   // Rows grow with the editor font size (lookup text uses the editor font, as typed text does).
-  "--cm-completion-row": "max(var(--h-list-row), calc(var(--openidea-editor-font-size, var(--fs-code)) * 1.7))",
+  "--cm-completion-row": lookupRowHeight,
   "--cm-completion-edge": `${completionInsets.edge}px`,
   "--cm-completion-inset": `${completionInsets.padding}px`,
   "--cm-completion-icon": `${completionInsets.icon}px`,
@@ -202,7 +203,7 @@ export const lspTheme = EditorView.theme({
     textDecoration: "line-through",
     color: "var(--fg-muted)",
   },
-  ".cm-lsp-completion-footer": {
+  ".cm-lsp-completion-footer, .cm-lsp-inplace-footer": {
     display: "flex",
     flex: "none",
     flexWrap: "wrap",
@@ -439,18 +440,49 @@ export const lspTheme = EditorView.theme({
     padding: "3px 8px",
     cursor: "default",
   },
+  ".cm-tooltip.cm-lsp-inplace-lookup": {
+    ...tooltipSurface,
+    "--cm-inplace-row": lookupRowHeight,
+    boxSizing: "border-box",
+    display: "flex",
+    flexDirection: "column",
+    width: "max-content",
+    maxWidth: "min(480px, 100vw)",
+    overflow: "hidden",
+    fontFamily: "var(--openidea-editor-font, var(--font-mono))",
+    fontSize: "var(--openidea-editor-font-size, var(--fs-code))",
+    fontWeight: "var(--fw-code, 400)",
+  },
   ".cm-lsp-inplace-suggestions": {
     listStyle: "none",
-    margin: "0 -8px 4px",
-    padding: "0",
-    fontFamily: "var(--openidea-editor-font, var(--font-mono))",
-    fontWeight: "var(--fw-code, 400)",
-    fontSize: "var(--fs-ui)",
-    color: "var(--fg)",
+    margin: "0",
+    padding: "var(--space-1)",
+    minHeight: "0",
+    maxHeight: "calc(var(--cm-inplace-row) * 8 + var(--space-2))",
+    overflowY: "auto",
+    color: "var(--fg-editor, var(--fg-strong))",
   },
-  ".cm-lsp-inplace-suggestions li": { padding: "1px 8px" },
-  ".cm-lsp-inplace-suggestions li:hover": { backgroundColor: "var(--bg-hover)" },
-  ".cm-lsp-inplace-suggestion-active": { backgroundColor: "var(--bg-selected)" },
+  ".cm-lsp-inplace-suggestions button": {
+    display: "block",
+    width: "100%",
+    minHeight: "var(--cm-inplace-row)",
+    padding: "0 var(--space-2)",
+    border: "none",
+    borderRadius: "var(--radius-small)",
+    background: "none",
+    color: "inherit",
+    font: "inherit",
+    textAlign: "start",
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    cursor: "pointer",
+  },
+  ".cm-lsp-inplace-suggestions button:hover": { backgroundColor: "var(--bg-hover)" },
+  '.cm-lsp-inplace-suggestions button[aria-current="true"]': {
+    backgroundColor: "var(--bg-list-selected, var(--bg-tree-selected, var(--bg-selected-strong)))",
+  },
+  ".cm-lsp-inplace-footer": { overflowWrap: "anywhere" },
 
   // --- floating lightbulb (intentions.ts) -----------------------------------
   ".cm-lsp-bulb": {
@@ -475,10 +507,12 @@ export const lspTheme = EditorView.theme({
     color: "var(--fg-inlay, var(--syn-inline-value))",
     backgroundColor: "var(--bg-inlay, color-mix(in srgb, var(--fg-subtle) 12%, transparent))",
     borderRadius: "var(--radius-small)",
-    padding: "0 4px",
-    fontSize: "0.9em",
+    padding: "1px var(--space-1-5)",
+    fontSize: "max(1px, calc(1em - 1px))",
     fontFamily: "var(--font-ui)",
-    verticalAlign: "1px",
+    lineHeight: "1",
+    verticalAlign: "baseline",
+    whiteSpace: "pre",
     WebkitUserSelect: "none",
     userSelect: "none",
   },
