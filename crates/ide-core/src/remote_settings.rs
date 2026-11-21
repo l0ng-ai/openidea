@@ -36,9 +36,6 @@ pub struct SshConfiguration {
     pub auth: SshAuth,
     /// Private key for [`SshAuth::KeyPair`]; `~/` is the home directory.
     pub key_file: String,
-    /// SSH agent socket for [`SshAuth::OpenSsh`]; `~/` is the home directory.
-    /// Empty: `SSH_AUTH_SOCK` of this process (the OpenSSH pipe on Windows).
-    pub agent_socket: String,
     /// Keep the password / key passphrase in the saved passwords.
     pub save_secret: bool,
 }

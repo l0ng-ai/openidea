@@ -97,7 +97,6 @@ describe("SSH configuration credentials", () => {
     const { container } = mount("openSsh");
     expect(container.querySelector('input[type="password"]')).toBeNull();
     expect(screen.queryByRole("checkbox")).toBeNull();
-    expect(screen.getByLabelText("SSH agent socket")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Test Connection" }));
     await screen.findByText("Connected");
     expect(mocks.test.mock.calls[0]?.[1]).toBeNull();

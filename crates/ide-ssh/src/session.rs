@@ -7,7 +7,7 @@
 //! (or is recorded silently under `StrictHostKeyChecking accept-new`), and a
 //! changed key is refused unless host key checking is off.
 
-use crate::target::{Hop, HostKeyPolicy, SshFiles, SshTarget, agent_socket, expand, home, resolve_hops};
+use crate::target::{Hop, HostKeyPolicy, SshFiles, SshTarget, expand, home, resolve_hops};
 use ide_core::remote_settings::SshAuth;
 use ide_core::{IdeError, IdeResult, error::ErrorKind};
 use parking_lot::Mutex;
@@ -154,7 +154,7 @@ impl Session {
             };
             // Jump hosts always use the agent / identity files; the secret belongs to the target.
             let mode = if last { target.auth } else { SshAuth::OpenSsh };
-            authenticate(&mut handle, hop, mode, &target.key_file, &target.agent_socket, secret).await?;
+            authenticate(&mut handle, hop, mode, &target.key_file, secret).await?;
             sessions.push(handle);
         }
         let handle = sessions.pop().expect("at least one hop");
@@ -640,21 +640,13 @@ async fn with_key(handle: &mut Handle<Client>, user: &str, key: keys::PrivateKey
 }
 
 /// Every identity of the running SSH agent, until one is accepted.
-/// `socket` empty: the process environment. Otherwise that socket (a GUI app
-/// does not see a path exported only in the shell).
-async fn with_agent(handle: &mut Handle<Client>, user: &str, socket: &str) -> bool {
+async fn with_agent(handle: &mut Handle<Client>, hop: &Hop) -> bool {
+    let user = hop.user.as_str();
+    let Some(socket) = hop.agent.socket() else { return false };
     #[cfg(unix)]
-    let agent = match agent_socket(socket) {
-        Some(path) => keys::agent::client::AgentClient::connect_uds(path).await,
-        None => keys::agent::client::AgentClient::connect_env().await,
-    };
+    let agent = keys::agent::client::AgentClient::connect_uds(socket).await;
     #[cfg(windows)]
-    let agent = {
-        let pipe = agent_socket(socket)
-            .map(|path| path.to_string_lossy().into_owned())
-            .unwrap_or_else(|| r"\\.\pipe\openssh-ssh-agent".to_owned());
-        keys::agent::client::AgentClient::connect_named_pipe(pipe).await
-    };
+    let agent = keys::agent::client::AgentClient::connect_named_pipe(socket).await;
     let Ok(mut agent) = agent else { return false };
     let Ok(identities) = agent.request_identities().await else { return false };
     let hash = rsa_hash(handle).await;
@@ -679,7 +671,6 @@ async fn authenticate(
     hop: &Hop,
     mode: SshAuth,
     key_file: &str,
-    socket: &str,
     secret: Option<&str>,
 ) -> IdeResult<()> {
     let user = hop.user.as_str();
@@ -704,7 +695,7 @@ async fn authenticate(
             if handle.authenticate_none(user).await.map(|r| r.success()).unwrap_or(false) {
                 return Ok(());
             }
-            if with_agent(handle, user, socket).await {
+            if with_agent(handle, hop).await {
                 return Ok(());
             }
             let files: Vec<PathBuf> = if hop.identity_files.is_empty() {

@@ -557,6 +557,7 @@
   "Markup": "Markup",
   "Tag": "Tag",
   "Repository:": "Repository:",
+  "Stashes:": "Stashes:",
   "Current branch:": "Current branch:",
   "Detached HEAD": "Detached HEAD",
   "Reset type:": "Reset type:",
@@ -2909,7 +2910,5 @@
   "Cursor": "Cursor",
   "Configure skills for this session": "Configure skills for this session",
   "No skills found in .agents/skills, .openidea/skills, ~/.agents/skills, or the CLI folders of Claude Code, GitHub Copilot, Codex, and Cursor.": "No skills found in .agents/skills, .openidea/skills, ~/.agents/skills, or the CLI folders of Claude Code, GitHub Copilot, Codex, and Cursor.",
-  "This CLI discovers the folder itself: off hides the skill from OpenIDEA's / menu and applies only where the CLI supports disabling.": "This CLI discovers the folder itself: off hides the skill from OpenIDEA's / menu and applies only where the CLI supports disabling.",
-  "SSH agent socket": "SSH agent socket",
-  "SSH agent socket:": "SSH agent socket:"
+  "This CLI discovers the folder itself: off hides the skill from OpenIDEA's / menu and applies only where the CLI supports disabling.": "This CLI discovers the folder itself: off hides the skill from OpenIDEA's / menu and applies only where the CLI supports disabling."
 }

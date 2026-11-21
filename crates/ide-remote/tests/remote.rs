@@ -38,7 +38,6 @@ async fn env_with(exec: impl FnOnce(std::path::PathBuf) -> ide_ssh::testing::Exe
         user: "dev".into(),
         auth: SshAuth::Password,
         key_file: String::new(),
-        agent_socket: String::new(),
     };
     let session = match Session::connect(&target, Some("secret"), &files).await {
         Err(ide_ssh::ConnectError::UnknownHostKey(k)) => {

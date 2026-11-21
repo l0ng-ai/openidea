@@ -247,15 +247,6 @@ function SshConfigForm({
         />
       </Row>
       {config.auth === "keyPair" && <KeyFileRow value={config.keyFile} onChange={(keyFile) => update({ keyFile })} />}
-      {config.auth === "openSsh" && (
-        <Field
-          label="SSH agent socket"
-          value={config.agentSocket}
-          onChange={(agentSocket) => update({ agentSocket })}
-          placeholder="SSH_AUTH_SOCK"
-          mono
-        />
-      )}
       {config.auth !== "openSsh" && (
         <Row
           label={config.auth === "password" ? "Password" : "Passphrase"}

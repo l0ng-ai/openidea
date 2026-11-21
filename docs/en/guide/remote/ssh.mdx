@@ -37,11 +37,11 @@ through the app-wide SSH configurations.
   </Step>
 </Steps>
 
-| Authentication type                         | What it uses                                                                                                                                                                                                                                                                  |
-| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Password**                                | A password. Tick **Save password** to keep it in the OS credential store.                                                                                                                                                                                                     |
-| **Key pair (OpenSSH or PuTTY)**             | A **Private key file** (for example `~/.ssh/id_ed25519`) and its **Passphrase**, which **Save passphrase** keeps in the credential store.                                                                                                                                     |
-| **OpenSSH config and authentication agent** | `HostName`, `User`, `Port`, `IdentityFile` and `ProxyJump` from `~/.ssh/config`, and the keys of the SSH agent. **SSH agent socket** overrides `SSH_AUTH_SOCK` (a path set only in the shell is not visible to the app). **Host** can be a `Host` alias from `~/.ssh/config`. |
+| Authentication type                         | What it uses                                                                                                                                                         |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Password**                                | A password. Tick **Save password** to keep it in the OS credential store.                                                                                            |
+| **Key pair (OpenSSH or PuTTY)**             | A **Private key file** (for example `~/.ssh/id_ed25519`) and its **Passphrase**, which **Save passphrase** keeps in the credential store.                            |
+| **OpenSSH config and authentication agent** | `HostName`, `User`, `Port`, `IdentityFile` and `ProxyJump` from `~/.ssh/config`, and the keys of the SSH agent. **Host** can be a `Host` alias from `~/.ssh/config`. |
 
 Saved passwords and passphrases go to the macOS Keychain, Windows Credential Manager or the Secret Service on Linux,
 never to a settings file. The **+**, **−** and copy buttons above the list add, remove and duplicate configurations.
@@ -49,9 +49,12 @@ never to a settings file. The **+**, **−** and copy buttons above the list add
 ### `~/.ssh/config` support
 
 OpenIDEA has its own SSH client and reads `~/.ssh/config` itself. It understands `Host`, `Match`, `Include`,
-`HostName`, `User`, `Port`, `IdentityFile`, `ProxyJump`, `ProxyCommand`, `StrictHostKeyChecking` and
+`HostName`, `User`, `Port`, `IdentityFile`, `IdentityAgent`, `ProxyJump`, `ProxyCommand`, `StrictHostKeyChecking` and
 `UserKnownHostsFile`. Jump hosts authenticate with the agent and identity files; the password or passphrase of the
 configuration is only used for the target host.
+
+The SSH agent is the one `IdentityAgent` names, otherwise `SSH_AUTH_SOCK` as your login shell sets it, so an agent
+socket exported in `~/.zshrc` (for example a password manager's agent) works even when OpenIDEA is started from the Dock.
 
 Host keys are checked against `known_hosts`. An unknown key has to be trusted once; a changed key is refused unless
 host key checking is turned off for that host.

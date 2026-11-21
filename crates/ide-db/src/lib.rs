@@ -721,7 +721,6 @@ impl DbManager {
                 user: ssh.user.clone(),
                 auth: ssh.auth,
                 key_file: ssh.key_file.clone(),
-                agent_socket: ssh.agent_socket.clone(),
             };
             Arc::new(self.ssh.connect(&self.host_key(&source.id), &target, secret.as_deref()).await?)
         } else {

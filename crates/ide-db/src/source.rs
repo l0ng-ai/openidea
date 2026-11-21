@@ -221,9 +221,6 @@ pub struct DbSsh {
     pub auth: DbSshAuth,
     /// Private key for [`DbSshAuth::KeyPair`]; `~/` is the home directory.
     pub key_file: String,
-    /// SSH agent socket for [`DbSshAuth::OpenSsh`]; `~/` is the home directory.
-    /// Empty: `SSH_AUTH_SOCK` of this process (the OpenSSH pipe on Windows).
-    pub agent_socket: String,
     /// Keep the SSH password / key passphrase in the saved passwords.
     pub save_secret: bool,
 }

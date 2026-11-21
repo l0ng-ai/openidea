@@ -4855,11 +4855,6 @@ export type DbSsh = {
 	auth?: SshAuth,
 	/**  Private key for [`DbSshAuth::KeyPair`]; `~/` is the home directory. */
 	keyFile?: string,
-	/**
-	 *  SSH agent socket for [`DbSshAuth::OpenSsh`]; `~/` is the home directory.
-	 *  Empty: `SSH_AUTH_SOCK` of this process (the OpenSSH pipe on Windows).
-	 */
-	agentSocket?: string,
 	/**  Keep the SSH password / key passphrase in the saved passwords. */
 	saveSecret?: boolean,
 };
@@ -11720,11 +11715,6 @@ export type SshConfiguration = {
 	auth?: SshAuth,
 	/**  Private key for [`SshAuth::KeyPair`]; `~/` is the home directory. */
 	keyFile?: string,
-	/**
-	 *  SSH agent socket for [`SshAuth::OpenSsh`]; `~/` is the home directory.
-	 *  Empty: `SSH_AUTH_SOCK` of this process (the OpenSSH pipe on Windows).
-	 */
-	agentSocket?: string,
 	/**  Keep the password / key passphrase in the saved passwords. */
 	saveSecret?: boolean,
 };
