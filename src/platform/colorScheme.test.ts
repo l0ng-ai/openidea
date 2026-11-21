@@ -154,6 +154,67 @@ describe("color schemes", () => {
     expect(resolvedAttribute("dark", "pyKeyword")).toMatchObject({ foreground: "#cf8e6d" });
   });
 
+  it("re-resolves Python fallback tokens inside the Python block, as PY.METHOD_CALL falls back to PY.FUNCTION_CALL", () => {
+    const block = (css: string) => css.slice(css.indexOf('.cm-editor[data-language="Python"]'));
+    // `--syn-python-method-call: var(--syn-function-call)` is computed on :root; the Python block re-declares it.
+    const call = block(schemeCss("dark", { dark: { pyFunctionCall: { foreground: "#d56075" } } }));
+    expect(call).toContain("--syn-function-call: #d56075 !important");
+    expect(call).toContain("--syn-python-method-call: var(--syn-function-call) !important");
+    expect(call).not.toContain("--syn-python-nested-function");
+    // PY.NESTED_FUNC_DEFINITION falls back to PY.FUNC_DEFINITION.
+    const definition = block(schemeCss("dark", { dark: { pyFunctionDeclaration: { foreground: "#123456" } } }));
+    expect(definition).toContain("--syn-python-nested-function: var(--syn-function) !important");
+    // A Method call colour of its own wins.
+    const own = block(
+      schemeCss("dark", {
+        dark: { pyFunctionCall: { foreground: "#d56075" }, pyMethodCall: { foreground: "#abcdef" } },
+      }),
+    );
+    expect(own).toContain("--syn-python-method-call: #abcdef !important");
+    expect(own).not.toContain("--syn-python-method-call: var(");
+    // Font style alone leaves the colour following Function call.
+    const bold = block(
+      schemeCss("dark", { dark: { pyFunctionCall: { foreground: "#d56075" }, pyMethodCall: { bold: true } } }),
+    );
+    expect(bold).toContain("--syn-python-method-call: var(--syn-function-call) !important");
+    // The other shared-token fallbacks follow too.
+    const shared = block(
+      schemeCss("dark", {
+        dark: { pyOperationSign: { foreground: "#111111" }, pyClassDefinition: { foreground: "#222222" } },
+      }),
+    );
+    for (const token of ["parentheses", "brackets", "braces"])
+      expect(shared).toContain(`--syn-python-${token}: var(--syn-punct) !important`);
+    for (const token of ["type-parameter", "annotation"])
+      expect(shared).toContain(`--syn-python-${token}: var(--syn-type) !important`);
+    // Only fallbacks the scheme declares: dark's f-string braces have a colour of their own, light's follow strings.
+    const string = { pyString: { foreground: "#333333" } };
+    expect(block(schemeCss("dark", { dark: string }))).not.toContain("--syn-python-fstring");
+    expect(block(schemeCss("light", { light: string }))).toContain(
+      "--syn-python-fstring: var(--syn-string) !important",
+    );
+    // Language Defaults overrides stay on :root, where the fallbacks already see them.
+    expect(schemeCss("dark", { dark: { functionCall: { foreground: "#d56075" } } })).not.toContain("data-language");
+  });
+
+  it("applies an imported scheme's Python Function call to method calls", () => {
+    const customs = {
+      "custom-pycharm": {
+        name: "PyCharm",
+        parent: "dark" as const,
+        attributes: { pyFunctionCall: { foreground: "#d56075" } },
+      },
+    };
+    const css = schemeCss("custom-pycharm", undefined, undefined, customs);
+    expect(css.slice(css.indexOf('.cm-editor[data-language="Python"]'))).toContain(
+      "--syn-python-method-call: var(--syn-function-call) !important",
+    );
+    expect(resolvedAttribute("custom-pycharm", "pyMethodCall", customs).foreground).toBe("#d56075");
+    expect(resolvedAttribute("dark", "pyMethodCall").foreground).toBe(
+      resolvedAttribute("dark", "pyFunctionCall").foreground,
+    );
+  });
+
   it("resolves scheme attribute state and editor defaults", () => {
     expect(resolvedAttribute("light", "lineComment")).toMatchObject({
       foreground: "#8c8c8c",
