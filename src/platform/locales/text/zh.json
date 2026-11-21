@@ -9282,5 +9282,8 @@
   "Global function": "全局函数",
   "Literal keyword": "字面量关键字",
   "Predefined type": "预定义类型",
-  "Predefined function": "预定义函数"
+  "Predefined function": "预定义函数",
+  "Extension function call": "扩展函数调用",
+  "Package-level function call": "包级函数调用",
+  "Enum entry": "枚举项"
 }

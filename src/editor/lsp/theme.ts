@@ -506,6 +506,9 @@ export const lspTheme = EditorView.theme({
   ".cm-sem-function": semanticStyle("function-call", "function"),
   // Keep role selectors at one class so static/deprecated modifiers can override their styles.
   ".cm-sem-function:where(.cm-sem-declaration)": semanticStyle("function", "function"),
+  // Kotlin's top-level function calls; a library's own stay Predefined functions (the rule below).
+  ".cm-sem-kotlin-extension-call": inheritedStyle("kotlin-extension-call", "function-call"),
+  ".cm-sem-kotlin-package-call": inheritedStyle("kotlin-package-call", "function-call"),
   // Predefined function / type: unset, they keep the Predefined symbol style.
   ".cm-sem-function:where(.cm-sem-builtin)": inheritedStyle("builtin-function", "builtin"),
   ".cm-sem-function.cm-sem-python-method-call": semanticStyle("python-method-call", "function-call"),
@@ -515,6 +518,10 @@ export const lspTheme = EditorView.theme({
   ".cm-sem-annotation": semanticStyle("decorator", "annotation"),
   ".cm-sem-namespace": semanticStyle("namespace", "type"),
   ".cm-sem-constant": { ...semanticStyle("constant", "constant"), fontStyle: "var(--syn-constant-italic, italic)" },
+  ".cm-sem-kotlin-enum-entry": {
+    ...inheritedStyle("kotlin-enum-entry", "constant"),
+    fontStyle: "var(--syn-kotlin-enum-entry-italic, var(--syn-constant-italic, italic))",
+  },
   ".cm-sem-variable": semanticStyle("variable", "variable"),
   ".cm-sem-property": semanticStyle("property", "property"),
   ".cm-sem-parameter": semanticStyle("param", "variable"),
