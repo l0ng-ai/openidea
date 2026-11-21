@@ -122,6 +122,8 @@ export interface TreeProps<T> {
 
   speedSearch?: boolean;
   speedSearchMode?: "highlight" | "filter";
+  /** Fit the passive speed-search field above the tree when its panel has a header. */
+  speedSearchAbove?: boolean;
   /**
    * Speed search shows as a field over the bar right above the tree (a tool window's toolbar)
    * instead of a popup over its first rows, with a toggle to show only the matches.
@@ -275,6 +277,7 @@ export function Tree<T>(props: TreeProps<T>) {
     onContextMenu,
     speedSearch = true,
     speedSearchMode = "highlight",
+    speedSearchAbove = false,
     speedSearchField = false,
     rowHeight: fixedRowHeight,
     indent = 20,
@@ -885,9 +888,14 @@ export function Tree<T>(props: TreeProps<T>) {
             />
           </div>
         ) : (
-          <div className={clsx(styles.speedSearch, noMatch && styles.noMatch)} role="status" aria-live="polite">
-            <Icon name="search" size={12} />
+          <div
+            className={clsx(styles.speedSearch, speedSearchAbove && styles.speedAbove, noMatch && styles.noMatch)}
+            role="status"
+            aria-live="polite"
+          >
+            <Icon name="search" size={speedSearchAbove ? 16 : 12} />
             <span className={styles.speedQuery}>{query}</span>
+            {speedSearchAbove && <span className={styles.caret} aria-hidden="true" />}
           </div>
         ))}
     </div>

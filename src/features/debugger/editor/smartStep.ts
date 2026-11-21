@@ -9,6 +9,7 @@ import { Decoration, EditorView, ViewPlugin, type DecorationSet } from "@codemir
 import { editorsFor, activeEditor, type EditorDocContext, type TextEditorHandle } from "@/editor/api";
 import { call, commands, type DebugSessionId, type StepInTarget } from "@/platform/ipc";
 import { suspendKeyboardDispatch } from "@/platform/keymap";
+import type { PopupAnchor } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { useExecutionPoint, resumeExecution } from "../state";
 import { useOverlays, type InlineStepTarget } from "../ui/popoverStore";
@@ -100,6 +101,29 @@ function editorShowing(path: string): TextEditorHandle | null {
   const active = activeEditor();
   if (active?.ctx.path === path) return active;
   return editorsFor(path)[0] ?? null;
+}
+
+export function smartStepAnchor(): PopupAnchor {
+  const { path, line } = useExecutionPoint.getState();
+  const view = path && editorShowing(path)?.view;
+  if (!view) return "center";
+  const measure = () => {
+    const doc = view.state.doc;
+    if (line < 0 || line >= doc.lines) return null;
+    const point = view.coordsAtPos(doc.line(line + 1).from, 1);
+    const viewport = view.scrollDOM.getBoundingClientRect();
+    if (
+      !point ||
+      point.left < viewport.left ||
+      point.left > viewport.right ||
+      point.bottom <= viewport.top ||
+      point.top >= viewport.bottom
+    )
+      return null;
+    return new DOMRect(point.left, point.top, 0, point.bottom - point.top);
+  };
+  const initial = measure();
+  return initial ? { contextElement: view.contentDOM, getBoundingClientRect: () => measure() ?? initial } : "center";
 }
 
 /**

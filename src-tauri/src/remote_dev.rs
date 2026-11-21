@@ -1084,11 +1084,16 @@ pub async fn remote_invoke(
         .remote_dev
         .get(&label)
         .ok_or_else(|| IdeError::unavailable("this window is not connected to a remote host"))?;
+    let batch_execution = cmd == "db_execute_stream";
+    let mut batch_channel = None;
     if let Value::Object(map) = &mut args {
-        for v in map.values_mut() {
+        for (name, v) in map {
             if let Some(id) = v.get("$channel").and_then(Value::as_u64) {
                 let own = c.next_channel.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 c.channels.lock().insert(own, (on_channel.clone(), id));
+                if batch_execution && name == "onProgress" {
+                    batch_channel = Some(own);
+                }
                 *v = serde_json::json!({ "$channel": own });
             }
         }
@@ -1112,9 +1117,23 @@ pub async fn remote_invoke(
     };
     let web_url = cmd == "web_url";
     let call = Invoke { window: label, cmd, args };
-    let mut result = invoke_reply(&c.peer, call, std::time::Duration::from_secs(30))
-        .await
-        .map_err(|e| lost_connection_error(older_server_error(e, &c.server_version, &c.host), &c))?;
+    let reply = invoke_reply(&c.peer, call, std::time::Duration::from_secs(30)).await;
+    // The batch's notifications precede its reply. Other commands can keep streaming later.
+    if let Some(id) = batch_channel {
+        c.channels.lock().remove(&id);
+    }
+    let mut result = reply.map_err(|e| {
+        if batch_execution
+            && !c.peer.is_closed()
+            && e.kind == ide_core::error::ErrorKind::Protocol
+            && e.message == "command db_execute_stream is not available remotely"
+        {
+            // The console can use the old command. This rejection happens before execution.
+            e
+        } else {
+            lost_connection_error(older_server_error(e, &c.server_version, &c.host), &c)
+        }
+    })?;
     if web_url && let Some(url) = result.as_str() {
         result = Value::String(forward_web_url(&c, url).await?);
     }

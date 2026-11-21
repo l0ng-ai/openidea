@@ -154,6 +154,111 @@ describe("color schemes", () => {
     expect(resolvedAttribute("dark", "pyKeyword")).toMatchObject({ foreground: "#cf8e6d" });
   });
 
+  it("re-resolves Python fallback tokens inside the Python block, as PY.METHOD_CALL falls back to PY.FUNCTION_CALL", () => {
+    const block = (css: string) => css.slice(css.indexOf('.cm-editor[data-language="Python"]'));
+    // `--syn-python-method-call: var(--syn-function-call)` is computed on :root; the Python block re-declares it.
+    const call = block(schemeCss("dark", { dark: { pyFunctionCall: { foreground: "#d56075" } } }));
+    expect(call).toContain("--syn-function-call: #d56075 !important");
+    expect(call).toContain("--syn-python-method-call: var(--syn-function-call) !important");
+    expect(call).not.toContain("--syn-python-nested-function");
+    // PY.NESTED_FUNC_DEFINITION falls back to PY.FUNC_DEFINITION.
+    const definition = block(schemeCss("dark", { dark: { pyFunctionDeclaration: { foreground: "#123456" } } }));
+    expect(definition).toContain("--syn-python-nested-function: var(--syn-function) !important");
+    // A Method call colour of its own wins.
+    const own = block(
+      schemeCss("dark", {
+        dark: { pyFunctionCall: { foreground: "#d56075" }, pyMethodCall: { foreground: "#abcdef" } },
+      }),
+    );
+    expect(own).toContain("--syn-python-method-call: #abcdef !important");
+    expect(own).not.toContain("--syn-python-method-call: var(");
+    // Font style alone leaves the colour following Function call.
+    const bold = block(
+      schemeCss("dark", { dark: { pyFunctionCall: { foreground: "#d56075" }, pyMethodCall: { bold: true } } }),
+    );
+    expect(bold).toContain("--syn-python-method-call: var(--syn-function-call) !important");
+    // The other shared-token fallbacks follow too.
+    const shared = block(
+      schemeCss("dark", {
+        dark: { pyOperationSign: { foreground: "#111111" }, pyClassDefinition: { foreground: "#222222" } },
+      }),
+    );
+    for (const token of ["parentheses", "brackets", "braces"])
+      expect(shared).toContain(`--syn-python-${token}: var(--syn-punct) !important`);
+    for (const token of ["type-parameter", "annotation"])
+      expect(shared).toContain(`--syn-python-${token}: var(--syn-type) !important`);
+    // Only fallbacks the scheme declares: dark's f-string braces have a colour of their own, light's follow strings.
+    const string = { pyString: { foreground: "#333333" } };
+    expect(block(schemeCss("dark", { dark: string }))).not.toContain("--syn-python-fstring");
+    expect(block(schemeCss("light", { light: string }))).toContain(
+      "--syn-python-fstring: var(--syn-string) !important",
+    );
+    // Language Defaults overrides stay on :root, where the fallbacks already see them.
+    expect(schemeCss("dark", { dark: { functionCall: { foreground: "#d56075" } } })).not.toContain("data-language");
+  });
+
+  it("applies an imported scheme's Python Function call to method calls", () => {
+    const customs = {
+      "custom-pycharm": {
+        name: "PyCharm",
+        parent: "dark" as const,
+        attributes: { pyFunctionCall: { foreground: "#d56075" } },
+      },
+    };
+    const css = schemeCss("custom-pycharm", undefined, undefined, customs);
+    expect(css.slice(css.indexOf('.cm-editor[data-language="Python"]'))).toContain(
+      "--syn-python-method-call: var(--syn-function-call) !important",
+    );
+    expect(resolvedAttribute("custom-pycharm", "pyMethodCall", customs).foreground).toBe("#d56075");
+    expect(resolvedAttribute("dark", "pyMethodCall").foreground).toBe(
+      resolvedAttribute("dark", "pyFunctionCall").foreground,
+    );
+  });
+
+  it("lets derived tokens follow the overrides of a scheme that isn't the theme's own", () => {
+    const root = (css: string) => css.slice(0, css.indexOf("}"));
+    const customs = {
+      "custom-pycharm": {
+        name: "PyCharm",
+        parent: "dark" as const,
+        attributes: { functionCall: { foreground: "#6dacff" }, identifier: { foreground: "#112233" } },
+      },
+    };
+    const imported = root(schemeCss("custom-pycharm", undefined, undefined, customs));
+    expect(imported).toContain("--syn-function-call: #6dacff !important");
+    expect(imported).toContain("--syn-python-method-call: #6dacff !important");
+    expect(imported).toContain(`--syn-php-function-call: ${schemeTokens("dark").get("--syn-function")} !important`);
+    // Through a chain of fallbacks: Python globals follow globals, which follow local variables.
+    expect(imported).toContain("--syn-global: #112233 !important");
+    expect(imported).toContain("--syn-python-global-variable: #112233 !important");
+    expect(resolvedAttribute("custom-pycharm", "pyMethodCall", customs).foreground).toBe("#6dacff");
+    expect(resolvedAttribute("custom-pycharm", "functionCall", customs).foreground).toBe("#6dacff");
+
+    // A derived token with a colour of its own keeps it, whether the scheme or the user sets it,
+    // and the tokens derived from it follow that colour.
+    const own = { ...customs["custom-pycharm"].attributes, globalVariable: { foreground: "#abcdef" } };
+    const withOwn = { "custom-pycharm": { ...customs["custom-pycharm"], attributes: own } };
+    const scheme = root(schemeCss("custom-pycharm", undefined, undefined, withOwn));
+    expect(scheme).toContain("--syn-global: #abcdef !important");
+    expect(scheme).toContain("--syn-python-global-variable: #abcdef !important");
+    expect(resolvedAttribute("custom-pycharm", "globalVariable", withOwn).foreground).toBe("#abcdef");
+    expect(resolvedAttribute("custom-pycharm", "pyGlobalVariable", withOwn).foreground).toBe("#abcdef");
+    const user = { "custom-pycharm": { globalVariable: { foreground: "#fedcba" } } };
+    const userOwn = root(schemeCss("custom-pycharm", user, undefined, customs));
+    expect(userOwn).toContain("--syn-global: #fedcba !important");
+    expect(userOwn).toContain("--syn-python-global-variable: #fedcba !important");
+
+    // The user's Language Defaults overrides under an explicitly chosen built-in scheme.
+    const light = root(schemeCss("light", { light: { functionCall: { foreground: "#d56075" } } }));
+    expect(light).toContain("--syn-python-method-call: #d56075 !important");
+    expect(light.match(/--syn-function-call:/g)).toHaveLength(1);
+
+    // The theme's own scheme writes no tokens: tokens.css derives them on :root itself.
+    expect(schemeCss("dark", { dark: { functionCall: { foreground: "#d56075" } } })).not.toContain(
+      "--syn-python-method-call",
+    );
+  });
+
   it("resolves scheme attribute state and editor defaults", () => {
     expect(resolvedAttribute("light", "lineComment")).toMatchObject({
       foreground: "#8c8c8c",

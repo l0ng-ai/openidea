@@ -61,6 +61,18 @@ export function encodeArgs(args: unknown): { json: string; channels: Map<number,
 
 async function remoteInvoke(cmd: string, args?: InvokeArgs, options?: InvokeOptions): Promise<unknown> {
   const { json, channels } = encodeArgs(args);
+  if (cmd === "db_execute_stream") {
+    // These callbacks are reached through onChannel; their own Tauri registrations are unused.
+    const runtime = "__TAURI_INTERNALS__" in window ? window.__TAURI_INTERNALS__ : undefined;
+    if (
+      runtime &&
+      typeof runtime === "object" &&
+      "unregisterCallback" in runtime &&
+      typeof runtime.unregisterCallback === "function"
+    ) {
+      for (const channel of channels.values()) runtime.unregisterCallback(channel.id);
+    }
+  }
   const onChannel = new Channel<ChannelFrame>();
   onChannel.onmessage = (frame) => channels.get(frame.id)?.onmessage(JSON.parse(frame.data));
   const result = await invokeLocal<string>("remote_invoke", { cmd, args: json, onChannel }, options);

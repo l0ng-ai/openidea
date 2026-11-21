@@ -526,26 +526,23 @@ export function _setSchemeSource(css: string) {
 
 /**
  * All tokens of a theme with `var()` references resolved (so they survive under another theme);
- * with `redGreen`, as Adjust colors for red-green vision deficiency recolours it.
+ * with `redGreen`, as Adjust colors for red-green vision deficiency recolours it. `fixed` values
+ * replace the theme's own and are kept as written, and the tokens derived from them follow them.
  */
-export function schemeTokens(id: SchemeId, css: string = source, redGreen = false): Vars {
+export function schemeTokens(id: SchemeId, css: string = source, redGreen = false, fixed?: Vars): Vars {
   const key = redGreen ? `${id}+red-green` : id;
-  const cached = css === source ? resolvedCache.get(key) : undefined;
+  const cacheable = css === source && !fixed?.size;
+  const cached = cacheable ? resolvedCache.get(key) : undefined;
   if (cached) return cached;
-  const all = css === source ? (parsed ??= blocks(css)) : blocks(css);
-  const own = themeSelectors(id);
-  const merged: Vars = new Map();
-  for (const b of all) if (b.selectors.includes(":root")) for (const [k, v] of b.decls) merged.set(k, v);
-  for (const b of all) if (b.selectors.some((s) => own.includes(s))) for (const [k, v] of b.decls) merged.set(k, v);
-  if (redGreen)
-    for (const b of all)
-      if (b.selectors.some((s) => redGreenApplies(id, s))) for (const [k, v] of b.decls) merged.set(k, v);
+  const merged = declaredSchemeTokens(id, css, redGreen);
   const resolve = (value: string, depth = 0): string =>
     depth > 8
       ? value
       : value.replace(
           /var\((--[\w-]+)(?:\s*,\s*([^()]*(?:\([^()]*\))?[^()]*))?\)/g,
           (_m, name: string, fallback?: string) => {
+            const own = fixed?.get(name);
+            if (own !== undefined) return own;
             const v = merged.get(name);
             return v !== undefined
               ? resolve(v, depth + 1)
@@ -555,8 +552,54 @@ export function schemeTokens(id: SchemeId, css: string = source, redGreen = fals
           },
         );
   const out: Vars = new Map();
-  for (const [k, v] of merged) out.set(k, resolve(v));
-  if (css === source) resolvedCache.set(key, out);
+  for (const [k, v] of merged) out.set(k, fixed?.get(k) ?? resolve(v));
+  for (const [k, v] of fixed ?? []) out.set(k, v);
+  if (cacheable) resolvedCache.set(key, out);
+  return out;
+}
+
+/** The tokens of a theme as tokens.css declares them, `var()` references kept. */
+function declaredSchemeTokens(id: SchemeId, css: string = source, redGreen = false): Vars {
+  const all = css === source ? (parsed ??= blocks(css)) : blocks(css);
+  const own = themeSelectors(id);
+  const merged: Vars = new Map();
+  for (const b of all) if (b.selectors.includes(":root")) for (const [k, v] of b.decls) merged.set(k, v);
+  for (const b of all) if (b.selectors.some((s) => own.includes(s))) for (const [k, v] of b.decls) merged.set(k, v);
+  if (redGreen)
+    for (const b of all)
+      if (b.selectors.some((s) => redGreenApplies(id, s))) for (const [k, v] of b.decls) merged.set(k, v);
+  return merged;
+}
+
+/**
+ * Python tokens that fall back to another token (`--syn-python-method-call: var(--syn-function-call)`)
+ * get their value on `:root`, so a Python block overriding that token alone never reaches them.
+ * Returns `[token, fallback]` pairs to re-declare there, in dependency order, for the tokens of
+ * scheme `id` whose fallback `declared` overrides and that `declared` does not set itself: a
+ * Python Function call override then also colours method calls, as PY.METHOD_CALL falls back to
+ * PY.FUNCTION_CALL in PyCharm.
+ */
+function pythonFallbacks(
+  id: string,
+  customs: CustomColorSchemes,
+  redGreen: boolean,
+  declared: Iterable<string>,
+): Array<[string, string]> {
+  const builtin = isBuiltinTheme(id);
+  const base = builtin ? id : (customs[id]?.parent ?? "light");
+  const tokens = declaredSchemeTokens(base, source, redGreen && builtin);
+  const set = new Set(declared);
+  const out: Array<[string, string]> = [];
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const [key, value] of tokens) {
+      const fallback = /^var\((--syn-[\w-]+)\)$/.exec(value.trim())?.[1];
+      if (!key.startsWith("--syn-python-") || set.has(key) || !fallback || !set.has(fallback)) continue;
+      out.push([key, fallback]);
+      set.add(key);
+      grew = true;
+    }
+  }
   return out;
 }
 
@@ -710,14 +753,22 @@ export function listSchemes(customs: CustomColorSchemes = {}) {
   return [...SCHEMES, ...Object.entries(customSchemes(customs)).map(([id, s]) => ({ id, name: s.name }))];
 }
 
-/** With `redGreen`, a built-in scheme's red-green variant; a custom scheme keeps its parent's own colours. */
-export function resolvedSchemeTokens(id: string, customs: CustomColorSchemes = {}, redGreen = false): Vars {
+/**
+ * A scheme's tokens with a custom scheme's attributes and then `overrides` applied; tokens that
+ * tokens.css derives from an overridden one follow it unless they are overridden themselves. With
+ * `redGreen`, a built-in scheme's red-green variant; a custom scheme keeps its parent's own colours.
+ */
+export function resolvedSchemeTokens(
+  id: string,
+  customs: CustomColorSchemes = {},
+  redGreen = false,
+  overrides?: Record<string, TextAttributesOverride>,
+): Vars {
   const custom = customSchemes(customs)[id];
   const builtin = isBuiltinTheme(id);
   const base = builtin ? id : (custom?.parent ?? "light");
-  const tokens = new Map(schemeTokens(base, source, redGreen && builtin));
-  for (const [key, value] of overrideDeclarations(custom?.attributes)) tokens.set(key, value);
-  return tokens;
+  const fixed: Vars = new Map([...overrideDeclarations(custom?.attributes), ...overrideDeclarations(overrides)]);
+  return new Map(schemeTokens(base, source, redGreen && builtin, fixed));
 }
 
 const hexIn = (value: string | undefined): string | undefined =>
@@ -762,8 +813,18 @@ export function resolvedAttribute(
   const custom = customSchemes(customs)[id];
   const own = custom?.attributes[attr.id];
   const vars = resolvedSchemeTokens(id, customs, redGreen);
-  if (attr.language)
-    for (const [key, value] of overrideDeclarations(custom?.attributes, attr.language)) vars.set(key, value);
+  if (attr.language) {
+    const scoped = overrideDeclarations(custom?.attributes, attr.language);
+    for (const [key, value] of scoped) vars.set(key, value);
+    if (attr.language === "Python")
+      for (const [key, fallback] of pythonFallbacks(
+        id,
+        customSchemes(customs),
+        redGreen,
+        scoped.map(([k]) => k),
+      ))
+        vars.set(key, vars.get(fallback)!);
+  }
 
   const token = attr.token;
   const foreground = attr.fg ? vars.get(attr.fg) : undefined;
@@ -817,7 +878,7 @@ export function schemeCss(
   const el = root === undefined ? (typeof document !== "undefined" ? document.documentElement : null) : root;
   const pluginTheme = !!el?.dataset.pluginTheme && id === setting;
   if (id !== themeScheme(root) || pluginTheme) {
-    const tokens = resolvedSchemeTokens(id, valid, !!el?.hasAttribute("data-red-green"));
+    const tokens = resolvedSchemeTokens(id, valid, !!el?.hasAttribute("data-red-green"), overrides?.[id]);
     for (const [k, v] of tokens)
       if (SCHEME_VARS.has(k) || k.startsWith("--syn-")) {
         decls.push([k, v]);
@@ -832,15 +893,26 @@ export function schemeCss(
     if (bg) decls.push(["--bg-editor", bg], ["--bg-editor-gutter", gutter ?? bg]);
   }
   decls.push(...overrideDeclarations(overrides?.[id]));
-  const body = decls
+  const body = [...new Map(decls)]
     .filter(([k, v]) => /^--[\w-]+$/.test(k) && SAFE.test(v))
     .map(([k, v]) => `  ${k}: ${v} !important;`);
   let css = body.length ? `:root {\n${body.join("\n")}\n}\n` : "";
   for (const language of Object.values(SCHEME_LANGUAGE_SCOPES)) {
-    const languageBody = [
+    const scoped = [
       ...overrideDeclarations(valid[id]?.attributes, language),
       ...overrideDeclarations(overrides?.[id], language),
-    ]
+    ];
+    if (language === "Python" && scoped.length) {
+      const redGreen = !!el?.hasAttribute("data-red-green");
+      for (const [key, fallback] of pythonFallbacks(
+        id,
+        valid,
+        redGreen,
+        scoped.map(([k]) => k),
+      ))
+        scoped.push([key, `var(${fallback})`]);
+    }
+    const languageBody = scoped
       .filter(([k, v]) => /^--[\w-]+$/.test(k) && SAFE.test(v))
       .map(([k, v]) => `  ${k}: ${v} !important;`);
     // The editor of that language, and a block of it in another editor (a Markdown code fence).

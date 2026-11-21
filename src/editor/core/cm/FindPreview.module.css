@@ -1,0 +1,34 @@
+.preview:global(.cm-tooltip) {
+  width: max-content;
+  max-width: min(400px, var(--find-preview-width, 100vw), calc(100vw - 16px));
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border-popup);
+  border-radius: var(--radius-popup);
+  background: var(--bg-popup);
+  color: var(--fg);
+  box-shadow: var(--shadow-popup);
+  pointer-events: none;
+}
+
+.preview :global(.cm-tooltip-arrow)::before {
+  border-top-color: var(--border-popup);
+  border-bottom-color: var(--border-popup);
+}
+
+.preview :global(.cm-tooltip-arrow)::after {
+  border-top-color: var(--bg-popup);
+  border-bottom-color: var(--bg-popup);
+}
+
+.code {
+  display: -webkit-box;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  tab-size: 4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6;
+}

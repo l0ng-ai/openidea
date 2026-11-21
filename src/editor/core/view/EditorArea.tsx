@@ -355,6 +355,7 @@ function PaneView({ paneId }: { paneId: string }) {
       panelIdPrefix={`editor-${paneId}`}
       dnd={stripDnd}
       layout={tabPrefs.multipleRows ? "wrap" : tabPrefs.oneRowOverflow === "squeeze" ? "squeeze" : "scroll"}
+      hiddenTabsOnly
       closePosition={tabPrefs.closeButtonPosition === "left" ? "left" : "right"}
       onSelect={(id) => ctrl.activate(paneId, id)}
       onClose={(id) => void ctrl.closeTab(paneId, id)}
