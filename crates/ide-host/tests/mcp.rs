@@ -297,6 +297,10 @@ async fn trusted_attached_projects_are_writable_and_reach_the_window_they_are_at
     .unwrap();
     h.host.trust.decide(&attached, true, false).unwrap();
 
+    // The workspace's roots: the project and the attached project it trusts.
+    let roots: serde_json::Value = serde_json::from_str(&h.call("get_workspace_roots", json!({})).await).unwrap();
+    assert_eq!(roots, json!({ "projectRoot": h.root, "roots": [h.root, attached] }));
+
     // Outside the project folder, by absolute path.
     let file = attached.join("new.txt");
     h.call("create_new_file", json!({"pathInProject": file, "text": "hello"})).await;
