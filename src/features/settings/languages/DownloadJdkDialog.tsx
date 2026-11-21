@@ -31,6 +31,8 @@ export function DownloadJdkDialog({
   const [job, setJob] = useState<JdkDownload | null>(null);
   const [progress, setProgress] = useState<{ fraction: number | null; message: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const versionId = useId();
+  const vendorId = useId();
   const locationId = useId();
 
   useEffect(() => {
@@ -101,23 +103,20 @@ export function DownloadJdkDialog({
       open
       onClose={() => (job ? job.cancel() : onClose())}
       title="Download JDK"
-      width={520}
+      width={460}
       aria-label="Download JDK"
       buttons={[
         { label: "Download", role: "default", disabled: !version || !!job, onClick: download },
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div className={styles.form}>
+      <div className={styles.downloadForm}>
         <div className={styles.downloadGrid}>
-          <span>
-            <T>Vendor:</T>
-          </span>
-          <Select value={vendor} options={vendors} onChange={setVendor} disabled={!!job} aria-label="Vendor" />
-          <span>
+          <label htmlFor={versionId}>
             <T>Version:</T>
-          </span>
+          </label>
           <Select
+            id={versionId}
             value={version}
             options={versionOptions}
             onChange={setVersion}
@@ -125,13 +124,23 @@ export function DownloadJdkDialog({
             placeholder={releases ? "Select a version" : "Loading…"}
             aria-label="Version"
           />
+          <label htmlFor={vendorId}>
+            <T>Vendor:</T>
+          </label>
+          <Select
+            id={vendorId}
+            value={vendor}
+            options={vendors}
+            onChange={setVendor}
+            disabled={!!job}
+            aria-label="Vendor"
+          />
           <label htmlFor={locationId}>
             <T>Location:</T>
           </label>
           <div className={styles.pathRow}>
             <Input
               id={locationId}
-              mono
               className={styles.pathInput}
               value={location}
               disabled={!!job}
@@ -148,21 +157,23 @@ export function DownloadJdkDialog({
               }}
             />
           </div>
-        </div>
-        <div className={styles.note}>
-          {tx`${vendorName} ${version ?? ""} is unpacked into a folder of its own in ${location || "…"}, where JDK detection finds it.`}
-        </div>
-        {progress && (
-          <div className={styles.downloadProgress}>
-            <ProgressBar value={progress.fraction} aria-label="Downloading JDK" />
-            <span className={styles.note}>{progress.message}</span>
+          <div className={styles.downloadStatus}>
+            <div className={styles.note}>
+              {tx`${vendorName} ${version ?? ""} is unpacked into a folder of its own in ${location || "…"}, where JDK detection finds it.`}
+            </div>
+            {progress && (
+              <div className={styles.downloadProgress}>
+                <ProgressBar value={progress.fraction} aria-label="Downloading JDK" />
+                <span className={styles.note}>{progress.message}</span>
+              </div>
+            )}
+            {error && (
+              <div className={styles.error} role="alert">
+                {error}
+              </div>
+            )}
           </div>
-        )}
-        {error && (
-          <div className={styles.error} role="alert">
-            {error}
-          </div>
-        )}
+        </div>
       </div>
     </Dialog>
   );
