@@ -88,10 +88,13 @@ function layout(el: HTMLElement | null, t: HTMLElement | null, th: HTMLElement |
   if (!el || !t || !th) return null;
   const height = el.clientHeight;
   const max = el.scrollHeight - height;
+  // WebKit can report scrollHeight a pixel over clientHeight after the scroller is resized to a
+  // fractional height (dragging a splitter), with nothing overflowing: that is no scroll range.
+  const scrolls = max > 1;
   t.style.top = `${el.offsetTop}px`;
   t.style.height = `${height}px`;
-  t.style.display = max > 0 ? "" : "none";
-  if (max <= 0) return null;
+  t.style.display = scrolls ? "" : "none";
+  if (!scrolls) return null;
   const size = Math.max(MIN_THUMB, (height * height) / el.scrollHeight);
   const range = height - size;
   th.style.height = `${size}px`;

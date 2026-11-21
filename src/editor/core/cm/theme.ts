@@ -167,7 +167,7 @@ export const openideaTheme = EditorView.theme({
     "--editor-fold-chip": "var(--bg-fold-placeholder, color-mix(in srgb, var(--fg-muted) 14%, transparent))",
   },
   "&.cm-focused": { outline: "none" },
-  ".cm-scroller, .cm-openidea-sticky": {
+  ".cm-scroller, .cm-openidea-sticky, .cm-openidea-scopeContext": {
     fontFamily: "var(--openidea-editor-font, var(--font-mono))",
     fontWeight: "var(--fw-code, 400)",
     fontSize: "var(--openidea-editor-font-size, var(--fs-code))",
@@ -184,7 +184,7 @@ export const openideaTheme = EditorView.theme({
   // The right side also leaves room for the floating corner widgets (core/cm/cornerInset.ts).
   ".cm-line": { padding: `0 calc(16px + var(--cm-corner-inset, 0px)) 0 ${LINE_INSET}px` },
   ...caretStyles,
-  "&.cm-openidea-ligatures .cm-scroller, &.cm-openidea-ligatures .cm-openidea-sticky": {
+  "&.cm-openidea-ligatures :is(.cm-scroller, .cm-openidea-sticky, .cm-openidea-scopeContext)": {
     fontVariantLigatures: "normal",
   },
   "&.cm-openidea-methodSeparators .cm-openidea-methodSeparator": {
@@ -411,6 +411,21 @@ export const openideaTheme = EditorView.theme({
   },
   ".cm-openidea-stickyText": { flex: "1", overflow: "hidden", position: "relative" },
   ".cm-openidea-stickyInner": { position: "relative" },
+  ".cm-openidea-scopeContext": {
+    position: "absolute",
+    zIndex: "3",
+    boxSizing: "border-box",
+    width: "max-content",
+    overflow: "hidden",
+    pointerEvents: "none",
+    backgroundColor: "var(--bg-popup)",
+    border: "1px solid var(--border-popup)",
+    borderRadius: "var(--radius-popup)",
+    boxShadow: "var(--shadow-popup)",
+    padding: "var(--space-0-5) var(--space-2) var(--space-0-5) 0",
+  },
+  ".cm-openidea-scopeLine": { display: "flex", whiteSpace: "pre" },
+  ".cm-openidea-scopeCode": { minWidth: "0", overflow: "hidden", textOverflow: "ellipsis" },
   // The selection on a pinned line, under its text (as the selection layer in the editor).
   ".cm-openidea-stickySelection": {
     position: "absolute",

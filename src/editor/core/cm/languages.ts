@@ -502,8 +502,46 @@ const annotationIndent = indentService.of((cx, pos) => {
   return undefined;
 });
 
+/**
+ * Python, as PyCharm: Enter after a statement that ends its block (`return`, `pass`, `raise`,
+ * `break`, `continue`) goes one level out, and a bare `except:` is realigned with its `try`.
+ */
+const pythonDedent = [
+  indentService.of((cx, pos) => {
+    if (cx.simulatedBreak == null) return bareExceptIndent(cx.state, pos);
+    if (cx.textAfterPos(pos).trim()) return undefined;
+    const line = cx.state.doc.lineAt(pos);
+    const before = line.text.slice(0, pos - line.from);
+    const code = indentationCode(before, "#");
+    if (!dedentsAfter(code, "python") || unbalanced(code)) return undefined;
+    return Math.max(0, cx.countColumn(before, before.search(/\S|$/)) - cx.unit);
+  }),
+  EditorState.languageData.of(() => [{ indentOnInput: /^\s*except:$/ }]),
+];
+
+/** The indentation of the `try:` (or earlier `except`) a bare `except:` line at `pos` belongs to. */
+function bareExceptIndent(state: EditorState, pos: number): number | undefined {
+  const line = state.doc.lineAt(pos);
+  if (!/^\s*except:/.test(line.text)) return undefined;
+  const own = line.text.search(/\S/);
+  for (let n = line.number - 1; n >= 1; n--) {
+    const text = state.doc.line(n).text;
+    const indent = text.search(/\S/);
+    if (indent < 0 || indent >= own) continue;
+    return /^\s*(try|except\b.*|else):\s*(#.*)?$/.test(text) ? indent : undefined;
+  }
+  return undefined;
+}
+
+/** Whether `code` leaves a bracket open (the statement continues on the next line). */
+function unbalanced(code: string): boolean {
+  let depth = 0;
+  for (const c of code) depth += "([{".includes(c) ? 1 : ")]}".includes(c) ? -1 : 0;
+  return depth > 0;
+}
+
 /** Extensions the stock modes lack, by CodeMirror language name. */
-const EXTRA_SUPPORT: Record<string, Extension[]> = { Java: [annotationIndent] };
+const EXTRA_SUPPORT: Record<string, Extension[]> = { Java: [annotationIndent], Python: pythonDedent };
 
 function patchSupport(desc: LanguageDescription, support: LanguageSupport): LanguageSupport {
   const extra = EXTRA_TAGS[desc.name];
@@ -528,7 +566,7 @@ export function loadedSupport(desc: LanguageDescription | null): LanguageSupport
 }
 
 const COLON_INDENT_LANGS = new Set(["gdscript", "python"]);
-const DEDENT_STATEMENT = /^\s*(?:pass|break|continue|return)\b/;
+const DEDENT_STATEMENT = /^\s*(?:pass|break|continue|return|raise)\b/;
 const KEYWORD_OPEN_LANGS = new Set(["elixir", "ruby", "lua"]);
 const KEYWORD_OPEN =
   /\b(?:do(?:\s*\|[^|]*\|)?|then|->)$|^\s*(?:def|defp|defmodule|class|module|function|local\s+function|if|unless|elsif|elseif|else|while|until|for|case|begin|cond|with|receive|try)\b/;

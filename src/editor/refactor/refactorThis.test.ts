@@ -70,7 +70,7 @@ const startExtractInterface = vi.fn();
 vi.mock("./extractInterface", () => ({ EXTRACT_INTERFACE_LANGUAGES: new Set(["java"]), startExtractInterface }));
 
 const { classifyAction, kindAdvertised, cannotPerform } = await import("./catalog");
-const { refactorThis, runRefactoring } = await import("./refactorThis");
+const { refactorThis, requestKind, runRefactoring } = await import("./refactorThis");
 const { useLspPopup, closePopup } = await import("@/editor/lsp/popupStore");
 const { lspDoc } = await import("@/editor/lsp/lsp");
 const { inplaceRenameExtension, inplaceSession } = await import("@/editor/lsp/inplaceRename");
@@ -400,5 +400,14 @@ describe("Refactor menu actions", () => {
     const session = inplaceSession(v.state)!;
     expect(session.oldName).toBe("var_name");
     expect(session.others).toHaveLength(1);
+  });
+});
+
+describe("requested code action kind", () => {
+  it("asks typescript-language-server for all refactorings, other servers for the kind", () => {
+    expect(requestKind("refactor.extract", "typescript")).toBe("refactor");
+    expect(requestKind("refactor.extract", "javascriptreact")).toBe("refactor");
+    expect(requestKind("refactor.extract", "java")).toBe("refactor.extract");
+    expect(requestKind("source.organizeImports", "typescript")).toBe("source.organizeImports");
   });
 });

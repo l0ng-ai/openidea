@@ -259,6 +259,41 @@ describe("completeStatementSpec (text rules)", () => {
   });
 });
 
+describe("completeStatementSpec: TypeScript and Python", () => {
+  const ts = [comments("//", ["/*", "*/"]), indentUnit.of("  ")];
+  const py = [comments("#"), indentUnit.of("    ")];
+  const complete = (text: string, language: string, ext: Extension) => {
+    const s = state(text, ext);
+    return withCaret(s, completeStatementSpec(s, language));
+  };
+
+  it("gives an unfinished arrow function a block body", () => {
+    expect(complete("const f = (x: number) =>|", "typescript", ts)).toBe("const f = (x: number) => {\n  |\n};");
+    expect(complete("  items.map((x) =>|", "typescript", ts)).toBe("  items.map((x) => {\n    |\n  });");
+  });
+
+  it("closes an unfinished object or call before the `;`", () => {
+    expect(complete('const obj = { name: "Ada"|', "typescript", ts)).toBe('const obj = { name: "Ada" };\n|');
+    expect(complete("foo(a, bar(2|", "typescript", ts)).toBe("foo(a, bar(2));\n|");
+    expect(complete("call(a,|", "typescript", ts)).toBe("call(a,\n|");
+  });
+
+  it("finishes every Python compound statement header with `:`", () => {
+    for (const head of [
+      "async def fetch(url)",
+      "with open(path) as f",
+      "except ValueError",
+      "case 1",
+      "match command",
+      "try",
+      "async for x in xs",
+    ])
+      expect(complete(`${head}|`, "python", py)).toBe(`${head}:\n    |`);
+    expect(complete("def f(x|", "python", py)).toBe("def f(x):\n    |");
+    expect(complete("match = 5|", "python", py)).toBe("match = 5\n|");
+  });
+});
+
 describe("planCompleteStatement", () => {
   const java = [comments("//", ["/*", "*/"]), indentUnit.of("    ")];
 
