@@ -682,11 +682,6 @@
   gap: var(--space-1-5);
   min-width: 0;
 }
-.optionGrid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-1) var(--space-3);
-}
 .manageBar {
   display: flex;
   align-items: center;
