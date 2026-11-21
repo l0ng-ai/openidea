@@ -10,11 +10,16 @@ import {
 } from "@codemirror/view";
 import { highlightingFor } from "@codemirror/language";
 import { highlightTree } from "@lezer/highlight";
-import { iconAreaSource, mapLineStart, shownAgain, type EditorDocContext } from "@/editor/api";
-import { rangeToOffsets } from "@/editor/lsp/positions";
+import {
+  iconAreaSource,
+  mapLineStart,
+  onNavigationProvidersChanged,
+  rangeToOffsets,
+  shownAgain,
+  type EditorDocContext,
+} from "@/editor/api";
 import { pluginVisuals } from "@/editor/lsp/pluginVisuals";
 import { findLanguageDescription, languageInfo, loadSupport } from "@/editor/core/cm/languages";
-import { onNavigationProvidersChanged } from "@/editor/navigationProviders";
 import { call, commands, type GutterAction, type Injection } from "@/platform/ipc";
 import { gutterIconMarkup } from "@/ui/icons";
 import { resolveMarkerIcon, onMarkerIconsChanged } from "./markerIcons";

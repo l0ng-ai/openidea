@@ -36,6 +36,32 @@ describe(".icls schemes", () => {
     expect(parseIcls(xml).scheme.attributes).toMatchObject(scheme.attributes);
   });
 
+  it("round trips Diff & Merge change types, error stripes and the separator wave", () => {
+    const { scheme } = parseIcls(`<scheme name="Diff" parent_scheme="Darcula"><colors>
+      <option name="DIFF_SEPARATOR_WAVE" value="555555"/>
+    </colors><attributes>
+      <option name="DIFF_MODIFIED"><value>
+        <option name="BACKGROUND" value="385570"/><option name="ERROR_STRIPE_COLOR" value="43698d"/>
+      </value></option>
+      <option name="DIFF_INSERTED"><value>
+        <option name="BACKGROUND" value="294436"/><option name="ERROR_STRIPE_COLOR" value="447152"/>
+      </value></option>
+      <option name="DIFF_DELETED"><value>
+        <option name="BACKGROUND" value="484a4a"/><option name="ERROR_STRIPE_COLOR" value="656e76"/>
+      </value></option>
+      <option name="DIFF_CONFLICT"><value><option name="ERROR_STRIPE_COLOR" value="8f5247"/></value></option>
+    </attributes></scheme>`);
+    expect(scheme.attributes.diffChanged).toEqual({ background: "#385570", errorStripeColor: "#43698d" });
+    expect(scheme.attributes.diffConflict).toEqual({ errorStripeColor: "#8f5247" });
+    expect(scheme.attributes.diffSeparatorWave).toEqual({ foreground: "#555555" });
+    const { id, customs } = importScheme({}, scheme);
+    const xml = exportIcls(id, customs);
+    expect(xml).toContain('<option name="DIFF_SEPARATOR_WAVE" value="555555" />');
+    expect(xml).toContain('name="DIFF_MODIFIED"');
+    expect(xml).toContain('<option name="ERROR_STRIPE_COLOR" value="43698d" />');
+    expect(parseIcls(xml).scheme.attributes).toMatchObject(scheme.attributes);
+  });
+
   it("round trips the selection foreground through SELECTION_FOREGROUND (#2446)", () => {
     const { scheme } = parseIcls(`<scheme name="Sel" parent_scheme="Default"><colors>
       <option name="SELECTION_BACKGROUND" value="214283"/>
