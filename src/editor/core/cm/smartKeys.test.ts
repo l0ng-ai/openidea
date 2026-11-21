@@ -213,6 +213,46 @@ describe("tab out of pairs", () => {
   });
 });
 
+describe("quote pairs per language", () => {
+  const typed = (language: string, support: Extension, text: string, chars: string) => {
+    const v = make(text, [
+      support,
+      closeBrackets(),
+      prefsExtension({
+        prefs: validateEditorExtras({}),
+        path: "",
+        softWrap: false,
+        showWhitespace: false,
+        hardWrapAt: 120,
+        readOnly: false,
+        language,
+      }),
+    ]);
+    for (const ch of chars) {
+      const tr = insertBracket(v.state, ch);
+      if (tr) v.dispatch(tr);
+      else v.dispatch(v.state.update(v.state.replaceSelection(ch), { userEvent: "input.type" }));
+    }
+    return show(v);
+  };
+
+  it("pairs template literal backticks in TypeScript", () => {
+    expect(typed("typescript", javascript({ typescript: true }), "const g = |", "`")).toBe("const g = `|`");
+  });
+
+  it("pairs Python's prefixed and triple-quoted strings", () => {
+    const py = StreamLanguage.define(python);
+    expect(typed("python", py, "label = f|", '"')).toBe('label = f"|"');
+    expect(typed("python", py, "p = rb|", "'")).toBe("p = rb'|'");
+    expect(typed("python", py, "    |", '"""')).toBe('    """|"""');
+  });
+
+  it("keeps plain quotes for other languages and respects the options", () => {
+    expect(typed("java", java(), "String s = |", '"')).toBe('String s = "|"');
+    expect(typed("java", java(), "String s = |", "`")).toBe("String s = `|");
+  });
+});
+
 describe("typing over a closing bracket", () => {
   const typed = (support: Extension, text: string, ch: string) => {
     const v = make(text, [support, skipClosingBracket]);
