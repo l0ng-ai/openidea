@@ -92,7 +92,7 @@ const DOCKER_PROVIDER_KINDS: ReadonlySet<string> = new Set(["docker-compose", "d
 // ---------------------------------------------------------------------------
 // Types added to Services, per project
 
-const useAddedTypes = create<{ root: string | null; types: string[] }>(() => ({ root: null, types: [] }));
+export const useAddedTypes = create<{ root: string | null; types: string[] }>(() => ({ root: null, types: [] }));
 
 /** The project's types; empty until the user adds one with "Add Service". */
 export function readTypes(root: string): string[] {
@@ -123,6 +123,18 @@ function setAddedTypes(types: string[]) {
 }
 
 const currentTypes = () => addedTypes(useProject.getState().project?.root ?? null);
+
+/** Moves a type's group among the others: the project's type list is their display order. */
+function moveType(fromKey: string, toKey: string, position: "before" | "after") {
+  const from = fromKey.slice(TYPE_PREFIX.length);
+  const to = toKey.slice(TYPE_PREFIX.length);
+  const types = currentTypes();
+  const at = types.indexOf(from);
+  if (at < 0 || !types.includes(to)) return;
+  const next = types.filter((t) => t !== from);
+  next.splice(position === "before" ? next.indexOf(to) : next.indexOf(to) + 1, 0, from);
+  setAddedTypes(next);
+}
 
 export function addType(kind: string) {
   const types = currentTypes();
@@ -912,14 +924,21 @@ export const runServiceProvider: ServiceProviderContribution = {
   addMenu,
   reorder: {
     canMove: (source, target) => {
-      if (!source.key.startsWith(CONFIG_PREFIX) || !target.key.startsWith(CONFIG_PREFIX) || source.key === target.key)
-        return false;
+      if (source.key === target.key) return false;
+      // A type's group moves among the other groups; the order is the project's type list.
+      if (source.key.startsWith(TYPE_PREFIX) || target.key.startsWith(TYPE_PREFIX))
+        return source.key.startsWith(TYPE_PREFIX) && target.key.startsWith(TYPE_PREFIX);
+      if (!source.key.startsWith(CONFIG_PREFIX) || !target.key.startsWith(CONFIG_PREFIX)) return false;
       const from = resolve(source),
         to = resolve(target);
       return !!from.config && !!to.config && from.kind === to.kind;
     },
     move: (source, target, position) => {
       if (!runServiceProvider.reorder!.canMove(source, target)) return;
+      if (source.key.startsWith(TYPE_PREFIX)) {
+        moveType(source.key, target.key, position);
+        return;
+      }
       const location = projectLocation(useProject.getState().project?.root);
       const kind = resolve(source).kind;
       if (!location || !kind) return;
