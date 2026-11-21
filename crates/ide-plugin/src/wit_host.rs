@@ -1862,6 +1862,10 @@ fn to_output(output: crate::types::ProcessOutput) -> process::Output {
     process::Output { status: output.status, stdout: output.stdout, stderr: output.stderr }
 }
 
+fn to_process_options(opts: process::ProcessOptions) -> crate::types::ProcessOptions {
+    crate::types::ProcessOptions { max_output_bytes: opts.max_output_bytes, buffer_bytes: opts.buffer_bytes }
+}
+
 impl process::Host for StoreData {
     fn run(
         &mut self,
@@ -1911,6 +1915,47 @@ impl process::Host for StoreData {
         };
         let cwd = self.cwd_of(cwd)?;
         let id = match self.host.start_process(cmd, cwd.as_deref(), self.invocation.client.as_deref()) {
+            Ok(id) => id,
+            Err(e) => return Ok(Err(to_wit(e))),
+        };
+        self.push(ChildRes { id, host: self.host.clone() }).map(Ok)
+    }
+
+    fn run_captured(
+        &mut self,
+        cmd: process::Command,
+        cwd: Option<Resource<ProjectRes>>,
+        stdin: Option<String>,
+        options: Option<process::ProcessOptions>,
+    ) -> Fallible<process::Output> {
+        let cmd = match self.command(cmd) {
+            Ok(cmd) => cmd,
+            Err(e) => return Ok(Err(e)),
+        };
+        let cwd = self.cwd_of(cwd)?;
+        let token = self.cancel.token();
+        let timeout = self.io_timeout();
+        let opts = options.map(to_process_options);
+        let outcome = self.host.run_process_with_options(cmd, cwd.as_deref(), stdin, &token, timeout, opts);
+        if outcome.is_err() {
+            self.grant_io_error_grace();
+        }
+        Ok(outcome.map(to_output).map_err(to_wit))
+    }
+
+    fn start_stream(
+        &mut self,
+        cmd: process::Command,
+        cwd: Option<Resource<ProjectRes>>,
+        options: Option<process::ProcessOptions>,
+    ) -> Fallible<Resource<ChildRes>> {
+        let cmd = match self.command(cmd) {
+            Ok(cmd) => cmd,
+            Err(e) => return Ok(Err(e)),
+        };
+        let cwd = self.cwd_of(cwd)?;
+        let opts = options.map(to_process_options);
+        let id = match self.host.start_process_stream(cmd, cwd.as_deref(), self.invocation.client.as_deref(), opts) {
             Ok(id) => id,
             Err(e) => return Ok(Err(to_wit(e))),
         };
