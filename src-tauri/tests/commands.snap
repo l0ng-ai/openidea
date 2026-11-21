@@ -349,6 +349,7 @@ lsp_code_lens                                trusted            project_host bin
 lsp_completion                               trusted            project_host bindings async
 lsp_document_highlights                      trusted            project_host bindings async
 lsp_document_links                           trusted            project_host bindings async
+lsp_exception_class_at                       trusted            project_host bindings async
 lsp_execute_code_action                      trusted            project_host bindings async
 lsp_execute_command                          trusted            project_host bindings async
 lsp_extract_interface                        trusted            project_host bindings async
