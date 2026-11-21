@@ -513,8 +513,15 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     e.preventDefault();
     const target = resolveLink(path, a.getAttribute("href") ?? "");
     if (!target) return;
-    const scrollTo = (id: string) =>
-      ref.current?.querySelector(`[id="${CSS.escape(ANCHOR_PREFIX + slugify(id))}"]`)?.scrollIntoView();
+    const scrollTo = (id: string) => {
+      const root = ref.current;
+      if (!root) return;
+      const heading = root.querySelector(`[id="${CSS.escape(ANCHOR_PREFIX + slugify(id))}"]`);
+      const footnote = id.startsWith(ANCHOR_PREFIX)
+        ? root.querySelector(`[id="${CSS.escape(id)}"]:is([role="doc-footnote"], [role="doc-noteref"])`)
+        : null;
+      (footnote ?? heading)?.scrollIntoView();
+    };
     if (target.kind === "external") openExternal(target.url);
     else if (target.kind === "anchor") scrollTo(target.id);
     else if (target.path === path && target.anchor) scrollTo(target.anchor);
