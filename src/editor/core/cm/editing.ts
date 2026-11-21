@@ -171,6 +171,14 @@ export const duplicateLineOrSelection: Command = (view) => {
 
 /** ⌘⌫: Delete Line — on a folded region's line, every line of the folded block. */
 export const deleteLine: Command = (view) => {
+  if (!deleteLines(view)) return false;
+  // Recorded as the selection after the edit, Redo puts the caret back here rather than
+  // where the pre-deletion caret maps to (the end of the line above).
+  view.dispatch({ selection: view.state.selection });
+  return true;
+};
+
+function deleteLines(view: EditorView): boolean {
   const { state } = view;
   if (state.readOnly) return false;
   const spans = foldedLineSpans(state);
@@ -192,7 +200,7 @@ export const deleteLine: Command = (view) => {
     userEvent: "delete.line",
   });
   return true;
-};
+}
 
 // --- occurrences --------------------------------------------------------------
 

@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { insertNewlineAndIndent } from "@codemirror/commands";
+import { history, insertNewlineAndIndent, redo, undo } from "@codemirror/commands";
 import { indentService, indentUnit, ensureSyntaxTree } from "@codemirror/language";
 import {
   addCaretsToLineEnds,
   commentLine,
   completeStatement,
+  deleteLine,
   joinLines,
   startNewLine,
   startNewLineBefore,
@@ -87,6 +88,19 @@ describe("start new line", () => {
     const v = make("  x|y");
     startNewLineBefore(v);
     expect(show(v)).toBe("  |\n  xy");
+  });
+});
+
+describe("delete line", () => {
+  it("puts the caret back where the deletion left it on Redo", () => {
+    const v = make("class A {\n    void m() {\n        int count = 1;|\n        print(count);\n    }\n}\n", history());
+    deleteLine(v);
+    const after = show(v);
+    undo(v);
+    expect(show(v)).toBe("class A {\n    void m() {\n        int count = 1;|\n        print(count);\n    }\n}\n");
+    redo(v);
+    expect(show(v)).toBe(after);
+    expect(v.state.doc.toString()).not.toContain("count = 1");
   });
 });
 
