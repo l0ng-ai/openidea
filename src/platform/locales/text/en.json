@@ -2168,6 +2168,8 @@
   "Show Changes": "Show Changes",
   "Previous Failed Test": "Previous Failed Test",
   "Next Failed Test": "Next Failed Test",
+  "Show Test Durations": "Show Test Durations",
+  "Test Runner Options": "Test Runner Options",
   "Run '{name}' with Fuzzing": "Run '{name}' with Fuzzing",
   "Reading…": "Reading…",
   "Editing…": "Editing…",
