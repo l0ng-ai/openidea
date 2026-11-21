@@ -5581,8 +5581,6 @@
   "Compared files": "비교된 파일",
   "Comparison cancelled": "비교가 취소되었습니다",
   "No matching differences": "일치하는 차이점이 없습니다",
-  "Left: {left}": "왼쪽: {left}",
-  "Right: {right}": "오른쪽: {right}",
   "Compared {compared} of {total} entries": "항목 {total}개 중 {compared}개 비교됨",
   "Scanned {scanned} entries": "항목 {scanned}개 스캔됨",
   "Binary content": "바이너리 내용",

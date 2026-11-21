@@ -6510,8 +6510,6 @@
   "Compared files": "比較的檔案",
   "Comparison cancelled": "已取消比較",
   "No matching differences": "沒有符合的差異",
-  "Left: {left}": "左側：{left}",
-  "Right: {right}": "右側：{right}",
   "Compared {compared} of {total} entries": "已比較 {compared} / {total} 個條目",
   "Scanned {scanned} entries": "已掃描 {scanned} 個條目",
   "Binary content": "二進位制內容",

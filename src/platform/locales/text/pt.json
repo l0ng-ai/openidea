@@ -5479,8 +5479,6 @@
   "Compared files": "Arquivos comparados",
   "Comparison cancelled": "Comparação cancelada",
   "No matching differences": "Nenhuma diferença correspondente",
-  "Left: {left}": "Esquerda: {left}",
-  "Right: {right}": "Direita: {right}",
   "Compared {compared} of {total} entries": "{compared} de {total} entradas comparadas",
   "Scanned {scanned} entries": "{scanned} entradas verificadas",
   "Binary content": "Conteúdo binário",
