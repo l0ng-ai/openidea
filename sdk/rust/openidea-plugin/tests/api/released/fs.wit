@@ -1,15 +1,15 @@
-package openidea:plugin@1.13.0;
+package openidea:plugin@1.14.0;
 
 /// Files outside the open projects: the configuration of the program a
 /// plugin integrates with, a tool installed elsewhere, a licence file.
 ///
 /// A plugin's own WASI has no preopened directory. Every path outside its
-/// own `plugin-dir` is checked against its `fs.read:<path>` (reading) or
-/// `fs.write:<path>`
-/// (writing; it doesn't imply reading) grants; without one covering the path a
-/// call returns `denied` naming the capability the manifest has to declare. A
-/// file inside a project is `workspace.project.read-file` / `write-file`.
-/// `path` is absolute, or starts with `~/` for the user's home.
+/// own `plugin-dir` and install directory is checked against its
+/// `fs.read:<path>` (reading) or `fs.write:<path>` (writing; it doesn't imply
+/// reading) grants; without one covering the path a call returns `denied`
+/// naming the capability the manifest has to declare. The install directory is
+/// read-only. A file inside a project is `workspace.project.read-file` /
+/// `write-file`. `path` is absolute, or starts with `~/` for the user's home.
 interface fs {
     use types.{error};
     use workspace.{file-kind, file-stat};
