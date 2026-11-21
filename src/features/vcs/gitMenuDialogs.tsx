@@ -120,18 +120,20 @@ function ModifyOptions({ items }: { items: MenuItem[] }) {
   );
 }
 
+const emptyBranches: Branch[] = [];
+
 function useBranches(repo: string | null): Branch[] {
-  const [branches, setBranches] = useState<Branch[]>([]);
+  const [loaded, setLoaded] = useState<{ repo: string | null; branches: Branch[] } | null>(null);
   useEffect(() => {
     let live = true;
     void call(commands.vcsBranches(repo))
-      .then((b) => live && setBranches(b))
+      .then((branches) => live && setLoaded({ repo, branches }))
       .catch(() => undefined);
     return () => {
       live = false;
     };
   }, [repo]);
-  return branches;
+  return loaded?.repo === repo ? loaded.branches : emptyBranches;
 }
 
 const branchOptions = (list: readonly Branch[]): SelectOption[] =>
@@ -432,6 +434,7 @@ export function showRebaseDialog(repo?: string | null) {
 }
 
 function RebaseDialog({ initialRepo, onClose }: { initialRepo?: string | null; onClose: () => void }) {
+  const upstreamId = useId();
   const [repo, setRepo] = useState(() => (initialRepo === undefined ? currentRepo() : initialRepo));
   const head = useBranchInfo(repo)?.head ?? null;
   const branches = useBranches(repo);
@@ -440,11 +443,30 @@ function RebaseDialog({ initialRepo, onClose }: { initialRepo?: string | null; o
   const [onto, setOnto] = useState<string | null>(null);
   const [rebaseMerges, setRebaseMerges] = useState(false);
   const [keepEmpty, setKeepEmpty] = useState(false);
-  const options = useMemo(
+  const branchChoices = useMemo(
     () => [...branchOptions(sortLocal(branches).filter((b) => !b.current)), ...branchOptions(sortRemote(branches))],
     [branches],
   );
+  const optionItems: MenuItem[] = [
+    { label: "--onto", verbatim: true, checked: useOnto, run: () => setUseOnto(!useOnto) },
+    { label: "--rebase-merges", verbatim: true, checked: rebaseMerges, run: () => setRebaseMerges(!rebaseMerges) },
+    { label: "--keep-empty", verbatim: true, checked: keepEmpty, run: () => setKeepEmpty(!keepEmpty) },
+  ];
+  const selectedFlags = [rebaseMerges ? "--rebase-merges" : null, keepEmpty ? "--keep-empty" : null].filter(
+    (label) => label !== null,
+  );
   const ready = !!upstream && (!useOnto || !!onto);
+  const upstreamPicker = (
+    <BranchSelect
+      id={upstreamId}
+      aria-label={useOnto ? "Old base" : "Upstream"}
+      className={commandStyles.branch}
+      value={upstream}
+      placeholder="Select branch"
+      options={branchChoices}
+      onChange={setUpstream}
+    />
+  );
 
   const chooseRepo = (root: string) => {
     if (root === repo) return;
@@ -454,7 +476,7 @@ function RebaseDialog({ initialRepo, onClose }: { initialRepo?: string | null; o
   };
 
   const run = async () => {
-    if (!upstream) return;
+    if (!ready || !upstream) return;
     onClose();
     await saveAll();
     const target = useOnto && onto ? onto : upstream;
@@ -477,38 +499,52 @@ function RebaseDialog({ initialRepo, onClose }: { initialRepo?: string | null; o
   return (
     <Dialog
       open
-      title="Rebase"
+      title={tx`Rebase ${head ?? "HEAD"}`}
       onClose={onClose}
-      width={460}
+      width={640}
+      footerStart={<ModifyOptions items={optionItems} />}
       buttons={[
         { label: "Rebase", role: "default", disabled: !ready, onClick: () => void run() },
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div className={styles.form}>
-        <RepoPicker repo={repo} onChange={chooseRepo} />
-        <div className={styles.fieldLabel}>
-          {useOnto ? tx`Rebase commits of ${head ?? "HEAD"} not on:` : `Rebase ${head ?? "HEAD"} onto:`}
+      <div className={commandStyles.form}>
+        <div className={commandStyles.source}>
+          <RepoPicker repo={repo} onChange={chooseRepo} className={commandStyles.repository} />
+          <div className={commandStyles.command}>
+            <code className={commandStyles.verb}>git rebase</code>
+            {useOnto ? (
+              <>
+                <code className={commandStyles.verb}>--onto</code>
+                <BranchSelect
+                  aria-label="New base"
+                  className={commandStyles.branch}
+                  value={onto}
+                  placeholder="New base"
+                  options={branchChoices}
+                  onChange={setOnto}
+                />
+              </>
+            ) : (
+              upstreamPicker
+            )}
+          </div>
         </div>
-        <BranchSelect
-          aria-label="Upstream"
-          value={upstream}
-          placeholder="Select branch"
-          options={options}
-          onChange={setUpstream}
-        />
-        <Checkbox label="--onto" checked={useOnto} onChange={setUseOnto} />
         {useOnto && (
-          <BranchSelect
-            aria-label="New base"
-            value={onto}
-            placeholder="New base"
-            options={options}
-            onChange={setOnto}
-          />
+          <div className={commandStyles.rebaseBase}>
+            <label htmlFor={upstreamId} title={tx`Rebase commits of ${head ?? "HEAD"} not on:`}>
+              <T>Old base</T>
+            </label>
+            {upstreamPicker}
+          </div>
         )}
-        <Checkbox label="--rebase-merges" checked={rebaseMerges} onChange={setRebaseMerges} />
-        <Checkbox label="--keep-empty" checked={keepEmpty} onChange={setKeepEmpty} />
+        {selectedFlags.length > 0 && (
+          <div className={commandStyles.flags} role="group" aria-label={tx("Rebase options")}>
+            {selectedFlags.map((label) => (
+              <code key={label}>{label}</code>
+            ))}
+          </div>
+        )}
         <div className={styles.hint}>
           <T>Uncommitted changes are stashed before the rebase and restored afterwards.</T>
         </div>

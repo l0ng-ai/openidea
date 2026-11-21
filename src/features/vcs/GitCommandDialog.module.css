@@ -7,7 +7,8 @@
 }
 
 .source,
-.command {
+.command,
+.rebaseBase {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -35,7 +36,8 @@
   flex: 1 1 104px;
 }
 
-.command > .branch {
+.command > .branch,
+.rebaseBase > .branch {
   flex: 3 1 208px;
 }
 
