@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useTxTemplate, VerbatimTextContext } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
-import { EmptyState, IconButton, Toast, T } from "@/ui";
+import { EmptyState, Toast, T } from "@/ui";
 import {
   balloonTimeout,
   canSuppress,
@@ -145,38 +145,38 @@ export function NotificationsToolWindow() {
           <T>No notifications</T>
         </EmptyState>
       ) : (
-        items.map((n) => {
-          const shown = shownText(n);
-          return (
-            <VerbatimTextContext.Provider key={n.id} value={!!n.verbatim}>
-              <Toast
-                className={styles.entry}
-                level={n.level}
-                title={shown.title}
-                body={n.body}
-                meta={timeLabel(n.time)}
-                actions={shown.actions}
-                onClose={() => removeNotification(n.id)}
-              />
-            </VerbatimTextContext.Provider>
-          );
-        })
+        <>
+          <div className={styles.timelineHeader}>
+            <h2 id="notification-timeline">
+              <T>Timeline</T>
+            </h2>
+            <button type="button" className={styles.clear} onClick={clearNotifications}>
+              <T>Clear All</T>
+            </button>
+          </div>
+          <ol className={styles.timeline} role="list" aria-labelledby="notification-timeline">
+            {items.map((n) => {
+              const shown = shownText(n);
+              return (
+                <li key={n.id}>
+                  <VerbatimTextContext.Provider value={!!n.verbatim}>
+                    <Toast
+                      variant="history"
+                      level={n.level}
+                      title={shown.title}
+                      body={n.body}
+                      meta={<time dateTime={new Date(n.time).toISOString()}>{timeLabel(n.time)}</time>}
+                      actions={shown.actions}
+                      onClose={() => removeNotification(n.id)}
+                    />
+                  </VerbatimTextContext.Provider>
+                </li>
+              );
+            })}
+          </ol>
+        </>
       )}
     </div>
-  );
-}
-
-export function NotificationsHeaderActions() {
-  const count = useNotifications((s) => s.items.filter((n) => n.logged).length);
-  return (
-    <IconButton
-      icon="trash"
-      title="Clear All"
-      size="small"
-      iconSize={16}
-      disabled={!count}
-      onClick={clearNotifications}
-    />
   );
 }
 
