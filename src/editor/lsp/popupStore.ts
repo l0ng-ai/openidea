@@ -1,6 +1,7 @@
 /** State of the React popups the LSP editor features open (rendered by `Popups.tsx`). */
 import { create } from "zustand";
 import type { EditorView } from "@codemirror/view";
+import type { CSSProperties } from "react";
 import type { Location, Markup } from "@/bindings";
 import type { MenuItem } from "@/ui";
 import type { WorkspaceEditSummary } from "./workspaceEdit";
@@ -13,8 +14,12 @@ export interface PopupPoint {
 export interface ListPopupItem {
   id: string;
   label: string;
+  /** Adjacent actions with the same section id share a caption or divider. */
+  section?: { id: string; label?: string };
   /** Muted trailing text (file:line, kind…). */
   detail?: string;
+  /** In its own column before the label (for example, a timestamp). */
+  leadingDetail?: string;
   /** Second line / muted text after the label (code preview). */
   preview?: string;
   icon?: string;
@@ -90,14 +95,17 @@ export type LspPopup =
       targets: DefinitionTarget[];
       index: number;
       themeClasses: string;
+      codeStyle: Pick<CSSProperties, "fontFamily" | "fontSize" | "fontWeight" | "lineHeight" | "tabSize">;
     }
   | {
       kind: "list";
-      anchor: PopupPoint;
+      anchor: PopupPoint | "center";
       title: string;
       items: ListPopupItem[];
       /** Rows 1-9 get a number; typing it runs the row (IDEA's numbered popups). */
       numbered?: boolean;
+      /** Compact action list, with room for icons only when a row has one. */
+      compact?: boolean;
       /** More rows are still being looked for (`aria-busy`). */
       busy?: boolean;
       /** Header pin button (e.g. "Open in Find Tool Window"). */

@@ -119,9 +119,24 @@ export function selectInProjectView(path?: string | null, focus = true) {
  * menu groups), the navigation bar, Finder / Explorer and the terminal.
  */
 export function selectInTargets(path: string): MenuItem[] {
+  const { unity } = useProjectTree.getState();
+  const views = VIEW_MODES.filter(([mode]) => mode !== "unity" || unity).map(([mode, label]) => ({
+    label,
+    disabled: !modeShows(path, mode),
+    run: () => {
+      setViewMode(mode);
+      selectInProjectView(path);
+    },
+  }));
   return [
-    { kind: "header", label: "Select In" },
-    { label: "Project View", icon: "toolwindow-project", run: () => void selectInProjectView(path) },
+    { kind: "header", label: "Select In", asTitle: true },
+    {
+      label: "Project View",
+      icon: "toolwindow-project",
+      run: () => void selectInProjectView(path),
+      submenu: views,
+      performOnSelect: true,
+    },
     ...menuGroupItems("selectIn", { paths: [path] }),
     ...(getAction("navigate.navigationBar") && maybeEditorService()?.activePath() === path
       ? [{ kind: "action" as const, action: "navigate.navigationBar", label: "Navigation Bar" }]
@@ -153,7 +168,6 @@ export function showNewPopupForEditor(orRoot = false): boolean {
 }
 
 function showSelectIn(path: string) {
-  // At the caret, like IDEA's popup; centred near the top otherwise.
   const view = activeEditor()?.view;
   const coords = view && activeEditor()?.ctx.path === path ? view.coordsAtPos(view.state.selection.main.head) : null;
   const at = coords ? { x: coords.left, y: coords.bottom + 2 } : { x: window.innerWidth / 2 - 100, y: 80 };

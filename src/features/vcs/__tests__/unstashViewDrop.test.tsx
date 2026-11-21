@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   diffs: [] as Array<{ repo: string | null; from: string; to: string }>,
   applies: [] as Array<{ repo: string | null; index: number }>,
   confirm: vi.fn(),
+  beforeRead: vi.fn<(repo: string | null) => Promise<void>>(),
 }));
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
@@ -17,7 +18,10 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     ...real,
     commands: {
       ...real.commands,
-      vcsStashes: (repo: string | null) => ok(mocks.stashes.get(repo) ?? []),
+      vcsStashes: async (repo: string | null) => {
+        await mocks.beforeRead(repo);
+        return ok(mocks.stashes.get(repo) ?? []);
+      },
       vcsStashDrop: (repo: string | null, index: number) => {
         mocks.drops.push({ repo, index });
         const list = mocks.stashes.get(repo) ?? [];
@@ -59,6 +63,7 @@ beforeEach(() => {
   mocks.diffs = [];
   mocks.applies = [];
   mocks.confirm.mockReset().mockResolvedValue(true);
+  mocks.beforeRead.mockReset().mockResolvedValue(undefined);
   useVcs.setState({ root: "/p", roots: ["/p/a", "/p/b"], repo: "/p/a", available: false });
 });
 
@@ -124,7 +129,20 @@ it("selects the new last stash after dropping the last one, and disables both wh
   await screen.findByText("stash@{1}: On dev: second");
   expect(radio("stash@{1}")).toBeChecked();
 
-  fireEvent.click(screen.getByRole("button", { name: "Drop Stash" }));
+  let finishRefresh = () => {};
+  const refresh = new Promise<void>((resolve) => {
+    finishRefresh = resolve;
+  });
+  mocks.beforeRead.mockImplementation((repo) => (repo === "/p/b" ? refresh : Promise.resolve()));
+  try {
+    fireEvent.click(screen.getByRole("button", { name: "Drop Stash" }));
+    await waitFor(() => expect(mocks.beforeRead.mock.calls.filter(([repo]) => repo === "/p/b")).toHaveLength(2));
+    expect(screen.getByText("stash@{1}: On dev: second")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Apply Stash" })).toBeDisabled();
+  } finally {
+    mocks.beforeRead.mockResolvedValue(undefined);
+    finishRefresh();
+  }
   await waitFor(() => expect(screen.queryByText("stash@{1}: On dev: second")).toBeNull());
   expect(radio("stash@{0}")).toBeChecked();
 

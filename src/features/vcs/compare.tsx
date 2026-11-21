@@ -13,7 +13,7 @@ import { compareFilesData, displayPath } from "./compareData";
 import { showDirectoryComparison } from "./directoryCompareKind";
 export { compareFilesData, displayPath } from "./compareData";
 import { openDiff, openVcsDiff, type DiffData } from "./diffInput";
-import { baseName } from "./model";
+import { baseName, dirName } from "./model";
 import { tx } from "@/platform/i18n";
 import { readClipboardPlainText } from "@/platform/clipboard";
 import { workflowSettings } from "@/platform/workflowSettings";
@@ -35,14 +35,18 @@ function argPaths(arg: unknown): string[] {
 
 /** Clipboard ↔ the file (editable) or ↔ the editor selection. */
 export function clipboardDiffData(path: string, clipboard: string, selection: string | null): DiffData {
+  const file = baseName(path);
+  const label = selection !== null ? tx`Selection from ${file}` : file;
+  const labelDetail = dirName(displayPath(path));
   return {
     path,
     swappable: true,
-    title: selection ? tx`Clipboard ↔ ${baseName(path)} (selection)` : tx`Clipboard ↔ ${baseName(path)}`,
-    left: { type: "text", text: clipboard, label: "Clipboard" },
-    right: selection
-      ? { type: "text", text: selection, label: "Selection" }
-      : { type: "worktree", label: displayPath(path) },
+    title: selection !== null ? tx`Clipboard ↔ ${file} (selection)` : tx`Clipboard ↔ ${file}`,
+    left: { type: "text", text: clipboard, label: tx("From Clipboard") },
+    right:
+      selection !== null
+        ? { type: "text", text: selection, label, labelDetail }
+        : { type: "worktree", label, labelDetail },
   };
 }
 

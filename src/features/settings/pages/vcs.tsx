@@ -10,14 +10,26 @@ import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { WORKFLOW_LIMITS, type IssueLinkValid, type VcsSettingsValid } from "@/platform/workflowSettings";
 import { showInFileManagerLabel } from "@/platform/fileManager";
-import { Button, Icon, IconButton, Input, rowSelectionMode, Select, selectRow, type SelectOption, T } from "@/ui";
+import {
+  Button,
+  Icon,
+  IconButton,
+  Input,
+  Radio,
+  rowSelectionMode,
+  Select,
+  selectRow,
+  type SelectOption,
+  T,
+} from "@/ui";
 import { choosePath } from "@/platform/choosePath";
-import { Row, SettingSelect } from "../components/Form";
+import { Row, SearchLabel, SettingSelect } from "../components/Form";
 import { useSetting } from "../components/context";
 import type { AgentModelCatalog, AgentProvider } from "@/bindings";
 import type { PageSpec } from "./spec";
-import { BoundToggle, Grid, Indented, RadioRow, TableEditor, ToggleNumber } from "./workflowControls";
+import { BoundToggle, Grid, Indented, TableEditor, ToggleNumber } from "./workflowControls";
 import styles from "./Workflow.module.css";
+import gitStyles from "./GitSettings.module.css";
 import { tx } from "@/platform/i18n";
 
 const L = WORKFLOW_LIMITS;
@@ -296,32 +308,35 @@ function GitExecutableRow() {
     }
   };
   return (
-    <Row
-      label="Path to Git executable"
-      htmlFor={id}
-      hint={
-        result ? (
-          <span className={result.ok ? styles.ok : styles.error} role="status">
-            {result.text}
-          </span>
-        ) : undefined
-      }
-    >
-      <Input
-        id={id}
-        mono
-        className={styles.wide}
-        value={path}
-        placeholder={detected ? tx`Auto-detected: ${detected}` : "Auto-detected"}
-        onChange={(e) => {
-          setPath(e.target.value);
-          setResult(null);
-        }}
-      />
-      <Button size="small" disabled={testing || !isTauri()} onClick={() => void test()}>
-        <T>Test</T>
-      </Button>
-    </Row>
+    <div className={gitStyles.executable}>
+      <Row
+        label="Path to Git executable"
+        htmlFor={id}
+        hint={
+          result ? (
+            <span className={clsx(gitStyles.testResult, result.ok ? styles.ok : styles.error)} role="status">
+              {result.text}
+            </span>
+          ) : undefined
+        }
+      >
+        <div className={gitStyles.executableControls}>
+          <Input
+            id={id}
+            mono
+            value={path}
+            placeholder={detected ? tx`Auto-detected: ${detected}` : "Auto-detected"}
+            onChange={(e) => {
+              setPath(e.target.value);
+              setResult(null);
+            }}
+          />
+          <Button disabled={testing || !isTauri()} onClick={() => void test()}>
+            <T>Test</T>
+          </Button>
+        </div>
+      </Row>
+    </div>
   );
 }
 
@@ -334,7 +349,7 @@ function ProtectedBranchesRow() {
       htmlFor={id}
       hint="Force push is not allowed to these branches. Separate patterns with ; (wildcards * and ? are supported)."
     >
-      <Input id={id} className={styles.medium} value={value} onChange={(e) => set(e.target.value)} />
+      <Input id={id} className={gitStyles.branchPatterns} value={value} onChange={(e) => set(e.target.value)} />
     </Row>
   );
 }
@@ -432,6 +447,31 @@ function PushDialogRows() {
         />
       </Indented>
     </>
+  );
+}
+
+function GitUpdateMethodRow() {
+  const [method, setMethod] = useSetting<"merge" | "rebase">("vcs.git.updateMethod");
+  const name = useId();
+  return (
+    <div>
+      <Row label="Update method">
+        <div className={gitStyles.updateMethods} role="radiogroup" aria-label={tx("Update method")}>
+          <Radio
+            name={name}
+            checked={method === "merge"}
+            onChange={() => setMethod("merge")}
+            label={<SearchLabel text="Merge" />}
+          />
+          <Radio
+            name={name}
+            checked={method === "rebase"}
+            onChange={() => setMethod("rebase")}
+            label={<SearchLabel text="Rebase" />}
+          />
+        </div>
+      </Row>
+    </div>
   );
 }
 
@@ -788,36 +828,24 @@ export const VCS_PAGES: PageSpec[] = [
         title: "Confirmation",
         options: [
           {
-            kind: "custom",
+            kind: "select",
+            key: "vcs.confirmation.onCreate",
             label: "When files are created",
-            keywords: ["Add silently", "Do not add"],
-            component: () => (
-              <RadioRow
-                k="vcs.confirmation.onCreate"
-                label="When files are created"
-                choices={[
-                  { value: "ask", label: "Ask" },
-                  { value: "silently", label: "Add silently" },
-                  { value: "never", label: "Do not add" },
-                ]}
-              />
-            ),
+            options: [
+              { value: "ask", label: "Ask" },
+              { value: "silently", label: "Add silently" },
+              { value: "never", label: "Do not add" },
+            ],
           },
           {
-            kind: "custom",
+            kind: "select",
+            key: "vcs.confirmation.onDelete",
             label: "When files are deleted",
-            keywords: ["Remove silently", "Do not remove"],
-            component: () => (
-              <RadioRow
-                k="vcs.confirmation.onDelete"
-                label="When files are deleted"
-                choices={[
-                  { value: "ask", label: "Ask" },
-                  { value: "silently", label: "Remove silently" },
-                  { value: "never", label: "Do not remove" },
-                ]}
-              />
-            ),
+            options: [
+              { value: "ask", label: "Ask" },
+              { value: "silently", label: "Remove silently" },
+              { value: "never", label: "Do not remove" },
+            ],
           },
           { kind: "toggle", key: "vcs.confirmation.showUpdateOptions", label: "Show options before Update" },
           {
@@ -842,6 +870,10 @@ export const VCS_PAGES: PageSpec[] = [
             label: "Open diff as editor tab",
             hint: "When off, diffs you open (changes, history, Compare) show in a separate window.",
           },
+        ],
+      },
+      {
+        options: [
           {
             kind: "select",
             key: "vcs.confirmation.onPatchCreated",
@@ -919,12 +951,6 @@ export const VCS_PAGES: PageSpec[] = [
             label: "Warn when committing in detached HEAD or during rebase",
           },
           {
-            kind: "toggle",
-            key: "vcs.git.signOff",
-            label: "Sign-off commit",
-            hint: "Adds a Signed-off-by trailer by default; it can still be switched per commit in Commit Options.",
-          },
-          {
             kind: "custom",
             label: "Warn when committing files larger than",
             keywords: ["MB"],
@@ -934,6 +960,12 @@ export const VCS_PAGES: PageSpec[] = [
             kind: "toggle",
             key: "vcs.git.warnBadFileNames",
             label: "Warn when committing files with names that might cause issues on other systems",
+          },
+          {
+            kind: "toggle",
+            key: "vcs.git.signOff",
+            label: "Sign-off commit",
+            hint: "Adds a Signed-off-by trailer by default; it can still be switched per commit in Commit Options.",
           },
         ],
       },
@@ -961,16 +993,7 @@ export const VCS_PAGES: PageSpec[] = [
             kind: "custom",
             label: "Update method",
             keywords: ["Merge", "Rebase", "pull"],
-            component: () => (
-              <RadioRow
-                k="vcs.git.updateMethod"
-                label="Update method"
-                choices={[
-                  { value: "merge", label: "Merge" },
-                  { value: "rebase", label: "Rebase" },
-                ]}
-              />
-            ),
+            component: GitUpdateMethodRow,
           },
           {
             kind: "custom",

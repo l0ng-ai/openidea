@@ -285,10 +285,45 @@
   color: var(--fg-subtle);
   margin-left: auto;
 }
-.macroField {
+.toolIdentity {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) max-content minmax(0, 1fr);
+  column-gap: var(--space-2);
+  padding-inline-start: 18px;
+}
+.toolIdentity > * {
+  grid-column: span 2;
+  grid-template-columns: subgrid;
+}
+.toolIdentity > .toolDescription {
+  grid-column: 1 / -1;
+}
+.toolDescription > div {
+  grid-column: 2 / -1;
+}
+@container settings-content (max-width: 560px) {
+  .toolIdentity {
+    grid-template-columns: fit-content(45%) minmax(0, 1fr);
+  }
+}
+.toolField {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-1-5);
+  width: 100%;
+}
+.toolField > input {
+  flex: 1 1 104px;
+  min-width: min(104px, 100%);
+}
+.toolOptions > summary {
+  width: fit-content;
+  padding-block: var(--space-1);
+  cursor: pointer;
+}
+.toolOptions > div {
+  padding-top: var(--space-1);
 }
 .macroList {
   display: flex;

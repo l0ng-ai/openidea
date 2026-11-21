@@ -1369,19 +1369,23 @@ export function DiffEditor({
   const canStage = editableB && isWorktree(right) && left.type === "rev" && !!useVcs.getState().root;
   const hasSource = !!source;
 
-  /** IDEA's title of a revision: its short commit id (HEAD resolved) and the file's path in the repository. */
-  const revTitle = (s: DiffSide): { label: string; file: string | null } => {
-    if (s.type !== "rev") return { label: sideLabel(s), file: null };
+  const paneTitle = (s: DiffSide): { label: string; detail?: string } => {
+    if (s.type === "worktree" || s.type === "text") return { label: sideLabel(s), detail: s.labelDetail };
+    if (s.type !== "rev") return { label: sideLabel(s) };
     const file = s.path ?? path;
     const root = repoOf(file);
     const commit = !s.label && s.rev === "HEAD" && root ? heads[root]?.headCommit : null;
     return {
       label: commit ? commit.slice(0, 8) : sideLabel(s),
-      file: root && file.startsWith(`${root}/`) ? file.slice(root.length + 1) : file,
+      detail: root && file.startsWith(`${root}/`) ? file.slice(root.length + 1) : file,
     };
   };
-  const titleA = revTitle(left);
-  const titleB = revTitle(right);
+  const titleA = paneTitle(left);
+  const titleB = paneTitle(right);
+  const captionA = [titleA.label, titleA.detail].filter(Boolean).join(" ");
+  const captionB = [titleB.label, titleB.detail].filter(Boolean).join(" ");
+  const sourceLabels = "labelDetail" in left || "labelDetail" in right;
+  const labels = clsx(styles.labels, sourceLabels && styles.sourceLabels);
 
   return (
     <div
@@ -1580,10 +1584,10 @@ export function DiffEditor({
         />
       </div>
       {viewMode === "split" ? (
-        <div className={styles.labels}>
-          <span className={styles.label} title={[titleA.label, titleA.file].filter(Boolean).join(" ")}>
-            {titleA.label}
-            {titleA.file && <span className={styles.labelFile}>{titleA.file}</span>}
+        <div className={labels}>
+          <span className={styles.label} title={captionA}>
+            <span className={styles.labelText}>{titleA.label}</span>
+            {titleA.detail && <span className={styles.labelFile}>{titleA.detail}</span>}
             {eolDiffers && eolA && <span className={styles.badge}>{badgeA}</span>}
             {editableA && (
               <span className={styles.badge}>
@@ -1591,9 +1595,9 @@ export function DiffEditor({
               </span>
             )}
           </span>
-          <span className={styles.label} title={[titleB.label, titleB.file].filter(Boolean).join(" ")}>
-            {titleB.label}
-            {titleB.file && <span className={styles.labelFile}>{titleB.file}</span>}
+          <span className={styles.label} title={captionB}>
+            <span className={styles.labelText}>{titleB.label}</span>
+            {titleB.detail && <span className={styles.labelFile}>{titleB.detail}</span>}
             {eolDiffers && eolB && <span className={styles.badge}>{badgeB}</span>}
             {editableB && (
               <span className={styles.badge}>{left.type === "rev" ? tx("working copy") : tx("editable")}</span>
@@ -1601,10 +1605,13 @@ export function DiffEditor({
           </span>
         </div>
       ) : (
-        <div className={styles.labels}>
-          <span className={styles.label}>
-            {sideLabel(left)}
-            {eolDiffers && eolA && <span className={styles.badge}>{badgeA}</span>} → {sideLabel(right)}
+        <div className={labels}>
+          <span className={styles.label} title={sourceLabels ? `${captionA} → ${captionB}` : undefined}>
+            <span className={styles.labelText}>{sideLabel(left)}</span>
+            {sourceLabels && titleA.detail && <span className={styles.labelFile}>{titleA.detail}</span>}
+            {eolDiffers && eolA && <span className={styles.badge}>{badgeA}</span>} →
+            <span className={styles.labelText}>{sideLabel(right)}</span>
+            {sourceLabels && titleB.detail && <span className={styles.labelFile}>{titleB.detail}</span>}
             {eolDiffers && eolB && <span className={styles.badge}>{badgeB}</span>}
           </span>
         </div>

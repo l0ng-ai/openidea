@@ -148,6 +148,26 @@
   }
 }
 
+@container settings-content (max-width: 440px) {
+  .stackFields > .row:not(.toggleRow) {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: var(--space-1-5);
+  }
+
+  .stackFields > .row:not(.toggleRow) > .label {
+    padding-top: 0;
+  }
+
+  .stackFields > .row:not(.toggleRow) > .label::after {
+    content: none;
+  }
+
+  .stackFields > .row:not(.toggleRow) > .hint {
+    grid-column: 1;
+    margin-top: 0;
+  }
+}
+
 .swatches {
   display: flex;
   align-items: center;
@@ -203,10 +223,12 @@
   display: flex;
   flex-direction: column;
   flex: 1;
-  max-width: 480px;
   border-radius: var(--radius-small);
   box-shadow: inset 0 0 0 1px var(--border-strong);
   overflow: hidden;
+}
+.globCompact {
+  max-width: 480px;
 }
 .listToolbar {
   display: flex;
@@ -230,8 +252,10 @@
   align-items: center;
   height: var(--h-row);
   padding: 0 8px;
-  font-family: var(--font-mono);
   color: var(--fg);
+}
+.globMono {
+  font-family: var(--font-mono);
 }
 .globSelected {
   background: var(--bg-selected);

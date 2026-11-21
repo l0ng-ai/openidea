@@ -199,10 +199,10 @@ export async function newBranch(from?: string, repo = currentRepo()) {
   const r = await promptText({
     title: from ? tx`Create New Branch from ${from}` : "Create New Branch",
     label: "New branch name:",
+    labelPlacement: "inline",
     // Kept even when that branch exists (the current one always does): the user edits it.
     initial: suggestion,
     prefixes: branchNamePrefixes(branches),
-    mono: true,
     okLabel: "Create",
     sanitize: cleanUpBranchNameOnTyping,
     validate: (name, overwrite) => validateBranchName(name, overwrite, branches),
@@ -704,8 +704,8 @@ export async function newBranchInRepos(roots: readonly string[], from?: string) 
   const r = await promptText({
     title: from ? tx`Create New Branch from ${from}` : "Create New Branch",
     label: tx`New branch name (in ${roots.length} repositories):`,
+    labelPlacement: "inline",
     initial: from ? (from.includes("/") ? shortRemoteName(from) : "") : (useVcs.getState().branch?.head ?? ""),
-    mono: true,
     okLabel: "Create",
     sanitize: cleanUpBranchNameOnTyping,
     validate: validateBranchName,

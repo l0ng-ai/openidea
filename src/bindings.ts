@@ -1041,7 +1041,7 @@ export const commands = {
 	 */
 	menuConfigure: (config: MenuConfig) => __TAURI_INVOKE<void>("menu_configure", { config }),
 	/**  The menu bar for a title bar drawn by the frontend (Windows). */
-	menuModel: () => __TAURI_INVOKE<MenuNode[]>("menu_model"),
+	menuModel: () => __TAURI_INVOKE<MenuNode_Serialize[]>("menu_model"),
 	/**
 	 *  Updates the menu after the recent-projects list changed. Only the Open Recent
 	 *  submenu is rewritten when the rest of the menu is unchanged.
@@ -5315,28 +5315,28 @@ export type DiffSide = DiffSide_Serialize | DiffSide_Deserialize;
 /**  One side of a diff window's comparison (the UI's `DiffSide`, `diffInput.ts`). */
 export type DiffSide_Deserialize = 
 /**  File content at a Git revision (`HEAD`, `:0` = index, a commit id). */
-({ type: "rev"; rev: string; path?: string | null; label?: string | null }) & { id?: never; text?: never } | 
+({ type: "rev"; rev: string; path?: string | null; label?: string | null }) & { id?: never; labelDetail?: never; text?: never } | 
 /**  The working file (unsaved editor buffer included). */
-({ type: "worktree"; label?: string | null }) & { id?: never; path?: never; rev?: never; text?: never } | 
+({ type: "worktree"; label?: string | null; labelDetail?: string | null }) & { id?: never; path?: never; rev?: never; text?: never } | 
 /**  Another file (Compare With…, Compare Files). */
-({ type: "file"; path: string; label?: string | null }) & { id?: never; rev?: never; text?: never } | 
-/**  Literal text: a side that does not exist. */
-({ type: "text"; text: string; label: string }) & { id?: never; path?: never; rev?: never } | 
+({ type: "file"; path: string; label?: string | null }) & { id?: never; labelDetail?: never; rev?: never; text?: never } | 
+/**  Literal text, such as clipboard contents or an editor selection. */
+({ type: "text"; text: string; label: string; labelDetail?: string | null }) & { id?: never; path?: never; rev?: never } | 
 /**  A Local History revision. */
-({ type: "history"; id: string; label: string }) & { path?: never; rev?: never; text?: never };
+({ type: "history"; id: string; label: string }) & { labelDetail?: never; path?: never; rev?: never; text?: never };
 
 /**  One side of a diff window's comparison (the UI's `DiffSide`, `diffInput.ts`). */
 export type DiffSide_Serialize = 
 /**  File content at a Git revision (`HEAD`, `:0` = index, a commit id). */
-({ type: "rev"; rev: string; path?: string | null; label?: string | null }) & { id?: never; text?: never } | 
+({ type: "rev"; rev: string; path?: string | null; label?: string | null }) & { id?: never; labelDetail?: never; text?: never } | 
 /**  The working file (unsaved editor buffer included). */
-({ type: "worktree"; label?: string | null }) & { id?: never; path?: never; rev?: never; text?: never } | 
+({ type: "worktree"; label?: string | null; labelDetail?: string | null }) & { id?: never; path?: never; rev?: never; text?: never } | 
 /**  Another file (Compare With…, Compare Files). */
-({ type: "file"; path: string; label?: string | null }) & { id?: never; rev?: never; text?: never } | 
-/**  Literal text: a side that does not exist. */
-({ type: "text"; text: string; label: string }) & { id?: never; path?: never; rev?: never } | 
+({ type: "file"; path: string; label?: string | null }) & { id?: never; labelDetail?: never; rev?: never; text?: never } | 
+/**  Literal text, such as clipboard contents or an editor selection. */
+({ type: "text"; text: string; label: string; labelDetail?: string | null }) & { id?: never; path?: never; rev?: never } | 
 /**  A Local History revision. */
-({ type: "history"; id: string; label: string }) & { path?: never; rev?: never; text?: never };
+({ type: "history"; id: string; label: string }) & { labelDetail?: never; path?: never; rev?: never; text?: never };
 
 export type DirectoryCompareEntry = {
 	path: string,
@@ -9000,16 +9000,41 @@ export type MenuConfig = {
  *  A menu entry for a menu bar drawn by the frontend (Windows title bar).
  *  Labels are the English defaults; the frontend localises them like the native menu.
  */
-export type MenuNode = { kind: "submenu"; id: string; label: string; children: MenuNode[] } | 
+export type MenuNode = MenuNode_Serialize | MenuNode_Deserialize;
+
+/**
+ *  A menu entry for a menu bar drawn by the frontend (Windows title bar).
+ *  Labels are the English defaults; the frontend localises them like the native menu.
+ */
+export type MenuNode_Deserialize = ({ kind: "submenu"; id: string; label: string; 
+/**  Saved layout selection, unset for ordinary submenus. */
+current: boolean | null; children: MenuNode_Deserialize[] }) & { arg?: never; checked?: never; hint?: never } | 
 /**
  *  Runs `id` with `arg`. Items with an `arg` (Open Recent) carry their final label.
  *  `checked` is the state of a frontend-listed toggle (Status Bar Widgets). Spec toggles
  *  leave it unset: the frontend menu reads their state from the action (`toggled`), the
  *  source [`MenuConfig::checked`] is built from for the native menu.
  */
-{ kind: "action"; id: string; label: string; hint: string | null; arg: string | null; checked: boolean | null } | 
+({ kind: "action"; id: string; label: string; hint: string | null; arg: string | null; checked: boolean | null }) & { children?: never; current?: never } | 
 /**  A disabled placeholder such as "No Recent Projects". */
-{ kind: "placeholder"; id: string; label: string } | { kind: "separator" };
+({ kind: "placeholder"; id: string; label: string }) & { arg?: never; checked?: never; children?: never; current?: never; hint?: never } | ({ kind: "separator" }) & { arg?: never; checked?: never; children?: never; current?: never; hint?: never; id?: never; label?: never };
+
+/**
+ *  A menu entry for a menu bar drawn by the frontend (Windows title bar).
+ *  Labels are the English defaults; the frontend localises them like the native menu.
+ */
+export type MenuNode_Serialize = ({ kind: "submenu"; id: string; label: string; 
+/**  Saved layout selection, unset for ordinary submenus. */
+current?: boolean | null; children: MenuNode_Serialize[] }) & { arg?: never; checked?: never; hint?: never } | 
+/**
+ *  Runs `id` with `arg`. Items with an `arg` (Open Recent) carry their final label.
+ *  `checked` is the state of a frontend-listed toggle (Status Bar Widgets). Spec toggles
+ *  leave it unset: the frontend menu reads their state from the action (`toggled`), the
+ *  source [`MenuConfig::checked`] is built from for the native menu.
+ */
+({ kind: "action"; id: string; label: string; hint: string | null; arg: string | null; checked: boolean | null }) & { children?: never; current?: never } | 
+/**  A disabled placeholder such as "No Recent Projects". */
+({ kind: "placeholder"; id: string; label: string }) & { arg?: never; checked?: never; children?: never; current?: never; hint?: never } | ({ kind: "separator" }) & { arg?: never; checked?: never; children?: never; current?: never; hint?: never; id?: never; label?: never };
 
 /**  Merge dialog › Modify options (shared by the Pull dialog). */
 export type MergeOptions = {

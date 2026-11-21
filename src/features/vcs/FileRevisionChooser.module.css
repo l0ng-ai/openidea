@@ -1,23 +1,31 @@
-.search {
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border-popup);
-}
-.body {
-  height: 280px;
+.dialog > [data-dialog-body] {
   display: flex;
   flex-direction: column;
-  padding: 4px 0;
+  overflow: hidden;
+}
+.search {
+  flex: none;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-popup);
+}
+.revisions {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding-block: var(--space-1);
 }
 .list {
   flex: 1;
   min-height: 0;
 }
 .error {
-  padding: 8px 10px;
+  padding: var(--space-2) var(--space-3);
   color: var(--danger);
 }
 .row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 9ch minmax(0, min(45%, 14em)) minmax(0, 1fr);
   align-items: center;
   gap: var(--space-3);
   min-width: 0;
@@ -29,18 +37,35 @@
 }
 .date {
   color: var(--fg-subtle);
-  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
 }
 .author {
-  flex: 0 0 110px;
   color: var(--fg-secondary);
 }
-.author,
-.subject {
+.row > span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.subject {
-  flex: 1;
+.details {
+  flex: 0 0 min(40%, 144px);
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  border-top: 1px solid var(--border-popup);
+  font-size: var(--fs-ui);
+}
+.details:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -2px;
+}
+.caption {
+  margin-bottom: var(--space-2);
+  color: var(--fg-secondary);
+}
+.message {
+  color: var(--fg-strong);
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }

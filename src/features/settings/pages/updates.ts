@@ -1,7 +1,8 @@
 import { lazyPage } from "./lazyPage";
 import type { PageSpec } from "./spec";
 
-const UpdateStatusRows = lazyPage("general.updates", () => import("./UpdatesBody").then((m) => m.UpdateStatusRows));
+const UpdateVersionRow = lazyPage("general.updates", () => import("./UpdatesBody").then((m) => m.UpdateVersionRow));
+const UpdateCheckRow = lazyPage("general.updates", () => import("./UpdatesBody").then((m) => m.UpdateCheckRow));
 
 export const UPDATES_PAGE: PageSpec = {
   id: "general.updates",
@@ -14,20 +15,13 @@ export const UPDATES_PAGE: PageSpec = {
         {
           kind: "custom",
           label: "Current version",
-          keywords: ["Last checked", "Check Now"],
-          component: UpdateStatusRows,
+          component: UpdateVersionRow,
         },
         {
           kind: "toggle",
           key: "general.autoCheckUpdates",
           label: "Check for updates automatically",
           hint: "At startup and every 4 hours while OpenIDEA runs. Each new version is announced once per session.",
-        },
-        {
-          kind: "toggle",
-          key: "general.showWhatsNewAfterUpdate",
-          label: "Show What's New after an update",
-          hint: "Opens a page with the release notes when a new version starts. Help › What's New opens it any time.",
         },
         {
           kind: "select",
@@ -39,6 +33,18 @@ export const UPDATES_PAGE: PageSpec = {
             { value: "github", label: "GitHub" },
             { value: "cnb", label: "CNB (China mirror)" },
           ],
+        },
+        {
+          kind: "custom",
+          label: "Last checked",
+          keywords: ["Check Now"],
+          component: UpdateCheckRow,
+        },
+        {
+          kind: "toggle",
+          key: "general.showWhatsNewAfterUpdate",
+          label: "Show What's New after an update",
+          hint: "Opens a page with the release notes when a new version starts. Help › What's New opens it any time.",
         },
       ],
     },

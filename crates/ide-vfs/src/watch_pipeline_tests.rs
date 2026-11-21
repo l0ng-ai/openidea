@@ -40,10 +40,12 @@ fn original(input: &[Event], filter: &EventFilter) -> (usize, FsBatch) {
 fn compact(input: &[Event], filter: &EventFilter) -> (usize, FsBatch) {
     let mut queue = PendingEvents::default();
     for event in input {
-        queue.push(event.clone(), Instant::now());
+        let mut changes = QueuedChanges::default();
+        queue_changes(filter, event, &mut changes);
+        queue.add(changes, Instant::now());
     }
-    let events = std::mem::take(&mut queue);
-    (events.events.len(), filter.batch(&events.events))
+    let queued = queue.changes.values().map(Vec::len).sum::<usize>();
+    (queued, filter.batch(&queue.into_events()))
 }
 
 fn event(kind: EventKind, root: &Path, rel: &str) -> Event {
@@ -126,15 +128,16 @@ fn pipeline_comparison_preserves_batches_and_rule_changes() {
             for reverse in [false, true] {
                 let (old, new) = pair(&input, &root, warm, reverse);
                 assert_eq!(old, 32);
-                let expected = match name {
-                    "repeated" => 1,
-                    "distinct" | "interleaved" => 32,
-                    "pairs" => 16,
-                    "runs10" => 4,
-                    "mixed" => 28,
-                    _ => unreachable!(),
-                };
-                assert_eq!(new, expected, "{name}");
+                // The queue holds exactly one merged change per distinct changed path;
+                // the batch `pair` already checked is identical to the un-coalesced one.
+                let filter = EventFilter::new(root.clone(), &["excluded".to_owned()]);
+                let mut queued = PendingEvents::default();
+                for event in &input {
+                    let mut changes = QueuedChanges::default();
+                    queue_changes(&filter, event, &mut changes);
+                    queued.add(changes, Instant::now());
+                }
+                assert_eq!(new, queued.changes.values().map(Vec::len).sum::<usize>(), "{name}");
             }
         }
     }
@@ -153,7 +156,13 @@ fn pipeline_comparison_preserves_batches_and_rule_changes() {
     }
     let (old, new) = pair(&special, &root, true, false);
     assert_eq!(old, special.len());
-    assert_eq!(new, special.len());
+    // Attributes no longer keep identical paths apart: one merged change per path.
+    let mut queued = QueuedChanges::default();
+    let filter = EventFilter::new(root.clone(), &[]);
+    for event in &special {
+        queue_changes(&filter, event, &mut queued);
+    }
+    assert_eq!(new, queued.paths.values().map(Vec::len).sum::<usize>());
     for rule in [".gitignore", ".ignore", ".git/info/exclude"] {
         let tmp = fixture(1);
         let root = dunce::canonicalize(tmp.path()).unwrap();
