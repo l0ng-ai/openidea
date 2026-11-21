@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
-const { list, move, remove, open, confirm, windowOpenRemote } = vi.hoisted(() => ({
+const { list, add, branches, move, remove, open, confirm, windowOpenRemote } = vi.hoisted(() => ({
   list: vi.fn(),
+  add: vi.fn(),
+  branches: vi.fn(),
   move: vi.fn(),
   remove: vi.fn(),
   open: vi.fn(),
@@ -16,6 +18,8 @@ vi.mock("@/platform/ipc", async (original) => {
     commands: {
       ...real.commands,
       vcsWorktrees: list,
+      vcsAddWorktree: add,
+      vcsBranches: branches,
       vcsMoveWorktree: move,
       vcsRemoveWorktree: remove,
       windowOpenRemote,
@@ -28,7 +32,8 @@ vi.mock("../dialogs", async (original) => ({
   confirmDialog: confirm,
 }));
 
-import { WorktreesPanel } from "../gitMenuDialogs";
+import { showNewWorktree, WorktreesPanel } from "../gitMenuDialogs";
+import { VcsDialogHost } from "../dialogs";
 import { useVcs } from "../store";
 import { useProject } from "@/platform/project";
 import { useRemote } from "@/platform/remote";
@@ -49,11 +54,50 @@ const rowAt = async (path: string) =>
 beforeEach(() => {
   useProject.setState({ project: { root: "/work/app-feature" } as never });
   list.mockReset().mockResolvedValue(ok(worktrees));
+  add.mockReset().mockResolvedValue(ok(null));
+  branches.mockReset().mockResolvedValue(ok([]));
   move.mockReset();
   remove.mockReset();
   open.mockReset();
   confirm.mockReset().mockResolvedValue(true);
   useVcs.setState({ root: "/work/app-feature", roots: ["/work/app-feature"], repo: null });
+});
+
+it("creates and opens a worktree from the selected branch, requiring a new branch when it is already checked out", async () => {
+  const run = vi.fn();
+  const dispose = registerAction({ id: "file.openProjectPath", title: "Open Project Path", run });
+  try {
+    render(<VcsDialogHost />);
+    act(() =>
+      showNewWorktree({
+        repo: "/work/app",
+        branch: { name: "feature", current: false, remote: false },
+        open: true,
+      }),
+    );
+    expect(await screen.findByRole("dialog", { name: "New Worktree" })).toBeInTheDocument();
+    const newBranch = screen.getByRole("checkbox", { name: "Create a new branch" });
+    await waitFor(() => expect(newBranch).toBeDisabled());
+    expect(newBranch).toBeChecked();
+    expect(screen.getByRole("textbox", { name: "New branch name" })).toHaveAttribute("placeholder", "feature-wt");
+    expect(screen.getByRole("textbox", { name: "Folder" })).toHaveValue("/work/app-feature-wt");
+    fireEvent.click(screen.getByRole("button", { name: "Create and Open Worktree" }));
+    await waitFor(() =>
+      expect(run).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          arg: { path: "/work/app-feature-wt", newWindow: true },
+        }),
+      ),
+    );
+    expect(add).toHaveBeenCalledExactlyOnceWith(
+      "/work/app",
+      "/work/app-feature-wt",
+      "refs/heads/feature",
+      "feature-wt",
+    );
+  } finally {
+    dispose();
+  }
 });
 
 it("marks the linked project root current when its main worktree is also listed", async () => {

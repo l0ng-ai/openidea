@@ -69,7 +69,11 @@ test("keeps frame sources and the keyboard selection visible in a narrow debug d
   expect(await frames.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
 
   await thread.click();
-  await page.getByRole("option", { name: "Order worker", exact: true }).click();
+  await page
+    .getByRole("listbox", { name: "Thread" })
+    .getByRole("option")
+    .filter({ has: page.getByText("Order worker", { exact: true }) })
+    .click();
   await expect(thread).toContainText("Order worker");
   await expect(frames.getByRole("option", { selected: true })).toContainText("processOrder");
 });

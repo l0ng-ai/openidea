@@ -235,12 +235,15 @@ describe("documentation", () => {
     expect(container).toBeTruthy();
   });
 
-  it("moves the popup to the Documentation tool window", () => {
+  it("navigates the popup history from More Actions and moves it to the Documentation tool window", () => {
     openPopup({
       kind: "doc",
       anchor: { x: 0, y: 0 },
-      entries: [{ markup: { kind: "plaintext", value: "docs" }, language: null }],
-      index: 0,
+      entries: [
+        { markup: { kind: "plaintext", value: "First document" }, language: null },
+        { markup: { kind: "plaintext", value: "Second document" }, language: null },
+      ],
+      index: 1,
       themeClasses: "",
     });
     render(
@@ -249,10 +252,17 @@ describe("documentation", () => {
         <DocumentationWindow />
       </>,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Show in Documentation Tool Window" }));
+    const more = screen.getByRole("button", { name: "More Actions" });
+    fireEvent.click(more);
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Back/ }));
+    expect(screen.getByText("First document")).toBeVisible();
+    fireEvent.click(more);
+    expect(screen.getByRole("menuitem", { name: /^Forward/ })).toBeEnabled();
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Show in Documentation Tool Window/ }));
     expect(useLspPopup.getState().popup).toBeNull();
     expect(show).toHaveBeenCalledWith("documentation", true);
-    expect(useDocWindow.getState().entries).toHaveLength(1);
+    expect(useDocWindow.getState().entries).toHaveLength(2);
+    expect(useDocWindow.getState().index).toBe(0);
   });
 });
 

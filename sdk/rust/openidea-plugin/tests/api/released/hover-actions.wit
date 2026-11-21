@@ -1,0 +1,40 @@
+package openidea:plugin@1.14.0;
+
+/// Optional export (world `plugin-hover-actions`): clickable actions rendered
+/// at the left edge of a line and revealed while the pointer is in the leftmost
+/// editing-area strip of the action's line range.
+interface hover-actions {
+    use language-features.{document};
+
+    /// An action drawn at the left edge of `line`.
+    record hover-action {
+        /// The line the button is drawn on; normally the declaration line.
+        line: u32,
+        /// First line whose left strip reveals this action, inclusive.
+        start-line: u32,
+        /// Last line whose left strip reveals this action, inclusive.
+        end-line: u32,
+        /// Optional icon: a registered icon name or a declared manifest SVG path.
+        icon: option<string>,
+        /// Text shown when no icon is present, or beside the icon.
+        label: string,
+        tooltip: option<string>,
+        /// This plugin's declared command.
+        command: string,
+        argument: option<string>,
+    }
+
+    /// Actions for the visible document, under the editor-provider budget.
+    hover-actions: func(doc: document) -> list<hover-action>;
+}
+
+/// The optional export-only world the SDK merges with `plugin`.
+world hover-actions-provider {
+    export hover-actions;
+}
+
+/// The host-side world used to instantiate a component that exports it.
+world plugin-hover-actions {
+    include plugin;
+    export hover-actions;
+}

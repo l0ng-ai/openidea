@@ -25,7 +25,8 @@ import {
 } from "@/ui";
 import { useRowHeight } from "@/ui/density";
 import { sortLocal, sortRemote } from "./branches";
-import { conflictActions, openConflictsInstead, validateBranchName } from "./branchOps";
+import { branchRef, conflictActions, openConflictsInstead, validateBranchName } from "./branchOps";
+import { joinPath } from "./clone";
 import { cleanUpBranchNameOnTyping } from "@/platform/gitRefName";
 import { confirmDialog, openDialog } from "./dialogs";
 import { errorMessage, runOp, runRemote, saveAll } from "./ops";
@@ -797,10 +798,24 @@ export function showWorktrees() {
   openDialog((close) => <WorktreesDialog onClose={close} />);
 }
 
-export function showNewWorktree(onCreated?: () => void, repo?: string | null) {
+type WorktreeSource = Pick<Branch, "name" | "remote" | "current">;
+
+export function showNewWorktree({
+  onCreated,
+  repo,
+  branch,
+  open = false,
+}: {
+  onCreated?: () => void;
+  repo?: string | null;
+  branch?: WorktreeSource;
+  open?: boolean;
+} = {}) {
   openDialog((close) => (
     <NewWorktreeDialog
       repo={repo}
+      branch={branch}
+      openAfterCreate={open}
       onClose={(created) => {
         close();
         if (created) onCreated?.();
@@ -960,7 +975,9 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
             icon="plus"
             title="New Worktree…"
             size="small"
-            onClick={() => showNewWorktree(() => void reload(), currentGroup?.root ?? repo ?? repos[0])}
+            onClick={() =>
+              showNewWorktree({ onCreated: () => void reload(), repo: currentGroup?.root ?? repo ?? repos[0] })
+            }
           />
           <IconButton
             icon="minus"
@@ -1075,49 +1092,94 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
 
 function NewWorktreeDialog({
   repo: initialRepo,
+  branch,
+  openAfterCreate,
   onClose,
 }: {
   /** The repository to add the worktree to; the selected one when omitted. */
   repo?: string | null;
+  branch?: WorktreeSource;
+  openAfterCreate: boolean;
   onClose: (created: boolean) => void;
 }) {
   const [repo] = useState(() => initialRepo ?? currentRepo());
   const [root] = useState(() => initialRepo ?? useVcs.getState().repo ?? useVcs.getState().root ?? "");
   const branches = useBranches(repo);
-  const [source, setSource] = useState<string | null>(null);
-  const [createBranch, setCreateBranch] = useState(true);
+  const initialRef = branch ? branchRef(branch.name, branch.remote) : null;
+  const [source, setSource] = useState(initialRef);
+  const [createBranchChoice, setCreateBranch] = useState<boolean | null>(null);
   const [newBranch, setNewBranch] = useState("");
-  const { ref: branchRef, clean: cleanBranch } = useSanitizedField(cleanUpBranchNameOnTyping);
+  const { ref: branchInput, clean: cleanBranch } = useSanitizedField(cleanUpBranchNameOnTyping);
   const [path, setPath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const options = useMemo(
-    () => [...branchOptions(sortLocal(branches)), ...branchOptions(sortRemote(branches))],
+  const [busy, setBusy] = useState(false);
+  const [worktrees, setWorktrees] = useState<Worktree[]>([]);
+  useEffect(() => {
+    let live = true;
+    call(commands.vcsWorktrees(repo)).then(
+      (worktrees) => live && setWorktrees(worktrees),
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+  }, [repo]);
+  const sources = useMemo(
+    () => [...sortLocal(branches), ...sortRemote(branches)].filter((b) => !b.remote || !b.name.endsWith("/HEAD")),
     [branches],
   );
-  const sourceRemote = branches.find((b) => b.name === source)?.remote ?? false;
-  // A remote branch `origin/x` suggests the local name `x`.
-  const shortSource = source && sourceRemote ? source.slice(source.indexOf("/") + 1) : (source ?? "");
-  const suggestedBranch = source ? (sourceRemote ? shortSource : `${shortSource}-wt`) : "";
+  const options: SelectOption[] = sources.map((b) => ({
+    value: branchRef(b.name, b.remote),
+    label: b.name,
+    icon: "branch",
+  }));
+  if (branch && initialRef && !options.some((option) => option.value === initialRef)) {
+    options.unshift({ value: initialRef, label: branch.name, icon: "branch" });
+  }
+  const selected =
+    sources.find((b) => branchRef(b.name, b.remote) === source) ?? (source === initialRef ? branch : null);
+  const checkedOut =
+    !!selected && !selected.remote && (selected.current || worktrees.some((w) => w.branch === selected.name));
+  const createBranch = checkedOut || selected?.remote || (createBranchChoice ?? !branch);
+  const shortSource = selected?.remote ? selected.name.slice(selected.name.indexOf("/") + 1) : (selected?.name ?? "");
+  const suggestedBranch =
+    selected?.remote && !sources.some((b) => !b.remote && b.name === shortSource)
+      ? shortSource
+      : shortSource && `${shortSource}-wt`;
   const branchName = newBranch.trim() || suggestedBranch;
   const target = path ?? (source ? defaultWorktreePath(root, createBranch ? branchName : shortSource) : "");
   const invalid = !source
     ? "Choose what to check out"
-    : createBranch
-      ? validateBranchName(branchName)
-      : !target.trim()
-        ? "Enter a folder"
+    : !target.trim()
+      ? "Enter a folder"
+      : createBranch
+        ? validateBranchName(branchName)
         : null;
 
   const create = async () => {
-    if (invalid || !source) return;
+    if (invalid || !source || !selected || busy) return;
+    const folder = target.trim();
+    const absolute = /^([a-zA-Z]:)?[\\/]/.test(folder) ? folder : joinPath(root, folder);
+    setBusy(true);
+    setError(null);
     try {
-      await call(commands.vcsAddWorktree(repo, target.trim(), source, createBranch ? branchName : null));
-      notifications().notify({ group: "vcs", level: "info", title: `Created worktree at ${target.trim()}` });
-      void loadBranches().catch(() => undefined);
-      onClose(true);
+      await call(
+        commands.vcsAddWorktree(
+          repo,
+          absolute,
+          createBranch ? source : selected.name,
+          createBranch ? branchName : null,
+        ),
+      );
     } catch (e) {
       setError(errorMessage(e));
+      setBusy(false);
+      return;
     }
+    notifications().notify({ group: "vcs", level: "info", title: `Created worktree at ${absolute}` });
+    void loadBranches().catch(() => undefined);
+    onClose(true);
+    if (openAfterCreate) void openWorktree(absolute, true);
   };
 
   return (
@@ -1127,7 +1189,12 @@ function NewWorktreeDialog({
       onClose={() => onClose(false)}
       width={520}
       buttons={[
-        { label: "Create", role: "default", disabled: !!invalid, onClick: () => void create() },
+        {
+          label: openAfterCreate ? "Create and Open Worktree" : "Create",
+          role: "default",
+          disabled: busy || !!invalid,
+          onClick: () => void create(),
+        },
         { label: "Cancel", role: "cancel" },
       ]}
     >
@@ -1142,10 +1209,15 @@ function NewWorktreeDialog({
           options={options}
           onChange={setSource}
         />
-        <Checkbox label="Create a new branch" checked={createBranch} onChange={setCreateBranch} />
+        <Checkbox
+          label="Create a new branch"
+          checked={!!createBranch}
+          disabled={checkedOut || selected?.remote}
+          onChange={setCreateBranch}
+        />
         {createBranch && (
           <Input
-            ref={branchRef}
+            ref={branchInput}
             aria-label="New branch name"
             mono
             value={newBranch}

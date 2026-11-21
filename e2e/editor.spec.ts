@@ -13,6 +13,40 @@ test("opens a file from the project tree and types into it", async ({ workbench:
   await expect(editor.locator(".cm-content")).not.toContainText("// typed by e2e");
 });
 
+test("indentation shows the language and current width with room for the keyboard choices", async ({
+  workbench: page,
+}) => {
+  await openFromTree(page, "build.gradle.kts");
+  await page.evaluate(async () => {
+    const path = "/src/editor/core/controller.ts";
+    const { editorController, useEditorStatus } = await import(/* @vite-ignore */ path);
+    const active = useEditorStatus.getState().status!.path;
+    editorController().manager.get(active)!.setIndent({ tabSize: 3, insertSpaces: true });
+  });
+
+  const status = page.getByRole("button", { name: "3 spaces", exact: true });
+  await status.click();
+  const menu = page.getByRole("menu", { name: "Indentation", exact: true });
+  const title = page.getByText("Kotlin Code Style", { exact: true });
+  await expect(title).toBeVisible();
+  await page.setViewportSize({ width: 500, height: 520 });
+  await expect(title).toBeInViewport({ ratio: 1 });
+  await expect(title).toHaveCSS("font-size", "13px");
+  await expect(title).toHaveCSS("font-weight", "600");
+  await expect(menu.getByRole("menuitemcheckbox", { name: "3 spaces", checked: true })).toBeInViewport({ ratio: 1 });
+  await expect(menu.getByRole("menuitem", { name: "Configure Indents…" })).toBeInViewport({ ratio: 1 });
+
+  await expect(menu.getByRole("menuitemcheckbox", { name: "2 spaces", checked: false })).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect(menu).toBeHidden();
+  const four = page.getByRole("button", { name: "4 spaces", exact: true });
+  await expect(four).toBeVisible();
+  await four.click();
+  await expect(menu.getByRole("menuitemcheckbox", { name: "4 spaces", checked: true })).toBeVisible();
+});
+
 test("Delete edits text after the focused Project tree is remounted", async ({ workbench: page }) => {
   const editor = await openFromTree(page, "README.md");
   const content = editor.locator(".cm-content");
