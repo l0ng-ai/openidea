@@ -5,6 +5,7 @@ const ipc = vi.hoisted(() => ({
   prepare: vi.fn(),
   collect: vi.fn(),
   gc: vi.fn(),
+  notify: vi.fn(),
 }));
 
 vi.mock("@/platform/ipc", () => ({
@@ -22,7 +23,7 @@ vi.mock("@/platform/ipc", () => ({
 }));
 
 vi.mock("@/workbench/contributions", () => ({
-  notifications: () => ({ notify: vi.fn() }),
+  notifications: () => ({ notify: ipc.notify }),
   toolWindowService: () => ({ show: vi.fn() }),
 }));
 
@@ -50,6 +51,7 @@ beforeEach(() => {
   ipc.prepare.mockReset();
   ipc.collect.mockReset();
   ipc.gc.mockReset();
+  ipc.notify.mockReset();
   ipc.prepare.mockImplementation(() => ok({ status: "ready", launch: config, spec: { id: "s" } }));
   ipc.collect.mockImplementation(() => ok(profile));
 });
@@ -77,6 +79,25 @@ describe("profiler executors", () => {
       ["profiler", "Profile 'App'", "run.profile", 20],
       ["profilerAllocations", "Profile 'App' Allocations", "run.profileAllocations", 21],
       ["profilerLiveObjects", "Profile 'App' Live Objects", "run.profileLiveObjects", 22],
+    ]);
+  });
+
+  it("answers a profiler that cannot run even when Run notifications are turned off", async () => {
+    ipc.prepare.mockImplementationOnce(() =>
+      ok({
+        status: "missingTool",
+        tool: "async-profiler",
+        message: "Profiling JVM applications needs async-profiler.",
+        install: null,
+        homepage: "https://example.com",
+      }),
+    );
+    expect(await profilerExecutor("cpu").prepare(config)).toBeNull();
+    ipc.prepare.mockImplementationOnce(() => ok({ status: "unsupported", reason: "Not a JVM program" }));
+    expect(await profilerExecutor("cpu").prepare(config)).toBeNull();
+    expect(ipc.notify.mock.calls.map(([n]) => [n.title, n.userInitiated])).toEqual([
+      ["async-profiler is not installed", true],
+      ["Cannot profile 'App'", true],
     ]);
   });
 

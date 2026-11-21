@@ -22,6 +22,7 @@ export async function runWithExecutor(config: RunConfig, executorId: string): Pr
       level: "error",
       title: `Cannot run '${config.name}'`,
       body: e instanceof Error ? e.message : String(e),
+      userInitiated: true,
     });
     return;
   }
