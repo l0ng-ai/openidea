@@ -4,11 +4,11 @@ import { commitKey, commitRepo } from "./multiRoot";
  * cherry-pick or revert, and the Git Log commit actions (Cherry-Pick, Revert
  * Commit, Reset Current Branch to Here, New Tag, Compare with Local).
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import type { ChangedFile, Commit, CompareResult, ResetMode, WorkingTreeChange } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands, isTauri, nextRequestId } from "@/platform/ipc";
-import { Button, Checkbox, Dialog, Icon, Input, Spinner, T } from "@/ui";
+import { Button, Checkbox, Dialog, Icon, Input, Radio, Select, Spinner, T, Toolbar } from "@/ui";
 import { useFilePresentation } from "@/ui/filePresentation";
 import { notifications } from "@/workbench/contributions";
 import { windowBackgroundHex } from "@/workbench/theme";
@@ -22,6 +22,8 @@ import { showLocalChanges } from "./commitUi";
 import { reloadLog, useGitLog } from "./logStore";
 import { conflictedFiles, currentRepo, currentRepoRoot, refreshNow, repoName, repoOf, useVcs } from "./store";
 import styles from "./common.module.css";
+import resetStyles from "./ResetDialog.module.css";
+import tagStyles from "./TagDialog.module.css";
 import { ComparisonTree } from "./ComparisonTree";
 import { showWorktreeComparison } from "./compareTool";
 import { buildFileTree, type FileTreeNode } from "./fileTree";
@@ -340,6 +342,13 @@ const RESET_MODES: Array<{ mode: ResetMode; label: string; hint: string }> = [
     hint: "Files will be reverted to the state of the selected commit, but local changes will be kept intact.",
   },
 ];
+const RESET_CHOICES = RESET_MODES.map(({ mode, label }) => ({ value: mode, label }));
+
+function useRepoHead(root: string | null) {
+  return useVcs(
+    (s) => (root ? s.heads[root] : undefined) ?? ((s.repo ?? s.roots[0] ?? s.root) === root ? s.branch : null),
+  );
+}
 
 /** Git Reset dialog: Reset Current Branch to Here… (log) and Git › Reset HEAD… (`commit` omitted). */
 export function showResetDialog(commit?: Commit) {
@@ -347,10 +356,21 @@ export function showResetDialog(commit?: Commit) {
 }
 
 function ResetDialog({ commit, onClose }: { commit?: Commit; onClose: () => void }) {
-  const [repo] = useState(() => (commit && commitRepo(commit)) || currentRepo());
-  const head = useVcs((s) => s.branch?.head ?? "HEAD");
+  const id = useId();
+  const [repo, setRepo] = useState(() => commitRepo(commit) ?? currentRepo());
+  const roots = useVcs((s) => s.roots);
+  const projectRoot = useVcs((s) => s.root);
+  const root = repo ?? roots[0] ?? projectRoot;
+  const head = useRepoHead(root);
+  const branch = head?.head ?? (head?.headCommit ? tx("Detached HEAD") : "—");
   const [mode, setMode] = useState<ResetMode>("mixed");
   const [target, setTarget] = useState(commit?.id ?? "HEAD");
+  const currentMode = RESET_MODES.find((m) => m.mode === mode);
+  const chooseRepo = (next: string) => {
+    if (next === root) return;
+    setRepo(next);
+    setTarget("HEAD");
+  };
   const run = async () => {
     const rev = target.trim();
     if (!rev) return;
@@ -359,7 +379,7 @@ function ResetDialog({ commit, onClose }: { commit?: Commit; onClose: () => void
       { op: "reset", commit: rev, mode },
       {
         progress: "Resetting",
-        success: tx`Reset ${head} to ${commit ? short(commit.id) : rev} (${mode})`,
+        success: tx`Reset ${head?.head ?? "HEAD"} to ${commit ? short(commit.id) : rev} (${mode})`,
         failure: tx("Reset failed"),
       },
       repo,
@@ -376,41 +396,99 @@ function ResetDialog({ commit, onClose }: { commit?: Commit; onClose: () => void
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div className={styles.form} role="radiogroup" aria-label={tx("Reset type")}>
+      <div className={resetStyles.form}>
         {commit ? (
-          <div className={styles.hint}>
-            <T>
-              {
-                "This will reset the current branch head to the selected commit, and update the working tree and the index according to the selected mode:"
-              }
-            </T>
-            <div className={styles.mono} style={{ marginTop: 4 }}>
-              {short(commit.id)} {commit.summary}
+          <div className={resetStyles.confirmation}>
+            <div className={resetStyles.summary}>
+              <span className={resetStyles.source}>
+                <strong>{branch}</strong>
+                {root && roots.length > 1 && <span className={resetStyles.repository}>{repoName(root)}</span>}
+              </span>
+              <Icon name="arrow-right" size={14} />
+              <span className={resetStyles.destination} title={commit.id}>
+                <strong>{short(commit.id)}</strong> <span>{commit.summary}</span>
+                {commit.author && (
+                  <>
+                    {" "}
+                    · <span className={resetStyles.repository}>{commit.author}</span>
+                  </>
+                )}
+              </span>
+            </div>
+            <p className={resetStyles.description}>
+              <T>
+                {
+                  "This will reset the current branch head to the selected commit, and update the working tree and the index according to the selected mode:"
+                }
+              </T>
+            </p>
+            <div className={resetStyles.modes} role="radiogroup" aria-label={tx("Reset type")}>
+              {RESET_MODES.map((m) => (
+                <Radio
+                  key={m.mode}
+                  className={resetStyles.choice}
+                  name={`${id}-mode`}
+                  checked={mode === m.mode}
+                  onChange={() => setMode(m.mode)}
+                  label={
+                    <span className={resetStyles.modeText}>
+                      <T>{m.label}</T>
+                      <span className={resetStyles.hint}>
+                        <T>{m.hint}</T>
+                      </span>
+                    </span>
+                  }
+                />
+              ))}
             </div>
           </div>
         ) : (
-          <>
-            <label className={styles.fieldLabel} htmlFor="openidea-reset-to">
+          <div className={resetStyles.fields}>
+            {roots.length > 1 ? (
+              <>
+                <label className={resetStyles.label} htmlFor={`${id}-repo`}>
+                  <T>Repository:</T>
+                </label>
+                <RepoPicker id={`${id}-repo`} repo={repo} onChange={chooseRepo} />
+              </>
+            ) : (
+              <>
+                <span className={resetStyles.label}>
+                  <T>Repository:</T>
+                </span>
+                <span className={resetStyles.fact}>{root ? repoName(root) : "—"}</span>
+              </>
+            )}
+            <span className={resetStyles.label}>
+              <T>Current branch:</T>
+            </span>
+            <span className={resetStyles.fact} title={branch}>
+              {branch}
+            </span>
+            <label className={`${resetStyles.label} ${resetStyles.modeLabel}`} htmlFor={`${id}-mode`}>
+              <T>Reset type:</T>
+            </label>
+            <div className={resetStyles.modeField}>
+              <Select
+                id={`${id}-mode`}
+                className={resetStyles.modePicker}
+                aria-label="Reset type"
+                value={mode}
+                options={RESET_CHOICES}
+                onChange={setMode}
+              />
+              {currentMode && (
+                <span className={resetStyles.hint}>
+                  <T>{currentMode.hint}</T>
+                </span>
+              )}
+            </div>
+            <label className={resetStyles.label} htmlFor={`${id}-target`}>
               <T>To commit:</T>
             </label>
-            <Input
-              id="openidea-reset-to"
-              data-autofocus
-              mono
-              value={target}
-              onChange={(e) => setTarget(e.target.value)}
-            />
-          </>
+            <Input id={`${id}-target`} data-autofocus value={target} onChange={(e) => setTarget(e.target.value)} />
+          </div>
         )}
-        {RESET_MODES.map((m) => (
-          <label key={m.mode} className={styles.radioRow}>
-            <input type="radio" name="reset" checked={mode === m.mode} onChange={() => setMode(m.mode)} />
-            <span className={styles.radioText}>
-              {m.label}
-              <span className={styles.hint}>{m.hint}</span>
-            </span>
-          </label>
-        ))}
       </div>
     </Dialog>
   );
@@ -452,7 +530,13 @@ export function showTagDialog() {
 }
 
 function TagDialog({ onClose }: { onClose: () => void }) {
+  const id = useId();
   const [repo, setRepo] = useState(currentRepo);
+  const roots = useVcs((s) => s.roots);
+  const projectRoot = useVcs((s) => s.root);
+  const root = repo ?? roots[0] ?? projectRoot;
+  const head = useRepoHead(root);
+  const branch = head?.head ?? (head?.headCommit ? tx("Detached HEAD") : "—");
   const [name, setName] = useState("");
   const [commit, setCommit] = useState("HEAD");
   const [message, setMessage] = useState("");
@@ -474,6 +558,7 @@ function TagDialog({ onClose }: { onClose: () => void }) {
     setExisting([]);
   };
   const error = validateTagName(name, force ? [] : existing);
+  const errorId = name && error ? `${id}-error` : undefined;
   const run = async () => {
     if (error) return;
     onClose();
@@ -490,36 +575,62 @@ function TagDialog({ onClose }: { onClose: () => void }) {
       open
       title="Tag"
       onClose={onClose}
-      width={460}
+      width={500}
       buttons={[
         { label: "Create Tag", role: "default", disabled: !!error, onClick: () => void run() },
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div className={styles.form}>
-        <RepoPicker repo={repo} onChange={chooseRepo} />
-        <label className={styles.fieldLabel} htmlFor="openidea-tag-name">
+      <div className={tagStyles.form}>
+        {roots.length > 1 ? (
+          <>
+            <label className={tagStyles.label} htmlFor={`${id}-repository`}>
+              <T>Repository:</T>
+            </label>
+            <RepoPicker id={`${id}-repository`} repo={repo} onChange={chooseRepo} />
+          </>
+        ) : (
+          <>
+            <span className={tagStyles.label}>
+              <T>Repository:</T>
+            </span>
+            <span className={tagStyles.context}>{root ? repoName(root) : "—"}</span>
+          </>
+        )}
+        <span className={tagStyles.label}>
+          <T>Current branch:</T>
+        </span>
+        <span className={tagStyles.context} title={branch}>
+          {branch}
+        </span>
+        <label className={tagStyles.nameLabel} htmlFor={`${id}-name`}>
           <T>Tag name:</T>
         </label>
-        <Input
-          id="openidea-tag-name"
-          data-autofocus
-          mono
-          value={name}
-          invalid={!!name && !!error}
-          onChange={(e) => setName(e.target.value)}
-        />
-        {name && error && <div className={styles.error}>{error}</div>}
-        <Checkbox checked={force} onChange={setForce} label="Force" />
-        <label className={styles.fieldLabel} htmlFor="openidea-tag-commit">
+        <div className={tagStyles.nameField}>
+          <Input
+            id={`${id}-name`}
+            data-autofocus
+            value={name}
+            invalid={!!errorId}
+            aria-describedby={errorId}
+            onChange={(e) => setName(e.target.value)}
+          />
+          {errorId && (
+            <div className={styles.error} id={errorId}>
+              {error}
+            </div>
+          )}
+        </div>
+        <Checkbox className={tagStyles.force} checked={force} onChange={setForce} label="Force" />
+        <label className={tagStyles.label} htmlFor={`${id}-commit`}>
           <T>Commit:</T>
         </label>
-        <Input id="openidea-tag-commit" mono value={commit} onChange={(e) => setCommit(e.target.value)} />
-        <label className={styles.fieldLabel} htmlFor="openidea-tag-message">
+        <Input id={`${id}-commit`} value={commit} onChange={(e) => setCommit(e.target.value)} />
+        <label className={tagStyles.messageLabel} htmlFor={`${id}-message`}>
           <T>Message:</T>
         </label>
         <textarea
-          id="openidea-tag-message"
+          id={`${id}-message`}
           className={styles.textarea}
           rows={4}
           value={message}
@@ -836,18 +947,33 @@ export function ChangesBetweenDialog({
       ) : null}
     </>
   );
-  if (native)
+  if (native) {
+    const diffButton = (
+      <Button
+        variant={listOnly ? "primary" : "ghost"}
+        size={listOnly ? "normal" : "small"}
+        icon={listOnly ? undefined : "diff"}
+        disabled={!current}
+        onClick={showDiff}
+      >
+        Show Diff
+      </Button>
+    );
     return (
       <div className={styles.comparisonWindow}>
+        {!listOnly && (
+          <Toolbar className={styles.comparisonWindowToolbar} aria-label="Comparison actions">
+            {diffButton}
+          </Toolbar>
+        )}
         <div className={styles.comparisonWindowBody}>{contents}</div>
         <div className={styles.comparisonWindowFooter}>
           <Button onClick={onClose}>Close</Button>
-          <Button variant="primary" disabled={!current} onClick={showDiff}>
-            Show Diff
-          </Button>
+          {listOnly && diffButton}
         </div>
       </div>
     );
+  }
   return (
     <Dialog
       open

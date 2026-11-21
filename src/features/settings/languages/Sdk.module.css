@@ -18,6 +18,15 @@
   min-width: 0;
 }
 
+.mavenSettings .sdkField {
+  min-width: 0;
+  max-width: none;
+}
+
+.mavenThreads {
+  width: 100px;
+}
+
 .interpreterRow {
   display: flex;
   flex-wrap: wrap;
@@ -266,6 +275,30 @@
 .pathInput {
   flex: 1;
   min-width: 0;
+}
+
+.gradleSettings .pathRow {
+  max-width: 560px;
+}
+
+.gradleSettings .sdkField {
+  min-width: 0;
+}
+
+.gradleDistribution {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  width: 560px;
+}
+
+.gradleDistribution > :first-child {
+  flex: 0 1 180px;
+}
+
+.gradleDistribution > .pathRow {
+  flex: 1 1 230px;
 }
 
 /* Project Structure */

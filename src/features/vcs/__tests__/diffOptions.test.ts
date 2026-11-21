@@ -495,10 +495,12 @@ describe("compare entry points", () => {
 
   it("Compare with Clipboard: the file, or the selection", () => {
     const whole = clipboardDiffData("/p/a.ts", "clip", null);
-    expect(whole.left).toEqual({ type: "text", text: "clip", label: "Clipboard" });
+    expect(whole.left).toEqual({ type: "text", text: "clip", label: "From Clipboard" });
     expect(sideFile(whole.right, whole.path)).toBe("/p/a.ts");
+    expect(whole.right).toMatchObject({ label: "a.ts", labelDetail: "/p" });
     const sel = clipboardDiffData("/p/a.ts", "clip", "sel");
     expect(sideFile(sel.right, sel.path)).toBeNull();
+    expect(sel.right).toMatchObject({ label: "Selection from a.ts", labelDetail: "/p" });
     expect(diffTitle(sel)).toBe("Clipboard ↔ a.ts (selection)");
   });
 

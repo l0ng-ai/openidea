@@ -16,6 +16,7 @@ import {
   Spinner,
   SymbolBadge,
   fileIconName,
+  firstSelectable,
   fuzzyMatch,
   selectableText,
   T,
@@ -26,6 +27,7 @@ import {
   closePopup,
   updatePopup,
   useLspPopup,
+  type DefinitionTarget,
   type ListPopupItem,
   type ListPreview,
   type LspPopup,
@@ -39,6 +41,7 @@ import styles from "./Popups.module.css";
 import fieldsetStyles from "@/ui/DialogFieldset.module.css";
 import { tx } from "@/platform/i18n";
 import { executeAction } from "@/platform/actions";
+import { useRowHeight } from "@/ui/density";
 
 export function BulbIcon({ fix }: { fix?: boolean }) {
   return <Icon name={fix ? "bulb-fix" : "bulb"} size={16} className={styles.bulb} />;
@@ -81,19 +84,44 @@ function ListPreviewPanel({
 const LIST_PREVIEW_WIDTH = 420;
 const MIN_SIDE_BY_SIDE_WIDTH = 660;
 
+type ListPopupRow =
+  | { kind: "action"; item: ListPopupItem; match: number[] | null }
+  | { kind: "section"; key: string; label?: string };
+
+const isListSection = (row: ListPopupRow) => row.kind === "section";
+const dividerHeight = (row: ListPopupRow) => (row.kind === "section" && !row.label ? 9 : undefined);
+
+function listPopupRows(items: ListPopupItem[], query: string): ListPopupRow[] {
+  const rows: ListPopupRow[] = [];
+  let previous: string | undefined;
+  for (const item of items) {
+    const match = query ? fuzzyMatch(item.label, query) : null;
+    if (query && match === null) continue;
+    const { section } = item;
+    if (section?.id !== previous && (section?.label || rows.length)) {
+      rows.push({ kind: "section", key: `section:${rows.length}`, label: section?.label });
+    }
+    rows.push({ kind: "action", item, match });
+    previous = section?.id;
+  }
+  return rows;
+}
+
 function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
   const [query, setQuery] = useState("");
-  const filtered = useMemo(() => {
-    if (!query) return popup.items.map((item) => ({ item, match: null as number[] | null }));
-    return popup.items.map((item) => ({ item, match: fuzzyMatch(item.label, query) })).filter((r) => r.match !== null);
-  }, [popup.items, query]);
-  const firstEnabled = Math.max(
-    0,
-    filtered.findIndex((r) => !r.item.disabled),
-  );
+  const rows = useMemo(() => listPopupRows(popup.items, query), [popup.items, query]);
+  const firstEnabled = rows.findIndex((row) => row.kind === "action" && !row.item.disabled);
   const [active, setActive] = useState(firstEnabled);
-  const activeIndex = Math.min(active, Math.max(0, filtered.length - 1));
-  const activeItem = filtered[activeIndex]?.item;
+  const clamped = Math.min(active, rows.length - 1);
+  const activeIndex =
+    rows[clamped]?.kind === "action"
+      ? clamped
+      : firstEnabled >= 0
+        ? firstEnabled
+        : firstSelectable(rows, isListSection);
+  const activeRow = rows[activeIndex];
+  const activeItem = activeRow?.kind === "action" ? activeRow.item : undefined;
+  const showIcons = !popup.compact || popup.items.some((item) => item.icon || item.symbol);
 
   // Choosers highlight what the selected row would act on.
   useEffect(() => {
@@ -155,26 +183,36 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
       if (item) activate(item);
     } else if (e.key === "Backspace" && query) {
       setQuery(query.slice(0, -1));
-      setActive(0);
+      setActive(-1);
       e.preventDefault();
     } else if (e.key.length === 1 && !(e.key === " " && !query)) {
       setQuery(query + e.key);
-      setActive(0);
+      setActive(-1);
       e.preventDefault();
     }
   };
 
-  const height = Math.min(12, Math.max(1, filtered.length)) * 24;
+  const rowHeight = useRowHeight();
+  const height = Math.min(
+    12 * rowHeight,
+    rows.reduce((sum, row) => sum + (dividerHeight(row) ?? rowHeight), 0) || rowHeight,
+  );
   // Rows are virtualized (absolutely positioned), so size the popup from the content.
   const width = useMemo(() => {
     const chars = Math.max(
       popup.title.length + (popup.pin ? 4 : 0),
       ...popup.items.map(
-        (i) => i.label.length + (i.preview?.length ?? 0) + (i.detail?.length ?? 0) + (i.shortcut?.length ?? 0),
+        (i) =>
+          i.label.length +
+          (i.leadingDetail?.length ?? 0) +
+          (i.preview?.length ?? 0) +
+          (i.detail?.length ?? 0) +
+          (i.shortcut?.length ?? 0),
       ),
     );
-    return Math.min(720, Math.max(320, chars * 7 + 90 + (popup.numbered ? 16 : 0)));
-  }, [popup]);
+    const padding = popup.compact ? 44 + (showIcons ? 20 : 0) : 90;
+    return Math.min(720, Math.max(popup.compact ? 272 : 320, chars * 7 + padding + (popup.numbered ? 16 : 0)));
+  }, [popup, showIcons]);
   const shownPreview = popup.preview
     ? preview && preview.id === activeItem?.id
       ? preview.data
@@ -183,28 +221,32 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
         : null
     : null;
   const hasPreview = shownPreview !== null;
+  const point = popup.anchor === "center" ? null : popup.anchor;
   const previewBelow = hasPreview && viewportWidth <= MIN_SIDE_BY_SIDE_WIDTH;
   const previewLeft =
+    point &&
     hasPreview &&
     !previewBelow &&
-    popup.anchor.x + width + LIST_PREVIEW_WIDTH > viewportWidth - 6 &&
-    popup.anchor.x >= LIST_PREVIEW_WIDTH + 6;
+    point.x + width + LIST_PREVIEW_WIDTH > viewportWidth - 6 &&
+    point.x >= LIST_PREVIEW_WIDTH + 6;
   const anchor = useMemo(() => {
-    if (!fetchPreview) return popup.anchor;
-    const x = popup.anchor.x - (previewLeft ? LIST_PREVIEW_WIDTH : 0);
+    if (!point || !fetchPreview) return popup.anchor;
+    const x = point.x - (previewLeft ? LIST_PREVIEW_WIDTH : 0);
     return {
       getBoundingClientRect: () =>
         new DOMRect(
           Math.max(0, Math.min(x, window.innerWidth)),
-          Math.max(0, Math.min(popup.anchor.y, window.innerHeight)),
+          Math.max(0, Math.min(point.y, window.innerHeight)),
           0,
           0,
         ),
     };
-  }, [fetchPreview, popup.anchor, previewLeft]);
+  }, [fetchPreview, point, popup.anchor, previewLeft]);
+  const leadingDetailChars = Math.max(0, ...popup.items.map((item) => item.leadingDetail?.length ?? 0));
   const popupSize = {
     width: hasPreview ? width + LIST_PREVIEW_WIDTH : width,
     "--list-preview-width": `${LIST_PREVIEW_WIDTH}px`,
+    "--list-leading-detail-width": `${leadingDetailChars + 1}ch`,
   } as CSSProperties;
   const indexOf = (item: ListPopupItem) => popup.items.indexOf(item);
   return (
@@ -215,9 +257,11 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
       aria-label={popup.title}
       className={clsx(
         styles.listPopup,
+        popup.compact && styles.compactListPopup,
         hasPreview && styles.withPreview,
         previewBelow && styles.previewBelow,
         previewLeft && styles.previewLeft,
+        popup.anchor === "center" && styles.centeredList,
       )}
       style={popupSize}
     >
@@ -241,14 +285,19 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
         </div>
         <div ref={bodyRef} onKeyDown={onKeyDown} className={styles.listBody} style={{ height }}>
           <List
-            items={filtered}
-            getKey={(r) => r.item.id}
+            items={rows}
+            getKey={(row) => (row.kind === "section" ? row.key : row.item.id)}
+            isSection={isListSection}
+            sectionHeightOf={dividerHeight}
+            renderSection={(row) =>
+              row.kind === "section" && row.label ? <T>{row.label}</T> : <span className={styles.listDivider} />
+            }
             activeIndex={activeIndex}
             onActiveChange={setActive}
             hoverSelects
             autoFocus
             aria-label={popup.title}
-            onActivate={(r) => activate(r.item)}
+            onActivate={(row) => row.kind === "action" && activate(row.item)}
             empty={
               popup.busy ? (
                 <span className={styles.empty}>
@@ -260,7 +309,9 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
                 </span>
               )
             }
-            renderItem={({ item, match }) => {
+            renderItem={(row) => {
+              if (row.kind !== "action") return null;
+              const { item, match } = row;
               const n = popup.numbered && !query ? indexOf(item) + 1 : 0;
               return (
                 <div
@@ -270,8 +321,13 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
                   data-path={item.location?.path}
                   data-line={item.location?.line}
                 >
+                  {leadingDetailChars > 0 && (
+                    <span className={styles.leadingDetail} title={item.leadingDetail}>
+                      {item.leadingDetail}
+                    </span>
+                  )}
                   {popup.numbered && <span className={styles.mnemonic}>{n > 0 && n <= 9 ? n : ""}</span>}
-                  <ItemIcon item={item} />
+                  {showIcons && <ItemIcon item={item} />}
                   <HighlightedText className={styles.label} text={item.label} indices={match} tone="accent" />
                   {item.preview && (
                     <span className={styles.preview} title={item.preview}>
@@ -504,6 +560,8 @@ function DefinitionPopup({ popup }: { popup: Extract<LspPopup, { kind: "definiti
   const target = popup.targets[popup.index]!;
   const { location } = target;
   const many = popup.targets.length > 1;
+  const source = (loc: DefinitionTarget["location"]) => `${relativePath(root, loc.path)}:${loc.range.start.line + 1}`;
+  const targetIcon = (path: string) => fileIconName(basename(path), path);
   const open = () => {
     closePopup();
     void editorService().openFile(location.path, {
@@ -524,41 +582,76 @@ function DefinitionPopup({ popup }: { popup: Extract<LspPopup, { kind: "definiti
     }
   };
   return (
-    <Popup open anchor={popup.anchor} onClose={closePopup} aria-label="Definition" className={styles.defPopup}>
+    <Popup
+      open
+      anchor={popup.anchor}
+      onClose={closePopup}
+      aria-label={tx("Definition")}
+      className={styles.defPopup}
+      resizable="both"
+    >
       <div className={styles.defFrame} tabIndex={-1} data-autofocus onKeyDown={onKeyDown}>
         <div className={styles.defHeader}>
-          <Icon name={fileIconName(basename(location.path), location.path)} size={14} />
           {many ? (
             <Select
               variant="ghost"
+              className={styles.defTarget}
               aria-label="Definition"
               value={String(popup.index)}
               options={popup.targets.map((t, i) => ({
                 value: String(i),
                 label: t.name,
-                detail: `${basename(t.location.path)}:${t.location.range.start.line + 1}`,
+                verbatim: true,
+                icon: targetIcon(t.location.path),
+                detail: source(t.location),
               }))}
               onChange={(v) => select(Number(v))}
             />
           ) : (
-            <span className={styles.defFile}>{basename(location.path)}</span>
+            <div className={styles.defTarget}>
+              <Icon name={targetIcon(location.path)} size={14} />
+              <span className={styles.defName} title={target.name}>
+                {target.name}
+              </span>
+            </div>
           )}
-          <span className={styles.defPath}>
-            {relativePath(root, location.path)}:{location.range.start.line + 1}
+          <span className={styles.defPath} title={source(location)}>
+            {source(location)}
           </span>
-          <span className={styles.spacer} />
-          {many && (
-            <span className={styles.defCount}>
-              {popup.index + 1}/{popup.targets.length}
-            </span>
-          )}
-          <IconButton icon="edit" size="small" title="Edit Source" shortcut="F4" onClick={open} />
+          <div className={styles.defActions}>
+            {many && (
+              <>
+                <IconButton
+                  icon="chevron-left"
+                  size="small"
+                  title="Previous Definition"
+                  onClick={() => select(popup.index - 1)}
+                />
+                <span className={styles.defCount} aria-live="polite">
+                  {popup.index + 1}/{popup.targets.length}
+                </span>
+                <IconButton
+                  icon="chevron-right"
+                  size="small"
+                  title="Next Definition"
+                  onClick={() => select(popup.index + 1)}
+                />
+              </>
+            )}
+            <IconButton icon="edit" size="small" title="Edit Source" shortcut="F4" onClick={open} />
+          </div>
         </div>
-        <div className={clsx(popup.themeClasses, styles.docScope)}>
+        <div
+          className={clsx(popup.themeClasses, styles.defBody)}
+          style={popup.codeStyle}
+          tabIndex={0}
+          role="region"
+          aria-label={tx("Preview")}
+        >
           <DomContent
             key={popup.index}
-            className={clsx(styles.defBody, selectableText)}
-            build={() => renderCode(target.text, target.language, "cm-lsp-code")}
+            className={selectableText}
+            build={() => renderCode(target.text, target.language, styles.defCode)}
           />
         </div>
       </div>

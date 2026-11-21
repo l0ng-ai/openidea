@@ -4,10 +4,13 @@ import { DEFAULT_SSH_CONFIG } from "@/platform/remoteSettings";
 import { SUPPORTED_LOCALES } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { DEFAULT_SETTINGS, getAt, setAt, validateSettings } from "../model/schema";
+import { DEFAULT_PAGE } from "../model/staging";
+import { lastSettingsPage, rememberSettingsPage } from "../model/lastPage";
 import {
   applySettings,
   closeSettings,
   openSettings,
+  selectPage,
   pendingChanges,
   persistChanges,
   resetPage,
@@ -337,5 +340,51 @@ describe("literal map entry staging", () => {
     });
     stageMapEntry("a", "global", "plugins", ["example.helper", "a.b"], 1);
     expect(useSettingsDialog.getState().staged).toEqual({});
+  });
+});
+
+describe("reopening Settings", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    useProject.setState({ settings: structuredClone(DEFAULT_SETTINGS) as Settings, project: null });
+    useSettingsDialog.setState({ pageId: DEFAULT_PAGE, newProjects: false });
+  });
+
+  it("reopens on the page the last session left", () => {
+    openSettings();
+    selectPage("editor.general");
+    closeSettings();
+    // A new session starts from the default page; the remembered one has to win.
+    useSettingsDialog.setState({ pageId: DEFAULT_PAGE });
+    openSettings();
+    expect(useSettingsDialog.getState().pageId).toBe("editor.general");
+  });
+
+  it("remembers the page of a deep link that opens Settings directly", () => {
+    openSettings("tools.sshConfigurations#add");
+    expect(lastSettingsPage()).toBe("tools.sshConfigurations");
+    expect(useSettingsDialog.getState().focus).toBe("add");
+  });
+
+  it("keeps Settings for New Projects out of the remembered page", () => {
+    selectPage("keymap");
+    openSettings("languages.java", { newProjects: true });
+    selectPage("languages.python");
+    expect(lastSettingsPage()).toBe("keymap");
+    openSettings();
+    expect(useSettingsDialog.getState().pageId).toBe("keymap");
+  });
+
+  it("falls back to the first page when nothing was recorded", () => {
+    openSettings();
+    expect(useSettingsDialog.getState().pageId).toBe(DEFAULT_PAGE);
+  });
+
+  it("ignores a recorded value that is not a page id", () => {
+    rememberSettingsPage("editor.general");
+    localStorage.setItem("openidea.settings.lastPage.v1", "not a page!");
+    expect(lastSettingsPage()).toBeNull();
+    openSettings();
+    expect(useSettingsDialog.getState().pageId).toBe(DEFAULT_PAGE);
   });
 });

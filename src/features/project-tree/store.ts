@@ -46,7 +46,7 @@ import {
   type ProjectViewLead,
   type ProjectViewRootContribution,
 } from "@/workbench/contributions";
-import { ancestorsWithin, isSameOrInside, nameOf, type PackageKind } from "./paths";
+import { ancestorsWithin, isInside, isSameOrInside, nameOf, type PackageKind } from "./paths";
 
 export interface ViewOptions extends TreeOptions {
   /** Select the active editor's file in the tree (IDEA: Always Select Opened File). */
@@ -730,23 +730,29 @@ export function extraRootOf(path: string): string | null {
   return null;
 }
 
-/** Whether the current pane can show `path` (Select In switches to "Project" otherwise). */
-export function modeShows(path: string): boolean {
-  const { mode, root } = get();
-  if (!root) return false;
+/** Whether a pane can show `path`. */
+export function modeShows(path: string, mode = get().mode): boolean {
+  const state = get();
+  if (!state.root) return false;
   switch (mode) {
     case "unity":
-      return unityPathVisible(path, treeOptions(get()));
+      return !!state.unity && unityPathVisible(path, treeOptions({ ...state, mode }));
     case "project":
       return true;
     case "projectFiles":
-      return memberRootOf(path) !== null || (!get().members && isSameOrInside(path, root));
+      return memberRootOf(path) !== null || (!state.members && isSameOrInside(path, state.root));
     case "scratches":
       return projectViewRoots(useProjectViewRoots.getState().roots).some(
         (r) => r.scope === "scratches" && r.path !== undefined && isSameOrInside(path, r.path),
       );
-    default:
-      return currentModel().keyOfPath.has(path);
+    default: {
+      if (mode === state.mode) return currentModel().keyOfPath.has(path);
+      const pane = { ...state, mode };
+      const files = filesOf(pane);
+      if (files?.includes(path)) return true;
+      // Only a folder that contains a listed file needs a tree lookup.
+      return !!files?.some((file) => isInside(file, path)) && selectModel(pane).keyOfPath.has(path);
+    }
   }
 }
 

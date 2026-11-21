@@ -340,6 +340,7 @@ describe("quick definition popup", () => {
       ],
       index: 0,
       themeClasses: "",
+      codeStyle: { fontSize: "16px", lineHeight: "24px" },
     });
     render(<LspPopups />);
     const frame = () => screen.getByRole("dialog", { name: "Definition" }).firstElementChild as HTMLElement;

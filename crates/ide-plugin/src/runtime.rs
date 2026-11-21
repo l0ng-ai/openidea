@@ -652,6 +652,10 @@ pub trait HostApi: Send + Sync {
     fn plugin_dir(&self) -> Result<PathBuf, HostError> {
         Err(HostError::Failed("private plugin storage is unavailable".into()))
     }
+    /// The plugin's install / package directory (read-only for the guest).
+    fn install_dir(&self) -> Result<PathBuf, HostError> {
+        Err(HostError::Failed("plugin install directory is unavailable".into()))
+    }
     /// Replaces the text of a file whose real path the caller already checked:
     /// in one step, keeping its encoding and BOM (a new file is UTF-8). Refused
     /// while an editor holds unsaved changes for it.

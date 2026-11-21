@@ -4,7 +4,7 @@ import type { RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { useRemote } from "@/platform/remote";
 import { validateSettings } from "@/features/settings/model/schema";
-import { runServiceProvider } from "@/features/run/services";
+import { runServiceProvider, useAddedTypes } from "@/features/run/services";
 import { useRun } from "@/features/run/store";
 import { registerServiceProvider } from "@/workbench/contributions";
 import { ServicesTreeView } from "./ServicesTree";
@@ -41,6 +41,8 @@ beforeEach(() => {
     sessions: [],
   });
   localStorage.setItem("openidea.services.runTypes:/services", '["spring-boot","npm"]');
+  // The type list is cached per project root: start each case from the stored one.
+  useAddedTypes.setState({ root: null, types: [] });
   useServicesTree.setState({
     roots: {},
     selectedKey: null,
@@ -90,8 +92,45 @@ describe("service reordering integration", () => {
     expect(names()).toEqual(["Spring Boot", "Gateway", "Portal", "npm", "Worker", "Web", "Docker"]);
     select("Docker");
     expect(screen.queryByRole("button", { name: "Move Up" })).toBeNull();
+  });
+
+  it("moves a run type's group among the other groups", () => {
+    const { unmount } = render(<ServicesTreeView />);
     select("Spring Boot");
-    expect(screen.queryByRole("button", { name: "Move Up" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Move Up" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Move Down" }));
+    expect(names()).toEqual(["npm", "Web", "Worker", "Spring Boot", "Gateway", "Portal", "Docker"]);
+    expect(localStorage.getItem("openidea.services.runTypes:/services")).toBe('["npm","spring-boot"]');
+    unmount();
+    render(<ServicesTreeView />);
+    expect(names()).toEqual(["npm", "Web", "Worker", "Spring Boot", "Gateway", "Portal", "Docker"]);
+  });
+
+  it("drags a run type's group onto another group", () => {
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      return new DOMRect(0, Number(this.dataset.row ?? 0) * 24, 400, this.dataset.row === undefined ? 600 : 24);
+    });
+    render(<ServicesTreeView />);
+    const source = within(tree()).getByText("npm").closest('[role="treeitem"]')!;
+    const target = within(tree()).getByText("Spring Boot").closest('[role="treeitem"]')!;
+    Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => target });
+    const pointer = (el: Element | Window, type: string, y: number) =>
+      fireEvent(
+        el,
+        new MouseEvent(type, {
+          bubbles: true,
+          button: 0,
+          buttons: type === "pointerup" ? 0 : 1,
+          clientX: 70,
+          clientY: y,
+        }),
+      );
+    pointer(source, "pointerdown", 60);
+    pointer(window, "pointermove", 10);
+    pointer(window, "pointerup", 10);
+    expect(localStorage.getItem("openidea.services.runTypes:/services")).toBe('["npm","spring-boot"]');
+    expect(names()).toEqual(["npm", "Web", "Worker", "Spring Boot", "Gateway", "Portal", "Docker"]);
+    vi.restoreAllMocks();
   });
 
   it("preserves multi-selection without offering single-row moves", () => {

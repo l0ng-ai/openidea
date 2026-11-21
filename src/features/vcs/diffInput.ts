@@ -14,14 +14,14 @@ export type DiffSide =
   /** File content at a git revision (`HEAD`, `:0` = index, a commit id, `<id>^`). */
   | { type: "rev"; rev: string; path?: string; label?: string }
   /** The working file (unsaved editor buffer included). */
-  | { type: "worktree"; label?: string }
+  | { type: "worktree"; label?: string; labelDetail?: string }
   /** Another file (Compare With…, Compare Files); editable like the working file. */
   | { type: "file"; path: string; label?: string }
   /**
    * `absent`: the file doesn't exist on this side (added / deleted), as IDEA's EmptyContent.
    * `editable`: a scratch text the user edits in the diff (Open Blank Diff Window).
    */
-  | { type: "text"; text: string; label: string; absent?: boolean; editable?: boolean }
+  | { type: "text"; text: string; label: string; labelDetail?: string; absent?: boolean; editable?: boolean }
   /** A Local History revision. */
   | { type: "history"; id: string; label: string };
 

@@ -15,8 +15,8 @@ import {
   type ProxyModeValid,
   type ProxySettingsValid,
 } from "@/platform/proxySettings";
-import { Button, Checkbox, Input, Popup, T } from "@/ui";
-import { NumberInput, Row, SearchLabel } from "../components/Form";
+import { Button, Checkbox, Input, Popup, Radio, T } from "@/ui";
+import { FormGroup, NumberInput, Row, SearchLabel } from "../components/Form";
 import { usePageContext, useSetting } from "../components/context";
 import { stage } from "../model/staging";
 import type { PageSpec } from "./spec";
@@ -47,27 +47,6 @@ function useProxy(): [ProxySettingsValid, (patch: Partial<ProxySettingsValid>) =
   return [proxy, update];
 }
 
-function Radio({
-  name,
-  checked,
-  onSelect,
-  label,
-  disabled,
-}: {
-  name: string;
-  checked: boolean;
-  onSelect: () => void;
-  label: string;
-  disabled?: boolean;
-}) {
-  return (
-    <label className={clsx(styles.radio, disabled && styles.disabled)}>
-      <input type="radio" name={name} checked={checked} disabled={disabled} onChange={onSelect} />
-      <SearchLabel text={label} />
-    </label>
-  );
-}
-
 function ProxyOptions() {
   const [proxy, update] = useProxy();
   const name = useId();
@@ -88,10 +67,11 @@ function ProxyOptions() {
         {MODES.map((m) => (
           <div key={m.value}>
             <Radio
+              className={styles.radioRow}
               name={name}
               checked={proxy.mode === m.value}
-              onSelect={() => update({ mode: m.value })}
-              label={m.label}
+              onChange={() => update({ mode: m.value })}
+              label={<SearchLabel text={m.label} />}
             />
             {m.hint && (
               <div className={styles.hint}>
@@ -106,52 +86,50 @@ function ProxyOptions() {
           {KINDS.map((k) => (
             <Radio
               key={k.value}
+              className={styles.radioRow}
               name={kindName}
               checked={proxy.kind === k.value}
               disabled={!manual}
-              onSelect={() => update(withProxyKind(proxy, k.value))}
-              label={k.label}
+              onChange={() => update(withProxyKind(proxy, k.value))}
+              label={<SearchLabel text={k.label} />}
             />
           ))}
         </div>
-        <div className={styles.hostRow}>
+        <FormGroup>
           <Row label="Host name" htmlFor={ids.host}>
             <Input
               id={ids.host}
-              className={styles.host}
+              className={styles.field}
               disabled={!manual}
               value={proxy.host}
               onChange={(e) => update({ host: e.target.value })}
             />
           </Row>
           <Row label="Port number" htmlFor={ids.port}>
-            {manual ? (
-              <NumberInput
-                id={ids.port}
-                value={proxy.port}
-                onChange={(port) => update({ port })}
-                {...PROXY_PORT_LIMITS}
-                integer
-                aria-label="Port number"
-              />
-            ) : (
-              <Input id={ids.port} className={styles.port} value={String(proxy.port)} disabled readOnly />
-            )}
+            <NumberInput
+              id={ids.port}
+              value={proxy.port}
+              onChange={(port) => update({ port })}
+              {...PROXY_PORT_LIMITS}
+              integer
+              disabled={!manual}
+              aria-label="Port number"
+            />
           </Row>
-        </div>
-        <Row
-          label="No proxy for"
-          htmlFor={ids.noProxy}
-          hint="Comma-separated host names; * matches any characters, e.g. *.example.com, 192.168.*"
-        >
-          <Input
-            id={ids.noProxy}
-            className={styles.wide}
-            disabled={!manual}
-            value={proxy.noProxy}
-            onChange={(e) => update({ noProxy: e.target.value })}
-          />
-        </Row>
+          <Row
+            label="No proxy for"
+            htmlFor={ids.noProxy}
+            hint="Comma-separated host names; * matches any characters, e.g. *.example.com, 192.168.*"
+          >
+            <Input
+              id={ids.noProxy}
+              className={styles.field}
+              disabled={!manual}
+              value={proxy.noProxy}
+              onChange={(e) => update({ noProxy: e.target.value })}
+            />
+          </Row>
+        </FormGroup>
         <div className={styles.toggle}>
           <Checkbox
             checked={proxy.authenticate}
@@ -160,11 +138,11 @@ function ProxyOptions() {
             label={<SearchLabel text="Proxy authentication" />}
           />
         </div>
-        <div className={styles.auth}>
+        <FormGroup indented>
           <Row label="Login" htmlFor={ids.login}>
             <Input
               id={ids.login}
-              className={styles.host}
+              className={styles.field}
               disabled={!auth}
               value={proxy.login}
               onChange={(e) => update({ login: e.target.value })}
@@ -174,19 +152,19 @@ function ProxyOptions() {
             <Input
               id={ids.password}
               type="password"
-              className={styles.host}
+              className={styles.field}
               disabled={!auth}
               value={proxy.password}
               onChange={(e) => update({ password: e.target.value })}
             />
           </Row>
-        </div>
-        {problem && (
-          <div className={styles.error} role="alert">
-            <T>{problem}</T>
-          </div>
-        )}
+        </FormGroup>
       </div>
+      {problem && (
+        <div className={styles.error} role="alert">
+          <T>{problem}</T>
+        </div>
+      )}
       <CheckConnection proxy={proxy} />
     </div>
   );
