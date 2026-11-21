@@ -8,8 +8,11 @@
 .group {
   flex: 1;
 }
-.group:has(> :global([data-separator="active"])) * {
+.group:has(> :global([data-separator="active"][aria-orientation="vertical"])) * {
   cursor: col-resize !important;
+}
+.group:has(> :global([data-separator="active"][aria-orientation="horizontal"])) * {
+  cursor: row-resize !important;
 }
 .editor {
   flex: 1;

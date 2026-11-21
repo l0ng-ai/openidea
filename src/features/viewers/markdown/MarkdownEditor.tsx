@@ -1,6 +1,6 @@
 /**
- * Text editor wrapper of Markdown files: the editor, a live preview, or both
- * side by side, switched from the tab strip or a floating toolbar. The
+ * Text editor wrapper of Markdown files: the editor, a live preview, or both,
+ * switched from the tab strip or a floating toolbar. The
  * preview follows the editor's scroll position in the split layout; Preview
  * only, it follows navigation in the hidden editor and reports the line on
  * screen (Structure's Autoscroll from Source).
@@ -20,7 +20,7 @@ import {
 import clsx from "clsx";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { editorPrefs, useEditorPrefs } from "@/platform/editorSettings";
-import { useMarkdownPreviewFontSize } from "@/platform/languageSettings";
+import { useMarkdownPreviewFontSize, useMarkdownPreviewLayout } from "@/platform/languageSettings";
 import { maybeEditorService, registerFontZoomSurface } from "@/workbench/contributions";
 import { editorsFor, setShownLine } from "@/editor/api";
 import { highlightInto } from "@/editor/lsp/markdown";
@@ -91,6 +91,7 @@ function attachImagePanZoom(img: HTMLImageElement): void {
 }
 
 const SPLIT_STORAGE_KEY = "openidea.markdown.split";
+const DEFAULT_SPLIT_LAYOUT = { editor: 50, preview: 50 };
 
 export function MarkdownEditor({
   path,
@@ -104,6 +105,7 @@ export function MarkdownEditor({
   actionsInTabs?: boolean;
 }) {
   const mode = useMarkdownModes((s) => modeOf(s, tabId));
+  const stacked = useMarkdownPreviewLayout() === "stacked";
   useEffect(() => pinMarkdownMode(tabId), [tabId]);
   const ref = useRef<HTMLDivElement>(null);
   const editorRef = useRef<HTMLDivElement>(null);
@@ -128,13 +130,15 @@ export function MarkdownEditor({
   }, [path, tabId]);
 
   const splitBounds = mode === "split" ? { minSize: "10%", maxSize: "90%" } : {};
+  const storageKey = stacked ? `${SPLIT_STORAGE_KEY}.stacked` : SPLIT_STORAGE_KEY;
   return (
     <div ref={ref} className={clsx(styles.split, styles[`mode-${mode}`])}>
       <SplitGroup
-        orientation="horizontal"
+        orientation={stacked ? "vertical" : "horizontal"}
         disableCursor
         className={styles.group}
-        storageKey={mode === "split" ? SPLIT_STORAGE_KEY : undefined}
+        storageKey={mode === "split" ? storageKey : undefined}
+        defaultLayout={mode === "split" ? DEFAULT_SPLIT_LAYOUT : undefined}
       >
         {/* Hidden but mounted in Preview only (its caret drives the preview). Disabled, it leaves the group a
             single resizable panel: two enabled panels without a separator get an implicit resize region between
