@@ -514,11 +514,20 @@ function moveStatement(up: boolean): Command {
       if (plan === "noop") return true;
       if (plan !== "line") {
         view.dispatch(plan.spec);
+        recordSelectionAfter(view);
         return true;
       }
     }
     return up ? moveLineUp(view) : moveLineDown(view);
   };
+}
+
+/**
+ * Records the caret an edit command set as the selection after its edit, which Redo restores;
+ * without it Redo maps the caret from before the edit through it (elsewhere after a move).
+ */
+export function recordSelectionAfter(view: EditorView): void {
+  view.dispatch({ selection: view.state.selection });
 }
 
 export const moveStatementUp = moveStatement(true);
