@@ -426,9 +426,12 @@ impl PendingEvents {
                             PathChange::Rename => Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::Any))),
                             PathChange::Change(Change::Created) => Event::new(EventKind::Create(CreateKind::File)),
                             PathChange::Change(Change::Removed) => Event::new(EventKind::Remove(RemoveKind::File)),
-                            PathChange::Change(Change::Modified | Change::Vcs) => {
+                            PathChange::Change(Change::Modified) => {
                                 Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
                             }
+                            // Any kind classifies a VCS path as `Vcs` again, except a modified
+                            // directory, which the batch drops as a lock-file touch.
+                            PathChange::Change(Change::Vcs) => Event::new(EventKind::Create(CreateKind::Any)),
                             PathChange::Change(Change::Transient) => {
                                 return vec![
                                     Event::new(EventKind::Create(CreateKind::File)).add_path(path.clone()),
