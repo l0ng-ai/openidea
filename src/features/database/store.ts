@@ -17,6 +17,7 @@ import {
   type DbCompletion,
   type DbDatabases,
   type DbDriver,
+  type DbIntrospection_Deserialize,
   type ExecutionEvent,
   type DbObjectKind,
   type DbPlanNode,
@@ -25,6 +26,7 @@ import {
   type DbTableDetails,
   type DbTableInfo,
   type DbTableKind,
+  type DbVisibilityChange,
   type RequestId,
   type SqlStatement,
 } from "@/platform/ipc";
@@ -346,6 +348,30 @@ function sourceMutation(id: string): () => boolean {
   return () => project() && sourceMutations.get(id) === intent;
 }
 
+/** The cached names come from the server before the visibility rules are applied. */
+function sourceMetadataKey(source: DataSource | undefined): string | undefined {
+  if (!source) return undefined;
+  const { introspection, ...connection } = source;
+  const metadata: DbIntrospection_Deserialize = {
+    ...introspection,
+    showSystem: !!introspection?.showSystem,
+    showTemplates: !!introspection?.showTemplates,
+  };
+  delete metadata.allDatabases;
+  delete metadata.databases;
+  delete metadata.allSchemas;
+  delete metadata.schemas;
+  delete metadata.schemasByDatabase;
+  delete metadata.objectFilter;
+  return JSON.stringify([connection, metadata]);
+}
+
+function jdbcSchemaRuleKey(source: DataSource): string | undefined {
+  const rules = source.introspection;
+  if (rules?.allSchemas !== false) return undefined;
+  return JSON.stringify([...new Set(rules.schemas?.map((pattern) => pattern.trim()).filter(Boolean))].sort());
+}
+
 export async function loadSources(): Promise<void> {
   // Closing the project resets `loaded` while its SQL consoles are still mounted.
   if (!useProject.getState().project) return;
@@ -356,8 +382,20 @@ export async function loadSources(): Promise<void> {
   try {
     const [sources, connected] = await Promise.all([call(commands.dbSources()), call(commands.dbConnected())]);
     if (request !== sourcesRequest || !current()) return;
+    const staleCompletionSources = new Set<string>();
     for (const old of useDatabase.getState().sources) {
-      if (JSON.stringify(old) !== JSON.stringify(sources.find((s) => s.id === old.id))) forget(old.id ?? "");
+      const next = sources.find((s) => s.id === old.id);
+      const id = old.id ?? "";
+      if (sourceMetadataKey(old) !== sourceMetadataKey(next)) forget(id);
+      else if (old.driver === "jdbc" && next && jdbcSchemaRuleKey(old) !== jdbcSchemaRuleKey(next)) {
+        staleCompletionSources.add(id);
+      }
+    }
+    if (staleCompletionSources.size) {
+      // JDBC completion uses the source's schema rules. Raw names and live sessions do not.
+      for (const target of completionLoads.keys()) {
+        if (staleCompletionSources.has(splitTarget(target).id)) completionLoads.delete(target);
+      }
     }
     useDatabase.setState((s) => {
       const server = new Set(connected);
@@ -370,7 +408,12 @@ export async function loadSources(): Promise<void> {
           sourceIntents.get(sourceId) !== sourceConnectionIntents.get(sourceId);
         return changed ? s.connected.has(target) : server.has(target);
       });
-      return { sources, connected: new Set(live), loaded: true };
+      const completion = staleCompletionSources.size
+        ? Object.fromEntries(
+            Object.entries(s.completion).filter(([target]) => !staleCompletionSources.has(splitTarget(target).id)),
+          )
+        : s.completion;
+      return { sources, connected: new Set(live), completion, loaded: true };
     });
   } catch (e) {
     if (request !== sourcesRequest || !current()) return;
@@ -410,11 +453,15 @@ export async function saveSource(
 ): Promise<void> {
   const id = source.id ?? "";
   const st = useDatabase.getState();
+  const preserve =
+    password === undefined &&
+    sshSecret === undefined &&
+    sourceMetadataKey(st.sources.find((s) => s.id === id)) === sourceMetadataKey(source);
   const loaded = id in st.databases || Object.keys(st.schemas).some((t) => splitTarget(t).id === id);
   // Taken before anything is forgotten: what the tree had expanded under this source.
-  const levels = loadedLevels(id);
+  const levels = !preserve && loaded ? loadedLevels(id) : undefined;
   const connection = connectionIntents.get(id);
-  forget(id);
+  if (!preserve) forget(id);
   const current = sourceMutation(id);
   const sources = useDatabase.getState().sources;
   const next = sources.some((s) => s.id === source.id)
@@ -431,7 +478,21 @@ export async function saveSource(
   // expanded nodes don't stay on Loading.
   await loadSources();
   if (!current() || !sourceById(id)) return;
-  if (loaded && connectionIntents.get(id) === connection) await refresh(id, levels);
+  if (levels && connectionIntents.get(id) === connection) await refresh(id, levels);
+}
+
+export async function saveSourceVisibility(id: string, available: string[], change: DbVisibilityChange): Promise<void> {
+  const current = projectRequest();
+  try {
+    await call(commands.dbSaveSourceVisibility(id, available, change));
+  } catch (e) {
+    // This command is deliberately separate: older hosts reject it before writing or disconnecting.
+    if (message(e).includes("command db_save_source_visibility is not available remotely")) {
+      throw new Error(tx("Update the remote OpenIDEA server to edit visibility from the tree."), { cause: e });
+    }
+    throw e;
+  }
+  if (current()) await loadSources();
 }
 
 /** Copy/Paste › Duplicate: a copy of data source `id` named `<name> [2]` (its password is not copied). */
@@ -909,7 +970,7 @@ export function loadCompletion(id: string): Promise<DbCompletion | null> {
     const current = databaseRequest(id);
     const promise = call(commands.dbCompletion(id))
       .then((model) => {
-        if (!current()) return null;
+        if (!current() || completionLoads.get(id)?.promise !== promise) return null;
         useDatabase.setState((s) => ({ completion: { ...s.completion, [id]: model } }));
         return model;
       })

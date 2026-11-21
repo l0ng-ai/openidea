@@ -288,6 +288,8 @@ pub struct SmartKeysSettings {
     pub pair_quotes: bool,
     pub surround_selection: bool,
     pub tab_out_of_pair: bool,
+    /// A `;` typed before the closing `)` of a statement goes to the end of the statement.
+    pub semicolon_at_statement_end: bool,
     /// Simultaneous `<tag></tag>` editing: renaming a tag renames its matching tag.
     pub simultaneous_tag_editing: bool,
     /// Reformat on paste: `none` | `indentBlock` | `indentEachLine`.
@@ -309,6 +311,7 @@ impl Default for SmartKeysSettings {
             pair_quotes: true,
             surround_selection: true,
             tab_out_of_pair: true,
+            semicolon_at_statement_end: true,
             simultaneous_tag_editing: true,
             reformat_on_paste: "indentEachLine".into(),
             escape_on_paste: true,
@@ -435,6 +438,9 @@ pub struct TextAttributesOverride {
     pub effect: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effect_color: Option<String>,
+    /// IDEA's `ERROR_STRIPE_COLOR`: the diff overview-lane marker of a change type.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_stripe_color: Option<String>,
 }
 
 /// Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit).

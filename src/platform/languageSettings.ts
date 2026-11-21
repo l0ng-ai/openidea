@@ -3,6 +3,7 @@
  * shape, defaults and normalisation (mirrors `ide-core::settings`).
  */
 import { useMemo } from "react";
+import type { MarkdownPreviewLayout } from "@/bindings";
 import { useProject } from "./project";
 
 export interface GoBuildTags {
@@ -239,6 +240,7 @@ export interface LanguagesValid {
     };
   };
   markdown: {
+    previewLayout: MarkdownPreviewLayout;
     /** Preview font size in px; `null` follows the editor font size. */
     previewFontSize: number | null;
     /** Run icons on shell code blocks and command lines. */
@@ -335,7 +337,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
       updateSnapshots: false,
     },
   },
-  markdown: { previewFontSize: null, runCommands: true, commandDirectory: null },
+  markdown: { previewLayout: "sideBySide", previewFontSize: null, runCommands: true, commandDirectory: null },
 };
 
 export const DEFAULT_PROJECT_STRUCTURE: ProjectStructureValid = {
@@ -362,6 +364,8 @@ const text = (v: unknown, d: string) => (typeof v === "string" ? v.trim() : d);
 const bool = (v: unknown, d: boolean) => (typeof v === "boolean" ? v : d);
 const oneOf = <T extends string>(v: unknown, allowed: readonly T[], d: T): T =>
   typeof v === "string" && (allowed as readonly string[]).includes(v) ? (v as T) : d;
+const markdownPreviewLayout = (v: unknown): MarkdownPreviewLayout =>
+  oneOf(v, ["sideBySide", "stacked"], DEFAULT_LANGUAGES.markdown.previewLayout);
 
 /** Project-relative folder: `/`-separated, no leading `./` or `/`, no trailing `/`. */
 export function normalizeFolder(path: string): string {
@@ -517,6 +521,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
       },
     },
     markdown: {
+      previewLayout: markdownPreviewLayout(markdown.previewLayout),
       previewFontSize: previewSize(markdown.previewFontSize),
       runCommands: bool(markdown.runCommands, d.markdown.runCommands),
       commandDirectory:
@@ -552,6 +557,10 @@ export function markdownCommandSettings(
 /** Reactive `markdownPreviewFontSize` of the open project. */
 export function useMarkdownPreviewFontSize(): number {
   return useProject((s) => markdownPreviewFontSize(s.settings));
+}
+
+export function useMarkdownPreviewLayout(): MarkdownPreviewLayout {
+  return useProject((s) => markdownPreviewLayout(s.settings?.languages?.markdown?.previewLayout));
 }
 
 function validateModuleDependencies(raw: unknown): ModuleDependencyValid[] {

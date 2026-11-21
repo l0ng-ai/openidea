@@ -264,8 +264,15 @@
   border-bottom: 1px solid var(--border);
 }
 .testToolbar {
-  gap: var(--space-0-5);
+  gap: var(--space-1);
   padding: var(--space-0-5) var(--space-1);
+}
+
+.testFilters {
+  display: flex;
+  gap: var(--space-0-5);
+  padding-inline-end: var(--space-1);
+  border-inline-end: 1px solid var(--border);
 }
 .testStatusBar {
   gap: var(--space-0-5) var(--space-2);

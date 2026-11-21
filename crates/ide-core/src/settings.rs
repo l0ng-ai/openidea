@@ -1254,6 +1254,7 @@ pub struct ArduinoSettings {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct MarkdownSettings {
+    pub preview_layout: MarkdownPreviewLayout,
     /// Preview (and notebook Markdown cell) font size in px; unset follows the editor font size.
     pub preview_font_size: Option<u32>,
     /// "Detect commands that can be run right from Markdown files": gutter run icons on
@@ -1265,8 +1266,21 @@ pub struct MarkdownSettings {
 
 impl Default for MarkdownSettings {
     fn default() -> Self {
-        Self { preview_font_size: None, run_commands: true, command_directory: None }
+        Self {
+            preview_layout: MarkdownPreviewLayout::default(),
+            preview_font_size: None,
+            run_commands: true,
+            command_directory: None,
+        }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum MarkdownPreviewLayout {
+    #[default]
+    SideBySide,
+    Stacked,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -1887,6 +1901,20 @@ mod tests {
                 assert_eq!(serde_json::from_value::<Settings>(json).unwrap().general, settings.general);
             }
         }
+    }
+
+    #[test]
+    fn markdown_preview_layout_defaults_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{"languages":{"markdown":{"previewFontSize":16}}}"#).unwrap();
+        assert_eq!(old.languages.markdown.preview_layout, MarkdownPreviewLayout::SideBySide);
+        assert_eq!(old.languages.markdown.preview_font_size, Some(16));
+
+        let stacked: Settings =
+            serde_json::from_str(r#"{"languages":{"markdown":{"previewLayout":"stacked"}}}"#).unwrap();
+        assert_eq!(stacked.languages.markdown.preview_layout, MarkdownPreviewLayout::Stacked);
+        let saved = serde_json::to_value(&stacked).unwrap();
+        assert_eq!(saved["languages"]["markdown"]["previewLayout"], "stacked");
+        assert_eq!(serde_json::from_value::<Settings>(saved).unwrap().languages.markdown, stacked.languages.markdown);
     }
 
     #[test]

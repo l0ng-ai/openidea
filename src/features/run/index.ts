@@ -768,6 +768,15 @@ export function activate(): () => void {
         run: () => testTree.exportResults?.(),
       },
       {
+        id: "run.toggleTestDurations",
+        title: "Show Test Durations",
+        category: "Run",
+        when: "projectOpen",
+        enabled: () => testTree.toggleDurations !== null,
+        toggled: () => testTree.showDurations === true,
+        run: () => testTree.toggleDurations?.(),
+      },
+      {
         id: "run.reloadConfigs",
         title: "Reload Run Configurations",
         category: "Run",

@@ -13,6 +13,8 @@ export interface TextAttributesOverride {
   italic?: boolean;
   effect?: "underline" | "wave" | "strikeout" | "none";
   effectColor?: string;
+  /** IDEA's ERROR_STRIPE_COLOR: the diff overview-lane marker of a change type. */
+  errorStripeColor?: string;
 }
 
 export interface CustomColorScheme {
@@ -176,6 +178,7 @@ export const EDITOR_EXTRA_DEFAULTS = {
     pairQuotes: true,
     surroundSelection: true,
     tabOutOfPair: true,
+    semicolonAtStatementEnd: true,
     simultaneousTagEditing: true,
     reformatOnPaste: "indentEachLine",
     escapeOnPaste: true,

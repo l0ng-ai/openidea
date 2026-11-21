@@ -3,13 +3,11 @@
  * Global, and Agent-Native CLI MCP servers, lets the user toggle servers for this session only,
  * reset session overrides, or jump to Settings › Agents › External MCP Servers.
  */
-import clsx from "clsx";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import type { McpExternalSource, McpServer } from "@/bindings";
-import { executeAction } from "@/platform/actions";
 import { formatMessage, useTx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
-import { Icon, IconButton, Popup, SearchField, T, Toggle } from "@/ui";
+import { T } from "@/ui";
 import {
   IDE_MCP_SETTINGS_PAGE,
   defaultMcpBackend,
@@ -23,7 +21,16 @@ import {
   type SessionMcpItem,
 } from "./mcpModel";
 import { MCP_PAGE } from "./model";
-import styles from "./McpPicker.module.css";
+import {
+  PickerEmpty,
+  PickerGroupLabel,
+  PickerInlineLink,
+  PickerPill,
+  PickerRow,
+  PickerSessionPill,
+  PickerToggle,
+  SessionPicker,
+} from "./SessionPicker";
 
 export interface McpPickerProps {
   provider: string;
@@ -66,59 +73,14 @@ export function McpPicker({
   const sources = testData?.sources ?? catalogSources;
   const ideMcpEnabled = testData?.ideMcpEnabled ?? projectIdeMcp;
 
-  const [open, setOpen] = useState(false);
-  const [seenOpenRequest, setSeenOpenRequest] = useState(openRequest);
-  const [query, setQuery] = useState("");
   const [importingKey, setImportingKey] = useState<string | null>(null);
-  const anchor = useRef<HTMLElement | null>(null);
-  const setAnchor = (el: HTMLElement | null) => {
-    anchor.current = el;
-  };
-
-  if (openRequest !== seenOpenRequest) {
-    setSeenOpenRequest(openRequest);
-    if (openRequest > 0 && !disabled) setOpen(true);
-  }
-
-  useEffect(() => {
-    if (openRequest > 0 && !disabled && !testData) {
-      void refreshMcpCatalog();
-    }
-  }, [openRequest, disabled, testData]);
-
-  const toggleOpen = () => {
-    const next = !open;
-    if (next && !testData) void refreshMcpCatalog();
-    if (!next) setQuery("");
-    setOpen(next);
-  };
 
   const resolved = useMemo(
     () => resolveSessionMcp(servers, sources, ideMcpEnabled, provider, overrides ?? {}),
     [servers, sources, ideMcpEnabled, provider, overrides],
   );
 
-  const q = query.trim().toLowerCase();
-  const matchesQuery = (name: string, detail?: string) =>
-    !q || name.toLowerCase().includes(q) || (detail ?? "").toLowerCase().includes(q);
-
-  const showIde = matchesQuery(resolved.ide.name, "openidea ide");
-  const filteredWorkspace = resolved.workspace.filter((i) =>
-    matchesQuery(i.name, i.server?.command ?? i.server?.url ?? undefined),
-  );
-  const filteredUser = resolved.user.filter((i) =>
-    matchesQuery(i.name, i.server?.command ?? i.server?.url ?? undefined),
-  );
-  const filteredNative = resolved.nativeCli.filter((i) => matchesQuery(i.name, i.sourceLabel));
-
   const totalRows = 1 + resolved.workspace.length + resolved.user.length + resolved.nativeCli.length;
-
-  const countLabel =
-    resolved.totalCount === 0
-      ? "0"
-      : resolved.activeCount === resolved.totalCount
-        ? String(resolved.activeCount)
-        : `${resolved.activeCount}/${resolved.totalCount}`;
 
   const handleToggleItem = (item: Pick<SessionMcpItem, "name" | "defaultEnabled">, nextEnabled: boolean) => {
     onChange(nextSessionOverrides(overrides, item, nextEnabled));
@@ -139,234 +101,152 @@ export function McpPicker({
   };
 
   return (
-    <>
-      {hideTrigger ? (
-        // Pinned to the composer's bottom-right corner: the popover opens under the box, like its other pickers.
-        <span ref={setAnchor} className={styles.hiddenAnchor} aria-hidden />
-      ) : (
-        <button
-          ref={setAnchor}
-          type="button"
-          disabled={disabled}
-          className={styles.trigger}
-          title={
-            resolved.overrideCount > 0
-              ? formatMessage(tx("MCP servers ({active}/{total} active · {overrides} session overrides)"), {
-                  active: resolved.activeCount,
-                  total: resolved.totalCount,
-                  overrides: resolved.overrideCount,
-                })
-              : formatMessage(tx("MCP servers ({active}/{total} active)"), {
-                  active: resolved.activeCount,
-                  total: resolved.totalCount,
-                })
-          }
-          aria-label={tx("MCP servers")}
-          aria-haspopup="dialog"
-          aria-expanded={open}
-          onClick={toggleOpen}
-        >
-          <Icon name="plugin" size={13} />
-          <span className={styles.triggerLabel}>MCP</span>
-          <span className={styles.triggerCount}>{countLabel}</span>
-          {resolved.overrideCount > 0 && <span className={styles.overrideDot} aria-hidden />}
-        </button>
-      )}
+    <SessionPicker
+      icon="plugin"
+      brand="MCP"
+      triggerTitles={{
+        plain: tx("MCP servers ({active}/{total} active)"),
+        withOverrides: tx("MCP servers ({active}/{total} active · {overrides} session overrides)"),
+      }}
+      triggerAriaLabel={tx("MCP servers")}
+      popupTitle={tx("Session MCP Servers")}
+      settingsTitle={tx("External MCP Servers…")}
+      settingsPage={MCP_PAGE}
+      counts={{ active: resolved.activeCount, total: resolved.totalCount, overrides: resolved.overrideCount }}
+      search={{ placeholder: tx("Filter MCP servers…"), ariaLabel: tx("Filter MCP servers"), shown: totalRows > 5 }}
+      disabled={disabled}
+      busy={busy}
+      openRequest={openRequest}
+      hideTrigger={hideTrigger}
+      refresh={testData ? undefined : () => void refreshMcpCatalog()}
+      onReset={() => onChange({})}
+    >
+      {(query, { openSettings }) => {
+        const q = query.trim().toLowerCase();
+        const matchesQuery = (name: string, detail?: string) =>
+          !q || name.toLowerCase().includes(q) || (detail ?? "").toLowerCase().includes(q);
+        const serverDetail = (i: SessionMcpItem) => i.server?.command ?? i.server?.url ?? undefined;
 
-      <Popup
-        open={open}
-        anchor={anchor}
-        placement={hideTrigger ? "bottom-end" : "top-start"}
-        offset={6}
-        onClose={() => {
-          setOpen(false);
-          setQuery("");
-        }}
-        aria-label={tx("Session MCP Servers")}
-        className={styles.popup}
-      >
-        <div className={styles.header}>
-          <span className={styles.title}>
-            <T>Session MCP Servers</T>
-          </span>
-          <div className={styles.headerActions}>
-            {resolved.overrideCount > 0 && (
-              <button type="button" className={styles.resetBtn} onClick={() => onChange({})}>
-                <T>Reset</T>
-              </button>
-            )}
-            <IconButton
-              icon="settings"
-              size="small"
-              title={tx("External MCP Servers…")}
-              aria-label={tx("External MCP Servers…")}
-              onClick={() => {
-                setOpen(false);
-                void executeAction("file.settings", MCP_PAGE);
-              }}
-            />
-          </div>
-        </div>
+        const showIde = matchesQuery(resolved.ide.name, "openidea ide");
+        const filteredWorkspace = resolved.workspace.filter((i) => matchesQuery(i.name, serverDetail(i)));
+        const filteredUser = resolved.user.filter((i) => matchesQuery(i.name, serverDetail(i)));
+        const filteredNative = resolved.nativeCli.filter((i) => matchesQuery(i.name, i.sourceLabel));
 
-        {totalRows > 5 && (
-          <div className={styles.searchWrap}>
-            <SearchField
-              value={query}
-              onChange={setQuery}
-              placeholder={tx("Filter MCP servers…")}
-              aria-label={tx("Filter MCP servers")}
-            />
-          </div>
-        )}
-
-        <div className={styles.list}>
-          {showIde && (
-            <>
-              <div className={styles.groupLabel}>
-                <T>IDE</T>
-              </div>
-              <div className={styles.row}>
-                <div className={styles.rowInfo}>
-                  <div className={styles.rowTitle}>
-                    <span className={styles.name}>openidea</span>
-                    {resolved.ide.overridden && (
-                      <span className={clsx(styles.pill, styles.pillSession)}>
-                        <T>Session</T>
-                      </span>
-                    )}
-                  </div>
-                  <span className={styles.sub}>
-                    <T>Built-in IDE tools</T>
-                  </span>
-                </div>
-                <div className={styles.rowControls}>
-                  {resolved.ide.lockedReason === "ideDisabled" ? (
-                    <button
-                      type="button"
-                      className={styles.inlineLink}
-                      onClick={() => {
-                        setOpen(false);
-                        void executeAction("file.settings", IDE_MCP_SETTINGS_PAGE);
-                      }}
-                    >
-                      <T>Enable in Settings</T>
-                    </button>
-                  ) : (
-                    <>
-                      <Toggle
-                        checked={resolved.ide.enabled}
-                        aria-label={tx("Enable openidea for this session")}
+        return (
+          <>
+            {showIde && (
+              <>
+                <PickerGroupLabel>
+                  <T>IDE</T>
+                </PickerGroupLabel>
+                <PickerRow
+                  name="openidea"
+                  pills={resolved.ide.overridden && <PickerSessionPill />}
+                  sub={<T>Built-in IDE tools</T>}
+                  controls={
+                    resolved.ide.lockedReason === "ideDisabled" ? (
+                      <PickerInlineLink onClick={() => openSettings(IDE_MCP_SETTINGS_PAGE)}>
+                        <T>Enable in Settings</T>
+                      </PickerInlineLink>
+                    ) : (
+                      <PickerToggle
+                        enabled={resolved.ide.enabled}
+                        ariaLabel={tx("Enable openidea for this session")}
                         onChange={(on) => handleToggleItem(resolved.ide, on)}
                       />
-                      <span className={clsx(styles.dot, resolved.ide.enabled && styles.dotOn)} aria-hidden />
-                    </>
-                  )}
-                </div>
-              </div>
-            </>
-          )}
-
-          {filteredWorkspace.length > 0 && (
-            <>
-              <div className={styles.groupLabel}>
-                <T>Project</T>
-              </div>
-              {filteredWorkspace.map((item) => (
-                <SessionServerRow
-                  key={`ws:${item.name}`}
-                  item={item}
-                  onToggle={(on) => handleToggleItem(item, on)}
-                  onOpenSettings={() => {
-                    setOpen(false);
-                    void executeAction("file.settings", MCP_PAGE);
-                  }}
+                    )
+                  }
                 />
-              ))}
-            </>
-          )}
+              </>
+            )}
 
-          {filteredUser.length > 0 && (
-            <>
-              <div className={styles.groupLabel}>
-                <T>Global</T>
-              </div>
-              {filteredUser.map((item) => (
-                <SessionServerRow
-                  key={`user:${item.name}`}
-                  item={item}
-                  onToggle={(on) => handleToggleItem(item, on)}
-                  onOpenSettings={() => {
-                    setOpen(false);
-                    void executeAction("file.settings", MCP_PAGE);
-                  }}
-                />
-              ))}
-            </>
-          )}
+            {filteredWorkspace.length > 0 && (
+              <>
+                <PickerGroupLabel>
+                  <T>Project</T>
+                </PickerGroupLabel>
+                {filteredWorkspace.map((item) => (
+                  <SessionServerRow
+                    key={`ws:${item.name}`}
+                    item={item}
+                    onToggle={(on) => handleToggleItem(item, on)}
+                    onOpenSettings={() => openSettings(MCP_PAGE)}
+                  />
+                ))}
+              </>
+            )}
 
-          {filteredNative.length > 0 && (
-            <>
-              <div className={styles.groupLabel}>
-                <T>Agent Config</T>
-              </div>
-              {filteredNative.map((item) => {
-                const key = `${item.sourceId}::${item.name}`;
-                return (
-                  <div key={key} className={styles.row}>
-                    <div className={styles.rowInfo}>
-                      <div className={styles.rowTitle}>
-                        <span className={styles.name}>{item.name}</span>
-                        <span className={styles.pill}>{item.server.transport.toUpperCase()}</span>
-                        {item.overridden && (
-                          <span className={clsx(styles.pill, styles.pillSession)}>
-                            <T>Session</T>
-                          </span>
-                        )}
-                      </div>
-                      <span className={styles.sub} title={item.sourcePath}>
-                        {formatMessage(
-                          tx(item.enabled ? "Active via {source}" : "Disabled for this session ({source})"),
-                          { source: item.sourceLabel },
-                        )}
-                      </span>
-                    </div>
-                    <div className={styles.rowControls}>
-                      {backend.importSelected && (
-                        <button
-                          type="button"
-                          disabled={importingKey === key}
-                          className={styles.inlineLink}
-                          title={tx("Import into Global settings to toggle per session and share across agents")}
-                          onClick={() => void handleImportNative(item)}
-                        >
-                          <T>Import</T>
-                        </button>
+            {filteredUser.length > 0 && (
+              <>
+                <PickerGroupLabel>
+                  <T>Global</T>
+                </PickerGroupLabel>
+                {filteredUser.map((item) => (
+                  <SessionServerRow
+                    key={`user:${item.name}`}
+                    item={item}
+                    onToggle={(on) => handleToggleItem(item, on)}
+                    onOpenSettings={() => openSettings(MCP_PAGE)}
+                  />
+                ))}
+              </>
+            )}
+
+            {filteredNative.length > 0 && (
+              <>
+                <PickerGroupLabel>
+                  <T>Agent Config</T>
+                </PickerGroupLabel>
+                {filteredNative.map((item) => {
+                  const key = `${item.sourceId}::${item.name}`;
+                  return (
+                    <PickerRow
+                      key={key}
+                      name={item.name}
+                      pills={
+                        <>
+                          <PickerPill>{item.server.transport.toUpperCase()}</PickerPill>
+                          {item.overridden && <PickerSessionPill />}
+                        </>
+                      }
+                      sub={formatMessage(
+                        tx(item.enabled ? "Active via {source}" : "Disabled for this session ({source})"),
+                        { source: item.sourceLabel },
                       )}
-                      <Toggle
-                        checked={item.enabled}
-                        aria-label={formatMessage(tx("Enable {name} for this session"), { name: item.name })}
-                        onChange={(on) => handleToggleItem(item, on)}
-                      />
-                      <span className={clsx(styles.dot, item.enabled && styles.dotOn)} aria-hidden />
-                    </div>
-                  </div>
-                );
-              })}
-            </>
-          )}
+                      subTitle={item.sourcePath}
+                      controls={
+                        <>
+                          {backend.importSelected && (
+                            <PickerInlineLink
+                              disabled={importingKey === key}
+                              title={tx("Import into Global settings to toggle per session and share across agents")}
+                              onClick={() => void handleImportNative(item)}
+                            >
+                              <T>Import</T>
+                            </PickerInlineLink>
+                          )}
+                          <PickerToggle
+                            enabled={item.enabled}
+                            ariaLabel={formatMessage(tx("Enable {name} for this session"), { name: item.name })}
+                            onChange={(on) => handleToggleItem(item, on)}
+                          />
+                        </>
+                      }
+                    />
+                  );
+                })}
+              </>
+            )}
 
-          {!showIde && filteredWorkspace.length === 0 && filteredUser.length === 0 && filteredNative.length === 0 && (
-            <div className={styles.empty}>
-              <T>No matching MCP servers.</T>
-            </div>
-          )}
-        </div>
-
-        <div className={styles.footer}>
-          {busy ? <T>Changes apply on the next message.</T> : <T>Toggles here apply to this session only.</T>}
-        </div>
-      </Popup>
-    </>
+            {!showIde && filteredWorkspace.length === 0 && filteredUser.length === 0 && filteredNative.length === 0 && (
+              <PickerEmpty>
+                <T>No matching MCP servers.</T>
+              </PickerEmpty>
+            )}
+          </>
+        );
+      }}
+    </SessionPicker>
   );
 }
 
@@ -387,45 +267,34 @@ function SessionServerRow({
       : (srv.url ?? srv.transport.toUpperCase());
 
   return (
-    <div className={styles.row}>
-      <div className={styles.rowInfo}>
-        <div className={styles.rowTitle}>
-          <span className={styles.name}>{item.name}</span>
-          <span className={styles.pill}>{srv.transport.toUpperCase()}</span>
+    <PickerRow
+      name={item.name}
+      pills={
+        <>
+          <PickerPill>{srv.transport.toUpperCase()}</PickerPill>
           {item.shadowsGlobal && (
-            <span className={styles.pill}>
+            <PickerPill>
               <T>Overrides Global</T>
-            </span>
+            </PickerPill>
           )}
-          {item.overridden && (
-            <span className={clsx(styles.pill, styles.pillSession)}>
-              <T>Session</T>
-            </span>
-          )}
-        </div>
-        {sub && (
-          <span className={styles.sub} title={sub}>
-            {sub}
-          </span>
-        )}
-      </div>
-
-      <div className={styles.rowControls}>
-        {item.lockedReason === "unapproved" ? (
-          <button type="button" className={styles.inlineLink} onClick={onOpenSettings}>
+          {item.overridden && <PickerSessionPill />}
+        </>
+      }
+      sub={sub || undefined}
+      subTitle={sub}
+      controls={
+        item.lockedReason === "unapproved" ? (
+          <PickerInlineLink onClick={onOpenSettings}>
             <T>Approve…</T>
-          </button>
+          </PickerInlineLink>
         ) : (
-          <>
-            <Toggle
-              checked={item.enabled}
-              aria-label={formatMessage(tx("Enable {name} for this session"), { name: item.name })}
-              onChange={onToggle}
-            />
-            <span className={clsx(styles.dot, item.enabled && styles.dotOn)} aria-hidden />
-          </>
-        )}
-      </div>
-    </div>
+          <PickerToggle
+            enabled={item.enabled}
+            ariaLabel={formatMessage(tx("Enable {name} for this session"), { name: item.name })}
+            onChange={onToggle}
+          />
+        )
+      }
+    />
   );
 }

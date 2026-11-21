@@ -29,7 +29,9 @@ const branch: BranchInfo = {
   behind: 0,
   operation: "merge",
 };
-const roots: VcsRoot[] = [{ root: git.root, head: branch.head, headCommit: branch.headCommit, operation: "merge" }];
+const roots: VcsRoot[] = [
+  { root: git.root, branchRoot: git.root, head: branch.head, headCommit: branch.headCommit, operation: "merge" },
+];
 const conflicted: FileStatus = {
   path: "/a/src/conflict.ts",
   relPath: "src/conflict.ts",
@@ -174,7 +176,15 @@ describe("VCS status ownership", () => {
       await vi.waitFor(() => expect(request).toHaveBeenCalledWith([conflicted.path]));
       const nextBranch = { ...branch, head: "main", operation: null };
       vi.mocked(commands.vcsRoots).mockResolvedValue(
-        ok([{ root: nonGit.root, head: nextBranch.head, headCommit: nextBranch.headCommit, operation: null }]),
+        ok([
+          {
+            root: nonGit.root,
+            branchRoot: nonGit.root,
+            head: nextBranch.head,
+            headCommit: nextBranch.headCommit,
+            operation: null,
+          },
+        ]),
       );
       vi.mocked(commands.vcsStatus).mockResolvedValue(ok([]));
       vi.mocked(commands.vcsBranchInfo).mockResolvedValue(ok(nextBranch));
@@ -248,7 +258,7 @@ describe("VCS status ownership", () => {
     };
     const remainingStatus = { ...modified, path: remaining + "/src/edited.ts" };
     vi.mocked(commands.vcsRoots).mockResolvedValue(
-      ok([{ root: remaining, head: "main", headCommit: "def1234", operation: null }]),
+      ok([{ root: remaining, branchRoot: remaining, head: "main", headCommit: "def1234", operation: null }]),
     );
     vi.mocked(commands.vcsStatus).mockResolvedValue(ok([remainingStatus]));
     vi.mocked(commands.vcsBranchInfo).mockImplementation(async (repo) => {
