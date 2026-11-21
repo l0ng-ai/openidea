@@ -8188,8 +8188,6 @@
   "Compared files": "Karşılaştırılan dosyalar",
   "Comparison cancelled": "Karşılaştırma iptal edildi",
   "No matching differences": "Eşleşen fark yok",
-  "Left: {left}": "Sol: {left}",
-  "Right: {right}": "Sağ: {right}",
   "Compared {compared} of {total} entries": "{total} öğenin {compared} tanesi karşılaştırıldı",
   "Scanned {scanned} entries": "{scanned} öğe tarandı",
   "Binary content": "İkili içerik",

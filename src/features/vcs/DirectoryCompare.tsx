@@ -29,12 +29,13 @@ import {
   lazyComponent,
   type IconName,
 } from "@/ui";
-import type { EditorInput } from "@/workbench/contributions";
+import { editorService, type EditorInput } from "@/workbench/contributions";
+import { choosePath } from "@/platform/choosePath";
 import { upsertTask } from "@/workbench/tasks";
 import { confirmDialog } from "./dialogs";
 import { diffInput, openVcsDiff, type DiffData, type DiffSide } from "./diffInput";
-import { compareFilesData, displayPath } from "./compareData";
-import type { DirectoryCompareData } from "./directoryCompareKind";
+import { compareFilesData } from "./compareData";
+import { directoryCompareInput, type DirectoryCompareData } from "./directoryCompareKind";
 import { formatSize, formatTime } from "./model";
 import styles from "./DirectoryCompare.module.css";
 import { useRowHeight } from "@/ui/density";
@@ -190,7 +191,18 @@ export function directoryRows(
 
 export function DirectoryCompareEditor({ input }: { input: EditorInput }) {
   const { left, right } = input.data as DirectoryCompareData;
-  return <DirectoryCompare left={left} right={right} />;
+  return (
+    <DirectoryCompare
+      left={left}
+      right={right}
+      onPathsChange={(l, r) => {
+        // ponytail: reopens as a new tab and closes this one; an in-place input update would keep the tab's position.
+        void editorService()
+          .openInput(directoryCompareInput(l, r), { focus: true })
+          .then(() => editorService().closeInput?.(input.key));
+      }}
+    />
+  );
 }
 
 const COLUMNS = {
@@ -274,7 +286,69 @@ function SyncCell({
   );
 }
 
-export function DirectoryCompare({ left, right }: { left: string; right: string }) {
+/** An editable folder path with a chooser; Enter or leaving the field compares the typed folder. */
+function PathField({
+  side,
+  path,
+  disabled,
+  onCommit,
+}: {
+  side: "left" | "right";
+  path: string;
+  disabled: boolean;
+  onCommit: (path: string) => void;
+}) {
+  const [draft, setDraft] = useState(path);
+  const label = side === "left" ? "Left folder" : "Right folder";
+  const commit = (next: string) => {
+    if (next.trim() && next.trim() !== path) onCommit(next.trim());
+  };
+  return (
+    <span className={styles.path}>
+      <Input
+        className={styles.pathInput}
+        aria-label={label}
+        title={path}
+        value={draft}
+        disabled={disabled}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => commit(draft)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit(draft);
+          else if (e.key === "Escape" && draft !== path) {
+            e.stopPropagation();
+            setDraft(path);
+          }
+        }}
+      />
+      <IconButton
+        icon="folder"
+        title="Browse…"
+        aria-label={side === "left" ? "Choose left folder" : "Choose right folder"}
+        size="small"
+        disabled={disabled}
+        onClick={async () => {
+          const picked = await choosePath({ directory: true, title: label, defaultPath: path });
+          if (picked) {
+            setDraft(picked);
+            commit(picked);
+          }
+        }}
+      />
+    </span>
+  );
+}
+
+export function DirectoryCompare({
+  left,
+  right,
+  onPathsChange,
+}: {
+  left: string;
+  right: string;
+  /** Compares other folders (the tab is replaced); without it the paths are read-only. */
+  onPathsChange?: (left: string, right: string) => void;
+}) {
   const rowHeight = useRowHeight(22);
   const t = useTx();
   const [entries, setEntries] = useState<DirectoryCompareEntry[]>([]);
@@ -288,6 +362,7 @@ export function DirectoryCompare({ left, right }: { left: string; right: string 
   const [operating, setOperating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
+  const [pathError, setPathError] = useState<string | null>(null);
   const [progress, setProgress] = useState<DirectoryCompareProgress | null>(null);
   const [cancelled, setCancelled] = useState(false);
   const cancel = useRef<() => void>(() => {});
@@ -367,6 +442,18 @@ export function DirectoryCompare({ left, right }: { left: string; right: string 
   const open = (entry: DirectoryCompareEntry) => {
     const data = !busy && !operating && directoryDiff(left, right, entry);
     if (data) void openVcsDiff(data);
+  };
+
+  const changePath = async (side: "left" | "right", path: string) => {
+    setPathError(null);
+    const next = side === "left" ? { left: path, right } : { left, right: path };
+    try {
+      if ((await call(commands.fsEntryKind(path))) !== "dir") throw new Error(tx`${path} is not a folder`);
+      if (next.left === next.right) throw new Error(tx("Choose two different folders"));
+      onPathsChange?.(next.left, next.right);
+    } catch (e) {
+      if (mounted.current) setPathError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   const actionOf = (e: DirectoryCompareEntry) => actions.get(e.path) ?? syncChoices(e)[0]!;
@@ -576,15 +663,21 @@ export function DirectoryCompare({ left, right }: { left: string; right: string 
         )}
       </div>
       <div className={styles.paths}>
-        <span className={styles.path} title={left}>
-          <Icon name="folder" size={14} />
-          <span className={styles.text}>{tx`Left: ${displayPath(left)}`}</span>
-        </span>
-        <span className={styles.path} title={right}>
-          <Icon name="folder" size={14} />
-          <span className={styles.text}>{tx`Right: ${displayPath(right)}`}</span>
-        </span>
+        {(["left", "right"] as const).map((side) => (
+          <PathField
+            key={`${side}:${side === "left" ? left : right}`}
+            side={side}
+            path={side === "left" ? left : right}
+            disabled={!onPathsChange || operating}
+            onCommit={(path) => void changePath(side, path)}
+          />
+        ))}
       </div>
+      {pathError && (
+        <div className={styles.error} role="alert">
+          {tx(pathError)}
+        </div>
+      )}
       {error && (
         <div className={styles.error} role="alert">
           {tx(error)}

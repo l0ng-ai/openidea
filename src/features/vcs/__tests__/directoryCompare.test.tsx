@@ -6,6 +6,8 @@ const mocks = vi.hoisted(() => ({
   compare: vi.fn(),
   cancel: vi.fn(),
   sync: vi.fn(),
+  kind: vi.fn(),
+  choose: vi.fn(),
   confirm: vi.fn(),
   open: vi.fn(),
 }));
@@ -17,6 +19,7 @@ vi.mock("@/platform/ipc", async (original) => {
       ...real.commands,
       fsCompareDirectories: mocks.compare,
       fsSynchronizeDirectories: mocks.sync,
+      fsEntryKind: mocks.kind,
       cancelRequest: mocks.cancel,
     },
   };
@@ -27,6 +30,7 @@ vi.mock("@tauri-apps/api/core", async (original) => ({
     onmessage = () => {};
   },
 }));
+vi.mock("@/platform/choosePath", () => ({ choosePath: mocks.choose }));
 vi.mock("../DiffEditor", () => ({
   DiffEditor: ({ input }: { input: unknown }) => <div data-testid="diff">{JSON.stringify(input)}</div>,
 }));
@@ -67,6 +71,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.compare.mockResolvedValue(ok(rows));
   mocks.sync.mockResolvedValue(ok([]));
+  mocks.kind.mockResolvedValue(ok("dir"));
   mocks.confirm.mockResolvedValue(true);
 });
 afterEach(cleanup);
@@ -232,6 +237,33 @@ describe("disk directory comparison", () => {
     await waitFor(() => expect(mocks.compare).toHaveBeenCalledTimes(3));
     expect(mocks.compare.mock.calls[2]![2]).toBe("sizeAndTimestamp");
     localStorage.removeItem("openidea.directoryCompare.mode");
+  });
+
+  it("compares other folders typed into the path fields or chosen with the folder chooser", async () => {
+    const change = vi.fn();
+    render(<DirectoryCompare left="/p/left" right="/p/right" onPathsChange={change} />);
+    const leftField = screen.getByRole("textbox", { name: "Left folder" });
+    expect(leftField).toHaveValue("/p/left");
+    fireEvent.change(leftField, { target: { value: "/p/other" } });
+    fireEvent.keyDown(leftField, { key: "Enter" });
+    await waitFor(() => expect(change).toHaveBeenCalledWith("/p/other", "/p/right"));
+    expect(mocks.kind).toHaveBeenCalledWith("/p/other");
+    // A file, or the folder already on the other side, is refused with a message.
+    mocks.kind.mockResolvedValueOnce(ok("file"));
+    const rightField = screen.getByRole("textbox", { name: "Right folder" });
+    fireEvent.change(rightField, { target: { value: "/p/file.txt" } });
+    fireEvent.blur(rightField);
+    expect(await screen.findByRole("alert")).toHaveTextContent("/p/file.txt is not a folder");
+    fireEvent.change(rightField, { target: { value: "/p/left" } });
+    fireEvent.keyDown(rightField, { key: "Enter" });
+    expect(await screen.findByText("Choose two different folders")).toBeInTheDocument();
+    fireEvent.keyDown(rightField, { key: "Escape" });
+    expect(rightField).toHaveValue("/p/right");
+    mocks.choose.mockResolvedValueOnce("/p/chosen");
+    fireEvent.click(screen.getByRole("button", { name: "Choose right folder" }));
+    await waitFor(() => expect(change).toHaveBeenCalledWith("/p/left", "/p/chosen"));
+    expect(mocks.choose).toHaveBeenCalledWith(expect.objectContaining({ directory: true, defaultPath: "/p/right" }));
+    expect(change).toHaveBeenCalledTimes(2);
   });
 
   it("streams progress, cancels on demand and on close, and ignores stale results after refresh", async () => {
