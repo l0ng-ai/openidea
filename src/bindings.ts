@@ -657,7 +657,7 @@ export const commands = {
 	 *  exited is only started again by the next request.
 	 */
 	flutterDevtoolsUrl: () => typedError<string, IdeError>(__TAURI_INVOKE("flutter_devtools_url")),
-	fsCompareDirectories: (left: string, right: string, request: RequestId, onProgress: Channel<DirectoryCompareProgress>) => typedError<DirectoryCompareEntry[], IdeError>(__TAURI_INVOKE("fs_compare_directories", { left, right, request, onProgress })),
+	fsCompareDirectories: (left: string, right: string, mode: DirectoryCompareMode, request: RequestId, onProgress: Channel<DirectoryCompareProgress>) => typedError<DirectoryCompareEntry[], IdeError>(__TAURI_INVOKE("fs_compare_directories", { left, right, mode, request, onProgress })),
 	fsCopy: (from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy", { from, to })),
 	fsCopyMerge: (sourceRoot: string, destinationRoot: string, path: string, overwrite: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy_merge", { sourceRoot, destinationRoot, path, overwrite })),
 	fsCreateDir: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_create_dir", { path })),
@@ -698,6 +698,11 @@ export const commands = {
 	 *  state). Returns whether the file is read-only now.
 	 */
 	fsSetWritable: (path: string, writable: boolean) => typedError<boolean, IdeError>(__TAURI_INVOKE("fs_set_writable", { path, writable })),
+	/**
+	 *  Runs Compare Directories' synchronisation operations in order. A failed operation is
+	 *  reported and the rest still run; cancellation stops before the next one.
+	 */
+	fsSynchronizeDirectories: (left: string, right: string, operations: DirectorySyncOperation[], request: RequestId, onProgress: Channel<DirectorySyncProgress>) => typedError<DirectorySyncFailure[], IdeError>(__TAURI_INVOKE("fs_synchronize_directories", { left, right, operations, request, onProgress })),
 	fsUndoDelete: (undo: DeletionUndo) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("fs_undo_delete", { undo })),
 	/**  The repositories of the account gh is signed in to ("Get from Version Control" › GitHub); needs no project. */
 	ghAccountRepos: () => typedError<GhAccountRepos, IdeError>(__TAURI_INVOKE("gh_account_repos")),
@@ -5324,6 +5329,13 @@ export type DirectoryCompareEntry = {
 	rightModified?: number | null,
 };
 
+/**  What makes two files equal (IDEA's "Compare by"). */
+export type DirectoryCompareMode = 
+/**  Identical bytes. */
+"content" | 
+/**  The same text once decoded, whatever the encoding, BOM or line separators. */
+"text" | "size" | "sizeAndTimestamp";
+
 export type DirectoryCompareProgress = {
 	scanned: number,
 	compared: number,
@@ -5351,6 +5363,29 @@ export type DirectoryHistory_Serialize = {
 	entries: HistoryEntry_Serialize[],
 	/**  Files with history that no longer exist on disk. */
 	deleted: IpcPath[],
+};
+
+/**  One row's synchronisation, applied by [`DirectorySyncOperation`] batches. */
+export type DirectorySyncAction = "copyToLeft" | "copyToRight" | "deleteLeft" | "deleteRight";
+
+export type DirectorySyncFailure = {
+	path: string,
+	action: DirectorySyncAction,
+	message: string,
+};
+
+export type DirectorySyncOperation = {
+	/**  Relative to both comparison roots. */
+	path: string,
+	action: DirectorySyncAction,
+	/**  A copy may replace what is already at the destination (confirmed by the user). */
+	overwrite: boolean,
+};
+
+export type DirectorySyncProgress = {
+	done: number,
+	total: number,
+	path: string,
 };
 
 /**  See [`IdeEvent::Direnv`]. */
