@@ -334,10 +334,14 @@ export function previewOffsetForLine(
 
 /** Source line of the block at the top of a preview scrolled to `offset`: the first one if none is above it. */
 export function previewLineAtOffset(blocks: ReadonlyArray<{ line: number; top: number }>, offset: number): number {
-  let line = blocks[0]?.line ?? 0;
-  for (const b of blocks) {
-    if (b.top > offset + 1) break;
-    line = b.line;
+  // Read only the offsets needed for the lookup. Reading every block's layout on each
+  // scroll frame stutters on dense previews, and cached offsets would miss later reflows.
+  let lo = 0;
+  let hi = blocks.length;
+  while (lo < hi) {
+    const mid = lo + Math.floor((hi - lo) / 2);
+    if (blocks[mid]!.top <= offset + 1) lo = mid + 1;
+    else hi = mid;
   }
-  return line;
+  return blocks[Math.max(0, lo - 1)]?.line ?? 0;
 }
