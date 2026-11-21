@@ -55,7 +55,7 @@ import {
 import { DB_VIEW_FOCUS, databaseTree, openTableData } from "./treeActions";
 import { newMenu, nodeMenu } from "./treeMenu";
 import styles from "./Database.module.css";
-import { tx } from "@/platform/i18n";
+import { formatMessage, tx } from "@/platform/i18n";
 import { databaseRequest } from "./requests";
 
 const GROUP_LABELS: Record<Group, string> = {
@@ -369,6 +369,7 @@ export function DatabaseView() {
     const name = label(n);
     const kind =
       listDatabases || source.driver === "clickhouse" || source.vendor === "clickhouse" ? "databases" : "schemas";
+    const title = kind === "databases" ? tx("Choose databases for {name}") : tx("Choose schemas for {name}");
     const override = schemaOverride(target, database);
     const hasPattern = (value: string) => /[*?]/.test(value);
     const protectedRules = database === null && (listDatabases ? intro?.databases : intro?.schemas)?.some(hasPattern);
@@ -404,7 +405,7 @@ export function DatabaseView() {
     const metadata = databases ?? schemas;
     return (
       <IntrospectionPicker
-        title={kind === "databases" ? tx`Choose databases for ${name}` : tx`Choose schemas for ${name}`}
+        title={formatMessage(title, { name })}
         kind={kind}
         names={names}
         initial={initial}

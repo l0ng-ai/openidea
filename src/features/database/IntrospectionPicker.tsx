@@ -171,16 +171,15 @@ function PickerPopup({
                   <Checkbox
                     key={name}
                     label={
-                      name === names.current ? (
-                        <>
-                          {name}{" "}
+                      <>
+                        {name}
+                        {name === names.current && (
                           <span className={styles.treeDetail}>
+                            {" "}
                             <T>Current database</T>
                           </span>
-                        </>
-                      ) : (
-                        name
-                      )
+                        )}
+                      </>
                     }
                     checked={marked.has(name)}
                     disabled={saving || name === names.current || !editableName(name)}

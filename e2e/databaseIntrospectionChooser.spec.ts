@@ -75,6 +75,21 @@ async function openTree(page: Page, sources: DataSource_Deserialize[]) {
   return databasePanel(page);
 }
 
+test("the localized chooser keeps source and database names verbatim", async ({ workbench: page }) => {
+  await page.evaluate(async () => {
+    const localePath = "/src/platform/i18n.ts";
+    await (await import(/* @vite-ignore */ localePath)).setLocale("zh");
+  });
+  await openTree(page, [{ id: "ch", name: "Apply", driver: "clickhouse" }]);
+  await page.evaluate(() => {
+    window.__ipc.handlers.db_schemas = () => ["Retry"];
+  });
+  await page.getByRole("button", { name: "选择 Apply 的数据库", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "选择 Apply 的数据库", exact: true });
+  await expect(dialog.getByRole("checkbox", { name: "Retry", exact: true })).toBeChecked();
+  await expect(dialog.getByRole("button", { name: "应用", exact: true })).toBeVisible();
+});
+
 test("a flat ClickHouse count applies a selection and cancels unsaved changes", async ({ workbench: page }, info) => {
   const panel = await openTree(page, [{ id: "ch", name: "ClickHouse Demo", driver: "clickhouse" }]);
   const source = panel.getByRole("treeitem").filter({ hasText: "ClickHouse Demo" });
