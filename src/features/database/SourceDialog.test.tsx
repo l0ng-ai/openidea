@@ -12,11 +12,18 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
   return {
     ...real,
     call: ipc.call,
-    commands: { ...real.commands, dbTest: request("dbTest"), dbTestTunnel: request("dbTestTunnel") },
+    commands: {
+      ...real.commands,
+      dbJdbcDrivers: request("dbJdbcDrivers"),
+      dbTest: request("dbTest"),
+      dbTestTunnel: request("dbTestTunnel"),
+    },
   };
 });
 
 const savePassword = () => screen.getByRole("checkbox", { name: "Save password" }) as HTMLInputElement;
+
+ipc.call.mockResolvedValue([]);
 
 describe("new data source", () => {
   it("does not save the database password unless asked to", () => {
@@ -59,7 +66,7 @@ describe("new data source", () => {
 
 describe("Test SSH Tunnel", () => {
   it("tests the tunnel typed in the SSH/SSL tab, without the database login", async () => {
-    ipc.call.mockResolvedValue("dev@bastion:22 reaches 127.0.0.1:5432");
+    ipc.call.mockImplementation(async ([op]) => (op === "dbTestTunnel" ? "dev@bastion:22 reaches 127.0.0.1:5432" : []));
     render(<SourceDialog initial={null} preset={{ driver: "postgres", host: "127.0.0.1" }} />);
     fireEvent.click(screen.getByRole("tab", { name: "SSH/SSL" }));
     const button = () => screen.getByRole("button", { name: "Test SSH Tunnel" }) as HTMLButtonElement;
@@ -71,7 +78,7 @@ describe("Test SSH Tunnel", () => {
     await waitFor(() =>
       expect(screen.getByRole("status").textContent).toBe("SSH tunnel works: dev@bastion:22 reaches 127.0.0.1:5432"),
     );
-    expect(ipc.call.mock.calls[0]?.[0]?.[0]).toBe("dbTestTunnel");
+    expect(ipc.call).toHaveBeenCalledWith(["dbTestTunnel", expect.anything(), null]);
     ipc.call.mockClear();
   });
 });
