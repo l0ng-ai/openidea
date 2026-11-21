@@ -1,0 +1,27 @@
+.dialog > [data-dialog-body] {
+  display: flex;
+  flex-direction: column;
+}
+
+.form {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4) 0;
+}
+
+.label {
+  font-size: var(--fs-ui);
+  color: var(--fg-secondary);
+  overflow-wrap: anywhere;
+}
+
+.form .editor {
+  flex: 1;
+  width: 100%;
+  min-height: 60px;
+  padding: var(--space-2);
+  resize: none;
+  line-height: 1.55;
+}

@@ -3,9 +3,12 @@ import { commitRepo } from "./multiRoot";
  * Git Log history rewriting: Undo Commit, Edit Commit Message, Drop Commit and
  * Interactively Rebase from Here (IDEA's Git.Log.ContextMenu).
  */
-import { useLayoutEffect, useRef, useState } from "react";
+import { useId, useLayoutEffect, useRef, useState } from "react";
 import type { BranchInfo, Commit, RebaseAction, RebaseEntry } from "@/bindings";
+import { fontWeightOf } from "@/platform/editorSettings";
+import { resolveMonoFont } from "@/platform/fonts";
 import { call, commands } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
 import { Dialog, IconButton, Select, SplitGroup, SplitHandle, SplitPanel, T } from "@/ui";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { ask, showError } from "@/workbench/messages";
@@ -37,6 +40,7 @@ import { currentRepo, refreshNow, useVcs } from "./store";
 import { isProtectedBranch } from "./remoteUi";
 import { notifications } from "@/workbench/contributions";
 import styles from "./common.module.css";
+import messageStyles from "./CommitMessageDialog.module.css";
 import { tx } from "@/platform/i18n";
 
 const short = (id: string) => id.slice(0, 8);
@@ -226,7 +230,10 @@ export async function editCommitMessage(commit: Commit) {
   // A paged log only carries the summary line: load the full message so the
   // dialog edits subject and body, not the subject alone (#2238).
   const initial = commit.messageTruncated ? (await loadLogDetails(commit)).message : commit.message;
-  const message = await promptMessage(`Edit Commit Message (${short(commit.id)})`, initial);
+  const hash = short(commit.id);
+  const author = commit.author || commit.email;
+  const label = author ? tx`Edit message for commit ${hash} by ${author}` : tx`Edit message for commit ${hash}`;
+  const message = await promptMessage("Edit Commit Message", label, initial);
   if (message === null || message.trim() === initial.trim()) return;
   // Written without a rebase: the index and the working tree (local changes) stay as they are.
   const change = await runOp(tx`Edit commit message of ${short(commit.id)}`, () =>
@@ -322,7 +329,8 @@ export async function squashCommits(commits: Commit[]) {
   const ids = new Set(commits.map((c) => c.id));
   const oldestFirst = range.commits.filter((c) => ids.has(c.id));
   const message = await promptMessage(
-    `Squash ${commits.length} Commits`,
+    "Squashed Commit Message",
+    tx("Edit message for squashed commit"),
     oldestFirst.map((c) => c.message.trim()).join("\n\n"),
   );
   if (message === null || !message.trim()) return;
@@ -359,11 +367,12 @@ export async function interactivelyRebaseFrom(target: Commit) {
   openDialog((close) => <InteractiveRebaseDialog range={range} onClose={close} />);
 }
 
-function promptMessage(title: string, initial: string): Promise<string | null> {
+function promptMessage(title: string, label: string, initial: string): Promise<string | null> {
   return new Promise((resolve) => {
     const close = openDialog(() => (
       <MessageDialog
         title={title}
+        label={label}
         initial={initial}
         onDone={(m) => {
           close();
@@ -376,30 +385,51 @@ function promptMessage(title: string, initial: string): Promise<string | null> {
 
 function MessageDialog({
   title,
+  label,
   initial,
   onDone,
 }: {
   title: string;
+  label: string;
   initial: string;
   onDone: (message: string | null) => void;
 }) {
+  const id = useId();
+  const field = useRef<HTMLTextAreaElement>(null);
   const [message, setMessage] = useState(initial);
+  const editor = useProject((s) => s.settings?.editor);
+  const { family, size } = resolveMonoFont(undefined, editor);
+  useLayoutEffect(() => field.current?.setSelectionRange(0, 0), []);
+
   return (
     <Dialog
       open
       title={title}
       onClose={() => onDone(null)}
-      width={520}
+      width={620}
+      minWidth={340}
+      resizable="both"
+      className={messageStyles.dialog}
       buttons={[
         { label: "OK", role: "default", disabled: !message.trim(), onClick: () => onDone(message) },
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div className={styles.form}>
+      <div className={messageStyles.form}>
+        <label className={messageStyles.label} htmlFor={id}>
+          {label}
+        </label>
         <textarea
+          id={id}
+          ref={field}
           data-autofocus
-          aria-label={tx("Commit message")}
-          className={styles.textarea}
+          className={`${styles.textarea} ${messageStyles.editor}`}
+          style={{
+            fontFamily: family,
+            fontSize: size,
+            fontWeight: fontWeightOf(editor?.fontWeight, 400),
+            lineHeight: editor?.lineHeight ? `${editor.lineHeight}px` : undefined,
+          }}
           rows={8}
           value={message}
           onChange={(e) => setMessage(e.target.value)}
