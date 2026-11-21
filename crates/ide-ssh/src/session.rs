@@ -640,11 +640,13 @@ async fn with_key(handle: &mut Handle<Client>, user: &str, key: keys::PrivateKey
 }
 
 /// Every identity of the running SSH agent, until one is accepted.
-async fn with_agent(handle: &mut Handle<Client>, user: &str) -> bool {
+async fn with_agent(handle: &mut Handle<Client>, hop: &Hop) -> bool {
+    let user = hop.user.as_str();
+    let Some(socket) = hop.agent.socket() else { return false };
     #[cfg(unix)]
-    let agent = keys::agent::client::AgentClient::connect_env().await;
+    let agent = keys::agent::client::AgentClient::connect_uds(socket).await;
     #[cfg(windows)]
-    let agent = keys::agent::client::AgentClient::connect_named_pipe(r"\\.\pipe\openssh-ssh-agent").await;
+    let agent = keys::agent::client::AgentClient::connect_named_pipe(socket).await;
     let Ok(mut agent) = agent else { return false };
     let Ok(identities) = agent.request_identities().await else { return false };
     let hash = rsa_hash(handle).await;
@@ -693,7 +695,7 @@ async fn authenticate(
             if handle.authenticate_none(user).await.map(|r| r.success()).unwrap_or(false) {
                 return Ok(());
             }
-            if with_agent(handle, user).await {
+            if with_agent(handle, hop).await {
                 return Ok(());
             }
             let files: Vec<PathBuf> = if hop.identity_files.is_empty() {
