@@ -247,8 +247,8 @@ fn event_handler(state: Weak<DirState>, polled: bool) -> impl FnMut(notify::Resu
     }
 }
 
-/// A directory's own mtime moving as entries come and go: polling sees it, the
-/// OS watchers report only the entries (also seen, through that directory's watch).
+/// A directory's own mtime moving as entries come and go. Polling also reports
+/// each changed entry through that directory's watch.
 fn is_dir_touch(event: &notify::Event) -> bool {
     matches!(event.kind, EventKind::Modify(_)) && event.paths.iter().all(|p| p.is_dir())
 }
@@ -728,6 +728,9 @@ impl EventFilter {
             Err(_) => None,
         };
         let change = match rel.and_then(Self::git_internal) {
+            // Windows also reports a directory modification when Git creates or removes a lock.
+            // The entries carry the actual changes, including edits to a linked worktree's gitfile.
+            Some(true) if change == Change::Modified && path.is_dir() => return,
             Some(true) => Change::Vcs,
             Some(false) => return,
             None if crate::encoding::is_atomic_temp(path) => return,
@@ -1328,6 +1331,43 @@ mod tests {
         assert_eq!(g(".git/worktrees"), Some(true));
         assert_eq!(g(".git/info"), Some(true));
         assert_eq!(g(".git/objects"), Some(false));
+    }
+
+    #[test]
+    fn git_metadata_directory_touches_do_not_refresh_vcs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let filter = EventFilter::new(root.clone(), &[]);
+        let modify = EventKind::Modify(ModifyKind::Any);
+        for (dir, lock) in
+            [(".git", "index.lock"), (".git/refs/heads", "main.lock"), (".git/worktrees/wt", "index.lock")]
+        {
+            let dir = root.join(dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let lock = dir.join(lock);
+            let batch = filter.batch(&[
+                ev(EventKind::Create(CreateKind::File), vec![lock.clone()]),
+                ev(EventKind::Remove(RemoveKind::File), vec![lock]),
+                ev(modify, vec![dir.clone()]),
+            ]);
+            assert!(batch.is_empty(), "{}: {batch:?}", dir.display());
+            for kind in [EventKind::Create(CreateKind::Folder), EventKind::Remove(RemoveKind::Folder)] {
+                let batch = filter.batch(&[ev(kind, vec![dir.clone()])]);
+                assert_eq!(batch.vcs, vec![dir.clone()]);
+            }
+        }
+
+        let gitfile = root.join("wt/.git");
+        std::fs::create_dir_all(root.join("wt")).unwrap();
+        std::fs::write(&gitfile, "gitdir: ../.git/worktrees/wt\n").unwrap();
+        let index = root.join(".git/index");
+        let head = root.join(".git/refs/heads/main");
+        std::fs::write(&index, b"index data").unwrap();
+        std::fs::write(&head, b"commit id").unwrap();
+        for path in [gitfile, index, head] {
+            let batch = filter.batch(&[ev(modify, vec![path.clone()])]);
+            assert_eq!(batch.vcs, vec![path]);
+        }
     }
 
     #[test]
