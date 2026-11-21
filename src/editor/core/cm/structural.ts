@@ -15,7 +15,7 @@ import type { EditorView } from "@codemirror/view";
 import { getIndentUnit, indentString } from "@codemirror/language";
 import type { Pos, StructuralRanges, SyntaxError, SyntaxErrors, SyntaxNode } from "@/bindings";
 import { offsetToPos, posToOffset } from "@/editor/lsp/positions";
-import { SEMICOLON_LANGS, codeEnd, completeStatementSpec, lineCommentToken } from "./editing";
+import { SEMICOLON_LANGS, codeEnd, completeStatementSpec, lineCommentToken, recordSelectionAfter } from "./editing";
 
 /** The document has a real (Lezer) syntax tree, not a stream mode's flat token list or nothing. */
 export function hasLezerTree(state: EditorState): boolean {
@@ -429,7 +429,8 @@ export async function moveStatementStructural(
   up: boolean,
   q: StructureQueries,
 ): Promise<"done" | "fallback" | "stale"> {
-  return runPlanned(view, async () => {
+  const before = view.state.doc;
+  const result = await runPlanned(view, async () => {
     const line = view.state.doc.lineAt(view.state.selection.main.head);
     if (!line.text.trim()) return null;
     const r = await q.ranges(offsetToPos(view.state.doc, line.from));
@@ -446,6 +447,8 @@ export async function moveStatementStructural(
     const plan = planMoveStatement(view.state, r, up, errors);
     return plan.kind === "move" ? plan.spec : plan.kind === "noop" ? "noop" : null;
   });
+  if (result === "done" && view.state.doc !== before) recordSelectionAfter(view);
+  return result;
 }
 
 export async function completeStatementStructural(
