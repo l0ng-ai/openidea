@@ -934,6 +934,7 @@ export function ProjectView() {
       )}
       <Tree<ProjectNode>
         horizontalScroll={options.horizontalScroll}
+        speedSearchAbove
         aria-label="Project"
         focusContext="projectViewFocus"
         handleRef={setTreeHandle}
