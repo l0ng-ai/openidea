@@ -1092,7 +1092,8 @@ pub async fn lsp_resolve_code_action(
 #[command(trust = trusted)]
 pub async fn lsp_apply_code_action(host: &Host, window: &str, doc: DocId, action: CodeAction) -> IdeResult<()> {
     let project = host.project(window)?;
-    let action = if action.edit.is_none() && action.command.is_none() {
+    // A lazy action may carry a follow-up command beside its unresolved edit (vtsls' refactorings).
+    let action = if action.edit.is_none() && (action.command.is_none() || action.data.is_some()) {
         let documents = project.documents.clone();
         let version = blocking(move || documents.version(doc)).await?;
         let action = resolve_action(host, window, doc, action).await?;

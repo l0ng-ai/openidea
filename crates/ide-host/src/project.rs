@@ -682,6 +682,16 @@ impl Host {
                 weak.upgrade().map(|p| p.settings.effective().agent_security).unwrap_or_default()
             }));
         }
+        {
+            let weak = Arc::downgrade(&project);
+            let trust = self.trust.clone();
+            project.agents.set_workspace_roots_hook(Arc::new(move || {
+                let Some(p) = weak.upgrade() else { return Vec::new() };
+                let mut roots = vec![p.root.clone()];
+                roots.extend(crate::mcp::trusted_attachments(&trust, &p.root));
+                roots
+            }));
+        }
         self.insert_project(window, project.clone());
         for (key, text, dirty) in &carried {
             let _ = project.documents.restore_untitled_buffer(key, text, *dirty);

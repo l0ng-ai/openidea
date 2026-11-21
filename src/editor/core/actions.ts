@@ -1028,7 +1028,7 @@ export function registerEditorActions(): () => void {
       title: "Reset Font Size",
       category: "View",
       keywords: ["zoom", "font size", "mouse wheel"],
-      when: "projectOpen",
+      when: "projectOpen || lightEdit",
       run: resetFontSize,
     },
     {
