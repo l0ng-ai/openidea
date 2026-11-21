@@ -202,7 +202,12 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
     const chars = Math.max(
       popup.title.length + (popup.pin ? 4 : 0),
       ...popup.items.map(
-        (i) => i.label.length + (i.preview?.length ?? 0) + (i.detail?.length ?? 0) + (i.shortcut?.length ?? 0),
+        (i) =>
+          i.label.length +
+          (i.leadingDetail?.length ?? 0) +
+          (i.preview?.length ?? 0) +
+          (i.detail?.length ?? 0) +
+          (i.shortcut?.length ?? 0),
       ),
     );
     const padding = popup.compact ? 44 + (showIcons ? 20 : 0) : 90;
@@ -216,28 +221,32 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
         : null
     : null;
   const hasPreview = shownPreview !== null;
+  const point = popup.anchor === "center" ? null : popup.anchor;
   const previewBelow = hasPreview && viewportWidth <= MIN_SIDE_BY_SIDE_WIDTH;
   const previewLeft =
+    point &&
     hasPreview &&
     !previewBelow &&
-    popup.anchor.x + width + LIST_PREVIEW_WIDTH > viewportWidth - 6 &&
-    popup.anchor.x >= LIST_PREVIEW_WIDTH + 6;
+    point.x + width + LIST_PREVIEW_WIDTH > viewportWidth - 6 &&
+    point.x >= LIST_PREVIEW_WIDTH + 6;
   const anchor = useMemo(() => {
-    if (!fetchPreview) return popup.anchor;
-    const x = popup.anchor.x - (previewLeft ? LIST_PREVIEW_WIDTH : 0);
+    if (!point || !fetchPreview) return popup.anchor;
+    const x = point.x - (previewLeft ? LIST_PREVIEW_WIDTH : 0);
     return {
       getBoundingClientRect: () =>
         new DOMRect(
           Math.max(0, Math.min(x, window.innerWidth)),
-          Math.max(0, Math.min(popup.anchor.y, window.innerHeight)),
+          Math.max(0, Math.min(point.y, window.innerHeight)),
           0,
           0,
         ),
     };
-  }, [fetchPreview, popup.anchor, previewLeft]);
+  }, [fetchPreview, point, popup.anchor, previewLeft]);
+  const leadingDetailChars = Math.max(0, ...popup.items.map((item) => item.leadingDetail?.length ?? 0));
   const popupSize = {
     width: hasPreview ? width + LIST_PREVIEW_WIDTH : width,
     "--list-preview-width": `${LIST_PREVIEW_WIDTH}px`,
+    "--list-leading-detail-width": `${leadingDetailChars + 1}ch`,
   } as CSSProperties;
   const indexOf = (item: ListPopupItem) => popup.items.indexOf(item);
   return (
@@ -252,6 +261,7 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
         hasPreview && styles.withPreview,
         previewBelow && styles.previewBelow,
         previewLeft && styles.previewLeft,
+        popup.anchor === "center" && styles.centeredList,
       )}
       style={popupSize}
     >
@@ -311,6 +321,11 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
                   data-path={item.location?.path}
                   data-line={item.location?.line}
                 >
+                  {leadingDetailChars > 0 && (
+                    <span className={styles.leadingDetail} title={item.leadingDetail}>
+                      {item.leadingDetail}
+                    </span>
+                  )}
                   {popup.numbered && <span className={styles.mnemonic}>{n > 0 && n <= 9 ? n : ""}</span>}
                   {showIcons && <ItemIcon item={item} />}
                   <HighlightedText className={styles.label} text={item.label} indices={match} tone="accent" />
