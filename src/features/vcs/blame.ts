@@ -394,13 +394,9 @@ function blameExtension(lines: BlameLine[], path: string, live: boolean): Extens
             const l = lineAt(view, block.from);
             event.preventDefault();
             showContextMenu(event as MouseEvent, [
+              { label: "Close Annotations", run: () => setAnnotations(view, null, path, false) },
               ...(l && !isUncommitted(l)
                 ? [
-                    {
-                      label: "Show Commit in Git Log",
-                      icon: "commit",
-                      run: () => void executeAction("vcs.showCommit", l.commit),
-                    },
                     {
                       label: "Show Diff",
                       icon: "diff",
@@ -411,11 +407,7 @@ function blameExtension(lines: BlameLine[], path: string, live: boolean): Extens
                       icon: "copy",
                       run: () => void writeClipboardText(l.commit),
                     },
-                    {
-                      label: "Ignore This Commit",
-                      icon: "hide",
-                      run: () => void ignoreCommit(view, path, l.commit, live),
-                    },
+                    { kind: "separator" as const },
                     {
                       label: tx("Annotate at Revision…"),
                       icon: "clock",
@@ -428,11 +420,19 @@ function blameExtension(lines: BlameLine[], path: string, live: boolean): Extens
                       run: () =>
                         void import("./annotateRevision").then((m) => m.annotatePreviousRevision(path, l.commit)),
                     },
-                    { kind: "separator" as const },
+                    {
+                      label: "Show Commit in Git Log",
+                      icon: "commit",
+                      run: () => void executeAction("vcs.showCommit", l.commit),
+                    },
+                    {
+                      label: "Ignore This Commit",
+                      icon: "hide",
+                      run: () => void ignoreCommit(view, path, l.commit, live),
+                    },
                   ]
                 : []),
               optionsMenu(),
-              { label: "Close Annotations", run: () => setAnnotations(view, null, path, false) },
             ]);
             return true;
           },
