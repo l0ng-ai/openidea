@@ -1,6 +1,6 @@
 //! Settings › Editor › File Encodings / Code Style defaults applied by the
 //! document layer: encoding, BOM and line separator of new (empty) files, the
-//! fallback decoding of files that are not valid UTF-8, and EditorConfig support.
+//! encoding of files that are not valid UTF-8 or are plain ASCII, and EditorConfig support.
 
 use ide_core::settings::Settings;
 use ide_text::LineEnding;
@@ -13,7 +13,7 @@ pub struct FileDefaults {
     /// Write a BOM into new UTF-8 files.
     pub utf8_bom: bool,
     pub line_ending: LineEnding,
-    /// Fallback for project files that are not valid UTF-8.
+    /// Encoding of project files that are not valid UTF-8 or are plain ASCII.
     pub project_fallback: String,
     /// Fallback for files outside `root`.
     pub global_fallback: String,
@@ -54,7 +54,7 @@ impl FileDefaults {
         }
     }
 
-    /// Encoding to decode `path` with when it is not valid UTF-8 (`None`: detect).
+    /// Encoding for `path` when it is not valid UTF-8 or is plain ASCII (`None`: detect).
     pub fn fallback_for(&self, path: &Path) -> Option<&str> {
         let label = if path.extension().is_some_and(|e| e == "properties") {
             &self.properties_fallback

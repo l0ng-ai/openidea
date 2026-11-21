@@ -220,19 +220,20 @@ pub fn load_text_bounded(path: &Path, fallback: Option<&str>, max_bytes: usize) 
 }
 
 /// Like [`load_text`], but text that is neither valid UTF-8 nor marked by a BOM
-/// is decoded as `fallback` (the configured project encoding) instead of guessed.
+/// is decoded as `fallback` (the configured project encoding) instead of guessed,
+/// and plain ASCII text is labelled with `fallback`.
 pub fn load_text_with_fallback(path: &Path, fallback: Option<&str>) -> IdeResult<LoadedText> {
-    let loaded = encoding::load_text(path)?;
-    match fallback {
-        Some(enc)
-            if !loaded.binary
-                && !loaded.has_bom
-                && loaded.encoding != "utf-8"
-                && !loaded.encoding.starts_with("utf-16") =>
-        {
-            encoding::load_text_as(path, enc).or(Ok(loaded))
+    let mut loaded = encoding::load_text(path)?;
+    let detected = encoding_rs::Encoding::for_label(loaded.encoding.as_bytes()).unwrap_or(encoding_rs::UTF_8);
+    match encoding::resolve(&loaded.text, detected, loaded.has_bom, loaded.binary, fallback) {
+        encoding::Resolution::Keep => Ok(loaded),
+        encoding::Resolution::Relabel(enc) => {
+            loaded.encoding = encoding::encoding_label(enc);
+            Ok(loaded)
         }
-        _ => Ok(loaded),
+        encoding::Resolution::Redecode(enc) => {
+            encoding::load_text_as(path, &encoding::encoding_label(enc)).or(Ok(loaded))
+        }
     }
 }
 
@@ -369,16 +370,10 @@ impl FsBatch {
 
 /// Detect a revision's encoding with the same rules as files opened in the editor.
 pub fn detect_encoding(bytes: &[u8], fallback: Option<&str>) -> &'static encoding_rs::Encoding {
-    let (_, detected, has_bom, binary) = encoding::decode(bytes);
-    if !binary
-        && !has_bom
-        && detected != encoding_rs::UTF_8
-        && detected != encoding_rs::UTF_16LE
-        && detected != encoding_rs::UTF_16BE
-    {
-        fallback.and_then(|label| encoding_rs::Encoding::for_label(label.trim().as_bytes())).unwrap_or(detected)
-    } else {
-        detected
+    let (text, detected, has_bom, binary) = encoding::decode(bytes);
+    match encoding::resolve(&text, detected, has_bom, binary, fallback) {
+        encoding::Resolution::Keep => detected,
+        encoding::Resolution::Relabel(enc) | encoding::Resolution::Redecode(enc) => enc,
     }
 }
 
@@ -390,18 +385,9 @@ pub fn decode_text(bytes: &[u8], fallback: Option<&str>) -> Option<String> {
     if binary {
         return None;
     }
-    let fallback = fallback.and_then(|label| encoding_rs::Encoding::for_label(label.trim().as_bytes()));
-    match fallback {
-        Some(enc)
-            if !has_bom
-                && enc != detected
-                && detected != encoding_rs::UTF_8
-                && detected != encoding_rs::UTF_16LE
-                && detected != encoding_rs::UTF_16BE =>
-        {
-            Some(enc.decode_without_bom_handling(bytes).0.into_owned())
-        }
-        _ => Some(text),
+    match encoding::resolve(&text, detected, has_bom, binary, fallback) {
+        encoding::Resolution::Redecode(enc) => Some(enc.decode_without_bom_handling(bytes).0.into_owned()),
+        encoding::Resolution::Keep | encoding::Resolution::Relabel(_) => Some(text),
     }
 }
 

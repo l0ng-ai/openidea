@@ -1296,3 +1296,95 @@ fn language_of_a_closed_file_reads_the_hashbang() {
     docs.apply_edits(doc.id, &[TextEdit { range: all, new_text: "#!/usr/bin/env python3".into() }]).unwrap();
     assert_eq!(language(None), "python", "the open buffer's first line");
 }
+
+fn latin_project(f: &Fixture) {
+    let mut defaults = f.docs.file_defaults();
+    defaults.project_fallback = "iso-8859-15".into();
+    f.docs.set_file_defaults(defaults);
+}
+
+#[test]
+fn ascii_file_in_a_latin_project_saves_new_characters_in_the_project_encoding() {
+    let f = fixture();
+    latin_project(&f);
+    let path = f.root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "iso-8859-15");
+    f.docs.edit(doc.id, doc.version, change(0, 0, "// ação €\n")).unwrap();
+    f.docs.save(doc.id).unwrap();
+
+    assert_eq!(fs::read(&path).unwrap(), b"// a\xe7\xe3o \xa4\nclass A {}\n");
+}
+
+#[test]
+fn ascii_file_stays_utf8_when_the_project_encoding_is_utf8() {
+    let f = fixture();
+    let path = f.root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "utf-8");
+    f.docs.edit(doc.id, doc.version, change(0, 0, "// ç\n")).unwrap();
+    f.docs.save(doc.id).unwrap();
+
+    assert_eq!(fs::read(&path).unwrap(), "// ç\nclass A {}\n".as_bytes());
+}
+
+#[test]
+fn utf8_text_with_accents_keeps_utf8_in_a_latin_project() {
+    let f = fixture();
+    latin_project(&f);
+    let path = f.root.join("A.java");
+    fs::write(&path, "// ação\n").unwrap();
+
+    assert_eq!(f.docs.open(&path).unwrap().encoding, "utf-8");
+}
+
+#[test]
+fn typing_a_character_latin9_lacks_into_an_ascii_file_fails_the_save() {
+    let f = fixture();
+    latin_project(&f);
+    let path = f.root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+    let doc = f.docs.open(&path).unwrap();
+    f.docs.edit(doc.id, doc.version, change(0, 0, "// 漢\n")).unwrap();
+
+    let before = f.events.lock().len();
+    let err = f.docs.save(doc.id).expect_err("ISO-8859-15 cannot encode the edit");
+
+    assert_eq!(err.kind, ErrorKind::InvalidInput, "{err}");
+    assert_failed_save_preserves_edit(&f, doc.id, "// 漢\nclass A {}\n", before);
+    assert_eq!(fs::read(&path).unwrap(), b"class A {}\n");
+}
+
+#[test]
+fn editorconfig_utf8_charset_wins_over_a_latin_project_for_ascii_files() {
+    let f = fixture();
+    latin_project(&f);
+    fs::write(f.root.join(".editorconfig"), "root = true\n[*.java]\ncharset = utf-8\n").unwrap();
+    let path = f.root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "utf-8");
+    f.docs.edit(doc.id, doc.version, change(0, 0, "// é\n")).unwrap();
+    f.docs.save(doc.id).unwrap();
+
+    assert_eq!(fs::read(&path).unwrap(), "// é\nclass A {}\n".as_bytes());
+}
+
+#[test]
+fn ascii_properties_file_takes_the_properties_encoding_by_default() {
+    let f = fixture();
+    let path = f.root.join("messages.properties");
+    fs::write(&path, b"greeting=Hello\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "windows-1252", "the iso-8859-1 default is windows-1252 in WHATWG");
+    f.docs.edit(doc.id, doc.version, change(9, 14, "Olá")).unwrap();
+    f.docs.save(doc.id).unwrap();
+
+    assert_eq!(fs::read(&path).unwrap(), b"greeting=Ol\xe1\n");
+}
