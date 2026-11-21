@@ -15,9 +15,10 @@ import {
   indentNodeProp,
   indentService,
   language as languageFacet,
+  syntaxTree,
   type StreamParser,
 } from "@codemirror/language";
-import { NodeProp } from "@lezer/common";
+import { NodeProp, type SyntaxNode } from "@lezer/common";
 import { styleTags, tags as t } from "@lezer/highlight";
 import { languages as languageData } from "@codemirror/language-data";
 import type { DocBackend, LanguageInfo } from "../backend";
@@ -477,6 +478,33 @@ const EXTRA_PROPS: Record<string, NonNullable<Parameters<LRLanguage["configure"]
   ],
 };
 
+/** An annotation usage (`@Ann`, `@a.b.Ann(…)`, with an optional trailing comment), not `@interface`. */
+const JAVA_ANNOTATION = /^@(?!interface\b)[\w$.]+(?:\s*\([\s\S]*\))?\s*(?:\/\/[^\n]*|\/\*[\s\S]*?\*\/)?$/;
+
+/**
+ * An annotation line ends the declaration it annotates, so Enter after it keeps the line's
+ * indentation. The stock grammar gets this wrong: an annotation, or an unfinished annotation
+ * type declaration, is a `Statement`, which indents one level deeper.
+ */
+const annotationIndent = indentService.of((cx, pos) => {
+  if (cx.simulatedBreak == null) return undefined;
+  const state = cx.state;
+  const tree = syntaxTree(state);
+  if (tree.length < pos) return undefined;
+  for (let node: SyntaxNode | null = tree.resolveInner(pos, -1); node; node = node.parent) {
+    if (node.name !== "Annotation" && node.name !== "MarkerAnnotation") continue;
+    // The break must follow the whole annotation, with at most whitespace or a comment between.
+    if (node.to > pos || !/^(?:\s|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*$/.test(state.sliceDoc(node.to, pos))) return undefined;
+    if (!JAVA_ANNOTATION.test(state.sliceDoc(node.from, node.to))) return undefined;
+    const line = state.doc.lineAt(node.from);
+    return cx.countColumn(line.text, line.text.search(/\S|$/));
+  }
+  return undefined;
+});
+
+/** Extensions the stock modes lack, by CodeMirror language name. */
+const EXTRA_SUPPORT: Record<string, Extension[]> = { Java: [annotationIndent] };
+
 function patchSupport(desc: LanguageDescription, support: LanguageSupport): LanguageSupport {
   const extra = EXTRA_TAGS[desc.name];
   const props = [...(extra ? [styleTags(extra)] : []), ...(EXTRA_PROPS[desc.name] ?? [])];
@@ -484,6 +512,7 @@ function patchSupport(desc: LanguageDescription, support: LanguageSupport): Lang
     props.length && support.language instanceof LRLanguage ? support.language.configure({ props }) : support.language;
   const result = new LanguageSupport(language, [
     support.support,
+    ...(EXTRA_SUPPORT[desc.name] ?? []),
     docCommentTags(desc.name),
     EditorView.editorAttributes.of({ "data-language": desc.name }),
   ]);
