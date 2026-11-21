@@ -5,7 +5,7 @@
  */
 import { EditorSelection } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
-import { activeEditor, editorsFor, whenSynced, type EditorDocContext } from "@/editor/api";
+import { openCodeLocation, activeEditor, editorsFor, whenSynced, type EditorDocContext } from "@/editor/api";
 import { docOf, lspRequest } from "@/editor/lsp/lsp";
 import { offsetToPos, posToOffset } from "@/editor/lsp/positions";
 import { caretAnchor, openPopup } from "@/editor/lsp/popupStore";
@@ -217,10 +217,7 @@ async function gotoRelated(view: EditorView) {
     return;
   }
   const open = (item: (typeof items)[number]) =>
-    editorService().openFile(item.path, {
-      selection: item.line === undefined ? undefined : { line: item.line, col: item.col ?? 0 },
-      focus: true,
-    });
+    openCodeLocation(item.path, item.line === undefined ? undefined : { line: item.line, col: item.col ?? 0 });
   if (items.length === 1) {
     await open(items[0]!);
     return;

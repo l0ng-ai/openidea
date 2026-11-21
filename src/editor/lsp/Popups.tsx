@@ -1,4 +1,5 @@
 /** React popups for LSP editor features, rendered as a workbench overlay. */
+import { openCodeLocation } from "@/editor/api";
 import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import {
@@ -22,7 +23,6 @@ import {
   T,
 } from "@/ui";
 import { basename, relativePath, useProject } from "@/platform/project";
-import { editorService } from "@/workbench/contributions";
 import {
   closePopup,
   updatePopup,
@@ -564,10 +564,7 @@ function DefinitionPopup({ popup }: { popup: Extract<LspPopup, { kind: "definiti
   const targetIcon = (path: string) => fileIconName(basename(path), path);
   const open = () => {
     closePopup();
-    void editorService().openFile(location.path, {
-      selection: { line: location.range.start.line, col: location.range.start.col },
-      focus: true,
-    });
+    void openCodeLocation(location.path, { line: location.range.start.line, col: location.range.start.col });
   };
   const select = (index: number) =>
     updatePopup("definition", { index: (index + popup.targets.length) % popup.targets.length });

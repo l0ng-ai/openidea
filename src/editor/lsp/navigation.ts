@@ -51,11 +51,11 @@ import {
   whenSynced,
   type ContributedDefinition,
   type EditorDocContext,
+  openCodeLocation,
 } from "@/editor/api";
 import { structure } from "@/editor/structure";
 import { executeAction } from "@/platform/actions";
 import { basename, relativePath, useProject } from "@/platform/project";
-import { editorService } from "@/workbench/contributions";
 import { fileIconName } from "@/ui";
 import { NO_SERVER, debounce, docOf, isUnavailable, lspDoc, lspRequest, reportLspError } from "./lsp";
 import { offsetToPos, rangeContains, rangeToOffsets } from "./positions";
@@ -108,10 +108,7 @@ import {
 const highlightsBackoff = featureBackoff();
 
 export async function navigateTo(loc: Location) {
-  await editorService().openFile(loc.path, {
-    selection: { line: loc.range.start.line, col: loc.range.start.col },
-    focus: true,
-  });
+  await openCodeLocation(loc.path, { line: loc.range.start.line, col: loc.range.start.col });
 }
 
 const NOT_FOUND: Record<GotoKind, string> = {
