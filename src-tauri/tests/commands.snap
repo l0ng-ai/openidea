@@ -282,6 +282,7 @@ fs_read_text                                 always             project_host bin
 fs_rename                                    always             project_host bindings async
 fs_resolve_reference                         always             project_host bindings async
 fs_set_writable                              always             project_host bindings sync
+fs_synchronize_directories                   always             project_host bindings async
 fs_undo_delete                               always             project_host bindings async
 gh_account_repos                             trusted            desktop      bindings async
 gh_api                                       trusted            desktop      bindings async

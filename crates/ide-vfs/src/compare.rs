@@ -63,6 +63,42 @@ pub struct DirectoryCompareProgress {
     pub path: String,
 }
 
+/// One row's synchronisation, applied by [`DirectorySyncOperation`] batches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DirectorySyncAction {
+    CopyToLeft,
+    CopyToRight,
+    DeleteLeft,
+    DeleteRight,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectorySyncOperation {
+    /// Relative to both comparison roots.
+    pub path: String,
+    pub action: DirectorySyncAction,
+    /// A copy may replace what is already at the destination (confirmed by the user).
+    pub overwrite: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectorySyncFailure {
+    pub path: String,
+    pub action: DirectorySyncAction,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectorySyncProgress {
+    pub done: u32,
+    pub total: u32,
+    pub path: String,
+}
+
 struct Entry {
     kind: EntryKind,
     size: u64,
