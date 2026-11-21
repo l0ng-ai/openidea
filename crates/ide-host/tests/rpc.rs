@@ -184,8 +184,7 @@ async fn serves_projects_files_documents_search_and_runs() {
     std::fs::write(right.join("中文.bin"), [0, 254, 1]).unwrap();
     assert_eq!(invoke(&peer, "fs_entry_kind", json!({"path": left})).await.unwrap(), "dir");
     assert_eq!(invoke(&peer, "fs_entry_kind", json!({"path": left.join("中文.bin")})).await.unwrap(), "file");
-    let compare_args =
-        |request| json!({"left": left, "right": right, "request": request, "onProgress": {"$channel": 520}});
+    let compare_args = |request| json!({"left": left, "right": right, "mode": "content", "request": request, "onProgress": {"$channel": 520}});
     let rows = invoke(&peer, "fs_compare_directories", compare_args(520)).await.unwrap();
     assert_eq!(rows[0]["status"], "different");
     assert!(client.channels.lock().iter().any(|c| c.id == 520 && c.data["compared"] == 1));

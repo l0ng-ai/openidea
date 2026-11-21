@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { Channel } from "@tauri-apps/api/core";
-import type { DirectoryCompareEntry, DirectoryCompareProgress, DirectoryCompareStatus } from "@/bindings";
+import type {
+  DirectoryCompareEntry,
+  DirectoryCompareMode,
+  DirectoryCompareProgress,
+  DirectoryCompareStatus,
+} from "@/bindings";
 import { call, commands, emitLocalIdeEvent, IpcError, isCancelled, nextRequestId } from "@/platform/ipc";
 import { notifyFileOperation } from "@/platform/fileOps";
 import { tx, useTx } from "@/platform/i18n";
@@ -11,6 +16,7 @@ import {
   IconButton,
   Input,
   List,
+  Select,
   SplitGroup,
   SplitHandle,
   SplitPanel,
@@ -50,6 +56,29 @@ const MARKER: Partial<Record<DirectoryCompareStatus, IconName>> = {
   rightOnly: "diff-arrow-left",
   different: "diff",
 };
+/** IDEA's "Compare by" choices; the last one picked is kept for the next comparison. */
+export const COMPARE_MODES: ReadonlyArray<{ value: DirectoryCompareMode; label: string }> = [
+  { value: "content", label: "Binary content" },
+  { value: "text", label: "Text" },
+  { value: "size", label: "Size" },
+  { value: "sizeAndTimestamp", label: "Size and timestamp" },
+];
+const MODE_KEY = "openidea.directoryCompare.mode";
+function loadMode(): DirectoryCompareMode {
+  try {
+    const saved = localStorage.getItem(MODE_KEY);
+    return COMPARE_MODES.find((m) => m.value === saved)?.value ?? "content";
+  } catch {
+    return "content";
+  }
+}
+function saveMode(mode: DirectoryCompareMode) {
+  try {
+    localStorage.setItem(MODE_KEY, mode);
+  } catch {
+    // ignore
+  }
+}
 const DEFAULT_SHOWN: ReadonlySet<DirectoryCompareStatus> = new Set(["leftOnly", "rightOnly", "different"]);
 
 const join = (root: string, path: string) => `${root.replace(/\/$/, "")}/${path}`;
@@ -177,6 +206,7 @@ export function DirectoryCompare({ left, right }: { left: string; right: string 
   const [current, setCurrent] = useState<DirectoryCompareEntry | null>(null);
   const [shown, setShown] = useState<ReadonlySet<DirectoryCompareStatus>>(DEFAULT_SHOWN);
   const [filter, setFilter] = useState("");
+  const [mode, setMode] = useState(loadMode);
   const [generation, setGeneration] = useState(0);
   const [busy, setBusy] = useState(true);
   const [operating, setOperating] = useState(false);
@@ -215,7 +245,7 @@ export function DirectoryCompare({ left, right }: { left: string; right: string 
       task.fraction = p.total ? p.compared / p.total : null;
       upsertTask({ ...task, done: false });
     };
-    void call(commands.fsCompareDirectories(left, right, request, channel))
+    void call(commands.fsCompareDirectories(left, right, mode, request, channel))
       .then((rows) => {
         if (!alive) return;
         setEntries(rows);
@@ -236,7 +266,7 @@ export function DirectoryCompare({ left, right }: { left: string; right: string 
       if (pending) task.cancel();
       upsertTask({ ...task, done: true });
     };
-  }, [left, right, generation]);
+  }, [left, right, mode, generation]);
 
   const rows = useMemo(() => directoryRows(entries, shown, filter), [entries, shown, filter]);
   const activeIndex = rows.findIndex((r) => "entry" in r && r.entry.path === current?.path);
@@ -379,6 +409,19 @@ export function DirectoryCompare({ left, right }: { left: string; right: string 
       <div className={styles.toolbar}>
         <div className={styles.toolbarGroup}>
           <IconButton icon="refresh" title="Refresh" size="small" disabled={!idle} onClick={refresh} />
+          <Select<DirectoryCompareMode>
+            className={styles.select}
+            value={mode}
+            options={COMPARE_MODES}
+            disabled={operating}
+            title="Compare by"
+            aria-label="Compare by"
+            onChange={(next) => {
+              saveMode(next);
+              setMode(next);
+              refresh();
+            }}
+          />
           {FILTERS.map((f) => (
             <IconButton
               key={f.status}
