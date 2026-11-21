@@ -49,7 +49,7 @@ import {
   selectHumpRight,
 } from "./editing";
 import { enterInLineComment, lineCommentStyle, type LineCommentStyle } from "./comments";
-import { enterInBlockComment, enterInDocComment } from "./docComment";
+import { enterInBlockComment, enterInDocComment, enterInDocstring } from "./docComment";
 import { renderDocComments } from "./renderedDocs";
 import { skipClosingQuote, smartAngleBrackets, smartBackspace, smartBackspaceApplies, tabOut } from "./smartKeys";
 import { linkedTags } from "./linkedTags";
@@ -684,6 +684,7 @@ export function prefsExtension(o: PrefsOptions): Extension {
       { mac: "Mod-ArrowLeft", run: cursorLineStart, shift: selectLineStart, preventDefault: true },
     );
   if (!o.readOnly && k.insertDocStub) keys.push({ key: "Enter", run: enterInDocComment(o.language) });
+  if (!o.readOnly && k.insertDocStub && o.language === "python") keys.push({ key: "Enter", run: enterInDocstring });
   if (!o.readOnly) keys.push({ key: "Enter", run: enterInBlockComment }, { key: "Enter", run: enterInLineComment });
   if (!k.smartIndent) keys.push({ key: "Enter", run: insertNewlineKeepIndent });
   if (k.backspaceUnindent === "none") keys.push({ key: "Backspace", run: deleteCharBackwardStrict });
