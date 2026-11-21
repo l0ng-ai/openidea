@@ -636,6 +636,30 @@ export function unclosedQuote(code: string, language: string): string | null {
   return open;
 }
 
+/** A Python compound statement's header, which ends with `:`. */
+const PYTHON_HEAD =
+  /^\s*((async\s+)?(def|for|with)\b|(class|if|elif|while|except)\b|(else|try|finally)\s*$|(match|case)\s+(?![=:.([])\S)/;
+/** Languages with `=>` arrow functions. */
+const ARROW_LANGS = new Set(["javascript", "javascriptreact", "typescript", "typescriptreact", "dart", "csharp"]);
+const CLOSER: Record<string, string> = { "(": ")", "[": "]", "{": "}" };
+
+/** The closers for brackets `code` opens and leaves open, innermost first (string literals skipped). */
+function missingClosers(code: string): string {
+  const open: string[] = [];
+  let quote: string | null = null;
+  for (let i = 0; i < code.length; i++) {
+    const c = code[i]!;
+    if (quote) {
+      if (c === "\\") i++;
+      else if (c === quote) quote = null;
+    } else if (c === '"' || c === "'" || c === "`") quote = c;
+    else if (CLOSER[c]) open.push(CLOSER[c]!);
+    else if (c === open[open.length - 1]) open.pop();
+    else if (")]}".includes(c)) return "";
+  }
+  return quote ? "" : open.reverse().join("");
+}
+
 /** Offset in `text` where a trailing line comment starts (outside string literals), else `text.length`. */
 export function codeEnd(text: string, lineComment: string | undefined): number {
   if (!lineComment) return text.length;
@@ -683,6 +707,41 @@ export function completeStatementSpec(state: EditorState, language: string): Tra
       userEvent: "input.complete",
     };
   }
+  if (braces && !comment && ARROW_LANGS.has(language) && /=>$/.test(text)) {
+    // `const f = (x) =>` → a block body; brackets still open and the `;` follow it (`});`).
+    const open = missingClosers(text);
+    const semi = SEMICOLON_LANGS.has(language) && (open || /^\s*(export\s+)?(const|let|var)\b/.test(text)) ? ";" : "";
+    const from = line.from + text.length;
+    const insert = ` {${br}${baseIndent}${unit}${br}${baseIndent}}${open}${semi}`;
+    return {
+      changes: {
+        from,
+        to: line.from + full.length,
+        insert: insert.slice(0, 2) + full.slice(text.length) + insert.slice(2),
+      },
+      selection: { anchor: from + 2 + full.length - text.length + br.length + baseIndent.length + unit.length },
+      scrollIntoView: true,
+      userEvent: "input.complete",
+    };
+  }
+  // Brackets the line opened and left open (`foo(a`, `= { name: "Ada"`) close first.
+  let closers = comment || /[{,]$/.test(text) ? "" : missingClosers(text);
+  if (closers) {
+    // `{ name: "Ada"` → `{ name: "Ada" }`: the brace spaced like its opener, then the `;`.
+    if (closers.endsWith("}") && /\{\s/.test(text)) closers = closers.replace(/\}$/, " }");
+    if (closers.endsWith("}") && SEMICOLON_LANGS.has(language)) closers += ";";
+    const at = line.from + text.length;
+    const first = state.changes({ from: at, insert: closers });
+    const next = state.update({ changes: first, selection: { anchor: first.mapPos(line.to, 1) } }).state;
+    const rest = completeStatementSpec(next, language);
+    const second = next.changes(rest?.changes ?? []);
+    return {
+      changes: first.compose(second),
+      selection: rest?.selection ?? { anchor: first.mapPos(line.to, 1) },
+      scrollIntoView: true,
+      userEvent: "input.complete",
+    };
+  }
   if (braces && !comment && isBlockHead(text, language)) {
     const insert = ` {${br}${baseIndent}${unit}${br}${baseIndent}}`;
     const from = line.from + text.length;
@@ -702,8 +761,8 @@ export function completeStatementSpec(state: EditorState, language: string): Tra
   if (SEMICOLON_LANGS.has(language) && !comment && text.trim() && !/[;{},:]$/.test(text))
     insert = (unclosedQuote(text, language) ?? "") + ";";
   if (
-    (language === "python" || language === "gdscript") &&
-    BLOCK_HEAD.test(text.replace(/^\s*(def|elif|static\s+func)\b/, "if")) &&
+    ((language === "python" && PYTHON_HEAD.test(text)) ||
+      (language === "gdscript" && BLOCK_HEAD.test(text.replace(/^\s*(def|elif|static\s+func)\b/, "if")))) &&
     !text.endsWith(":")
   )
     insert = ":";
