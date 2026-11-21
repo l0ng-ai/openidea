@@ -52,7 +52,7 @@ function Host(props: {
   );
 }
 
-function moreItem(name: string) {
+function moreItem(name: string | RegExp) {
   const trigger = screen.getByRole("button", { name: "More Actions" });
   if (trigger.getAttribute("aria-expanded") !== "true") fireEvent.click(trigger);
   return screen.getByRole("menuitem", { name });
@@ -152,7 +152,16 @@ describe("TestTreeView", () => {
 });
 
 describe("Previous / Next Failed Test", () => {
-  beforeEach(() => localStorage.clear());
+  const navigate = vi.fn();
+  beforeEach(() => {
+    localStorage.clear();
+    onTestFinished(
+      registerActions([
+        { id: "navigate.prevOccurrence", title: "Previous Occurrence", run: () => void navigate(-1) },
+        { id: "navigate.nextOccurrence", title: "Next Occurrence", run: () => void navigate(1) },
+      ]),
+    );
+  });
   afterEach(() => vi.clearAllMocks());
 
   /** Two suites with failures in a nested suite and between passing tests. */
@@ -187,13 +196,13 @@ describe("Previous / Next Failed Test", () => {
     return step as { key: string; index: number; total: number } | null;
   };
   const selectedName = () => screen.getByRole("treeitem", { selected: true }).textContent;
-  const prev = () => screen.getByRole("button", { name: "Previous Failed Test" });
-  const next = () => screen.getByRole("button", { name: "Next Failed Test" });
+  const prev = () => moreItem(/^Previous Failed Test/);
+  const next = () => moreItem(/^Next Failed Test/);
 
   it("steps through the failed tests in tree order and stops at both ends", () => {
     render(<Nested results={nested()} />);
-    expect(prev()).toBeEnabled();
-    expect(next()).toBeEnabled();
+    expect(prev()).not.toHaveAttribute("aria-disabled", "true");
+    expect(next()).not.toHaveAttribute("aria-disabled", "true");
     expect(go(1)).toMatchObject({ index: 1, total: 3 });
     expect(selectedName()).toContain("rejects()");
     expect(go(1)).toMatchObject({ index: 2, total: 3 });
@@ -201,13 +210,13 @@ describe("Previous / Next Failed Test", () => {
     expect(go(1)).toMatchObject({ index: 3, total: 3 });
     expect(selectedName()).toContain("writes()");
     // IDEA doesn't wrap: Next is unavailable on the last failure, and the selection stays.
-    expect(next()).toBeDisabled();
-    expect(prev()).toBeEnabled();
+    expect(next()).toHaveAttribute("aria-disabled", "true");
+    expect(prev()).not.toHaveAttribute("aria-disabled", "true");
     expect(go(1)).toBeNull();
     expect(selectedName()).toContain("writes()");
     expect(go(-1)).toMatchObject({ index: 2 });
     expect(go(-1)).toMatchObject({ index: 1 });
-    expect(prev()).toBeDisabled();
+    expect(prev()).toHaveAttribute("aria-disabled", "true");
     expect(go(-1)).toBeNull();
     expect(selectedName()).toContain("rejects()");
   });
@@ -236,8 +245,8 @@ describe("Previous / Next Failed Test", () => {
 
   it("is unavailable when no test failed", () => {
     render(<Nested results={nested(false)} />);
-    expect(prev()).toBeDisabled();
-    expect(next()).toBeDisabled();
+    expect(prev()).toHaveAttribute("aria-disabled", "true");
+    expect(next()).toHaveAttribute("aria-disabled", "true");
     expect(go(1)).toBeNull();
     expect(go(-1)).toBeNull();
   });
@@ -245,10 +254,29 @@ describe("Previous / Next Failed Test", () => {
   it("runs Previous / Next Occurrence, so ⌘⌥↑ / ⌘⌥↓ do the same", () => {
     render(<Nested results={nested()} />);
     fireEvent.click(next());
-    expect(actions.executeAction).toHaveBeenCalledWith("navigate.nextOccurrence", undefined);
     fireEvent.click(prev());
-    expect(actions.executeAction).toHaveBeenCalledWith("navigate.prevOccurrence", undefined);
+    expect(navigate.mock.calls).toEqual([[1], [-1]]);
   });
+});
+
+it("remembers hidden row durations across test result sessions", () => {
+  localStorage.clear();
+  onTestFinished(() => localStorage.clear());
+  const results = new TestResults();
+  results.apply([{ type: "result", path: ["TestCheckout"], status: "failed", durationMs: 120 }]);
+  results.finish(1);
+  const view = (
+    <TestTreeView results={results} version={1} cwd="/p" selected={null} onSelect={() => {}} running={false} />
+  );
+  const { unmount } = render(view);
+  expect(screen.getByText("120 ms")).toBeVisible();
+  act(() => testTree.toggleDurations!());
+  expect(screen.queryByText("120 ms")).toBeNull();
+  unmount();
+  expect(testTree.toggleDurations).toBeNull();
+  render(view);
+  expect(screen.queryByText("120 ms")).toBeNull();
+  expect(testTree.showDurations).toBe(false);
 });
 
 describe("Expand All / Collapse All", () => {
