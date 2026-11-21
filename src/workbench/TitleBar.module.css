@@ -62,6 +62,14 @@
   gap: var(--space-1);
   min-width: 0;
 }
+.bar > .widget,
+.item:has([data-toolbar-label]) {
+  flex: none;
+}
+.bar [data-toolbar-label] {
+  min-inline-size: 0;
+  max-inline-size: min(var(--toolbar-label-width, 100vw), var(--toolbar-label-max, 100vw));
+}
 /* Main toolbar dropdown widgets. */
 .widget {
   min-width: 0;
@@ -256,13 +264,17 @@
   color: var(--fg-caption-close-hover);
 }
 
-/* A narrow window: tighter spacing, and the widgets give way (ellipsis) before anything overlaps. */
+/* A narrow window leaves more room for widgets and window controls. */
 @media (max-width: 560px) {
   .bar {
     gap: var(--space-0-5);
   }
   .widget {
     padding: 0 4px;
+  }
+  .item button:has(> [data-toolbar-label]) {
+    margin-inline: 0;
+    padding-inline: var(--space-1);
   }
   .tools {
     margin-left: 2px;
@@ -281,5 +293,17 @@
   }
   .caption {
     width: 28px;
+  }
+}
+
+/* The leading icons identify these dropdowns when the toolbar has to use its smallest spacing. */
+@media (max-width: 480px) {
+  .bar [data-toolbar-icon-dropdown] {
+    gap: var(--space-0-5);
+    min-inline-size: var(--h-control-small);
+    padding-inline: var(--space-0-5);
+  }
+  .bar [data-toolbar-icon-dropdown] > svg:last-child {
+    display: none;
   }
 }
