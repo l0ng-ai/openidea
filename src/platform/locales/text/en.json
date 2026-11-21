@@ -1,4 +1,9 @@
 {
+  "Code Style": "Code Style",
+  "{language} Code Style": "{language} Code Style",
+  "{width} space": "{width} space",
+  "{width} spaces": "{width} spaces",
+  "Tab ({tabSize})": "Tab ({tabSize})",
   "Timeline": "Timeline",
   "At breakpoint": "At breakpoint",
   "Replacement preview": "Replacement preview",
