@@ -432,7 +432,12 @@ export const lspTheme = EditorView.theme({
     outlineOffset: "-1px",
     borderRadius: "2px",
   },
-  ".cm-lsp-inplace-hint": { color: "var(--fg-secondary)", fontSize: "var(--fs-small)", padding: "3px 8px" },
+  ".cm-lsp-inplace-hint": {
+    color: "var(--fg-secondary)",
+    fontSize: "var(--fs-small)",
+    padding: "3px 8px",
+    cursor: "default",
+  },
   ".cm-lsp-inplace-suggestions": {
     listStyle: "none",
     margin: "0 -8px 4px",
@@ -442,7 +447,7 @@ export const lspTheme = EditorView.theme({
     fontSize: "var(--fs-ui)",
     color: "var(--fg)",
   },
-  ".cm-lsp-inplace-suggestions li": { padding: "1px 8px", cursor: "pointer" },
+  ".cm-lsp-inplace-suggestions li": { padding: "1px 8px" },
   ".cm-lsp-inplace-suggestions li:hover": { backgroundColor: "var(--bg-hover)" },
   ".cm-lsp-inplace-suggestion-active": { backgroundColor: "var(--bg-selected)" },
 
