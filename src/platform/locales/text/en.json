@@ -161,6 +161,8 @@
   "A finished pinned tab stays open: a later run opens a new tab instead of taking its place.": "A finished pinned tab stays open: a later run opens a new tab instead of taking its place.",
   "Cannot paste the image into {name}": "Cannot paste the image into {name}",
   "Worktree Conflict": "Worktree Conflict",
+  "New Worktree from '{name}'…": "New Worktree from '{name}'…",
+  "Create and Open Worktree": "Create and Open Worktree",
   "Branch '{branch}' is already checked out in a worktree at:\n{path}": "Branch '{branch}' is already checked out in a worktree at:\n{path}",
   "Checkout Anyway": "Checkout Anyway",
   "Open Existing Worktree": "Open Existing Worktree",
