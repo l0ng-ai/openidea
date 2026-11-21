@@ -72,6 +72,14 @@ test("long quick documentation scrolls with its actions in view", async ({ workb
     .toBeLessThanOrEqual(1);
   const body = popup.locator(".cm-lsp-markdown").locator("..");
   const last = popup.getByText("End of pricing documentation.");
+  // Repositioning after a viewport resize lands a frame later: read the actions once they settle.
+  await expect
+    .poll(async () => {
+      const first = await more.boundingBox();
+      await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+      return JSON.stringify(first) === JSON.stringify(await more.boundingBox());
+    })
+    .toBe(true);
   const actionsBefore = (await more.boundingBox())!;
   await expect(body.locator("pre")).toContainText(signature);
   const scroll = await body.evaluate((node) => {
