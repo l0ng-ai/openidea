@@ -11,6 +11,7 @@ import { kotlin, csharp } from "@codemirror/legacy-modes/mode/clike";
 import { validateEditorExtras } from "@/platform/editorSettings";
 import {
   autoIndentBackspace,
+  enterInStringLiteral,
   insertTab,
   smartBackspace,
   smartBackspaceApplies,
@@ -72,6 +73,36 @@ function show(view: EditorView): string {
       : out.slice(0, r.from) + "[" + out.slice(r.from, r.to) + "]" + out.slice(r.to);
   return out;
 }
+
+describe("Enter in a string literal", () => {
+  const enter = (text: string, language: string, ext: Extension) => {
+    const v = make(text, ext, "    ");
+    const handled = enterInStringLiteral(language)(v);
+    return handled ? show(v) : null;
+  };
+
+  it("splits a Java string into two joined with +, keeping the value", () => {
+    expect(enter('class A {\n    String t = "hello|world";\n}', "java", java())).toBe(
+      'class A {\n    String t = "hello" +\n            "|world";\n}',
+    );
+  });
+
+  it("uses the literal's own quote in JavaScript", () => {
+    expect(enter("const t = 'ab|cd';", "javascript", javascript())).toBe("const t = 'ab' +\n    '|cd';");
+  });
+
+  it("leaves text blocks, escapes, other languages and positions outside the literal alone", () => {
+    expect(enter('String t = """\n  a|b\n  """;', "java", java())).toBeNull();
+    expect(enter('String t = "a\\|nb";', "java", java())).toBeNull();
+    expect(enter('String t = |"ab";', "java", java())).toBeNull();
+    expect(enter('t = "a|b"', "python", [])).toBeNull();
+    expect(enter("char c = 'a|';", "java", java())).toBeNull();
+  });
+
+  it("splits after an escaped backslash", () => {
+    expect(enter('String t = "a\\\\|b";', "java", java())).toBe('String t = "a\\\\" +\n        "|b";');
+  });
+});
 
 describe("tab", () => {
   it("inserts whitespace up to the next indent stop at each caret", () => {

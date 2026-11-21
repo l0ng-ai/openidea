@@ -52,6 +52,7 @@ import { enterInLineComment, lineCommentStyle, type LineCommentStyle } from "./c
 import { enterInBlockComment, enterInDocComment } from "./docComment";
 import { renderDocComments } from "./renderedDocs";
 import {
+  enterInStringLiteral,
   semicolonAtStatementEnd,
   skipClosingQuote,
   smartAngleBrackets,
@@ -692,7 +693,12 @@ export function prefsExtension(o: PrefsOptions): Extension {
       { mac: "Mod-ArrowLeft", run: cursorLineStart, shift: selectLineStart, preventDefault: true },
     );
   if (!o.readOnly && k.insertDocStub) keys.push({ key: "Enter", run: enterInDocComment(o.language) });
-  if (!o.readOnly) keys.push({ key: "Enter", run: enterInBlockComment }, { key: "Enter", run: enterInLineComment });
+  if (!o.readOnly)
+    keys.push(
+      { key: "Enter", run: enterInBlockComment },
+      { key: "Enter", run: enterInLineComment },
+      { key: "Enter", run: enterInStringLiteral(o.language ?? "") },
+    );
   if (!k.smartIndent) keys.push({ key: "Enter", run: insertNewlineKeepIndent });
   if (k.backspaceUnindent === "none") keys.push({ key: "Backspace", run: deleteCharBackwardStrict });
   else if (smartBackspaceApplies(k.backspaceUnindent, o.language)) keys.push({ key: "Backspace", run: smartBackspace });
