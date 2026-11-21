@@ -3,6 +3,7 @@ import {
   openFileExternally,
   opensExternally,
   registerExternalFileOpenHandler,
+  registerExternalOpenSuppression,
   type ExternalFileOpenHandler,
 } from "./contributions";
 
@@ -76,5 +77,18 @@ describe("external file openers", () => {
     expect(await openFileExternally("/p/a.xlsx")).toBe(true);
     dispose();
     expect(await openFileExternally("/p/a.xlsx")).toBe(false);
+  });
+
+  it("skips associated apps when a default custom editor claims the path", async () => {
+    const open = vi.fn(() => true);
+    register({ id: "pdf", matches: (p) => p.endsWith(".pdf"), open });
+    const dispose = registerExternalOpenSuppression("plugin.pdf-reader", (p) => p.endsWith(".pdf"));
+    disposers.push(dispose);
+    expect(opensExternally("/p/a.pdf")).toBe(false);
+    expect(await openFileExternally("/p/a.pdf")).toBe(false);
+    expect(open).not.toHaveBeenCalled();
+    dispose();
+    expect(opensExternally("/p/a.pdf")).toBe(true);
+    expect(await openFileExternally("/p/a.pdf")).toBe(true);
   });
 });

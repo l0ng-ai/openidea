@@ -1,0 +1,58 @@
+.field,
+.shellControls {
+  width: 100%;
+}
+
+.shellControls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.shellControls > input {
+  flex: 1;
+  min-width: 0;
+}
+
+.families {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(265px, 100%), 1fr));
+  column-gap: var(--space-4);
+}
+
+.fontPicker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.metrics {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: var(--space-4);
+}
+
+.metrics > div {
+  margin-inline: 0;
+  padding-inline: 0;
+}
+
+.options > div:first-child {
+  grid-template-columns: repeat(auto-fit, minmax(min(245px, 100%), 1fr));
+}
+
+@container settings-content (max-width: 440px) {
+  section .textRow[class] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .textRow > label {
+    padding-top: 0;
+  }
+
+  .textRow > :last-child {
+    grid-column: 1;
+  }
+}

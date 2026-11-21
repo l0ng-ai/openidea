@@ -181,7 +181,7 @@ describe("catalog", () => {
 });
 
 describe("Refactor This", () => {
-  it("lists only the refactorings applicable at the caret, in IDEA order", async () => {
+  it("lists applicable refactorings in menu order and groups extraction actions", async () => {
     prepare = ok({ start: { line: 0, col: 0 }, end: { line: 0, col: 1 } });
     query = answer([
       action("Inline variable", "refactor.inline"),
@@ -190,7 +190,9 @@ describe("Refactor This", () => {
       action("Extract into function", "refactor.extract", "Can't extract here"),
     ]);
     await refactorThis(editor(), vi.fn());
-    expect(labels()).toEqual(["Rename…", "Safe Delete…", "Introduce Variable…", "Inline…", "Convert to raw string"]);
+    expect(labels()).toEqual(["Rename…", "Introduce Variable…", "Inline…", "Safe Delete…", "Convert to raw string"]);
+    const popup = useLspPopup.getState().popup;
+    expect(popup?.kind === "list" && popup.items[1]?.section?.label).toBe("Extract/Introduce");
     // IDEA's numbered list: 1-9 run a row directly.
     expect((useLspPopup.getState().popup as { numbered?: boolean }).numbered).toBe(true);
     expect(lspCodeActionQuery).toHaveBeenCalledOnce();

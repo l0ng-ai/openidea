@@ -98,6 +98,20 @@
   color: var(--fg-subtle);
   font-family: var(--font-ui);
 }
+.sourceLabels {
+  font-size: var(--fs-ui);
+}
+.sourceLabels .label {
+  font-family: var(--font-ui);
+}
+.sourceLabels .labelText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sourceLabels .labelFile {
+  font-size: var(--fs-small);
+}
 .badge {
   padding: 0 5px;
   border-radius: var(--radius-small);

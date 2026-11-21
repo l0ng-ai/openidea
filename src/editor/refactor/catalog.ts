@@ -28,6 +28,7 @@ export interface Refactoring {
   /** Action id (keymaps, menu). */
   action: string;
   label: string;
+  section?: { id: string; label?: string };
   /** LSP kind prefix that can produce it; null for client-side refactorings. */
   kind: string | null;
   /** IDEA's reason when nothing applies at the caret / selection. */
@@ -35,6 +36,9 @@ export interface Refactoring {
 }
 
 const AT_NAME = "Caret should be positioned at the name of the element to be refactored";
+const EXTRACT = { id: "extract", label: "Extract/Introduce" };
+const MOVE = { id: "move" };
+const HIERARCHY = { id: "hierarchy" };
 
 /** IDEA's Refactor This order. */
 export const REFACTORINGS: readonly Refactoring[] = [
@@ -52,26 +56,11 @@ export const REFACTORINGS: readonly Refactoring[] = [
     kind: "refactor.rewrite",
     reason: () => "Caret should be positioned at the name of the function or method to be refactored",
   },
-  { id: "move", action: "refactor.move", label: "Move…", kind: "refactor.move", reason: () => AT_NAME },
-  {
-    id: "safeDelete",
-    action: "refactor.safeDelete",
-    label: "Safe Delete…",
-    kind: null,
-    reason: () => "Caret should be on a symbol",
-  },
-  {
-    id: "extractMethod",
-    action: "refactor.extractMethod",
-    label: "Extract Method…",
-    kind: "refactor.extract",
-    reason: (sel) =>
-      sel ? "Selected block should represent a set of statements or an expression" : "Select the code to extract",
-  },
   {
     id: "extractVariable",
     action: "refactor.extractVariable",
     label: "Introduce Variable…",
+    section: EXTRACT,
     kind: "refactor.extract",
     reason: (sel) => (sel ? "Selected block should represent an expression" : "Caret should be inside an expression"),
   },
@@ -79,6 +68,7 @@ export const REFACTORINGS: readonly Refactoring[] = [
     id: "extractConstant",
     action: "refactor.extractConstant",
     label: "Introduce Constant…",
+    section: EXTRACT,
     kind: "refactor.extract",
     reason: (sel) => (sel ? "Selected block should represent an expression" : "Caret should be inside an expression"),
   },
@@ -86,6 +76,7 @@ export const REFACTORINGS: readonly Refactoring[] = [
     id: "extractField",
     action: "refactor.extractField",
     label: "Introduce Field…",
+    section: EXTRACT,
     kind: "refactor.extract",
     reason: (sel) =>
       sel ? "Selected block should represent an expression" : "Caret should be inside an expression in a class",
@@ -94,22 +85,50 @@ export const REFACTORINGS: readonly Refactoring[] = [
     id: "extractParameter",
     action: "refactor.extractParameter",
     label: "Introduce Parameter…",
+    section: EXTRACT,
     kind: "refactor.extract",
     reason: (sel) =>
       sel ? "Selected block should represent an expression" : "Caret should be inside an expression in a function",
   },
   {
+    id: "extractMethod",
+    action: "refactor.extractMethod",
+    label: "Extract Method…",
+    section: EXTRACT,
+    kind: "refactor.extract",
+    reason: (sel) =>
+      sel ? "Selected block should represent a set of statements or an expression" : "Select the code to extract",
+  },
+  {
     id: "extractInterface",
     action: "refactor.extractInterface",
     label: "Extract Interface…",
+    section: EXTRACT,
     kind: null,
     reason: () => "Caret should be inside a class",
   },
-  { id: "inline", action: "refactor.inline", label: "Inline…", kind: "refactor.inline", reason: () => AT_NAME },
+  {
+    id: "inline",
+    action: "refactor.inline",
+    label: "Inline…",
+    section: { id: "inline" },
+    kind: "refactor.inline",
+    reason: () => AT_NAME,
+  },
+  { id: "move", action: "refactor.move", label: "Move…", section: MOVE, kind: "refactor.move", reason: () => AT_NAME },
+  {
+    id: "safeDelete",
+    action: "refactor.safeDelete",
+    label: "Safe Delete…",
+    section: MOVE,
+    kind: null,
+    reason: () => "Caret should be on a symbol",
+  },
   {
     id: "pullMembersUp",
     action: "refactor.pullMembersUp",
     label: "Pull Members Up…",
+    section: HIERARCHY,
     kind: null,
     reason: () => "Caret should be inside a class that has members to pull up",
   },
@@ -117,6 +136,7 @@ export const REFACTORINGS: readonly Refactoring[] = [
     id: "pushMembersDown",
     action: "refactor.pushMembersDown",
     label: "Push Members Down…",
+    section: HIERARCHY,
     kind: null,
     reason: () => "Caret should be inside a class that has members to push down",
   },

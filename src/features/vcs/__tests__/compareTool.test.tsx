@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 
 const mocks = vi.hoisted(() => ({
   worktree: vi.fn(),
@@ -165,6 +165,36 @@ describe("CompareToolWindow", () => {
     render(<ChangesBetweenDialog from={from} to={{ rev: "next", label: "next" }} onClose={() => {}} />);
     expect(await screen.findByTestId("icon-file-java")).toBeInTheDocument();
     expect(mocks.presentations).not.toHaveBeenCalled();
+  });
+
+  it("opens the selected revision diff from the native comparison toolbar", async () => {
+    mocks.revisions.mockResolvedValue({ status: "ok", data: [modified] });
+    const onShowDiff = vi.fn();
+    const onClose = vi.fn();
+    render(
+      <ChangesBetweenDialog
+        from={from}
+        to={{ rev: "next", label: "next" }}
+        onClose={onClose}
+        onShowDiff={onShowDiff}
+        native
+      />,
+    );
+
+    const toolbar = screen.getByRole("toolbar", { name: "Comparison actions" });
+    const showDiff = within(toolbar).getByRole("button", { name: "Show Diff" });
+    expect(showDiff).toBeDisabled();
+    fireEvent.mouseDown(await screen.findByText("app.ts"), { button: 0 });
+    expect(await screen.findByTestId("diff")).toBeInTheDocument();
+    expect(showDiff).toBeEnabled();
+    fireEvent.click(showDiff);
+    expect(onShowDiff).toHaveBeenCalledWith({
+      path: "/workspace/client/src/app.ts",
+      left: { type: "rev", rev: "main", label: "main", path: undefined },
+      right: { type: "rev", rev: "next", label: "next" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(onClose).toHaveBeenCalledOnce();
   });
 
   it("lists files without an inline diff and opens a file's diff in the editor", async () => {

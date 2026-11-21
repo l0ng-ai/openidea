@@ -44,7 +44,7 @@ import { currentRepo, currentRepoRoot, useVcs } from "../store";
 import { ColumnHeaders } from "./ColumnHeaders";
 import { CommitSignature } from "./CommitMessage";
 import { CommitRow } from "./CommitRow";
-import { ROW, type LogColumn, type RowEvents } from "./shared";
+import { ROW, SUBJECT_COLUMN, type LogColumn, type RowEvents } from "./shared";
 
 const remoteNameSets = new WeakMap<readonly string[], ReadonlySet<string>>();
 
@@ -56,7 +56,7 @@ function rowRemoteNames(own: readonly string[] | undefined, shared: ReadonlySet<
   return set;
 }
 
-export function CommitList() {
+export function CommitList({ fileHistory = false }: { fileHistory?: boolean }) {
   const scope = useContext(LogIdContext);
   const shown = useGitLog((s) => s.shownLog);
   const active = !scope || scope === shown;
@@ -76,7 +76,12 @@ export function CommitList() {
       return (c.logPosition ?? 0) > 0;
     });
   }, [all]);
-  const opts = useLogOptions();
+  const options = useLogOptions();
+  const opts = useMemo(() => {
+    if (!fileHistory || options.columnOrder.includes(SUBJECT_COLUMN.id)) return options;
+    const extraColumns = options.columnOrder.filter((id) => id !== "author" && id !== "date");
+    return { ...options, columnOrder: ["author", "date", SUBJECT_COLUMN.id, ...extraColumns] };
+  }, [fileHistory, options]);
   const ChecksCell = useGitLogChecks((s) => s.cell);
   const bookmarks = useGitLog((s) => s.bookmarks);
   const fragments = useGitLog((s) => s.fragments);
