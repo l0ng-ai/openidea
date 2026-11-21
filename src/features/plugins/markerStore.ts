@@ -1,7 +1,7 @@
 /** Gutter markers of document indexers for the files open in editors: bounded IPC, no file reads. */
 import { create } from "zustand";
 import { call, commands, isTauri, type FileMarkers } from "@/platform/ipc";
-import { navigationEpoch, onNavigationProvidersChanged } from "@/editor/navigationProviders";
+import { navigationEpoch, onNavigationProvidersChanged } from "@/editor/api";
 
 export const usePluginMarkers = create<{ entries: ReadonlyMap<string, FileMarkers> }>(() => ({
   entries: new Map(),

@@ -245,6 +245,28 @@
 .shortcut {
   font-family: var(--font-keys);
 }
+.copyPathPopup {
+  width: 500px;
+  min-width: 0;
+  max-width: calc(100vw - 12px);
+}
+.copyPathPopup .listMain,
+.copyPathPopup .listBody {
+  flex-shrink: 1;
+  min-height: 0;
+}
+.copyPathPopup .label {
+  flex: 0 1 auto;
+  max-width: 60%;
+}
+.copyPathPopup .preview {
+  flex: 1;
+  min-width: 0;
+  direction: rtl;
+  text-align: start;
+  font: inherit;
+  color: var(--fg-subtle);
+}
 .itemIcon {
   flex: none;
   color: var(--fg-muted);

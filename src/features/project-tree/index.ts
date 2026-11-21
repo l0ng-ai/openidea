@@ -4,7 +4,12 @@ import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { userScopes } from "@/platform/scopes";
 import { useBuildModel } from "@/platform/buildModel";
-import { effectiveContentRoots, validateProjectStructure, type RootFolder } from "@/platform/languageSettings";
+import {
+  effectiveContentRoots,
+  effectiveRoots,
+  validateProjectStructure,
+  type RootFolder,
+} from "@/platform/languageSettings";
 import { useProject } from "@/platform/project";
 import { initProjectRoots, useProjectRoots } from "@/platform/projectRoots";
 import { folderIconName } from "@/ui";
@@ -110,10 +115,16 @@ export function activate(): () => void {
       ]);
     if (s.settings !== prev.settings && prev.settings && ex(s.settings) !== ex(prev.settings)) void reloadAll();
   });
-  // …and so do excluded roots detected from build files (`target`, `node_modules`, …).
+  // …and so do excluded roots detected from build files (`target`, `node_modules`, …) and
+  // the excluded folders of attached projects.
   const disposeRoots = initProjectRoots();
-  const detectedExcluded = (s: { root: string | null; detected: readonly RootFolder[] }) =>
-    JSON.stringify([s.root, s.detected.filter((r) => r.kind === "excluded").map((r) => r.path)]);
+  const excludedOf = (roots: readonly RootFolder[]) => roots.filter((r) => r.kind === "excluded").map((r) => r.path);
+  const detectedExcluded = (s: ReturnType<typeof useProjectRoots.getState>) =>
+    JSON.stringify([
+      s.root,
+      excludedOf(s.detected),
+      s.attached.map((p) => [p.root, excludedOf(effectiveRoots(p.detected, p.structure))]),
+    ]);
   const unsubRoots = useProjectRoots.subscribe((s, prev) => {
     if (s.root && s.root === prev.root && detectedExcluded(s) !== detectedExcluded(prev)) void reloadAll();
   });

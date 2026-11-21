@@ -117,6 +117,9 @@
 .hint {
   min-height: 1.5em;
 }
+.hint.hintError {
+  color: var(--danger);
+}
 .fieldHint {
   margin-top: 4px;
 }

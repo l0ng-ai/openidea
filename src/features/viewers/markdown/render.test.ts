@@ -51,6 +51,69 @@ describe("front matter", () => {
 });
 
 describe("markdown preview rendering", () => {
+  it("links repeated footnote references to a multiline definition and back to each citation", () => {
+    const text = [
+      "Ayer et al. [^10], again [^10].",
+      "",
+      "[^10]: Ayer et al. (1955).",
+      "",
+      "    [Paper](https://doi.org/10.1214/aoms/1177728423).",
+      "",
+      "## Appendix",
+    ].join("\n");
+    const root = document.createElement("div");
+    root.innerHTML = createMarkdownRenderer()(text);
+    const note = root.querySelector('[role="doc-footnote"]')!;
+    const citations = [...root.querySelectorAll('sup > [role="doc-noteref"]')];
+    const backlinks = [...note.querySelectorAll('[role="doc-backlink"]')];
+    expect(citations.map((link) => [link.textContent, link.getAttribute("href")])).toEqual([
+      ["[1]", "#user-content-footnote:1"],
+      ["[1]", "#user-content-footnote:1"],
+    ]);
+    expect(note.id).toBe("user-content-footnote:1");
+    expect(note.closest("[data-line]")?.getAttribute("data-line")).toBe("6");
+    expect(note.querySelector('a[href^="https:"]')?.textContent).toBe("Paper");
+    expect(backlinks.map((link) => link.getAttribute("href"))).toEqual(citations.map((link) => "#" + link.id));
+    expect(backlinks.map((link) => link.parentElement)).toEqual([
+      note.querySelector("p:last-child"),
+      note.querySelector("p:last-child"),
+    ]);
+    expect(note.closest("[data-line]")?.previousElementSibling?.textContent?.trim()).toBe("Appendix");
+  });
+
+  it("puts footnotes after the document body in citation order even when the definitions are out of order", () => {
+    const text = "First [^a], second [^b].\n\n[^b]: Second note.\n\n[^a]: First note.\n\n## Appendix";
+    const root = document.createElement("div");
+    root.innerHTML = renderMarkdown(text);
+    const endnotes = root.lastElementChild?.firstElementChild;
+    expect(endnotes?.getAttribute("role")).toBe("doc-endnotes");
+    expect(endnotes?.firstElementChild?.tagName).toBe("HR");
+    expect(root.children[1]?.textContent?.trim()).toBe("Appendix");
+    expect(
+      [...endnotes!.querySelectorAll(':scope > [role="doc-footnote"]')].map((note) => [
+        note.firstElementChild?.textContent,
+        note.querySelector("p")?.textContent,
+      ]),
+    ).toEqual([
+      ["1", "First note. ↩"],
+      ["2", "Second note. ↩"],
+    ]);
+  });
+
+  it("keeps code and unresolved footnotes literal and numbers each preview independently", () => {
+    const render = createMarkdownRenderer();
+    const text = "Known [^a], missing [^b], code `[^a]`.\n\n[^a]: A note.\n\n```md\n[^b]: Code\n```";
+    const first = render(text);
+    const root = document.createElement("div");
+    root.innerHTML = render("Other [^c].\n\n[^c]: Other note.");
+    expect(root.querySelector('[role="doc-noteref"]')?.textContent).toBe("[1]");
+    expect(render(text)).toBe(first);
+    root.innerHTML = first;
+    expect(root.querySelector("code")?.textContent).toBe("[^a]");
+    expect(root.querySelector("p")?.textContent).toBe("Known [1], missing [^b], code [^a].");
+    expect(root.querySelectorAll('[role="doc-footnote"]')).toHaveLength(1);
+  });
+
   it("tags blocks with their source line", () => {
     const html = renderMarkdown("# Title\n\nPara one\nstill one\n\n- a\n- b\n");
     const root = document.createElement("div");
@@ -280,6 +343,19 @@ describe("markdown preview rendering", () => {
     expect(previewLineAtOffset(blocks, 250)).toBe(10);
     expect(previewLineAtOffset(blocks, 5000)).toBe(20);
     expect(previewLineAtOffset([], 50)).toBe(0);
+  });
+
+  it("reads only the offsets needed to locate the last block at the viewport top", () => {
+    let reads = 0;
+    const blocks = Array.from({ length: 1024 }, (_, line) => ({
+      line,
+      get top() {
+        reads++;
+        return Math.floor(line / 2) * 20;
+      },
+    }));
+    expect(previewLineAtOffset(blocks, 999)).toBe(101);
+    expect(reads).toBe(10);
   });
 
   it("renders LaTeX math blocks with source lines and inline math", () => {

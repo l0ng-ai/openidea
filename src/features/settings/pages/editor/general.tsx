@@ -771,7 +771,7 @@ const SMART_KEYS = editorPage({
   id: "editor.general.smartKeys",
   title: "Smart Keys",
   order: 9,
-  keywords: ["brackets", "quotes", "home", "camel humps", "paste", "indent"],
+  keywords: ["brackets", "quotes", "home", "camel humps", "paste", "indent", "semicolon"],
   sections: [
     {
       items: [
@@ -791,6 +791,12 @@ const SMART_KEYS = editorPage({
         },
         { t: "check", key: `${P}.smartKeys.surroundSelection`, label: "Surround selection on typing quote or brace" },
         { t: "check", key: `${P}.smartKeys.tabOutOfPair`, label: "Jump outside closing bracket/quote with Tab" },
+        {
+          t: "check",
+          key: `${P}.smartKeys.semicolonAtStatementEnd`,
+          label: "Move ';' typed before ')' to the end of the statement",
+          hint: "In foo(bar|), typing ; gives foo(bar);|. Only when nothing but ) follows the caret; not in for headers, strings or comments.",
+        },
         { t: "check", key: `${P}.smartKeys.simultaneousTagEditing`, label: "Simultaneous <tag></tag> editing" },
       ],
     },

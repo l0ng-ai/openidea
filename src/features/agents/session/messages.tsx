@@ -5,7 +5,7 @@ import { basename } from "@/platform/project";
 import { copyText, fileIconName, Icon, IconButton, T } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import clsx from "clsx";
-import { memo, useLayoutEffect, useRef, useState } from "react";
+import { memo, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { AgentReply, MessageActions, ReplyActions } from "../AgentReply";
 import { ImagePreview, imageSrc } from "../ImagePreview";
 import { ReferencedText } from "../ReferenceChip";
@@ -18,7 +18,7 @@ import { useAgentErrorText } from "../loginHint";
 import { isBusy, type ReplyTimes, type ReplyTurn } from "../model";
 import { useRevealedText } from "../reveal";
 import { forkTask, rerunFrom, resendMessage } from "../store";
-import { PermissionLine } from "./QuestionForm";
+import { PermissionLine, QuestionForm, type QuestionAnswer } from "./QuestionForm";
 import { type UserEntry } from "./shared";
 import { SubagentCard, ThoughtEntry, ToolEntry } from "./toolEntries";
 
@@ -101,6 +101,7 @@ export const Entry = memo(function Entry({
   time,
   thoughtMs,
   working,
+  drafts,
   onOpenSubagent,
   onDiagramDrawn,
 }: {
@@ -115,6 +116,8 @@ export const Entry = memo(function Entry({
   /** How long a finished thought took. */
   thoughtMs?: number | null;
   working: boolean;
+  /** Answers in flight, kept across entry reloads so a refresh doesn't lose what was typed. */
+  drafts: RefObject<Map<string, QuestionAnswer[]>>;
   onOpenSubagent: (id: string) => void;
   onDiagramDrawn: () => void;
 }) {
@@ -190,8 +193,11 @@ export const Entry = memo(function Entry({
         </div>
       );
     case "permission":
-      // Waiting for an answer, it is asked above the composer; the conversation keeps the record.
-      return entry.chosen || entry.questions?.length ? <PermissionLine task={task} entry={entry} /> : null;
+      // An open AskUserQuestion is the card itself, scrolling with the conversation; answered,
+      // the record stays. Permission forms and plain approvals wait above the composer.
+      if (entry.chosen) return <PermissionLine task={task} entry={entry} />;
+      if (!entry.questions?.length) return null;
+      return <QuestionForm key={entry.id} task={task} entry={entry} questions={entry.questions} drafts={drafts} />;
     case "question":
       return (
         <div className={clsx(styles.permissionLine, entry.chosen ? styles.permissionDone : styles.permissionAsking)}>

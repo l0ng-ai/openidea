@@ -326,8 +326,8 @@ function LogView({ conn, container, running }: { conn: string; container: Docker
         ariaLabel={tx("Container log")}
         start={(onLine, onError, on) => {
           const request = nextRequestId();
-          const channel = new Channel<DockerLogLine>();
-          channel.onmessage = onLine;
+          const channel = new Channel<DockerLogLine[]>();
+          channel.onmessage = (lines) => lines.forEach(onLine);
           call(commands.dockerLogs(request, endpointOf(conn), id, 1000, running, on.has("timestamps"), channel)).catch(
             (e) => {
               if (!isCancelled(e)) onError(errorMessage(e));

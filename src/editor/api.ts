@@ -40,6 +40,15 @@ import { rootOfPath } from "@/platform/projectRoots";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { cornerInset } from "@/editor/core/cm/cornerInset";
 export { iconAreaSource, mapLineStart, type IconAreaSource } from "@/editor/core/cm/iconArea";
+export {
+  invalidateNavigationProviders,
+  navigationEpoch,
+  onNavigationProvidersChanged,
+  registerNavigationProvider,
+  type NavigationMatch,
+} from "@/editor/navigationProviders";
+export { registerRelatedProvider, type RelatedContext, type RelatedItem } from "@/editor/relatedProviders";
+export { offsetsToRange, offsetToPos, posToOffset, rangeToOffsets } from "@/editor/lsp/positions";
 
 /** Documents above this size (UTF-16 units) skip per-line decorations. */
 export const HEAVY_LIMIT = 8_000_000;
