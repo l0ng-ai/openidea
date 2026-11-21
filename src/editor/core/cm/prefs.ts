@@ -52,6 +52,7 @@ import { enterInLineComment, lineCommentStyle, type LineCommentStyle } from "./c
 import { enterInBlockComment, enterInDocComment } from "./docComment";
 import { renderDocComments } from "./renderedDocs";
 import {
+  skipClosingBracket,
   enterInStringLiteral,
   semicolonAtStatementEnd,
   skipClosingQuote,
@@ -688,6 +689,7 @@ export function prefsExtension(o: PrefsOptions): Extension {
   if (k.pairBrackets && !o.readOnly) out.push(smartAngleBrackets(o.language));
   if (!k.surroundSelection) out.push(Prec.highest(noSurround));
   if (k.pairQuotes) out.push(Prec.highest(skipClosingQuote));
+  if (k.pairBrackets && !o.readOnly) out.push(Prec.highest(skipClosingBracket));
   if (k.tabOutOfPair) out.push(tabOut);
   if (!o.readOnly && k.semicolonAtStatementEnd) out.push(semicolonAtStatementEnd(o.language));
   // Simultaneous `<tag></tag>` editing, from the syntax tree: every mode whose outer
