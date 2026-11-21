@@ -21,6 +21,7 @@ import { iconAreaSource, mapLineStart } from "@/editor/core/cm/iconArea";
 import { isLibrarySource, shownAgain, type EditorDocContext } from "@/editor/api";
 import { docOf, debounce, isUnavailable, lspRequest } from "@/editor/lsp/lsp";
 import { featureBackoff, onServerSettled } from "@/editor/lsp/availability";
+import { isNavigating, onNavigation } from "@/editor/lsp/foreground";
 import { readManyFileLines, withDocument } from "@/editor/lsp/files";
 import { locationItems, navigateTo, pinToFind } from "@/editor/lsp/navigation";
 import { openPopup } from "@/editor/lsp/popupStore";
@@ -122,6 +123,14 @@ function watchChanges() {
     docMarkers.clear();
     forgetInheritanceGraph();
     for (const plugin of live) plugin.refreshSoon();
+  });
+  // Go to Declaration and the like go first: in-flight marker requests are cancelled and
+  // asked again once the navigation is done.
+  onNavigation((navigating) => {
+    for (const plugin of live) {
+      if (navigating) plugin.yieldToNavigation();
+      else plugin.resumeAfterNavigation();
+    }
   });
 }
 
@@ -642,6 +651,8 @@ class MarkersPlugin {
   private refresh = debounce(() => void this.run(), DEBOUNCE_MS);
   private generation = 0;
   private skipped = false;
+  /** A pass was cancelled or held back by a navigation: run again once it is done. */
+  private yielded = false;
   private request: RequestId | null = null;
   private offSettings: () => void;
 
@@ -655,6 +666,19 @@ class MarkersPlugin {
   }
 
   refreshSoon() {
+    this.refresh();
+  }
+
+  yieldToNavigation() {
+    if (this.request === null) return;
+    this.generation++;
+    this.cancelRequest();
+    this.yielded = true;
+  }
+
+  resumeAfterNavigation() {
+    if (!this.yielded) return;
+    this.yielded = false;
     this.refresh();
   }
 
@@ -688,6 +712,10 @@ class MarkersPlugin {
     if (this.skipped) return;
     const ctx = docOf(view);
     if (!ctx) return;
+    if (isNavigating()) {
+      this.yielded = true;
+      return;
+    }
     const gen = ++this.generation;
     this.cancelRequest();
     const groups = enabledGroups(editorPrefs());
@@ -702,12 +730,10 @@ class MarkersPlugin {
       if (!entry.outline) {
         const items = await lspRequest(() => commands.docOutline(ctx.doc));
         if (stale()) return;
-        entry.outline = {
-          items,
-          candidates: markerCandidates(items, (l) => (l < text.lines ? text.line(l + 1).text : ""), {
-            implicitInterfaces: ctx.language === "go",
-          }),
-        };
+        const candidates = markerCandidates(items, (l) => (l < text.lines ? text.line(l + 1).text : ""), {
+          implicitInterfaces: ctx.language === "go",
+        });
+        entry.outline = { items, candidates: isLibrarySource(ctx) ? libraryCandidates(candidates) : candidates };
       }
       const { candidates, items } = entry.outline;
       const { from, to } = view.viewport;
@@ -736,6 +762,14 @@ class MarkersPlugin {
   }
 }
 
+/**
+ * In a library every method's overriders would be searched for across the whole project,
+ * one search per visible method: only its classes and interfaces get ↓ markers.
+ */
+export function libraryCandidates(candidates: readonly MarkerCandidate[]): MarkerCandidate[] {
+  return candidates.map((c) => (c.method && c.inheritable ? { ...c, inheritable: false } : c));
+}
+
 /** LSP access for one pass: this document's outline as known, others' opened on demand, each asked once. */
 export function markerDeps(
   ctx: EditorDocContext,
@@ -748,13 +782,8 @@ export function markerDeps(
   const outlines = new Map<string, Promise<OutlineItem[]>>([[ctx.path, Promise.resolve(items)]]);
   const hierarchy = (doc: number, pos: Pos, direction: "incoming" | "outgoing") =>
     lspRequest(() => commands.lspTypeHierarchy(doc, pos, direction));
-  // In a library the server would search the whole project for each declaration's inheritors;
-  // ↓ there comes from the Python inheritance graph only, ↑ (supertypes) stays.
-  const library = isLibrarySource(ctx);
   return {
-    implementations: library
-      ? async (positions) => positions.map(() => [])
-      : (positions) => lspRequest(() => commands.lspImplementations(request, ctx.doc, positions)),
+    implementations: (positions) => lspRequest(() => commands.lspImplementations(request, ctx.doc, positions)),
     supers: {
       supertypes: (path, pos) => {
         const key = `${path}:${pos.line}:${pos.col}`;
@@ -772,20 +801,18 @@ export function markerDeps(
         }
         return p;
       },
-      subtypes: library
-        ? undefined
-        : (path, pos) => {
-            const key = `${path}:${pos.line}:${pos.col}`;
-            let p = subtypes.get(key);
-            if (!p) {
-              p =
-                path === ctx.path
-                  ? hierarchy(ctx.doc, pos, "outgoing")
-                  : withDocument(path, (doc) => hierarchy(doc, pos, "outgoing"));
-              subtypes.set(key, p);
-            }
-            return p;
-          },
+      subtypes: (path, pos) => {
+        const key = `${path}:${pos.line}:${pos.col}`;
+        let p = subtypes.get(key);
+        if (!p) {
+          p =
+            path === ctx.path
+              ? hierarchy(ctx.doc, pos, "outgoing")
+              : withDocument(path, (doc) => hierarchy(doc, pos, "outgoing"));
+          subtypes.set(key, p);
+        }
+        return p;
+      },
       outline: (path) => {
         let p = outlines.get(path);
         if (!p) outlines.set(path, (p = withDocument(path, (doc) => lspRequest(() => commands.docOutline(doc)))));

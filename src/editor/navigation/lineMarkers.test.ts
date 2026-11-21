@@ -29,6 +29,7 @@ import {
   emptyCache,
   enabledGroups,
   fillMarkers,
+  libraryCandidates,
   markerBatches,
   markerDeps,
   markersOf,
@@ -492,22 +493,36 @@ describe("settings", () => {
 });
 
 describe("library sources", () => {
-  it("ask the server for no inheritors, which would search the whole project per declaration", async () => {
+  const shapeImpls = {
+    [`${SHAPE_PATH}:0`]: [loc("/p/Circle.java", 0, 13), loc("/p/Square.java", 0, 13)],
+    [`${SHAPE_PATH}:1`]: [loc("/p/Circle.java", 2, 18), loc("/p/Square.java", 1, 18)],
+  };
+
+  it("ask for the inheritors of types only, not one project-wide search per method", async () => {
+    const { deps, calls } = server(shapeImpls, {});
+    const candidates = libraryCandidates(markerCandidates(SHAPE_OUTLINE, lines(SHAPE)));
+    const cache = emptyCache();
+    await fillMarkers(SHAPE_PATH, candidates, ALL, deps(SHAPE_PATH), cache);
+    expect(calls.implementations).toEqual([[{ line: 0, col: 17 }]]);
+    expect(cachedMarkers(candidates, ALL, cache).map((m) => [m.line, m.kind, m.tooltip])).toEqual([
+      [0, "implemented", "Is implemented by Circle, Square"],
+    ]);
+  });
+
+  it("still ask the server for inheritors and subtypes", async () => {
     const off = setLibraryRoots("test", ["/venv/site-packages"]);
-    const ctx = { doc: 1, path: "/p/a.py", language: "python", uiMode: null, readOnly: false };
     try {
-      for (const library of [
-        { ...ctx, path: "/venv/site-packages/m/a.py", readOnly: true },
-        { ...ctx, path: "jdt://contents/A.class", virtual: true },
-      ]) {
-        const deps = markerDeps(library, [], 1, emptyCache());
-        expect(await deps.implementations([{ line: 0, col: 4 }])).toEqual([[]]);
-        expect(deps.supers.subtypes).toBeUndefined();
-      }
-      // The project's own files still ask (no server in tests: unavailable).
-      const own = markerDeps(ctx, [], 1, emptyCache());
-      await expect(own.implementations([{ line: 0, col: 4 }])).rejects.toMatchObject({ kind: "unavailable" });
-      expect(own.supers.subtypes).toBeDefined();
+      const library = {
+        doc: 1,
+        path: "/venv/site-packages/m/a.py",
+        language: "python",
+        uiMode: null,
+        readOnly: true,
+      };
+      const deps = markerDeps(library, [], 1, emptyCache());
+      // No server in tests: unavailable.
+      await expect(deps.implementations([{ line: 0, col: 4 }])).rejects.toMatchObject({ kind: "unavailable" });
+      expect(deps.supers.subtypes).toBeDefined();
     } finally {
       off();
     }

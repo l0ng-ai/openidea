@@ -82,6 +82,7 @@ import {
   textReference,
 } from "./links";
 import { featureBackoff } from "./availability";
+import { navigationStarted } from "./foreground";
 import { requestHover, showPhpConstructDocumentation } from "./hover";
 import { declarationSummary, renderCode } from "./markdown";
 import { enclosingType } from "@/editor/navigation/lineMarkers";
@@ -353,9 +354,11 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
   // can take as long as the server's answer.
   const done = showPendingHint(view, tx`Finding navigation target…`);
   pendingGestureHints.set(view, done);
+  const navigated = navigationStarted();
   try {
     await gotoResolved(view, kind, at ?? view.state.selection.main.head, superseded, done);
   } finally {
+    navigated();
     done();
     if (pendingGestureHints.get(view) === done) pendingGestureHints.delete(view);
   }
