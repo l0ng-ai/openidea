@@ -9,25 +9,6 @@ use tauri::AppHandle;
 
 pub use ide_host::{Host, Project};
 
-#[cfg(test)]
-mod startup_locale_tests {
-    use super::startup_locale;
-
-    #[test]
-    fn selects_a_supported_locale() {
-        for (language, expected) in [
-            ("tr-TR", "tr"),
-            ("fr_CA.UTF-8", "fr"),
-            ("zh-Hant-HK", "zh-TW"),
-            ("zh-Hans-HK", "zh"),
-            ("xx-XX", "en"),
-            ("", "en"),
-        ] {
-            assert_eq!(startup_locale(language), expected);
-        }
-    }
-}
-
 /// Process-wide state shared by all windows: the backend [`Host`] (reachable
 /// through `Deref`) plus what only the desktop shell has.
 pub struct AppState {
@@ -102,9 +83,7 @@ impl AppState {
             tracing::info!("invalidated caches: {removed:?}");
         }
         ide_host::data_dirs::migrate(&data_dir, &local_data_dir);
-        if let Err(error) = ide_workspace::settings::initialize_global_locale(&config_dir, || {
-            startup_locale(&system_ui_language().unwrap_or_default())
-        }) {
+        if let Err(error) = ide_workspace::settings::initialize_global_locale(&config_dir, system_ui_language) {
             tracing::warn!(%error, "cannot initialize the UI language");
         }
         let runtime = tauri::async_runtime::handle().inner().clone();
@@ -217,22 +196,7 @@ impl AppState {
     }
 }
 
-fn startup_locale(language: &str) -> &'static str {
-    let normalized = language.trim().to_ascii_lowercase();
-    let mut parts = normalized.split(['-', '_', '.', '@']);
-    match parts.next().unwrap_or_default() {
-        "zh" if matches!(parts.next(), Some("tw" | "hk" | "mo" | "hant")) => "zh-TW",
-        "zh" => "zh",
-        "ko" => "ko",
-        "fr" => "fr",
-        "pl" => "pl",
-        "pt" => "pt",
-        "es" => "es",
-        "tr" => "tr",
-        _ => "en",
-    }
-}
-
+/// The OS's preferred UI language as a BCP 47 / POSIX locale tag.
 #[cfg(windows)]
 fn system_ui_language() -> Option<String> {
     use windows_sys::Win32::Globalization::{GetUserPreferredUILanguages, MUI_LANGUAGE_NAME};

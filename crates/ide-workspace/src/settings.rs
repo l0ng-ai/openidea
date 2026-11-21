@@ -7,16 +7,22 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use toml_edit::{DocumentMut, Item, Table, TableLike};
 
-/// Layered settings: defaults → `<app-config>/settings.toml` → `<project>/.openidea/settings.toml`.
-/// Writes go through `toml_edit` so user comments survive.
-///
-/// TOML keys use the camelCase names of the serde [`Settings`] struct, e.g.
-/// `[editor]` / `fontSize = 14`. A layer that fails to parse or holds values of
-/// the wrong type is logged and ignored as a whole.
-const PROJECT_FILE: &str = "settings.toml";
+/// The UI languages the frontend ships (`LOCALES` in `src/platform/i18n.ts`).
+pub const UI_LOCALES: &[&str] = &["en", "zh", "zh-TW", "ko", "fr", "pl", "pt", "es", "tr"];
 
-/// Seeds the UI language only when the desktop profile has no global settings.
-pub fn initialize_global_locale(config_dir: &Path, locale: impl FnOnce() -> &'static str) -> io::Result<()> {
+/// Maps an OS language tag (`tr-TR`, `fr_CA.UTF-8`, `zh-Hant-HK`) to one of [`UI_LOCALES`], English otherwise.
+pub fn ui_locale_for(language: &str) -> &'static str {
+    let normalized = language.trim().to_ascii_lowercase();
+    let mut parts = normalized.split(['-', '_', '.', '@']);
+    let base = parts.next().unwrap_or_default();
+    if base == "zh" {
+        return if matches!(parts.next(), Some("tw" | "hk" | "mo" | "hant")) { "zh-TW" } else { "zh" };
+    }
+    UI_LOCALES.iter().copied().find(|locale| *locale == base).unwrap_or("en")
+}
+
+/// Seeds `appearance.locale` from the OS language when the profile has no global settings yet.
+pub fn initialize_global_locale(config_dir: &Path, system_language: impl FnOnce() -> Option<String>) -> io::Result<()> {
     let file = config_dir.join(PROJECT_FILE);
     match std::fs::symlink_metadata(&file) {
         Ok(_) => return Ok(()),
@@ -24,8 +30,10 @@ pub fn initialize_global_locale(config_dir: &Path, locale: impl FnOnce() -> &'st
         Err(error) => return Err(error),
     }
     let mut settings = tempfile::NamedTempFile::new_in(config_dir)?;
+    let mut appearance = Table::new();
+    appearance["locale"] = toml_edit::value(ui_locale_for(&system_language().unwrap_or_default()));
     let mut document = DocumentMut::new();
-    document["appearance"]["locale"] = toml_edit::value(locale());
+    document["appearance"] = Item::Table(appearance);
     settings.write_all(document.to_string().as_bytes())?;
     match settings.persist_noclobber(file) {
         Ok(_) => Ok(()),
@@ -34,17 +42,13 @@ pub fn initialize_global_locale(config_dir: &Path, locale: impl FnOnce() -> &'st
     }
 }
 
-#[cfg(test)]
-#[test]
-fn initializes_global_locale_once() {
-    let config = tempfile::tempdir().unwrap();
-    initialize_global_locale(config.path(), || "tr").unwrap();
-    let store = SettingsStore::load(config.path(), None);
-    assert_eq!(store.effective().appearance.locale, "tr");
-    store.set(SettingsScope::Global, "appearance.locale", Json::from("en")).unwrap();
-    initialize_global_locale(config.path(), || panic!("existing profiles must skip detection")).unwrap();
-    assert_eq!(store.reload().appearance.locale, "en");
-}
+/// Layered settings: defaults → `<app-config>/settings.toml` → `<project>/.openidea/settings.toml`.
+/// Writes go through `toml_edit` so user comments survive.
+///
+/// TOML keys use the camelCase names of the serde [`Settings`] struct, e.g.
+/// `[editor]` / `fontSize = 14`. A layer that fails to parse or holds values of
+/// the wrong type is logged and ignored as a whole.
+const PROJECT_FILE: &str = "settings.toml";
 
 pub struct SettingsStore {
     global_file: PathBuf,
@@ -608,6 +612,37 @@ struct SettingsBundle {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn initializes_global_locale_once() {
+        let config = tempfile::tempdir().unwrap();
+        initialize_global_locale(config.path(), || Some("tr-TR".into())).unwrap();
+        let written = std::fs::read_to_string(config.path().join("settings.toml")).unwrap();
+        assert_eq!(written, "[appearance]\nlocale = \"tr\"\n");
+        let store = SettingsStore::load(config.path(), None);
+        assert_eq!(store.effective().appearance.locale, "tr");
+        store.set(SettingsScope::Global, "appearance.locale", Json::from("en")).unwrap();
+        initialize_global_locale(config.path(), || panic!("existing profiles must skip detection")).unwrap();
+        assert_eq!(store.reload().appearance.locale, "en");
+    }
+
+    #[test]
+    fn maps_os_languages_to_ui_locales() {
+        for (language, expected) in [
+            ("tr-TR", "tr"),
+            ("fr_CA.UTF-8", "fr"),
+            ("pt-BR", "pt"),
+            ("zh-Hant-HK", "zh-TW"),
+            ("zh_TW.UTF-8", "zh-TW"),
+            ("zh-Hans-HK", "zh"),
+            ("zh-Hans-CN", "zh"),
+            ("xx-XX", "en"),
+            ("C", "en"),
+            ("", "en"),
+        ] {
+            assert_eq!(ui_locale_for(language), expected, "{language}");
+        }
+    }
 
     #[test]
     fn removed_theme_named_in_a_settings_file_is_reported_for_the_notice() {
