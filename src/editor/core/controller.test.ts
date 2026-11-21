@@ -203,6 +203,29 @@ describe("EditorController", () => {
     }
   });
 
+  it("gives the keyboard to the next tab when the focused one closes", async () => {
+    ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "a\n", "/p/b.ts": "b\n" }));
+    ctrl.start();
+    await ctrl.openFile("/p/a.ts", { focus: false });
+    const first = ctrl.activeSlot!;
+    await ctrl.openFile("/p/b.ts", { focus: false });
+    const second = ctrl.activeSlot!;
+    const hosts = [document.createElement("div"), document.createElement("div")];
+    document.body.append(...hosts);
+    try {
+      const a = first.mount(hosts[0]!);
+      ctrl.onMounted(first);
+      const b = second.mount(hosts[1]!);
+      ctrl.onMounted(second);
+      b.focus();
+      expect(b.hasFocus).toBe(true);
+      await ctrl.closeActiveTab();
+      expect(a.hasFocus).toBe(true);
+    } finally {
+      hosts.forEach((h) => h.remove());
+    }
+  });
+
   it("autosaves on blur, but not while focus is in a popup over the editor", async () => {
     const backend = createMemoryBackend({ "/p/a.c": "int main() {\n    \n}\n" });
     const save = vi.spyOn(backend, "save");

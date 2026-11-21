@@ -4,7 +4,7 @@ import { getContext } from "@/platform/context";
 import { canOpenWithSystemApp, canRevealInFileManager, fileManagerName } from "@/platform/fileManager";
 import { formatBinding, hostBinding, isMacHost, shortcutLabel } from "@/platform/keymap";
 import { projectFolder, relativePath, useProject } from "@/platform/project";
-import { currentDetectedRoots, currentRoots } from "@/platform/projectRoots";
+import { attachedProjectOf, currentDetectedRoots, currentRoots } from "@/platform/projectRoots";
 import type { MenuItem } from "@/ui";
 import { menuGroupItems, toolWindowService, type MenuGroupContext } from "@/workbench/contributions";
 import type { FolderRole } from "@/platform/languageSettings";
@@ -445,15 +445,19 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
       }),
     );
 
-  if (inProject && single?.dir && !single.root && !single.placeholder) {
+  // An attached project keeps its own excluded folders; its other roles aren't applied yet.
+  const attached = !inProject && single?.dir ? attachedProjectOf(single.path) : null;
+  if ((inProject || attached) && single?.dir && !single.root && !single.placeholder) {
     const current = directoryRole(single.path);
-    const roles: Array<[FolderRole, string, string]> = [
-      ["source", "Sources Root", "folder-source"],
-      ["test", "Test Sources Root", "folder-test"],
-      ["resources", "Resources Root", "folder-resources"],
-      ["testResources", "Test Resources Root", "folder-test-resources"],
-      ["excluded", "Excluded", "folder-excluded"],
-    ];
+    const roles: Array<[FolderRole, string, string]> = (
+      [
+        ["source", "Sources Root", "folder-source"],
+        ["test", "Test Sources Root", "folder-test"],
+        ["resources", "Resources Root", "folder-resources"],
+        ["testResources", "Test Resources Root", "folder-test-resources"],
+        ["excluded", "Excluded", "folder-excluded"],
+      ] as Array<[FolderRole, string, string]>
+    ).filter(([role]) => !attached || role === "excluded");
     push({
       id: "markAs",
       label: "Mark Directory as",
@@ -461,7 +465,7 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
         ...roles
           .filter(([role]) => role !== current)
           .map(([role, label, icon]) => ({ id: role, label, icon, run: () => void markDirectory(single.path, role) })),
-        ...(current
+        ...(current && (!attached || current === "excluded")
           ? [
               {
                 id: "unmark",

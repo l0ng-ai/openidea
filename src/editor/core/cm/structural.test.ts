@@ -325,6 +325,51 @@ describe("planCompleteStatement", () => {
     expect(withCaret(s, planCompleteStatement(s, "ruby", null, errs()))).toBe("def f(x)\n  |\n  x\nend\n");
   });
 
+  it("gives a Java block head a body even when tree-sitter asks for a `;`", () => {
+    const plan = (text: string) => {
+      const s = state(text, java);
+      const at = s.doc.line(1).to;
+      return withCaret(s, planCompleteStatement(s, "java", null, errs(missing(s, at, ";"))));
+    };
+    expect(plan("    if (true)|\n")).toBe("    if (true) {\n        |\n    }\n");
+    expect(plan("public class App|\n")).toBe("public class App {\n    |\n}\n");
+    expect(plan("    public void run()|\n")).toBe("    public void run() {\n        |\n    }\n");
+    expect(plan("    private static <T> List<T> of(T a, int b) throws IOException|\n")).toBe(
+      "    private static <T> List<T> of(T a, int b) throws IOException {\n        |\n    }\n",
+    );
+    expect(plan("    public App()|\n")).toBe("    public App() {\n        |\n    }\n");
+    expect(plan("    abstract void run()|\n")).toBe("    abstract void run();\n    |\n");
+  });
+
+  it("starts a loop or condition header for a bare keyword", () => {
+    const s = state("    for|\n", java);
+    expect(withCaret(s, planCompleteStatement(s, "java", null, errs()))).toBe("    for (|) {\n    }\n");
+    const w = state("    } else if|\n", java);
+    expect(withCaret(w, completeStatementSpec(w, "java"))).toBe("    } else if (|) {\n    }\n");
+  });
+
+  it("closes an unterminated string before the `;`", () => {
+    const s = state('    String m = "hello|\n', java);
+    const at = s.doc.line(1).to;
+    expect(withCaret(s, planCompleteStatement(s, "java", null, errs(missing(s, at, ";"))))).toBe(
+      '    String m = "hello";\n    |\n',
+    );
+    const done = state('    f("a\\"b", \'"\')|\n', java);
+    expect(withCaret(done, completeStatementSpec(done, "java"))).toBe('    f("a\\"b", \'"\');\n    |\n');
+  });
+
+  it("takes a Rust lifetime for no quote", () => {
+    const s = state("    let s: &'a str = x|\n", java);
+    expect(withCaret(s, completeStatementSpec(s, "rust"))).toBe("    let s: &'a str = x;\n    |\n");
+  });
+
+  it("leaves calls and statements to the `;`", () => {
+    for (const line of ["    foo(a, b)", "    System.out.println(x)", "    return foo(x)", "    throw new Error(m)"]) {
+      const s = state(`${line}|\n`, java);
+      expect(withCaret(s, completeStatementSpec(s, "java"))).toBe(`${line};\n    |\n`);
+    }
+  });
+
   it("places a missing `;` before a trailing comment", () => {
     const s = state("int a = 1| // one\nfoo();\n", java);
     const out = withCaret(s, planCompleteStatement(s, "java", null, errs(missing(s, 9, ";"))));

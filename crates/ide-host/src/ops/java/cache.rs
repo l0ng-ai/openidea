@@ -2,10 +2,12 @@
 use ide_build::compile::{self, LaunchFingerprint};
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use ide_run::BuildPolicy;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct Outputs {
@@ -49,6 +51,64 @@ pub(super) struct BuildOptions {
     /// A JDT error makes a cache miss rebuild, but it must not prevent an unchanged
     /// snapshot from being reused on the next launch.
     pub rebuild_on_jdt_errors: bool,
+    /// Other launches of the same reactor waiting for their build (configurations started
+    /// together, #3971): their modules join this Maven run, and their launches then reuse
+    /// the snapshots recorded here instead of running Maven again.
+    pub members: Vec<Member>,
+}
+
+/// A launch module joining another launch's build; see [`BuildOptions::members`].
+#[derive(Debug)]
+pub(super) struct Member {
+    pub module: PathBuf,
+    pub rebuild_on_jdt_errors: bool,
+}
+
+/// Java launches from their start until their build: one launch's Maven run also builds
+/// the modules of launches still waiting (configurations started together, #3971).
+#[derive(Default)]
+pub(crate) struct Waiting(Arc<Mutex<Vec<Arc<WaitingLaunch>>>>);
+
+#[derive(Debug)]
+pub(super) struct WaitingLaunch {
+    pub module: PathBuf,
+    pub test: bool,
+    pub policy: BuildPolicy,
+}
+
+/// Leaves [`Waiting`] when dropped.
+pub(super) struct WaitingGuard {
+    all: Arc<Mutex<Vec<Arc<WaitingLaunch>>>>,
+    launch: Arc<WaitingLaunch>,
+}
+
+impl Waiting {
+    pub(super) fn add(&self, module: PathBuf, test: bool, policy: BuildPolicy) -> WaitingGuard {
+        let launch = Arc::new(WaitingLaunch { module, test, policy });
+        self.0.lock().push(launch.clone());
+        WaitingGuard { all: self.0.clone(), launch }
+    }
+}
+
+impl WaitingGuard {
+    /// The other launches still waiting, in the order they started.
+    pub(super) fn others(&self) -> Vec<Arc<WaitingLaunch>> {
+        self.all.lock().iter().filter(|l| !Arc::ptr_eq(l, &self.launch)).cloned().collect()
+    }
+}
+
+impl Drop for WaitingGuard {
+    fn drop(&mut self) {
+        self.all.lock().retain(|l| !Arc::ptr_eq(l, &self.launch));
+    }
+}
+
+/// A module whose launch snapshot can't be reused, ready to build.
+struct Pending {
+    module: PathBuf,
+    record: PathBuf,
+    before: Option<LaunchFingerprint>,
+    previous: Option<Outputs>,
 }
 
 /// Owned by Project: running JVMs may still load superseded outputs until it drops.
@@ -56,11 +116,14 @@ pub(crate) struct Session {
     cache: PathBuf,
     initialized: bool,
     unreferenced: Vec<PathBuf>,
+    /// A shared build that failed for a member, by (module, test): the member's own launch
+    /// reports it instead of running the same failing build again while its inputs are unchanged.
+    failed: HashMap<(PathBuf, bool), (LaunchFingerprint, String)>,
 }
 
 impl Session {
     pub(crate) fn new(cache: PathBuf) -> Self {
-        Self { cache, initialized: false, unreferenced: Vec::new() }
+        Self { cache, initialized: false, unreferenced: Vec::new(), failed: HashMap::new() }
     }
 
     pub(super) fn initialize(&mut self) {
@@ -82,20 +145,84 @@ impl Session {
         cancel: &CancellationToken,
     ) -> IdeResult<Outputs> {
         self.initialize();
-        let BuildOptions { test, policy, rebuild_on_jdt_errors } = options;
-        let cache = &self.cache;
-        let record =
-            record_path(root, cache, module, test).ok_or_else(|| IdeError::internal("launch outside project"))?;
-        let snapshots = cache.join("java-launch/snapshots");
-        let fingerprint = || match compile::launch_fingerprint(root, model, module, test, local_repo.clone(), cancel) {
-            Ok(value) => Ok(value),
-            Err(e) if cancel.is_cancelled() => Err(e),
-            Err(e) => {
-                tracing::debug!(error = %e, "Cannot fingerprint Maven launch; rebuilding");
-                Ok(None)
-            }
+        let BuildOptions { test, policy, rebuild_on_jdt_errors, members } = options;
+        let mut lead = match self.prepare(root, model, module, test, policy, &local_repo, cancel)? {
+            Ok(outputs) => return Ok(outputs),
+            Err(pending) => pending,
         };
-        let mut before = fingerprint()?;
+        if let Some((fingerprint, failure)) = self.failed.remove(&(module.to_path_buf(), test))
+            && lead.before.as_ref() == Some(&fingerprint)
+            && matches!(policy, BuildPolicy::Automatic | BuildPolicy::Make)
+        {
+            tracing::info!(module = %module.display(), "The shared Maven launch build failed for these inputs");
+            return Err(IdeError::internal(failure));
+        }
+        // JDT can report errors from its own classpath while the last Maven snapshot is
+        // still valid. Reuse that snapshot first; only a cache miss needs the expensive
+        // clean rebuild that replaces JDT's error-stub classes.
+        let policy = if rebuild_on_jdt_errors { BuildPolicy::Rebuild } else { policy };
+        let mut joined = Vec::new();
+        let mut rebuild = policy == BuildPolicy::Rebuild;
+        for member in members {
+            if let Err(pending) =
+                self.prepare(root, model, &member.module, test, BuildPolicy::Make, &local_repo, cancel)?
+            {
+                rebuild |= member.rebuild_on_jdt_errors;
+                joined.push(pending);
+            }
+        }
+        let modules: Vec<PathBuf> =
+            std::iter::once(&lead).chain(&joined).map(|pending| pending.module.clone()).collect();
+        if modules.len() > 1 {
+            tracing::info!(?modules, "Building the launch modules in one Maven run");
+        }
+        let kind = if rebuild { compile::BuildKind::Rebuild } else { compile::BuildKind::Build };
+        let mut built = compile::build_for_launches(root, model, &modules, test, kind, cancel)?.into_iter();
+        let lead_built = built.next().unwrap();
+        for (pending, built) in joined.into_iter().zip(built) {
+            match built.failure {
+                Some(failure) => {
+                    if let Some(before) = pending.before {
+                        self.failed.insert((pending.module, test), (before, failure));
+                    }
+                }
+                None => {
+                    self.finish(root, model, pending, test, built.class_dirs, None, rebuild, &local_repo, cancel)?;
+                }
+            }
+        }
+        if let Some(failure) = &lead_built.failure {
+            if policy != BuildPolicy::MakeAndContinueOnErrors {
+                return Err(IdeError::internal(failure.clone()));
+            }
+            if let Some(mut previous) =
+                lead.previous.take().filter(|p| (0..p.originals.len()).all(|i| p.snapshot.join(i.to_string()).is_dir()))
+            {
+                previous.fingerprint = None;
+                previous.failure = lead_built.failure;
+                write_record(&lead.record, &previous)?;
+                return Ok(previous);
+            }
+        }
+        self.finish(root, model, lead, test, lead_built.class_dirs, lead_built.failure, rebuild, &local_repo, cancel)
+    }
+
+    /// The reusable snapshot of `module` (`Ok`), else the module marked for a build (`Err`).
+    #[allow(clippy::too_many_arguments)]
+    fn prepare(
+        &mut self,
+        root: &Path,
+        model: &ide_build::BuildModel,
+        module: &Path,
+        test: bool,
+        policy: BuildPolicy,
+        local_repo: &Option<PathBuf>,
+        cancel: &CancellationToken,
+    ) -> IdeResult<Result<Outputs, Pending>> {
+        let record =
+            record_path(root, &self.cache, module, test).ok_or_else(|| IdeError::internal("launch outside project"))?;
+        let snapshots = self.cache.join("java-launch/snapshots");
+        let mut before = fingerprint(root, model, module, test, local_repo, cancel)?;
         let previous = fs::read(&record).ok().and_then(|bytes| serde_json::from_slice::<Outputs>(&bytes).ok());
         // Timestamp-incremental builders (Maven, the Kotlin plugin) skip sources whose
         // mtime did not advance. An external edit that preserves both length and mtime
@@ -115,7 +242,7 @@ impl Session {
                     tracing::debug!(path = %path.display(), %error, "Cannot re-stamp externally edited source");
                 }
             }
-            before = fingerprint()?;
+            before = fingerprint(root, model, module, test, local_repo, cancel)?;
         }
         if let Some(outputs) = previous.as_ref()
             && policy != BuildPolicy::Rebuild
@@ -124,12 +251,8 @@ impl Session {
             tracing::info!(module = %module.display(), test, "Reusing Maven launch snapshot");
             let mut outputs = previous.unwrap();
             outputs.authoritative = true;
-            return Ok(outputs);
+            return Ok(Ok(outputs));
         }
-        // JDT can report errors from its own classpath while the last Maven snapshot is
-        // still valid. Reuse that snapshot first; only a cache miss needs the expensive
-        // clean rebuild that replaces JDT's error-stub classes.
-        let policy = if rebuild_on_jdt_errors { BuildPolicy::Rebuild } else { policy };
         // Retain a non-reusable record even on failure, so removing the final mixed
         // source still delegates to Maven to clean its old classes on the next launch.
         fs::create_dir_all(record.parent().unwrap())?;
@@ -137,24 +260,25 @@ impl Session {
         if let Some(previous) = &previous {
             self.unreferenced.push(previous.snapshot.clone());
         }
-        let kind = if policy == BuildPolicy::Rebuild { compile::BuildKind::Rebuild } else { compile::BuildKind::Build };
-        let built = compile::build_for_launch(root, model, module, test, kind, cancel)?;
-        if let Some(failure) = &built.failure {
-            if policy != BuildPolicy::MakeAndContinueOnErrors {
-                return Err(IdeError::internal(failure.clone()));
-            }
-            if let Some(mut previous) =
-                previous.filter(|p| (0..p.originals.len()).all(|i| p.snapshot.join(i.to_string()).is_dir()))
-            {
-                previous.fingerprint = None;
-                previous.failure = built.failure;
-                let mut file = tempfile::NamedTempFile::new_in(record.parent().unwrap())?;
-                serde_json::to_writer(file.as_file_mut(), &previous).map_err(|e| IdeError::internal(e.to_string()))?;
-                file.persist(&record).map_err(|e| IdeError::from(e.error))?;
-                return Ok(previous);
-            }
-        }
-        let originals = built.class_dirs;
+        Ok(Err(Pending { module: module.to_path_buf(), record, before, previous }))
+    }
+
+    /// Copies the built outputs of a prepared module into a new snapshot and records it
+    /// when the build succeeded on inputs that did not change meanwhile.
+    #[allow(clippy::too_many_arguments)]
+    fn finish(
+        &mut self,
+        root: &Path,
+        model: &ide_build::BuildModel,
+        pending: Pending,
+        test: bool,
+        originals: Vec<PathBuf>,
+        failure: Option<String>,
+        authoritative: bool,
+        local_repo: &Option<PathBuf>,
+        cancel: &CancellationToken,
+    ) -> IdeResult<Outputs> {
+        let snapshots = self.cache.join("java-launch/snapshots");
         fs::create_dir_all(&snapshots)?;
         let snapshot = tempfile::Builder::new().prefix("launch-").tempdir_in(&snapshots)?.keep();
         // Retain every new snapshot even if copying or publishing its record fails.
@@ -165,27 +289,44 @@ impl Session {
             }
             ide_vfs::copy(source, &snapshot.join(i.to_string()))?;
         }
-        let after = fingerprint()?;
+        let after = fingerprint(root, model, &pending.module, test, local_repo, cancel)?;
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
         }
-        let mut outputs = Outputs {
-            fingerprint: None,
-            snapshot,
-            originals,
-            failure: built.failure,
-            authoritative: policy == BuildPolicy::Rebuild,
-        };
-        if outputs.failure.is_none() && before.is_some() && before == after {
-            outputs.fingerprint = before;
-            fs::create_dir_all(record.parent().unwrap())?;
-            let mut file = tempfile::NamedTempFile::new_in(record.parent().unwrap())?;
-            serde_json::to_writer(file.as_file_mut(), &outputs).map_err(|e| IdeError::internal(e.to_string()))?;
-            file.persist(&record).map_err(|e| IdeError::from(e.error))?;
+        let mut outputs = Outputs { fingerprint: None, snapshot, originals, failure, authoritative };
+        if outputs.failure.is_none() && pending.before.is_some() && pending.before == after {
+            outputs.fingerprint = pending.before;
+            write_record(&pending.record, &outputs)?;
             self.unreferenced.retain(|path| path != &outputs.snapshot);
         }
         Ok(outputs)
     }
+}
+
+fn fingerprint(
+    root: &Path,
+    model: &ide_build::BuildModel,
+    module: &Path,
+    test: bool,
+    local_repo: &Option<PathBuf>,
+    cancel: &CancellationToken,
+) -> IdeResult<Option<LaunchFingerprint>> {
+    match compile::launch_fingerprint(root, model, module, test, local_repo.clone(), cancel) {
+        Ok(value) => Ok(value),
+        Err(e) if cancel.is_cancelled() => Err(e),
+        Err(e) => {
+            tracing::debug!(error = %e, "Cannot fingerprint Maven launch; rebuilding");
+            Ok(None)
+        }
+    }
+}
+
+fn write_record(record: &Path, outputs: &Outputs) -> IdeResult<()> {
+    fs::create_dir_all(record.parent().unwrap())?;
+    let mut file = tempfile::NamedTempFile::new_in(record.parent().unwrap())?;
+    serde_json::to_writer(file.as_file_mut(), outputs).map_err(|e| IdeError::internal(e.to_string()))?;
+    file.persist(record).map_err(|e| IdeError::from(e.error))?;
+    Ok(())
 }
 
 impl Drop for Session {
@@ -271,6 +412,122 @@ mod tests {
         fs::create_dir_all(root.join("src/main/kotlin")).unwrap();
         fs::write(root.join("src/main/kotlin/Main.kt"), "first").unwrap();
         ide_build::load(root, &root.join("cache"), None)
+    }
+
+    /// A reactor of `lib` and the applications `a` and `b` depending on it; the build script
+    /// compiles every module and logs its arguments.
+    fn reactor_fixture(root: &Path) -> ide_build::BuildModel {
+        let pom = |artifact: &str, extra: &str| {
+            format!(
+                "<project><groupId>demo</groupId><artifactId>{artifact}</artifactId><version>1</version>{extra}</project>"
+            )
+        };
+        fs::write(
+            root.join("pom.xml"),
+            pom(
+                "root",
+                "<packaging>pom</packaging><modules><module>lib</module><module>a</module><module>b</module></modules>",
+            ),
+        )
+        .unwrap();
+        let lib = "<dependencies><dependency><groupId>demo</groupId><artifactId>lib</artifactId><version>1</version></dependency></dependencies>";
+        for (module, extra) in [("lib", ""), ("a", lib), ("b", lib), ("other", "")] {
+            fs::create_dir_all(root.join(module).join("src/main/java")).unwrap();
+            fs::write(root.join(module).join("pom.xml"), pom(module, extra)).unwrap();
+            fs::write(root.join(module).join("src/main/java/Main.java"), module).unwrap();
+        }
+        let script = root.join("mvnw");
+        fs::write(&script, "#!/bin/sh\necho build \"$@\" >> calls\nif [ -f broken ]; then exit 1; fi\nfor m in lib a b; do mkdir -p $m/target/classes; cp $m/src/main/java/Main.java $m/target/classes/Main.class; done\n").unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        ide_build::load(root, &root.join("cache"), None)
+    }
+
+    fn calls(root: &Path) -> Vec<String> {
+        fs::read_to_string(root.join("calls")).unwrap_or_default().lines().map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn waiting_launches_of_one_reactor_share_one_maven_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let model = reactor_fixture(root);
+        let cancel = CancellationToken::new();
+        let mut session = Session::new(root.join("cache"));
+        let (a, b) = (root.join("a"), root.join("b"));
+        let with = |rebuild_on_jdt_errors: bool| BuildOptions {
+            members: vec![Member { module: b.clone(), rebuild_on_jdt_errors }],
+            ..Default::default()
+        };
+        let lead = session.build(root, &model, &a, with(false), None, &cancel).unwrap();
+        assert_eq!(fs::read_to_string(lead.snapshot.join("0/Main.class")).unwrap(), "a");
+        assert_eq!(fs::read_to_string(lead.snapshot.join("1/Main.class")).unwrap(), "lib");
+        // b's own launch runs from the snapshot the shared build recorded for it.
+        let member = session.build(root, &model, &b, BuildOptions::default(), None, &cancel).unwrap();
+        assert!(member.authoritative);
+        assert_eq!(fs::read_to_string(member.snapshot.join("0/Main.class")).unwrap(), "b");
+        assert_eq!(calls(root).len(), 1);
+        assert!(calls(root)[0].contains("-pl a,b -am") && calls(root)[0].ends_with(" compile"), "{:?}", calls(root));
+        // A member whose JDT errors call for a clean build makes the shared build a rebuild.
+        fs::write(root.join("lib/src/main/java/Main.java"), "lib 2").unwrap();
+        session.build(root, &model, &a, with(true), None, &cancel).unwrap();
+        assert!(calls(root)[1].contains("-pl a,b -am clean compile"), "{:?}", calls(root));
+        let member = session.build(root, &model, &b, BuildOptions::default(), None, &cancel).unwrap();
+        assert_eq!(fs::read_to_string(member.snapshot.join("1/Main.class")).unwrap(), "lib 2");
+        assert_eq!(calls(root).len(), 2);
+        // A failed shared build fails the member's launch without running Maven again,
+        // once: unchanged inputs built on their own afterwards fail in their own build.
+        fs::write(root.join("lib/src/main/java/Main.java"), "lib 3").unwrap();
+        fs::write(root.join("broken"), "").unwrap();
+        assert!(session.build(root, &model, &a, with(false), None, &cancel).is_err());
+        let failure = session.build(root, &model, &b, BuildOptions::default(), None, &cancel).unwrap_err();
+        assert!(failure.message.contains("Build failed"), "{failure:?}");
+        assert_eq!(calls(root).len(), 3);
+        assert!(session.build(root, &model, &b, BuildOptions::default(), None, &cancel).is_err());
+        assert_eq!(calls(root).len(), 4);
+        assert!(calls(root)[3].contains("-pl b -am"));
+        // With nothing waiting, a launch builds just its own module, as before.
+        fs::remove_file(root.join("broken")).unwrap();
+        session.build(root, &model, &a, BuildOptions::default(), None, &cancel).unwrap();
+        assert!(calls(root)[4].contains("-pl a -am compile"), "{:?}", calls(root));
+    }
+
+    #[test]
+    fn only_incremental_launches_of_the_same_reactor_and_scope_join_a_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let model = reactor_fixture(root);
+        let waiting = Waiting::default();
+        let lead = waiting.add(root.join("a"), false, BuildPolicy::Automatic);
+        let _guards = [
+            waiting.add(root.join("b"), false, BuildPolicy::Make),
+            waiting.add(root.join("lib"), false, BuildPolicy::Automatic),
+            waiting.add(root.join("b"), false, BuildPolicy::Automatic),
+            waiting.add(root.join("a"), false, BuildPolicy::Automatic),
+            waiting.add(root.join("lib"), true, BuildPolicy::Automatic),
+            waiting.add(root.join("lib"), false, BuildPolicy::Rebuild),
+            waiting.add(root.join("lib"), false, BuildPolicy::MakeAndContinueOnErrors),
+            waiting.add(root.join("lib"), false, BuildPolicy::NoBuild),
+            waiting.add(root.join("other"), false, BuildPolicy::Automatic),
+        ];
+        let join = |prefer_maven| {
+            super::super::joining_launches(
+                root,
+                &root.join("cache"),
+                &model,
+                &root.join("a"),
+                false,
+                lead.others(),
+                prefer_maven,
+            )
+            .into_iter()
+            .map(|l| l.module.strip_prefix(root).unwrap().to_path_buf())
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(join(true), [PathBuf::from("b"), PathBuf::from("lib")]);
+        // Without "Delegate to Maven", these Java-only modules build with the language server.
+        assert!(join(false).is_empty());
+        drop(_guards);
+        assert!(lead.others().is_empty());
     }
 
     /// Like [`fixture`], but the build script skips sources whose mtime did not advance,

@@ -9,12 +9,13 @@ import type { FileMove, WorkspaceEdit } from "@/bindings";
 import { editorsFor } from "@/editor/api";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { Checkbox, Dialog, Icon, fileIconName } from "@/ui";
-import { nameOf, relativeTo } from "./paths";
+import { nameOf, parentOf, relativeTo } from "./paths";
 import { useProjectTree } from "./store";
 import styles from "./FileRefactor.module.css";
 import { tx } from "@/platform/i18n";
 
 type EditFile = Extract<WorkspaceEdit["files"][number], { kind: "edit" }>;
+const PREVIEW_CONTEXT = 40;
 
 interface PreviewRequest {
   title: string;
@@ -77,34 +78,42 @@ function FileGroup({
   const sorted = [...file.edits].sort(
     (a, b) => a.range.start.line - b.range.start.line || a.range.start.col - b.range.start.col,
   );
+  const name = nameOf(file.path);
+  const directory = relativeTo(root, parentOf(file.path));
+  const count = sorted.length;
   return (
-    <li className={styles.previewFile}>
+    <li className={styles.previewFile} data-excluded={!included || undefined}>
       <div className={styles.previewFileRow}>
-        <Checkbox checked={included} onChange={onToggle} aria-label={tx`Include ${nameOf(file.path)}`} />
-        <Icon name={fileIconName(nameOf(file.path), file.path)} size={14} />
-        <span className={styles.previewName}>{nameOf(file.path)}</span>
-        <span className={styles.previewPath}>{relativeTo(root, file.path) || file.path}</span>
-        <span className={styles.spacer} />
-        <span className={styles.previewCount}>
-          {file.edits.length} {file.edits.length === 1 ? "occurrence" : "occurrences"}
+        <Checkbox checked={included} onChange={onToggle} aria-label={tx`Include ${name}`} />
+        <Icon name={fileIconName(name, file.path)} size={16} />
+        <span className={styles.previewName} title={name}>
+          {name}
         </span>
+        <span className={styles.previewPath} title={directory}>
+          <bdi>{directory}</bdi>
+        </span>
+        <span className={styles.previewCount}>{count === 1 ? tx`${count} occurrence` : tx`${count} occurrences`}</span>
       </div>
       <ul className={styles.previewOccurrences}>
         {sorted.slice(0, 50).map((e, i) => {
-          const text = lines?.[e.range.start.line] ?? "";
-          const end = e.range.end.line === e.range.start.line ? e.range.end.col : text.length;
-          const lead = text.length - text.trimStart().length;
-          const from = Math.max(0, e.range.start.col - lead);
-          const to = Math.max(from, end - lead);
-          const t = text.trim();
+          const line = lines?.[e.range.start.line] ?? "";
+          const text = line.trimStart();
+          const lead = line.length - text.length;
+          const end = e.range.end.line === e.range.start.line ? e.range.end.col : line.length;
+          const from = Math.min(text.length, Math.max(0, e.range.start.col - lead));
+          const to = Math.min(text.length, Math.max(from, end - lead));
+          const left = Math.max(0, from - PREVIEW_CONTEXT);
+          const right = Math.min(text.length, to + PREVIEW_CONTEXT);
           return (
             <li key={i} className={styles.previewLineRow}>
               <span className={styles.previewLineNo}>{e.range.start.line + 1}</span>
               <span className={styles.previewCode}>
-                {t.slice(0, from)}
-                <del className={styles.previewOld}>{t.slice(from, to)}</del>
+                {left > 0 && "…"}
+                {text.slice(left, from)}
+                <del className={styles.previewOld}>{text.slice(from, to)}</del>
                 <ins className={styles.previewNew}>{e.new_text}</ins>
-                {t.slice(to)}
+                {text.slice(to, right)}
+                {right < text.length && "…"}
               </span>
             </li>
           );
@@ -133,6 +142,7 @@ function PreviewDialog({ request }: { request: PreviewRequest }) {
       title={tx`Refactoring Preview: ${request.title}`}
       onClose={() => request.resolve(null)}
       width={680}
+      className={styles.previewDialog}
       buttons={[
         {
           label: "Do Refactor",

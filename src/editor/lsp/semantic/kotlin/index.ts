@@ -3,6 +3,16 @@ import { registerLanguageSemantics, type LanguageSemantics } from "../languages"
 
 const NAME = /[A-Za-z_][\w]*/y;
 
+/** Names right after a `.`: a call's explicit receiver (`book.summary()`, `x?.let`). */
+function receiverNames(doc: Text): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const m of doc.toString().matchAll(/\.[ \t]*([A-Za-z_]\w*)/g)) {
+    const to = m.index + m[0].length;
+    out.set(`${to - m[1]!.length}:${to}`, "receiver");
+  }
+  return out;
+}
+
 /**
  * The names of annotation usages (`@Column`, `@field:Column`, `@Outer.Inner`), as `"from:to"` → `"annotation"`.
  * An `@` right after a name is a label (`return@forEach`, `this@Outer`, `loop@`), not an annotation.
@@ -35,7 +45,8 @@ function annotationNames(doc: Text): Map<string, string> {
 }
 
 const kotlinSemantics: LanguageSemantics = {
-  symbolKinds: (_tree, doc) => annotationNames(doc),
+  // Annotations last: `@Outer.Inner` is an annotation, not a receiver's member.
+  symbolKinds: (_tree, doc) => new Map([...receiverNames(doc), ...annotationNames(doc)]),
   tokenClasses({ type, modifiers, kind, classes }) {
     // JetBrains Kotlin LSP reports an annotation usage as a constructor call (`method`);
     // IDEA colours the name as an annotation (Metadata), like its `@`.
@@ -49,6 +60,11 @@ const kotlinSemantics: LanguageSemantics = {
     if ((type === "variable" || type === "property" || type === "parameter") && modifiers.includes("modification"))
       classes.push("cm-sem-mutable");
     if (type === "label") classes.push("cm-sem-constant");
+    if (type === "enumMember") classes.push("cm-sem-kotlin-enum-entry");
+    // JetBrains Kotlin LSP marks top-level functions static (members are methods): called on a receiver,
+    // one is an extension. ponytail: an implicit receiver (`with(x) { ext() }`) reads as package-level.
+    if (type === "function" && modifiers.includes("static") && !modifiers.includes("declaration"))
+      classes.push(kind === "receiver" ? "cm-sem-kotlin-extension-call" : "cm-sem-kotlin-package-call");
   },
 };
 

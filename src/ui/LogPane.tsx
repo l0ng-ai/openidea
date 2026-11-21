@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import { useTx } from "@/platform/i18n";
+import { useWorkflowSettings } from "@/platform/workflowSettings";
+import { AnsiStream, spanStyle, stripAnsi, type Span } from "./ansi";
 import { IconButton } from "./Button";
+import { logLineColor } from "./logColors";
 import { Toggle } from "./Checkbox";
 import { copySelectionOnKeyDown } from "./selectableText";
 import styles from "./LogPane.module.css";
@@ -36,10 +39,16 @@ export interface LogPaneProps {
   ariaLabel: string;
 }
 
-const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g; // eslint-disable-line no-control-regex
+/** A line as shown: its ANSI-coloured spans and the plain text (level detection, copy). */
+interface ShownLine {
+  stderr: boolean;
+  text: string;
+  spans: Span[];
+}
+
 const MAX_LINES = 5000;
 
-/** A followed log (container, program output) with toggles, Soft-wrap and Clear. */
+/** A followed log (container, program output) in ANSI and log level colours, with toggles, Soft-wrap, Scroll to End and Clear. */
 export function LogPane({ sourceKey, ...props }: LogPaneProps) {
   const [on, setOn] = useState<ReadonlySet<string>>(() => new Set());
   const [wrap, setWrap] = useState(true);
@@ -58,15 +67,20 @@ function LogStream(
 ) {
   const tx = useTx();
   const { toggles = [], live, ariaLabel, on, setOn, wrap, setWrap } = props;
-  const [lines, setLines] = useState<LogLine[]>([]);
+  // As in the Run console: a line whose log level is recognised takes that level's colour.
+  const levelColors = useWorkflowSettings((s) => s.console.logColors);
+  const [lines, setLines] = useState<ShownLine[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [exit, setExit] = useState<number | null | undefined>(undefined);
   const scroller = useRef<HTMLDivElement>(null);
-  const stick = useRef(true);
+  // Scroll to End: follows new output; scrolling up turns it off, back to the end turns it on.
+  const [follow, setFollow] = useState(true);
   const source = useRef({ start: props.start, on });
 
   useEffect(() => {
-    let buffer: LogLine[] = [];
+    let buffer: ShownLine[] = [];
+    // One parser per stream: a colour set on one line carries to the next of the same stream.
+    const ansi = [new AnsiStream(), new AnsiStream()];
     let frame = 0;
     // Output that arrives after the stop (a source that already ran) is dropped.
     let stopped = false;
@@ -82,7 +96,8 @@ function LogStream(
     const stop = source.current.start(
       (line) => {
         if (stopped) return;
-        buffer.push({ stderr: line.stderr, text: line.text.replace(ANSI, "") });
+        const spans = ansi[line.stderr ? 1 : 0]!.parse(line.text);
+        buffer.push({ stderr: line.stderr, text: stripAnsi(line.text), spans });
         frame ||= requestAnimationFrame(flush);
       },
       (message) => !stopped && setError(message),
@@ -102,8 +117,8 @@ function LogStream(
 
   useEffect(() => {
     const el = scroller.current;
-    if (el && stick.current) el.scrollTop = el.scrollHeight;
-  }, [lines]);
+    if (el && follow) el.scrollTop = el.scrollHeight;
+  }, [lines, follow]);
 
   const toggle = (id: string, checked: boolean) => {
     const next = new Set(on);
@@ -121,6 +136,13 @@ function LogStream(
         <Toggle checked={wrap} onChange={setWrap} label="Soft-wrap" />
         <span className={styles.flex} />
         {props.actions}
+        <IconButton
+          icon="scroll-to-end"
+          size="small"
+          title="Scroll to End"
+          pressed={follow}
+          onClick={() => setFollow((v) => !v)}
+        />
         <IconButton icon="trash" size="small" title="Clear" onClick={() => setLines([])} />
       </div>
       <div
@@ -132,12 +154,22 @@ function LogStream(
         aria-label={ariaLabel}
         onScroll={(e) => {
           const el = e.currentTarget;
-          stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+          setFollow(el.scrollHeight - el.scrollTop - el.clientHeight < 24);
         }}
       >
         {lines.map((l, i) => (
-          <div key={i} className={clsx(l.stderr && styles.stderr)}>
-            {l.text || " "}
+          <div
+            key={i}
+            className={clsx(l.stderr && styles.stderr)}
+            style={{ color: logLineColor(l.text, l.stderr ? "stderr" : "stdout", levelColors) }}
+          >
+            {l.spans.length
+              ? l.spans.map((span, j) => (
+                  <span key={j} style={spanStyle(span)}>
+                    {span.text}
+                  </span>
+                ))
+              : " "}
           </div>
         ))}
         {error && <div className={styles.stderr}>{error}</div>}

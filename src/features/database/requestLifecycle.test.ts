@@ -642,6 +642,48 @@ describe("completion requests", () => {
     expect(backend.completion).toHaveBeenCalledTimes(2);
   });
 
+  it("drops only the edited JDBC completion model when its schema rules change", async () => {
+    const jdbc: DataSource = { ...pg, driver: "jdbc", introspection: { allSchemas: false, schemas: ["APP_*"] } };
+    savedSources = [jdbc, other];
+    await loadSources();
+    await loadSchemas("pg");
+    await loadCompletion("pg");
+    await loadCompletion("pg2");
+    const schemas = useDatabase.getState().schemas;
+
+    await saveSource({ ...jdbc, introspection: { allSchemas: false, schemas: ["REPORTS"] } }, undefined);
+
+    const state = useDatabase.getState();
+    expect(state.completion.pg).toBeUndefined();
+    expect(state.completion.pg2).toEqual(completion);
+    expect(state.schemas).toBe(schemas);
+    expect(state.connected.has("pg")).toBe(true);
+    expect(backend.schemas).toHaveBeenCalledOnce();
+    expect(backend.completion).toHaveBeenCalledTimes(2);
+    expect(await loadCompletion("pg")).toEqual(completion);
+    expect(backend.completion).toHaveBeenCalledTimes(3);
+  });
+
+  it("ignores an old JDBC completion response after its schema rules change", async () => {
+    const jdbc: DataSource = { ...pg, driver: "jdbc" };
+    savedSources = [jdbc, other];
+    await loadSources();
+    const old = deferred();
+    const fresh = deferred();
+    backend.completion.mockReturnValueOnce(old.promise).mockReturnValueOnce(fresh.promise);
+    const previous = loadCompletion("pg");
+
+    await saveSource({ ...jdbc, introspection: { allSchemas: false, schemas: ["APP"] } }, undefined);
+    const next = loadCompletion("pg");
+    expect(next).not.toBe(previous);
+    old.resolve(ok({ ...completion, defaultSchema: "old" }));
+    expect(await previous).toBeNull();
+    expect(useDatabase.getState().completion.pg).toBeUndefined();
+    expect(loadCompletion("pg")).toBe(next);
+    fresh.resolve(ok(completion));
+    expect(await next).toEqual(completion);
+  });
+
   it("lets completion recover after failure", async () => {
     backend.completion.mockRejectedValueOnce(new Error("not available"));
     expect(await loadCompletion("pg")).toBeNull();

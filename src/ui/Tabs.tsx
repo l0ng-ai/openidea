@@ -150,8 +150,8 @@ export interface TabsProps {
   focusContent?: () => boolean;
   /** Enables drag & drop reordering (and moving between strips of the same type). */
   dnd?: TabsDnd;
-  /** Tabs that don't fit: `scroll` the strip (default), `squeeze` them, or `wrap` into rows. */
-  layout?: "scroll" | "squeeze" | "wrap";
+  /** `fit` keeps each tab within the scrolling strip. `squeeze` shrinks tabs together and `wrap` adds rows. */
+  layout?: "scroll" | "fit" | "squeeze" | "wrap";
   /** For editor strips, show only tabs clipped by the strip in the overflow popup. */
   hiddenTabsOnly?: boolean;
   /** Side of the label the close button sits on. */
@@ -290,6 +290,7 @@ export function Tabs({
     };
   }, [tabIds]);
 
+  const observedTabs = layout === "fit" ? tabIds : null;
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -306,8 +307,10 @@ export function Tabs({
     if (typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(measure);
     ro.observe(el);
+    // A renamed tab can move or resize the selected slot without resizing the strip.
+    if (observedTabs) for (const tab of el.children) ro.observe(tab);
     return () => ro.disconnect();
-  }, [items.length, revealTab, vertical, hiddenTabsOnly, closeMenu]);
+  }, [items.length, observedTabs, revealTab, vertical, hiddenTabsOnly, closeMenu]);
 
   useEffect(() => {
     // The whole tab (label + close button) into view, without scrolling any outer container.

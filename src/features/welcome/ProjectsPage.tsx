@@ -1,4 +1,4 @@
-/** Welcome › Projects: search, New Project / Open / Clone Repository, and the recent projects list. */
+/** Welcome › Projects: search, New Project / Open / Clone Repository / Remote Development, and the recent projects list. */
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { executeAction, useActions } from "@/platform/actions";
@@ -29,6 +29,7 @@ import { tx } from "@/platform/i18n";
 
 function HeaderButtons() {
   const canClone = useActions((s) => s.actions.has("vcs.clone"));
+  const canRemote = useActions((s) => s.actions.has("remote.connect"));
   const opening = useProject((s) => s.opening);
   const canCreate = useActions((s) => s.actions.has("file.newProject"));
   const openKey = shortcutLabel("file.openProject");
@@ -45,11 +46,11 @@ function HeaderButtons() {
       disabled: opening,
     },
     { id: "vcs.clone", label: "Clone Repository", icon: "branch", available: canClone },
+    { id: "remote.connect", label: "Remote Development", icon: "remote", available: canRemote, disabled: opening },
   ];
   const secondary: MenuItem[] = [
     { kind: "action", action: "file.newUntitled", label: "New File", disabled: opening },
     { kind: "action", action: "file.openFile", label: "Open File", disabled: opening },
-    { kind: "action", action: "remote.connect", label: "Remote Development", disabled: opening },
   ];
   return (
     <div className={styles.headerButtons} role="group" aria-label={tx("Project actions")}>
@@ -114,7 +115,7 @@ function Landing() {
       <div className={styles.landingActions}>
         <button type="button" className={styles.landingAction} onClick={() => void executeAction("file.newUntitled")}>
           <span className={styles.landingIcon}>
-            <Icon name="plus" size={20} />
+            <Icon name="file-new" size={20} />
           </span>
           <T>New File</T>
         </button>
@@ -164,7 +165,7 @@ function Landing() {
             onClick={() => void executeAction("remote.connect")}
           >
             <span className={styles.landingIcon}>
-              <Icon name="terminal" size={20} />
+              <Icon name="remote" size={20} />
             </span>
             <T>Remote Development</T>
           </button>

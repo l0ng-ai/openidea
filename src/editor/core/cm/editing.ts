@@ -20,6 +20,7 @@ import {
   getIndentUnit,
   indentString,
   getIndentation,
+  ensureSyntaxTree,
 } from "@codemirror/language";
 import {
   copyLineDown,
@@ -171,6 +172,14 @@ export const duplicateLineOrSelection: Command = (view) => {
 
 /** ⌘⌫: Delete Line — on a folded region's line, every line of the folded block. */
 export const deleteLine: Command = (view) => {
+  if (!deleteLines(view)) return false;
+  // Recorded as the selection after the edit, Redo puts the caret back here rather than
+  // where the pre-deletion caret maps to (the end of the line above).
+  view.dispatch({ selection: view.state.selection });
+  return true;
+};
+
+function deleteLines(view: EditorView): boolean {
   const { state } = view;
   if (state.readOnly) return false;
   const spans = foldedLineSpans(state);
@@ -192,7 +201,7 @@ export const deleteLine: Command = (view) => {
     userEvent: "delete.line",
   });
   return true;
-};
+}
 
 // --- occurrences --------------------------------------------------------------
 
@@ -567,6 +576,65 @@ const KEYWORD_HEAD =
   /\b(do(\s*\|[^|]*\|)?|then|where|of)$|^\s*(def|defp|defmodule|class|module|function|local function|if|unless|elsif|elseif|else|while|until|for|case|begin)\b/;
 const BLOCK_HEAD =
   /^\s*(if|else|for|while|do|switch|try|catch|finally|fn|fun|func|function|class|struct|enum|impl|trait|interface|object|match|when|loop|unsafe|mod|namespace)\b/;
+/** Languages whose `if` / `for` / `while`… take their condition in parentheses. */
+const PAREN_CONDITION_LANGS = new Set([
+  "java",
+  "c",
+  "cpp",
+  "csharp",
+  "javascript",
+  "javascriptreact",
+  "typescript",
+  "typescriptreact",
+  "php",
+  "dart",
+  "kotlin",
+  "groovy",
+  "objective-c",
+  "objective-cpp",
+]);
+/** A condition keyword with nothing after it yet (`for`, `} else if`). */
+export const BARE_CONDITION = /^\s*(\}\s*)?(else\s+)?(if|for|while|switch|catch|synchronized)$/;
+const MODIFIERS =
+  "public|protected|private|internal|static|final|abstract|sealed|non-sealed|open|data|export|default|async|override|partial|readonly|unsafe|const|extern|inline|virtual|synchronized|native|strictfp|transient";
+const ANNOTATIONS = String.raw`(@[\w.]+(\([^)]*\))?\s+)*`;
+/** A type declaration behind modifiers or annotations (`public final class A`, `@Entity record R(...)`). */
+const DECLARATION_HEAD = new RegExp(
+  String.raw`^\s*${ANNOTATIONS}((${MODIFIERS})\s+)+(class|interface|enum|record|struct|trait|object|function|fun|fn|func|impl|@interface)\b`,
+);
+/** Words that start a statement, not a declaration's type. */
+const STATEMENT_WORDS = /^\s*(return|throw|new|else|yield|assert|case|goto|await|delete|typeof)\b/;
+/** A Java / C# method or constructor header: `[modifiers] [<T>] Type name(params) [throws X]`, or `modifiers Name(params)`. */
+const METHOD_HEAD = new RegExp(
+  String.raw`^\s*${ANNOTATIONS}(((${MODIFIERS})\s+)*(<[^>]*>\s+)?[\w$][\w$.<>\[\],?]*(\s*<[^>]*>)?(\[\])*\s+|((${MODIFIERS})\s+)+)[\w$]+\s*\([^;{}=]*\)(\s*throws\s+[\w$.,\s]+)?$`,
+);
+const METHOD_HEAD_LANGS = new Set(["java", "csharp", "groovy"]);
+
+/** Whether `code` (a line without its comment) opens a block that ⌘⇧↵ completes with `{ }`. */
+export function isBlockHead(code: string, language: string): boolean {
+  if (KEYWORD_BLOCK_LANGS.has(language) || /[{;,]$/.test(code)) return false;
+  if (BLOCK_HEAD.test(code) || DECLARATION_HEAD.test(code)) return true;
+  return (
+    METHOD_HEAD_LANGS.has(language) &&
+    !STATEMENT_WORDS.test(code) &&
+    !/\b(abstract|native)\b/.test(code) &&
+    METHOD_HEAD.test(code)
+  );
+}
+
+/** The quote of a string or char literal `code` leaves open, if any (Rust's `'a` is a lifetime). */
+export function unclosedQuote(code: string, language: string): string | null {
+  const quotes = language === "rust" ? '"' : "\"'`";
+  let open: string | null = null;
+  for (let i = 0; i < code.length; i++) {
+    const c = code[i]!;
+    if (open) {
+      if (c === "\\") i++;
+      else if (c === open) open = null;
+    } else if (quotes.includes(c)) open = c;
+  }
+  return open;
+}
 
 /** A Python compound statement's header, which ends with `:`. */
 const PYTHON_HEAD =
@@ -628,6 +696,17 @@ export function completeStatementSpec(state: EditorState, language: string): Tra
   const baseIndent = /^\s*/.exec(line.text)![0];
   const br = state.lineBreak;
   const braces = !KEYWORD_BLOCK_LANGS.has(language);
+  if (braces && !comment && PAREN_CONDITION_LANGS.has(language) && BARE_CONDITION.test(text)) {
+    // `for` → `for (|) {` + `}`: the condition comes first.
+    const from = line.from + text.length;
+    const insert = ` () {${br}${baseIndent}}`;
+    return {
+      changes: { from, to: line.to, insert },
+      selection: { anchor: from + 2 },
+      scrollIntoView: true,
+      userEvent: "input.complete",
+    };
+  }
   if (braces && !comment && ARROW_LANGS.has(language) && /=>$/.test(text)) {
     // `const f = (x) =>` → a block body; brackets still open and the `;` follow it (`});`).
     const open = missingClosers(text);
@@ -663,7 +742,7 @@ export function completeStatementSpec(state: EditorState, language: string): Tra
       userEvent: "input.complete",
     };
   }
-  if (braces && !comment && BLOCK_HEAD.test(text) && !/[{;,]$/.test(text)) {
+  if (braces && !comment && isBlockHead(text, language)) {
     const insert = ` {${br}${baseIndent}${unit}${br}${baseIndent}}`;
     const from = line.from + text.length;
     return {
@@ -679,7 +758,8 @@ export function completeStatementSpec(state: EditorState, language: string): Tra
     };
   }
   let insert = "";
-  if (SEMICOLON_LANGS.has(language) && !comment && text.trim() && !/[;{},:]$/.test(text)) insert = ";";
+  if (SEMICOLON_LANGS.has(language) && !comment && text.trim() && !/[;{},:]$/.test(text))
+    insert = (unclosedQuote(text, language) ?? "") + ";";
   if (
     ((language === "python" && PYTHON_HEAD.test(text)) ||
       (language === "gdscript" && BLOCK_HEAD.test(text.replace(/^\s*(def|elif|static\s+func)\b/, "if")))) &&
@@ -692,7 +772,16 @@ export function completeStatementSpec(state: EditorState, language: string): Tra
     text.endsWith(":") ||
     (KEYWORD_BLOCK_LANGS.has(language) && KEYWORD_HEAD.test(text) && !/^\s*module\b.*\bwhere$/.test(text));
   const nextIndent = baseIndent + (opensBlock ? unit : "");
-  const indentHere = getIndentation(state, line.to);
+  // Indent the new line as the finished statement's next line: without the `;` the line is
+  // still an unfinished statement and gets a continuation indent.
+  let finished = state;
+  let lineEnd = line.to;
+  if (insert) {
+    finished = state.update({ changes: { from: line.from + text.length, insert } }).state;
+    lineEnd += insert.length;
+    ensureSyntaxTree(finished, lineEnd, 50);
+  }
+  const indentHere = getIndentation(finished, lineEnd);
   const newline = br + (indentHere !== null && !opensBlock ? indentString(state, indentHere) : nextIndent);
   const changes: ChangeSpec[] = [];
   if (insert) changes.push({ from: line.from + text.length, insert });

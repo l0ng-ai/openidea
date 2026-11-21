@@ -153,7 +153,17 @@ describe("git blame gutter and commit popup", () => {
     )!;
     fireEvent.contextMenu(firstLine);
     const items = mocks.menu.mock.calls[0]![1] as { label?: string; run?: () => void }[];
-    expect(items.map((i) => i.label).slice(0, 2)).toEqual(["Show Commit in Git Log", "Show Diff"]);
+    expect(items.map((i) => i.label)).toEqual([
+      "Close Annotations",
+      "Show Diff",
+      "Copy Revision Number",
+      undefined,
+      "Annotate at Revision…",
+      "Annotate Previous Revision",
+      "Show Commit in Git Log",
+      "Ignore This Commit",
+      "Options",
+    ]);
 
     items[1]!.run!();
     await vi.waitFor(() => expect(mocks.openDiff).toHaveBeenCalled());
@@ -184,7 +194,7 @@ describe("git blame gutter and commit popup", () => {
     )!;
     fireEvent.contextMenu(edited);
     const items = mocks.menu.mock.calls[0]![1] as { label?: string }[];
-    expect(items.map((i) => i.label)).toEqual(["Options", "Close Annotations"]);
+    expect(items.map((i) => i.label)).toEqual(["Close Annotations", "Options"]);
   });
 });
 

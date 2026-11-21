@@ -4,8 +4,8 @@
  * endpoint), matched by method and path.
  */
 import type { Text } from "@codemirror/state";
+import { registerNavigationProvider, type NavigationMatch } from "@/editor/api";
 import { docOf } from "@/editor/lsp/lsp";
-import { registerNavigationProvider, type NavigationMatch } from "@/editor/navigationProviders";
 import { useProject } from "@/platform/project";
 import { searchEndpoints, type EndpointEntry } from "@/workbench/contributions";
 import { HTTP_LANGUAGE } from "./editor";

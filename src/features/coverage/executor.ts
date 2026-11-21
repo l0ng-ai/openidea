@@ -60,13 +60,19 @@ export function notifyMissingTool(
         ? `${missing.message} ${missing.homepage}`
         : missing.message,
     sticky: true,
+    userInitiated: true,
     actions,
   });
 }
 
 async function prepare(config: RunConfig): Promise<ExecutorLaunch | null> {
   if (!isTauri()) {
-    notifications().notify({ group: "run", level: "warning", title: "Coverage needs the desktop app" });
+    notifications().notify({
+      group: "run",
+      level: "warning",
+      title: "Coverage needs the desktop app",
+      userInitiated: true,
+    });
     return null;
   }
   const project = captureCoverageProject();
@@ -83,6 +89,7 @@ async function prepare(config: RunConfig): Promise<ExecutorLaunch | null> {
       key: "coverage-unsupported",
       title: `Cannot run '${config.name}' with coverage`,
       body: plan.reason,
+      userInitiated: true,
     });
     return null;
   }

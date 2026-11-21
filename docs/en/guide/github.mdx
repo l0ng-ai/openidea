@@ -138,9 +138,12 @@ If the head branch exists only locally, OpenIDEA asks for a remote branch name a
 
 The Git log can show the GitHub check status of each commit. Turn on the **GitHub Commit Checks** column in the log's **View Options › Columns**, or in **Settings › Version Control › Log**. Click a commit's icon to list its check runs; click a run to open it on GitHub.
 
+## Open a file on GitHub
+
+In the editor or the Project view, **Open In › GitHub** opens the file (at the selected lines) or directory in the browser, and **Copy Path/Reference… › GitHub Link** copies its address. The link points at the current branch's upstream, or at the HEAD commit when the branch has none. GitLab and Bitbucket remotes get the same two items.
+
 ## Not supported
 
 - GitHub Enterprise, GitLab, Bitbucket.
 - Issues, gists, notifications and creating or sharing repositories.
-- Opening a file or line on GitHub, or copying a permalink.
 - Managing GitHub Actions (re-running jobs, reading logs).
