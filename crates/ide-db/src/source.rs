@@ -6,6 +6,7 @@
 use ide_core::{IdeError, IdeResult, IpcPath, project_dir};
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 pub(crate) const FILE: &str = "data-sources.toml";
@@ -101,6 +102,9 @@ pub struct DbIntrospection {
     pub databases: Vec<String>,
     pub all_schemas: bool,
     pub schemas: Vec<String>,
+    /// A database can replace the source's schema rules with all schemas or a list of exact names.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub schemas_by_database: BTreeMap<String, DbSchemaSelection>,
     /// `pg_catalog`, `information_schema`, `mysql`…, and service databases (`rdsadmin`…).
     pub show_system: bool,
     /// PostgreSQL template databases (`template0`, `template1`).
@@ -117,6 +121,7 @@ impl Default for DbIntrospection {
             databases: Vec::new(),
             all_schemas: true,
             schemas: Vec::new(),
+            schemas_by_database: BTreeMap::new(),
             show_system: false,
             show_templates: false,
             object_filter: String::new(),
@@ -125,6 +130,18 @@ impl Default for DbIntrospection {
 }
 
 impl DbIntrospection {
+    pub(crate) fn with_visibility_from(self, source: &Self) -> Self {
+        Self {
+            all_databases: source.all_databases,
+            databases: source.databases.clone(),
+            all_schemas: source.all_schemas,
+            schemas: source.schemas.clone(),
+            schemas_by_database: source.schemas_by_database.clone(),
+            object_filter: source.object_filter.clone(),
+            ..self
+        }
+    }
+
     /// Whether the tree shows this schema: every one with `all_schemas`, otherwise it has to
     /// match one of the `schemas` patterns. The completion model uses the same test, so it
     /// offers exactly the tables the tree lists (and does not read the ones it never shows).
@@ -161,6 +178,60 @@ fn schema_matches(pattern: &str, name: &str) -> bool {
         }
     }
     p[pi..].iter().all(|&c| c == '*')
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default)]
+pub struct DbSchemaSelection {
+    pub all: bool,
+    pub names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum DbVisibilityChange {
+    Databases { selection: DbSchemaSelection },
+    Schemas { selection: DbSchemaSelection },
+    DatabaseSchemas { database: String, selection: Option<DbSchemaSelection> },
+}
+
+impl DbVisibilityChange {
+    pub(crate) fn apply(self, introspection: &mut DbIntrospection, available: &[String]) {
+        let available: std::collections::HashSet<_> = available.iter().map(String::as_str).collect();
+        let keep_names = |before: &mut Vec<String>, selection: DbSchemaSelection, exact: bool| {
+            if selection.all || (!exact && before.iter().any(|name| name.contains(['*', '?']))) {
+                return;
+            }
+            before.retain(|name| !available.contains(if exact { name.as_str() } else { name.trim() }));
+            let mut seen: std::collections::HashSet<_> = before.iter().cloned().collect();
+            before.extend(
+                selection
+                    .names
+                    .into_iter()
+                    .filter(|name| (exact || !name.contains(['*', '?'])) && seen.insert(name.clone())),
+            );
+        };
+        match self {
+            Self::Databases { selection } => {
+                introspection.all_databases = selection.all;
+                keep_names(&mut introspection.databases, selection, false);
+            }
+            Self::Schemas { selection } => {
+                introspection.all_schemas = selection.all;
+                keep_names(&mut introspection.schemas, selection, false);
+            }
+            Self::DatabaseSchemas { database, selection } => match selection {
+                Some(selection) => {
+                    let rule = introspection.schemas_by_database.entry(database).or_default();
+                    rule.all = selection.all;
+                    keep_names(&mut rule.names, selection, true);
+                }
+                None => {
+                    introspection.schemas_by_database.remove(&database);
+                }
+            },
+        }
+    }
 }
 
 /// Advanced tab: a driver property. PostgreSQL: run-time parameters (and
@@ -430,6 +501,14 @@ pub fn parse_url(raw: &str) -> IdeResult<ParsedUrl> {
 }
 
 impl DataSource {
+    pub(crate) fn same_except_visibility(&self, other: &Self) -> bool {
+        if self == other {
+            return true;
+        }
+        let introspection = other.introspection.clone().with_visibility_from(&self.introspection);
+        *self == Self { introspection, ..other.clone() }
+    }
+
     /// The settings to connect with: with [`DataSource::url_only`], host, port,
     /// database, user, SSL and driver properties come from the URL (properties
     /// of the Advanced tab still apply after the URL's).
@@ -659,6 +738,81 @@ mod tests {
         };
         save(tmp.path(), std::slice::from_ref(&s)).unwrap();
         assert_eq!(load(tmp.path()).unwrap(), vec![s]);
+    }
+
+    #[test]
+    fn visibility_change_preserves_patterns_unavailable_names_and_other_scopes() {
+        let mut introspection = DbIntrospection {
+            schemas: vec!["app_*".into(), "unavailable_?".into()],
+            databases: vec!["reporting".into(), "offline".into()],
+            schemas_by_database: BTreeMap::from([
+                ("reporting".into(), DbSchemaSelection { all: false, names: vec!["private".into()] }),
+                ("sandbox".into(), DbSchemaSelection { all: false, names: vec!["experiments".into()] }),
+            ]),
+            show_system: true,
+            ..Default::default()
+        };
+        DbVisibilityChange::Schemas { selection: DbSchemaSelection { all: false, names: vec!["demo".into()] } }
+            .apply(&mut introspection, &["app_sales".into(), "demo".into()]);
+        assert_eq!(introspection.schemas, ["app_*", "unavailable_?"]);
+        DbVisibilityChange::Databases { selection: DbSchemaSelection { all: false, names: vec!["sandbox".into()] } }
+            .apply(&mut introspection, &["reporting".into(), "sandbox".into()]);
+        assert_eq!(introspection.databases, ["offline", "sandbox"]);
+        DbVisibilityChange::DatabaseSchemas {
+            database: "reporting".into(),
+            selection: Some(DbSchemaSelection {
+                all: false,
+                names: vec!["finance".into(), "finance".into(), "private".into()],
+            }),
+        }
+        .apply(&mut introspection, &["public".into(), "finance".into()]);
+        assert_eq!(introspection.schemas_by_database["reporting"].names, ["private", "finance"]);
+        assert_eq!(introspection.schemas_by_database["sandbox"].names, ["experiments"]);
+        assert!(introspection.show_system);
+    }
+
+    #[test]
+    fn schema_override_can_omit_default_fields() {
+        let introspection: DbIntrospection = toml::from_str(
+            r#"
+            [schemasByDatabase.reporting]
+            all = true
+
+            [schemasByDatabase.sandbox]
+            names = ["finance"]
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            introspection.schemas_by_database,
+            BTreeMap::from([
+                ("reporting".into(), DbSchemaSelection { all: true, names: vec![] }),
+                ("sandbox".into(), DbSchemaSelection { all: false, names: vec!["finance".into()] }),
+            ])
+        );
+    }
+
+    #[test]
+    fn round_trips_database_schema_overrides() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = DataSource {
+            id: "postgres".into(),
+            name: "PostgreSQL Demo".into(),
+            driver: DbDriver::Postgres,
+            introspection: DbIntrospection {
+                all_schemas: false,
+                schemas: vec!["app_*".into()],
+                schemas_by_database: BTreeMap::from([
+                    ("analytics".into(), DbSchemaSelection { all: true, names: vec![] }),
+                    ("reporting.eu".into(), DbSchemaSelection { all: false, names: vec!["public".into()] }),
+                    ("sandbox".into(), DbSchemaSelection { all: false, names: vec![] }),
+                ]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        save(tmp.path(), std::slice::from_ref(&source)).unwrap();
+        assert_eq!(load(tmp.path()).unwrap(), vec![source]);
     }
 
     #[test]

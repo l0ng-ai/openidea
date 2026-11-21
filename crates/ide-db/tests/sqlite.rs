@@ -2,7 +2,8 @@
 
 use ide_core::{CancellationToken, IdeResult};
 use ide_db::{
-    CellValue, DataSource, DbDriver, DbManager, DbOptions, DbProperty, DbRowEdit, DbTableKind, QueryResult, SortKey,
+    CellValue, DataSource, DbDriver, DbManager, DbOptions, DbProperty, DbRowEdit, DbSchemaSelection, DbTableKind,
+    DbVisibilityChange, QueryResult, SortKey,
 };
 
 async fn setup() -> (tempfile::TempDir, DbManager) {
@@ -239,6 +240,72 @@ async fn manual_commit_keeps_a_transaction_until_commit_or_rollback() -> IdeResu
     db.execute("s1", "DELETE FROM users", 1, &c).await?;
     db.disconnect("s1").await;
     assert_eq!(count(&db).await, "4");
+    Ok(())
+}
+
+#[tokio::test]
+async fn visibility_edits_preserve_the_held_transaction() -> IdeResult<()> {
+    let (tmp, db) = setup().await;
+    let c = CancellationToken::new();
+    db.set_manual_commit("s1", true).await?;
+    db.execute("s1", "INSERT INTO users (name) VALUES ('dee')", 1, &c).await?;
+    assert_eq!(count(&db).await, "4");
+
+    let mut source = db.source("s1")?;
+    source.introspection.all_schemas = false;
+    source.introspection.schemas.clear();
+    db.save_sources(vec![source.clone()]).await?;
+    assert!(db.is_connected("s1"), "saving rules must keep the active connection");
+    assert_eq!(count(&db).await, "4", "the held transaction must still see its uncommitted row");
+    db.save_source_visibility(
+        "s1",
+        &["main".into()],
+        DbVisibilityChange::Schemas { selection: DbSchemaSelection { all: true, names: vec![] } },
+    )?;
+    assert!(db.source("s1")?.introspection.all_schemas);
+    assert_eq!(count(&db).await, "4", "the scoped save must keep the live transaction");
+
+    db.reconcile_sources().await;
+    let root = tmp.path();
+    let ssh = std::sync::Arc::new(ide_ssh::SshManager::new(root.join("ssh-passwords.json")));
+    let other = DbManager::new(root.to_path_buf(), root.join("passwords.json"), root.join("history.json"), ssh);
+    source = db.source("s1")?;
+    source.introspection.object_filter = "user*".into();
+    other.save_sources(vec![source.clone()]).await?;
+    assert!(db.reconcile_sources().await);
+    assert_eq!(count(&db).await, "4", "a visibility edit from another window must keep the transaction");
+    db.finish_transaction("s1", true).await?;
+    assert_eq!(count(&db).await, "4");
+
+    source.introspection.show_system = true;
+    db.save_sources(vec![source]).await?;
+    assert!(!db.is_connected("s1"), "raw metadata option changes keep their invalidation path");
+    Ok(())
+}
+
+#[tokio::test]
+async fn visibility_save_does_not_mask_an_unreconciled_connection_edit() -> IdeResult<()> {
+    let (tmp, db) = setup().await;
+    let first = db.source("s1")?;
+    let second = DataSource { id: "s2".into(), name: "Another source".into(), ..first.clone() };
+    db.save_sources(vec![first.clone(), second.clone()]).await?;
+    db.reconcile_sources().await;
+    assert!(db.is_connected("s1"));
+
+    let root = tmp.path();
+    let ssh = std::sync::Arc::new(ide_ssh::SshManager::new(root.join("ssh-passwords.json")));
+    let external = DbManager::new(root.to_path_buf(), root.join("passwords.json"), root.join("history.json"), ssh);
+    external.save_sources(vec![DataSource { read_only: true, ..first }, second]).await?;
+    db.save_source_visibility(
+        "s2",
+        &["main".into()],
+        DbVisibilityChange::Schemas { selection: DbSchemaSelection { all: false, names: vec![] } },
+    )?;
+
+    assert!(db.is_connected("s1"));
+    assert!(db.reconcile_sources().await);
+    assert!(!db.is_connected("s1"));
+    assert!(!db.source("s2")?.introspection.all_schemas);
     Ok(())
 }
 

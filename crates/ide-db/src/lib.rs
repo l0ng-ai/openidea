@@ -25,8 +25,8 @@ pub use conn::{Held, Pool, QueryResult, ResultColumn};
 pub use history::HistoryEntry;
 pub use plan::{PlanNode, PlanProperty};
 pub use source::{
-    DataSource, DbColor, DbDriver, DbIntrospection, DbOptions, DbProperty, DbSnowflake, DbSnowflakeAuth, DbSsh,
-    DbSshAuth, DbSslMode, DbTxMode,
+    DataSource, DbColor, DbDriver, DbIntrospection, DbOptions, DbProperty, DbSchemaSelection, DbSnowflake,
+    DbSnowflakeAuth, DbSsh, DbSshAuth, DbSslMode, DbTxMode, DbVisibilityChange,
 };
 pub use sql::{CellValue, DbRowEdit, SortKey};
 
@@ -518,7 +518,7 @@ impl DbManager {
         Ok(source)
     }
 
-    /// Saves the data source list; connections of removed or changed sources are closed.
+    /// Saves the data source list, preserving connections when only visibility rules change.
     /// Global ones (`global`) go to the app-wide list, the others to the project's.
     pub async fn save_sources(&self, mut sources: Vec<DataSource>) -> IdeResult<()> {
         if sources.iter().any(|s| s.global && s.plugin_owner.is_some()) {
@@ -551,7 +551,7 @@ impl DbManager {
         };
         for o in old {
             match sources.iter().find(|s| s.id == o.id) {
-                Some(n) if *n == o => {}
+                Some(n) if o.same_except_visibility(n) => {}
                 gone_or_changed => {
                     let keys =
                         [o.id.clone(), secrets::jdbc_key(&o.id), secrets::ssh_key(&o.id), Self::sso_credential(&o.id)];
@@ -585,6 +585,31 @@ impl DbManager {
         Ok(())
     }
 
+    /// Updates one scope of a source's visibility against its latest saved rules.
+    pub fn save_source_visibility(&self, id: &str, available: &[String], change: DbVisibilityChange) -> IdeResult<()> {
+        let _guard = plugin::EDIT.lock();
+        let mut sources = source::load(&self.root)?;
+        let scoped_global = self.global.as_ref().filter(|_| !sources.iter().any(|source| source.id == id));
+        if let Some((dir, _)) = scoped_global {
+            sources = source::load_global(dir)?;
+        }
+        let selected = sources
+            .iter_mut()
+            .find(|source| source.id == id)
+            .ok_or_else(|| IdeError::not_found(format!("no data source {id}")))?;
+        let previous = selected.introspection.clone();
+        change.apply(&mut selected.introspection, available);
+        if selected.introspection == previous {
+            return Ok(());
+        }
+        if let Some((dir, _)) = scoped_global {
+            source::save_global(dir, &sources)?;
+        } else {
+            source::save(&self.root, &sources)?;
+        }
+        Ok(())
+    }
+
     /// Watches the data source files (the project's and the global one) for edits made
     /// outside the IDE; `on_change` runs on a background thread once they settle, and
     /// should call [`DbManager::reconcile_sources`]. Stops when the result is dropped.
@@ -593,9 +618,9 @@ impl DbManager {
         SourcesWatch::start(&self.root, self.global.as_ref().map(|(dir, _)| dir.as_path()), on_change)
     }
 
-    /// Re-reads the data sources after their files changed on disk: connections of
-    /// removed or changed sources close, as on [`DbManager::save_sources`] (saved
-    /// passwords stay, the source may come back). Returns whether the list the tree
+    /// Re-reads the data sources after their files changed on disk and closes affected
+    /// connections as on [`DbManager::save_sources`] (saved passwords stay, the source
+    /// may come back). Returns whether the list the tree
     /// shows changed, or the files no longer parse (the tree reports the error).
     pub async fn reconcile_sources(&self) -> bool {
         let now = match self.sources() {
@@ -610,7 +635,7 @@ impl DbManager {
             return false;
         }
         for o in &before {
-            if now.iter().find(|s| s.id == o.id) != Some(o) {
+            if now.iter().find(|s| s.id == o.id).is_none_or(|n| !o.same_except_visibility(n)) {
                 self.disconnect_source(&o.id).await;
             }
         }

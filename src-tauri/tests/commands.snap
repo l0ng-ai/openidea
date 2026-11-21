@@ -124,6 +124,7 @@ db_remove_jdbc_driver                        trusted            project_host bin
 db_retain_catalog                            trusted            project_host bindings async
 db_run_tool                                  trusted            desktop      bindings async
 db_save_jdbc_driver                          trusted            project_host bindings sync
+db_save_source_visibility                    trusted            project_host bindings async
 db_save_sources                              trusted            project_host bindings async
 db_saved_catalog                             trusted            project_host bindings async
 db_schema_objects                            trusted            project_host bindings async
