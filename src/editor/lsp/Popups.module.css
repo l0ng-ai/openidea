@@ -354,9 +354,6 @@
   padding: 0;
   border: 0;
 }
-.docPopup .docToolbar .spacer {
-  display: none;
-}
 .docWindowFrame {
   height: 100%;
   display: flex;
