@@ -154,15 +154,12 @@
   align-items: center;
   gap: var(--space-1);
 }
-.headerAction {
-  max-width: 146px;
-}
 .headerActionLabel {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-@container welcome-projects (max-width: 600px) {
+@container welcome-projects (max-width: 740px) {
   .headerAction {
     width: var(--h-control);
     padding: 0;

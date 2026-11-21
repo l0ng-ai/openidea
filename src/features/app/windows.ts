@@ -544,7 +544,7 @@ export function windowActions(): Action[] {
       id: "file.newUntitled",
       title: t("app.action.newFile"),
       category: t("app.category.file"),
-      icon: "plus",
+      icon: "file-new",
       keywords: ["new", "create", "untitled", "file", "light edit"],
       run: async () => {
         if (desktopOnly()) return;

@@ -423,6 +423,8 @@ const ICONS = {
   export: "openidea/general/export",
   artifact: "openidea/general/artifact",
   web: "openidea/general/web",
+  remote: "openidea/general/remote",
+  "file-new": "openidea/general/newFile",
   "browser-chrome": "openidea/browsers/chrome",
   "browser-chromium": "openidea/browsers/chromium",
   "browser-firefox": "openidea/browsers/firefox",
