@@ -1,12 +1,12 @@
 /**
  * Form pieces of the Version Control / Build, Execution, Deployment / Tools
- * pages: bound checkboxes, "[x] Limit … to: [N] unit" rows, radio rows,
+ * pages: bound checkboxes, "[x] Limit … to: [N] unit" rows,
  * two-column grids, string lists and editable two-column tables.
  */
-import { useId, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useState, type KeyboardEvent, type ReactNode } from "react";
 import clsx from "clsx";
 import { Checkbox, IconButton, Input } from "@/ui";
-import { NumberInput, Row, SearchLabel, Toggle } from "../components/Form";
+import { NumberInput, SearchLabel, Toggle } from "../components/Form";
 import { useLabelMatch, useSetting } from "../components/context";
 import { selectPage } from "../model/staging";
 import styles from "./Workflow.module.css";
@@ -86,39 +86,6 @@ export function ToggleNumber({
       {unit && <span className={clsx(styles.unit, !on && styles.disabled)}>{unit}</span>}
       {hint && <span className={styles.inlineHint}>{hint}</span>}
     </div>
-  );
-}
-
-export interface RadioChoice<V extends string> {
-  value: V;
-  label: string;
-}
-
-/** `Label:  (•) A  ( ) B  ( ) C` bound to a key. */
-export function RadioRow<V extends string>({
-  k,
-  label,
-  choices,
-  hint,
-}: {
-  k: string;
-  label: string;
-  choices: readonly RadioChoice<V>[];
-  hint?: ReactNode;
-}) {
-  const [value, set] = useSetting<V>(k);
-  const name = useId();
-  return (
-    <Row label={label} hint={hint}>
-      <div className={styles.radios} role="radiogroup" aria-label={label}>
-        {choices.map((c) => (
-          <label key={c.value} className={styles.radio}>
-            <input type="radio" name={name} checked={value === c.value} onChange={() => set(c.value)} />
-            <SearchLabel text={c.label} />
-          </label>
-        ))}
-      </div>
-    </Row>
   );
 }
 
