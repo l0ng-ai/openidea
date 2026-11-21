@@ -6749,6 +6749,7 @@ dependencies = [
  "objc2-web-kit 0.3.2",
  "parking_lot",
  "percent-encoding",
+ "reqwest",
  "security-framework",
  "serde",
  "serde_json",

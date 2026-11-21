@@ -568,6 +568,18 @@ fn source_endpoints(official: Vec<String>, source: UpdateSource) -> Vec<String> 
     }
 }
 
+/// Bounds connection establishment (TCP and TLS) for the updater. reqwest divides this
+/// across a host's resolved addresses, so a CDN hostname with four A records gets about
+/// 3.75s each — enough for a slow link, while still leaving the 60s check budget intact.
+const UPDATER_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+fn configure_updater_client(
+    builder: reqwest::ClientBuilder,
+    proxy: &ide_core::proxy_settings::ProxySettings,
+) -> reqwest::ClientBuilder {
+    ide_http::client::with_proxy(builder, proxy).connect_timeout(UPDATER_CONNECT_TIMEOUT)
+}
+
 fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option<tauri_plugin_updater::Updater>> {
     use tauri_plugin_updater::UpdaterExt;
     if !updates_configured(app) {
@@ -591,7 +603,7 @@ fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option<tauri_plug
         builder = builder.target(target);
     }
     builder
-        .configure_client(move |b| ide_http::client::with_proxy(b, &proxy))
+        .configure_client(move |b| configure_updater_client(b, &proxy))
         .endpoints(endpoints)
         .map_err(|e| IdeError::invalid(e.to_string()))?
         .build()
@@ -905,6 +917,18 @@ mod tests {
         assert_eq!(source_endpoints(vec![github.clone()], UpdateSource::Cnb), [CNB_ENDPOINT.into(), github]);
         // A build without an update endpoint stays without one.
         assert!(source_endpoints(Vec::new(), UpdateSource::Cnb).is_empty());
+    }
+
+    #[test]
+    fn updater_client_bounds_connection_setup() {
+        let proxy = ide_core::proxy_settings::ProxySettings::default();
+        let builder = configure_updater_client(reqwest::ClientBuilder::new(), &proxy);
+        // reqwest has no getter for this; its ClientBuilder Debug prints non-default settings.
+        let debug = format!("{builder:?}");
+        assert!(
+            debug.contains(&format!("connect_timeout: {:?}", UPDATER_CONNECT_TIMEOUT)),
+            "the updater must not wait forever on an unreachable CDN address: {debug}"
+        );
     }
 
     #[test]
