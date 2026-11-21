@@ -377,10 +377,12 @@ function FileStructureDialog() {
   const inheritedSupported = useOutline((s) => s.inheritedSupported);
   const nodes = useOutlineNodes();
   const [query, setQuery] = useState("");
+  const [showOptions, setShowOptions] = useState(false);
   // IDEA opens the popup fully expanded.
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
   const caret = useMemo(() => useTracking.getState().caret, []);
   const tree = useRef<TreeHandle>(null);
+  const optionsButton = useRef<HTMLButtonElement>(null);
 
   const filter = useMemo(() => filterOutline(nodes, query, narrowDown), [nodes, query, narrowDown]);
   const parents = useMemo(() => parentKeys(filter.nodes), [filter.nodes]);
@@ -469,6 +471,7 @@ function FileStructureDialog() {
   };
 
   const height = Math.min(420, Math.max(1, visibleCount(filter.nodes, collapsed)) * rowHeight + 8);
+  const name = path ? basename(path) : tx("File Structure");
   return (
     <Dialog
       open
@@ -476,20 +479,78 @@ function FileStructureDialog() {
       width={540}
       position="top"
       transparentBackdrop
+      className={styles.structurePopup}
       aria-label="File Structure"
       title={
         <span className={styles.popupTitle}>
-          {path ? basename(path) : tx("File Structure")}
+          <span className={styles.popupName} title={name}>
+            {name}
+          </span>
           <span className={styles.popupHint}>{shortcutLabel("navigate.fileStructure")}</span>
         </span>
       }
     >
+      <div className={styles.popupToolbar}>
+        <div className={styles.popupOptions} role="group" aria-label={tx("Structure actions")}>
+          {(hasFields(items ?? []) || !showFields) && (
+            <Checkbox
+              label="Show fields"
+              checked={showFields}
+              onChange={(v) => useStructureOptions.setState({ showFields: v })}
+            />
+          )}
+          {hasVisibility(items ?? []) && (
+            <Checkbox
+              label="Show non-public"
+              checked={showNonPublic}
+              onChange={(v) => useStructureOptions.setState({ showNonPublic: v })}
+            />
+          )}
+          {inheritedSupported && (
+            <Checkbox
+              label="Show inherited members"
+              checked={showInherited}
+              onChange={(v) => useStructureOptions.setState({ showInherited: v })}
+            />
+          )}
+        </div>
+        <IconButton
+          ref={optionsButton}
+          icon="settings"
+          title="View Options"
+          size="small"
+          aria-haspopup="menu"
+          aria-expanded={showOptions}
+          onClick={() => setShowOptions((open) => !open)}
+        />
+        <Menu
+          open={showOptions}
+          onClose={() => setShowOptions(false)}
+          anchor={optionsButton}
+          placement="bottom-end"
+          aria-label={tx("View Options")}
+          items={[
+            {
+              label: "Sort Alphabetically",
+              checked: alphabetical,
+              run: () => useStructureOptions.setState({ alphabetical: !alphabetical }),
+            },
+            { kind: "separator" },
+            {
+              label: "Narrow down on typing",
+              checked: narrowDown,
+              run: () => useStructureOptions.setState({ narrowDown: !narrowDown }),
+            },
+          ]}
+        />
+      </div>
       <div className={styles.filterRow}>
+        <Icon name="search" size={16} />
         <input
           data-autofocus
           className={styles.filter}
           value={query}
-          placeholder={path ? "Type to filter symbols" : "No active editor"}
+          placeholder={path ? tx("Type to filter symbols") : tx("No active editor")}
           aria-label={tx("Filter symbols")}
           spellCheck={false}
           autoComplete="off"
@@ -503,41 +564,6 @@ function FileStructureDialog() {
           <span className={styles.filterStatus} role="status">
             {tx("No matches")}
           </span>
-        )}
-        <IconButton
-          icon="sort"
-          title="Sort Alphabetically"
-          size="small"
-          pressed={alphabetical}
-          onClick={() => useStructureOptions.setState({ alphabetical: !alphabetical })}
-        />
-      </div>
-      <div className={styles.popupOptions}>
-        <Checkbox
-          label="Narrow down on typing"
-          checked={narrowDown}
-          onChange={(v) => useStructureOptions.setState({ narrowDown: v })}
-        />
-        {(hasFields(items ?? []) || !showFields) && (
-          <Checkbox
-            label="Show fields"
-            checked={showFields}
-            onChange={(v) => useStructureOptions.setState({ showFields: v })}
-          />
-        )}
-        {hasVisibility(items ?? []) && (
-          <Checkbox
-            label="Show non-public"
-            checked={showNonPublic}
-            onChange={(v) => useStructureOptions.setState({ showNonPublic: v })}
-          />
-        )}
-        {inheritedSupported && (
-          <Checkbox
-            label="Show inherited members"
-            checked={showInherited}
-            onChange={(v) => useStructureOptions.setState({ showInherited: v })}
-          />
         )}
       </div>
       <div className={styles.popupList} style={{ height }}>

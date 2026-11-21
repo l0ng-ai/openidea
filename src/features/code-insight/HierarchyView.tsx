@@ -1,8 +1,9 @@
 /** "hierarchy" tool window: call hierarchy (⌃⌥H) and type hierarchy (⌃H). */
+import { openCodeLocation } from "@/editor/api";
 import { useCallback, useMemo, useRef } from "react";
 import { create } from "zustand";
 import { basename, relativePath, useProject } from "@/platform/project";
-import { maybeEditorService, useOccurrenceNavigator } from "@/workbench/contributions";
+import { useOccurrenceNavigator } from "@/workbench/contributions";
 import {
   EmptyState,
   IconButton,
@@ -164,7 +165,7 @@ export function HierarchyView() {
   };
   const show = (n: Node, focus: boolean) => {
     const t = targetOf(n);
-    if (t) void maybeEditorService()?.openFile(t.path, { selection: { line: t.line, col: t.col }, focus });
+    if (t) void openCodeLocation(t.path, { line: t.line, col: t.col }, { focus });
   };
 
   // Every node is an occurrence, as in IDEA's hierarchy views.

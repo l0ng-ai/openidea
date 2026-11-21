@@ -40,19 +40,11 @@ export const openideaHighlightStyle = HighlightStyle.define([
   token(t.link, "link", { effect: "underline" }),
   token(t.quote, "string"),
   token(
-    [
-      t.keyword,
-      t.controlKeyword,
-      t.moduleKeyword,
-      t.operatorKeyword,
-      t.definitionKeyword,
-      t.modifier,
-      t.null,
-      t.bool,
-      t.unit,
-    ],
+    [t.keyword, t.controlKeyword, t.moduleKeyword, t.operatorKeyword, t.definitionKeyword, t.modifier, t.unit],
     "keyword",
   ),
+  // JetBrains colours them as keywords; Literal keyword sets them apart.
+  token([t.null, t.bool], "literal", { color: "keyword" }),
   token(t.self, "self"),
   token([t.string, t.special(t.string), t.character, t.attributeValue], "string"),
   token(t.docString, "docstring", { italic: "italic" }),
@@ -60,7 +52,9 @@ export const openideaHighlightStyle = HighlightStyle.define([
   token(t.regexp, "regexp"),
   token([t.number, t.integer, t.float], "number"),
   token([t.typeName, t.className, t.namespace, t.definition(t.typeName)], "type"),
-  token([t.standard(t.typeName), t.standard(t.variableName), t.standard(t.function(t.variableName))], "builtin"),
+  token(t.standard(t.variableName), "builtin"),
+  token(t.standard(t.typeName), "builtin-type", { color: "builtin" }),
+  token(t.standard(t.function(t.variableName)), "builtin-function", { color: "builtin" }),
   token([t.function(t.variableName), t.function(t.propertyName)], "function-call"),
   token(shellCommand, "shell-command", { color: "function-call" }),
   token(

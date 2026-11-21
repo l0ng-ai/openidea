@@ -760,20 +760,28 @@ function useLatestExecution(): [string, ConsoleExecution] | undefined {
 }
 
 function ExecutingBar({ path, execution }: { path: string; execution: ConsoleExecution }) {
+  const startedAt = execution.active?.startedAt ?? execution.startedAt;
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 100);
     return () => clearInterval(timer);
-  }, [execution.startedAt]);
+  }, [startedAt]);
   const name = basename(path);
   const count = execution.statements;
+  const index = execution.active ? execution.active.index + 1 : null;
+  const label =
+    count === 1
+      ? tx`Executing in ${name}…`
+      : index === null
+        ? tx`Executing ${count} statements in ${name}…`
+        : tx`Executing statement ${index} of ${count} in ${name}…`;
   return (
     <div className={styles.executing} role="status">
       <Spinner size={12} label={tx("Executing")} />
       <span className={styles.executingText} title={path}>
-        {count > 1 ? tx`Executing ${count} statements in ${name}…` : tx`Executing in ${name}…`}
+        {label}
       </span>
-      <span className={styles.executingTime}>{formatElapsed(Math.max(0, now - execution.startedAt))}</span>
+      <span className={styles.executingTime}>{formatElapsed(Math.max(0, now - startedAt))}</span>
     </div>
   );
 }

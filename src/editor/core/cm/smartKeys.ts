@@ -1,6 +1,6 @@
 /**
- * IDEA-style Tab, smart Backspace, smart angle brackets and Tab out of
- * auto-inserted brackets and quotes.
+ * IDEA-style Tab, smart Backspace, smart angle brackets, Tab out of
+ * auto-inserted brackets and quotes, and `;` moved to the statement end.
  */
 import {
   EditorSelection,
@@ -12,9 +12,18 @@ import {
   type Transaction,
 } from "@codemirror/state";
 import { EditorView, keymap, type Command } from "@codemirror/view";
-import { getIndentUnit, getIndentation, indentString, indentUnit, syntaxTree } from "@codemirror/language";
+import {
+  getIndentUnit,
+  getIndentation,
+  indentString,
+  indentUnit,
+  matchBrackets,
+  syntaxTree,
+} from "@codemirror/language";
+import type { SyntaxNode } from "@lezer/common";
 import { indentMore } from "@codemirror/commands";
 import { visibleColumn } from "./visibleColumn";
+import { SEMICOLON_LANGS, codeEnd, lineCommentToken } from "./editing";
 
 // --- Tab -------------------------------------------------------------------------------
 
@@ -386,4 +395,77 @@ export function smartAngleBrackets(language: string | undefined): Extension {
       return false;
     }),
   ];
+}
+
+// --- semicolon at statement end --------------------------------------------------------------
+
+/** The paren group opens a control statement head, where `;` separates parts (`for`) or no `;` belongs. */
+const CONTROL_HEAD = /\b(for|foreach|if|while|switch|catch|synchronized|try|using|lock|fixed|when)\s*$/;
+/** `} while (…)` closes a do-while, which does end with `;`. */
+const DO_WHILE_TAIL = /^\s*}\s*while\s*$/;
+/** Comment continuation lines, preprocessor directives, annotations and attributes. */
+const NOT_A_STATEMENT_LINE = /^\s*(\*|\/\/|\/\*|#|@|\[)/;
+/** Syntax nodes around the `(` that make the group a parameter list or an annotation, not a call. */
+const NOT_A_CALL = /Param|Annotation|Attribute|Decorator/;
+const LITERAL = /string|comment|template|textblock|char|rune/i;
+/** The next line goes on with the expression (a chained call, an operator), so the statement doesn't end here. */
+const CONTINUES = /^\s*(\.|\?|:|&&|\|\||\+(?!\+)|-(?!-)|\*(?!\/)|\/(?![/*])|%|=|,)/;
+
+/**
+ * Where a `;` typed at `pos` goes to end the statement, as in IDEA's
+ * `editor.move.semicolon.after.paren`: right after the last `)` when nothing
+ * but closing parentheses and whitespace follow the caret on its line. `null`
+ * (a plain `;`) in literals and comments, for / try / control heads,
+ * declarations and annotations, and when the statement goes on below.
+ */
+function semicolonTarget(state: EditorState, pos: number): number | null {
+  const line = state.doc.lineAt(pos);
+  const before = line.text.slice(0, pos - line.from);
+  const rest = line.text.slice(pos - line.from);
+  if (!/^[\s)]*\)[\s)]*$/.test(rest)) return null;
+  if (codeEnd(before, lineCommentToken(state, line.from)) !== before.length) return null;
+  const tree = syntaxTree(state);
+  for (let n: SyntaxNode | null = tree.resolveInner(pos, -1); n; n = n.parent)
+    if (n.from < pos && pos < n.to && LITERAL.test(n.name)) return null;
+
+  const target = pos + rest.lastIndexOf(")") + 1;
+  const match = matchBrackets(state, target, -1);
+  if (!match?.matched || !match.end) return null;
+  const open = match.end.from;
+  const head = state.sliceDoc(state.doc.lineAt(open).from, open);
+  if (CONTROL_HEAD.test(head) && !DO_WHILE_TAIL.test(head)) return null;
+  if (NOT_A_STATEMENT_LINE.test(head)) return null;
+  let n: SyntaxNode | null = tree.resolveInner(open, 1);
+  for (let depth = 0; n && depth < 3; n = n.parent, depth++) if (NOT_A_CALL.test(n.name)) return null;
+
+  for (let no = line.number + 1; no <= state.doc.lines; no++) {
+    const next = state.doc.line(no).text;
+    if (!next.trim()) continue;
+    if (CONTINUES.test(next)) return null;
+    break;
+  }
+  return target;
+}
+
+/**
+ * Settings › Smart Keys › "Move ';' typed before ')' to the end of the
+ * statement": `foo(bar|)` + `;` → `foo(bar);|`, in languages that end
+ * statements with `;`. When any caret doesn't qualify, every caret types a plain `;`.
+ */
+export function semicolonAtStatementEnd(language: string | undefined): Extension {
+  if (!SEMICOLON_LANGS.has(language ?? "")) return [];
+  return EditorView.inputHandler.of((view, _from, _to, text) => {
+    const { state } = view;
+    if (text !== ";" || state.readOnly || state.selection.ranges.some((r) => !r.empty)) return false;
+    const targets = state.selection.ranges.map((r) => semicolonTarget(state, r.head));
+    if (targets.some((t) => t === null) || new Set(targets).size !== targets.length) return false;
+    view.dispatch(
+      state.changeByRange((r) => {
+        const at = semicolonTarget(state, r.head)!;
+        return { changes: { from: at, insert: ";" }, range: EditorSelection.cursor(at + 1) };
+      }),
+      { scrollIntoView: true, userEvent: "input.type" },
+    );
+    return true;
+  });
 }
