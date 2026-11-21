@@ -162,6 +162,35 @@ describe("staging operations of the tree's nodes", () => {
     useSettings(false);
     expect(labels(nodeMenu([group("unstaged").children![0]!], []))).toContain("Commit File…");
   });
+
+  it.each([false, true])("groups the change menu for staging area = %s", (staging) => {
+    useSettings(staging);
+    const underUnstaged = group("unstaged").children!.find((n) => n.label === "Unstaged.kt")!;
+    const node = staging ? underUnstaged : { ...underUnstaged, group: "changes" as const, changelist: "a" };
+    const groups: string[][] = [[]];
+    for (const item of nodeMenu([node], [], { roots })) {
+      if (item.kind === "separator") groups.push([]);
+      else groups.at(-1)!.push(item.kind === "action" ? item.action : item.label);
+    }
+    expect(groups[0]).toEqual(
+      staging
+        ? ["Stage", "Unstage", "vcs.stashSelected", "vcs.rollback", "Delete…"]
+        : ["Commit File…", "vcs.rollback", "vcs.changelist.move"],
+    );
+    expect(groups[1]).toEqual([
+      "Show Diff",
+      "vcs.showDiffInNewWindow",
+      "Jump to Source",
+      "Copy Path",
+      "Copy File Name",
+    ]);
+    expect(groups).toContainEqual([
+      "vcs.createPatch",
+      "Copy as Patch to Clipboard",
+      "vcs.shelve",
+      ...(staging ? [] : ["vcs.stashSelected"]),
+    ]);
+  });
 });
 
 describe("the Commit tool window with the staging area", () => {
