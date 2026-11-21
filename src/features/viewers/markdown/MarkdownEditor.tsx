@@ -6,6 +6,8 @@
  * screen (Structure's Autoscroll from Source).
  */
 import {
+  Suspense,
+  use,
   useDeferredValue,
   useEffect,
   useLayoutEffect,
@@ -24,7 +26,7 @@ import { useMarkdownPreviewFontSize } from "@/platform/languageSettings";
 import { maybeEditorService, registerFontZoomSurface } from "@/workbench/contributions";
 import { editorsFor, setShownLine } from "@/editor/api";
 import { highlightInto } from "@/editor/lsp/markdown";
-import { FloatingToolbar, SplitGroup, SplitHandle, SplitPanel, selectableText } from "@/ui";
+import { FloatingToolbar, Spinner, SplitGroup, SplitHandle, SplitPanel, selectableText } from "@/ui";
 import {
   FIND_CURRENT_HIGHLIGHT,
   FIND_HIGHLIGHT,
@@ -42,6 +44,7 @@ import { publishPreviewSelection, publishPreviewTop, stepMarkdownPreviewFontZoom
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { hasMermaid, MERMAID_SELECTOR, renderMermaidIn } from "./mermaid";
 import { renderMath } from "@/editor/lsp/markdownMath";
+import type { renderMathSvg } from "./mathSvg";
 import { modeOf, pinMarkdownMode, useMarkdownModes } from "./modes";
 import { MarkdownLayoutActions } from "./MarkdownLayoutActions";
 import {
@@ -147,7 +150,15 @@ export function MarkdownEditor({
         {mode === "split" && <SplitHandle aria-label={tx("Resize Markdown preview")} />}
         {mode !== "editor" && (
           <SplitPanel id="preview" style={{ overflow: "hidden" }} {...splitBounds}>
-            <MarkdownPreview path={path} sync={mode === "split"} />
+            <Suspense
+              fallback={
+                <div className={styles.preview}>
+                  <Spinner label={tx("Loading")} />
+                </div>
+              }
+            >
+              <MarkdownPreview path={path} sync={mode === "split"} />
+            </Suspense>
           </SplitPanel>
         )}
       </SplitGroup>
@@ -166,6 +177,15 @@ const blocksOf = (root: HTMLElement) =>
     top: el.offsetTop,
   }));
 
+let svgRenderer: Promise<typeof renderMathSvg | null> | undefined;
+
+function loadSvgRenderer() {
+  return (svgRenderer ??= import("./mathSvg").then(
+    (module) => module.renderMathSvg,
+    () => null,
+  ));
+}
+
 function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   const text = useLiveMarkdown((s) => s[path]?.text);
   const fontZoom = useLiveMarkdown((s) => s[path]?.fontZoom ?? 0);
@@ -181,6 +201,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   const deferred = useDeferredValue(text ?? "");
   const [render] = useState(createMarkdownRenderer);
   const html = useMemo(() => render(deferred), [render, deferred]);
+  const renderSvg = html.includes(' data-math="') ? use(loadSvgRenderer()) : null;
   const ref = useRef<HTMLDivElement>(null);
   const theme = useSyncExternalStore(subscribeTheme, themeKey, () => "");
   const diagrams = useRef<Node[]>([]);
@@ -206,9 +227,10 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   // Math before the preview index: typesetting changes the blocks' heights.
   useLayoutEffect(() => {
     if (!ref.current) return;
+    renderSvg?.(ref.current);
     renderMath(ref.current);
     invalidatePreviewIndex(ref.current);
-  }, [html]);
+  }, [html, renderSvg]);
 
   // Mermaid diagrams: before paint, so cached ones don't flash their source.
   useLayoutEffect(() => {

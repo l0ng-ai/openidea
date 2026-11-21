@@ -97,7 +97,7 @@ function collectRuns(root: Node): TextRun[] {
     const el = node as Element;
     const tag = el.tagName.toUpperCase();
     if (SKIP_TAGS.has(tag)) return;
-    if (el.classList.contains("katex-mathml")) return;
+    if (tag === "MJX-ASSISTIVE-MML" || el.classList.contains("katex-mathml")) return;
     if (tag === "PRE" && el.parentElement?.getAttribute("data-mermaid-state") === "ok") return;
     const isBlock = BLOCK_TAGS.has(tag);
     if (isBlock) flush();
