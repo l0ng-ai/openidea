@@ -571,6 +571,42 @@ async fn an_idle_open_project_expires_but_an_attached_view_does_not() {
     until("a disconnected, opened project expires", || !guard.0.exists()).await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unsaved_edits_of_a_dropped_connection_keep_an_idle_daemon() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("h");
+    let base = tmp.path().join("s");
+    let project = home.join("demo");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(project.join("app.py"), "print(1)\n").unwrap();
+    let guard = DaemonGuard(ide_host::daemon::paths_for(&base, &home, "~/demo").unwrap().socket);
+    let (peer, _) = attach_client(&home, &base, "~/demo", 1);
+    initialize(&peer).await;
+    invoke(&peer, "open_project", json!({ "path": project })).await.unwrap();
+    let doc = invoke(&peer, "doc_open", json!({ "path": project.join("app.py") })).await.unwrap();
+    invoke(
+        &peer,
+        "doc_edit",
+        json!({
+            "doc": doc["id"],
+            "baseVersion": doc["version"],
+            "changes": { "changes": [{ "from": 0, "to": 0, "insert": "# unsaved\n" }] }
+        }),
+    )
+    .await
+    .unwrap();
+    peer.kill();
+    peer.exited().await;
+    tokio::time::sleep(Duration::from_millis(2300)).await;
+    assert!(guard.0.exists(), "an idle daemon expired with unsaved edits");
+
+    let (again, _) = attach_client(&home, &base, "~/demo", 1);
+    initialize(&again).await;
+    let reopened = invoke(&again, "doc_open", json!({ "path": project.join("app.py") })).await.unwrap();
+    assert!(reopened["text"].as_str().unwrap().starts_with("# unsaved\n"));
+    shutdown(&again).await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn applying_the_host_timeout_expires_the_running_daemon_without_a_restart() {
     saved_idle_policy(false).await;
