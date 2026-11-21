@@ -8,7 +8,7 @@ import { useEffect, useId, useMemo, useState } from "react";
 import type { ChangedFile, Commit, CompareResult, ResetMode, WorkingTreeChange } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands, isTauri, nextRequestId } from "@/platform/ipc";
-import { Button, Checkbox, Dialog, Icon, Input, Radio, Select, Spinner, T } from "@/ui";
+import { Button, Checkbox, Dialog, Icon, Input, Radio, Select, Spinner, T, Toolbar } from "@/ui";
 import { useFilePresentation } from "@/ui/filePresentation";
 import { notifications } from "@/workbench/contributions";
 import { windowBackgroundHex } from "@/workbench/theme";
@@ -947,18 +947,33 @@ export function ChangesBetweenDialog({
       ) : null}
     </>
   );
-  if (native)
+  if (native) {
+    const diffButton = (
+      <Button
+        variant={listOnly ? "primary" : "ghost"}
+        size={listOnly ? "normal" : "small"}
+        icon={listOnly ? undefined : "diff"}
+        disabled={!current}
+        onClick={showDiff}
+      >
+        Show Diff
+      </Button>
+    );
     return (
       <div className={styles.comparisonWindow}>
+        {!listOnly && (
+          <Toolbar className={styles.comparisonWindowToolbar} aria-label="Comparison actions">
+            {diffButton}
+          </Toolbar>
+        )}
         <div className={styles.comparisonWindowBody}>{contents}</div>
         <div className={styles.comparisonWindowFooter}>
           <Button onClick={onClose}>Close</Button>
-          <Button variant="primary" disabled={!current} onClick={showDiff}>
-            Show Diff
-          </Button>
+          {listOnly && diffButton}
         </div>
       </div>
     );
+  }
   return (
     <Dialog
       open

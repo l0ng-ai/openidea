@@ -1534,6 +1534,7 @@
   "Show Incoming and Outgoing Commits": "Show Incoming and Outgoing Commits",
   "Open in Git Log": "Open in Git Log",
   "Could not show diff": "Could not show diff",
+  "Comparison actions": "Comparison actions",
   "This branch has no upstream. Push it to compare with a remote branch.": "This branch has no upstream. Push it to compare with a remote branch.",
   "Highlight occurrences of selected text": "Highlight occurrences of selected text",
   "Show What's New after an update": "Show What's New after an update",
