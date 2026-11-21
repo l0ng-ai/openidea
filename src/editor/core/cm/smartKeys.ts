@@ -14,7 +14,9 @@ import {
 import { EditorView, keymap, type Command } from "@codemirror/view";
 import { getIndentUnit, getIndentation, indentString, indentUnit, syntaxTree } from "@codemirror/language";
 import { indentMore } from "@codemirror/commands";
+import type { SyntaxNode } from "@lezer/common";
 import { visibleColumn } from "./visibleColumn";
+import { literalAt } from "./literals";
 
 // --- Tab -------------------------------------------------------------------------------
 
@@ -386,4 +388,61 @@ export function smartAngleBrackets(language: string | undefined): Extension {
       return false;
     }),
   ];
+}
+
+/** Languages that join string literals with `+`. */
+const PLUS_CONCAT_LANGS = new Set([
+  "java",
+  "csharp",
+  "kotlin",
+  "groovy",
+  "javascript",
+  "javascriptreact",
+  "typescript",
+  "typescriptreact",
+]);
+
+/** The one-line string literal around `pos` (parse tree, else the highlighted literals). */
+function stringLiteralAt(state: EditorState, pos: number): { from: number; to: number } | null {
+  for (let n: SyntaxNode | null = syntaxTree(state).resolveInner(pos, -1); n; n = n.parent)
+    if (/^(StringLiteral|String)$/.test(n.name)) return { from: n.from, to: n.to };
+  const lit = literalAt(state, pos);
+  return lit?.kind === "string" ? lit : null;
+}
+
+/**
+ * Enter inside a string literal splits it into two joined with `+` (`"hello" +` / `"world"`),
+ * keeping the value, as in IDEA; text blocks, template literals and other languages get a plain newline.
+ */
+export function enterInStringLiteral(language: string): Command {
+  return (view) => {
+    if (!PLUS_CONCAT_LANGS.has(language)) return false;
+    const { state } = view;
+    const sel = state.selection.main;
+    if (!sel.empty || state.selection.ranges.length > 1) return false;
+    const pos = sel.head;
+    const lit = stringLiteralAt(state, pos);
+    if (!lit) return false;
+    const text = state.sliceDoc(lit.from, lit.to);
+    const quote = text[0];
+    const singleQuoted = quote === "'" && language !== "java" && language !== "csharp" && language !== "kotlin";
+    if (!(quote === '"' || singleQuoted) || text.startsWith('"""')) return false;
+    // Strictly between the quotes of a literal on one line, and not inside an escape.
+    if (pos <= lit.from || pos >= lit.to || !text.endsWith(quote) || text.length < 2) return false;
+    if (state.doc.lineAt(lit.from).number !== state.doc.lineAt(lit.to).number) return false;
+    const before = state.sliceDoc(lit.from + 1, pos);
+    if (/(^|[^\\])(\\\\)*\\$/.test(before)) return false;
+    // The continuation indent: two levels in the JVM languages and C#, one in JavaScript (IDEA's defaults).
+    const unit = indentString(state, getIndentUnit(state));
+    const base = /^\s*/.exec(state.doc.lineAt(pos).text)![0];
+    const indent = base + (language.startsWith("javascript") || language.startsWith("typescript") ? unit : unit + unit);
+    const insert = `${quote} +${state.lineBreak}${indent}${quote}`;
+    view.dispatch({
+      changes: { from: pos, insert },
+      selection: { anchor: pos + insert.length },
+      scrollIntoView: true,
+      userEvent: "input",
+    });
+    return true;
+  };
 }
