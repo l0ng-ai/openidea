@@ -18,6 +18,7 @@ import { toggleCaret } from "./multiCaret";
 import { restructuredtextLanguage } from "./restructuredtext";
 import { commentBlock, enterInLineComment, lineCommentStyle } from "./comments";
 import { languages } from "@codemirror/language-data";
+import { java } from "@codemirror/lang-java";
 
 /** Brace languages in miniature: one unit deeper after a line ending in `{`. */
 const javascript = () =>
@@ -311,6 +312,14 @@ describe("fallback indentation for GDScript", () => {
     const v = make("func test() -> void|", gd);
     completeStatement("gdscript")(v);
     expect(show(v)).toBe("func test() -> void:\n\t|");
+  });
+});
+
+describe("complete current statement", () => {
+  it("indents the line after an added semicolon like the statement, not as its continuation", () => {
+    const v = make('class A {\n  void f() {\n    String a = "1"|\n    g();\n  }\n}\n', java());
+    completeStatement("java")(v);
+    expect(show(v)).toBe('class A {\n  void f() {\n    String a = "1";\n    |\n    g();\n  }\n}\n');
   });
 });
 

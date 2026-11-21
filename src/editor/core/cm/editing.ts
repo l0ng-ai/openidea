@@ -20,6 +20,7 @@ import {
   getIndentUnit,
   indentString,
   getIndentation,
+  ensureSyntaxTree,
 } from "@codemirror/language";
 import {
   copyLineDown,
@@ -633,7 +634,16 @@ export function completeStatementSpec(state: EditorState, language: string): Tra
     text.endsWith(":") ||
     (KEYWORD_BLOCK_LANGS.has(language) && KEYWORD_HEAD.test(text) && !/^\s*module\b.*\bwhere$/.test(text));
   const nextIndent = baseIndent + (opensBlock ? unit : "");
-  const indentHere = getIndentation(state, line.to);
+  // Indent the new line as the finished statement's next line: without the `;` the line is
+  // still an unfinished statement and gets a continuation indent.
+  let finished = state;
+  let lineEnd = line.to;
+  if (insert) {
+    finished = state.update({ changes: { from: line.from + text.length, insert } }).state;
+    lineEnd += insert.length;
+    ensureSyntaxTree(finished, lineEnd, 50);
+  }
+  const indentHere = getIndentation(finished, lineEnd);
   const newline = br + (indentHere !== null && !opensBlock ? indentString(state, indentHere) : nextIndent);
   const changes: ChangeSpec[] = [];
   if (insert) changes.push({ from: line.from + text.length, insert });
