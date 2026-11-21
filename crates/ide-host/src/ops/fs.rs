@@ -85,11 +85,13 @@ pub async fn fs_read_dir(host: &Host, window: &str, path: PathBuf) -> IdeResult<
     host.blocking(move || {
         let excludes = project
             .map(|p| {
-                let globs = p.exclude_globs();
+                // An attached project's folders follow its own exclusions.
+                let root = p.root_of(&path);
+                let globs = p.exclude_globs_in(&root);
                 // `read_dir` matches relative to the enclosing repository: re-anchor
-                // project-root patterns (`/build`) when the project is a repo subfolder.
-                let repo = p.root.ancestors().find(|d| d.join(".git").exists());
-                match repo.and_then(|r| p.root.strip_prefix(r).ok()).filter(|rel| !rel.as_os_str().is_empty()) {
+                // root patterns (`/build`) when the project is a repo subfolder.
+                let repo = root.ancestors().find(|d| d.join(".git").exists());
+                match repo.and_then(|r| root.strip_prefix(r).ok()).filter(|rel| !rel.as_os_str().is_empty()) {
                     Some(rel) => {
                         let rel = rel.to_string_lossy().replace('\\', "/");
                         globs.into_iter().map(|g| if g.starts_with('/') { format!("/{rel}{g}") } else { g }).collect()
