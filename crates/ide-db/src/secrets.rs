@@ -18,6 +18,11 @@ pub fn ssh_key(id: &str) -> String {
     format!("{id}#ssh")
 }
 
+/// JDBC password when the original credential is a Snowflake passphrase or token.
+pub fn jdbc_key(id: &str) -> String {
+    format!("{id}#jdbc")
+}
+
 fn file_key(project: &str, key: &str) -> String {
     format!("{project}|{key}")
 }
