@@ -6784,7 +6784,6 @@
   "Recent calls p95 {toFixed} ms; {crashes} crashes, {slowCalls} editor results too late, reclaimed {reclaims}× when idle": "近期调用 p95 {toFixed} 毫秒；崩溃 {crashes} 次，编辑器结果超时 {slowCalls} 次，空闲回收 {reclaims} 次",
   "Linked plugin": "链接的插件",
   "Project plugin": "项目插件",
-  "Signed by {publisher}": "由 {publisher} 签名",
   "Unsigned": "未签名",
   "Roll Back to {previousVersion}": "回滚到 {previousVersion}",
   "Install Plugin from Package File…": "从插件包文件安装…",
@@ -9279,5 +9278,10 @@
   "Configure skills for this session": "为此会话配置技能",
   "No skills found in .agents/skills, .openidea/skills, ~/.agents/skills, or the CLI folders of Claude Code, GitHub Copilot, Codex, and Cursor.": "未在 .agents/skills、.openidea/skills、~/.agents/skills 或 Claude Code、GitHub Copilot、Codex 与 Cursor 的 CLI 文件夹中找到技能。",
   "This CLI discovers the folder itself: off hides the skill from OpenIDEA's / menu and applies only where the CLI supports disabling.": "该 CLI 会自己发现这个文件夹：关闭只会让 OpenIDEA 的 / 菜单不再提供该技能，并且只在 CLI 支持禁用时生效。",
-  "Cannot find the source of {0}": "找不到 {0} 的源代码"
+  "Cannot find the source of {0}": "找不到 {0} 的源代码",
+  "Code:": "代码：",
+  "Signed by:": "签名者：",
+  "ID:": "ID：",
+  "Homepage:": "主页：",
+  "Mail:": "邮件："
 }

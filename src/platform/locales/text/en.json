@@ -2950,5 +2950,11 @@
   "Configure skills for this session": "Configure skills for this session",
   "No skills found in .agents/skills, .openidea/skills, ~/.agents/skills, or the CLI folders of Claude Code, GitHub Copilot, Codex, and Cursor.": "No skills found in .agents/skills, .openidea/skills, ~/.agents/skills, or the CLI folders of Claude Code, GitHub Copilot, Codex, and Cursor.",
   "This CLI discovers the folder itself: off hides the skill from OpenIDEA's / menu and applies only where the CLI supports disabling.": "This CLI discovers the folder itself: off hides the skill from OpenIDEA's / menu and applies only where the CLI supports disabling.",
-  "Cannot find the source of {0}": "Cannot find the source of {0}"
+  "Cannot find the source of {0}": "Cannot find the source of {0}",
+  "Code:": "Code:",
+  "Signed by:": "Signed by:",
+  "Location:": "Location:",
+  "ID:": "ID:",
+  "Homepage:": "Homepage:",
+  "Mail:": "Mail:"
 }
