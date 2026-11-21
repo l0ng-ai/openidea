@@ -6,10 +6,10 @@ import { Icon } from "./icons";
 import { List } from "./List";
 import { Popup } from "./Popup";
 import { Given } from "./T";
+import { useRowHeight } from "./density";
 import type { TabItem } from "./Tabs";
 import styles from "./HiddenTabsPopup.module.css";
 
-const ROW_HEIGHT = 26;
 const DIVIDER_HEIGHT = 8;
 const isDivider = (item: TabItem | null) => item === null;
 
@@ -37,6 +37,7 @@ export function HiddenTabsPopup({
   onDismiss,
 }: Props) {
   const tr = useGivenTx();
+  const rowHeight = useRowHeight(26);
   const [rows, setRows] = useState<(TabItem | null)[]>([]);
   const [position, setPosition] = useState(0);
 
@@ -95,7 +96,7 @@ export function HiddenTabsPopup({
     event.stopPropagation();
   };
   const hasDivider = rows.includes(null);
-  const totalHeight = (rows.length - Number(hasDivider)) * ROW_HEIGHT + (hasDivider ? DIVIDER_HEIGHT : 0);
+  const totalHeight = (rows.length - Number(hasDivider)) * rowHeight + (hasDivider ? DIVIDER_HEIGHT : 0);
   return (
     <Popup
       open={rows.length > 0}
@@ -111,7 +112,7 @@ export function HiddenTabsPopup({
         role="grid"
         aria-label={tr("Hidden Editor Tabs")}
         aria-rowcount={rows.length - Number(hasDivider)}
-        style={{ height: Math.min(totalHeight, ROW_HEIGHT * 10) }}
+        style={{ height: Math.min(totalHeight, rowHeight * 10) }}
         onKeyDown={onKeyDown}
       >
         <List
@@ -120,7 +121,7 @@ export function HiddenTabsPopup({
           isSection={isDivider}
           renderSection={() => <span className={styles.divider} />}
           sectionHeight={DIVIDER_HEIGHT}
-          rowHeight={ROW_HEIGHT}
+          rowHeight={rowHeight}
           activeIndex={activeIndex}
           onActiveChange={setPosition}
           onActivate={(item) => item && pick(item)}
