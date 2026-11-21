@@ -288,6 +288,8 @@ export interface ServiceProviderContribution {
   menu?(item: ServiceTreeItem): MenuItem[];
   /** Double click / Enter. */
   activate?(item: ServiceTreeItem): void;
+  /** Jump to Source (F4 / ⌘↓); a provider without it activates the node instead. */
+  jumpToSource?(item: ServiceTreeItem): void;
   /** A node of this provider became the lead selection. */
   select?(item: ServiceTreeItem): void;
   /** A node of this provider was expanded or collapsed. */
