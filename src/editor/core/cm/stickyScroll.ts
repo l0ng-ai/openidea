@@ -165,6 +165,26 @@ function xAtOffset(inner: HTMLElement, offset: number): number {
   return range.getBoundingClientRect().right;
 }
 
+export function readEditorTopLayout(view: EditorView) {
+  const scroller = view.scrollDOM;
+  const viewport = scroller.getBoundingClientRect();
+  const gutters = view.dom.querySelector(".cm-gutters")?.getBoundingClientRect();
+  const numbers = view.dom.querySelector(".cm-lineNumbers")?.getBoundingClientRect();
+  const overview = view.dom.querySelector(".cm-openidea-overview")?.getBoundingClientRect();
+  const width = scroller.clientWidth;
+  return {
+    viewport,
+    top: scroller.offsetTop,
+    left: scroller.offsetLeft,
+    width,
+    rightInset: overview?.width ? Math.max(0, width - (overview.left - viewport.left) / view.scaleX) : 0,
+    gutterWidth: (gutters?.width ?? 0) / view.scaleX,
+    numberWidth: (numbers?.width ?? 0) / view.scaleX,
+    // Gutters left of the line numbers (e.g. VCS annotations) shift the number column.
+    numberLeft: gutters && numbers ? Math.max(0, (numbers.left - gutters.left) / view.scaleX) : 0,
+  };
+}
+
 class StickyScroll {
   dom: HTMLElement;
   private lines: number[] = [];
@@ -216,29 +236,10 @@ class StickyScroll {
       key: this,
       read: (view) => {
         this.scheduled = false;
-        const scroller = view.scrollDOM;
-        const viewport = scroller.getBoundingClientRect();
-        const scrollTop = scroller.scrollTop;
-        const docOffset = view.documentTop - viewport.top + scrollTop;
+        const layout = readEditorTopLayout(view);
+        const scrollTop = view.scrollDOM.scrollTop;
+        const docOffset = view.documentTop - layout.viewport.top + scrollTop;
         const lh = view.defaultLineHeight;
-        const gutters = view.dom.querySelector(".cm-gutters")?.getBoundingClientRect();
-        const numbers = view.dom.querySelector(".cm-lineNumbers")?.getBoundingClientRect();
-        const gutterWidth = (gutters?.width ?? 0) / view.scaleX;
-        const numberWidth = (numbers?.width ?? 0) / view.scaleX;
-        // Gutters left of the line numbers (e.g. VCS annotations) shift the number column.
-        const numberLeft = gutters && numbers ? Math.max(0, (numbers.left - gutters.left) / view.scaleX) : 0;
-        const overview = view.dom.querySelector(".cm-openidea-overview")?.getBoundingClientRect();
-        const width = scroller.clientWidth;
-        const rightInset = overview?.width ? Math.max(0, width - (overview.left - viewport.left) / view.scaleX) : 0;
-        const layout = {
-          top: scroller.offsetTop,
-          left: scroller.offsetLeft,
-          width,
-          rightInset,
-          gutterWidth,
-          numberWidth,
-          numberLeft,
-        };
         if (scrollTop - docOffset <= 0) return { lines: [] as number[], layout, scrollLeft: 0 };
         // n sticky rows cover the first n visible lines; they show the n outermost
         // headers of the first line below them, as long as it has that many.
@@ -252,7 +253,7 @@ class StickyScroll {
           if (enclosing.length < n) break;
           headers = enclosing.slice(0, n);
         }
-        return { lines: headers, layout, scrollLeft: scroller.scrollLeft };
+        return { lines: headers, layout, scrollLeft: view.scrollDOM.scrollLeft };
       },
       write: ({ lines, layout, scrollLeft }) => {
         const state = this.view.state;
@@ -417,3 +418,5 @@ class StickyScroll {
   }
 }
 export const stickyScroll: Extension = ViewPlugin.fromClass(StickyScroll);
+
+export { renderLineContent as renderContextLine };
