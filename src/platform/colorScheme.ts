@@ -526,11 +526,13 @@ export function _setSchemeSource(css: string) {
 
 /**
  * All tokens of a theme with `var()` references resolved (so they survive under another theme);
- * with `redGreen`, as Adjust colors for red-green vision deficiency recolours it.
+ * with `redGreen`, as Adjust colors for red-green vision deficiency recolours it. `fixed` values
+ * replace the theme's own and are kept as written, and the tokens derived from them follow them.
  */
-export function schemeTokens(id: SchemeId, css: string = source, redGreen = false): Vars {
+export function schemeTokens(id: SchemeId, css: string = source, redGreen = false, fixed?: Vars): Vars {
   const key = redGreen ? `${id}+red-green` : id;
-  const cached = css === source ? resolvedCache.get(key) : undefined;
+  const cacheable = css === source && !fixed?.size;
+  const cached = cacheable ? resolvedCache.get(key) : undefined;
   if (cached) return cached;
   const merged = declaredSchemeTokens(id, css, redGreen);
   const resolve = (value: string, depth = 0): string =>
@@ -539,6 +541,8 @@ export function schemeTokens(id: SchemeId, css: string = source, redGreen = fals
       : value.replace(
           /var\((--[\w-]+)(?:\s*,\s*([^()]*(?:\([^()]*\))?[^()]*))?\)/g,
           (_m, name: string, fallback?: string) => {
+            const own = fixed?.get(name);
+            if (own !== undefined) return own;
             const v = merged.get(name);
             return v !== undefined
               ? resolve(v, depth + 1)
@@ -548,8 +552,9 @@ export function schemeTokens(id: SchemeId, css: string = source, redGreen = fals
           },
         );
   const out: Vars = new Map();
-  for (const [k, v] of merged) out.set(k, resolve(v));
-  if (css === source) resolvedCache.set(key, out);
+  for (const [k, v] of merged) out.set(k, fixed?.get(k) ?? resolve(v));
+  for (const [k, v] of fixed ?? []) out.set(k, v);
+  if (cacheable) resolvedCache.set(key, out);
   return out;
 }
 
@@ -748,14 +753,22 @@ export function listSchemes(customs: CustomColorSchemes = {}) {
   return [...SCHEMES, ...Object.entries(customSchemes(customs)).map(([id, s]) => ({ id, name: s.name }))];
 }
 
-/** With `redGreen`, a built-in scheme's red-green variant; a custom scheme keeps its parent's own colours. */
-export function resolvedSchemeTokens(id: string, customs: CustomColorSchemes = {}, redGreen = false): Vars {
+/**
+ * A scheme's tokens with a custom scheme's attributes and then `overrides` applied; tokens that
+ * tokens.css derives from an overridden one follow it unless they are overridden themselves. With
+ * `redGreen`, a built-in scheme's red-green variant; a custom scheme keeps its parent's own colours.
+ */
+export function resolvedSchemeTokens(
+  id: string,
+  customs: CustomColorSchemes = {},
+  redGreen = false,
+  overrides?: Record<string, TextAttributesOverride>,
+): Vars {
   const custom = customSchemes(customs)[id];
   const builtin = isBuiltinTheme(id);
   const base = builtin ? id : (custom?.parent ?? "light");
-  const tokens = new Map(schemeTokens(base, source, redGreen && builtin));
-  for (const [key, value] of overrideDeclarations(custom?.attributes)) tokens.set(key, value);
-  return tokens;
+  const fixed: Vars = new Map([...overrideDeclarations(custom?.attributes), ...overrideDeclarations(overrides)]);
+  return new Map(schemeTokens(base, source, redGreen && builtin, fixed));
 }
 
 const hexIn = (value: string | undefined): string | undefined =>
@@ -865,7 +878,7 @@ export function schemeCss(
   const el = root === undefined ? (typeof document !== "undefined" ? document.documentElement : null) : root;
   const pluginTheme = !!el?.dataset.pluginTheme && id === setting;
   if (id !== themeScheme(root) || pluginTheme) {
-    const tokens = resolvedSchemeTokens(id, valid, !!el?.hasAttribute("data-red-green"));
+    const tokens = resolvedSchemeTokens(id, valid, !!el?.hasAttribute("data-red-green"), overrides?.[id]);
     for (const [k, v] of tokens)
       if (SCHEME_VARS.has(k) || k.startsWith("--syn-")) {
         decls.push([k, v]);
@@ -880,7 +893,7 @@ export function schemeCss(
     if (bg) decls.push(["--bg-editor", bg], ["--bg-editor-gutter", gutter ?? bg]);
   }
   decls.push(...overrideDeclarations(overrides?.[id]));
-  const body = decls
+  const body = [...new Map(decls)]
     .filter(([k, v]) => /^--[\w-]+$/.test(k) && SAFE.test(v))
     .map(([k, v]) => `  ${k}: ${v} !important;`);
   let css = body.length ? `:root {\n${body.join("\n")}\n}\n` : "";

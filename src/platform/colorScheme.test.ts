@@ -215,6 +215,50 @@ describe("color schemes", () => {
     );
   });
 
+  it("lets derived tokens follow the overrides of a scheme that isn't the theme's own", () => {
+    const root = (css: string) => css.slice(0, css.indexOf("}"));
+    const customs = {
+      "custom-pycharm": {
+        name: "PyCharm",
+        parent: "dark" as const,
+        attributes: { functionCall: { foreground: "#6dacff" }, identifier: { foreground: "#112233" } },
+      },
+    };
+    const imported = root(schemeCss("custom-pycharm", undefined, undefined, customs));
+    expect(imported).toContain("--syn-function-call: #6dacff !important");
+    expect(imported).toContain("--syn-python-method-call: #6dacff !important");
+    expect(imported).toContain(`--syn-php-function-call: ${schemeTokens("dark").get("--syn-function")} !important`);
+    // Through a chain of fallbacks: Python globals follow globals, which follow local variables.
+    expect(imported).toContain("--syn-global: #112233 !important");
+    expect(imported).toContain("--syn-python-global-variable: #112233 !important");
+    expect(resolvedAttribute("custom-pycharm", "pyMethodCall", customs).foreground).toBe("#6dacff");
+    expect(resolvedAttribute("custom-pycharm", "functionCall", customs).foreground).toBe("#6dacff");
+
+    // A derived token with a colour of its own keeps it, whether the scheme or the user sets it,
+    // and the tokens derived from it follow that colour.
+    const own = { ...customs["custom-pycharm"].attributes, globalVariable: { foreground: "#abcdef" } };
+    const withOwn = { "custom-pycharm": { ...customs["custom-pycharm"], attributes: own } };
+    const scheme = root(schemeCss("custom-pycharm", undefined, undefined, withOwn));
+    expect(scheme).toContain("--syn-global: #abcdef !important");
+    expect(scheme).toContain("--syn-python-global-variable: #abcdef !important");
+    expect(resolvedAttribute("custom-pycharm", "globalVariable", withOwn).foreground).toBe("#abcdef");
+    expect(resolvedAttribute("custom-pycharm", "pyGlobalVariable", withOwn).foreground).toBe("#abcdef");
+    const user = { "custom-pycharm": { globalVariable: { foreground: "#fedcba" } } };
+    const userOwn = root(schemeCss("custom-pycharm", user, undefined, customs));
+    expect(userOwn).toContain("--syn-global: #fedcba !important");
+    expect(userOwn).toContain("--syn-python-global-variable: #fedcba !important");
+
+    // The user's Language Defaults overrides under an explicitly chosen built-in scheme.
+    const light = root(schemeCss("light", { light: { functionCall: { foreground: "#d56075" } } }));
+    expect(light).toContain("--syn-python-method-call: #d56075 !important");
+    expect(light.match(/--syn-function-call:/g)).toHaveLength(1);
+
+    // The theme's own scheme writes no tokens: tokens.css derives them on :root itself.
+    expect(schemeCss("dark", { dark: { functionCall: { foreground: "#d56075" } } })).not.toContain(
+      "--syn-python-method-call",
+    );
+  });
+
   it("resolves scheme attribute state and editor defaults", () => {
     expect(resolvedAttribute("light", "lineComment")).toMatchObject({
       foreground: "#8c8c8c",
