@@ -1248,6 +1248,22 @@ describe("an asynchronous Codex question", () => {
     );
   });
 
+  it("waits above the composer at its width, while a blocking question sits in the conversation", async () => {
+    freeQuestion();
+    const card = await screen.findByRole("form", { name: "What deadline?" });
+    expect(card).toHaveClass(styles.questionCardPinned!);
+    const blocking = {
+      type: "permission",
+      id: 100,
+      title: "Blocking question",
+      options: [],
+      chosen: null,
+      questions: [{ header: "", question: "Blocking question", multiSelect: false, options: [] }],
+    } as AgentEntry;
+    act(() => useAgents.setState({ entries: new Map([["A", [blocking]]]) }));
+    expect(await screen.findByRole("form", { name: "Blocking question" })).not.toHaveClass(styles.questionCardPinned!);
+  });
+
   it("skips without submitting an answer", async () => {
     freeQuestion();
     const card = await screen.findByRole("form", { name: "What deadline?" });

@@ -187,6 +187,7 @@ export function QuestionCard({
       entry={entry}
       questions={entry.questions}
       drafts={drafts}
+      pinned
     />
   ) : null;
 }
@@ -196,11 +197,14 @@ export function QuestionForm({
   entry,
   questions,
   drafts,
+  pinned = false,
 }: {
   task: AgentTask;
   entry: PermissionEntry | AsyncQuestionEntry;
   questions: AgentQuestion[];
   drafts: RefObject<Map<string, QuestionAnswer[]>>;
+  /** Above the composer rather than in the conversation. */
+  pinned?: boolean;
 }) {
   const cacheKey = `${entry.type}:${entry.id}`;
   const [answers, setAnswers] = useState<QuestionAnswer[]>(
@@ -289,7 +293,7 @@ export function QuestionForm({
   };
   return (
     <form
-      className={styles.questionCard}
+      className={clsx(styles.questionCard, pinned && styles.questionCardPinned)}
       aria-label={entry.title}
       onSubmit={(event) => {
         event.preventDefault();
