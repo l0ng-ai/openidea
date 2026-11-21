@@ -41,6 +41,11 @@ export interface AttributeDef {
   defaultEffect?: TextAttributesOverride["effect"];
   /** CodeMirror language name; unset attributes are language defaults. */
   language?: string;
+  /**
+   * A token whose `--syn-<inherit>-*` values show while this one's are unset, as a JetBrains key falls
+   * back to another. Resolved where the text is drawn, so a language's own override of it shows through.
+   */
+  inherit?: string;
 }
 
 const syn = (
@@ -48,7 +53,7 @@ const syn = (
   name: string,
   path: string[],
   token: string,
-  defaults: Pick<AttributeDef, "defaultBold" | "defaultItalic" | "defaultEffect"> = {},
+  defaults: Pick<AttributeDef, "defaultBold" | "defaultItalic" | "defaultEffect" | "inherit"> = {},
 ): AttributeDef => ({
   id,
   name,
@@ -384,27 +389,44 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   syn("regexp", "Regular expression", ["RegExp"], "regexp"),
 ];
 
+const JS = "JavaScript and TypeScript";
 const SCHEME_LANGUAGES = {
   csharp: "C#",
   go: "Go",
   java: "Java",
+  javascript: JS,
   julia: "Julia",
   kotlin: "Kotlin",
   php: "PHP",
 } as const;
 /** Languages that scope their overrides into a per-language editor block; Python ships its own attributes. */
 const SCHEME_LANGUAGE_SCOPES = { ...SCHEME_LANGUAGES, python: "Python" } as const;
+/** `data-language` of the editors a page styles, where they are not the page's own name. */
+const SCHEME_EDITORS: Record<string, readonly string[]> = {
+  [JS]: ["JavaScript", "JSX", "TypeScript", "TSX", "Angular TypeScript"],
+};
 
 export const ATTRIBUTES: readonly AttributeDef[] = [
   ...BASE_ATTRIBUTES,
   ...Object.entries(SCHEME_LANGUAGES).flatMap(([id, language]) =>
-    BASE_ATTRIBUTES.filter((a) => a.path[0] === LD && !/^(semantic|bracket)\d$/.test(a.id)).map((a) => ({
+    BASE_ATTRIBUTES.filter(
+      // WebStorm's page has a Decorator instead of Metadata.
+      (a) => a.path[0] === LD && !/^(semantic|bracket)\d$/.test(a.id) && !(language === JS && a.id === "metadata"),
+    ).map((a) => ({
       ...a,
       id: `${id}.${a.id}`,
       path: [language, ...a.path.slice(1)],
       language,
     })),
   ),
+  // WebStorm's JavaScript / TypeScript page: the whole `@Name` of a decorator, and module-level functions.
+  { ...syn("javascript.decorator", "Decorator", [JS], "decorator"), language: JS },
+  {
+    ...syn("javascript.globalFunction", "Identifiers › Global function", [JS], "global-function", {
+      inherit: "function",
+    }),
+    language: JS,
+  },
   ...[
     ["brackets", "Brackets", "bracket"],
     ["separator", "Comma and semicolon", "separator"],
@@ -814,9 +836,12 @@ export function resolvedAttribute(
   }
 
   const token = attr.token;
-  const foreground = attr.fg ? vars.get(attr.fg) : undefined;
-  const background = attr.bg ? vars.get(attr.bg) : token ? vars.get(`--syn-${token}-bg`) : undefined;
-  const effectCss = attr.effect ? vars.get(attr.effect) : token ? vars.get(`--syn-${token}-effect`) : undefined;
+  // An inheriting token's own value, else its parent's.
+  const syn = (suffix: string) =>
+    vars.get(`--syn-${token}${suffix}`) ?? (attr.inherit ? vars.get(`--syn-${attr.inherit}${suffix}`) : undefined);
+  const foreground = attr.fg ? (attr.inherit ? syn("") : vars.get(attr.fg)) : undefined;
+  const background = attr.bg ? vars.get(attr.bg) : token ? syn("-bg") : undefined;
+  const effectCss = attr.effect ? vars.get(attr.effect) : token ? syn("-effect") : undefined;
   const effect = own?.effect ?? effectFromCss(effectCss) ?? attr.defaultEffect;
   const out: TextAttributesOverride = {};
   if (isHexColor(foreground)) out.foreground = foreground.toLowerCase();
@@ -827,10 +852,8 @@ export function resolvedAttribute(
     if (effectColor) out.effectColor = effectColor;
   }
   if (token) {
-    if (!attr.italicOnly)
-      out.bold = own?.bold ?? boldFromCss(vars.get(`--syn-${token}-bold`)) ?? attr.defaultBold ?? false;
-    const italicCss =
-      vars.get(`--syn-${token}-italic`) ?? (token === "comment" ? vars.get("--syn-comment-style") : undefined);
+    if (!attr.italicOnly) out.bold = own?.bold ?? boldFromCss(syn("-bold")) ?? attr.defaultBold ?? false;
+    const italicCss = syn("-italic") ?? (token === "comment" ? vars.get("--syn-comment-style") : undefined);
     out.italic = own?.italic ?? italicFromCss(italicCss) ?? attr.defaultItalic ?? false;
     if (effect) out.effect = effect;
   } else {
@@ -903,8 +926,11 @@ export function schemeCss(
       .filter(([k, v]) => /^--[\w-]+$/.test(k) && SAFE.test(v))
       .map(([k, v]) => `  ${k}: ${v} !important;`);
     // The editor of that language, and a block of it in another editor (a Markdown code fence).
-    if (languageBody.length)
-      css += `.cm-editor[data-language="${language}"], .cm-editor [data-language="${language}"] {\n${languageBody.join("\n")}\n}\n`;
+    const selectors = (SCHEME_EDITORS[language] ?? [language]).flatMap((name) => [
+      `.cm-editor[data-language="${name}"]`,
+      `.cm-editor [data-language="${name}"]`,
+    ]);
+    if (languageBody.length) css += `${selectors.join(", ")} {\n${languageBody.join("\n")}\n}\n`;
   }
   return css;
 }
