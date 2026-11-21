@@ -23,11 +23,13 @@ import {
   type SelectProps,
   type MenuItem,
 } from "@/ui";
+import { useRowHeight } from "@/ui/density";
 import { sortLocal, sortRemote } from "./branches";
 import { conflictActions, openConflictsInstead, validateBranchName } from "./branchOps";
 import { cleanUpBranchNameOnTyping } from "@/platform/gitRefName";
 import { confirmDialog, openDialog } from "./dialogs";
 import { errorMessage, runOp, runRemote, saveAll } from "./ops";
+import { baseName } from "./model";
 import { currentRepo, loadBranches, refreshNow, repoName, useVcs } from "./store";
 import {
   groupWorktrees,
@@ -39,6 +41,7 @@ import {
 import styles from "./common.module.css";
 import remoteStyles from "./GitRemotes.module.css";
 import commandStyles from "./GitCommandDialog.module.css";
+import worktreeStyles from "./Worktrees.module.css";
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 
@@ -788,16 +791,15 @@ function WorktreesDialog({ onClose }: { onClose: () => void }) {
 interface WorktreeNode {
   key: string;
   label: string;
-  worktree?: Worktree;
+  worktree?: { entry: Worktree; branch: string };
   children?: WorktreeNode[];
 }
 
 /**
- * The worktrees of every repository of the project as one tree, styled like the Log's
- * Branches pane, with New / Remove / Open: the Worktrees dialog's content and the Git
- * tool window's Worktrees tab. `listClassName` replaces the dialog's default height.
+ * The worktrees of every project repository, shown in the dialog and in the Git tool window.
  */
 export function WorktreesPanel({ className, listClassName }: { className?: string; listClassName?: string }) {
+  const rowHeight = useRowHeight(40);
   const projectRoot = useProject((s) => s.project?.root);
   const repo = useVcs((s) => s.repo);
   const repos = useVcs((s) => s.roots);
@@ -833,8 +835,8 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
         label: repoName(group.root),
         children: group.worktrees.map((w): WorktreeNode => ({
           key: `w:${w.path}`,
-          label: w.branch ?? (w.head ? w.head.slice(0, 8) : tx("(bare)")),
-          worktree: w,
+          label: baseName(w.path.replaceAll("\\", "/")) || w.path,
+          worktree: { entry: w, branch: w.branch ?? (w.head ? w.head.slice(0, 8) : tx("(bare)")) },
         })),
       })),
     [groups],
@@ -846,18 +848,6 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
   const containsProject = !!current && worktreeContainsProject(current.path, projectRoot);
   const selectedKeys = useMemo(() => new Set(selected ? [selected] : []), [selected]);
   const isCurrent = (path: string) => repos.some((root) => isCurrentWorktree(path, root));
-  const icon = (node: WorktreeNode) =>
-    node.worktree ? (isCurrent(node.worktree.path) ? "current-branch" : "branch") : "folder";
-  const detail = (node: WorktreeNode) => {
-    const w = node.worktree;
-    if (!w) return "";
-    const current = isCurrent(w.path);
-    // "main" only when the main worktree is not the one this window works in.
-    const flags = [
-      current ? tx("current") : w.main ? "main" : w.locked ? tx("locked") : w.prunable ? tx("prunable") : "",
-    ].filter(Boolean);
-    return [...flags, w.path].join("  ");
-  };
 
   const mutate = async (task: () => Promise<unknown>, selection: string | null) => {
     if (projectRoot !== useProject.getState().project?.root) return;
@@ -926,62 +916,110 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
   };
 
   return (
-    <div className={className}>
-      <div className={styles.manageBar} role="toolbar" aria-label={tx("Worktrees")}>
-        <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void reload()} />
-        <IconButton
-          icon="plus"
-          title="New Worktree…"
-          size="small"
-          onClick={() => showNewWorktree(() => void reload(), currentGroup?.root ?? repo ?? repos[0])}
-        />
-        <IconButton
-          icon="minus"
-          title={containsProject ? "Cannot remove a worktree containing the open project." : "Remove Worktree"}
-          aria-label="Remove Worktree"
-          size="small"
-          disabled={!current || current.main || containsProject}
-          onClick={() => void remove()}
-        />
-        <IconButton
-          icon="export"
-          title={containsProject ? "Cannot move a worktree containing the open project." : "Move Worktree…"}
-          aria-label="Move Worktree…"
-          size="small"
-          disabled={!current || current.main || containsProject}
-          onClick={() => void move()}
-        />
-        <IconButton
-          icon="folder"
-          title="Open in New Window"
-          size="small"
-          disabled={!current}
-          onClick={() => current && void openWorktree(current.path)}
+    <div className={clsx(worktreeStyles.panel, className)}>
+      <div className={worktreeStyles.body}>
+        <div className={worktreeStyles.toolbar} role="toolbar" aria-label={tx("Worktrees")} aria-orientation="vertical">
+          <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void reload()} />
+          <IconButton
+            icon="plus"
+            title="New Worktree…"
+            size="small"
+            onClick={() => showNewWorktree(() => void reload(), currentGroup?.root ?? repo ?? repos[0])}
+          />
+          <IconButton
+            icon="minus"
+            title={containsProject ? "Cannot remove a worktree containing the open project." : "Remove Worktree"}
+            aria-label="Remove Worktree"
+            size="small"
+            disabled={!current || current.main || containsProject}
+            onClick={() => void remove()}
+          />
+          <IconButton
+            icon="export"
+            title={containsProject ? "Cannot move a worktree containing the open project." : "Move Worktree…"}
+            aria-label="Move Worktree…"
+            size="small"
+            disabled={!current || current.main || containsProject}
+            onClick={() => void move()}
+          />
+          <IconButton
+            icon="folder"
+            title="Open in New Window"
+            size="small"
+            disabled={!current}
+            onClick={() => current && void openWorktree(current.path)}
+          />
+        </div>
+        <Tree<WorktreeNode>
+          // A new set of repositories starts with every section expanded.
+          key={tree.map((n) => n.key).join("|")}
+          roots={tree}
+          getKey={(n) => n.key}
+          getLabel={(n) => (n.worktree ? `${n.label} ${n.worktree.branch}` : n.label)}
+          getChildren={(n) => n.children}
+          isExpandable={(n) => !!n.children}
+          renderNode={(node, { matches }) => {
+            if (!node.worktree) {
+              return (
+                <>
+                  <Icon name="folder" size={16} className={worktreeStyles.icon} />
+                  <HighlightedText
+                    className={worktreeStyles.truncated}
+                    text={node.label}
+                    indices={matches}
+                    tone="accent"
+                  />
+                </>
+              );
+            }
+            const { entry, branch } = node.worktree;
+            const current = isCurrent(entry.path);
+            const branchStart = node.label.length + 1;
+            return (
+              <>
+                <Icon
+                  name={current ? "check" : "folder"}
+                  size={16}
+                  label={current ? tx("current") : undefined}
+                  className={clsx(worktreeStyles.icon, worktreeStyles.leading)}
+                />
+                <div className={worktreeStyles.details}>
+                  <span className={worktreeStyles.line}>
+                    <HighlightedText
+                      className={clsx(worktreeStyles.truncated, entry.main && worktreeStyles.main)}
+                      text={node.label}
+                      indices={matches?.filter((i) => i < node.label.length)}
+                      tone="accent"
+                    />
+                    {entry.locked && <Icon name="lock" size={12} label={tx("locked")} />}
+                    {entry.prunable && <Icon name="warning" size={12} label={tx("prunable")} />}
+                  </span>
+                  <span className={worktreeStyles.secondary}>
+                    <Icon name="branch" size={12} />
+                    <HighlightedText
+                      className={worktreeStyles.truncated}
+                      text={branch}
+                      indices={matches?.filter((i) => i >= branchStart).map((i) => i - branchStart)}
+                      tone="accent"
+                    />
+                    <span className={clsx(worktreeStyles.path, worktreeStyles.truncated)} title={entry.path}>
+                      {entry.path}
+                    </span>
+                  </span>
+                </div>
+              </>
+            );
+          }}
+          defaultExpanded={tree.map((n) => n.key)}
+          selected={selectedKeys}
+          multiSelect={false}
+          onSelectionChange={(selection) => setSelected([...selection][0] ?? null)}
+          onActivate={(n) => n.worktree && void openWorktree(n.worktree.entry.path)}
+          className={clsx(worktreeStyles.tree, listClassName ?? worktreeStyles.dialogTree)}
+          rowHeight={rowHeight}
+          aria-label="Worktrees"
         />
       </div>
-      <Tree<WorktreeNode>
-        // A new set of repositories starts with every section expanded.
-        key={tree.map((n) => n.key).join("|")}
-        roots={tree}
-        getKey={(n) => n.key}
-        getLabel={(n) => n.label}
-        getChildren={(n) => n.children}
-        isExpandable={(n) => !!n.children}
-        renderNode={(node, state) => (
-          <>
-            <Icon name={icon(node)} size={16} className={styles.worktreeIcon} />
-            <HighlightedText className={styles.worktreeLabel} text={node.label} indices={state.matches} tone="accent" />
-            {node.worktree && <span className={styles.worktreeDetail}>{detail(node)}</span>}
-          </>
-        )}
-        defaultExpanded={tree.map((n) => n.key)}
-        selected={selectedKeys}
-        multiSelect={false}
-        onSelectionChange={(selection) => setSelected([...selection][0] ?? null)}
-        onActivate={(n) => n.worktree && void openWorktree(n.worktree.path)}
-        className={listClassName ?? styles.worktreeListDialog}
-        aria-label="Worktrees"
-      />
       {groups.map(
         (group) =>
           group.error && (
