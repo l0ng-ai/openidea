@@ -11,7 +11,7 @@ import { browseRepositoryAt } from "../RevisionBrowser";
 import { useVcs } from "../store";
 import type { FileHistoryCommitArg, FileHistoryCommitsArg } from "../historyActions";
 
-/** IDEA's Git Log commit context menu (Git.Log.ContextMenu); `selection` = all selected commits, newest first. */
+/** The commit context menu in Git Log and File History. The selection is ordered newest first. */
 export function commitMenu(c: Commit, selection: Commit[] = [c], fileHistoryTarget?: string | null): MenuItem[] {
   const actionCommit: Commit | FileHistoryCommitArg = fileHistoryTarget
     ? { kind: "file-history-commit", commit: c, target: fileHistoryTarget }
@@ -20,20 +20,16 @@ export function commitMenu(c: Commit, selection: Commit[] = [c], fileHistoryTarg
     return [
       { kind: "action", action: "vcs.log.copyRevision", arg: c },
       { label: "Copy Commit Message", run: () => copyCommitMessage(c) },
-      {
-        label: useGitLog.getState().bookmarks[commitKey(c)] ? "Remove Commit Bookmark" : "Bookmark Commit",
-        run: () => toggleCommitBookmark(c),
-      },
-      {
-        label: "Assign Mnemonic",
-        run: () => useBookmarkPopups.setState({ chooser: { path: commitBookmarkPath(c), line: 0, text: c.summary } }),
-      },
-      { kind: "action", action: "vcs.log.goToParent", arg: c },
-      { kind: "action", action: "vcs.log.goToChild", arg: c },
+      { kind: "separator" },
       { label: "Browse Repository at Revision", run: () => browseRepositoryAt(c) },
       ...(fileHistoryTarget
         ? [{ kind: "action" as const, action: "vcs.log.showFileAtRevision", arg: actionCommit }]
         : []),
+      { kind: "separator" },
+      { kind: "action", action: "vcs.log.goToChild", arg: c },
+      { kind: "action", action: "vcs.log.goToParent", arg: c },
+      { kind: "separator" },
+      ...bookmarkItems(c),
     ];
   const many = selection.length > 1 && selection.some((x) => commitKey(x) === commitKey(c));
   const repo = commitRepo(c);
@@ -47,11 +43,14 @@ export function commitMenu(c: Commit, selection: Commit[] = [c], fileHistoryTarg
     return [
       { kind: "action", action: "vcs.log.copyRevision", arg: selection, label: "Copy Revision Numbers" },
       { kind: "action", action: "vcs.log.createPatch", arg: selection },
-      { kind: "action", action: "vcs.log.cherryPick", arg: selection },
-      ...(selection.length === 2
-        ? [{ kind: "action", action: "vcs.log.compareVersions", arg: compareArg } satisfies MenuItem]
-        : []),
       { kind: "separator" },
+      ...(selection.length === 2
+        ? ([
+            { kind: "action", action: "vcs.log.compareVersions", arg: compareArg },
+            { kind: "separator" },
+          ] satisfies MenuItem[])
+        : []),
+      { kind: "action", action: "vcs.log.cherryPick", arg: selection },
       { kind: "action", action: "vcs.log.revert", arg: selection, label: "Revert Commits" },
       { kind: "separator" },
       { kind: "action", action: "vcs.log.squashCommits", arg: selection },
@@ -82,13 +81,8 @@ export function commitMenu(c: Commit, selection: Commit[] = [c], fileHistoryTarg
     });
   return [
     { kind: "action", action: "vcs.log.copyRevision", arg: c },
-    {
-      label: useGitLog.getState().bookmarks[commitKey(c)] ? "Remove Commit Bookmark" : "Bookmark Commit",
-      run: () => toggleCommitBookmark(c),
-    },
     { label: "Copy Commit Message", run: () => copyCommitMessage(c) },
     { kind: "action", action: "vcs.log.createPatch", arg: c },
-    { kind: "action", action: "vcs.log.cherryPick", arg: c },
     { kind: "separator" },
     { kind: "action", action: "vcs.log.checkoutRevision", arg: c },
     { label: "Browse Repository at Revision", run: () => browseRepositoryAt(c) },
@@ -97,6 +91,7 @@ export function commitMenu(c: Commit, selection: Commit[] = [c], fileHistoryTarg
       : []),
     { kind: "action", action: "vcs.log.compareWithLocal", arg: actionCommit },
     { kind: "separator" },
+    { kind: "action", action: "vcs.log.cherryPick", arg: c },
     { kind: "action", action: "vcs.log.resetToHere", arg: c },
     { kind: "action", action: "vcs.log.revert", arg: c },
     { kind: "action", action: "vcs.log.undoCommit", arg: c },
@@ -112,14 +107,26 @@ export function commitMenu(c: Commit, selection: Commit[] = [c], fileHistoryTarg
     { kind: "action", action: "vcs.log.newBranch", arg: c },
     { kind: "action", action: "vcs.log.newTag", arg: c },
     { kind: "separator" },
-    {
-      label: "Assign Mnemonic",
-      run: () => useBookmarkPopups.setState({ chooser: { path: commitBookmarkPath(c), line: 0, text: c.summary } }),
-    },
     { kind: "action", action: "vcs.log.goToChild", arg: c },
     { kind: "action", action: "vcs.log.goToParent", arg: c, disabled: !c.parents.length },
     { kind: "separator" },
+    ...bookmarkItems(c),
+    { kind: "separator" },
     { kind: "action", action: "vcs.log.openInBrowser", arg: c },
+  ];
+}
+
+function bookmarkItems(commit: Commit): MenuItem[] {
+  return [
+    {
+      label: useGitLog.getState().bookmarks[commitKey(commit)] ? "Remove Commit Bookmark" : "Bookmark Commit",
+      run: () => toggleCommitBookmark(commit),
+    },
+    {
+      label: "Assign Mnemonic",
+      run: () =>
+        useBookmarkPopups.setState({ chooser: { path: commitBookmarkPath(commit), line: 0, text: commit.summary } }),
+    },
   ];
 }
 
