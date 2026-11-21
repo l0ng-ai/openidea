@@ -349,6 +349,7 @@ export const commands = {
 	 */
 	dbRunTool: (request: RequestId, id: string, executable: string, job: DbToolJob, onOutput: Channel<DbToolLine[]>) => typedError<number | null, IdeError>(__TAURI_INVOKE("db_run_tool", { request, id, executable, job, onOutput })),
 	dbSaveJdbcDriver: (driver: DbJdbcDriver) => typedError<null, IdeError>(__TAURI_INVOKE("db_save_jdbc_driver", { driver })),
+	dbSaveSourceVisibility: (id: string, available: string[], change: DbVisibilityChange) => typedError<null, IdeError>(__TAURI_INVOKE("db_save_source_visibility", { id, available, change })),
 	dbSaveSources: (sources: DataSource_Deserialize[]) => typedError<null, IdeError>(__TAURI_INVOKE("db_save_sources", { sources })),
 	dbSavedCatalog: (id: string) => typedError<{
 	databases?: DbCatalogDatabase[],
@@ -4391,7 +4392,7 @@ export type DataSource_Deserialize = {
 	sslCertFile?: string,
 	sslKeyFile?: string,
 	options?: DbOptions,
-	introspection?: DbIntrospection,
+	introspection?: DbIntrospection_Deserialize,
 	properties?: DbProperty[],
 	/**  Snowflake settings (`None`: not a Snowflake data source, or all defaults). */
 	snowflake?: DbSnowflake | null,
@@ -4437,7 +4438,7 @@ export type DataSource_Serialize = {
 	sslCertFile: string,
 	sslKeyFile: string,
 	options: DbOptions,
-	introspection: DbIntrospection,
+	introspection: DbIntrospection_Serialize,
 	properties: DbProperty[],
 	/**  Snowflake settings (`None`: not a Snowflake data source, or all defaults). */
 	snowflake: DbSnowflake | null,
@@ -4597,11 +4598,16 @@ export type DbIndexInfo = {
 };
 
 /**  Schemas tab: the databases / schemas the tree shows. Names may use `*` and `?`. */
-export type DbIntrospection = {
+export type DbIntrospection = DbIntrospection_Serialize | DbIntrospection_Deserialize;
+
+/**  Schemas tab: the databases / schemas the tree shows. Names may use `*` and `?`. */
+export type DbIntrospection_Deserialize = {
 	allDatabases?: boolean,
 	databases?: string[],
 	allSchemas?: boolean,
 	schemas?: string[],
+	/**  A database can replace the source's schema rules with all schemas or a list of exact names. */
+	schemasByDatabase?: { [key in string]: DbSchemaSelection },
 	/**  `pg_catalog`, `information_schema`, `mysql`…, and service databases (`rdsadmin`…). */
 	showSystem?: boolean,
 	/**  PostgreSQL template databases (`template0`, `template1`). */
@@ -4611,6 +4617,25 @@ export type DbIntrospection = {
 	 *  one of these patterns (`*`, `?`; separated by commas or spaces). Empty: all.
 	 */
 	objectFilter?: string,
+};
+
+/**  Schemas tab: the databases / schemas the tree shows. Names may use `*` and `?`. */
+export type DbIntrospection_Serialize = {
+	allDatabases: boolean,
+	databases: string[],
+	allSchemas: boolean,
+	schemas: string[],
+	/**  A database can replace the source's schema rules with all schemas or a list of exact names. */
+	schemasByDatabase?: { [key in string]: DbSchemaSelection },
+	/**  `pg_catalog`, `information_schema`, `mysql`…, and service databases (`rdsadmin`…). */
+	showSystem: boolean,
+	/**  PostgreSQL template databases (`template0`, `template1`). */
+	showTemplates: boolean,
+	/**
+	 *  Object filter: the tree lists only tables, views, routines and sequences matching
+	 *  one of these patterns (`*`, `?`; separated by commas or spaces). Empty: all.
+	 */
+	objectFilter: string,
 };
 
 export type DbJdbcDriver = {
@@ -4791,6 +4816,11 @@ export type DbSchemaObjects = {
 	others?: DbSchemaObject[],
 };
 
+export type DbSchemaSelection = {
+	all?: boolean,
+	names?: string[],
+};
+
 export type DbSequenceInfo = {
 	name: string,
 	dataType: string,
@@ -4927,6 +4957,8 @@ export type DbTriggerInfo = {
 
 /**  Transaction control of the data source's consoles. */
 export type DbTxMode = "auto" | "manual";
+
+export type DbVisibilityChange = { kind: "databases"; selection: DbSchemaSelection } | { kind: "schemas"; selection: DbSchemaSelection } | { kind: "databaseSchemas"; database: string; selection: DbSchemaSelection | null };
 
 /**  What a session's adapter supports, for enabling actions. */
 export type DebugCapabilities = {
