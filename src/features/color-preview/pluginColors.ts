@@ -2,10 +2,8 @@
 import { RangeSet, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { GutterMarker, ViewPlugin, gutter, type EditorView, type ViewUpdate } from "@codemirror/view";
 import { isolateHistory } from "@codemirror/commands";
-import { shownAgain, type EditorDocContext } from "@/editor/api";
-import { rangeToOffsets } from "@/editor/lsp/positions";
+import { onNavigationProvidersChanged, rangeToOffsets, shownAgain, type EditorDocContext } from "@/editor/api";
 import { pluginVisuals } from "@/editor/lsp/pluginVisuals";
-import { onNavigationProvidersChanged } from "@/editor/navigationProviders";
 import { call, commands, type ColorInfo } from "@/platform/ipc";
 import { showContextMenu } from "@/ui";
 import { openColorPicker } from "./ColorPicker";
