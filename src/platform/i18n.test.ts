@@ -81,6 +81,12 @@ describe("t / locales", () => {
   it("resolves locale tags", () => {
     expect(resolveLocale("zh-CN")).toBe("zh");
     expect(resolveLocale("zh_Hans")).toBe("zh");
+    expect(resolveLocale("zh-Hans-HK")).toBe("zh");
+    expect(resolveLocale("zh-TW")).toBe("zh-TW");
+    expect(resolveLocale("zh_tw")).toBe("zh-TW");
+    expect(resolveLocale("zh-HK")).toBe("zh-TW");
+    expect(resolveLocale("zh-Hant")).toBe("zh-TW");
+    expect(resolveLocale("zh-Hant-TW")).toBe("zh-TW");
     expect(resolveLocale("ko-KR")).toBe("ko");
     expect(resolveLocale("pt-BR")).toBe("pt");
     expect(resolveLocale("pt_PT")).toBe("pt");
@@ -112,6 +118,8 @@ describe("t / locales", () => {
     );
     await setLocale("zh-CN");
     expect(t("app.keymap.count", { count: 1 })).toBe("1 个快捷键");
+    await setLocale("zh-Hant-TW");
+    expect(t("app.keymap.count", { count: 1 })).toBe("1 個快速鍵");
     await setLocale("pt-BR");
     expect(t("app.keymap.count", { count: 1 })).toBe("1 atalho");
     expect(t("app.keymap.count", { count: 5 })).toBe("5 atalhos");
