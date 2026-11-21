@@ -285,7 +285,7 @@ async function expectNoSubmission(page: Page) {
 }
 
 for (const surface of ["new", "task"] as const) {
-  test(`${surface}: configure another model from its row, then edit its context from the composer`, async ({
+  test(`${surface}: switch models from the list, then set effort and context from the settings chip`, async ({
     workbench: page,
   }) => {
     const context = option(
@@ -306,22 +306,16 @@ for (const surface of ["new", "task"] as const) {
     await modelButton(page).click();
     const row = page.getByRole("option", { name: /^Swift\b/ });
     await row.hover();
-    const configure = row.getByRole("button", { name: "Configure Swift…" });
-    if (surface === "task") await configure.press("Enter");
-    else await configure.click();
-    await expect(modelButton(page)).toHaveText("Atlas");
-    await expect(page.getByRole("radio", { name: "Gentle" })).toHaveCount(0);
-    await page.getByRole("radio", { name: "Thorough" }).click();
+    await expect(row.getByRole("button", { name: /^Configure/ })).toHaveCount(0);
+    if (surface === "task") await row.press("Enter");
+    else await row.click();
     await expect(modelButton(page)).toHaveText("Swift");
-    await expect(page.getByRole("radio", { name: "Thorough" })).toBeChecked();
-    await page.keyboard.press("Escape");
     const settings = page.getByRole("button", { name: /^Model settings:/ });
-    await expect(settings).toHaveText("Thorough · 200K");
     await settings.click();
+    await expect(page.getByRole("button", { name: "Back to models" })).toHaveCount(0);
+    await page.getByRole("radio", { name: "Thorough" }).click();
     await page.getByRole("radio", { name: "1M" }).click();
     await expect(settings).toHaveText("Thorough · 1M");
-    await page.getByRole("button", { name: "Back to models" }).click();
-    await expect(page.getByRole("listbox", { name: "Model", exact: true })).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(box(page)).toHaveText("Review the project structure");
     await expectNoSubmission(page);
@@ -642,7 +636,7 @@ test("New Task discovers uncached model effort before the first prompt", async (
     await expect
       .poll(async () => (await ipcCalls(page, "agent_refresh_models")).filter((call) => call.model === "swift"))
       .toEqual([{ provider: provider.id, force: false, model: "swift" }]);
-    await expect(page.getByRole("status").filter({ hasText: "Loading model settings…" })).toBeVisible();
+    await expect(page.getByRole("status", { name: "Loading model settings…" })).toBeVisible();
     await expect(effortLabel(page)).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath("model-settings-loading.png") });
     await page.evaluate(() => document.dispatchEvent(new Event("test:model-settings-ready")));
@@ -671,7 +665,7 @@ test("an existing chat can choose effort for a refreshed model before sending", 
   await page.getByRole("button", { name: "Refresh models", exact: true }).click();
   await swiftModel.click();
 
-  const loading = page.getByRole("status").filter({ hasText: "Loading model settings…" });
+  const loading = page.getByRole("status", { name: "Loading model settings…" });
   const send = page.getByRole("button", { name: "Send", exact: true });
   await expect(loading).toBeVisible();
   await expect(send).toBeDisabled();

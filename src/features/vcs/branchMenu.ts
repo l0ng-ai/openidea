@@ -65,6 +65,13 @@ function historyMenuItem(name: string, run: Run): MenuItem {
   return { label: "Show History", icon: "history", run: run(() => executeAction("vcs.showLog", { branch: name })) };
 }
 
+function worktreeMenuItem(branch: Pick<Branch, "name" | "remote" | "current">, run: Run, repo?: string): MenuItem {
+  return {
+    label: tx`New Worktree from '${branch.name}'…`,
+    run: run(() => executeAction("vcs.newWorktree", { repo: repo ?? currentRepo(), branch })),
+  };
+}
+
 /** The Branches pane's context menu: `selected` carries the multi-selection, which Update Selected and Delete act on as a whole. */
 export function branchMenu(
   b: Branch,
@@ -92,6 +99,7 @@ export function branchMenu(
   if (b.current) {
     return [
       { label: tx`New Branch from '${b.name}'…`, icon: "branch", run: run(() => newBranch()) },
+      worktreeMenuItem(b, run),
       { kind: "separator" },
       update,
       { label: "Push…", icon: "git-push", run: run(() => executeAction("vcs.push", { repo: currentRepo() })) },
@@ -104,6 +112,7 @@ export function branchMenu(
   const items: MenuItem[] = [
     { label: "Checkout", run: run(() => checkoutBranch(b.name)) },
     { label: tx`New Branch from '${b.name}'…`, icon: "branch", run: run(() => newBranch(b.name)) },
+    worktreeMenuItem(b, run),
     ...(current ? [{ label: tx`Checkout and Rebase onto '${cur}'`, run: run(() => checkoutAndRebase(b.name)) }] : []),
     { kind: "separator" },
     { label: tx`Compare with '${cur}'`, icon: "diff", run: run(() => showCompareBranches(b.name)) },
@@ -185,9 +194,12 @@ export function commonBranchMenu(
     run: run(() => newBranchInRepos(roots, b.name)),
   };
   const rename: MenuItem = { label: "Rename…", run: run(() => renameInRepos(b.name, roots, b.upstream)) };
+  const currentRoot = currentRepo();
+  const worktree = worktreeMenuItem(b, run, roots.find((root) => root === currentRoot) ?? roots[0]);
   if (b.current)
     return [
       newFrom,
+      worktree,
       { kind: "separator" },
       { label: "Update", icon: "git-pull", run: run(() => executeAction("vcs.update")) },
       { label: "Push…", icon: "git-push", run: run(() => executeAction("vcs.push")) },
@@ -197,6 +209,7 @@ export function commonBranchMenu(
   const items: MenuItem[] = [
     { label: "Checkout", run: run(() => checkoutInRepos(b.name, roots)) },
     newFrom,
+    worktree,
     ...(current
       ? [
           {

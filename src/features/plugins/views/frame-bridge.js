@@ -51,6 +51,9 @@
     for (const [k, v] of Object.entries(vars)) root.style.setProperty(k, v);
     applied = Object.keys(vars);
     root.dataset.theme = t.dark ? "dark" : "light";
+    // Chromium (WebView2) paints an opaque backdrop behind a frame whose color-scheme differs from the
+    // workbench's, so web view pages (no BASE_STYLE) would turn white under a dark theme.
+    root.style.colorScheme = t.dark ? "dark" : "light";
     theme = Object.freeze({ dark: !!t.dark, vars: Object.freeze(vars) });
     for (const l of themeListeners) safely(l, theme);
   };

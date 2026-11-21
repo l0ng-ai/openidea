@@ -1,12 +1,29 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { DbDriver, DbQueryResult, DbTableDetails } from "@/platform/ipc";
+import type {
+  ChannelFrame,
+  DbDriver,
+  ExecutionEvent,
+  DbQueryResult,
+  DbTableDetails,
+  SqlStatement,
+} from "@/platform/ipc";
 import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
+import { disableRemote, enableRemote } from "@/platform/remote";
 import { installCellActions } from "./cellActions";
 import { getContext } from "@/platform/context";
 import { ResultsView } from "./ResultsView";
-import { executeConsole, explainConsole, pinResult, rerunResult, useDatabase, type ResultTab } from "./store";
+import { streamExecution } from "./executeStream.fixture";
+import {
+  cancelConsole,
+  executeConsole,
+  explainConsole,
+  pinResult,
+  rerunResult,
+  useDatabase,
+  type ResultTab,
+} from "./store";
 import { registerResultTabActions } from "./resultTabActions";
 import { activeTableEditor, installTableEditorFocus } from "./tableEditorFocus";
 import { provideToolWindowService } from "@/workbench/contributions";
@@ -17,6 +34,10 @@ const backend = vi.hoisted(() => ({
   details: vi.fn(),
   applyEdits: vi.fn(),
   execute: vi.fn(),
+  stream: vi.fn(),
+  cancel: vi.fn(),
+  connected: vi.fn(),
+  schemas: vi.fn(),
   statements: vi.fn(),
   explain: vi.fn(),
 }));
@@ -30,11 +51,22 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       dbTableDetails: backend.details,
       dbApplyEdits: backend.applyEdits,
       dbExecute: backend.execute,
+      dbExecuteStream: backend.stream,
+      cancelRequest: backend.cancel,
+      dbConnected: backend.connected,
+      dbSchemas: backend.schemas,
       dbStatements: backend.statements,
       dbExplain: backend.explain,
     },
   };
 });
+
+vi.mock("@tauri-apps/api/core", async (original) => ({
+  ...(await original<typeof import("@tauri-apps/api/core")>()),
+  Channel: class {
+    onmessage = (_event: unknown) => {};
+  },
+}));
 
 vi.mock("@tanstack/react-virtual", () => ({
   useVirtualizer: ({ count }: { count: number }) => ({
@@ -98,6 +130,10 @@ function show(text: string, columns: Array<{ name: string }>, rows: (string | nu
 beforeEach(() => {
   provideToolWindowService({ show: () => {} } as never);
   vi.clearAllMocks();
+  backend.stream.mockReset().mockImplementation(streamExecution(backend.execute));
+  backend.cancel.mockResolvedValue(undefined);
+  backend.connected.mockResolvedValue({ status: "ok", data: ["pg"] });
+  backend.schemas.mockResolvedValue({ status: "ok", data: ["main"] });
   backend.statements.mockImplementation((_id: unknown, text: string) =>
     Promise.resolve({ status: "ok", data: [{ from: 0, to: text.length, text }] }),
   );
@@ -680,6 +716,8 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
       output: [],
       details: {},
       running: {},
+      manualCommit: new Set(),
+      pendingTx: new Set(),
     });
     backend.statements.mockImplementation((_id: unknown, text: string) => {
       let from = 0;
@@ -751,6 +789,340 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
     await runIn("a.sql", "bad sql");
     expect(useDatabase.getState().results).toBe(before);
   });
+
+  it("keeps a completed grid and a pinned result when a later statement fails", async () => {
+    await runIn("a.sql", "SELECT old");
+    const pinned = ids()[0]!;
+    pinResult(pinned, true);
+    await runIn("a.sql", "SELECT 1; bad sql");
+    expect(ids()[0]).toBe(pinned);
+    expect(strip()).toEqual(["a.sql:SELECT old", "a.sql:SELECT 1"]);
+    expect(useDatabase.getState().activeResult).toBe(0);
+    expect(useDatabase.getState().output.map((entry) => entry.text)).toContain("[Local] syntax error");
+  });
+
+  it.each(["stop", "timeout"])("releases an acknowledged stream with a missing terminal event on %s", async (exit) => {
+    useDatabase.setState({
+      sources: [{ id: "pg", name: "Local", driver: "sqlite" }],
+      manualCommit: new Set(["pg"]),
+    });
+    await runIn("a.sql", "SELECT pinned");
+    const pinned = ids()[0]!;
+    pinResult(pinned, true);
+    let sendDone!: () => void;
+    let acknowledge!: () => void;
+    backend.stream.mockImplementationOnce(async (_r, _id, statements: SqlStatement[], _max, _schema, channel) => {
+      const completed = [
+        { ...result([], []), affected: 3 },
+        { ...result([], []), affected: 0 },
+        result([{ name: "v" }], [["first"]]),
+      ];
+      completed.forEach((query, index) => {
+        channel.onmessage({ type: "started", index });
+        channel.onmessage({
+          type: "completed",
+          index,
+          outcome: { statement: statements[index]!, result: query, error: null },
+        });
+      });
+      sendDone = () => channel.onmessage({ type: "done", error: null });
+      await new Promise<void>((resolve) => (acknowledge = resolve));
+      return { status: "ok", data: null };
+    });
+    vi.useFakeTimers();
+    const pending = runIn("a.sql", "UPDATE t SET n = 3; CREATE TABLE saved (id INT); SELECT first; SELECT missing");
+    const affected = () => useDatabase.getState().output.filter((line) => line.text === "3 rows affected in 1 ms");
+    try {
+      await vi.waitFor(() => expect(strip()).toEqual(["a.sql:SELECT pinned", "a.sql:SELECT first"]));
+      const completed = ids()[1];
+      expect(affected()).toHaveLength(1);
+      expect(useDatabase.getState().pendingTx.has("pg")).toBe(true);
+      expect(backend.schemas).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(useDatabase.getState().running["a.sql"]).toBeDefined();
+      acknowledge();
+      await vi.advanceTimersByTimeAsync(0);
+      if (exit === "stop") cancelConsole("a.sql");
+      await vi.advanceTimersByTimeAsync(exit === "stop" ? 0 : 60_000);
+      expect(useDatabase.getState().running).toEqual({});
+      expect(useDatabase.getState().executions).toEqual({});
+      expect(await pending).toHaveLength(3);
+      expect(ids()).toEqual([pinned, completed]);
+      expect(affected()).toHaveLength(1);
+      expect(useDatabase.getState().pendingTx.has("pg")).toBe(true);
+      expect(backend.schemas).toHaveBeenCalledExactlyOnceWith("pg");
+      const output = useDatabase.getState().output;
+      expect(output.map((line) => line.text)).toContain(
+        "SQL result delivery was incomplete. The final execution status is unknown.",
+      );
+      expect(output.map((line) => line.text)).not.toContain("Cancelled");
+      expect(output.some((line) => line.kind === "error")).toBe(false);
+    } finally {
+      acknowledge?.();
+      sendDone?.();
+      await pending;
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([true, false])(
+    "waits for the real terminal event after Stop before the reply (cancelled: %s)",
+    async (cancelled) => {
+      useDatabase.setState({ manualCommit: new Set(["pg"]) });
+      let acknowledge!: () => void;
+      let sendDone!: () => void;
+      backend.stream.mockImplementationOnce(async (_r, _id, statements: SqlStatement[], _max, _schema, channel) => {
+        channel.onmessage({ type: "started", index: 0 });
+        channel.onmessage({
+          type: "completed",
+          index: 0,
+          outcome: { statement: statements[0]!, result: { ...result([], []), affected: 3 }, error: null },
+        });
+        channel.onmessage({ type: "started", index: 1 });
+        sendDone = () => {
+          if (!cancelled)
+            channel.onmessage({
+              type: "completed",
+              index: 1,
+              outcome: { statement: statements[1]!, result: result([{ name: "v" }], [["actual"]]), error: null },
+            });
+          channel.onmessage({
+            type: "done",
+            error: cancelled ? { kind: "cancelled", message: "Cancelled", data: null } : null,
+          });
+        };
+        await new Promise<void>((resolve) => (acknowledge = resolve));
+        return { status: "ok", data: null };
+      });
+      const pending = runIn("a.sql", "UPDATE t SET n = 3; SELECT n FROM t");
+      try {
+        await vi.waitFor(() => expect(acknowledge).toBeTypeOf("function"));
+        cancelConsole("a.sql");
+        acknowledge();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(useDatabase.getState().running["a.sql"]).toBeDefined();
+        sendDone();
+        await pending;
+        const output = useDatabase.getState().output.map((line) => line.text);
+        expect(output.includes("Cancelled")).toBe(cancelled);
+        expect(output.includes("Transaction rolled back")).toBe(cancelled);
+        expect(useDatabase.getState().pendingTx.has("pg")).toBe(!cancelled);
+        expect(strip()).toEqual(cancelled ? [] : ["a.sql:SELECT n FROM t"]);
+      } finally {
+        acknowledge?.();
+        sendDone?.();
+        await pending;
+      }
+    },
+  );
+
+  it("keeps the grids from a fast DDL batch when refreshing schema metadata", async () => {
+    useDatabase.setState({ sources: [{ id: "pg", name: "Local", driver: "sqlite" }] });
+    const outcomes = await runIn("a.sql", "CREATE TABLE saved (id INT); SELECT saved");
+    expect(outcomes).toHaveLength(2);
+    expect(strip()).toContain("a.sql:SELECT saved");
+    expect(backend.schemas).toHaveBeenCalledExactlyOnceWith("pg");
+  });
+
+  it.each([
+    { label: "between statements", started: false, terminal: true, pending: true },
+    { label: "during a statement", started: true, terminal: true, pending: false },
+    { label: "without a terminal frame", started: true, terminal: false, pending: true },
+  ])(
+    "keeps the completed write and reports transaction state after cancellation $label",
+    async ({ started, terminal, pending }) => {
+      useDatabase.setState({ manualCommit: new Set(["pg"]) });
+      backend.stream.mockImplementationOnce(async (_r, _id, statements: SqlStatement[], _max, _schema, channel) => {
+        channel.onmessage({ type: "started", index: 0 });
+        channel.onmessage({
+          type: "completed",
+          index: 0,
+          outcome: { statement: statements[0]!, result: { ...result([], []), affected: 3 }, error: null },
+        });
+        if (started) channel.onmessage({ type: "started", index: 1 });
+        const error = { kind: "cancelled", message: "Cancelled", data: null };
+        if (!terminal) return { status: "error", error };
+        channel.onmessage({ type: "done", error });
+        return { status: "ok", data: null };
+      });
+      await runIn("a.sql", "UPDATE t SET n = 3; SELECT n FROM t");
+      const output = useDatabase.getState().output.map((line) => line.text);
+      expect(output.filter((line) => line === "3 rows affected in 1 ms")).toHaveLength(1);
+      expect(output.includes("Transaction rolled back")).toBe(!pending);
+      expect(useDatabase.getState().pendingTx.has("pg")).toBe(pending);
+    },
+  );
+
+  it("publishes a frame of fast results together and retains every fresh grid beyond the tab limit", async () => {
+    await runIn("b.sql", "SELECT pinned");
+    pinResult(ids()[0]!, true);
+    await runIn("b.sql", "SELECT old");
+    const texts = Array.from({ length: 16 }, (_, i) => `SELECT ${i}`);
+    const text = texts.join("; ");
+    let finish!: () => void;
+    backend.stream.mockImplementationOnce(async (_r, _id, statements: SqlStatement[], _max, _schema, channel) => {
+      statements.forEach((statement, index) => {
+        channel.onmessage({ type: "started", index });
+        channel.onmessage({
+          type: "completed",
+          index,
+          outcome: { statement, result: result([{ name: "v" }], [[String(index)]]), error: null },
+        });
+      });
+      await new Promise<void>((resolve) => (finish = resolve));
+      channel.onmessage({ type: "done", error: null });
+      return { status: "ok", data: null };
+    });
+    const publish = vi.fn();
+    const pending = executeConsole("a.sql", text, 0, text.length, undefined, publish);
+    try {
+      await vi.waitFor(() => expect(publish).toHaveBeenCalledTimes(1));
+      const expected = ["b.sql:SELECT pinned", ...texts.map((query) => `a.sql:${query}`)];
+      expect(strip()).toEqual(expected);
+      finish();
+      await pending;
+      expect(strip()).toEqual(expected);
+      expect(new Set(ids()).size).toBe(expected.length);
+    } finally {
+      finish?.();
+      await pending;
+    }
+  });
+
+  it("ignores results from a superseded request after an early invocation reply", async () => {
+    let stale!: () => void;
+    backend.stream.mockImplementationOnce(async (_r, _id, statements: SqlStatement[], _max, _schema, channel) => {
+      const emit = (event: ExecutionEvent) => channel.onmessage(event);
+      emit({ type: "started", index: 0 });
+      stale = () => {
+        emit({
+          type: "completed",
+          index: 0,
+          outcome: { statement: statements[0]!, result: result([{ name: "v" }], [["stale"]]), error: null },
+        });
+        emit({ type: "done", error: null });
+      };
+      return { status: "ok", data: null };
+    });
+    const superseded = runIn("a.sql", "SELECT stale; SELECT later");
+    await vi.waitFor(() => expect(stale).toBeTypeOf("function"));
+    const oldRequest = useDatabase.getState().running["a.sql"];
+    expect(oldRequest).toBeDefined();
+    expect(strip()).toEqual([]);
+    try {
+      await runIn("a.sql", "SELECT current");
+      expect(backend.cancel).toHaveBeenCalledWith(oldRequest);
+      stale();
+      expect(await superseded).toEqual([]);
+      expect(strip()).toEqual(["a.sql:SELECT current"]);
+      expect(useDatabase.getState().executions).toEqual({});
+      expect(useDatabase.getState().output.map((entry) => entry.text)).not.toContain("SELECT stale");
+    } finally {
+      stale();
+      await superseded;
+    }
+  });
+
+  it("syncs a lost connection reported by a superseded run", async () => {
+    useDatabase.setState({ connected: new Set(["pg"]) });
+    let finish!: () => void;
+    backend.stream.mockImplementationOnce(async (_r, _id, statements: SqlStatement[], _max, _schema, channel) => {
+      await new Promise<void>((resolve) => (finish = resolve));
+      channel.onmessage({
+        type: "completed",
+        index: 0,
+        outcome: { statement: statements[0], result: null, error: "Connection lost" },
+      });
+      channel.onmessage({ type: "done", error: null });
+      return { status: "ok", data: null };
+    });
+    const older = runIn("a.sql", "SELECT old; SELECT untouched");
+    try {
+      await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+      await runIn("a.sql", "SELECT current");
+      backend.connected.mockResolvedValueOnce({ status: "ok", data: [] });
+      finish();
+      await older;
+      expect(backend.connected).toHaveBeenCalledOnce();
+      await vi.waitFor(() => expect(useDatabase.getState().connected.has("pg")).toBe(false));
+      expect(strip()).toEqual(["a.sql:SELECT current"]);
+      expect(useDatabase.getState().output.map((entry) => entry.text)).not.toContain("SELECT old");
+    } finally {
+      finish?.();
+      await older;
+    }
+  });
+
+  it.each([
+    { started: false, stopped: false },
+    { started: true, stopped: false },
+    { started: false, stopped: true },
+  ])(
+    "uses the legacy remote command only before progress or Stop (started: $started, stopped: $stopped)",
+    async ({ started, stopped }) => {
+      const { commands } = await vi.importActual<typeof import("@/platform/ipc")>("@/platform/ipc");
+      let failStream!: () => void;
+      const invoke = vi.fn(
+        async (
+          name: string,
+          args: { cmd: string; args: string; onChannel: { onmessage: (frame: ChannelFrame) => void } },
+        ) => {
+          expect(name).toBe("remote_invoke");
+          const { statements, onProgress } = JSON.parse(args.args) as {
+            statements: SqlStatement[];
+            onProgress?: { $channel: number };
+          };
+          if (args.cmd === "db_execute_stream") {
+            if (started)
+              args.onChannel.onmessage({
+                id: onProgress!.$channel,
+                data: JSON.stringify({ type: "started", index: 0 }),
+              });
+            if (stopped) await new Promise<void>((resolve) => (failStream = resolve));
+            throw { kind: "protocol", message: "command db_execute_stream is not available remotely", data: null };
+          }
+          expect(args.cmd).toBe("db_execute");
+          return JSON.stringify(
+            statements.map((statement) => ({
+              statement,
+              result: result([{ name: "v" }], [[statement.text]]),
+              error: null,
+            })),
+          );
+        },
+      );
+      vi.stubGlobal("__TAURI_INTERNALS__", { invoke });
+      enableRemote({
+        target: { kind: "wsl", distro: "Ubuntu" },
+        root: "/remote",
+        host: "Ubuntu",
+        os: "linux",
+        commands: ["db_execute_stream", "db_execute"],
+      });
+      backend.stream.mockImplementationOnce(commands.dbExecuteStream);
+      backend.execute.mockImplementation(commands.dbExecute);
+      const pending = runIn("a.sql", "SELECT 1; SELECT 2");
+      try {
+        if (stopped) {
+          await vi.waitFor(() => expect(failStream).toBeTypeOf("function"));
+          cancelConsole("a.sql");
+          failStream();
+        }
+        await pending;
+        const legacy = !started && !stopped;
+        expect(invoke.mock.calls.map(([_name, args]) => args.cmd)).toEqual(
+          legacy ? ["db_execute_stream", "db_execute"] : ["db_execute_stream"],
+        );
+        expect(strip()).toEqual(legacy ? ["a.sql:SELECT 1", "a.sql:SELECT 2"] : []);
+        if (stopped) expect(useDatabase.getState().output.map((line) => line.text)).toContain("Cancelled");
+      } finally {
+        failStream?.();
+        await pending;
+        disableRemote();
+        vi.unstubAllGlobals();
+      }
+    },
+  );
 
   it("never replaces the Query Plan from a run, and appends a new plan beside a pinned one", async () => {
     backend.explain.mockResolvedValue({ status: "ok", data: [] });
@@ -859,7 +1231,7 @@ describe("a console request in flight", () => {
       pending = executeConsole("console.sql", "SELECT 1; SELECT 2", 0, 18);
       await vi.waitFor(() => expect(backend.execute).toHaveBeenCalled());
     });
-    expect(screen.getByText("Executing 2 statements in console.sql…")).toBeTruthy();
+    expect(await screen.findByText("Executing statement 1 of 2 in console.sql…")).toBeTruthy();
     expect(screen.getByText("Ann")).toBeTruthy();
     await act(async () => {
       finish();

@@ -163,7 +163,7 @@ impl Repos {
     }
 
     /// Changes of every repository. A nested repository reports its own files, so the
-    /// enclosing one's "untracked folder" entry for it is dropped. A repository that cannot
+    /// enclosing one's "untracked folder" entry for it, and its entries inside it, are dropped. A repository that cannot
     /// be read (e.g. deleted since the last scan) is left out; fails only when all fail.
     ///
     /// The reads go through [`Backend`], the Changes-view surface — repositories of a
@@ -207,10 +207,13 @@ impl Repos {
                     continue;
                 }
             };
+            // A file belongs to its innermost repository: the nested one reports what lies
+            // inside it, including files the enclosing one still tracks there (#4990).
             out.extend(status.into_iter().filter(|f| {
                 let untracked_root =
                     f.unstaged == Some(crate::ChangeKind::Untracked) && nested.iter().any(|n| f.path.0 == *n);
-                !untracked_root
+                let in_nested = nested.iter().any(|n| f.path.0 != *n && f.path.0.starts_with(n));
+                !untracked_root && !in_nested
             }));
         }
         match first_error {
@@ -348,6 +351,39 @@ mod tests {
         assert_eq!(repos.for_path(&file).unwrap().root(), api.join("libs/sdk"), "a nested file is its own repo's");
         assert_eq!(repos.for_path(&docs.join("a.md")).unwrap().root(), mono, "a subfolder member is its repo's");
         assert!(repos.for_path(&plain.join("x")).is_none());
+    }
+
+    /// A folder the enclosing repository still tracks became a repository of its own: both
+    /// report its files, and each file must be listed once, by its innermost repository (#4990).
+    #[test]
+    fn a_file_of_a_nested_repository_is_listed_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        git_init(&root);
+        std::fs::create_dir_all(root.join("web")).unwrap();
+        std::fs::write(root.join("web/page.html"), "v1").unwrap();
+        let git = |dir: &Path, args: &[&str]| {
+            let ok = Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(dir)
+                .status()
+                .is_ok_and(|s| s.success());
+            assert!(ok, "git {args:?}");
+        };
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-qm", "init"]);
+        git_init(&root.join("web"));
+        std::fs::write(root.join("web/page.html"), "v2").unwrap();
+        std::fs::write(root.join("README.md"), "x").unwrap();
+
+        let repos = Repos::discover(&root, &|_| false).unwrap();
+        assert_eq!(repos.all().len(), 2);
+        for status in [repos.status().unwrap(), repos.status_paths(&[root.join("web/page.html")]).unwrap()] {
+            let page: Vec<_> = status.iter().filter(|f| f.path.0 == root.join("web/page.html")).collect();
+            assert_eq!(page.len(), 1, "{status:?}");
+            assert_eq!(page[0].rel_path, "page.html", "listed by the nested repository");
+        }
     }
 
     #[test]

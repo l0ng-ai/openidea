@@ -51,6 +51,20 @@ describe("Kotlin soft keywords", () => {
   });
 });
 
+describe("literal keywords (#4059)", () => {
+  it.each(["Kotlin", "Scala", "Dart", "Groovy", "C#"])(
+    "tags true, false and null in %s as literals, not as constants",
+    async (mode) => {
+      const out = await tokens(mode, "x = f(true, false, null)");
+      const styleOf = (text: string) => out.find((t) => t.text === text)?.style ?? "";
+      expect(styleOf("true")).toBe("tok-bool");
+      expect(styleOf("false")).toBe("tok-bool");
+      // `tags.null` derives from keyword, which classHighlighter prints; an atom prints tok-atom.
+      expect(styleOf("null")).toBe("tok-keyword");
+    },
+  );
+});
+
 describe("frontend string interpolation", () => {
   it.each([
     ["Kotlin", 'println("$i + 1 = ${i + 1}")'],

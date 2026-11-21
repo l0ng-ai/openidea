@@ -11,6 +11,9 @@ import { Marked, type Token, type TokensList } from "marked";
 import DOMPurify from "dompurify";
 import { mathExtension } from "@/editor/lsp/markdownMath";
 import { opensOtherShare } from "@/platform/paths";
+import { footnoteExtension, renderFootnotes } from "./footnotes";
+
+export const ANCHOR_PREFIX = "user-content-";
 
 const escapeHtml = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -24,7 +27,7 @@ const marked = new Marked({
       return `<div data-mermaid=""><pre><code class="language-mermaid">${escapeHtml(text)}</code></pre></div>\n`;
     },
   },
-}).use(mathExtension());
+}).use(mathExtension(), footnoteExtension(ANCHOR_PREFIX));
 
 // Own instance: hooks must not leak into the hover / documentation renderer.
 let purifier: ReturnType<typeof DOMPurify> | null = null;
@@ -55,12 +58,6 @@ function purify(): ReturnType<typeof DOMPurify> {
   purifier = p;
   return p;
 }
-
-/**
- * Heading ids carry GitHub's prefix: bare ids like `title` would clobber
- * `document` properties, so the sanitizer drops them.
- */
-export const ANCHOR_PREFIX = "user-content-";
 
 /** GitHub-style heading anchor: lower case, punctuation dropped, spaces → dashes. */
 export function slugify(text: string): string {
@@ -160,7 +157,7 @@ function blocks(text: string): { line: number; html: string }[] {
   for (const token of tokens) {
     const start = line;
     line += countLines(token.raw);
-    if (token.type === "space") continue;
+    if (token.type === "space" || token.type === "footnoteDefinition") continue;
     const list = Object.assign([token], { links: tokens.links }) as TokensList;
     let body = marked.parser(list);
     if (token.type === "heading") {
@@ -177,6 +174,8 @@ function blocks(text: string): { line: number; html: string }[] {
     group = null;
   }
   if (group) out.push(group);
+  const footnotes = renderFootnotes(marked, tokens);
+  if (footnotes) out.push({ line: countLines(text), html: footnotes });
   return out;
 }
 
@@ -334,10 +333,14 @@ export function previewOffsetForLine(
 
 /** Source line of the block at the top of a preview scrolled to `offset`: the first one if none is above it. */
 export function previewLineAtOffset(blocks: ReadonlyArray<{ line: number; top: number }>, offset: number): number {
-  let line = blocks[0]?.line ?? 0;
-  for (const b of blocks) {
-    if (b.top > offset + 1) break;
-    line = b.line;
+  // Read only the offsets needed for the lookup. Reading every block's layout on each
+  // scroll frame stutters on dense previews, and cached offsets would miss later reflows.
+  let lo = 0;
+  let hi = blocks.length;
+  while (lo < hi) {
+    const mid = lo + Math.floor((hi - lo) / 2);
+    if (blocks[mid]!.top <= offset + 1) lo = mid + 1;
+    else hi = mid;
   }
-  return line;
+  return blocks[Math.max(0, lo - 1)]?.line ?? 0;
 }

@@ -93,6 +93,20 @@ function semanticStyle(token: string, fallback: string) {
   };
 }
 
+/** A token that shows `parent`'s colour and style while its own are unset (an `inherit` attribute). */
+function inheritedStyle(token: string, parent: string) {
+  const v = (suffix: string, fallback: string) =>
+    `var(--syn-${token}${suffix}, var(--syn-${parent}${suffix}, ${fallback}))`;
+  return {
+    color: v("", "inherit"),
+    fontWeight: v("-bold", "inherit"),
+    fontStyle: v("-italic", "inherit"),
+    backgroundColor: v("-bg", "transparent"),
+    textDecoration: v("-effect", "none"),
+    WebkitTextDecoration: v("-effect", "none"),
+  };
+}
+
 export const lspTheme = EditorView.theme({
   // --- completion (IDEA lookup: icon column, bold blue match, grey tail/type, advertiser) ---
   ".cm-tooltip.cm-tooltip-autocomplete.cm-lsp-completion": {
@@ -294,12 +308,12 @@ export const lspTheme = EditorView.theme({
   ".cm-lsp-diag-shortcut": { color: "var(--fg-subtle)", fontSize: "var(--fs-small)", whiteSpace: "nowrap" },
   ".cm-lsp-link-button:hover .cm-lsp-diag-action-label": { color: "var(--link-hover)", textDecoration: "underline" },
   ".cm-tooltip.cm-lsp-signature": {
-    fontFamily: "var(--openidea-editor-font, var(--font-mono))",
-    fontWeight: "var(--fw-code, 400)",
-    fontSize: "var(--openidea-editor-font-size, var(--fs-code))",
+    fontFamily: "var(--font-ui)",
+    fontWeight: "400",
+    fontSize: "var(--fs-ui)",
     maxWidth: "min(640px, var(--cm-signature-width, 100%))",
     maxHeight: "min(380px, 65vh)",
-    paddingBlock: "var(--space-0-5)",
+    padding: "var(--space-1)",
     overflow: "auto",
     overscrollBehavior: "contain",
   },
@@ -307,17 +321,29 @@ export const lspTheme = EditorView.theme({
     color: "var(--fg-secondary)",
     whiteSpace: "pre-wrap",
     overflowWrap: "anywhere",
-    lineHeight: "1.5",
-    padding: "var(--space-0-5) var(--space-2)",
+    lineHeight: "1.4",
+    padding: "var(--space-1) var(--space-2)",
     paddingInlineStart: "calc(var(--space-2) + 2ch)",
     textIndent: "-2ch",
   },
-  ".cm-lsp-signature-active": {
-    color: "var(--fg-strong)",
-    backgroundColor: "var(--bg-identifier-under-caret, color-mix(in srgb, var(--accent) 14%, transparent))",
+  ".cm-lsp-signature-active": { color: "var(--fg-strong)" },
+  ".cm-lsp-signature-overloads .cm-lsp-signature-row + .cm-lsp-signature-row": {
+    position: "relative",
+    marginBlockStart: "var(--space-1)",
+  },
+  ".cm-lsp-signature-overloads .cm-lsp-signature-row + .cm-lsp-signature-row::before": {
+    content: '""',
+    position: "absolute",
+    insetInline: "var(--space-2)",
+    insetBlockStart: "calc(-1 * var(--space-0-5))",
+    borderBlockStart: "1px solid var(--border-popup)",
+  },
+  ".cm-lsp-signature-overloads .cm-lsp-signature-active": {
+    backgroundColor: "var(--bg-tree-selected-inactive)",
+    borderRadius: "var(--radius-selection)",
   },
   ".cm-lsp-signature-disabled": { opacity: "0.55" },
-  ".cm-lsp-signature b": { fontWeight: "var(--fw-code-bold, 700)", color: "var(--fg-strong)" },
+  ".cm-lsp-signature b": { fontWeight: "700", color: "var(--fg-strong)" },
   ".cm-lsp-signature-doc": {
     borderTop: "1px solid var(--border-popup)",
     marginTop: "var(--space-1)",
@@ -492,12 +518,22 @@ export const lspTheme = EditorView.theme({
   ".cm-sem-function": semanticStyle("function-call", "function"),
   // Keep role selectors at one class so static/deprecated modifiers can override their styles.
   ".cm-sem-function:where(.cm-sem-declaration)": semanticStyle("function", "function"),
-  ".cm-sem-function:where(.cm-sem-builtin)": semanticStyle("builtin", "function"),
+  // Kotlin's top-level function calls; a library's own stay Predefined functions (the rule below).
+  ".cm-sem-kotlin-extension-call": inheritedStyle("kotlin-extension-call", "function-call"),
+  ".cm-sem-kotlin-package-call": inheritedStyle("kotlin-package-call", "function-call"),
+  // Predefined function / type: unset, they keep the Predefined symbol style.
+  ".cm-sem-function:where(.cm-sem-builtin)": inheritedStyle("builtin-function", "builtin"),
   ".cm-sem-function.cm-sem-python-method-call": semanticStyle("python-method-call", "function-call"),
+  // WebStorm's Global function: a module-level function, its declaration and its calls.
+  ".cm-sem-global-function": inheritedStyle("global-function", "function"),
   ".cm-sem-macro": semanticStyle("annotation", "annotation"),
   ".cm-sem-annotation": semanticStyle("decorator", "annotation"),
   ".cm-sem-namespace": semanticStyle("namespace", "type"),
   ".cm-sem-constant": { ...semanticStyle("constant", "constant"), fontStyle: "var(--syn-constant-italic, italic)" },
+  ".cm-sem-kotlin-enum-entry": {
+    ...inheritedStyle("kotlin-enum-entry", "constant"),
+    fontStyle: "var(--syn-kotlin-enum-entry-italic, var(--syn-constant-italic, italic))",
+  },
   ".cm-sem-variable": semanticStyle("variable", "variable"),
   ".cm-sem-property": semanticStyle("property", "property"),
   ".cm-sem-parameter": semanticStyle("param", "variable"),
@@ -507,6 +543,7 @@ export const lspTheme = EditorView.theme({
   // Before the builtin rule: library globals (`print`, `string`) keep the predefined colour.
   ".cm-sem-global:where(:not(.cm-sem-function))": semanticStyle("global", "variable"),
   ".cm-sem-builtin:where(:not(.cm-sem-function))": semanticStyle("builtin", "variable"),
+  ".cm-sem-builtin:where(.cm-sem-type)": inheritedStyle("builtin-type", "builtin"),
   ".cm-sem-builtin.cm-sem-python-builtin": semanticStyle("python-builtin", "builtin"),
   ".cm-sem-static": { fontStyle: "var(--syn-static-italic, italic)" },
   ".cm-sem-property.cm-sem-static, .cm-sem-property.cm-sem-static *": {

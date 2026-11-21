@@ -327,6 +327,7 @@ export const commands = {
 	/**  What made the dump at `path` and whether it creates its own database (from its first bytes). */
 	dbDumpInfo: (path: string) => typedError<DbDumpInfo, IdeError>(__TAURI_INVOKE("db_dump_info", { path })),
 	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], skip: number, maxRows: number, schema: string | null) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, skip, maxRows, schema })),
+	dbExecuteStream: (request: RequestId, id: string, statements: SqlStatement[], maxRows: number, schema: string | null, onProgress: Channel<ExecutionEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("db_execute_stream", { request, id, statements, maxRows, schema, onProgress })),
 	dbExplain: (request: RequestId, id: string, statement: string, schema: string | null) => typedError<DbPlanNode[], IdeError>(__TAURI_INVOKE("db_explain", { request, id, statement, schema })),
 	/**
 	 *  Writes exported result data (CSV, JSON, SQL…) to `path`. Stays in the
@@ -1327,6 +1328,13 @@ export const commands = {
 	projectTrustRemoveLocation: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("project_trust_remove_location", { path })),
 	projectTrustSet: (path: string, trusted: boolean, folder: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("project_trust_set", { path, trusted, folder })),
 	projectTrustStatus: (path: string) => typedError<TrustStatus, IdeError>(__TAURI_INVOKE("project_trust_status", { path })),
+	/**
+	 *  Sets a `projectStructure.*` key in the settings of `root`, a project attached to the window's
+	 *  project (Mark Directory as there). Every open window holding that project follows.
+	 */
+	projectWorkspaceMemberSet: (root: string, key: string, value: string) => typedError<null, IdeError>(__TAURI_INVOKE("project_workspace_member_set", { root, key, value })),
+	/**  The workspace projects outside the window's project folder, for Mark Directory as there. */
+	projectWorkspaceMembers: () => typedError<WorkspaceMember[], IdeError>(__TAURI_INVOKE("project_workspace_members")),
 	/**
 	 *  System Settings › HTTP Proxy › Check connection: GETs `url` through `proxy` as
 	 *  edited (not yet applied); the response status, or why there was none.
@@ -6041,6 +6049,8 @@ export type ExceptionFilter = {
 	default: boolean,
 	supportsCondition: boolean,
 };
+
+export type ExecutionEvent = { type: "started"; index: number } | { type: "completed"; index: number; outcome: DbStatementOutcome } | { type: "done"; error: IdeError | null };
 
 /**  Result of `expression_at` (Extract Variable / Introduce … fallback). */
 export type ExpressionAt = {
@@ -11695,6 +11705,8 @@ export type SmartKeysSettings = {
 	pairQuotes?: boolean,
 	surroundSelection?: boolean,
 	tabOutOfPair?: boolean,
+	/**  A `;` typed before the closing `)` of a statement goes to the end of the statement. */
+	semicolonAtStatementEnd?: boolean,
 	/**  Simultaneous `<tag></tag>` editing: renaming a tag renames its matching tag. */
 	simultaneousTagEditing?: boolean,
 	/**  Reformat on paste: `none` | `indentBlock` | `indentEachLine`. */
@@ -12641,6 +12653,8 @@ export type VcsMappings = {
 export type VcsRoot = {
 	/**  Worktree root. */
 	root: IpcPath,
+	/**  Root representing all mapped worktrees of the same Git repository in branch lists. */
+	branchRoot: IpcPath,
 	/**  Merge / rebase / cherry-pick / revert in progress. */
 	operation: string | null,
 	/**  Current branch; `None` when HEAD is detached (or unreadable). */
@@ -12892,6 +12906,15 @@ export type WorkspaceEdit = {
 export type WorkspaceEditPrecondition = {
 	path: IpcPath,
 	hash: string,
+};
+
+/**  A project attached to the window's project, with its own Project Structure. */
+export type WorkspaceMember = {
+	root: IpcPath,
+	/**  Its project settings' Project Structure (not merged with the user settings). */
+	structure: ProjectStructureSettings,
+	/**  Roots detected from its build files. */
+	detected: SourceFolder[],
 };
 
 export type WorkspaceSymbol = {

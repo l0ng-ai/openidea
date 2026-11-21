@@ -18,6 +18,8 @@ test("backspace and paste controls align below Enter options in Smart Keys", asy
 
   for (const width of [1120, 520]) {
     await page.setViewportSize({ width, height: 760 });
+    // The page scrolls once its options outgrow the dialog; the controls must be whole once in view.
+    await paste.scrollIntoViewIfNeeded();
     await expect(unindent).toBeInViewport({ ratio: 0.98 });
     await expect(paste).toBeInViewport({ ratio: 0.98 });
     const enterBox = (await enter.boundingBox())!;
