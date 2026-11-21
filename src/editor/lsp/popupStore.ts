@@ -104,6 +104,8 @@ export type LspPopup =
       anchor: PopupPoint | "center";
       title: string;
       items: ListPopupItem[];
+      /** The resizable Copy Path/Reference chooser with trailing path previews. */
+      layout?: "copyPath";
       /** Rows 1-9 get a number; typing it runs the row (IDEA's numbered popups). */
       numbered?: boolean;
       /** Compact action list, with room for icons only when a row has one. */

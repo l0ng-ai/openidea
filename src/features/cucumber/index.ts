@@ -9,15 +9,15 @@ import { ViewPlugin, type EditorView } from "@codemirror/view";
 import {
   intentionProviders,
   intentionsChanged,
+  offsetsToRange,
   quickFixProviders,
   registerEditorContribution,
+  registerNavigationProvider,
   whenAllSynced,
   type ContributedIntention,
 } from "@/editor/api";
 import { setFileDiagnostics } from "@/editor/lsp/diagnostics";
 import { docOf } from "@/editor/lsp/lsp";
-import { offsetsToRange } from "@/editor/lsp/positions";
-import { registerNavigationProvider } from "@/editor/navigationProviders";
 import type { Diagnostic } from "@/bindings";
 import { tx } from "@/platform/i18n";
 import { CUCUMBER_UNDEFINED_STEP_PRODUCER } from "@/platform/inspections";

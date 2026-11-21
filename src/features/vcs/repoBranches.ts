@@ -63,6 +63,20 @@ export function widgetShowsRepo(repos: readonly Pick<RepoEntry, "head">[]): bool
   return !first || repos.some((r) => r.head !== first);
 }
 
+export function branchRepositoryRoots(
+  roots: readonly string[],
+  branchRoots: Readonly<Record<string, string>>,
+  current?: string | null,
+): string[] {
+  const repositories = new Map<string, string>();
+  for (const root of roots) {
+    const group = branchRoots[root] ?? root;
+    const previous = repositories.get(group);
+    if (!previous || root === current || (root === group && previous !== current)) repositories.set(group, root);
+  }
+  return [...repositories.values()];
+}
+
 export interface CommonBranch {
   name: string;
   remote: boolean;

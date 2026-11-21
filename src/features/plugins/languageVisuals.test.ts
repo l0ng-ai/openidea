@@ -3,7 +3,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { syntaxHighlighting, defaultHighlightStyle } from "@codemirror/language";
 import { iconAreaExtension } from "@/editor/core/cm/iconArea";
-import { invalidateNavigationProviders } from "@/editor/navigationProviders";
+import { invalidateNavigationProviders } from "@/editor/api";
 const ipc = vi.hoisted(() => ({
   pluginLanguageVisuals: vi.fn(),
   lspExecuteCommand: vi.fn(async () => ({ status: "ok", data: null })),

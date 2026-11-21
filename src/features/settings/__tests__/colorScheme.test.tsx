@@ -429,6 +429,40 @@ describe("Console Colors (#2698)", () => {
   });
 });
 
+describe("Diff & Merge colors", () => {
+  it("groups change types and the folded wave, and overrides the stripe from the preview", () => {
+    act(() => stage("editor.colorScheme", "global", "editor.colorScheme", "dark"));
+    schemePage("editor.colorScheme.diff-and-merge");
+    const tree = screen.getByRole("tree", { name: "Color scheme attributes" });
+    expect(within(tree).getByRole("treeitem", { name: "Changed lines" })).toBeInTheDocument();
+    expect(within(tree).getByRole("treeitem", { name: "Folded unchanged fragments" })).toBeInTheDocument();
+    // Change-type strips select their attribute; the stripe cell selects the same one.
+    const preview = screen.getByLabelText("Color scheme preview");
+    act(() => fireEvent.click(within(preview).getByText("def MyClass():")));
+    expect(screen.getByRole("treeitem", { name: "Changed", selected: true })).toBeInTheDocument();
+    act(() => fireEvent.click(screen.getByRole("checkbox", { name: "Error stripe mark" })));
+    const stripe = screen.getByRole("textbox", { name: "Error stripe mark hex" });
+    act(() => fireEvent.change(stripe, { target: { value: "#ff4081" } }));
+    expect(value("colorOverrides")).toEqual({ dark: { diffChanged: { errorStripeColor: "#ff4081" } } });
+    expect(preview.style.getPropertyValue("--diff-modified-stripe")).toBe("#ff4081");
+  });
+
+  it("selects the wave attribute from the folded separator", () => {
+    _setSchemeSource(readFileSync("src/styles/tokens.css", "utf8"));
+    try {
+      act(() => stage("editor.colorScheme", "global", "editor.colorScheme", "dark"));
+      schemePage("editor.colorScheme.diff-and-merge");
+      const preview = screen.getByLabelText("Color scheme preview");
+      act(() => fireEvent.click(within(preview).getByText("6 unchanged lines")));
+      expect(screen.getByRole("treeitem", { name: "Wave", selected: true })).toBeInTheDocument();
+      // The default follows the theme's subtle text rather than a hardcoded IDEA colour.
+      expect(screen.getByRole("textbox", { name: "Foreground hex" })).toHaveValue("#73767c");
+    } finally {
+      _setSchemeSource("");
+    }
+  });
+});
+
 describe("Git colors", () => {
   it("groups inline blame and project view attributes and overrides the preview", () => {
     act(() => stage("editor.colorScheme", "global", "editor.colorScheme", "dark"));

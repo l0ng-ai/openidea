@@ -6,6 +6,7 @@ use ide_command::command;
 
 use ide_core::{IdeError, IdeResult, IpcPath, RequestId};
 use ide_scaffold::{CreateRequest, Field, GeneratorInfo, Requirement, ScaffoldEvent, Values};
+use std::path::PathBuf;
 
 fn join_err(e: impl std::fmt::Display) -> IdeError {
     IdeError::internal(e.to_string())
@@ -41,6 +42,19 @@ pub async fn scaffold_requirements(generator: String, values: Values) -> IdeResu
     tokio::task::spawn_blocking(move || ide_scaffold::requirements(&generator, &values)).await.map_err(join_err)?
 }
 
+/// Whether a project named `name` cannot be created in `location`: something other than an
+/// empty folder is already there.
+#[command(trust = always)]
+pub async fn scaffold_target_taken(location: PathBuf, name: String) -> IdeResult<bool> {
+    tokio::task::spawn_blocking(move || ide_scaffold::target_taken(&location.join(name.trim()))).await.map_err(join_err)
+}
+
+/// The first of `base`, `base1`, `base2`, … that names nothing in `location` yet.
+#[command(trust = always)]
+pub async fn scaffold_free_name(location: PathBuf, base: String) -> IdeResult<String> {
+    tokio::task::spawn_blocking(move || ide_scaffold::free_name(&location, &base)).await.map_err(join_err)
+}
+
 /// Creates a project, streaming progress through `on_event`, and returns its directory,
 /// trusted. Cancellable with `cancel_request(request)`; a failed or cancelled run leaves nothing.
 #[command(trust = always)]
@@ -69,6 +83,8 @@ ide_command::domain!(
     scaffold:
     scaffold_catalog,
     scaffold_create,
+    scaffold_free_name,
     scaffold_options,
     scaffold_requirements,
+    scaffold_target_taken,
 );

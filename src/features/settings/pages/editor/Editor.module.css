@@ -553,6 +553,93 @@
   gap: 1px;
 }
 
+/* Diff & Merge preview mirrors the two real diff surfaces: the change-type strips on a
+   side-by-side diff and the wavy separator where IDEA folds an unchanged fragment. */
+.diffPreview {
+  margin: 14px 0 0;
+  border-radius: var(--radius-small);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  background: var(--bg-editor, var(--bg-island));
+  overflow: auto;
+  max-height: 260px;
+}
+.diffPane {
+  padding: 4px 0;
+  font-family: var(--openidea-editor-font, var(--font-mono));
+  font-weight: var(--fw-code);
+  font-size: var(--fs-code);
+  line-height: var(--lh-code);
+  color: var(--fg-editor, var(--fg));
+}
+.diffLine {
+  display: flex;
+  align-items: stretch;
+  min-height: 22px;
+}
+.diffLineBody {
+  flex: 1;
+  display: block;
+  padding: 2px 8px;
+  min-width: 0;
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.diffStripe {
+  flex: none;
+  width: 4px;
+  align-self: stretch;
+}
+.diffConflictMark {
+  padding: 0 4px;
+  border-radius: 2px;
+  color: var(--fg-editor, var(--fg));
+}
+.diffFold {
+  padding: 4px 0;
+  font-family: var(--openidea-editor-font, var(--font-mono));
+  font-size: var(--fs-code);
+  line-height: var(--lh-code);
+  color: var(--fg-editor, var(--fg));
+}
+.diffFoldCode {
+  padding: 2px 12px;
+  white-space: pre;
+}
+.diffFoldWave {
+  position: relative;
+  height: 24px;
+  margin: 2px 0;
+  display: flex;
+  align-items: center;
+  padding-left: 12px;
+  border-bottom: 2px solid var(--diff-separator-wave);
+  background: linear-gradient(
+    to bottom,
+    transparent 0,
+    color-mix(in srgb, var(--diff-separator-wave) 22%, var(--bg-editor)) 50%,
+    transparent 100%
+  );
+}
+.diffFoldWave::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 6px;
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--diff-separator-wave) 0,
+    var(--diff-separator-wave) 1px,
+    transparent 1px,
+    transparent 5px
+  );
+}
+.diffFoldChevron {
+  font-family: var(--font-ui);
+  font-size: var(--fs-small);
+  color: var(--fg-subtle);
+}
+
 /* Code Style tables */
 .guides {
   width: 160px;

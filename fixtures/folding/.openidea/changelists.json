@@ -1,0 +1,11 @@
+{
+  "lists": [
+    {
+      "id": "default",
+      "name": "Changes",
+      "comment": ""
+    }
+  ],
+  "active": "default",
+  "files": {}
+}

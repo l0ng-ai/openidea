@@ -4,14 +4,15 @@ import {
   activeEditor,
   editorsFor,
   iconAreaSource,
+  invalidateNavigationProviders,
   onEditorEvent,
+  registerNavigationProvider,
   useEditorRegistry,
   type EditorDocContext,
 } from "@/editor/api";
 import { docOf } from "@/editor/lsp/lsp";
 import { locationItems, navigateTo } from "@/editor/lsp/navigation";
 import { caretAnchor, openPopup, type ListPopupItem } from "@/editor/lsp/popupStore";
-import { invalidateNavigationProviders, registerNavigationProvider } from "@/editor/navigationProviders";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { call, commands, onIdeEvent, type Location, type ProjectInfo } from "@/platform/ipc";

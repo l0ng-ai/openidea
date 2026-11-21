@@ -28,6 +28,9 @@ export const useMarkdownModes = create<ModesState>(() => ({ byTab: {}, fallback:
 
 export const modeOf = (s: ModesState, tabId: string): MarkdownMode => s.byTab[tabId] ?? s.fallback;
 
+/** Preview Only hides the source editor of `tabId`. */
+export const useMarkdownSourceHidden = (tabId: string) => useMarkdownModes((s) => modeOf(s, tabId) === "preview");
+
 /** Fixes a shown tab's mode, so choosing one in another tab doesn't change it. */
 export function pinMarkdownMode(tabId: string) {
   if (useMarkdownModes.getState().byTab[tabId]) return;

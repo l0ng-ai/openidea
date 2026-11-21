@@ -59,10 +59,10 @@ test("directory comparison mirrors both sides and keeps the headers aligned whil
 
   const grid = page.getByRole("grid", { name: "Compared files" });
   const filter = page.getByRole("textbox", { name: "Filter by name" });
-  const source = page.getByText("Left: source", { exact: true });
-  const target = page.getByText("Right: target", { exact: true });
-  await expect(source).toBeVisible();
-  await expect(target).toBeVisible();
+  const source = page.getByRole("textbox", { name: "Left folder" });
+  const target = page.getByRole("textbox", { name: "Right folder" });
+  await expect(source).toHaveValue("/dev/acme-api/source");
+  await expect(target).toHaveValue("/dev/acme-api/target");
   const [pathBox, filterBox] = await Promise.all([source.boundingBox(), filter.boundingBox()]);
   if (!pathBox || !filterBox) throw new Error("Missing comparison toolbar bounds");
   expect(pathBox.y).toBeGreaterThanOrEqual(filterBox.y + filterBox.height);
@@ -99,6 +99,7 @@ test("directory comparison mirrors both sides and keeps the headers aligned whil
   const shared = grid.getByRole("gridcell", { name: "shared.txt", exact: true });
   await expect(shared).toHaveCount(2);
   await shared.first().click();
-  await expect(page.getByRole("button", { name: "Copy to Right", exact: true })).toBeEnabled();
+  // An identical file's row does nothing by default, so there is nothing to synchronize.
+  await expect(page.getByRole("button", { name: "Synchronize Selected", exact: true })).toBeDisabled();
   await expect(page.getByRole("toolbar", { name: "Diff", exact: true })).toBeVisible();
 });

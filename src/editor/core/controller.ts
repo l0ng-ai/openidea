@@ -1735,8 +1735,18 @@ export class EditorController implements SlotHost {
     });
   }
 
-  closeTab(paneId: string, tabId: string): Promise<boolean> {
-    return this.removeGuarded((s) => (s.panes[paneId] ? closeTab(s, paneId, tabId) : s));
+  async closeTab(paneId: string, tabId: string): Promise<boolean> {
+    const hadFocus = this.slots.get(tabId)?.view?.hasFocus ?? false;
+    const closed = await this.removeGuarded((s) => (s.panes[paneId] ? closeTab(s, paneId, tabId) : s));
+    // The closed editor had the keyboard: hand it to the tab that took its place.
+    if (closed && hadFocus) await this.focusActiveEditor();
+    return closed;
+  }
+
+  private async focusActiveEditor() {
+    const tab = this.activeTabOf();
+    if (tab) await this.ensureSlot(tab.id);
+    if (this.activeTabOf()?.id === tab?.id) this.focus();
   }
   closeOthers(paneId: string, tabId: string): Promise<boolean> {
     return this.removeGuarded((s) => (s.panes[paneId] ? closeOthers(s, paneId, tabId) : s), {

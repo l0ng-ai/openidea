@@ -21,13 +21,12 @@
 .path {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1);
   min-width: 0;
-  min-height: var(--h-field);
-  padding-inline: var(--space-2);
-  border-radius: var(--radius-control);
-  background: var(--bg-field);
-  box-shadow: inset 0 0 0 1px var(--border);
+}
+.pathInput {
+  flex: 1;
+  min-width: 0;
 }
 .path:last-child {
   grid-column: 3;
@@ -199,4 +198,29 @@
 }
 .folder {
   font-weight: 600;
+}
+.select {
+  height: var(--h-control-small);
+  font-size: var(--fs-small);
+}
+.sync {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-small);
+  color: inherit;
+  opacity: 0.7;
+}
+.sync.planned {
+  opacity: 1;
+  --icon-color: var(--accent);
+}
+.sync:not(:disabled):hover {
+  background: var(--bg-toolbar-hover);
+  opacity: 1;
+}
+.sync:disabled {
+  cursor: default;
 }
