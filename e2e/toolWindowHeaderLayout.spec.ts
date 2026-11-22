@@ -67,12 +67,11 @@ test("tool window header keeps its actions visible as the Project pane narrows",
 });
 
 test("Project options expose behavior, appearance, and sorting as submenus", async ({ workbench: page }) => {
-  await page.setViewportSize({ width: 540, height: 500 });
+  await openFromTree(page, "build.gradle.kts");
+  await page.setViewportSize({ width: 700, height: 500 });
   await page.evaluate(async () => {
     const path = "/src/workbench/toolwindows/store.ts";
-    const { setToolWindowSize, showToolWindow } = await import(/* @vite-ignore */ path);
-    setToolWindowSize("left", 185);
-    showToolWindow("project", true);
+    (await import(/* @vite-ignore */ path)).setToolWindowSize("left", 185);
   });
   const header = page.locator('[data-toolwindow="project"] header');
   const options = header.getByRole("button", { name: "Options", exact: true });
