@@ -104,6 +104,13 @@ const fixEslintProblems = (v: EditorView) =>
     none: "No ESLint problems to fix",
     label: "Fix ESLint Problems",
   });
+/** WebStorm's Fix Stylelint Problems: vscode-stylelint's fix-all for the whole file. */
+const fixStylelintProblems = (v: EditorView) =>
+  runKindAction(v, "source.fixAll.stylelint", {
+    whole: true,
+    none: "No Stylelint problems to fix",
+    label: "Fix Stylelint Problems",
+  });
 /**
  * typescript-language-server's organize imports only sorts and merges them; removing the unused
  * ones is its own action, so Optimize Imports runs that first in these languages.
@@ -294,6 +301,9 @@ export function registerLspActions(): () => void {
     ),
     editorAction("code.fixEslintProblems", "Fix ESLint Problems", "Code", fixEslintProblems, {
       keywords: ["eslint", "lint", "fix all"],
+    }),
+    editorAction("code.fixStylelintProblems", "Fix Stylelint Problems", "Code", fixStylelintProblems, {
+      keywords: ["stylelint", "lint", "css", "fix all"],
     }),
     editorAction("code.optimizeImports", "Optimize Imports", "Code", optimizeImports, {
       keywords: ["organize imports"],
