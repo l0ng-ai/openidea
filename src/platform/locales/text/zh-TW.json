@@ -5381,7 +5381,6 @@
   "WSL distribution:": "WSL 發行版：",
   "WSL distribution": "WSL 發行版",
   "Project runs on {label}": "專案執行於 {label}",
-  "Forwarding ports is not supported in a WSL project yet": "WSL 專案暫不支援埠轉發",
   "No SSH configurations": "沒有 SSH 組態",
   "Project directory:": "專案目錄：",
   "Remote Development…": "遠端開發…",
