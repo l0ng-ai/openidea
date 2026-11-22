@@ -298,6 +298,7 @@ describe("catalogs", () => {
     "Claude Code",
     "GitHub Copilot",
     "Codex",
+    "SKILL.md",
     "Cursor",
     "PHP",
     "SQL",
