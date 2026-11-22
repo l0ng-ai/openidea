@@ -1,7 +1,4 @@
-/*
- * Line-number gutter element class; the marker is a pseudo-element that, like
- * IDEA, replaces the number (centred on the element's content box).
- */
+/* The marker replaces the number and shares its trailing edge. */
 .bp {
   position: relative;
   color: transparent !important;
@@ -10,8 +7,9 @@
 .bp::before {
   content: "";
   position: absolute;
-  left: calc(50% + 1px);
+  left: calc(100% - var(--space-1) - 0.5em);
   top: 50%;
+  font-size: var(--openidea-editor-font-size, var(--fs-code));
   width: 1em;
   height: 1em;
   transform: translate(-50%, -50%);
