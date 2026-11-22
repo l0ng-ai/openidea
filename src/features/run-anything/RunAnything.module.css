@@ -49,7 +49,15 @@
 }
 .query {
   flex: none;
-  padding: var(--space-2);
+  margin-inline: var(--space-3);
+  border-bottom: 1px solid var(--border-popup);
+}
+.query:focus-within {
+  border-bottom-color: var(--focus-ring);
+}
+.query .commandField {
+  min-height: 29px;
+  padding-inline: var(--space-0-5);
 }
 .rows {
   flex: 1 1 auto;
