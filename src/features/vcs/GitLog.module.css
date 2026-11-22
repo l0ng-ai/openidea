@@ -496,7 +496,17 @@
   flex-direction: column;
   min-height: 0;
 }
+.detailsBar {
+  height: auto;
+  min-height: 32px;
+  flex-wrap: wrap;
+  padding-block: var(--space-0-5);
+}
 .detailsCount {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   padding-left: 4px;
   color: var(--fg-subtle);
   font-size: var(--fs-ui);

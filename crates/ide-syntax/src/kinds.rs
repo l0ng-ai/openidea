@@ -28,6 +28,9 @@ pub(crate) enum Redeclaration {
 pub(crate) struct LangKinds {
     pub grammars: &'static [&'static str],
     pub blocks: &'static [&'static str],
+    /// Branches of a `switch` / `when` (`case 1:` with its statements): moved as one statement,
+    /// among their sibling branches only.
+    pub clauses: &'static [&'static str],
     pub members: &'static [&'static str],
     /// A block whose parent has one of these kinds is a member container (Python class bodies).
     pub member_parents: &'static [&'static str],
@@ -59,6 +62,7 @@ const NONE: &[&str] = &[];
 pub(crate) const DEFAULT: LangKinds = LangKinds {
     grammars: NONE,
     blocks: &["block", "statement_block", "compound_statement", "statement_list", "statements"],
+    clauses: NONE,
     members: &["class_body", "declaration_list", "field_declaration_list", "enum_body", "interface_body"],
     member_parents: NONE,
     expressions: NONE,
@@ -157,6 +161,7 @@ static TABLES: &[LangKinds] = &[
     LangKinds {
         grammars: &["kotlin"],
         blocks: &["block", "statements", "control_structure_body"],
+        clauses: &["when_entry"],
         members: &["class_body", "enum_class_body"],
         expressions: &["this_expression", "super_expression", "string_literal", "lambda_literal", "object_literal"],
         labels: &[("value_argument", "=")],
@@ -168,6 +173,7 @@ static TABLES: &[LangKinds] = &[
     LangKinds {
         grammars: &["go"],
         blocks: &["statement_list", "block", "expression_case", "default_case", "type_case", "communication_case"],
+        clauses: &["expression_case", "default_case", "type_case", "communication_case"],
         members: &["field_declaration_list"],
         expressions: &["func_literal", "composite_literal", "true", "false", "nil", "iota"],
         not_expressions: &["expression_list", "literal_value", "keyed_element", "literal_element"],
@@ -507,6 +513,10 @@ impl Kinds {
 
     pub(crate) fn redeclaration(&self) -> Redeclaration {
         self.table.redeclaration
+    }
+
+    pub(crate) fn is_clause(&self, node: &Node) -> bool {
+        self.table.clauses.contains(&node.kind())
     }
 
     pub(crate) fn is_block(&self, node: &Node) -> bool {

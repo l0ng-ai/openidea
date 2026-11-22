@@ -7,6 +7,7 @@ import {
   enterInBlockComment,
   enterInDocComment,
   enterInDocstring,
+  cDocTags,
   javaDocTags,
   jsDocTags,
   phpDocTags,
@@ -20,6 +21,8 @@ const slashStar = EditorState.languageData.of(() => [
   { commentTokens: { line: "//", block: { open: "/*", close: "*/" } } },
 ]);
 const hash = EditorState.languageData.of(() => [{ commentTokens: { line: "#" } }]);
+/** What Lezer PHP reports right after `<?php\n/**`: the HTML around it. */
+const html = EditorState.languageData.of(() => [{ commentTokens: { block: { open: "<!--", close: "-->" } } }]);
 
 /** `|` marks the caret. */
 function enter(text: string, language = "php", tokens = slashStar) {
@@ -101,6 +104,38 @@ function enterBlock(text: string) {
   const caret = s.selection.main.head;
   return { handled, text: s.doc.sliceString(0, caret) + "|" + s.doc.sliceString(caret) };
 }
+
+describe("Enter after /** in PHP files and C / C++", () => {
+  it("closes the stub in a PHP file where the parser reports HTML comments", () => {
+    const r = enter("<?php\n/**|\nfunction add(int $a, int $b): int { return $a + $b; }", "php", html);
+    expect(r.text).toBe(
+      "<?php\n/**\n * |\n * @param int $a\n * @param int $b\n * @return int\n */\nfunction add(int $a, int $b): int { return $a + $b; }",
+    );
+  });
+
+  it("lists a C or C++ function's parameters and return value", () => {
+    expect(enter("<p>/**|</p>", "html", html).handled).toBe(false);
+    expect(enter("/**|\nint add(int a, int b) { return a + b; }", "c").text).toBe(
+      "/**\n * |\n * @param a\n * @param b\n * @return\n */\nint add(int a, int b) { return a + b; }",
+    );
+    expect(cDocTags("static const char *name(const struct S *s, size_t n[]);")).toEqual([
+      "@param s",
+      "@param n",
+      "@return",
+    ]);
+    expect(cDocTags("void run(void) {}")).toEqual([]);
+    expect(cDocTags("void *alloc(size_t size, int flags = 0) {}")).toEqual(["@param size", "@param flags", "@return"]);
+    expect(cDocTags("template <typename T> std::vector<T> Box<T>::take(const T &x, ...) const {")).toEqual([
+      "@param x",
+      "@return",
+    ]);
+    expect(cDocTags("explicit Widget(int w) : w_(w) {}")).toEqual(["@param w"]);
+    expect(cDocTags("Widget(int w) {}")).toEqual(["@param w"]);
+    expect(cDocTags("struct S { int a; };")).toEqual([]);
+    expect(cDocTags("return add(a, b);")).toEqual([]);
+    expect(cDocTags('printf("%d", x);')).toEqual([]);
+  });
+});
 
 describe("Enter in a /* */ comment", () => {
   it("starts the new line with a leading asterisk aligned under the comment's", () => {

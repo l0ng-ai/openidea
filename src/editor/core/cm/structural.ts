@@ -114,6 +114,12 @@ function statementIsInnermost(state: EditorState, r: StructuralRanges): boolean 
   return !r.declaration || contains(offsets(state, r.declaration), offsets(state, r.statement));
 }
 
+/** Without the line breaks a node may end with (Go's `case 1:` branch ends at the next line's start). */
+function trimEnd(state: EditorState, s: Span): Span {
+  const text = state.sliceDoc(s.from, s.to);
+  return { from: s.from, to: s.from + text.trimEnd().length };
+}
+
 /** The node starts its line and nothing but `;`, `,` or a comment follows it on its last line. */
 function ownsLines(state: EditorState, s: Span): boolean {
   const first = state.doc.lineAt(s.from);
@@ -195,10 +201,10 @@ export function planMoveStatement(
   const node = useStatement ? r.statement : r.declaration;
   const sibling = useStatement ? (up ? r.prevStatement : r.nextStatement) : up ? r.prevDeclaration : r.nextDeclaration;
   if (!node) return { kind: "fallback" };
-  const cur = offsets(state, node);
+  const cur = trimEnd(state, offsets(state, node));
   if (!ownsLines(state, cur) || !reliableBounds(state, node, cur, errors)) return { kind: "fallback" };
   if (!sibling) return { kind: "noop" };
-  const sib = offsets(state, sibling);
+  const sib = trimEnd(state, offsets(state, sibling));
   if (!ownsLines(state, sib) || !reliableBounds(state, sibling, sib, errors)) return { kind: "noop" };
   const curLines = lineSpan(state, cur);
   const sibLines = lineSpan(state, sib);
