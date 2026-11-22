@@ -96,7 +96,12 @@
               },
               {
                 "group": "Remote development",
-                "pages": ["en/guide/remote/ssh", "en/guide/remote/server", "en/guide/remote/containers"]
+                "pages": [
+                  "en/guide/remote/ssh",
+                  "en/guide/remote/server",
+                  "en/guide/remote/containers",
+                  "en/guide/web-server"
+                ]
               },
               {
                 "group": "Customize",

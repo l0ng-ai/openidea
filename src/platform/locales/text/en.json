@@ -3030,5 +3030,9 @@
   "ID:": "ID:",
   "Homepage:": "Homepage:",
   "Mail:": "Mail:",
-  "A folder with this name already exists and is not empty": "A folder with this name already exists and is not empty"
+  "A folder with this name already exists and is not empty": "A folder with this name already exists and is not empty",
+  "Connection to OpenIDEA server lost. Reconnecting…": "Connection to OpenIDEA server lost. Reconnecting…",
+  "Save File": "Save File",
+  "Not connected to OpenIDEA server": "Not connected to OpenIDEA server",
+  "Command failed": "Command failed"
 }

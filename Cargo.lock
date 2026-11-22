@@ -4454,6 +4454,7 @@ version = "0.1.50"
 dependencies = [
  "base64 0.22.1",
  "blake3",
+ "bytes",
  "criterion",
  "dirs 6.0.0",
  "dunce",
@@ -4461,6 +4462,9 @@ dependencies = [
  "futures",
  "getrandom 0.3.4",
  "globset",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "ide-agent",
  "ide-analysis",
  "ide-build",

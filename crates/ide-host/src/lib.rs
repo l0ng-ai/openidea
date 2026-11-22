@@ -24,6 +24,7 @@ mod requests;
 pub mod rpc;
 pub mod shell_env;
 pub mod trust;
+pub mod web_server;
 
 pub use project::{Project, apply_git_executable, history_retention};
 

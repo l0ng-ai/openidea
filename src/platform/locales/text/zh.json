@@ -9353,5 +9353,9 @@
   "Signed by:": "签名者：",
   "ID:": "ID：",
   "Homepage:": "主页：",
-  "Mail:": "邮件："
+  "Mail:": "邮件：",
+  "Connection to OpenIDEA server lost. Reconnecting…": "与 OpenIDEA 服务器的连接已断开，正在重新连接…",
+  "Save File": "保存文件",
+  "Not connected to OpenIDEA server": "未连接到 OpenIDEA 服务器",
+  "Command failed": "命令执行失败"
 }

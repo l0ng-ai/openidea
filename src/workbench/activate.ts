@@ -12,6 +12,7 @@ import {
   registerOverlay,
   registerStatusItem,
   registerToolWindow,
+  registerWorkbenchBanner,
 } from "./contributions";
 import { installBrowserGuards } from "./browserGuards";
 import { installDistractionFree } from "./distractionFree";
@@ -33,6 +34,7 @@ import {
   setFocusedToolWindow,
   toolWindowServiceImpl,
 } from "./toolwindows/store";
+import { WebConnectionBanner } from "./WebConnectionBanner";
 
 export function activateWorkbench(): () => void {
   provideToolWindowService(toolWindowServiceImpl);
@@ -77,6 +79,7 @@ export function activateWorkbench(): () => void {
     installNotifyEvents(),
     installBrowserGuards(),
     installFileDrop(),
+    registerWorkbenchBanner({ id: "workbench.webConnection", component: WebConnectionBanner }),
     registerOverlay({ id: "workbench.customizeToolbar", component: MainToolbarDialogHost }),
     registerOverlay({ id: "workbench.backgroundTasks", component: BackgroundTasksHost }),
     registerStatusItem({ id: "workbench.tasks", align: "right", priority: 0, component: TaskStatus, lightEdit: true }),

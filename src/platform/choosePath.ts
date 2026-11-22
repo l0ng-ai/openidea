@@ -1,5 +1,6 @@
 import { isTauri } from "@/platform/ipc";
 import { isRemoteWindow } from "@/platform/remote";
+import { isWebMode } from "@/platform/webBridge";
 
 export interface ChoosePathOptions {
   directory: boolean;
@@ -23,11 +24,11 @@ export function registerHostPathChooser(chooser: HostChooser): () => void {
 
 /**
  * File / folder chooser for a path on the host this window's commands run on: the desktop's dialog
- * locally, the in-app chooser in a remote window. Null when cancelled or outside Tauri.
+ * locally, the in-app chooser in a remote or web-server window. Null when cancelled or outside Tauri.
  */
 export async function choosePath(opts: ChoosePathOptions): Promise<string | null> {
   if (!isTauri()) return null;
-  if (isRemoteWindow() && hostChooser) return hostChooser(opts);
+  if ((isRemoteWindow() || isWebMode()) && hostChooser) return hostChooser(opts);
   // Lazy on purpose: loading platform/dialog starts its GTK capability probe at module load.
   const { open } = await import("@/platform/dialog");
   const picked = await open({

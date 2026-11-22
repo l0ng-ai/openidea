@@ -1,0 +1,67 @@
+# Multi-stage container build for running OpenIDEA as a browser-based IDE server.
+#
+# Build:
+#   docker build -f Dockerfile.web -t openidea-web .
+#
+# Run on port 8080 with a mounted workspace:
+#   docker run --rm -p 8080:8080 -v "$PWD:/workspace" openidea-web
+
+FROM node:22-bookworm-slim AS frontend
+WORKDIR /src
+RUN corepack enable
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY index.html tsconfig.json tsconfig.node.json vite.config.ts ./
+COPY public ./public
+COPY src ./src
+COPY src-tauri/icons ./src-tauri/icons
+RUN pnpm build
+
+FROM rust:1-bookworm AS backend
+WORKDIR /src
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    libssl-dev \
+    cmake \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY languages ./languages
+COPY java ./java
+COPY wit ./wit
+COPY src-tauri/Cargo.toml src-tauri/Cargo.toml
+RUN mkdir -p src-tauri/src && echo "pub fn dummy() {}" > src-tauri/src/lib.rs
+RUN cargo build --release -p ide-host --bin openidea-server
+
+FROM debian:bookworm-slim AS runtime
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    openssh-client \
+    ripgrep \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd -m -s /bin/bash openidea && mkdir -p /workspace /opt/openidea && chown -R openidea:openidea /workspace /opt/openidea
+
+COPY --from=backend /src/target/release/openidea-server /usr/local/bin/openidea-server
+COPY --from=frontend /src/dist /opt/openidea/web
+COPY scripts/start-web.sh /usr/local/bin/start-openidea-web.sh
+RUN chmod +x /usr/local/bin/openidea-server /usr/local/bin/start-openidea-web.sh
+
+USER openidea
+WORKDIR /workspace
+
+ENV OPENIDEA_HOST="0.0.0.0" \
+    OPENIDEA_PORT="8080" \
+    OPENIDEA_WEB_DIR="/opt/openidea/web" \
+    OPENIDEA_WORKSPACE_DIR="/workspace"
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -fsS "http://127.0.0.1:${OPENIDEA_PORT}/api/health" >/dev/null || exit 1
+
+ENTRYPOINT ["/usr/local/bin/start-openidea-web.sh"]

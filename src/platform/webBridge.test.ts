@@ -1,0 +1,180 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  encodeWebArgs,
+  initWebRuntime,
+  isWebMode,
+  resolveWebSocketUrl,
+  shouldActivateWebRuntime,
+  useWebConnection,
+} from "./webBridge";
+
+class FakeWebSocket {
+  static OPEN = 1;
+  static CLOSED = 3;
+  static instances: FakeWebSocket[] = [];
+
+  readonly url: string;
+  readyState = FakeWebSocket.OPEN;
+  sent: unknown[] = [];
+  private listeners = new Map<string, Array<(ev: unknown) => void>>();
+
+  constructor(url: string) {
+    this.url = url;
+    FakeWebSocket.instances.push(this);
+    queueMicrotask(() => this.emit("open", {}));
+  }
+
+  addEventListener(type: string, fn: (ev: unknown) => void) {
+    let list = this.listeners.get(type);
+    if (!list) {
+      list = [];
+      this.listeners.set(type, list);
+    }
+    list.push(fn);
+  }
+
+  send(data: string) {
+    this.sent.push(JSON.parse(data));
+  }
+
+  close() {
+    this.readyState = FakeWebSocket.CLOSED;
+    this.emit("close", {});
+  }
+
+  receive(msg: unknown) {
+    this.emit("message", { data: JSON.stringify(msg) });
+  }
+
+  private emit(type: string, ev: unknown) {
+    for (const fn of this.listeners.get(type) ?? []) fn(ev);
+  }
+}
+
+describe("webBridge", () => {
+  const originalWs = globalThis.WebSocket;
+
+  beforeEach(() => {
+    FakeWebSocket.instances = [];
+    document.head.innerHTML = "";
+    sessionStorage.clear();
+    delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
+    delete (window as unknown as Record<string, unknown>).__TAURI_EVENT_PLUGIN_INTERNALS__;
+    useWebConnection.setState({
+      active: false,
+      status: "idle",
+      windowLabel: "main",
+      serverHome: "",
+      serverOs: "linux",
+    });
+  });
+
+  afterEach(() => {
+    globalThis.WebSocket = originalWs;
+    vi.restoreAllMocks();
+  });
+
+  it("resolves WebSocket URLs relative to direct and reverse-proxied page URLs", () => {
+    expect(resolveWebSocketUrl("http://localhost:8080/")).toBe("ws://localhost:8080/api/ws");
+    expect(resolveWebSocketUrl("https://host.example/user/proj/r/session/abc/")).toBe(
+      "wss://host.example/user/proj/r/session/abc/api/ws",
+    );
+    expect(resolveWebSocketUrl("https://host.example/ide/?project=/workspace#top")).toBe(
+      "wss://host.example/ide/api/ws",
+    );
+  });
+
+  it("encodes Tauri Channel arguments into $channel objects", () => {
+    const fakeChannel = { __TAURI_TO_IPC_KEY__: () => "__CHANNEL__:42" };
+    expect(encodeWebArgs({ path: "/tmp/a", onEvent: fakeChannel, nested: [fakeChannel] })).toEqual({
+      path: "/tmp/a",
+      onEvent: { $channel: 42 },
+      nested: [{ $channel: 42 }],
+    });
+  });
+
+  it("activates only when the openidea-web meta tag is present and native Tauri is absent", () => {
+    expect(shouldActivateWebRuntime()).toBe(false);
+    const meta = document.createElement("meta");
+    meta.name = "openidea-web";
+    meta.content = "1";
+    document.head.appendChild(meta);
+    expect(shouldActivateWebRuntime()).toBe(true);
+
+    (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
+    expect(shouldActivateWebRuntime()).toBe(false);
+  });
+
+  it("installs Tauri internals over WebSocket, handles invoke, channels, events, and plugin shims", async () => {
+    const meta = document.createElement("meta");
+    meta.name = "openidea-web";
+    meta.content = "1";
+    document.head.appendChild(meta);
+
+    globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+
+    const boot = initWebRuntime();
+    await new Promise((r) => setTimeout(r, 0));
+    const ws = FakeWebSocket.instances[0]!;
+    expect(ws.sent[0]).toEqual({ type: "hello", window: "main" });
+
+    ws.receive({
+      type: "ready",
+      window: "main",
+      server: { version: "0.1.38", protocol: 2, os: "linux", arch: "x86_64", home: "/home/dev" },
+    });
+
+    await expect(boot).resolves.toBe(true);
+    expect(isWebMode()).toBe(true);
+
+    const internals = (
+      window as unknown as {
+        __TAURI_INTERNALS__: {
+          invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
+          transformCallback: (cb: (payload: unknown) => void, once?: boolean) => number;
+        };
+      }
+    ).__TAURI_INTERNALS__;
+
+    // Plugin shims work locally without hitting WebSocket.
+    await internals.invoke("plugin:window|set_title", { title: "My Project" });
+    expect(document.title).toBe("My Project");
+    await expect(internals.invoke("plugin:path|resolve_directory", { directory: 21 })).resolves.toBe("/home/dev");
+
+    // Command invoke + response.
+    const req = internals.invoke("app_info", {}) as Promise<unknown>;
+    const sentInvoke = ws.sent[1] as { type: string; id: number; cmd: string };
+    expect(sentInvoke.type).toBe("invoke");
+    expect(sentInvoke.cmd).toBe("app_info");
+    ws.receive({ type: "response", id: sentInvoke.id, ok: true, data: { version: "0.1.38" } });
+    await expect(req).resolves.toEqual({ version: "0.1.38" });
+
+    // Channel streaming delivers ordered frames.
+    const received: unknown[] = [];
+    const cbId = internals.transformCallback((msg: unknown) => received.push(msg)) as number;
+    const chObj = { __TAURI_TO_IPC_KEY__: () => `__CHANNEL__:${cbId}` };
+    const streamReq = internals.invoke("terminal_spawn", { onOutput: chObj }) as Promise<unknown>;
+    const sentStream = ws.sent[2] as { id: number; args: { onEvent?: unknown; onOutput: { $channel: number } } };
+    expect(sentStream.args.onOutput).toEqual({ $channel: cbId });
+    ws.receive({ type: "channel", id: cbId, data: "hello " });
+    ws.receive({ type: "channel", id: cbId, data: "world" });
+    ws.receive({ type: "response", id: sentStream.id, ok: true, data: 1 });
+    await expect(streamReq).resolves.toBe(1);
+    expect(received).toEqual([
+      { index: 0, message: "hello " },
+      { index: 1, message: "world" },
+    ]);
+
+    // Backend events reach ide://event listeners.
+    const events: unknown[] = [];
+    const evCb = internals.transformCallback((e: unknown) => events.push(e)) as number;
+    await internals.invoke("plugin:event|listen", { event: "ide://event", handler: evCb });
+    ws.receive({ type: "event", window: "main", event: { type: "settingsChanged", key: "appearance.theme" } });
+    expect(events).toHaveLength(1);
+    expect((events[0] as { payload: unknown }).payload).toEqual({ type: "settingsChanged", key: "appearance.theme" });
+
+    // Dropping the socket enters reconnecting state.
+    ws.close();
+    expect(useWebConnection.getState().status).toBe("reconnecting");
+  });
+});
