@@ -41,7 +41,6 @@ import { rootOfPath } from "@/platform/projectRoots";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { cornerInset } from "@/editor/core/cm/cornerInset";
 export { iconAreaSource, mapLineStart, type IconAreaSource } from "@/editor/core/cm/iconArea";
-export { disambiguateTitles } from "@/editor/core/model/tabTitles";
 export {
   invalidateNavigationProviders,
   navigationEpoch,
