@@ -254,14 +254,14 @@ register_plugin!(MyPlugin, run_target_validation);
 
 ## 运行程序
 
-| 函数                                                                     | 作用                                                                                     |
-| ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
-| `Project::run_process(program, &args, stdin)`                            | 在项目根目录运行已固定的程序并等待结束：`{ status, stdout, stderr }`，各 4 MiB。         |
-| `host::run_command(&Command, Some(&project), stdin)`                     | API 1.3：同上，可用 `Command::env` 追加环境变量。                                        |
-| `host::run_captured(&Command, Some(&project), stdin, options)`           | API 1.15：可配置输出上限（每个流最高 128 MiB），stdout 或 stderr 溢出时明确报错。      |
-| `host::start(&Command, Some(&project))`                                  | API 1.3：保持运行的 `Child`：`poll`、`write`、`close_stdin`、`wait`、`kill`。最多 8 个。 |
-| `host::start_stream(&Command, Some(&project), options)`                  | API 1.15：基于管道背压的有界无损流式传输，超出总预算时明确报错并终止进程。              |
-| `host::open_terminal(title, program, &args)`                             | 运行该程序的终端标签页（见 [视图](/zh/plugins/guides/views)）。                          |
+| 函数                                                           | 作用                                                                                     |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `Project::run_process(program, &args, stdin)`                  | 在项目根目录运行已固定的程序并等待结束：`{ status, stdout, stderr }`，各 4 MiB。         |
+| `host::run_command(&Command, Some(&project), stdin)`           | API 1.3：同上，可用 `Command::env` 追加环境变量。                                        |
+| `host::run_captured(&Command, Some(&project), stdin, options)` | API 1.15：可配置输出上限（每个流最高 128 MiB），stdout 或 stderr 溢出时明确报错。        |
+| `host::start(&Command, Some(&project))`                        | API 1.3：保持运行的 `Child`：`poll`、`write`、`close_stdin`、`wait`、`kill`。最多 8 个。 |
+| `host::start_stream(&Command, Some(&project), options)`        | API 1.15：基于管道背压的有界无损流式传输，超出总预算时明确报错并终止进程。               |
+| `host::open_terminal(title, program, &args)`                   | 运行该程序的终端标签页（见 [视图](/zh/plugins/guides/views)）。                          |
 
 ```rust
 use openidea_plugin::host::{self, Command};
