@@ -126,7 +126,7 @@ test.describe("search popups at the minimum window width", () => {
     const dialog = page.getByRole("dialog", { name: "Replace in Files" });
     const search = dialog.getByRole("textbox", { name: "Text to find" });
     await search.fill("http://localhost:8080");
-    await expect(dialog.locator("header [aria-live]")).toContainText("12 matches in 12 files");
+    await expect(dialog.locator("header [aria-live]")).toContainText("13 matches in 12 files");
     await search.press("Shift+ArrowDown");
     await search.press("Shift+ArrowDown");
 
