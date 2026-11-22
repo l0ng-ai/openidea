@@ -134,9 +134,9 @@ function rustTargets(lines: string[], relPath: string): RunTarget[] {
   );
 }
 
-/** Jest / Vitest `describe` / `test` / `it`, and Playwright's `test.describe` and modifiers. */
+/** Jest / Vitest `describe` / `test` / `it` (Mocha's `specify` too), and Playwright's `test.describe` and modifiers. */
 const JS_RE =
-  /^(\s*)(test\.describe|describe|suite|context|test|it)\b(?:\.(?:only|skip|todo|concurrent|failing|sequential|fixme|fail|serial|parallel))*(\.each\s*(?:\(.*?\)|`[^`]*`))?\s*\(\s*(['"`])((?:\\.|(?!\4).)*)\4/;
+  /^(\s*)(test\.describe|describe|suite|context|test|it|specify)\b(?:\.(?:only|skip|todo|concurrent|failing|sequential|fixme|fail|serial|parallel))*(\.each\s*(?:\(.*?\)|`[^`]*`))?\s*\(\s*(['"`])((?:\\.|(?!\4).)*)\4/;
 
 function jsTargets(lines: string[]): RunTarget[] {
   const out: RunTarget[] = [];
@@ -381,7 +381,8 @@ export function detectRunTargets(text: string, relPath: string, django = false):
     case "rust":
       return rustTargets(lines, relPath);
     case "js":
-      return /\.(test|spec)\.[cm]?[jt]sx?$|(^|\/)__tests__\//.test(relPath) ? jsTargets(lines) : [];
+      // `test/`: where Mocha (and `node --test`) look for tests by default, whatever the file's name.
+      return /\.(test|spec)\.[cm]?[jt]sx?$|(^|\/)(__tests__|test)\//.test(relPath) ? jsTargets(lines) : [];
     case "python":
       return pythonTargets(lines).filter(
         (t) =>
@@ -477,6 +478,7 @@ export function targetConfig(
   // node:test selects by full name, through NODE_OPTIONS (see `nodeTest.ts`).
   if (frameworkFor(file) === "node-test")
     return { ...named(file.args), env: withNodeTestNamePattern(file.env, jsNamePattern(target)) };
+  if (frameworkFor(file) === "mocha") return named([...file.args, "--grep", jsNamePattern(target)]);
   switch (file.kind) {
     case "dotnet-test": {
       const methods =

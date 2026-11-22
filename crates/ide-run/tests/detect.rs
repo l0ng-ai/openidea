@@ -93,6 +93,20 @@ fn node_test_scripts() {
 }
 
 #[test]
+fn mocha_scripts() {
+    let dir = project(&[(
+        "package.json",
+        r#"{"scripts":{"spec":"mocha --recursive","test":"nyc ./node_modules/.bin/mocha","lint":"eslint mocha.config.js"}}"#,
+    )]);
+    let c = detect(dir.path());
+    let spec = find(&c, "npm:spec");
+    assert!(spec.is_test);
+    assert_eq!(spec.extras.test_runner.as_deref(), Some("mocha"));
+    assert_eq!(find(&c, "npm:test").extras.test_runner.as_deref(), Some("mocha"));
+    assert!(!find(&c, "npm:lint").is_test);
+}
+
+#[test]
 fn package_manager_selection() {
     for (lock, pm) in [("yarn.lock", "yarn"), ("bun.lockb", "bun"), ("bun.lock", "bun"), ("package-lock.json", "npm")] {
         let dir = project(&[("package.json", r#"{"scripts":{"start":"node ."}}"#), (lock, "")]);

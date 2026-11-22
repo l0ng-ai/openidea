@@ -273,6 +273,18 @@ function builtinTestsConfig(config: RunConfig, paths: string[][], name: string):
         : { ...config.env };
       return { ...config, args: appendScriptArgs(config.command, config.args, files), name, detected: true, env };
     }
+    case "mocha": {
+      // Mocha's `--grep` matches a test's full title: its describe chain and name, space separated.
+      const files = unique(paths.map((p) => p[0]!).filter(Boolean));
+      const names = unique(paths.filter((p) => p.length > 1).map((p) => p.slice(1).join(" ")));
+      if (!files.length) return null;
+      const { before, after } = splitDashDash(config.args);
+      const flags = ["-g", "--grep", "-f", "--fgrep"];
+      const base = after === null ? dropFlag(before, flags) : [...before, "--", ...dropFlag(after, flags)];
+      const grep = names.length ? ["--grep", `^(?:${names.map(escapeRegExp).join("|")})$`] : [];
+      args = appendScriptArgs(config.command, base, [...files, ...grep]);
+      break;
+    }
     case "pytest":
       args = pytestArgs(config.args, paths);
       break;

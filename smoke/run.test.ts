@@ -89,6 +89,17 @@ const CASES: Record<string, Case | Case[]> = {
         file: "test/inventory.test.js",
       },
     },
+    {
+      fixture: "mocha-app",
+      setup: npmInstall,
+      tests: {
+        config: "npm:test",
+        failing: (c) => env(c, { OPENIDEA_FAIL: "1" }),
+        passed: 4,
+        failed: "intentionally fails (set OPENIDEA_FAIL=1)",
+        file: "test/pricing.spec.js",
+      },
+    },
   ],
   python: {
     fixture: "python-app",
