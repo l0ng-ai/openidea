@@ -3412,6 +3412,71 @@ impl LspManager {
         out.finish(Vec::new())
     }
 
+    /// The colors the servers find in the document (`textDocument/documentColor`), each tagged with
+    /// its server for [`Self::color_presentations`]. An answer for an older version is dropped.
+    pub async fn document_colors(&self, doc: DocId) -> IdeResult<Vec<DocumentColor>> {
+        let (snap, targets) = self.doc_targets(doc, "document colors", |c| c.has("colorProvider")).await?;
+        let requests = targets.iter().map(|t| {
+            let params = json!({ "textDocument": snap.ident() });
+            async move {
+                let colors = self
+                    .call_retrying::<_, Option<Vec<lsp::ColorInformation>>>(
+                        t,
+                        "textDocument/documentColor",
+                        params,
+                        DEFAULT_TIMEOUT,
+                    )
+                    .await;
+                (t, colors)
+            }
+        });
+        let mut out = Outcome::new();
+        for (t, r) in join_all(requests).await {
+            match r {
+                Ok(colors) => {
+                    let conv = self.conv(t.enc());
+                    let acc = out.value.get_or_insert_with(Vec::new);
+                    acc.extend(
+                        colors
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|c| convert::document_color(&conv, &snap.path, t.server.id, c)),
+                    );
+                }
+                Err(e) => out.fail(e),
+            }
+        }
+        if self.docs.lock().get(&doc).is_none_or(|d| d.version != snap.version) {
+            return Err(IdeError::cancelled());
+        }
+        out.finish(Vec::new())
+    }
+
+    /// How `color.server` would write `color` at its range (`textDocument/colorPresentation`).
+    pub async fn color_presentations(&self, doc: DocId, color: DocumentColor) -> IdeResult<Vec<ColorPresentation>> {
+        let snap = self.snapshot(doc)?;
+        let Some(server) = snap.servers.iter().find(|s| s.id == color.server) else { return Ok(Vec::new()) };
+        let Some(t) = self.ready_targets(std::slice::from_ref(server), |c| c.has("colorProvider")).await.pop() else {
+            return Ok(Vec::new());
+        };
+        let params = json!({
+            "textDocument": snap.ident(),
+            "color": { "red": color.red, "green": color.green, "blue": color.blue, "alpha": color.alpha },
+            "range": snap.range(&t, color.range),
+        });
+        let list: Option<Vec<lsp::ColorPresentation>> =
+            self.call(&t, "textDocument/colorPresentation", params, None, DEFAULT_TIMEOUT).await?;
+        if self.docs.lock().get(&doc).is_none_or(|d| d.version != snap.version) {
+            return Err(IdeError::cancelled());
+        }
+        let conv = self.conv(t.enc());
+        Ok(list
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| convert::color_presentation(&conv, &snap.path, color.range, p))
+            .collect())
+    }
+
     pub async fn call_hierarchy(
         &self,
         doc: DocId,

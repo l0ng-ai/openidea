@@ -9945,5 +9945,6 @@
   "Previous Rows": "上一组行",
   "Next Rows": "下一组行",
   "Previous Columns": "上一组列",
-  "Next Columns": "下一组列"
+  "Next Columns": "下一组列",
+  "This color can't be changed with the picker": "无法用颜色选择器修改此颜色"
 }

@@ -305,6 +305,27 @@ pub struct DocumentLink {
     pub tooltip: Option<String>,
 }
 
+/// A color a server found in a document (`textDocument/documentColor`); components are 0–1.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentColor {
+    pub range: Range,
+    pub red: f32,
+    pub green: f32,
+    pub blue: f32,
+    pub alpha: f32,
+    pub server: ServerId,
+}
+
+/// One way to write a picked color (`textDocument/colorPresentation`): `edits` replace the
+/// color's range (with `label` unless the server gave its own edit), then any extra edits.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ColorPresentation {
+    pub label: String,
+    pub edits: Vec<TextEdit>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum HierarchyDirection {

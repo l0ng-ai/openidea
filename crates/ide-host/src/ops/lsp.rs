@@ -1753,6 +1753,23 @@ pub async fn lsp_document_links(host: &Host, window: &str, doc: DocId) -> IdeRes
     Ok(out)
 }
 
+/// Colors in a document from its language servers (Tailwind classes, CSS values…).
+#[command(trust = trusted)]
+pub async fn lsp_document_colors(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec<DocumentColor>> {
+    host.project(window)?.lsp.document_colors(doc).await
+}
+
+/// How the server that reported `color` writes it with new components.
+#[command(trust = trusted)]
+pub async fn lsp_color_presentations(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    color: DocumentColor,
+) -> IdeResult<Vec<ColorPresentation>> {
+    host.project(window)?.lsp.color_presentations(doc, color).await
+}
+
 #[command(trust = trusted)]
 pub async fn lsp_call_hierarchy(
     host: &Host,
@@ -2855,7 +2872,9 @@ ide_command::domain!(
     lsp_code_action_query,
     lsp_code_actions,
     lsp_code_lens,
+    lsp_color_presentations,
     lsp_completion,
+    lsp_document_colors,
     lsp_document_highlights,
     lsp_document_links,
     lsp_exception_class_at,

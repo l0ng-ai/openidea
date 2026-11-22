@@ -2,7 +2,7 @@
  * Color preview gutter: a swatch on each line with a color literal (the first one), as IDEA's
  * color gutter icons. Picking a color replaces the literal in its own format.
  */
-import { StateEffect, StateField, type Extension } from "@codemirror/state";
+import { StateEffect, StateField, type EditorState, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, GutterMarker, WidgetType, gutter } from "@codemirror/view";
 import { isolateHistory } from "@codemirror/commands";
 import { syntaxTree } from "@codemirror/language";
@@ -63,19 +63,22 @@ class Swatch extends GutterMarker {
   }
 }
 
-function lineColor(view: EditorView, pos: number, language: string): ColorMatch | null {
-  const line = view.state.doc.lineAt(pos);
-  if (line.length > MAX_LINE) return null;
+/** The literals the built-in preview recognizes on the line at `pos`; its swatch shows the first. */
+export function lineColors(state: EditorState, pos: number, language: string): ColorMatch[] {
+  const line = state.doc.lineAt(pos);
+  if (line.length > MAX_LINE) return [];
   const matches = findColors(line.text, language, isColorName);
-  if (!isMarkupLanguage(language)) return matches[0] ?? null;
-  const tree = syntaxTree(view.state);
-  return (
-    matches.find((color) => {
-      let node: ReturnType<typeof tree.resolveInner> | null = tree.resolveInner(line.from + color.from + 1);
-      for (; node; node = node.parent) if (node.name === "StyleSheet" || node.name === "Styles") return true;
-      return false;
-    }) ?? null
-  );
+  if (!isMarkupLanguage(language)) return matches;
+  const tree = syntaxTree(state);
+  return matches.filter((color) => {
+    let node: ReturnType<typeof tree.resolveInner> | null = tree.resolveInner(line.from + color.from + 1);
+    for (; node; node = node.parent) if (node.name === "StyleSheet" || node.name === "Styles") return true;
+    return false;
+  });
+}
+
+function lineColor(view: EditorView, pos: number, language: string): ColorMatch | null {
+  return lineColors(view.state, pos, language)[0] ?? null;
 }
 
 interface ColorEdit {
