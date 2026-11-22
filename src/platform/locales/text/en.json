@@ -3743,5 +3743,13 @@
   "Visible columns": "Visible columns",
   "Pipenv Environment": "Pipenv Environment",
   "Install packages from Pipfile": "Install packages from Pipfile",
-  "Runs “pipenv --python <base>” in the project, which writes a Pipfile (from requirements.txt if there is one) when the project has none. Pipenv chooses where to store the environment and reuses an existing one.": "Runs “pipenv --python <base>” in the project, which writes a Pipfile (from requirements.txt if there is one) when the project has none. Pipenv chooses where to store the environment and reuses an existing one."
+  "Runs “pipenv --python <base>” in the project, which writes a Pipfile (from requirements.txt if there is one) when the project has none. Pipenv chooses where to store the environment and reuses an existing one.": "Runs “pipenv --python <base>” in the project, which writes a Pipfile (from requirements.txt if there is one) when the project has none. Pipenv chooses where to store the environment and reuses an existing one.",
+  "Open plugin file": "Open plugin file",
+  "Cannot open plugin file": "Cannot open plugin file",
+  "Cannot refresh plugin annotations": "Cannot refresh plugin annotations",
+  "Resize conversation from the top": "Resize conversation from the top",
+  "Resize conversation from the right": "Resize conversation from the right",
+  "Resize conversation from the bottom": "Resize conversation from the bottom",
+  "Resize conversation from the left": "Resize conversation from the left",
+  "Resize conversation from the corner": "Resize conversation from the corner"
 }

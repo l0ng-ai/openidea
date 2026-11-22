@@ -5570,6 +5570,11 @@ export type Decoration = {
 	style: string,
 	hover: string | null,
 	after: string | null,
+	/**
+	 *  Markdown rendered in the editor's hover card (API 1.15); `hover` is the
+	 *  plain-text fallback shown when this is absent.
+	 */
+	markdownHover: string | null,
 };
 
 /**  A plugin-owned editor or project-tree decoration set for one file. */

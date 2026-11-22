@@ -33,7 +33,7 @@ plugins/
    ├─ regex-tester/           # html view talking to its code, settings, the editor's selection
    └─ license-header/         # file-opened events, quick fix, project scan in a task
 sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
-crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints
+crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints, decorations
 ```
 
 The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.15.0`, world
@@ -432,6 +432,11 @@ are always available. Calling a gated function without its capability returns
 API 1.15.0 is in development on `main`. Use `engines.openidea = "^1.15"` and the
 matching SDK. Plugins for 1.14 and earlier keep working. New in 1.15:
 
+- [Editor decorations](#editor-and-project-snapshots-api-14):
+  `host::set_markdown_decorations` (`decorations.set-markdown`, API 1.15) draws
+  the same line-end labels as `set_decorations`, and renders each item's
+  `markdown_hover` as a hover card. Set ids, limits and `clear_decorations` are
+  shared with `set_decorations`.
 - [Events](#events): `caret-moved` (API 1.15) delivers `{path, line, col,
   settled}` with 0-based UTF-16 positions when the caret moves in the focused
   editor, so line-scoped labels follow it. `settled` is true for the final
@@ -795,6 +800,7 @@ then run `openidea-plugin check`.
 | `host::open_editor(path, selection)`                                                                           | `editor.open`                                | API 1.4: open/select a project file (`project.read`), plugin-dir file, or install-directory file (read-only); same path rules as `views.open-location`. Commands/events of a window only.                                                                                                                                                                 |
 | `TextEditor::set_selections(ranges)`, `reveal(range)`                                                          | `editor.text-editor`                         | API 1.4: selections or scrolling in this window's already open editor; no capability. Commands/events only, UTF-16 coordinates.                                                                                                                                                                                                                           |
 | `host::set_decorations`, `clear_decorations`                                                                   | `decorations.{set,clear}`                    | API 1.4: project-scoped editor annotations cleared on plugin stop. Requires `project.read`.                                                                                                                                                                                                                                                               |
+| `host::set_markdown_decorations`                                                                               | `decorations.set-markdown`                   | API 1.15: the same sets with `markdown_hover` cards; shares set ids and limits with `set_decorations`. Requires `project.read`.                                                                                                                                                                                                                           |
 | `host::set_file_decoration`, `clear_file_decorations`                                                          | `decorations.{set-file,clear-file}`          | API 1.4: project-tree badges/styles. Requires `project.read`.                                                                                                                                                                                                                                                                                             |
 | `host::set_file_note`                                                                                          | `decorations.set-file-note`                  | API 1.7: a note after the name in the project tree (one line, at most 200 characters). Requires `project.read`.                                                                                                                                                                                                                                           |
 | `host::set_file_icon`, `set_file_icons`                                                                        | `decorations.{set-file-icon,set-file-icons}` | API 1.8: assign one of the plugin's declared `[[contributes.fileIcons]]` icons to a file or plain folder by path (individually or up to 10,000 entries per set). Requires `project.read`.                                                                                                                                                                 |
@@ -1288,6 +1294,59 @@ that project. Setting replaces a set's items for one file; clearing removes that
 set in all projects. Each plugin has at most 50 editor sets and 50 tree sets,
 10,000 editor items per file across its sets, and 4 MiB total metadata. Disabling,
 unloading or crashing the plugin withdraws them; idle reclamation preserves them.
+
+API 1.15 adds `set_markdown_decorations`: the same items, limits and set ids, with
+`markdown_hover` rendered as a hover card (the editor's Markdown hover, including
+code highlighting and safe links) while the pointer rests on the range or its
+`after` label. `hover` remains the plain-text fallback. A plugin that pushes
+labels when a file is opened or focused should subscribe to
+`file-opened`/`editor-focused` and call `clear_decorations` when its data no
+longer applies; the host already bounds what a set can carry.
+
+#### File links in decoration cards
+
+A decoration publisher can opt into file navigation without changing its WIT
+imports. Declare `on-command:open-decoration-file` in `activation`, retain
+`project.read`, and render a generated metadata entry as
+`[display name](#openidea-file/opaque-token)`. The token is 1–128 ASCII letters,
+digits, `_` or `-`; it is **not** a path, URI or command name. Escape the display
+name as Markdown. Older hosts leave these fragments inert.
+
+The floating card dispatches the hidden action `plugins.openDecorationFile` to
+that same plugin's fixed `open-decoration-file` command. Its JSON argument is
+`{"target":"opaque-token"}`; the invocation editor is the card's source path,
+language and original UTF-16 range, not the currently focused editor. There are
+no selected paths or global settings scope. The host never decodes a filename,
+joins a project root or opens the target through the generic editor service.
+
+The **plugin** must resolve the token against its own generated metadata, binding
+it to the exact source, publication/session identity and file; reject stale or
+unknown tokens, never recycle them to mean a different file, and call
+`host::open_location` only after rechecking that association. Never create these
+entries from recorded message text. Keep untrusted prose escaped/quoted; links
+inside blockquotes or code cannot activate this route. The host preserves web
+links, but does not open generic `file:` or virtual-source links from plugin
+cards. Regular documentation rendering is unchanged.
+
+Native decoration events are invalidations, not trusted content: the renderer
+fetches the current machine's authoritative snapshot only after invoke routing is
+installed, rechecking the captured source before dispatch and rejecting stale replies.
+A remote host without `plugin_decoration_sets` cannot fall back to local data.
+New navigation is suspended until refresh completes. A failed refresh withdraws
+stale publications and reports the error; successful unchanged snapshots leave
+existing card operations intact.
+
+Card replacement/destruction, document changes, project transitions, plugin
+ineligibility (including revoked `project.read`) and source-connection changes
+invalidate navigation. Pending command requests are cancelled, not retried. Non-cancellation failures
+are shown through the existing notification service with the native error message.
+Cancellation cannot retract an already-emitted native event. The native host
+rechecks grants and canonical paths, including existence and symlink escapes,
+and targets the invoking client. `open_location` retains its existing
+invocation-root semantics (and plugin-private-directory exception); unlike
+project resource reads, it does not search sibling workspace-member roots.
+Plugins must not emulate that behavior by concatenating the main root or
+opening a `file://` link instead.
 
 The new Git reads run on the project machine, require a trusted open project and
 `vcs.read`, and disable repository-configured helpers, textconv and external diff

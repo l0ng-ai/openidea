@@ -34,7 +34,7 @@ import type {
 import { useRef, useState } from "react";
 import { EditorSelection } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { setPluginDecorations } from "./decorations";
+import { refreshPluginDecorations, setPluginDecorations } from "./decorations";
 import { setPluginConsoleRules } from "./consoleRules";
 import { editorsFor, onEditorEvent, useEditorRegistry, type TextEditorHandle } from "@/editor/api";
 import { executeAction, executeActionOrThrow, getAction, onActionExecuted } from "@/platform/actions";
@@ -652,7 +652,9 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
       void refreshRunTargets().catch(() => {});
       return true;
     case "decorationsChanged":
-      setPluginDecorations(e.pluginId, e.sets);
+      // Local broadcasts can reach remote windows; payloads do not identify their host.
+      if (isTauri()) refreshPluginDecorations();
+      else setPluginDecorations(e.pluginId, e.sets);
       return true;
     case "consoleRulesChanged":
       setPluginConsoleRules(e.pluginId, e.rules);

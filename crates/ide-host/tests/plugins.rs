@@ -3525,6 +3525,77 @@ fn views_open_project_files_at_a_line() {
 }
 
 #[test]
+fn views_open_locations_use_invoking_root_and_reject_symlink_escapes() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    let other = f._tmp.path().join("project-b");
+    std::fs::create_dir_all(&other).unwrap();
+    let other = dunce::canonicalize(other).unwrap();
+    for root in [&f.project, &other] {
+        std::fs::write(root.join("jobs.log"), "build\ndeploy\nfailed\n").unwrap();
+    }
+    let press = |client: &str, root: Option<&Path>| {
+        f.take_events();
+        let inv = Invocation {
+            client: Some(client.into()),
+            workspace_root: root.map(Path::to_path_buf),
+            ..Default::default()
+        };
+        let result = f.host.view_event("jobs", "jobs", ide_plugin::ViewEvent::Button { id: "log".into() }, inv);
+        let opened = f
+            .take_events()
+            .into_iter()
+            .filter_map(|(client, event)| match event {
+                PluginEvent::OpenLocation { plugin_id, path, line, column } => {
+                    Some((client, plugin_id, path.0, line, column))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        (result, opened)
+    };
+
+    for (client, root) in [("window-a", &f.project), ("window-b", &other), ("window-a", &f.project)] {
+        let (result, opened) = press(client, Some(root));
+        result.unwrap();
+        assert_eq!(opened, vec![(Some(client.into()), "jobs".into(), root.join("jobs.log"), 2, 4)]);
+    }
+
+    let link = f.project.join("jobs.log");
+    std::fs::remove_file(&link).unwrap();
+    let (result, opened) = press("window-a", Some(&f.project));
+    let error = result.unwrap_err();
+    assert_eq!(error.kind, ErrorKind::InvalidInput);
+    assert!(error.message.contains("no such file"), "{error:?}");
+    assert!(opened.is_empty());
+
+    let (result, opened) = press("window-a", None);
+    let error = result.unwrap_err();
+    assert_eq!(error.kind, ErrorKind::InvalidInput);
+    assert!(error.message.contains("no project is open"), "{error:?}");
+    assert!(opened.is_empty());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        symlink(other.join("jobs.log"), &link).unwrap();
+        let (result, opened) = press("window-a", Some(&f.project));
+        let error = result.unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidInput);
+        assert!(error.message.contains("outside the project root"), "{error:?}");
+        assert!(opened.is_empty());
+
+        std::fs::remove_file(&link).unwrap();
+        let target = f.project.join("构建 日志 [ ] # %.log");
+        std::fs::write(&target, "build\ndeploy\nfailed\n").unwrap();
+        symlink(target.file_name().unwrap(), &link).unwrap();
+        let (result, opened) = press("window-a", Some(&f.project));
+        result.unwrap();
+        assert_eq!(opened, vec![(Some("window-a".into()), "jobs".into(), target, 2, 4)]);
+    }
+}
+
+#[test]
 fn commands_see_the_paths_they_were_run_on() {
     let f = fixture(Limits::default());
     f.install(&sample("jobs"));
@@ -6797,6 +6868,26 @@ fn api14_stage3_terminal_calls_are_denied_without_process_grants() {
     let f = execution_fixture();
     f.host.set_capability("execution", "process:execution-tool", false).unwrap();
     assert!(f.run("execution", "terminal", None).unwrap_err().contains("not granted"));
+}
+
+/// API 1.15: a plugin pushes line-end labels whose hover is Markdown, and clears them.
+#[test]
+fn markdown_decorations_publish_a_hover_card_and_clear() {
+    let f = fixture(Limits::default());
+    f.install(&sample("decorations"));
+    f.run("decorations", "publish", Some("src/notes.txt")).unwrap();
+    let sets = f.host.decoration_sets();
+    let set = &sets["decorations"][0];
+    assert_eq!((set.set_id.as_str(), set.tree), ("example", false));
+    assert_eq!(set.items.len(), 1);
+    assert_eq!(set.items[0].style, "highlight");
+    assert_eq!(set.items[0].after.as_deref(), Some(" + model-x"));
+    assert_eq!(
+        set.items[0].markdown_hover.as_deref(),
+        Some("**model-x** generated this line\n\n- prompt: add a greeting")
+    );
+    f.run("decorations", "clear", None).unwrap();
+    assert!(f.host.decoration_sets()["decorations"].is_empty());
 }
 
 // ─── Project window groups ────────────────────────────────────────────────────
