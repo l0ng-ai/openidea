@@ -410,9 +410,11 @@ describe("Refactor menu actions", () => {
 });
 
 describe("requested code action kind", () => {
-  it("asks typescript-language-server for all refactorings, other servers for the kind", () => {
+  it("asks typescript-language-server and clangd for all refactorings, other servers for the kind", () => {
     expect(requestKind("refactor.extract", "typescript")).toBe("refactor");
     expect(requestKind("refactor.extract", "javascriptreact")).toBe("refactor");
+    expect(requestKind("refactor.extract", "c")).toBe("refactor");
+    expect(requestKind("refactor.extract", "cpp")).toBe("refactor");
     expect(requestKind("refactor.extract", "java")).toBe("refactor.extract");
     expect(requestKind("source.organizeImports", "typescript")).toBe("source.organizeImports");
   });

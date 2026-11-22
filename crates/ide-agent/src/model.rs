@@ -931,9 +931,21 @@ pub struct AgentSkill {
     /// The frontmatter `name`, else the folder's name.
     pub name: String,
     pub description: String,
+    /// Optional `argument-hint` from frontmatter, completed in the `/` menu.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
     /// Canonical folder holding `SKILL.md` (symlinks resolved, so duplicates collapse).
     pub path: IpcPath,
     pub source: AgentSkillSource,
+    /// Other skill roots whose symlinked entry resolved to this same canonical `path`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub also_in: Vec<AgentSkillSource>,
+    /// False when frontmatter sets `user-invocable: false` (omitted from `/` completion).
+    #[serde(default = "default_true")]
+    pub user_invocable: bool,
+    /// True when frontmatter sets `disable-model-invocation: true` (defaults to `slashOnly`).
+    #[serde(default)]
+    pub disable_model_invocation: bool,
     /// The `SKILL.md` passes validation (`name` matches its folder, `description` present).
     pub valid: bool,
     /// What validation found (`name` mismatch, missing or over-long description…).

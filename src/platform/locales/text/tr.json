@@ -949,6 +949,8 @@
   "Resolving reference…": "Başvuru çözümleniyor…",
   "Insert imports on paste": "Yapıştırırken içe aktarmaları ekle",
   "Path with line number": "Satır numaralı yol",
+  "Absolute Path with line number": "Satır numaralı mutlak yol",
+  "Copy Absolute Path with Line Number": "Mutlak Yolu Satır Numarasıyla Kopyala",
   "Clipboard history": "Pano geçmişi",
   "Copy Path with Line Number": "Yolu Satır Numarasıyla Kopyala",
   "1 line": "1 satır",
