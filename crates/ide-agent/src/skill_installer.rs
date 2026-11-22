@@ -1066,6 +1066,8 @@ pub fn install_skill(
                 use std::os::unix::fs::PermissionsExt;
                 let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755));
             }
+            #[cfg(not(unix))]
+            let _ = is_exec;
         }
         for (rel_link, target) in &bundle.in_root_symlinks {
             let dest = staging.join(rel_link);
