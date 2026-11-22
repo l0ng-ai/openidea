@@ -40,7 +40,14 @@ import {
   selectionMatchesInNode,
   setPreviewHighlight,
 } from "./highlight";
-import { publishPreviewSelection, publishPreviewTop, stepMarkdownPreviewFontZoom, useLiveMarkdown } from "./live";
+import { followMarkdownSource } from "./splitScroll";
+import {
+  installMarkdownSourceScroll,
+  publishPreviewSelection,
+  publishPreviewTop,
+  stepMarkdownPreviewFontZoom,
+  useLiveMarkdown,
+} from "./live";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { hasMermaid, MERMAID_SELECTOR, renderMermaidIn } from "./mermaid";
 import { renderMath } from "@/editor/lsp/markdownMath";
@@ -127,6 +134,10 @@ export function MarkdownEditor({
   const ref = useRef<HTMLDivElement>(null);
   const editorRef = useRef<HTMLDivElement>(null);
 
+  useEffect(() => {
+    if (mode === "split" && editorRef.current) return installMarkdownSourceScroll(editorRef.current);
+  }, [mode]);
+
   // CodeMirror's internal ResizeObserver skips resizes within 75ms of a view update
   // and debounces by 50ms; re-measure immediately on drag and mode transitions.
   useEffect(() => {
@@ -188,13 +199,45 @@ export function MarkdownEditor({
   );
 }
 
-const blocksOf = (root: HTMLElement) =>
-  [...root.querySelectorAll<HTMLElement>(":scope > [data-preview-blocks] > [data-line]")].map((el) => ({
-    line: Number(el.dataset.line),
-    get top() {
-      return el.offsetTop;
-    },
-  }));
+function blocksOf(root: HTMLElement) {
+  const blocks = [];
+  for (const el of root.querySelectorAll<HTMLElement>(":scope > [data-preview-blocks] > [data-line]")) {
+    const line = Number(el.dataset.line);
+    const endLine = Number(el.dataset.endLine);
+    const table = el.firstElementChild;
+    if (
+      table instanceof HTMLTableElement &&
+      table.hasAttribute("data-markdown-table") &&
+      table.rows.length + 1 === endLine - line
+    ) {
+      for (const [i, row] of Array.from(table.rows).entries()) {
+        const start = i === 0 ? line : line + i + 1;
+        blocks.push({
+          line: start,
+          endLine: i === 0 ? line + 2 : start + 1,
+          get top() {
+            return row.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop;
+          },
+          get bottom() {
+            return row.getBoundingClientRect().bottom - root.getBoundingClientRect().top + root.scrollTop;
+          },
+        });
+      }
+    } else {
+      blocks.push({
+        line,
+        endLine,
+        get top() {
+          return el.offsetTop;
+        },
+        get bottom() {
+          return el.offsetTop + el.offsetHeight;
+        },
+      });
+    }
+  }
+  return blocks;
+}
 
 let svgRenderer: Promise<typeof renderMathSvg | null> | undefined;
 
@@ -210,8 +253,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   const fontZoom = useLiveMarkdown((s) => s[path]?.fontZoom ?? 0);
   const fontSize = useMarkdownPreviewFontSize();
   const zoomScale = Number((Math.max(4, fontSize + fontZoom) / fontSize).toFixed(4));
-  const topLine = useLiveMarkdown((s) => s[path]?.topLine ?? 0);
-  const scrollSeq = useLiveMarkdown((s) => s[path]?.scrollSeq ?? 0);
+  const follower = useRef<ReturnType<typeof followMarkdownSource> | null>(null);
   const caretLine = useLiveMarkdown((s) => s[path]?.caretLine ?? 0);
   const caretSeq = useLiveMarkdown((s) => s[path]?.caretSeq ?? 0);
   const find = useLiveMarkdown((s) => s[path]?.find ?? null);
@@ -220,6 +262,14 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   const deferred = useDeferredValue(text ?? "");
   const [render] = useState(createMarkdownRenderer);
   const html = useMemo(() => render(deferred), [render, deferred]);
+  const markup = useMemo(() => ({ __html: html }), [html]);
+  const sourceOffsets = useMemo(() => {
+    if (!sync) return undefined;
+    const offsets = [0];
+    for (let i = deferred.indexOf("\n"); i !== -1; i = deferred.indexOf("\n", i + 1)) offsets.push(i + 1);
+    offsets.push(deferred.length);
+    return offsets;
+  }, [deferred, sync]);
   const renderSvg = html.includes(' data-math="') ? use(loadSvgRenderer()) : null;
   const ref = useRef<HTMLDivElement>(null);
   const linkRequest = useRef(0);
@@ -332,27 +382,22 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     };
   }, [html, path]);
 
-  // Scroll sync: editor → preview.
   useLayoutEffect(() => {
     const root = ref.current;
     if (!root || !sync) return;
-    root.scrollTop = topLine <= 0 ? 0 : previewOffsetForLine(blocks.current, topLine, root.scrollHeight);
-  }, [html, topLine, scrollSeq, sync, diagramsDrawn, fontZoom, fontSize]);
+    const follow = followMarkdownSource(path, root, (line) =>
+      line <= 0 ? 0 : previewOffsetForLine(blocks.current, line, root.scrollHeight, sourceOffsets),
+    );
+    follower.current = follow;
+    return () => {
+      follow.dispose();
+      follower.current = null;
+    };
+  }, [path, sync, sourceOffsets]);
 
-  // Keep the split preview anchored to `topLine` as dragging the divider or resizing the window reflows text.
-  useEffect(() => {
-    const root = ref.current;
-    if (!root || !sync || typeof ResizeObserver === "undefined") return;
-    let width = root.clientWidth;
-    const ro = new ResizeObserver(() => {
-      if (root.clientWidth === width) return;
-      width = root.clientWidth;
-      const top = useLiveMarkdown.getState()[path]?.topLine ?? 0;
-      root.scrollTop = top <= 0 ? 0 : previewOffsetForLine(blocks.current, top, root.scrollHeight);
-    });
-    ro.observe(root);
-    return () => ro.disconnect();
-  }, [path, sync]);
+  useLayoutEffect(() => {
+    follower.current?.align();
+  }, [path, sync, html, sourceOffsets, diagramsDrawn, fontZoom, fontSize]);
 
   useEffect(() => {
     const root = ref.current;
@@ -371,15 +416,17 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     let timer: number | undefined;
     const apply = () => {
       if (!width || width === settled) return;
+      const follow = follower.current;
       const top = root.scrollTop;
       const atBottom = top > 0 && top + root.clientHeight >= root.scrollHeight - 1;
-      const line = top > 0 ? previewLineAtOffset(blocks.current, top) : -1;
+      const line = !follow && top > 0 ? previewLineAtOffset(blocks.current, top) : -1;
       const block = line >= 0 ? blocks.current.find((b) => b.line === line) : undefined;
       const within = block ? top - block.top : 0;
       settled = width;
       root.removeAttribute("data-constrain-blocks");
       root.style.setProperty("--markdown-block-width", `${width}px`);
-      if (atBottom) root.scrollTop = root.scrollHeight;
+      if (follow) follow.align();
+      else if (atBottom) root.scrollTop = root.scrollHeight;
       else if (block) root.scrollTop = block.top + within;
     };
     const schedule = () => {
@@ -662,7 +709,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       onClick={onClick}
       onScroll={onScroll}
     >
-      <div data-preview-blocks="" dangerouslySetInnerHTML={{ __html: html }} />
+      <div data-preview-blocks="" dangerouslySetInnerHTML={markup} />
     </div>
   );
 }

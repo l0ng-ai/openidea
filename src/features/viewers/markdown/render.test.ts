@@ -362,6 +362,28 @@ describe("markdown preview rendering", () => {
     expect(previewOffsetForLine([], 3, 400)).toBe(0);
   });
 
+  it("tracks table rows across the delimiter and excludes trailing blank lines from a block", () => {
+    const root = document.createElement("div");
+    root.innerHTML = renderMarkdown("| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\nNext");
+    const table = root.querySelector("table[data-markdown-table]")!;
+    expect(table.querySelectorAll("tr")).toHaveLength(3);
+    expect(table.parentElement?.dataset).toMatchObject({ line: "0", endLine: "4" });
+    expect(root.lastElementChild?.getAttribute("data-line")).toBe("5");
+  });
+
+  it("follows source characters inside a wrapped block and crosses the gap below its rendered box", () => {
+    const blocks = [
+      { line: 0, endLine: 2, top: 10, bottom: 110 },
+      { line: 4, endLine: 5, top: 130, bottom: 160 },
+    ];
+    const sourceOffsets = [0, 80, 100, 101, 102, 110];
+    expect(previewOffsetForLine(blocks, 0.5, 400, sourceOffsets)).toBe(50);
+    expect(previewOffsetForLine(blocks, 1, 400, sourceOffsets)).toBe(90);
+    expect(previewOffsetForLine(blocks, 2, 400, sourceOffsets)).toBe(110);
+    expect(previewOffsetForLine(blocks, 3, 400, sourceOffsets)).toBe(120);
+    expect(previewOffsetForLine(blocks, 4, 400, sourceOffsets)).toBe(130);
+  });
+
   it("finds the block at the top of a scrolled preview", () => {
     const blocks = [
       { line: 2, top: 0 },

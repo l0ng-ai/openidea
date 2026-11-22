@@ -25,6 +25,7 @@ describe("selectable read-only surfaces", () => {
         "/p/README.md": {
           text: "# Title\n\nSome *text*",
           topLine: 0,
+          sourceAtEnd: false,
           scrollSeq: 0,
           fontZoom: 0,
           caretLine: 0,
