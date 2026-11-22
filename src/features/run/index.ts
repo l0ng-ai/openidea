@@ -70,6 +70,7 @@ import { junitType } from "./junitType";
 import { listenForApplicationDeactivation, showApplicationUpdate, updatableSessions } from "./applicationUpdate";
 import { hotReload, hotReloadSession, hotRestart } from "./flutterHotReload";
 import { npmGutter } from "./npmGutter";
+import { startNpmScriptsWatch } from "./npmScripts";
 import { launchSettingsGutter } from "./launchSettingsGutter";
 import { runGutter } from "./runGutter";
 import { markdownCommandGutter } from "./markdownCommands";
@@ -435,6 +436,17 @@ export function activate(): () => void {
       headerContent: lazyComponent(() => import("./RunView").then((m) => m.RunTabs)),
       useBadge: useRunningCount,
     }),
+    // npm scripts 树（IDEA Maven 面板风格），默认停靠右侧；数据源独立扫描 package.json（npmScripts.ts），
+    // 不依赖运行配置检测；点击条目运行、右键 Run/Debug。
+    registerToolWindow({
+      id: "npm-scripts",
+      title: "npm",
+      icon: "file-npm",
+      anchor: "right",
+      order: 60,
+      component: lazyComponent(() => import("./NpmScriptsView").then((m) => m.NpmScriptsView)),
+    }),
+    startNpmScriptsWatch(),
     registerTitleItem({ id: "run.widget", title: "Run Widget", align: "right", priority: 0, component: RunWidget }),
     registerRunAnythingProvider(runConfigsRunAnything),
     registerBuiltinTypes(),

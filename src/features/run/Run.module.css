@@ -6,6 +6,24 @@
   min-width: 0;
 }
 
+/* npm scripts 工具窗口（IDEA Maven 面板风格）的树行 */
+.scriptsRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.scriptsStrong {
+  font-weight: var(--fw-medium, 500);
+}
+
+.scriptsMeta {
+  flex: none;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+
 .tabs {
   min-width: 0;
   border: 0;

@@ -82,6 +82,18 @@ describe("run context menu group", () => {
     expect(items[0]).toMatchObject({ arg: { path: `${SCRATCHES}/hi.ts`, line: 0, dir: false } });
   });
 
+  it("editor: package.json scripts 行右键出 Run / Debug '<script>'", () => {
+    const text = '{\n  "scripts": {\n    "dev": "vite",\n    "build": "vite build"\n  }\n}\n';
+    // 第 2 行（0-based）是 "dev" 条目。
+    const items = contextMenuItems("editor", { paths: [`${ROOT}/package.json`], text, line: 2 });
+    expect(items.map((i) => ("label" in i ? i.label : i.kind))).toEqual(["Run 'dev'", "Debug 'dev'"]);
+    expect(items[0]).toMatchObject({ icon: "run" });
+    expect(items[1]).toMatchObject({ icon: "debug" });
+    // 非 scripts 行（如文件名行）不出该项，走普通菜单。
+    const other = contextMenuItems("editor", { paths: [`${ROOT}/package.json`], text, line: 0 });
+    expect(other.map((i) => ("label" in i ? i.label : i.kind))).not.toContain("Run 'dev'");
+  });
+
   it("editor: the element at the caret names the entries", () => {
     const text = "describe('math', () => {\n  it('adds', () => {\n    expect(1).toBe(1);\n  });\n});\n";
     const at = (line: number) => contextMenuItems("editor", { paths: [`${ROOT}/src/m.test.ts`], text, line })[0];
