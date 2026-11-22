@@ -60,6 +60,58 @@ test.beforeEach(async ({ workbench: page }) => {
   await expect(page.getByRole("listbox", { name: "Commits" }).getByRole("option").first()).toBeVisible();
 });
 
+test("Git Log separates commit message typography from compact metadata", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 860, height: 720 });
+  await page.evaluate(() => {
+    window.__ipc.handlers.vcs_log_details_batch = ({ revisions }) =>
+      (revisions as string[]).map(() => ({
+        message: "Commit 1\n\nUpdate checkout totals after applying shipping discounts.",
+        containingBranches: ["feature/update-checkout-totals-and-apply-shipping-discounts".repeat(3)],
+        signature: "N",
+        signer: "",
+        key: "",
+        fingerprint: "",
+      }));
+  });
+  const setEditorSize = (fontSize: number) =>
+    page.evaluate(async (fontSize) => {
+      const module = "/src/platform/project.ts";
+      const { useProject } = await import(/* @vite-ignore */ module);
+      const { settings } = useProject.getState();
+      useProject.setState({
+        settings: { ...settings, editor: { ...settings?.editor, fontFamily: "Consolas", fontSize } },
+      });
+    }, fontSize);
+  await setEditorSize(18);
+  const commits = page.getByRole("listbox", { name: "Commits" });
+  await commits.getByRole("option").filter({ hasText: "Commit 1" }).first().click();
+
+  const message = page.locator("#message");
+  const subject = message.getByText("Commit 1", { exact: true });
+  const body = message.getByText("Update checkout totals after applying shipping discounts.", { exact: true });
+  await expect(body).toHaveCSS("font-size", "18px");
+  await expect(body).toHaveCSS("font-family", /Consolas/);
+  await expect(subject).toHaveCSS("font-size", "18px");
+  const author = message.getByTitle("Copy revision number").locator("..");
+  const parent = message.getByText(/^Parent\s/);
+  await expect(author).toHaveCSS("font-size", "12px");
+  const authorBox = (await author.boundingBox())!;
+  const parentBox = (await parent.boundingBox())!;
+  expect(parentBox.y - authorBox.y - authorBox.height).toBeLessThanOrEqual(4);
+  const signature = message.getByText(/Signature: Unsigned/);
+  await signature.scrollIntoViewIfNeeded();
+  await expect(signature).toBeInViewport();
+  const overflow = await message.evaluate((el) => {
+    const scroller = el.querySelector('[class*="_messageBox_"]')!;
+    return scroller.scrollWidth - scroller.clientWidth;
+  });
+  expect(overflow).toBeLessThanOrEqual(1);
+
+  await setEditorSize(15);
+  await expect(body).toHaveCSS("font-size", "15px");
+  await expect(author).toHaveCSS("font-size", "12px");
+});
+
 test("a second click on a Git Log toolbar button closes its popup", async ({ workbench: page }) => {
   const toolbar = page.getByRole("toolbar", { name: "Log filters" });
   const branchPopup = page.getByRole("dialog", { name: "Filter by Branch" });
