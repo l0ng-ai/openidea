@@ -5,8 +5,8 @@
   gap: var(--space-1-5);
   height: var(--h-field, 28px);
   min-width: 0;
-  padding: 0 6px 0 9px;
-  border-radius: var(--radius-control, 4px);
+  padding: 0 var(--combo-pad-end, 6px) 0 var(--combo-pad-start, 9px);
+  border-radius: var(--radius-combo, var(--radius-control, 4px));
   color: var(--fg-strong);
   transition:
     background var(--dur-fast) var(--ease),

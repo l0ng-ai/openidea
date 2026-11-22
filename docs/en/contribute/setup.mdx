@@ -67,7 +67,7 @@ mise run dev
 
 `setup` runs `pnpm install` in this worktree. `dev` and `dev:app` use the same worktree-aware launchers as the direct commands. No shell activation is needed for `mise run`.
 
-Run `mise tasks` to list all six tasks. `mise run build` builds the frontend (not a desktop installer). `mise run test` runs Vitest and `cargo test --workspace`; `mise run check` runs the format, lint, type and unused-code checks, then both test suites. Neither requires nextest or the plugin WASM target.
+Run `mise tasks` to list all tasks. `mise run build` builds the frontend (not a desktop installer); `mise run dogfood:build` and `mise run dogfood:install` build and locally install a grey-icon dogfood desktop app that shares settings and data with the release app. Only one of the two apps runs at a time, since they share one instance; settings written by the newer dogfood build can make an older release ignore the settings file. The dogfood app never updates itself: run `dogfood:install` again to pick up new changes. `mise run dogfood:remote <remote_name>` builds and stages `openidea-server` on an SSH host configured in **Tools › SSH Configurations** (`--clean` removes the override). `mise run test` runs Vitest and `cargo test --workspace`; `mise run check` runs the format, lint, type and unused-code checks, then both test suites. Neither requires nextest or the plugin WASM target.
 
 ## Worktrees
 

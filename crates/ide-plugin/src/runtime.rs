@@ -58,7 +58,7 @@ use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
 
 /// The API version of the world above, `major.minor` of [`host_api`].
-pub const API_VERSION: &str = "1.14";
+pub const API_VERSION: &str = "1.15";
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 pub(crate) const MAX_TEXT: usize = 1 << 20;
 /// The most text, and the most PNG bytes, `ui.read-clipboard` returns.
@@ -583,6 +583,19 @@ pub trait HostApi: Send + Sync {
         cancel: &CancellationToken,
         timeout: Duration,
     ) -> Result<ProcessOutput, HostError>;
+    /// Runs `cmd` with configurable capture options (API 1.15).
+    fn run_process_with_options(
+        &self,
+        cmd: ProcessCommand,
+        cwd: Option<&Path>,
+        stdin: Option<String>,
+        cancel: &CancellationToken,
+        timeout: Duration,
+        options: Option<crate::types::ProcessOptions>,
+    ) -> Result<ProcessOutput, HostError> {
+        let _ = options;
+        self.run_process(cmd, cwd, stdin, cancel, timeout)
+    }
     /// Delivers every event of `kind`, dropping its path filter.
     fn subscribe(&self, kind: EventKind);
     /// Delivers `kind` (`file-opened`, `file-saved`, `files-changed`) only for matching paths.
@@ -590,6 +603,17 @@ pub trait HostApi: Send + Sync {
     fn unsubscribe(&self, kind: &str);
     /// Starts `cmd` and returns the handle to it without waiting.
     fn start_process(&self, cmd: ProcessCommand, cwd: Option<&Path>, client: Option<&str>) -> Result<u64, HostError>;
+    /// Starts `cmd` with streaming options (API 1.15).
+    fn start_process_stream(
+        &self,
+        cmd: ProcessCommand,
+        cwd: Option<&Path>,
+        client: Option<&str>,
+        options: Option<crate::types::ProcessOptions>,
+    ) -> Result<u64, HostError> {
+        let _ = options;
+        self.start_process(cmd, cwd, client)
+    }
     /// What process `id` printed since the last call, each stream at most
     /// `max` bytes (the rest waits for the next call), and its status once it
     /// ended.
@@ -1108,6 +1132,16 @@ fn event_to_wit(e: WorkbenchEvent) -> wit_events::Event {
         WorkbenchEvent::InputModeChanged(mode) => wit_events::Event::Other(wit_types::Extension {
             kind: "input-mode-changed".into(),
             data: serde_json::to_string(&mode).expect("mode serializes"),
+        }),
+        WorkbenchEvent::CaretMoved(caret) => wit_events::Event::Other(wit_types::Extension {
+            kind: "caret-moved".into(),
+            data: serde_json::json!({
+                "path": caret.path,
+                "line": caret.line,
+                "col": caret.col,
+                "settled": caret.settled,
+            })
+            .to_string(),
         }),
         WorkbenchEvent::FileOpened(p) => wit_events::Event::FileOpened(p),
         WorkbenchEvent::FileSaved(p) => wit_events::Event::FileSaved(p),

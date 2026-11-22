@@ -26,6 +26,12 @@ describe("disambiguateTitles", () => {
     expect(m.get("/r/a/d/f.ts")).toBe("d");
   });
 
+  it("distinguishes directory names that occur at different depths", () => {
+    const paths = ["/r/prod/shared/f.ts", "/r/shared/prod/f.ts", "/r/test/shared/f.ts"];
+    const labels = disambiguateTitles(paths);
+    expect(paths.map((path) => labels.get(path))).toEqual(["prod/shared", "shared/prod", "test"]);
+  });
+
   it("ignores duplicates of the same path", () => {
     expect(disambiguateTitles(["/p/a/x.ts", "/p/a/x.ts"]).size).toBe(0);
   });

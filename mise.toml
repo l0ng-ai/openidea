@@ -20,6 +20,19 @@ run = "pnpm dev:app"
 description = "Typecheck, bundle and verify the frontend"
 run = "pnpm build"
 
+[tasks."dogfood:build"]
+description = "Build a local dogfood desktop app bundle"
+run = "pnpm dogfood:build"
+
+[tasks."dogfood:install"]
+description = "Build and install the local dogfood desktop app"
+depends = ["dogfood:build"]
+run = "pnpm dogfood:install --no-build"
+
+[tasks."dogfood:remote"]
+description = "Build and install a local dogfood openidea-server on a configured SSH remote"
+run = "pnpm dogfood:remote"
+
 [tasks.test]
 description = "Run the frontend and Rust workspace tests"
 run = ["pnpm test", "cargo test --workspace"]

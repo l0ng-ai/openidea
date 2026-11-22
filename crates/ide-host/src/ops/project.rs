@@ -391,6 +391,9 @@ pub fn set_settings(
     if key == "languages" || key == "languages.java" || key.starts_with("languages.java.addedJdks") {
         host.apply_added_jdks();
     }
+    if key == "vcs" || key == "vcs.git" || key == "vcs.git.executable" {
+        host.apply_git_executable();
+    }
     if is_proxy {
         host.apply_proxy();
     }

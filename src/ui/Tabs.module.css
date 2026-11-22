@@ -11,9 +11,10 @@
   --tab-selected-bg: var(--bg-tab-selected-inactive);
   --tab-selected-border: var(--border-tab-selected-inactive);
 }
-/* Islands tabs: the selected tab is a rounded pill (tab-selected-bg / -border); no underline, no separators. */
+/* Islands tabs: the selected tab is a rounded pill (tab-selected-bg / -border); no underline, no separators.
+   EditorTabs.tabInsets -6,8,-6,8 (tabInsets.compact -2,6,-2,4) put 8px (6px compact) around the tab label. */
 .editor {
-  --tab-inline-padding: var(--space-2);
+  --tab-inline-padding: var(--tab-pad-x, 8px);
   height: var(--h-header);
   font-size: var(--fs-chrome);
   padding: 0 4px;

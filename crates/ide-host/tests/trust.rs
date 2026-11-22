@@ -352,7 +352,6 @@ async fn restricted_git_views_ignore_project_executables_and_mutations_cannot_ru
     project.with_repo(|repo| repo.commit("trusted", false, false)).unwrap();
     assert!(root.join("git-executable.marker").exists());
     assert!(root.join("git-hook.marker").exists());
-    ide_vcs::set_git_executable(None);
     host.shutdown().await;
 }
 

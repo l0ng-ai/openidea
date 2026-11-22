@@ -1,0 +1,10 @@
+@gutter: 16px;
+
+// Intentional Stylelint problem: the same selector twice (no-duplicate-selectors).
+.layout {
+  margin: @gutter;
+}
+
+.layout {
+  padding: @gutter;
+}

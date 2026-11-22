@@ -112,7 +112,7 @@ test("resizing the configuration dialog grows its panes and keeps the footer vis
   await expect(dialog.getByRole("tree", { name: "Run configurations", exact: true })).toBeVisible();
   await expect.poll(async () => (await content.boundingBox())!.height).toBeLessThan(initial);
   await expect
-    .poll(() => dialog.locator("[class*='editForm_']").evaluate((el) => el.scrollHeight - el.clientHeight))
+    .poll(() => dialog.locator("[class*='_formSettings_']").evaluate((el) => el.scrollHeight - el.clientHeight))
     .toBeGreaterThan(0);
 });
 
@@ -144,7 +144,7 @@ test("Java, npm and Python forms fit narrow and zoomed content panes", async ({ 
       for (const width of [1024, 640, 520]) {
         await page.setViewportSize({ width, height: 820 });
         await expect
-          .poll(() => dialog.locator("[class*='editForm_']").evaluate((el) => el.scrollWidth - el.clientWidth), {
+          .poll(() => dialog.locator("[class*='_formSettings_']").evaluate((el) => el.scrollWidth - el.clientWidth), {
             message: `${kind}, ${width}px, ${zoom * 100}%`,
           })
           .toBeLessThanOrEqual(1);
@@ -204,7 +204,7 @@ for (const locale of ["en", "zh"]) {
           )
           .toMatchObject({ overflow: expect.any(Number), footerFits: true, footerVisible: true });
         await expect
-          .poll(() => dialog.locator("[class*='editForm_']").evaluate((el) => el.scrollWidth - el.clientWidth))
+          .poll(() => dialog.locator("[class*='_formSettings_']").evaluate((el) => el.scrollWidth - el.clientWidth))
           .toBeLessThanOrEqual(1);
         const tasks = dialog.getByRole("list");
         await tasks.scrollIntoViewIfNeeded();

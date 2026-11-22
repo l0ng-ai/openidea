@@ -48,7 +48,10 @@ agent_set_env                                trusted            project_host bin
 agent_set_mcp_overrides                      always             project_host bindings sync
 agent_set_skill_overrides                    always             project_host bindings sync
 agent_shell                                  trusted            project_host bindings async
+agent_skills_browse                          always             project_host bindings async
+agent_skills_install                         always             project_host bindings async
 agent_skills_list                            always             project_host bindings async
+agent_skills_preview                         always             project_host bindings async
 agent_skills_set_mode                        always             project_host bindings sync
 agent_stop_background                        always             project_host bindings async
 agent_subscribe                              always             project_host bindings sync
@@ -346,6 +349,7 @@ lsp_code_lens                                trusted            project_host bin
 lsp_completion                               trusted            project_host bindings async
 lsp_document_highlights                      trusted            project_host bindings async
 lsp_document_links                           trusted            project_host bindings async
+lsp_exception_class_at                       trusted            project_host bindings async
 lsp_execute_code_action                      trusted            project_host bindings async
 lsp_execute_command                          trusted            project_host bindings async
 lsp_extract_interface                        trusted            project_host bindings async
@@ -510,6 +514,7 @@ project_trust_status                         always             project_host bin
 project_workspace_member_set                 always             project_host bindings sync
 project_workspace_members                    always             project_host bindings sync
 proxy_check_connection                       always             desktop      bindings async
+python_requirements                          trusted            project_host bindings async
 recent_files                                 always             project_host bindings sync
 recent_project_groups                        always             desktop      bindings sync
 recent_projects                              always             desktop      bindings async

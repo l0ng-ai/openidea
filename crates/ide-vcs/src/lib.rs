@@ -700,7 +700,7 @@ mod write;
 pub use backend::Backend;
 pub use cli::{
     GitCommandObserver, detected_git_executable, filter_overrides_from, git_version, restrict, set_askpass_env,
-    set_git_command_observer, set_git_executable,
+    set_default_git_executable, set_git_command_observer,
 };
 pub use diff::build_partial_patch;
 pub use external_diff::{ExternalDiffSide, launch_external_diff};
@@ -774,7 +774,7 @@ mod clone_tests {
 /// Creates an empty repository in `dir` (`git init`).
 pub fn init(dir: &Path) -> IdeResult<()> {
     // `git init` runs nothing a repository config names, so the configured git runs as it is.
-    let _scope = ExecutionScope::enter(true);
+    let _scope = ExecutionScope::enter_with(true, opening_git_executable());
     cli::run(dir, &["init", "-q"], None).map(|_| ())
 }
 
@@ -788,6 +788,7 @@ pub fn diff_hunks(old_text: &str, new_text: &str) -> Vec<LineHunk> {
 /// on-disk state, so it never needs to be reopened after external changes.
 pub struct Repo {
     execution_allowed: std::sync::atomic::AtomicBool,
+    git_executable: std::sync::RwLock<Option<std::sync::Arc<Path>>>,
     root: PathBuf,
     git_dir: PathBuf,
     inner: std::sync::Mutex<repo::Cache>,
@@ -806,18 +807,18 @@ impl Repo {
     }
     /// The worktree root.
     pub fn root(&self) -> &Path {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         &self.root
     }
     /// git's own folders for this worktree: its git dir and the common one (they differ for a
     /// linked worktree, whose `.git` file points into the main repository).
     pub fn metadata_dirs(&self) -> IdeResult<[PathBuf; 2]> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         Ok([self.git_dir.clone(), repo::absolute(self.gix()?.common_dir())?])
     }
     /// Untracked files with one of these names (or under such a folder) are not reported.
     pub fn set_ignored_names(&self, names: IgnoredNames) {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         *self.ignored.write().unwrap_or_else(|p| p.into_inner()) = names;
     }
     /// Read the working-tree status with `git status` rather than in process: for file systems
@@ -828,13 +829,13 @@ impl Repo {
     /// Staged (HEAD↔index) and unstaged (index↔worktree, incl. untracked) changes,
     /// sorted by path. Conflicted files report `unstaged: Conflicted` and no staged kind.
     pub fn status(&self) -> IdeResult<Vec<FileStatus>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         status::status(self)
     }
     /// Status of `paths` only (absolute; those outside the repository are ignored), for the
     /// dirty-scope refresh after a watcher batch. An empty list is the full status.
     pub fn status_paths(&self, paths: &[PathBuf]) -> IdeResult<Vec<FileStatus>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         // Restricted Mode starts no program of the repository, and the scoped read is `git status`
         // with a pathspec: answer with the full gitoxide status instead.
         if !self.execution_allowed.load(std::sync::atomic::Ordering::Acquire) {
@@ -850,18 +851,18 @@ impl Repo {
         status::status_paths(self, &rel)
     }
     pub fn branch_info(&self) -> IdeResult<BranchInfo> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         refs::branch_info(self)
     }
     /// Current branch (short name; `None` when detached) and HEAD commit, without
     /// upstream tracking (cheap enough to call for every repository on each refresh).
     pub fn head(&self) -> IdeResult<(Option<String>, Option<String>)> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         refs::head(&self.gix()?)
     }
     /// Merge / rebase / cherry-pick… in progress (cheap: no ref walking).
     pub fn operation(&self) -> IdeResult<Option<String>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         Ok(refs::operation(&self.gix()?))
     }
     /// Content of `path` at `rev` (default HEAD); `None` if absent there.
@@ -873,13 +874,13 @@ impl Repo {
         encoding: impl Into<TextEncoding>,
     ) -> IdeResult<Option<String>> {
         let encoding = encoding.into();
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         Ok(self.blob_of(path, rev.unwrap_or("HEAD"))?.map(|b| text_encoding::decode(&b, encoding).into_owned()))
     }
     /// The file's git mode at `rev` as printed by git (`100644`, `100755`, `120000`…),
     /// `None` when absent there. `rev` follows `file_at`'s rules, `WT` reads the worktree.
     pub fn file_mode_at(&self, path: &Path, rev: Option<&str>) -> IdeResult<Option<String>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         if rev == Some("WT") {
             return repo::worktree_mode(self.root(), &self.rel_path(path)?);
         }
@@ -889,7 +890,7 @@ impl Repo {
     }
     /// Raw revision bytes, for encoding detection when the working file is absent.
     pub fn file_bytes_at(&self, path: &Path, rev: Option<&str>) -> IdeResult<Option<Vec<u8>>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         self.blob_of(path, rev.unwrap_or("HEAD"))
     }
     /// Stage selected decoded hunks, retaining the index encoding, BOM and line endings.
@@ -901,7 +902,7 @@ impl Repo {
         encoding: impl Into<TextEncoding>,
     ) -> IdeResult<()> {
         let encoding = encoding.into();
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::stage_hunks(self, path, current, selected, encoding)
     }
     /// Hunks of `current_text` against HEAD (or the index when `against_index`).
@@ -918,7 +919,7 @@ impl Repo {
         encoding: impl Into<TextEncoding>,
     ) -> IdeResult<Vec<LineHunk>> {
         let encoding = encoding.into();
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         let Ok(rel) = self.rel_path(path) else { return Ok(Vec::new()) };
         if rel.is_empty() || rel == ".git" || rel.starts_with(".git/") {
             return Ok(Vec::new());
@@ -948,13 +949,13 @@ impl Repo {
         encoding: impl Into<TextEncoding>,
     ) -> IdeResult<Vec<BlameLine>> {
         let encoding = encoding.into();
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::blame(self, path, current_text, revision, encoding)
     }
     /// Adds `commit` to the list `blame.ignoreRevsFile` names, so annotate skips it; with none
     /// configured, to `.git-blame-ignore-revs` at the worktree root, which the local config then names.
     pub fn ignore_blame_revision(&self, commit: &str) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::ignore_blame_revision(self, commit)
     }
     /// History for Selection: commits that changed `lines` (0-based, inclusive, of the
@@ -968,7 +969,7 @@ impl Repo {
         cancel: &CancellationToken,
     ) -> IdeResult<BlockHistory> {
         let encoding = encoding.into();
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         block_history::block_history(self, path, current_text, lines, encoding, cancel)
     }
     /// Commits newest-first in topological order (children before parents).
@@ -979,11 +980,11 @@ impl Repo {
     /// `skip`/`limit` paginate over the filtered result; `limit == 0` means no limit.
     /// `refs` decorations are `HEAD`, branch names (`main`, `origin/main`) and `tag: <name>`.
     pub fn log(&self, query: &LogQuery) -> IdeResult<Vec<Commit>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         history::log(self, query, &CancellationToken::new())
     }
     pub fn log_cancellable(&self, query: &LogQuery, cancel: &CancellationToken) -> IdeResult<Vec<Commit>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         history::log(self, query, cancel)
     }
     /// Enables the disposable, content-addressed log cache outside the worktree.
@@ -1000,7 +1001,7 @@ impl Repo {
             .collect())
     }
     pub fn log_users(&self) -> IdeResult<Vec<String>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         let out = cli::run(self.root(), &["log", "--all", "--format=%an <%ae>"], None)?;
         Ok(out
             .stdout_str()
@@ -1026,7 +1027,7 @@ impl Repo {
         cancel: &CancellationToken,
     ) -> IdeResult<Vec<LogDetails>> {
         let allowed = self.execution_allowed.load(std::sync::atomic::Ordering::Acquire);
-        let _scope = crate::ExecutionScope::enter(allowed);
+        let _scope = self.execution_scope();
         let repo = self.gix()?;
         let shallow: std::collections::HashSet<gix::ObjectId> =
             repo.shallow_commits().map_err(repo::gx)?.map(|ids| ids.iter().copied().collect()).unwrap_or_default();
@@ -1099,7 +1100,7 @@ impl Repo {
 
     /// Lists one immutable revision directory. Directory names end in `/`.
     pub fn revision_children(&self, revision: &str, directory: &str) -> IdeResult<Vec<String>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         let repo = self.gix()?;
         let id = repo::resolve(&repo, revision)?.to_string();
         let directory = self.rel_path(std::path::Path::new(directory))?;
@@ -1122,7 +1123,7 @@ impl Repo {
     }
 
     pub fn revision_files(&self, revision: &str) -> IdeResult<Vec<String>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         let repo = self.gix()?;
         let id = repo::resolve(&repo, revision)?.to_string();
         let out = cli::run(self.root(), &["ls-tree", "-r", "-z", "--name-only", "--", &id], None)?;
@@ -1135,23 +1136,23 @@ impl Repo {
     }
     /// Files changed by `commit` relative to its first parent (renames detected).
     pub fn commit_files(&self, commit: &str) -> IdeResult<Vec<ChangedFile>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         history::commit_files(self, commit)
     }
     /// Combined changes of several commits (oldest first): per file, before the first commit
     /// that touched it ↔ after the last one (IDEA's multi-commit Git Log selection).
     pub fn commits_changes(&self, commits: &[String]) -> IdeResult<Vec<RevisionChange>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         history::commits_changes(self, commits)
     }
     /// Local and remote branches; the current branch first, then most recent first.
     pub fn branches(&self) -> IdeResult<Vec<Branch>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         refs::branches(self)
     }
     /// Stash entries, newest (`stash@{0}`) first.
     pub fn stashes(&self) -> IdeResult<Vec<Stash>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         refs::stashes(self)
     }
     /// Working tree against a revision, optionally restricted to a file. Bounded and cancellable.
@@ -1162,7 +1163,7 @@ impl Repo {
         max_bytes: usize,
         cancel: &CancellationToken,
     ) -> IdeResult<String> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         let rev = against.unwrap_or("HEAD");
         if rev.is_empty() || rev.starts_with('-') || rev.contains('\0') {
             return Err(ide_core::IdeError::invalid("invalid revision"));
@@ -1184,13 +1185,13 @@ impl Repo {
     /// against /dev/null) or HEAD↔index (`staged == true`). Empty when unchanged.
     pub fn diff_text(&self, path: &Path, staged: bool, encoding: impl Into<TextEncoding>) -> IdeResult<String> {
         let encoding = encoding.into();
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::diff_text(self, path, staged, encoding)
     }
 
     /// `git config --get <key>` (all scopes); `None` when unset.
     pub fn config_get(&self, key: &str) -> IdeResult<Option<String>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         let out = cli::run_raw(&self.root, &["config", "--get", key], None)?;
         Ok((out.code == Some(0)).then(|| out.stdout_str().trim().to_string()))
     }
@@ -1198,7 +1199,7 @@ impl Repo {
     /// Sets `user.name` and `user.email` for commits: in this repository's config, or in the
     /// user's global one (`global`).
     pub fn set_user_identity(&self, name: &str, email: &str, global: bool) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         let scope = if global { "--global" } else { "--local" };
         for (key, value) in [("user.name", name.trim()), ("user.email", email.trim())] {
             if value.is_empty() {
@@ -1211,11 +1212,11 @@ impl Repo {
 
     // ---- writes (git CLI) ----
     pub fn stage(&self, paths: &[PathBuf]) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::stage(self, paths)
     }
     pub fn unstage(&self, paths: &[PathBuf]) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::unstage(self, paths)
     }
     /// Applies a unified-diff patch to the index (partial staging of hunks/lines).
@@ -1225,20 +1226,20 @@ impl Repo {
         patch: &str,
         encoding: &dyn Fn(&Path) -> IdeResult<E>,
     ) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::stage_patch(self, patch, &|path| encoding(path).map(Into::into))
     }
     /// Discards unstaged changes: tracked paths are restored from the index (staged
     /// changes are kept), untracked files and directories are deleted. A submodule goes back
     /// to the commit the index records, with its tracked files restored.
     pub fn discard(&self, paths: &[PathBuf]) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::discard(self, paths)
     }
     /// Commits the index; returns the new HEAD commit id. An empty message with
     /// `amend` keeps the previous message.
     pub fn commit(&self, message: &str, amend: bool, sign_off: bool) -> IdeResult<String> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         let options = CommitOptions { amend, sign_off, author: None, run_hooks: true, ..Default::default() };
         write::commit(self, message, &options, &|_| Ok(encoding_rs::UTF_8.into()))
     }
@@ -1249,7 +1250,7 @@ impl Repo {
         options: &CommitOptions,
         encoding: &dyn Fn(&Path) -> IdeResult<E>,
     ) -> IdeResult<String> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::commit(self, message, options, &|path| encoding(path).map(Into::into))
     }
     /// What [`Repo::commit_with`] would commit with `options`, file by file, without
@@ -1260,14 +1261,14 @@ impl Repo {
         max_bytes: usize,
         encoding: &dyn Fn(&Path) -> IdeResult<E>,
     ) -> IdeResult<Vec<PendingChange>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::pending_changes(self, options, max_bytes, &|path| encoding(path).map(Into::into))
     }
     /// Switches to `branch`. With `create`, creates it at HEAD. Without, a remote branch
     /// (`origin/x`) gets a local tracking branch and any other revision is checked out
     /// detached.
     pub fn checkout(&self, branch: &str, create: bool) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::checkout(self, branch, create)
     }
     /// [`Repo::checkout`] as IDEA does it: local changes in the way are reported (or
@@ -1275,7 +1276,7 @@ impl Repo {
     /// is behind fast-forwards that branch, while one that is ahead is reported (or
     /// rebased / reset per `options.diverged`).
     pub fn checkout_with(&self, branch: &str, create: bool, options: &CheckoutOptions) -> IdeResult<CheckoutOutcome> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::checkout_with(self, branch, create, options)
     }
     /// Creates branch `name` at `start` (default HEAD), optionally switching to it. A
@@ -1292,62 +1293,62 @@ impl Repo {
         checkout: bool,
         overwrite: bool,
     ) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::create_branch(self, name, start, checkout, overwrite)
     }
     /// Undo Commit: resets the current branch to the parent of `commit` (which must be
     /// HEAD and not a merge) keeping its changes staged; undoing the initial commit
     /// leaves an unborn branch. Returns the undone commit's message.
     pub fn undo_commit(&self, commit: &str) -> IdeResult<String> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::undo_commit(self, commit)
     }
     /// Deletes a local branch (`git branch -d`, `-D` when `force`).
     /// Edit Commit Message without touching the index or the working tree; returns HEAD
     /// before and after.
     pub fn reword(&self, commit: &str, message: &str) -> IdeResult<HeadChange> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::reword(self, commit, message).map(|(before, after)| HeadChange { before, after })
     }
 
     /// Undoes a history rewrite: HEAD goes from `after` back to `before`, local changes kept.
     pub fn restore_head(&self, before: &str, after: &str) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::restore_head(self, before, after)
     }
 
     pub fn delete_branch(&self, branch: &str, force: bool) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::delete_branch(self, branch, force)
     }
     /// Deletes a local branch as IDEA does: without asking, force-deleting one that is not
     /// fully merged (reported as `unmerged`), and returning what [`Repo::restore_branch`]
     /// needs to undo it.
     pub fn delete_branch_restorable(&self, branch: &str) -> IdeResult<DeletedBranch> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::delete_branch_restorable(self, branch)
     }
     /// Recreates a deleted branch at its old tip, with its upstream.
     pub fn restore_branch(&self, deleted: &DeletedBranch) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::restore_branch(self, deleted)
     }
     /// Renames a local branch (`git branch -m`); its upstream configuration moves with it,
     /// unless `unset_upstream` drops the tracking instead.
     pub fn rename_branch(&self, from: &str, to: &str, unset_upstream: bool) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::rename_branch(self, from, to, unset_upstream)
     }
     /// Merges `branch` into HEAD; local changes are stashed and restored around it. On
     /// conflicts an error is returned and the repository is left mid-merge
     /// (`branch_info().operation == Some("merge")`).
     pub fn merge(&self, branch: &str) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::merge(self, branch)
     }
     /// Rebases the current branch onto `onto`; local changes are stashed and restored.
     pub fn rebase(&self, onto: &str) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::rebase(self, onto)
     }
     /// `paths` (absolute) stashes only those files; empty stashes the whole working tree.
@@ -1359,23 +1360,23 @@ impl Repo {
         keep_index: bool,
         paths: &[PathBuf],
     ) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::stash_push(self, message, include_untracked, keep_index, paths)
     }
     /// `reinstate_index`: also restore what was staged when the stash was made.
     pub fn stash_apply(&self, index: u32, pop: bool, reinstate_index: bool) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::stash_apply(self, index, pop, reinstate_index)
     }
     /// Creates and checks out `branch` at the commit the stash was made on, applies the
     /// stash there (index included) and drops it.
     pub fn stash_branch(&self, index: u32, branch: &str) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::stash_branch(self, index, branch)
     }
     /// Removes `stash@{index}` without applying it.
     pub fn stash_drop(&self, index: u32) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::stash_drop(self, index)
     }
     /// Deletes a branch on a remote (`git push <remote> --delete <branch>`); `branch` is the
@@ -1386,19 +1387,19 @@ impl Repo {
         cancel: &CancellationToken,
         on_output: &dyn Fn(String),
     ) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::delete_remote_branch(self, branch, cancel, on_output)
     }
     /// Network operations stream progress lines through `on_output`.
     /// Fetches all remotes (pruning deleted branches).
     pub fn fetch(&self, cancel: &CancellationToken, on_output: &dyn Fn(String)) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         cli::run_streaming(&self.root, &["fetch", "--progress", "--all", "--prune"], cancel, on_output)
     }
     /// Update Project: pulls the upstream by merge or rebase. Local changes are stashed
     /// and restored; the merge mode fast-forwards when possible whatever `pull.ff` says.
     pub fn pull(&self, rebase: bool, cancel: &CancellationToken, on_output: &dyn Fn(String)) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         let mode: &[&str] = if rebase { &["--rebase"] } else { &["--no-rebase", "--ff"] };
         let mut args = vec!["pull", "--progress"];
         args.extend_from_slice(mode);
@@ -1435,13 +1436,13 @@ impl Repo {
         cancel: &CancellationToken,
         on_output: &dyn Fn(String),
     ) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::push(self, options, cancel, on_output)
     }
     /// Whether the repository has an executable hook `name` (e.g. `pre-push`), wherever
     /// `core.hooksPath` puts it: the Push dialog then offers to skip it.
     pub fn has_hook(&self, name: &str) -> IdeResult<bool> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::has_hook(self, name)
     }
     /// Pushes a local branch, or its history up to `revision`, to its upstream (Git Log
@@ -1454,7 +1455,7 @@ impl Repo {
         cancel: &CancellationToken,
         on_output: &dyn Fn(String),
     ) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::push_branch(
             self,
             branch,
@@ -1473,13 +1474,13 @@ impl Repo {
         cancel: &CancellationToken,
         on_output: &dyn Fn(String),
     ) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::push_branch(self, branch, options, cancel, on_output)
     }
     /// Update Project › Reset to the Remote Branch: the current branch is moved to its
     /// freshly fetched tracked branch; local commits are dropped, local changes kept.
     pub fn reset_to_upstream(&self, cancel: &CancellationToken, on_output: &dyn Fn(String)) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::reset_to_upstream(self, cancel, on_output)
     }
     /// Branches › Update Selected: fetches each remote once and fast-forwards every
@@ -1490,7 +1491,7 @@ impl Repo {
         cancel: &CancellationToken,
         on_output: &dyn Fn(String),
     ) -> IdeResult<Vec<BranchUpdate>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         write::update_branches(self, branches, cancel, on_output)
     }
     // ---- in-progress operations, history rewriting, tags ----
@@ -1498,21 +1499,21 @@ impl Repo {
     /// Continues the merge / rebase / cherry-pick / revert in progress; fails while
     /// conflicts are unresolved.
     pub fn continue_operation(&self, cancel: &CancellationToken, on_output: &dyn Fn(String)) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         ops::continue_op(self, false, cancel, on_output)
     }
     /// Stage and Retry: stages the changes of tracked files, then continues.
     pub fn stage_and_continue(&self, cancel: &CancellationToken, on_output: &dyn Fn(String)) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         ops::continue_op(self, true, cancel, on_output)
     }
     pub fn abort_operation(&self, cancel: &CancellationToken, on_output: &dyn Fn(String)) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         ops::abort_op(self, cancel, on_output)
     }
     /// Skips the current commit of a rebase / cherry-pick / revert.
     pub fn skip_operation(&self, cancel: &CancellationToken, on_output: &dyn Fn(String)) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         ops::skip_op(self, cancel, on_output)
     }
     /// Cherry-picks `commits` in order (oldest first). Stops mid-way on conflicts.
@@ -1532,12 +1533,12 @@ impl Repo {
         cancel: &CancellationToken,
         on_output: &dyn Fn(String),
     ) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         ops::cherry_pick(self, commits, record_origin, cancel, on_output)
     }
     /// Reverts `commits` in order (newest first) with git's default messages.
     pub fn revert(&self, commits: &[String], cancel: &CancellationToken, on_output: &dyn Fn(String)) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         ops::revert(self, commits, cancel, on_output)
     }
     /// Interactive rebase of `base..HEAD` (`None`: from the root) following `entries`,
@@ -1550,7 +1551,7 @@ impl Repo {
         cancel: &CancellationToken,
         on_output: &dyn Fn(String),
     ) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         ops::interactive_rebase(self, base, entries, cancel, on_output)
     }
     /// Moves the current branch to `commit` (`git reset --<mode>`).
@@ -1561,22 +1562,22 @@ impl Repo {
         cancel: &CancellationToken,
         on_output: &dyn Fn(String),
     ) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         ops::reset(self, commit, mode, cancel, on_output)
     }
     /// Creates tag `name` on `commit` (annotated when `message` is given).
     pub fn create_tag(&self, name: &str, commit: &str, message: Option<&str>, force: bool) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         ops::create_tag(self, name, commit, message, force)
     }
     /// Deletes a local tag, returning what [`Repo::restore_tag`] needs to undo it.
     pub fn delete_tag(&self, name: &str) -> IdeResult<DeletedTag> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         ops::delete_tag(self, name)
     }
     /// Recreates a deleted tag (annotated ones with their message).
     pub fn restore_tag(&self, deleted: &DeletedTag) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         ops::restore_tag(self, deleted)
     }
     /// Pushes one tag to `remote` (Push Tag › Push to …).
@@ -1587,7 +1588,7 @@ impl Repo {
         cancel: &CancellationToken,
         on_output: &dyn Fn(String),
     ) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         ops::push_tag(self, tag, remote, false, cancel, on_output)
     }
     /// Deletes a tag on `remote` (Delete on Remote, after deleting it locally).
@@ -1598,33 +1599,33 @@ impl Repo {
         cancel: &CancellationToken,
         on_output: &dyn Fn(String),
     ) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         ops::push_tag(self, tag, remote, true, cancel, on_output)
     }
     pub fn tags(&self) -> IdeResult<Vec<String>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         ops::tags(self)
     }
     /// Files that differ between revisions `from` and `to`.
     pub fn diff_revisions(&self, from: &str, to: &str) -> IdeResult<Vec<ChangedFile>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         ops::diff_revisions(self, from, to)
     }
     /// Added and deleted lines between `from` and `to`. `paths` limits the diff to those
     /// repository-relative paths (both names of a rename); empty diffs every file.
     pub fn diff_numstat(&self, from: &str, to: &str, paths: &[String]) -> IdeResult<Vec<FileLineStats>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         ops::diff_numstat(self, from, to, paths)
     }
     /// Tracked files whose working-tree content differs from `rev`.
     pub fn diff_with_worktree(&self, rev: &str) -> IdeResult<Vec<ChangedFile>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         ops::diff_with_worktree(self, rev)
     }
     /// `(repo-relative path, added lines, deleted lines)` of the tracked files whose
     /// working-tree content differs from `rev`.
     pub fn numstat_with_worktree(&self, rev: &str) -> IdeResult<Vec<(String, u32, u32)>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         ops::numstat_with_worktree(self, rev)
     }
 
@@ -1632,45 +1633,45 @@ impl Repo {
 
     /// Patch of the local changes of `paths` against HEAD (untracked files included).
     pub fn create_patch(&self, paths: &[PathBuf], reverse: bool) -> IdeResult<String> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         let rel = self.rel_paths(paths)?;
         Ok(patch::working_patch(self, &rel, reverse, true)?.0)
     }
     /// Patch of the changes made by `commits` (oldest first).
     pub fn create_commits_patch(&self, commits: &[String], reverse: bool) -> IdeResult<String> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         patch::commits_patch(self, commits, reverse)
     }
     pub fn patch_preview(&self, patch: &str) -> IdeResult<Vec<PatchFile>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         patch::preview(self, patch)
     }
     /// Applies a patch to the working tree, 3-way merging when it does not apply cleanly.
     pub fn apply_patch(&self, patch: &str) -> IdeResult<ApplyOutcome> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         patch::apply(self, patch)
     }
     /// Saves the changes of `paths` under `shelf_dir` and reverts them.
     pub fn shelve(&self, shelf_dir: &Path, name: &str, paths: &[PathBuf]) -> IdeResult<ShelvedChangeList> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         let rel = self.rel_paths(paths)?;
         shelf::shelve(self, shelf_dir, name, &rel)
     }
     pub fn unshelve(&self, shelf_dir: &Path, id: &str, remove: bool) -> IdeResult<ApplyOutcome> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         shelf::unshelve(self, shelf_dir, id, remove)
     }
 
     /// Who is on each side of the conflicts of the operation in progress.
     pub fn merge_sides(&self) -> IdeResult<MergeSides> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         ops::merge_sides(self)
     }
     /// The versions of a conflicted file with the user's work as `ours`, as IDEA's merge
     /// dialog shows them (sides swapped during a rebase).
     pub fn merge_versions(&self, path: &Path, encoding: impl Into<TextEncoding>) -> IdeResult<MergeVersions> {
         let encoding = encoding.into();
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         let (base, ours, theirs) = self.conflict_versions(path, encoding)?;
         let sides = self.merge_sides()?;
         let (ours, theirs) = if sides.reversed { (theirs, ours) } else { (ours, theirs) };
@@ -1687,7 +1688,7 @@ impl Repo {
         encoding: impl Into<TextEncoding>,
     ) -> IdeResult<(Option<String>, Option<String>, Option<String>)> {
         let encoding = encoding.into();
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         let rel = self.rel_path(path)?;
         let repo = self.gix()?;
         let stage = |n: u8| -> IdeResult<Option<String>> {
@@ -1697,33 +1698,83 @@ impl Repo {
     }
 }
 
+/// What git started on this thread may do, and which executable it is.
+#[derive(Clone)]
+struct Grant {
+    allowed: bool,
+    git: Option<std::sync::Arc<Path>>,
+}
+
 // `None`: nobody has decided yet. Git started now is restricted, and the first scope entered
-// decides. The flag governs the git CLI only: gitoxide follows the repository's own flag.
-thread_local! { static EXECUTION_ALLOWED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) }; }
-struct ExecutionScope(Option<bool>);
+// decides. The grant governs the git CLI only: gitoxide follows the repository's own flag.
+thread_local! { static EXECUTION: std::cell::RefCell<Option<Grant>> = const { std::cell::RefCell::new(None) }; }
+struct ExecutionScope(Option<Grant>);
 impl ExecutionScope {
-    /// The outermost scope decides; a scope inside it can only restrict.
     fn enter(allowed: bool) -> Self {
-        Self(
-            EXECUTION_ALLOWED
-                .with(|current| current.replace(Some(current.get().map_or(allowed, |outer| outer && allowed)))),
-        )
+        Self::enter_with(allowed, None)
+    }
+    /// The outermost scope decides; a scope inside it can only restrict.
+    fn enter_with(allowed: bool, git: Option<std::sync::Arc<Path>>) -> Self {
+        EXECUTION.with(|current| {
+            let mut current = current.borrow_mut();
+            let grant = match current.as_ref() {
+                Some(outer) => Grant { allowed: outer.allowed && allowed, git: outer.git.clone() },
+                None => Grant { allowed, git },
+            };
+            Self(current.replace(grant))
+        })
     }
 }
 impl Drop for ExecutionScope {
     fn drop(&mut self) {
-        EXECUTION_ALLOWED.with(|current| current.set(self.0));
+        EXECUTION.with(|current| *current.borrow_mut() = self.0.take());
     }
 }
 pub(crate) fn execution_allowed() -> bool {
-    EXECUTION_ALLOWED.with(|current| current.get().unwrap_or(false))
+    EXECUTION.with(|current| current.borrow().as_ref().is_some_and(|grant| grant.allowed))
+}
+/// The git executable of the repository whose scope this thread is in, when it may execute.
+pub(crate) fn scoped_git_executable() -> Option<std::sync::Arc<Path>> {
+    EXECUTION
+        .with(|current| current.borrow().as_ref().filter(|grant| grant.allowed).and_then(|grant| grant.git.clone()))
+}
+
+thread_local! { static OPENING_GIT: std::cell::RefCell<Option<std::sync::Arc<Path>>> = const { std::cell::RefCell::new(None) }; }
+
+/// Runs `f` with `git` (a project's Path to Git executable; `None` for the default) as the git
+/// executable of every [`Repo`] opened in it on this thread, and of [`init`]: for work on behalf
+/// of a project that opens its own repositories. It grants no execution.
+pub fn with_git_executable<T>(git: Option<&Path>, f: impl FnOnce() -> T) -> T {
+    struct Restore(Option<std::sync::Arc<Path>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            OPENING_GIT.with(|opening| *opening.borrow_mut() = self.0.take());
+        }
+    }
+    let git = git.filter(|p| !p.as_os_str().is_empty()).map(std::sync::Arc::from);
+    let _restore = Restore(OPENING_GIT.with(|opening| opening.replace(git)));
+    f()
+}
+pub(crate) fn opening_git_executable() -> Option<std::sync::Arc<Path>> {
+    OPENING_GIT.with(|opening| opening.borrow().clone())
 }
 impl Repo {
     /// Whether git may run what the repository's config names (hooks, filters, the fsmonitor,
     /// signature verifiers, a promisor) and use the configured git executable. A repository
     /// starts without it: only a caller that knows the project is trusted grants it.
     pub fn set_execution_allowed(&self, allowed: bool) {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         self.execution_allowed.store(allowed, std::sync::atomic::Ordering::Release);
+    }
+    /// The git executable from this repository's project settings (`None` or empty: the default,
+    /// see [`set_default_git_executable`]). A relative path resolves against the worktree root.
+    /// Used only while execution is allowed.
+    pub fn set_git_executable(&self, path: Option<&Path>) {
+        let path = path.filter(|p| !p.as_os_str().is_empty()).map(std::sync::Arc::from);
+        *self.git_executable.write().unwrap_or_else(|p| p.into_inner()) = path;
+    }
+    fn execution_scope(&self) -> ExecutionScope {
+        let git = self.git_executable.read().unwrap_or_else(|p| p.into_inner()).clone();
+        ExecutionScope::enter_with(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire), git)
     }
 }

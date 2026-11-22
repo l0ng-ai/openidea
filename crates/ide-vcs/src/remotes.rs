@@ -43,14 +43,14 @@ pub(crate) fn parse_remotes(text: &str) -> Vec<Remote> {
 impl Repo {
     /// Configured remotes with their fetch URLs.
     pub fn remotes(&self) -> IdeResult<Vec<Remote>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         let out = cli::run(self.root(), &["remote", "-v"], None)?;
         Ok(parse_remotes(&out.stdout_str()))
     }
 
     /// Whether `rev` names a commit present in the object database.
     pub fn has_commit(&self, rev: &str) -> bool {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         check_rev(rev).is_ok()
             && cli::run_raw(self.root(), &["cat-file", "-e", &format!("{rev}^{{commit}}")], None)
                 .is_ok_and(|o| o.code == Some(0))
@@ -65,7 +65,7 @@ impl Repo {
         cancel: &CancellationToken,
         on_output: &dyn Fn(String),
     ) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         check_rev(remote)?;
         for r in refspecs {
             check_rev(r)?;
@@ -77,7 +77,7 @@ impl Repo {
 
     /// The best common ancestor of two revisions, if any.
     pub fn merge_base(&self, a: &str, b: &str) -> IdeResult<Option<String>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         check_rev(a)?;
         check_rev(b)?;
         let out = cli::run_raw(self.root(), &["merge-base", a, b], None)?;
@@ -86,7 +86,7 @@ impl Repo {
 
     /// Files changed between two revisions (renames detected).
     pub fn diff_files(&self, from: &str, to: &str) -> IdeResult<Vec<ChangedFile>> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         check_rev(from)?;
         check_rev(to)?;
         let out = cli::run(

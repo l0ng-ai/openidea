@@ -286,6 +286,10 @@ impl Host {
                         lombok.jar(),
                     );
                     ide_sdk::apply::configure_gradle_runtime(cfg, root, server_root, &effective);
+                    let gradle_dirs: Vec<_> = std::iter::once(data_dir.join("gradle"))
+                        .chain(dirs::cache_dir().map(|dir| dir.join("openidea").join("gradle")))
+                        .collect();
+                    ide_sdk::apply::configure_gradle_classpath(cfg, &gradle_dirs);
                     ide_sdk::apply::configure_maven_sources(cfg, &effective);
                     ide_sdk::jdtls::launch_directly(cfg);
                 }
@@ -692,6 +696,10 @@ impl Host {
                 roots
             }));
         }
+        {
+            let weak = Arc::downgrade(&project);
+            project.agents.set_git_executable_hook(Arc::new(move || weak.upgrade()?.git_executable()));
+        }
         self.insert_project(window, project.clone());
         for (key, text, dirty) in &carried {
             let _ = project.documents.restore_untitled_buffer(key, text, *dirty);
@@ -765,12 +773,20 @@ impl Host {
         let skill_settings = settings.clone();
         let skill_root = root.clone();
         let trust = self.trust.clone();
+        let plugin_host = self.plugin_host.read().clone();
         agents.set_skills_policy_hook(Box::new(move || {
             let layer = |scope| skill_settings.layer(scope).agents.skills.clone();
+            let workspace_trusted = trust.window_trusted(&skill_root).unwrap_or(false);
+            let plugin_dirs = plugin_host
+                .upgrade()
+                .map(|plugins| plugins.skill_dirs(Some(&skill_root), workspace_trusted))
+                .unwrap_or_default();
             ide_agent::SkillsPolicy {
                 user: layer(ide_workspace::settings::SettingsScope::Global),
                 workspace: layer(ide_workspace::settings::SettingsScope::Project),
-                workspace_trusted: trust.trusted(&skill_root).unwrap_or(false),
+                workspace_trusted,
+                workspace_roots: crate::ops::agent::workspace_skill_roots(&skill_root),
+                plugin_dirs,
             }
         }));
         agents.set_mcp_servers_hook(Box::new(move || {
@@ -1061,11 +1077,24 @@ impl Project {
         );
     }
 
+    /// Settings › Version Control › Git › Path to Git executable, this project's value (its own
+    /// layer over the global one); `None` when it is empty or the project is not trusted.
+    /// Every git started for the project runs it: the project's repositories carry it, and work
+    /// that opens repositories of its own (agent worktrees, gh, plugins) passes it to
+    /// [`ide_vcs::with_git_executable`].
+    pub fn git_executable(&self) -> Option<PathBuf> {
+        let git = self.settings.read_effective(|s| s.vcs.git.executable.trim().to_owned());
+        (self.is_trusted() && !git.is_empty()).then(|| PathBuf::from(git))
+    }
+
     /// The project's git repositories.
     pub fn repos(&self) -> Repos {
         let repos = self.repos.read().clone();
+        let trusted = self.is_trusted();
+        let git = self.git_executable();
         for repo in repos.all() {
-            repo.set_execution_allowed(self.is_trusted());
+            repo.set_execution_allowed(trusted);
+            repo.set_git_executable(git.as_deref());
         }
         repos
     }
@@ -1149,9 +1178,6 @@ impl Project {
 
     fn run_in<T>(&self, repo: &Repo, f: impl FnOnce(&Repo) -> IdeResult<T>) -> IdeResult<T> {
         let settings = self.settings.effective();
-        if self.is_trusted() {
-            apply_git_executable(&settings);
-        }
         repo.set_ignored_names(settings.ignored_names());
         repo.set_cli_status(settings.vcs.git.cli_status);
         f(repo)
@@ -2165,12 +2191,6 @@ fn notify_transfer(sink: &SharedSink, what: &str, path: &Path, result: IdeResult
         title: format!("{what} failed: {name}"),
         body: Some(body),
     });
-}
-
-/// Settings › Version Control › Git › Path to Git executable (empty = auto-detect).
-pub fn apply_git_executable(settings: &ide_core::settings::Settings) {
-    let exe = settings.vcs.git.executable.trim();
-    ide_vcs::set_git_executable((!exe.is_empty()).then(|| Path::new(exe)));
 }
 
 #[cfg(test)]

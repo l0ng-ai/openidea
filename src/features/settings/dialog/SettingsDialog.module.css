@@ -101,19 +101,28 @@
   color: var(--fg-strong);
   font-weight: 600;
 }
-.crumb:last-child {
+.parentCrumbs {
+  display: flex;
   min-width: 0;
-}
-.crumb > span {
   overflow: hidden;
-  text-overflow: ellipsis;
 }
 .crumb {
   display: inline-flex;
   align-items: center;
+  min-width: 0;
+}
+.crumbLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.currentCrumb {
+  flex: none;
+  max-width: 100%;
 }
 .crumbSep {
-  margin: 0 4px;
+  flex: none;
+  margin-inline: var(--space-1);
   color: var(--fg-subtle);
 }
 .reset {

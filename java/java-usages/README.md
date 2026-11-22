@@ -88,7 +88,7 @@ is not a claim of full IntelliJ feature parity.
 ## Rebuild and delivery
 
 The checked-in jar is embedded by ide-sdk `include_bytes!`, installed as
-`java-usages-1.16.0.jar`, and added alongside existing initialization bundles.
+`java-usages-1.17.0.jar`, and added alongside existing initialization bundles.
 Users need no compiler, Maven or Python. Manifest/install version must change
 when replacing the bundle because OSGi caches bundles.
 
@@ -139,6 +139,9 @@ reproducible SHA-256 is `c29e5455c02c245523b2e7a5861e00ae670cefc66cda33ec19fdce2
 Version 1.16.0 adds `openidea.java.generatedSources`, which puts Maven plugin output such as
 protobuf and gRPC stubs on the project classpath; its reproducible SHA-256 is
 `a5feda1cae11bdea1044fb311404840b048601af037f65685973721f1eefff8b`.
+Version 1.17.0 adds `openidea.java.exceptionType`, the exception class at a caret for the exception
+breakpoint intention; its reproducible SHA-256 is
+`d1c596b37dcb6bd402ad48b214fd2a7651dbd4472eeea49e2ce992ea2f1363e9`.
 
 ```sh
 export PATH=/path/to/jdk25/bin:$PATH
@@ -169,6 +172,7 @@ python3 java/java-usages/tests/read-write.py /path/to/jdtls /path/to/lombok.jar 
 OPENIDEA_USAGES_INDEX_STRESS=1 python3 java/java-usages/tests/read-write.py /path/to/jdtls /path/to/lombok.jar > /tmp/read-write-indexed.json
 python3 java/java-usages/tests/hierarchy.py /path/to/jdtls
 python3 java/java-usages/tests/implementations.py /path/to/jdtls
+python3 java/java-usages/tests/exception-type.py /path/to/jdtls
 ```
 
 The harnesses select the JDT LS configuration for the current platform. The first
@@ -184,6 +188,21 @@ Find transfer, persistence and unfiltered non-Java counts with the same fixture.
 listing, moving, declaring abstract, pulling up to an interface, conflicts reported
 before any change, and a class without supertypes. Each edit is applied to a copy of
 the fixture and compiled with javac.
+
+`exception-type.py` puts the caret on throws, catches (multi-catch too), qualified names, a
+thrown variable or call, a nested, local, unresolved or non-Throwable class, an import and a
+class declaration, and compares each answer with IntelliJ's.
+
+## Exception class at a caret
+
+`openidea.java.exceptionType(uri, line, column)` answers `{qualifiedName, displayName}` (the
+binary name, `app.Outer$Failure`, and the simple name) or `null`, as IntelliJ's
+`ControlExceptionBreakpointJVMSupport` decides: from the token right of the caret, else the one
+left of it, the nearest enclosing reference, class or throw statement. A reference gives the class
+it resolves to (a constructor's class; a variable, a method or a package gives nothing, and so does
+a call with a qualifier, which UAST sees as a reference to its method), a class gives itself only on
+its name, a throw statement the class of what it throws. The class must be a `Throwable` with a
+qualified name: not unresolved, local, anonymous or a type variable.
 
 ## Class-hierarchy refactorings
 

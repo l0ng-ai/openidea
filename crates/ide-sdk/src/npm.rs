@@ -10,6 +10,13 @@ pub(crate) fn has_ts_api(lib: &Path) -> bool {
     lib.join("typescript.js").is_file()
 }
 
+/// `command` installed in the project: the nearest `node_modules/.bin` from `server_root` up to `root`.
+pub(crate) fn project_bin(command: &str, root: &Path, server_root: &Path) -> Option<PathBuf> {
+    server_root.ancestors().take_while(|dir| dir.starts_with(root)).find_map(|dir| {
+        ide_core::tool_path::find_command(command, dir.join("node_modules/.bin").as_os_str(), server_root)
+    })
+}
+
 /// The native executable of TypeScript 7 (`typescript` 7+, whose `tsc` is native, or
 /// `@typescript/native-preview`'s `tsgo`), from its package directory or its `lib`.
 /// These packages have no JavaScript API (`lib/typescript.js`); their platform package

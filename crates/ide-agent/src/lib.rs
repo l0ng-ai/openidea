@@ -23,6 +23,7 @@ mod provider;
 pub mod registry;
 pub mod security;
 mod shell;
+pub mod skill_installer;
 pub mod skills;
 mod timeline;
 mod worktree;
@@ -31,6 +32,10 @@ pub use catalogs::AgentCatalogs;
 pub use cli_update::{AgentCliOffer, AgentCliUpdateResult};
 pub use external::ExternalSession;
 pub use model::*;
+pub use skill_installer::{
+    InstallRemoteSkillRequest, RemoteSkillBrowseResult, RemoteSkillCandidate, RemoteSkillFile, RemoteSkillPreview,
+    SkillScanWarning, SkillScanWarningKind,
+};
 
 use conversation::{Conversation, SavedSubagent, Session};
 use ide_core::{IdeError, IdeResult, IpcPath};
@@ -57,6 +62,9 @@ pub type NewTaskApprovalsHook = Arc<dyn Fn() -> ide_core::settings::NewTaskAppro
 /// Returns the roots of the project's workspace an agent may work in: the project and the
 /// attached projects the user trusts.
 pub type WorkspaceRootsHook = Arc<dyn Fn() -> Vec<PathBuf> + Send + Sync>;
+
+/// Returns the project's git executable (`None`: the default), which the tasks' git runs.
+pub type GitExecutableHook = Arc<dyn Fn() -> Option<PathBuf> + Send + Sync>;
 
 /// Entry changes are batched for this long before they are sent.
 const FLUSH_DELAY: Duration = Duration::from_millis(40);
@@ -138,11 +146,27 @@ pub type McpExecutableFn = dyn Fn() -> Option<PathBuf> + Send + Sync;
 /// The `[agents.skills.<name>]` policies a session resolves against: the user's (global
 /// `settings.toml`), the workspace's (`.openidea/settings.toml`), and whether the workspace
 /// is trusted (an untrusted one can only turn skills off).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct SkillsPolicy {
     pub user: BTreeMap<String, AgentSkillPolicy>,
     pub workspace: BTreeMap<String, AgentSkillPolicy>,
     pub workspace_trusted: bool,
+    /// All workspace folders (the project root plus any multi-repo workspace members).
+    pub workspace_roots: Vec<PathBuf>,
+    /// Validated `<dir>` folders contributed by live OpenIDEA plugins (`[[contributes.skills]]`).
+    pub plugin_dirs: Vec<PathBuf>,
+}
+
+impl Default for SkillsPolicy {
+    fn default() -> Self {
+        Self {
+            user: BTreeMap::new(),
+            workspace: BTreeMap::new(),
+            workspace_trusted: true,
+            workspace_roots: Vec::new(),
+            plugin_dirs: Vec::new(),
+        }
+    }
 }
 
 /// Returns the skill policies for this project.
@@ -164,6 +188,7 @@ struct Shared {
     security: RwLock<Option<SecurityHook>>,
     new_task_approvals: RwLock<Option<NewTaskApprovalsHook>>,
     workspace_roots: RwLock<Option<WorkspaceRootsHook>>,
+    git_executable: RwLock<Option<GitExecutableHook>>,
     known: Arc<Mutex<HashMap<String, Known>>>,
     providers: RwLock<Vec<provider::ProviderSpec>>,
     /// Last probe of each provider.
@@ -578,6 +603,7 @@ impl AgentManager {
             security: RwLock::new(None),
             new_task_approvals: RwLock::new(None),
             workspace_roots: RwLock::new(None),
+            git_executable: RwLock::new(None),
             known,
             providers,
             probes: Mutex::new(HashMap::new()),
@@ -648,6 +674,11 @@ impl AgentManager {
     /// Sets the callback that lists the workspace roots offered to agents besides a task's own.
     pub fn set_workspace_roots_hook(&self, hook: WorkspaceRootsHook) {
         *self.shared.workspace_roots.write() = Some(hook);
+    }
+
+    /// Sets the callback that reads the project's git executable.
+    pub fn set_git_executable_hook(&self, hook: GitExecutableHook) {
+        *self.shared.git_executable.write() = Some(hook);
     }
 
     /// The agents (custom ones re-read), whether each is installed, and what they offered last time.
@@ -784,20 +815,22 @@ impl AgentManager {
         }
         let home = self.shared.paths.home_dir.clone();
         if provider == "hermes" || provider.starts_with("hermes-") {
+            let hermes_home = home.clone();
+            let hermes_provider = provider.clone();
             let found = blocking(move || {
-                let profile = hermes::root(home.as_deref()).and_then(|root| hermes::profile_home(&root, &provider));
+                let profile =
+                    hermes::root(hermes_home.as_deref()).and_then(|root| hermes::profile_home(&root, &hermes_provider));
                 Ok(profile.map(|p| skills::hermes(&p)).unwrap_or_default())
             })
             .await?;
-            return Ok(skills::merge(offered, found));
-        }
-        if provider == "claude" || provider == "claude-acp" {
+            offered = skills::merge(offered, found);
+        } else if provider == "claude" || provider == "claude-acp" {
             let claude_cwd = cwd.clone();
             let found = blocking(move || Ok(skills::discover(&claude_cwd, home.as_deref()))).await?;
             offered = skills::merge(offered, found);
         }
-        // The hub's active skills complete on every agent; its `off` ones drop out here,
-        // which is all the enforcement an ACP agent gets.
+        // The hub's active skills complete on every agent; its `off` ones drop out here
+        // (including entries `offered` already held), which is all the enforcement an ACP agent gets.
         let holder = self.task_for_commands(&provider, task);
         let states = match holder {
             Some(holder) => holder.skill_states().await,
@@ -807,10 +840,12 @@ impl AgentManager {
                     let policy = shared.skills_policy_hook.read().as_ref().map(|hook| hook()).unwrap_or_default();
                     (policy, shared.paths.project_root.clone())
                 };
+                let roots = if policy.workspace_roots.is_empty() { vec![root] } else { policy.workspace_roots };
+                let plugin_dirs = policy.plugin_dirs;
                 let home = self.shared.paths.home_dir.clone();
                 blocking(move || {
                     Ok(skills::resolve(
-                        skills::discover_skills(&root, home.as_deref()),
+                        skills::discover_skills_with_plugins(&roots, home.as_deref(), &plugin_dirs),
                         None,
                         &policy.workspace,
                         &policy.user,
@@ -958,14 +993,15 @@ impl AgentManager {
                 }
                 let dir = self.shared.paths.worktrees_dir.clone();
                 let (t, b) = (title.clone(), req.base.clone());
-                let c = blocking(move || worktree::create(&root, &dir, &t, b.as_deref())).await?;
+                let c = vcs(&self.shared, move || worktree::create(&root, &dir, &t, b.as_deref())).await?;
                 (c.path, Some(c.branch), Some(c.base), Some(c.base_commit), BTreeMap::new())
             }
             Isolation::Local => {
                 let r = root.clone();
-                let (head, before) =
-                    blocking(move || Ok((worktree::head_of(&r).ok(), worktree::snapshot(&r).unwrap_or_default())))
-                        .await?;
+                let (head, before) = vcs(&self.shared, move || {
+                    Ok((worktree::head_of(&r).ok(), worktree::snapshot(&r).unwrap_or_default()))
+                })
+                .await?;
                 let (base, commit) = head.unzip();
                 (root, None, base, commit, before)
             }
@@ -999,7 +1035,7 @@ impl AgentManager {
         } else {
             let name = format!("{id}.before");
             let (dir, at, files) = (self.shared.paths.store_dir.join(&name), cwd.clone(), before.clone());
-            match blocking(move || worktree::save_before(&at, &files, &dir)).await {
+            match vcs(&self.shared, move || worktree::save_before(&at, &files, &dir)).await {
                 Ok(saved) => saved.then_some(name),
                 Err(e) => {
                     tracing::warn!("saving the changed files of agent task {id}: {e}");
@@ -1801,7 +1837,7 @@ impl AgentManager {
                 let _ = tokio::time::timeout(EXIT_WAIT, peer.exited()).await;
             }
             let worktrees = self.shared.paths.worktrees_dir.clone();
-            blocking(move || worktree::remove(&root, &worktrees, &cwd)).await?;
+            vcs(&self.shared, move || worktree::remove(&root, &worktrees, &cwd)).await?;
         }
         Ok(())
     }
@@ -1811,7 +1847,7 @@ impl AgentManager {
         let task = self.task(id)?;
         let at = task.base();
         let (before, touched) = task.attribution();
-        blocking(move || Ok(worktree::made_by_task(at.changes(&before)?, touched.as_deref()))).await
+        vcs(&self.shared, move || Ok(worktree::made_by_task(at.changes(&before)?, touched.as_deref()))).await
     }
 
     /// The task's uncommitted changes and, for a worktree task, the commits made since it
@@ -1820,7 +1856,7 @@ impl AgentManager {
         let task = self.task(id)?;
         let at = task.base();
         let (before, touched) = task.attribution();
-        blocking(move || {
+        vcs(&self.shared, move || {
             let mut grouped = at.grouped_changes(&before)?;
             grouped.uncommitted = worktree::made_by_task(grouped.uncommitted, touched.as_deref());
             Ok(grouped)
@@ -1833,7 +1869,7 @@ impl AgentManager {
     pub async fn turn_changes(&self, id: &str) -> IdeResult<Vec<AgentChange>> {
         let (cwd, turn, dir) = self.task(id)?.last_turn();
         let Some(turn) = turn else { return Ok(Vec::new()) };
-        blocking(move || {
+        vcs(&self.shared, move || {
             let changed = match &turn.changed {
                 Some(changed) => changed.clone(),
                 None => worktree::changed_in_turn(&cwd, &turn)?.1,
@@ -1850,10 +1886,10 @@ impl AgentManager {
         if view == AgentChangesView::LastTurn {
             let (cwd, turn, dir) = task.last_turn();
             let Some(turn) = turn else { return Ok(None) };
-            return blocking(move || worktree::turn_text(&cwd, &path, &turn, &dir)).await;
+            return vcs(&self.shared, move || worktree::turn_text(&cwd, &path, &turn, &dir)).await;
         }
         let at = task.base();
-        blocking(move || {
+        vcs(&self.shared, move || {
             let rev = match view {
                 AgentChangesView::Group => worktree::head_commit(at.cwd())?,
                 _ => at.rev()?,
@@ -1887,7 +1923,7 @@ impl AgentManager {
             let s = task.state.lock();
             (s.before.clone(), s.saved.as_ref().map(|name| self.shared.paths.store_dir.join(name)), s.touched.clone())
         };
-        let (restamped, restored) = blocking(move || {
+        let (restamped, restored) = vcs(&self.shared, move || {
             let (changes, rev) = match view {
                 AgentChangesView::Group => (at.grouped_changes(&before)?.uncommitted, worktree::head_commit(at.cwd())?),
                 AgentChangesView::SinceStart | AgentChangesView::LastTurn => (at.changes(&before)?, at.rev()?),
@@ -1943,7 +1979,7 @@ impl AgentManager {
             let s = task.state.lock();
             (s.before.clone(), s.saved.as_ref().map(|name| self.shared.paths.store_dir.join(name)))
         };
-        let restamped = blocking(move || {
+        let restamped = vcs(&self.shared, move || {
             let changed = match &turn.changed {
                 Some(changed) => changed.clone(),
                 None => worktree::changed_in_turn(&cwd, &turn)?.1,
@@ -2000,7 +2036,7 @@ impl AgentManager {
         let Some(base) = base else {
             return Err(IdeError::invalid("the task has no base revision to accept from"));
         };
-        blocking(move || {
+        vcs(&self.shared, move || {
             let wanted: Vec<AgentChange> = worktree::without_untouched(worktree::changes(&cwd, &base)?, &before)
                 .into_iter()
                 .filter(|c| rel_paths.as_ref().is_none_or(|p| p.contains(&c.rel_path)))
@@ -2114,15 +2150,24 @@ impl Task {
     /// The skills offered in this project: every discovery resolved against the policies
     /// and the task's overrides.
     async fn skill_states(&self) -> Vec<AgentSkillState> {
-        let (policy, overrides, home, root) = {
+        let (policy, overrides, home, roots) = {
             let shared = &self.shared;
             let policy = shared.skills_policy_hook.read().as_ref().map(|hook| hook()).unwrap_or_default();
-            let overrides = self.state.lock().task.skill_overrides.clone();
-            (policy, overrides, shared.paths.home_dir.clone(), shared.paths.project_root.clone())
+            let (overrides, task_root) = {
+                let s = self.state.lock();
+                (s.task.skill_overrides.clone(), s.task.project_root.as_ref().map(|p| p.0.clone()))
+            };
+            let mut roots = Vec::new();
+            if let Some(tr) = task_root {
+                roots.push(tr);
+            }
+            roots.extend(policy.workspace_roots.iter().cloned());
+            roots.push(shared.paths.project_root.clone());
+            (policy, overrides, shared.paths.home_dir.clone(), roots)
         };
         blocking(move || {
             Ok(skills::resolve(
-                skills::discover_skills(&root, home.as_deref()),
+                skills::discover_skills_with_plugins(&roots, home.as_deref(), &policy.plugin_dirs),
                 Some(&overrides),
                 &policy.workspace,
                 &policy.user,
@@ -2246,7 +2291,7 @@ impl Task {
     /// Records the checkout as a turn starts: what the turn's changes are compared with.
     async fn checkout_before_turn(&self) {
         let (cwd, previous, dir) = self.last_turn();
-        let turn = match blocking(move || worktree::start_turn(&cwd, &dir, previous.as_deref())).await {
+        let turn = match vcs(&self.shared, move || worktree::start_turn(&cwd, &dir, previous.as_deref())).await {
             Ok(turn) => Some(Arc::new(turn)),
             Err(e) => {
                 tracing::warn!("recording the checkout as a turn of agent task {} starts: {e}", self.id);
@@ -2263,7 +2308,9 @@ impl Task {
         let (cwd, turn, _) = self.last_turn();
         let Some(turn) = turn else { return };
         let start = turn.clone();
-        let Ok((in_worktree, all)) = blocking(move || worktree::changed_in_turn(&cwd, &start)).await else { return };
+        let Ok((in_worktree, all)) = vcs(&self.shared, move || worktree::changed_in_turn(&cwd, &start)).await else {
+            return;
+        };
         {
             let mut s = self.state.lock();
             if !in_worktree.is_empty()
@@ -4215,6 +4262,12 @@ fn write_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + 'static) -> IdeResult<T> {
     tokio::task::spawn_blocking(f).await.map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+/// [`blocking`] for work that runs git: the repositories it opens run the project's git.
+async fn vcs<T: Send + 'static>(shared: &Shared, f: impl FnOnce() -> IdeResult<T> + Send + 'static) -> IdeResult<T> {
+    let git = shared.git_executable.read().as_ref().and_then(|hook| hook());
+    blocking(move || ide_vcs::with_git_executable(git.as_deref(), f)).await
 }
 
 #[cfg(test)]
