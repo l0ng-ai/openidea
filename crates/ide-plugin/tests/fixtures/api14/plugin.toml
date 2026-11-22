@@ -3,7 +3,7 @@ name = "API 1.4 host tests"
 version = "0.1.0"
 engines.openidea = "^1.5"
 wasm = "dist/plugin.wasm"
-activation = ["on-command:*", "on-event:file-closed", "on-event:settings-changed", "on-event:input-mode-changed"]
+activation = ["on-command:*", "on-event:file-closed", "on-event:settings-changed", "on-event:input-mode-changed", "on-event:caret-moved"]
 
 [capabilities]
 required = ["storage"]
