@@ -284,11 +284,11 @@ export function UsagesView() {
         <IconButton icon="arrow-up" action="navigate.prevOccurrence" size="small" iconSize={16} />
         <IconButton icon="arrow-down" action="navigate.nextOccurrence" size="small" iconSize={16} />
         <span className={styles.toolbarSep} />
+        <UsageAccessFilter items={allUsages} vertical />
         <IconButton icon="expand-all" title="Expand All" size="small" iconSize={16} onClick={() => setAll(false)} />
         <IconButton icon="collapse-all" title="Collapse All" size="small" iconSize={16} onClick={() => setAll(true)} />
       </div>
       <div className={styles.body} onKeyDown={onKeyDown}>
-        <UsageAccessFilter items={allUsages} />
         {!search.loading && !search.error && search.scope === "project" && (
           <div className={styles.summary}>
             <T>Usages in Project Files</T>
