@@ -48,7 +48,7 @@ import {
   selectHumpLeft,
   selectHumpRight,
 } from "./editing";
-import { enterInLineComment, lineCommentStyle, type LineCommentStyle } from "./comments";
+import { enterAfterDocLineComment, enterInLineComment, lineCommentStyle, type LineCommentStyle } from "./comments";
 import { enterInBlockComment, enterInDocComment, enterInDocstring } from "./docComment";
 import { renderDocComments } from "./renderedDocs";
 import {
@@ -746,6 +746,7 @@ export function prefsExtension(o: PrefsOptions): Extension {
     keys.push(
       { key: "Enter", run: enterInBlockComment },
       { key: "Enter", run: enterInLineComment },
+      { key: "Enter", run: enterAfterDocLineComment(o.language ?? "") },
       { key: "Enter", run: enterInStringLiteral(o.language ?? "") },
     );
   if (!k.smartIndent) keys.push({ key: "Enter", run: insertNewlineKeepIndent });

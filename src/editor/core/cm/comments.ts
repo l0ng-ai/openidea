@@ -480,6 +480,34 @@ function lineCommentStart(state: EditorState, pos: number, token: string): numbe
  * Enter inside a `//` comment with text after the caret: the rest moves to a
  * new line that continues the comment (with the comment's own spacing).
  */
+/** Languages whose `///` (and Rust's `//!`) line comments are documentation. */
+const DOC_LINE_COMMENT_LANGS = new Set(["rust", "csharp", "dart", "swift", "fsharp"]);
+
+/**
+ * Enter at the end of a `///` / `//!` documentation line continues the documentation on the
+ * next line (`/// |`), as RustRover and Rider do; plain `//` comments end there.
+ */
+export function enterAfterDocLineComment(language: string): Command {
+  return (view) => {
+    const { state } = view;
+    if (!DOC_LINE_COMMENT_LANGS.has(language) || state.readOnly) return false;
+    if (state.selection.ranges.length !== 1 || !state.selection.main.empty) return false;
+    const pos = state.selection.main.head;
+    const line = state.doc.lineAt(pos);
+    if (state.sliceDoc(pos, line.to).trim()) return false;
+    const m = /^([ \t]*)(\/\/\/|\/\/!)(?!\/)/.exec(line.text);
+    if (!m || (m[2] === "//!" && language !== "rust")) return false;
+    const insert = `${state.lineBreak}${m[1]}${m[2]} `;
+    view.dispatch({
+      changes: { from: pos, to: line.to, insert },
+      selection: { anchor: pos + insert.length },
+      scrollIntoView: true,
+      userEvent: "input",
+    });
+    return true;
+  };
+}
+
 export const enterInLineComment: Command = (view) => {
   const { state } = view;
   if (state.readOnly || state.selection.ranges.some((r) => !r.empty)) return false;
