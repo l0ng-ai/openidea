@@ -173,6 +173,17 @@ describe("planMoveStatement", () => {
     );
   });
 
+  it("swaps whole Go switch branches whose range runs to the next line's start", () => {
+    const GO = 'func f(x int) {\n\tswitch x {\n\tcase 1:\n\t\tprintln("one")\n\tcase 2:\n\t\tprintln("two")\n\t}\n}\n';
+    const s = state(GO.replace("case 1", "case| 1"), comments("//"));
+    const one = node(s, 'case 1:\n\t\tprintln("one")\n');
+    const two = node(s, 'case 2:\n\t\tprintln("two")\n');
+    const plan = planMoveStatement(s, ranges({ statement: one, nextStatement: two }), false);
+    expect(withCaret(s, plan.kind === "move" ? plan.spec : null)).toBe(
+      'func f(x int) {\n\tswitch x {\n\tcase 2:\n\t\tprintln("two")\n\tcase| 1:\n\t\tprintln("one")\n\t}\n}\n',
+    );
+  });
+
   it("moves a multi-line statement up over its previous sibling", () => {
     const s = kt("if (a");
     const r = ranges({
