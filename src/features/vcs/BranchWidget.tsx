@@ -148,6 +148,7 @@ export function BranchWidget() {
     <>
       <BarButton
         data-branches-widget
+        data-toolbar-icon-dropdown=""
         variant="title"
         className={styles.widget}
         tooltip={tooltip}
@@ -156,8 +157,12 @@ export function BranchWidget() {
         onClick={() => useBranchesPopup.setState({ open: !open })}
       >
         <Icon name={presented?.icon ?? (branch.head ? "branch" : "commit")} size={16} className={styles.icon} />
-        {repo && <span className={styles.repo}>{repo}</span>}
-        <span className={styles.name}>
+        {repo && (
+          <span className={styles.repo} data-toolbar-label="">
+            {repo}
+          </span>
+        )}
+        <span className={styles.name} data-toolbar-label="">
           {inProgress(branch.operation)
             ? operationTitle(inProgress(branch.operation)!, branch.head)
             : (presented?.text ?? headLabel(branch))}
