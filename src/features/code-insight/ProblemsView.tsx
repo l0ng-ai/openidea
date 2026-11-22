@@ -13,6 +13,7 @@ import { basename, relativeDir, useProject } from "@/platform/project";
 import { diagnosticInspection, producerOf, type InspectionRef } from "@/platform/inspections";
 import { problemControls } from "@/platform/inspectionControls";
 import { editorService, maybeEditorService, useOccurrenceNavigator } from "@/workbench/contributions";
+import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import {
   EmptyState,
   Icon,
@@ -72,7 +73,7 @@ const OPTIONS_KEY = "openidea.problems.view.v1";
 interface ProblemsOptions extends ProblemOrder {
   /** Selecting a problem opens it in the editor. */
   autoscroll: boolean;
-  /** Source preview beside the list. */
+  /** Source preview in the Problems tool window. */
   preview: boolean;
 }
 
@@ -214,11 +215,11 @@ function useCurrentPath(): string | null {
   return currentProblemsPath(text, useSyncExternalStore(subscribeActiveInput, activeInput));
 }
 
-function ProblemsToolbar() {
+function ProblemsToolbar({ orientation }: { orientation: "horizontal" | "vertical" }) {
   const show = useProblemsView((s) => s.show);
   const toggle = useProblemsView((s) => s.toggle);
   return (
-    <Toolbar aria-label="Problems actions" orientation="vertical" className={styles.toolbar}>
+    <Toolbar aria-label="Problems actions" orientation={orientation} className={styles.toolbar}>
       <IconButton icon="arrow-up" action="navigate.prevOccurrence" size="small" />
       <IconButton icon="arrow-down" action="navigate.nextOccurrence" size="small" />
       <IconButton icon="error" title="Show Errors" size="small" pressed={show.error} onClick={() => toggle("error")} />
@@ -281,12 +282,16 @@ export function ProblemsTabs() {
   );
 }
 
+const DEFAULT_PREVIEW_LAYOUT = { problems: 50, preview: 50 };
+
 export function ProblemsView() {
   const map = useProblems((s) => s.map);
   const { tab, show } = useProblemsView();
   const options = useProblemsOptions();
   const current = useCurrentPath();
   const root = useProject((s) => s.project?.root ?? "");
+  const sideDocked = useToolWindowLayout((s) => (s.placements.problems?.anchor ?? "bottom") !== "bottom");
+  const previewMinimum = sideDocked ? "25%" : 120;
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const [lead, setLead] = useState<Node | null>(null);
   const tree = useRef<TreeHandle>(null);
@@ -454,8 +459,8 @@ export function ProblemsView() {
     />
   );
   const list = (
-    <div className={styles.results}>
-      <ProblemsToolbar />
+    <div className={clsx(styles.results, sideDocked && styles.resultsStacked)}>
+      <ProblemsToolbar orientation={sideDocked ? "horizontal" : "vertical"} />
       {treeView}
     </div>
   );
@@ -464,12 +469,17 @@ export function ProblemsView() {
     <div className={styles.view}>
       <div className={styles.body} onKeyDownCapture={onKeyDownCapture}>
         {options.preview ? (
-          <SplitGroup orientation="horizontal" id="problems-preview-split" storageKey="openidea.problems.previewSplit">
-            <SplitPanel id="problems" minSize={120} className={styles.panel}>
+          <SplitGroup
+            orientation={sideDocked ? "vertical" : "horizontal"}
+            id="problems-preview-split"
+            storageKey={sideDocked ? "openidea.problems.previewSplit.vertical" : "openidea.problems.previewSplit"}
+            defaultLayout={DEFAULT_PREVIEW_LAYOUT}
+          >
+            <SplitPanel id="problems" minSize={previewMinimum} className={styles.panel}>
               {list}
             </SplitPanel>
             <SplitHandle />
-            <SplitPanel id="preview" minSize={120} defaultSize="50%" className={styles.panel}>
+            <SplitPanel id="preview" minSize={previewMinimum} className={styles.panel}>
               <SourcePreview
                 path={selected?.path ?? null}
                 line={selected?.d.range.start.line ?? 0}
