@@ -62,8 +62,20 @@ async function askServer(view: EditorView, signal?: AbortSignal, only?: string[]
   }
 }
 
-/** typescript-language-server returns refactorings only when `only` names `refactor` itself. */
-const WHOLE_REFACTOR_KIND = new Set(["javascript", "javascriptreact", "typescript", "typescriptreact"]);
+/**
+ * Servers that return refactorings only when `only` names `refactor` itself: typescript-language-server,
+ * and clangd, whose tweaks are all of kind `refactor`.
+ */
+const WHOLE_REFACTOR_KIND = new Set([
+  "javascript",
+  "javascriptreact",
+  "typescript",
+  "typescriptreact",
+  "c",
+  "cpp",
+  "objective-c",
+  "objective-cpp",
+]);
 
 /** The code action kind to ask `language`'s server for, to get the refactorings of `kind`. */
 export function requestKind(kind: string, language: string): string {
