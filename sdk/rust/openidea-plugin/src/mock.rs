@@ -2700,6 +2700,25 @@ pub mod current {
         })
     }
 
+    pub fn run_captured(
+        cmd: &crate::host::Command,
+        cwd: Option<&ProjectRes>,
+        stdin: Option<&str>,
+        options: Option<crate::host::ProcessOptions>,
+    ) -> Result<ProcessOutput, Error> {
+        let _ = options;
+        run_command(cmd, cwd, stdin)
+    }
+
+    pub fn start_stream(
+        cmd: &crate::host::Command,
+        cwd: Option<&ProjectRes>,
+        options: Option<crate::host::ProcessOptions>,
+    ) -> Result<ChildRes, Error> {
+        let _ = options;
+        start(cmd, cwd)
+    }
+
     /// Starts a [`Command`] and returns its handle (at most 8, as the host allows).
     pub fn start(cmd: &crate::host::Command, cwd: Option<&ProjectRes>) -> Result<ChildRes, Error> {
         with(|s| {
