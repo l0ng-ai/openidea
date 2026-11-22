@@ -190,6 +190,10 @@
   white-space: pre;
   color: var(--fg-strong);
 }
+.fileName {
+  flex-shrink: 0;
+  max-width: 100%;
+}
 .code {
   font-family: var(--font-ui);
   color: var(--fg);
@@ -208,6 +212,20 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--fg-subtle);
+}
+.path {
+  display: inline-flex;
+}
+.pathPart {
+  flex: none;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pathPrefix {
+  flex-shrink: 1;
 }
 .shortcut {
   flex: none;
