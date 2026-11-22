@@ -162,15 +162,24 @@
   white-space: nowrap;
   max-width: 220px;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
 .filterValue {
+  min-width: 0;
+  max-width: 16ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--fg-strong);
+}
+@container git-log (max-width: 600px) {
+  .filterValue {
+    max-width: 10ch;
+  }
 }
 .filterChevron {
   color: var(--fg-icon);
 }
 .filterClear {
+  flex: none;
   height: 100%;
   display: inline-flex;
   align-items: center;

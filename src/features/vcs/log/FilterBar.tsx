@@ -56,7 +56,13 @@ function FilterButton({ label, value, onOpen, onClear, hidden }: LogFilter & { h
       className={clsx(styles.filterButton, value && styles.filterActive, hidden && styles.filterHidden)}
       inert={hidden}
     >
-      <button type="button" className={styles.filterMain} onClick={(e) => onOpen(e.currentTarget)} aria-haspopup="menu">
+      <button
+        type="button"
+        className={styles.filterMain}
+        onClick={(e) => onOpen(e.currentTarget)}
+        aria-haspopup="menu"
+        title={value ?? undefined}
+      >
         {value ? (
           <>
             {tx(label)}: <span className={styles.filterValue}>{value}</span>

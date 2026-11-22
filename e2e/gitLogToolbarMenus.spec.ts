@@ -174,6 +174,48 @@ test("Git Log keeps filters and actions inside the commit pane at the minimum wi
   await expect(page.getByRole("menuitem", { name: "Paths" })).toBeVisible();
 });
 
+test("long Git Log filter values shorten inside their buttons", async ({ workbench: page }) => {
+  const branchName = "feature/quarterly-settlement-and-backoffice-invoice-reconciliation";
+  await page.setViewportSize({ width: 1120, height: 720 });
+  await page.evaluate(async (branch) => {
+    const logModule = "/src/features/vcs/logStore.ts";
+    const optionsModule = "/src/features/vcs/logOptions.ts";
+    const { setLogBranches } = await import(/* @vite-ignore */ logModule);
+    const { setLogOptions } = await import(/* @vite-ignore */ optionsModule);
+    setLogOptions({ showBranches: false, showDetails: false });
+    setLogBranches([branch]);
+  }, branchName);
+
+  const toolbar = page.getByRole("toolbar", { name: "Log filters" });
+  const branch = toolbar.getByRole("button", { name: `Branch: ${branchName}`, exact: true });
+  const value = branch.getByText(branchName, { exact: true });
+  const clear = toolbar.getByRole("button", { name: "Clear Branch filter", exact: true });
+  for (const width of [1120, 620]) {
+    await page.setViewportSize({ width, height: 720 });
+    await expect(branch).toBeVisible();
+    await expect(value).toHaveCSS("text-overflow", "ellipsis");
+    expect(
+      await value.evaluate((label) => {
+        const bounds = label.getBoundingClientRect();
+        const button = label.closest("button")!.getBoundingClientRect();
+        return label.scrollWidth > label.clientWidth && bounds.width > 0 && bounds.right <= button.right;
+      }),
+    ).toBe(true);
+    await expect(branch).toHaveAttribute("title", branchName);
+    await clear.click({ trial: true });
+  }
+
+  await page.setViewportSize({ width: 400, height: 560 });
+  await toolbar.getByRole("button", { name: "More Filters" }).click();
+  await expect(page.getByRole("menuitem", { name: `Branch: ${branchName}`, exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  await page.setViewportSize({ width: 620, height: 720 });
+  await clear.click();
+  await expect(toolbar.getByRole("button", { name: "Branch", exact: true })).toBeVisible();
+  await expect(clear).toBeHidden();
+});
+
 test("Git Log puts affected changes on the changed-files toolbar and groups preview options", async ({
   workbench: page,
 }) => {
