@@ -1,4 +1,5 @@
 {
+  "Task Actions": "Task Actions",
   "Search commits": "Search commits",
   "Amend commit failed": "Amend commit failed",
   "Amending this commit would cause a conflict. You can keep the prepared changes as a separate amend commit.": "Amending this commit would cause a conflict. You can keep the prepared changes as a separate amend commit.",

@@ -1,38 +1,81 @@
 import type { Page } from "@playwright/test";
+import type { BeforeLaunchTask } from "../src/bindings";
 import { expect, test } from "./fixtures";
 
-async function openConfigurations(page: Page, target?: string) {
-  await page.evaluate(async (target) => {
-    const path = "/src/features/run/store.ts";
-    const { useRun } = await import(/* @vite-ignore */ path);
-    const base = {
-      kind: "shell",
-      command: "/Users/developer/projects/acme/services/payments/scripts/start-development-server",
-      args: ["--watch"],
-      cwd: "/Users/developer/projects/acme/services/payments",
-      env: { NODE_ENV: "development" },
-      detected: false,
-      isTest: false,
-      debugAdapter: null,
-    };
-    useRun.setState({
-      configs: [
-        {
-          ...base,
-          id: "layout:app",
-          name: "Payments development server",
-          target,
-          beforeLaunch: [{ kind: "run", target: "layout:prepare" }],
-        },
-        { ...base, id: "layout:prepare", name: "Prepare generated sources for the payments development server" },
-      ],
-      selectedId: "layout:app",
-      loaded: true,
-      editorOpen: true,
-    });
-  }, target);
+async function openConfigurations(page: Page, target?: string, beforeLaunch?: BeforeLaunchTask[]) {
+  await page.evaluate(
+    async ({ target, beforeLaunch }) => {
+      const path = "/src/features/run/store.ts";
+      const { useRun } = await import(/* @vite-ignore */ path);
+      const base = {
+        kind: "shell",
+        command: "/Users/developer/projects/acme/services/payments/scripts/start-development-server",
+        args: ["--watch"],
+        cwd: "/Users/developer/projects/acme/services/payments",
+        env: { NODE_ENV: "development" },
+        detected: false,
+        isTest: false,
+        debugAdapter: null,
+      };
+      useRun.setState({
+        configs: [
+          {
+            ...base,
+            id: "layout:app",
+            name: "Payments development server",
+            target,
+            beforeLaunch: beforeLaunch ?? [{ kind: "run", target: "layout:prepare" }],
+          },
+          { ...base, id: "layout:prepare", name: "Prepare generated sources for the payments development server" },
+        ],
+        selectedId: "layout:app",
+        loaded: true,
+        editorOpen: true,
+      });
+    },
+    { target, beforeLaunch },
+  );
   await expect(page.getByRole("dialog", { name: "Run/Debug Configurations", exact: true })).toBeVisible();
 }
+
+test("before-launch tasks wrap as ordered tags and keep their edit controls", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 1150, height: 820 });
+  await openConfigurations(page, undefined, [
+    { kind: "build" },
+    { kind: "buildArtifacts" },
+    { kind: "command", target: "make generate" },
+  ]);
+  const dialog = page.getByRole("dialog", { name: "Run/Debug Configurations", exact: true });
+  const tasks = dialog.getByRole("list", { name: "Before launch tasks", exact: true });
+  const build = tasks.getByRole("button", { name: "1. Build Project", exact: true });
+  const artifacts = tasks.getByRole("button", { name: "2. Build Artifacts", exact: true });
+  await tasks.scrollIntoViewIfNeeded();
+  await expect(build).toBeVisible();
+  expect((await build.boundingBox())!.y).toBeCloseTo((await artifacts.boundingBox())!.y, 0);
+  await expect(build).toHaveCSS("font-size", "13px");
+
+  await page.setViewportSize({ width: 520, height: 820 });
+  await expect.poll(() => tasks.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+  const command = tasks.getByRole("textbox", { name: "Before launch command 3" });
+  expect((await command.boundingBox())!.y).toBeGreaterThan((await build.boundingBox())!.y + 20);
+  await command.fill("make report");
+
+  await build.press("Enter");
+  const actions = page.getByRole("menu", { name: "Task Actions", exact: true });
+  const moveDown = actions.getByRole("menuitem", { name: "Move Down", exact: true });
+  await expect(moveDown).toBeVisible();
+  await moveDown.click();
+  await expect(tasks.getByRole("button", { name: "1. Build Artifacts", exact: true })).toBeVisible();
+  const moved = tasks.getByRole("listitem").filter({
+    has: page.getByRole("button", { name: "2. Build Project", exact: true }),
+  });
+  await moved.getByRole("button", { name: "Remove Task" }).click();
+  await expect(tasks.getByRole("textbox", { name: "Before launch command 2" })).toHaveValue("make report");
+
+  await tasks.getByRole("button", { name: "Add task", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Build Project", exact: true }).click();
+  await expect(tasks.getByRole("button", { name: "3. Build Project", exact: true })).toBeVisible();
+});
 
 test("long run target names leave room for configuration names in the sidebar", async ({ workbench: page }) => {
   const target = "payments-development-shared-staging-runner-west";

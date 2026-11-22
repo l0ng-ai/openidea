@@ -958,10 +958,43 @@
 .taskRow > :first-child {
   min-width: 0;
 }
-.taskActions {
+.beforeLaunchTasks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+.taskTag {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-0-5);
+  gap: var(--space-1);
+  min-width: 0;
+  max-width: 100%;
+  min-height: var(--h-list-row);
+  padding-inline: var(--space-2) var(--space-1);
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+  color: var(--fg);
+  font-size: var(--fs-ui);
+}
+.taskName {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  min-height: var(--h-list-row);
+  text-align: start;
+}
+.taskName:hover {
+  color: var(--fg-strong);
+}
+.taskOrder {
+  flex: none;
+  color: var(--fg-muted);
+}
+.taskTag .taskCommand {
+  width: 24ch;
+  height: var(--h-control-small);
 }
 .taskLabel {
   overflow: hidden;
