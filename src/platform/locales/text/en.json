@@ -3030,5 +3030,7 @@
   "ID:": "ID:",
   "Homepage:": "Homepage:",
   "Mail:": "Mail:",
-  "A folder with this name already exists and is not empty": "A folder with this name already exists and is not empty"
+  "A folder with this name already exists and is not empty": "A folder with this name already exists and is not empty",
+  "Show Only Affected Changes": "Show Only Affected Changes",
+  "Layout": "Layout"
 }

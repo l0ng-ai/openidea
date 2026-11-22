@@ -9353,5 +9353,7 @@
   "Signed by:": "签名者：",
   "ID:": "ID：",
   "Homepage:": "主页：",
-  "Mail:": "邮件："
+  "Mail:": "邮件：",
+  "Show Only Affected Changes": "仅显示受影响的变更",
+  "Layout": "布局"
 }
