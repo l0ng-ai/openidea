@@ -467,6 +467,7 @@ export function VariablesView({
           editing?.key === n.key ? (
             <VarEditRow
               node={n}
+              changed={isChanged(n)}
               value={editing.value}
               error={editing.error}
               onChange={(value) => setEditing({ ...editing, value, error: null })}
@@ -558,6 +559,7 @@ function ValueDialog({
 
 function VarEditRow({
   node,
+  changed,
   value,
   error,
   onChange,
@@ -565,6 +567,7 @@ function VarEditRow({
   onCancel,
 }: {
   node: VarNode;
+  changed: boolean;
   value: string;
   error: string | null;
   onChange: (v: string) => void;
@@ -575,37 +578,36 @@ function VarEditRow({
   // the global "Escape → focus editor" binding (`!popupOpen`) from firing.
   useEffect(() => acquirePopup(), []);
   return (
-    <span className={styles.row}>
-      <span className={styles.name} title={node.name}>
-        {node.name}
+    <span className={clsx(styles.row, styles.editRow)} title={node.name}>
+      <VarPrefix node={node} changed={changed} />
+      <span className={styles.valueGroup}>
+        <input
+          className={clsx(styles.editInput, error && styles.editInvalid)}
+          value={value}
+          autoFocus
+          spellCheck={false}
+          autoComplete="off"
+          aria-label={`New value of ${node.name}`}
+          aria-invalid={!!error || undefined}
+          title={error ?? undefined}
+          onFocus={(e) => e.currentTarget.select()}
+          onChange={(e) => onChange(e.target.value)}
+          onClick={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
+          onBlur={onCancel}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === "Enter") {
+              e.preventDefault();
+              onCommit();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              onCancel();
+            }
+          }}
+        />
+        {error && <span className={clsx(styles.error, styles.editError)}>{oneLine(error)}</span>}
       </span>
-      <span className={styles.eq}>=</span>
-      <input
-        className={clsx(styles.editInput, error && styles.editInvalid)}
-        value={value}
-        autoFocus
-        spellCheck={false}
-        autoComplete="off"
-        aria-label={`New value of ${node.name}`}
-        aria-invalid={!!error || undefined}
-        title={error ?? undefined}
-        onFocus={(e) => e.currentTarget.select()}
-        onChange={(e) => onChange(e.target.value)}
-        onClick={(e) => e.stopPropagation()}
-        onDoubleClick={(e) => e.stopPropagation()}
-        onBlur={onCancel}
-        onKeyDown={(e) => {
-          e.stopPropagation();
-          if (e.key === "Enter") {
-            e.preventDefault();
-            onCommit();
-          } else if (e.key === "Escape") {
-            e.preventDefault();
-            onCancel();
-          }
-        }}
-      />
-      {error && <span className={styles.error}>{error}</span>}
     </span>
   );
 }
@@ -614,6 +616,31 @@ function nodeIcon(node: VarNode): string {
   if (node.kind === "watch") return "eye";
   if (node.kind === "eval") return "evaluate-expression";
   return node.depth0 ? "variable" : "field";
+}
+
+function VarPrefix({ node, changed, showName = true }: { node: VarNode; changed: boolean; showName?: boolean }) {
+  const evaluation = node.kind === "eval";
+  return (
+    <>
+      <Icon name={nodeIcon(node)} size={16} className={styles.nodeIcon} />
+      {showName && (
+        <>
+          <span
+            className={clsx(
+              styles.name,
+              evaluation && styles.evalName,
+              node.kind === "var" && styles.varName,
+              changed && styles.changed,
+            )}
+            title={evaluation ? node.name : undefined}
+          >
+            {evaluation ? oneLine(node.name) : node.name}
+          </span>
+          <span className={styles.eq}>=</span>
+        </>
+      )}
+    </>
+  );
 }
 
 function VarRow({
@@ -655,26 +682,9 @@ function VarRow({
     );
   const kind = node.error ? null : classifyValue(node.value, node.typeName);
   const shown = shownValue(node.value, node.typeName);
-  const evaluation = node.kind === "eval";
   return (
     <span className={styles.row} title={node.name}>
-      <Icon name={nodeIcon(node)} size={16} className={styles.nodeIcon} />
-      {!shown.entry && (
-        <>
-          <span
-            className={clsx(
-              styles.name,
-              evaluation && styles.evalName,
-              node.kind === "var" && styles.varName,
-              changed && styles.changed,
-            )}
-            title={evaluation ? node.name : undefined}
-          >
-            {evaluation ? oneLine(node.name) : node.name}
-          </span>
-          <span className={styles.eq}>=</span>
-        </>
-      )}
+      <VarPrefix node={node} changed={changed} showName={!shown.entry} />
       {node.error ? (
         <span className={styles.error}>{oneLine(node.error)}</span>
       ) : (

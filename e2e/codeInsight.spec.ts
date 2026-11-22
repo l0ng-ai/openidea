@@ -715,6 +715,58 @@ test("rename keeps the typed name, uses the editor font and shows long preview n
   await expect.poll(() => ipcCalls(page, "apply_workspace_edit")).toHaveLength(1);
 });
 
+test("intentions separate quick fixes from other actions and navigate across the divider", async ({
+  workbench: page,
+}) => {
+  const editor = await openSample(page);
+  const fix = "Correct the Order type";
+  const refactor = "Extract the order value";
+  await page.evaluate(
+    ({ file, edit, fix, refactor }) => {
+      const action = (title: string, kind: string, newText: string) => ({
+        title,
+        kind,
+        isPreferred: false,
+        disabledReason: null,
+        edit: { files: [{ kind: "edit", path: file, edits: [{ range: edit, new_text: newText }] }] },
+        command: null,
+        data: null,
+        server: 1,
+      });
+      window.__ipc.handlers.lsp_code_actions = () => [
+        action(refactor, "refactor.extract", "ExtractedOrder"),
+        action(fix, "quickfix", "CorrectOrder"),
+      ];
+      window.__ipc.handlers.lsp_execute_code_action = () => [];
+    },
+    { file: FILE, edit: range(20, 19, 24), fix, refactor },
+  );
+  await caretAt(editor, page, "val order: Order", "Order ");
+  await page.keyboard.press("Alt+Enter");
+
+  const popup = page.getByRole("dialog", { name: "Intentions", exact: true });
+  const list = popup.getByRole("listbox", { name: "Intentions" });
+  const divider = list.locator("[class*=listDivider]");
+  const preview = popup.locator('[aria-label="Preview"] pre');
+  await expect(list.getByRole("option", { name: fix })).toBeVisible();
+  await page.keyboard.type("order");
+  await expect(list.getByRole("option")).toHaveText([fix, refactor]);
+  await expect(divider).toHaveCount(1);
+  await expect(list.getByRole("option", { name: fix })).toHaveAttribute("aria-selected", "true");
+  await expect(preview).toContainText("CorrectOrder");
+  await list.press("ArrowDown");
+  await expect(list.getByRole("option", { name: refactor })).toHaveAttribute("aria-selected", "true");
+  await expect(preview).toContainText("ExtractedOrder");
+
+  for (const _character of "order") await list.press("Backspace");
+  await page.keyboard.type("extract");
+  await expect(list.getByRole("option")).toHaveText([refactor]);
+  await expect(divider).toHaveCount(0);
+  await list.press("Enter");
+  await expect(popup).toBeHidden();
+  await expect.poll(() => ipcCalls(page, "lsp_execute_code_action")).toHaveLength(1);
+});
+
 test("intention previews fit narrow windows and wrap long code lines", async ({ workbench: page }) => {
   await page.setViewportSize({ width: 1600, height: 900 });
   const editor = await openSample(page);

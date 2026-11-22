@@ -13,7 +13,7 @@ import { openEditorPaths, useEditorRegistry } from "@/editor/api";
 import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { t, useTxTemplate, tx, txPart } from "@/platform/i18n";
-import { formatBinding, hostBinding, shortcutLabel } from "@/platform/keymap";
+import { formatBinding, hostBinding, registerKeyClaim, shortcutLabel } from "@/platform/keymap";
 import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { useProjectModules } from "@/platform/projectRoots";
@@ -193,7 +193,19 @@ function FindInFilesDialog() {
   // Hidden popup actions (⌘G, F4, ⌥↓ …) win over the editor's bindings while this is set.
   useEffect(() => {
     setContext("findPopupOpen", true);
-    return () => setContext("findPopupOpen", false);
+    const release = registerKeyClaim(
+      (e) =>
+        e.key === "Enter" &&
+        (e.ctrlKey || e.metaKey) &&
+        !e.altKey &&
+        !e.shiftKey &&
+        e.target instanceof HTMLElement &&
+        e.target.matches("[data-find-field] :is(input, textarea)"),
+    );
+    return () => {
+      release();
+      setContext("findPopupOpen", false);
+    };
   }, []);
 
   useEffect(() => {
@@ -491,8 +503,7 @@ function FindInFilesDialog() {
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
-    const inField =
-      (target.tagName === "INPUT" || target.tagName === "TEXTAREA") && target.closest("[data-find-field]");
+    const inField = target.matches("[data-find-field] :is(input, textarea)");
     if (e.key === "Backspace" && e.altKey && e.shiftKey && !e.metaKey && !e.ctrlKey) {
       e.preventDefault();
       clearOptions();
@@ -611,6 +622,7 @@ function FindInFilesDialog() {
         }
         renderItem={(r, st) => {
           const state = s.replace ? groupState(r, marks) : "pending";
+          const repeatedFile = !st.active && rows[st.index - 1]?.path === r.path;
           return (
             <>
               <span
@@ -626,13 +638,20 @@ function FindInFilesDialog() {
                   source={{ path: r.path, line: r.line, col: r.textCol }}
                 />
               </span>
-              <span className={clsx(styles.rowFile, st.active && styles.rowFileActive)}>
-                {state === "done" && (
-                  <span className={styles.rowLine}>
-                    <T>replaced ·</T>{" "}
-                  </span>
-                )}
-                {workspace ? r.relPath : basename(r.relPath)} <span className={styles.rowLine}>{r.line + 1}</span>
+              <span className={clsx(styles.rowLocation, st.active && styles.rowLocationActive)}>
+                <span
+                  className={clsx(styles.rowFile, repeatedFile && styles.rowFileRepeated)}
+                  title={r.relPath}
+                  dir="auto"
+                >
+                  {state === "done" && (
+                    <>
+                      <T>replaced ·</T>{" "}
+                    </>
+                  )}
+                  {workspace ? r.relPath : basename(r.relPath)}
+                </span>{" "}
+                <span className={styles.rowLine}>{r.line + 1}</span>
               </span>
             </>
           );
@@ -903,30 +922,37 @@ function FindInFilesDialog() {
           )}
         </div>
         <footer className={styles.footer}>
-          <Checkbox
-            checked={s.newTab}
-            onChange={setFindPopupNewTab}
-            label={<Mnemonic text={tx("Open results in new tab")} char="B" />}
-          />
-          {s.replace && <Checkbox checked={previewMode} onChange={setPreviewMode} label="Preview" />}
+          <div className={styles.footerOptions}>
+            <Checkbox
+              checked={s.newTab}
+              onChange={setFindPopupNewTab}
+              label={<Mnemonic text={tx("Open results in new tab")} char="B" />}
+            />
+            {s.replace && <Checkbox checked={previewMode} onChange={setPreviewMode} label="Preview" />}
+          </div>
           {navigationHint && <span className={styles.hint}>{navigationHint}</span>}
-          <span className={styles.spacer} />
-          {s.replace && progress && (
-            <span className={styles.hint} aria-live="polite">
-              {tx`Replacing… ${progress.done}/${progress.total} files`}
-            </span>
+          {s.replace && (progress || running) && (
+            <div className={styles.footerGroup}>
+              {progress && (
+                <span className={styles.hint} aria-live="polite">
+                  {tx`Replacing… ${progress.done}/${progress.total} files`}
+                </span>
+              )}
+              {running && (
+                <Button onClick={() => running.cancel()}>
+                  <T>Stop</T>
+                </Button>
+              )}
+            </div>
           )}
-          {s.replace && running && (
-            <Button onClick={() => running.cancel()}>
-              <T>Stop</T>
+          <div className={styles.footerGroup}>
+            <kbd className={styles.okHint}>{formatBinding(hostBinding("Meta+Enter"))}</kbd>
+            <Button disabled={!query?.pattern} onClick={pin}>
+              <T>Open in Find Window</T>
             </Button>
-          )}
-          <span className={styles.okHint}>{formatBinding(hostBinding("Meta+Enter"))}</span>
-          <Button disabled={!query?.pattern} onClick={pin}>
-            <T>Open in Find Window</T>
-          </Button>
+          </div>
           {s.replace && (
-            <>
+            <div className={styles.footerGroup}>
               <Button
                 title={formatBinding("Shift+Alt+Enter")}
                 disabled={stale || !rows.length || busy || state.status === "searching"}
@@ -937,7 +963,7 @@ function FindInFilesDialog() {
               <Button variant="primary" disabled={stale || !selected || busy} onClick={() => void replaceSelected()}>
                 {pendingSelected > 1 ? txt(`Replace ${pendingSelected} Occurrences`) : <T>Replace</T>}
               </Button>
-            </>
+            </div>
           )}
         </footer>
       </div>

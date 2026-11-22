@@ -15,7 +15,7 @@ vi.mock("@/workbench/contributions", async (orig) => {
 });
 
 const { LspPopups, DocumentationWindow } = await import("./Popups");
-const { closePopup, openPopup, useLspPopup } = await import("./popupStore");
+const { closePopup, openPopup, updatePopup, useLspPopup } = await import("./popupStore");
 const { useDocWindow, hoverDoc, pushHistory, stepHistory, hoverCandidates } = await import("./docs");
 const { mountHoverDoc } = await import("./DocView");
 const { hoverSource } = await import("./hover");
@@ -137,6 +137,31 @@ describe("list popup", () => {
     expect(onActive[1]).toHaveBeenCalledOnce();
     act(() => closePopup());
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the chosen intention when a quick-fix section arrives ahead of it", () => {
+    const local = ["Extract variable", "Inline value"].map((label) => ({
+      id: label,
+      label,
+      section: { id: "intentions" },
+      run: vi.fn(),
+    }));
+    openPopup({ kind: "list", title: "Intentions", anchor: { x: 0, y: 0 }, items: local, busy: true });
+    render(<LspPopups />);
+    fireEvent.keyDown(screen.getByRole("listbox"), { key: "ArrowDown" });
+    expect(screen.getByRole("option", { name: "Inline value", selected: true })).toBeVisible();
+
+    const runFix = vi.fn();
+    act(() =>
+      updatePopup("list", {
+        busy: false,
+        items: [{ id: "fix", label: "Correct type", section: { id: "quick-fixes" }, run: runFix }, ...local],
+      }),
+    );
+    expect(screen.getByRole("option", { name: "Inline value", selected: true })).toBeVisible();
+    fireEvent.keyDown(screen.getByRole("listbox"), { key: "Enter" });
+    expect(local[1]!.run).toHaveBeenCalledOnce();
+    expect(runFix).not.toHaveBeenCalled();
   });
 
   it("focuses the rows, not the header's pin button, when it opens", () => {

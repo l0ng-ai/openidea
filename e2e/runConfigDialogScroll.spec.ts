@@ -2,7 +2,7 @@ import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
 
 for (const height of [990, 700, 560]) {
-  test(`run configurations dialog keeps its toolbar and scrolls only inside the panes at ${height}px`, async ({
+  test(`run configurations dialog keeps its toolbar and name visible while scrolling at ${height}px`, async ({
     workbench: page,
   }) => {
     await page.setViewportSize({ width: 900, height });
@@ -62,9 +62,13 @@ async function resize(page: Page, dialog: Locator, dy: number) {
 async function checkScrolling(page: Page, dialog: Locator) {
   const body = dialog.locator("[data-dialog-body]");
   const list = dialog.getByRole("tree", { name: "Run configurations", exact: true });
-  const form = dialog.locator('[class*="_editForm_"]');
+  const form = dialog.locator('[class*="_formSettings_"]');
+  const nameField = dialog.getByRole("textbox", { name: "Name", exact: true });
   await list.evaluate((el) => (el.scrollTop = 0));
   await form.evaluate((el) => (el.scrollTop = 0));
+  // Measure once the dialog's opening animation has settled.
+  await dialog.evaluate((el) => Promise.all(el.getAnimations().map((animation) => animation.finished)));
+  const nameTop = (await nameField.boundingBox())!.y;
   await list.hover();
   await page.mouse.wheel(0, 200);
   await expect.poll(() => list.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
@@ -74,6 +78,8 @@ async function checkScrolling(page: Page, dialog: Locator) {
   await page.mouse.wheel(0, 200);
   await expect.poll(() => form.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
   expect(await list.evaluate((el) => el.scrollTop)).toBe(listTop);
+  expect((await nameField.boundingBox())!.y).toBeCloseTo(nameTop, 0);
+  await expect(dialog.getByRole("checkbox", { name: /Store as project file/ })).toBeInViewport({ ratio: 1 });
   const overflow = await body.evaluate((el) => ({
     scroll: el.scrollHeight,
     client: el.clientHeight,

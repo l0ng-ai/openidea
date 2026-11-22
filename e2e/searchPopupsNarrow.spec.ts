@@ -3,7 +3,9 @@
  * header on screen: titles stay on one line and every header control lies inside the popup.
  */
 import type { Page } from "@playwright/test";
-import { expect, stubDesktop, test } from "./fixtures";
+import { expect, openFromTree, stubDesktop, test } from "./fixtures";
+
+const LONG_RESULT_PATH = "config/RegionalOrderReconciliationEndpointsForSandboxEnvironments.txt";
 
 async function run(page: Page, id: string) {
   await page.evaluate(async (id) => {
@@ -15,15 +17,16 @@ async function run(page: Page, id: string) {
 
 async function stubFindMatches(page: Page) {
   await stubDesktop(page);
-  await page.evaluate(() => {
+  await page.evaluate((longPath) => {
     window.__ipc.handlers.search_validate = () => null;
     window.__ipc.handlers.search_start = (args) => {
       const send = (event: unknown) => window.__ipc.send(args.onEvent, event);
       const text = "base=http://localhost:8080";
       setTimeout(() => {
         for (let i = 0; i < 12; i++) {
-          const relPath = `config/endpoint-${i}.txt`;
-          const matches = [{ line: 0, text, ranges: [[5, text.length]], textOffset: 0 }];
+          const relPath = i === 0 ? longPath : `config/endpoint-${i}.txt`;
+          const lines = i === 0 ? [12344, 12345] : [0];
+          const matches = lines.map((line) => ({ line, text, ranges: [[5, text.length]], textOffset: 0 }));
           send({
             type: "file",
             file: { path: `/dev/acme-api/${relPath}`, relPath, matches },
@@ -31,12 +34,12 @@ async function stubFindMatches(page: Page) {
         }
         send({
           type: "done",
-          summary: { files: 12, matches: 12, limitHit: false, cancelled: false, elapsedMs: 4 },
+          summary: { files: 12, matches: 13, limitHit: false, cancelled: false, elapsedMs: 4 },
         });
       }, 20);
       return null;
     };
-  });
+  }, LONG_RESULT_PATH);
 }
 
 async function expectControlsFit(page: Page) {
@@ -74,7 +77,8 @@ test.describe("search popups at the minimum window width", () => {
       await expect(page.getByRole("dialog").locator("header [aria-live]")).toContainText(/match/);
       const dialog = page.getByRole("dialog");
       const title = dialog.getByText(id === "find.inPath" ? "Find in Files" : "Replace in Files", { exact: true });
-      const count = dialog.getByText("12 matches in 12 files", { exact: true });
+      const count = dialog.getByText("13 matches in 12 files", { exact: true });
+      const line = dialog.getByText("12345", { exact: true });
       for (const [width, height] of [
         [400, 500],
         [600, 700],
@@ -87,6 +91,14 @@ test.describe("search popups at the minimum window width", () => {
           expect(
             await text.evaluate((el) => el.getClientRects().length === 1 && el.scrollWidth <= el.clientWidth),
           ).toBe(true);
+        await expect(line).toBeVisible();
+        expect(
+          await line.evaluate(
+            (el) => el.getBoundingClientRect().right <= el.parentElement!.getBoundingClientRect().right + 0.5,
+          ),
+          "the line number fits even when the long filename is elided",
+        ).toBe(true);
+        await expect(line.locator("..").getByTitle(LONG_RESULT_PATH)).toBeVisible();
         for (const name of ["Search Context", "Pin Window"])
           await dialog.getByRole("button", { name, exact: true }).click({ trial: true });
       }
@@ -104,6 +116,49 @@ test.describe("search popups at the minimum window width", () => {
     expect(width).toBeGreaterThan(200);
     await expectControlsFit(page);
     await dialog.getByRole("button", { name: /Browse/ }).click({ trial: true });
+  });
+
+  test("Replace in Files keeps its footer actions together as the window narrows", async ({ workbench: page }) => {
+    await page.setViewportSize({ width: 1120, height: 750 });
+    await openFromTree(page, "settings.gradle.kts");
+    await stubFindMatches(page);
+    await run(page, "find.replaceInPath");
+    const dialog = page.getByRole("dialog", { name: "Replace in Files" });
+    const search = dialog.getByRole("textbox", { name: "Text to find" });
+    await search.fill("http://localhost:8080");
+    await expect(dialog.locator("header [aria-live]")).toContainText("13 matches in 12 files");
+    await search.press("Shift+ArrowDown");
+    await search.press("Shift+ArrowDown");
+
+    const footer = dialog.locator("footer");
+    const open = footer.getByRole("button", { name: "Open in Find Window", exact: true });
+    const shortcut = footer.getByText(/^(Ctrl\+Enter|⌘↵)$/);
+    const replaceAll = footer.getByRole("button", { name: "Replace All", exact: true });
+    const replaceSelected = footer.getByRole("button", { name: "Replace 3 Occurrences", exact: true });
+    await expect(replaceSelected).toBeEnabled();
+    for (const [width, height] of [
+      [400, 500],
+      [1120, 750],
+    ] as const) {
+      await page.setViewportSize({ width, height });
+      const [key, find, all, selected] = await Promise.all([
+        shortcut.boundingBox(),
+        open.boundingBox(),
+        replaceAll.boundingBox(),
+        replaceSelected.boundingBox(),
+      ]);
+      if (!key || !find || !all || !selected) throw new Error("Expected all footer actions to be visible");
+      expect(Math.abs(key.y + key.height / 2 - find.y - find.height / 2)).toBeLessThanOrEqual(1);
+      expect(Math.abs(all.y - selected.y)).toBeLessThanOrEqual(1);
+      await expectControlsFit(page);
+      await expect(footer).toBeInViewport({ ratio: 1 });
+      await expect(shortcut).toHaveCSS("font-size", "12px");
+      await open.click({ trial: true });
+      await replaceSelected.click({ trial: true });
+    }
+    await search.press("Meta+Enter");
+    await expect(dialog).toBeHidden();
+    await expect(page.getByRole("region", { name: "Find", exact: true })).toContainText("http://localhost:8080");
   });
 
   for (const id of [

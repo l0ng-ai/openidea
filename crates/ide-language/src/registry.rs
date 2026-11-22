@@ -838,6 +838,33 @@ mod tests {
     }
 
     #[test]
+    fn stylelint_serves_style_sheets_only_below_its_config() {
+        let reg = reg();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for dir in ["apps/web/src", "apps/admin/src", "apps/api"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        std::fs::write(root.join("apps/web/stylelint.config.mjs"), "export default {};").unwrap();
+        std::fs::write(root.join("apps/admin/package.json"), r#"{"stylelint": {"extends": []}}"#).unwrap();
+        std::fs::write(root.join("apps/api/package.json"), r#"{"name": "api"}"#).unwrap();
+        for lang in ["css", "scss", "less"] {
+            let cfg = reg.get(&LanguageId::new(lang)).unwrap();
+            let stylelint = cfg.language_servers.iter().find(|s| s.name == "stylelint").unwrap();
+            assert_eq!(stylelint.command, "stylelint-language-server", "{lang}");
+            assert!(stylelint.require_root_marker && !stylelint.fallback, "{lang}");
+            assert_eq!(stylelint.features, ["code-action", "diagnostics"], "{lang}");
+            // The server lints only the languages in `validate` (CSS alone by default).
+            let validate = stylelint.settings.as_ref().unwrap().get("validate").unwrap();
+            assert_eq!(validate, &serde_json::json!(["css", "scss", "less"]), "{lang}");
+            let served = |file: &str| crate::marked_root(Some(root), &root.join(file), &stylelint.root_markers);
+            assert_eq!(served("apps/web/src/app.css"), Some(root.join("apps/web")), "{lang}");
+            assert_eq!(served("apps/admin/src/app.css"), Some(root.join("apps/admin")), "{lang}");
+            assert_eq!(served("apps/api/app.css"), None, "{lang}: package.json without stylelint");
+        }
+    }
+
+    #[test]
     fn laravel_lsp_serves_php_files_only_below_artisan() {
         let reg = reg();
         let cfg = reg.get(&LanguageId::new("php")).unwrap();

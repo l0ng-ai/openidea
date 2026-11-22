@@ -363,9 +363,6 @@
 .pushCommitDetails {
   flex: 1;
   min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
   margin: var(--space-1) var(--space-3);
   padding: var(--space-1) var(--space-2);
   overflow: auto;
@@ -373,11 +370,6 @@
   border-radius: var(--radius-small);
   -webkit-user-select: text;
   user-select: text;
-}
-.pushCommitMessage {
-  color: var(--fg-strong);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
 .todoList {
   margin: 8px 0 0;

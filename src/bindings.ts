@@ -846,6 +846,13 @@ export const commands = {
 	lspDocumentHighlights: (doc: DocId, pos: Pos) => typedError<Highlight[], IdeError>(__TAURI_INVOKE("lsp_document_highlights", { doc, pos })),
 	/**  Links in a document (`href`s, Markdown links, `#include`s…) from its language servers. */
 	lspDocumentLinks: (doc: DocId) => typedError<DocumentLink[], IdeError>(__TAURI_INVOKE("lsp_document_links", { doc })),
+	/**  The Throwable class the caret at `pos` names, for the exception breakpoint intention. */
+	lspExceptionClassAt: (request: RequestId, doc: DocId, pos: Pos) => typedError<{
+	/**  The binary name (`app.Outer$Failure`), as exception breakpoints take it. */
+	qualifiedName: string,
+	/**  The simple name (`Failure`). */
+	displayName: string,
+} | null, IdeError>(__TAURI_INVOKE("lsp_exception_class_at", { request, doc, pos })),
 	lspExecuteCodeAction: (request: RequestId, doc: DocId, action: CodeAction, answers: FormAnswer[]) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("lsp_execute_code_action", { request, doc, action, answers })),
 	/**
 	 *  Runs a server command (`workspace/executeCommand`), e.g. a completion item's
@@ -6181,6 +6188,14 @@ export type ExceptionClassBreakpoint = {
 	/**  Patterns (`com.acme.*`, `*Test`, a full name) for the class whose code throws. */
 	classFilters: string[],
 	classExclusionFilters: string[],
+};
+
+/**  The exception class a caret names: a reference to it, its declaration, or a throw of it. */
+export type ExceptionClassRef = {
+	/**  The binary name (`app.Outer$Failure`), as exception breakpoints take it. */
+	qualifiedName: string,
+	/**  The simple name (`Failure`). */
+	displayName: string,
 };
 
 /**  What a session's exception class breakpoints can do. */

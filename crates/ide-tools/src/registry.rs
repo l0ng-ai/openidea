@@ -225,6 +225,17 @@ pub static TOOLS: &[ToolSpec] = &[
         needs: NODE,
     },
     ToolSpec {
+        name: "stylelint",
+        display: "Stylelint Language Server",
+        kind: LanguageServer,
+        commands: &["stylelint-language-server"],
+        method: Method::Npm { packages: &["@stylelint/language-server"] },
+        fallback: None,
+        version: V,
+        homepage: "https://github.com/stylelint/vscode-stylelint",
+        needs: NODE,
+    },
+    ToolSpec {
         name: "rust-analyzer",
         display: "rust-analyzer",
         kind: LanguageServer,

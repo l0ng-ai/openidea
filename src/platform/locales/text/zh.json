@@ -1,4 +1,6 @@
 {
+  "Fix Stylelint Problems": "修复 Stylelint 问题",
+  "No Stylelint problems to fix": "没有可修复的 Stylelint 问题",
   "Reformat with Biome": "使用 Biome 重新格式化",
   "Biome path": "Biome 路径",
   "Biome formats an enabled language instead of Prettier and oxfmt below a Biome configuration file (biome.json, biome.jsonc) or installation, or when it is the selected provider.": "在 Biome 配置文件（biome.json、biome.jsonc）或 Biome 安装所在目录及其子目录中，或选择 Biome 作为格式化工具时，Biome 将代替 Prettier 和 oxfmt 格式化已启用的语言。",
@@ -1493,6 +1495,9 @@
   "Exception breakpoints": "异常断点",
   "Java Exception Breakpoints": "Java 异常断点",
   "Add Java Exception Breakpoint": "添加 Java 异常断点",
+  "Create exception breakpoint on {name}": "在 {name} 上创建异常断点",
+  "Enable exception breakpoint on {name}": "启用 {name} 上的异常断点",
+  "Disable exception breakpoint on {name}": "禁用 {name} 上的异常断点",
   "Any exception": "任何异常",
   "Enable Any exception": "启用“任何异常”",
   "Stops at every exception thrown in a Java debug session.": "在 Java 调试会话中抛出的每个异常处停止。",

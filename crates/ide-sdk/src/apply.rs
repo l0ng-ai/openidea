@@ -537,6 +537,42 @@ pub fn configure_gradle_runtime(cfg: &mut LanguageServerConfig, root: &Path, bui
     merge(cfg.settings.get_or_insert_with(|| json!({})), json!({"java": {"import": {"gradle": gradle}}}));
 }
 
+/// Gradle's Eclipse model, which jdtls imports the build through, leaves out project dependencies
+/// a source set only compiles against (`compileOnly(project(":a"))`) and marks some as test-only,
+/// so their classes don't resolve in the editor although Gradle compiles. jdtls's Gradle import
+/// runs an init script that adds them, written to the first of `dirs` whose path has no
+/// whitespace: Buildship stores the import's arguments joined by spaces and splits them again,
+/// so `Application Support` would break the path. The name carries the script's hash, so
+/// releases running side by side never overwrite each other's script.
+pub fn configure_gradle_classpath(cfg: &mut LanguageServerConfig, dirs: &[PathBuf]) {
+    const SCRIPT: &str = include_str!("gradle-classpath.init.gradle");
+    if cfg.name != "jdtls" {
+        return;
+    }
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in SCRIPT.bytes() {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+    }
+    let name = format!("openidea-classpath-{hash:016x}.init.gradle");
+    let Some(script) = dirs
+        .iter()
+        .map(|dir| dir.join(&name))
+        .filter(|script| !script.to_string_lossy().contains(char::is_whitespace))
+        .find(|script| {
+            std::fs::read(script).ok().as_deref() == Some(SCRIPT.as_bytes())
+                || script.parent().is_some_and(|dir| std::fs::create_dir_all(dir).is_ok())
+                    && std::fs::write(script, SCRIPT).is_ok()
+        })
+    else {
+        tracing::warn!("no directory without spaces for the Gradle classpath init script: {dirs:?}");
+        return;
+    };
+    merge(
+        cfg.settings.get_or_insert_with(|| json!({})),
+        json!({"java": {"import": {"gradle": {"arguments": ["--init-script", script.to_string_lossy()]}}}}),
+    );
+}
+
 /// Settings › Build Tools › Maven › Automatically download sources and Always update
 /// snapshots → jdtls `java.maven.downloadSources` / `java.maven.updateSnapshots`.
 pub fn configure_maven_sources(cfg: &mut LanguageServerConfig, s: &Settings) {
@@ -2527,6 +2563,33 @@ mod maven_linkage_tests {
         let gradle = &cfg.settings.as_ref().unwrap()["java"]["import"]["gradle"];
         assert!(gradle.get("home").is_none() && gradle.get("wrapper").is_none());
         assert_eq!(gradle["user"]["home"], resolved("/caches/gradle"));
+    }
+
+    #[test]
+    fn gradle_import_adds_the_projects_a_source_set_compiles_against() {
+        let temp = tempfile::tempdir().unwrap();
+        let spaced = temp.path().join("Application Support").join("gradle");
+        let plain = temp.path().join("cache").join("gradle");
+        let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+        cfg.settings = Some(json!({"java": {"import": {"gradle": {"enabled": true}}}}));
+        configure_gradle_classpath(&mut cfg, &[spaced.clone(), plain.clone()]);
+        let gradle = &cfg.settings.as_ref().unwrap()["java"]["import"]["gradle"];
+        assert_eq!(gradle["enabled"], json!(true), "merged, not replaced");
+        let args = gradle["arguments"].as_array().unwrap();
+        assert_eq!(args[0], json!("--init-script"));
+        let script = PathBuf::from(args[1].as_str().unwrap());
+        assert_eq!(script.parent(), Some(plain.as_path()), "Buildship splits arguments at spaces");
+        assert!(!spaced.exists());
+        let text = std::fs::read_to_string(&script).unwrap();
+        assert!(text.contains("compileClasspath") && text.contains("whenMerged"));
+
+        let mut other = custom_server("pyright", &LanguageServerSettings::default());
+        configure_gradle_classpath(&mut other, &[plain]);
+        assert!(other.settings.is_none(), "only jdtls imports Gradle builds");
+
+        let mut nowhere = custom_server("jdtls", &LanguageServerSettings::default());
+        configure_gradle_classpath(&mut nowhere, &[spaced]);
+        assert!(nowhere.settings.is_none(), "no usable directory: the import runs without it");
     }
 
     #[test]

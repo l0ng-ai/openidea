@@ -467,6 +467,16 @@ pub struct HierarchyMember {
     pub abstractable: bool,
 }
 
+/// The exception class a caret names: a reference to it, its declaration, or a throw of it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ExceptionClassRef {
+    /// The binary name (`app.Outer$Failure`), as exception breakpoints take it.
+    pub qualified_name: String,
+    /// The simple name (`Failure`).
+    pub display_name: String,
+}
+
 /// The class at a position and what can move: pull-up destinations, or the subclasses
 /// members are pushed into.
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]

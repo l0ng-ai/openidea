@@ -21,6 +21,7 @@ const GENERATED_SOURCES: &str = "openidea.java.generatedSources";
 
 pub(crate) mod configuration;
 pub(crate) mod exception_breakpoints;
+mod exception_type;
 mod extract_interface;
 mod formatter;
 mod generated;

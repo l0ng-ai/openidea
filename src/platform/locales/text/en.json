@@ -1,4 +1,6 @@
 {
+  "Fix Stylelint Problems": "Fix Stylelint Problems",
+  "No Stylelint problems to fix": "No Stylelint problems to fix",
   "Reformat with Biome": "Reformat with Biome",
   "Biome path": "Biome path",
   "Biome formats an enabled language instead of Prettier and oxfmt below a Biome configuration file (biome.json, biome.jsonc) or installation, or when it is the selected provider.": "Biome formats an enabled language instead of Prettier and oxfmt below a Biome configuration file (biome.json, biome.jsonc) or installation, or when it is the selected provider.",
@@ -2070,6 +2072,9 @@
   "Add Request Breakpoint": "Add Request Breakpoint",
   "Java Exception Breakpoints": "Java Exception Breakpoints",
   "Add Java Exception Breakpoint": "Add Java Exception Breakpoint",
+  "Create exception breakpoint on {name}": "Create exception breakpoint on {name}",
+  "Enable exception breakpoint on {name}": "Enable exception breakpoint on {name}",
+  "Disable exception breakpoint on {name}": "Disable exception breakpoint on {name}",
   "Any exception": "Any exception",
   "Enable Any exception": "Enable Any exception",
   "Stops at every exception thrown in a Java debug session.": "Stops at every exception thrown in a Java debug session.",
