@@ -162,8 +162,8 @@
 }
 .outdated .rowText,
 .outdated .rowText *,
-.outdated .rowFile,
-.outdated .rowFile * {
+.outdated .rowLocation,
+.outdated .rowLocation * {
   color: var(--fg-faint);
 }
 .rowText {
@@ -174,18 +174,28 @@
   font-family: var(--font-mono);
   font-weight: var(--fw-code);
 }
-.rowFile {
+.rowLocation {
   flex: none;
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-1-5);
   max-width: 40%;
+  color: var(--fg-secondary);
+  font-size: var(--fs-ui);
+}
+.rowLocationActive {
+  color: var(--fg-emphasis);
+}
+.rowFile {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--fg-subtle);
 }
-.rowFileActive {
+.rowFileRepeated {
   color: var(--fg-muted);
 }
 .rowLine {
-  color: var(--fg-faint);
+  flex: none;
   font-variant-numeric: tabular-nums;
 }
 .previewHeader {

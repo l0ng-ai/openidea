@@ -117,7 +117,7 @@ test("fits a wide graph and saved columns without horizontal scrolling", async (
   expect(await list.evaluate((element) => element.scrollLeft)).toBe(0);
 });
 
-test("keeps ref names visible when a long commit subject competes for space", async ({ workbench: page }) => {
+test("keeps expanded ref names visible when a long commit subject competes for space", async ({ workbench: page }) => {
   const branch = "origin/feature/workspace-settings";
   const tag = "v2.1";
   const summary = "Keep workspace settings and commit references visible ".repeat(4).trim();
@@ -127,7 +127,7 @@ test("keeps ref names visible when a long commit subject competes for space", as
       const options = "/src/features/vcs/logOptions.ts";
       const { useGitLog } = await import(/* @vite-ignore */ log);
       const { useLogOptions } = await import(/* @vite-ignore */ options);
-      useLogOptions.setState({ tagNames: true });
+      useLogOptions.setState({ tagNames: true, compactRefs: false });
       const [first, ...rest] = useGitLog.getState().commits;
       useGitLog.setState({ commits: [{ ...first, summary, refs: [branch, `tag: ${tag}`] }, ...rest] });
     },

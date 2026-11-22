@@ -150,6 +150,28 @@
 .deprecated {
   text-decoration-line: line-through;
 }
+.tabPath {
+  --tab-directory-min: min(5ch, 25%);
+  display: flex;
+}
+.tabDirectory > span,
+.tabFilename {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tabDirectory {
+  flex: 0 1000 max-content;
+  /* Leave space for a short prefix without stretching one that already fits. */
+  width: var(--tab-directory-min);
+  color: var(--fg-subtle);
+}
+.tabDirectory > span {
+  display: block;
+}
+.tabFilename {
+  flex: none;
+  max-width: calc(100% - var(--tab-directory-min));
+}
 .dupe {
   color: var(--fg-faint);
   margin-left: 4px;
