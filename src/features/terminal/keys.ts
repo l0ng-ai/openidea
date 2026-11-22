@@ -135,7 +135,7 @@ export function installTerminalKeys(target: Window = window): () => void {
   // Embedded terminals and sessions with shortcut overrides disabled still own copy/interrupt.
   const releaseCopyClaim = registerKeyClaim(
     (e, stroke) =>
-      !!(e.target as Element | null)?.closest?.(".xterm") &&
+      !!((e.composedPath()[0] ?? e.target) as Element | null)?.closest?.(".xterm") &&
       ["Ctrl+C", "Ctrl+Insert", "Ctrl+Shift+C", "Meta+C"].includes(stroke),
   );
   const onKeyDown = (e: KeyboardEvent) => {

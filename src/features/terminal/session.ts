@@ -8,8 +8,7 @@ import { noteCopySource } from "@/platform/clipboardSource";
 import { Terminal, type IDisposable, type ILink, type ILinkHandler } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon, type ISearchOptions } from "@xterm/addon-search";
-import "@xterm/xterm/css/xterm.css";
-import "./xtermInput.css";
+import screenCss from "./sessionScreen.css?inline";
 import { Channel } from "@tauri-apps/api/core";
 import { call, commands, isTauri, type TerminalId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
@@ -676,7 +675,14 @@ export class TerminalSession {
     if (this.host.offsetWidth === 0 || this.host.offsetHeight === 0) return;
     // xterm's DOM renderer: the WebGL one rasterizes glyphs per background, so
     // selected text rendered at a visibly different weight than the rest.
-    this.term.open(this.host);
+    // Keep xterm's per-session stylesheets from restyling the editor on tab changes.
+    const root = this.host.attachShadow({ mode: "open" });
+    const style = document.createElement("style");
+    style.textContent = screenCss;
+    const screen = document.createElement("div");
+    screen.style.height = "100%";
+    root.append(style, screen);
+    this.term.open(screen);
     installDomRowCache(this.term);
     this.opened = true;
     remeasureWhenFontsLoad(
@@ -690,7 +696,7 @@ export class TerminalSession {
       this.opts.onFocus(this.key);
     });
     this.watchImeCommit();
-    this.disposables.push({ dispose: installImeAnchor({ host: this.host, term: this.term }) });
+    this.disposables.push({ dispose: installImeAnchor({ host: screen, term: this.term }) });
     if (this.pendingFocus) {
       this.pendingFocus = false;
       if (this.focusStayedHere()) this.focus();
