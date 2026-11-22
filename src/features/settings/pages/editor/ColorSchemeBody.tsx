@@ -5,7 +5,16 @@ import { SCHEME_SUBPAGES, languagePageId } from "./colorSchemeMeta";
  * italic / effects editor, and a live preview. Edits are staged in
  * `editor.colorOverrides[scheme][attribute]`; `editor/core` injects them.
  */
-import { Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  Suspense,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
 import {
   Button,
   Checkbox,
@@ -1497,53 +1506,42 @@ function GitPreview({
   );
 }
 
-/** Chips that select each Diff & Merge attribute from the preview, as the shared code preview does. */
-const DIFF_PREVIEW_CHIPS: Array<{ attr: string; colorVar: string; name: string }> = [
-  { attr: "diffChanged", colorVar: "--diff-modified", name: "Changed" },
-  { attr: "diffInserted", colorVar: "--diff-inserted", name: "Inserted" },
-  { attr: "diffDeleted", colorVar: "--diff-deleted", name: "Deleted" },
-  { attr: "diffConflict", colorVar: "--diff-conflict-stripe", name: "Conflict" },
-  { attr: "diffSeparatorWave", colorVar: "--diff-separator-wave", name: "Wave" },
-];
-
 /**
- * A real, read-only diff rendered through the editor's `diff` contribution (the same viewer
- * a Git diff uses), so the colours here are the colours users actually get. The chips above
- * select the attribute; the diff itself is a live example, not a mock-up. The long unchanged
- * stretch collapses, showing the wavy separator that DIFF_SEPARATOR_WAVE paints.
+ * A static three-pane merge view (left parent / result / right parent) rendered through the
+ * `mergeSchemePreview` editor kind — the same real CodeMirror diff decorations a merge view
+ * uses, so the colours here are exactly the colours users get. Clicking a coloured line
+ * selects its scheme attribute; the long unchanged stretch shows the folded wave separator.
+ * Differences sit outside the folded stretch so modified / inserted / deleted all show.
  */
-// A long unchanged stretch (more than 6 lines after the 3-line margins) so the diff folds it
-// and paints the DIFF_SEPARATOR_WAVE, exactly as a real folded-unchanged fragment does.
+const DIFF_HEAD_A = ["bar(123)", "def foo(self):", "    # Left changes", "    pass"];
+const DIFF_HEAD_RESULT = ["class MyClass", "value = 123", "def foo(self):", "    pass"];
+const DIFF_HEAD_B = ["class MyClass", "value = 123", "def foo(self):", "    pass"];
 const DIFF_UNCHANGED = Array.from({ length: 16 }, (_, i) => `        # unchanged context ${i + 1}`);
-const DIFF_SAMPLE_A = [
-  "class MyClazz:",
-  "    def foo(self):",
-  "        print('old')",
-  ...DIFF_UNCHANGED,
-  "        pass",
-].join("\n");
-const DIFF_SAMPLE_B = [
-  "class MyClass:",
-  "    def foo(self):",
-  "        value = 123",
-  ...DIFF_UNCHANGED,
-  "        print(value)",
-  "        return value",
-].join("\n");
-const DIFF_PREVIEW_INPUT = {
-  kind: "diff",
-  key: "color-scheme-diff-preview",
-  path: "untitled:diff-merge-preview.py",
-  data: {
-    path: "untitled:diff-merge-preview.py",
-    left: { type: "text", text: DIFF_SAMPLE_A, label: "Before" },
-    right: { type: "text", text: DIFF_SAMPLE_B, label: "After" },
-    embedded: true,
-    fit: true,
-    collapse: true,
-    mode: "split",
-  },
-};
+const DIFF_TAIL = ["def bar(self, a, b):", "    print a", "    print b"];
+const DIFF_PARENT_A = [...DIFF_HEAD_A, ...DIFF_UNCHANGED, ...DIFF_TAIL, "    removed_from_left()"].join("\n");
+const DIFF_RESULT = [...DIFF_HEAD_RESULT, ...DIFF_UNCHANGED, ...DIFF_TAIL].join("\n");
+const DIFF_PARENT_B = [...DIFF_HEAD_B, ...DIFF_UNCHANGED, ...DIFF_TAIL, "    added_on_right()"].join("\n");
+function diffMergeInput(): import("@/workbench/contributions").EditorInput {
+  return {
+    kind: "mergeSchemePreview",
+    key: "color-scheme-diff-preview",
+    data: {
+      path: "untitled:diff-merge-preview.py",
+      left: DIFF_PARENT_A,
+      result: DIFF_RESULT,
+      right: DIFF_PARENT_B,
+      labels: [tx("Left"), tx("Result"), tx("Right")],
+      attrs: {
+        inserted: "diffInserted",
+        deleted: "diffDeleted",
+        modified: "diffChanged",
+        conflict: "diffConflict",
+        wave: "diffSeparatorWave",
+      },
+      fold: { from: 5, to: 20, label: tx("16 unchanged lines") },
+    },
+  };
+}
 
 function DiffMergePreview({
   vars,
@@ -1554,23 +1552,16 @@ function DiffMergePreview({
   ids: Set<string>;
   reveal: (attrId: string) => void;
 }) {
-  const diffViewer = useContributions((s) => s.editorKinds.get("diff"));
+  const previewViewer = useContributions((s) => s.editorKinds.get("mergeSchemePreview"));
+  const input = useMemo(() => diffMergeInput(), []);
+  const onClick = (e: MouseEvent<HTMLDivElement>) => {
+    const attr = (e.target as HTMLElement).closest<HTMLElement>("[data-diattr]")?.dataset.diattr;
+    if (attr) revealPreviewAttr(attr, ids, reveal);
+  };
   return (
-    <div className={styles.diffPreview} style={vars} aria-label={tx("Color scheme preview")}>
-      <div className={styles.diffChips}>
-        {DIFF_PREVIEW_CHIPS.map((chip) => (
-          <span
-            key={chip.attr}
-            className={`${styles.diffChip} ${styles.clickable}`}
-            onClick={() => revealPreviewAttr(chip.attr, ids, reveal)}
-          >
-            <span className={styles.diffChipDot} style={{ background: `var(${chip.colorVar})` }} />
-            {tx(chip.name)}
-          </span>
-        ))}
-      </div>
+    <div className={styles.diffPreview} style={vars} aria-label={tx("Color scheme preview")} onClick={onClick}>
       <Suspense fallback={<div className={styles.diffLoading}>{tx("Loading preview…")}</div>}>
-        {diffViewer && <diffViewer.component input={DIFF_PREVIEW_INPUT} />}
+        {previewViewer && <previewViewer.component input={input} />}
       </Suspense>
     </div>
   );
