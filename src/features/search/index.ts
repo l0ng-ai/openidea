@@ -47,7 +47,7 @@ import {
 } from "./find/windowStore";
 import { cycleSwitcher, hideRecentPopup, showRecentPopup, useRecentPopup } from "./recent/store";
 import { useFileStructurePopup } from "./structure/popupStore";
-import { useOutline, useStructureOptions } from "./structure/store";
+import { useOutline, useStructureHeaderMenu, useStructureOptions } from "./structure/store";
 import { tx } from "@/platform/i18n";
 
 async function removeMissingBookmarks(removed: readonly string[]) {
@@ -198,6 +198,9 @@ export function activate(): void | (() => void) {
       secondary: true,
       order: 20,
       component: lazyComponent(() => import("./structure/StructureView").then((m) => m.StructureView)),
+      headerActions: lazyComponent(() => import("./structure/StructureView").then((m) => m.StructureHeaderActions)),
+      headerMenu: useStructureHeaderMenu,
+      plainTitle: true,
     }),
     registerToolWindow({
       id: "bookmarks",

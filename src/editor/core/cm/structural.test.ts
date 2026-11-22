@@ -294,6 +294,25 @@ describe("completeStatementSpec: TypeScript and Python", () => {
   });
 });
 
+describe("completeStatementSpec: function names without a parameter list", () => {
+  const ext = [comments("//"), indentUnit.of("    ")];
+  it("adds the parameter list before the body", () => {
+    for (const [head, language] of [
+      ["func f", "go"],
+      ["fn f", "rust"],
+      ["pub async fn load<T>", "rust"],
+      ["fun f", "kotlin"],
+      ["private suspend fun load", "kotlin"],
+      ["function f", "javascript"],
+    ] as const) {
+      const s = state(`${head}|`, ext);
+      expect(withCaret(s, completeStatementSpec(s, language))).toBe(`${head}() {\n    |\n}`);
+    }
+    const done = state("func f(x int)|", ext);
+    expect(withCaret(done, completeStatementSpec(done, "go"))).toBe("func f(x int) {\n    |\n}");
+  });
+});
+
 describe("planCompleteStatement", () => {
   const java = [comments("//", ["/*", "*/"]), indentUnit.of("    ")];
 

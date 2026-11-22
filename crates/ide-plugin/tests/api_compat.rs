@@ -93,7 +93,7 @@ fn the_sdk_carries_the_hosts_wit() {
 
 #[test]
 fn the_version_check_runs_compatible_components_and_explains_the_rest() {
-    let host = v("1.14.0");
+    let host = v("1.15.0");
     for ok in [
         "1.0.0",
         "1.3.0",
@@ -108,15 +108,16 @@ fn the_version_check_runs_compatible_components_and_explains_the_rest() {
         "1.12.0",
         "1.13.0",
         "1.14.0",
+        "1.15.0",
         "1.0.0-rc.1",
     ] {
         assert_eq!(check_api(&v(ok), &host), Ok(()), "{ok}");
     }
-    let newer = check_api(&v("1.15.0"), &host).unwrap_err();
-    assert!(newer.contains("1.15") && newer.contains("update OpenIDEA"), "{newer}");
+    let newer = check_api(&v("1.16.0"), &host).unwrap_err();
+    assert!(newer.contains("1.16") && newer.contains("update OpenIDEA"), "{newer}");
     assert!(check_api(&v("2.0.0"), &host).unwrap_err().contains("update OpenIDEA"));
     let older = check_api(&v("0.2.0"), &host).unwrap_err();
-    assert!(older.contains("rebuild it with the 1.14 SDK"), "{older}");
+    assert!(older.contains("rebuild it with the 1.15 SDK"), "{older}");
     // 0.x: every minor is its own API.
     assert_eq!(check_api(&v("0.2.0"), &v("0.2.5")), Ok(()));
     assert!(check_api(&v("0.1.0"), &v("0.2.0")).is_err());
@@ -144,14 +145,17 @@ fn shipped_components_are_built_for_this_api() {
 }
 
 #[test]
-fn a_1_14_component_exports_the_optional_hover_actions_world() {
+fn the_hover_actions_component_exports_the_optional_hover_actions_world() {
     let engine = PluginEngine::new().unwrap();
     let component =
         engine.compile(&repo().join("crates/ide-plugin/tests/fixtures/hover-actions/dist/plugin.wasm")).unwrap();
     let exports: Vec<String> =
         component.component_type().exports(engine.engine()).map(|(name, _)| name.to_owned()).collect();
-    assert!(exports.iter().any(|name| name.starts_with("openidea:plugin/hover-actions@1.14.0")), "{exports:?}");
-    // A 1.13-compatible plugin that does not export the new world stays valid.
+    assert!(
+        exports.iter().any(|name| name.starts_with(&format!("openidea:plugin/hover-actions@{API_VERSION}.0"))),
+        "{exports:?}"
+    );
+    // A plugin that does not export the optional world stays valid.
     let old = engine.compile(&repo().join("plugins/official/test-runner/dist/plugin.wasm")).unwrap();
     let old_exports: Vec<String> =
         old.component_type().exports(engine.engine()).map(|(name, _)| name.to_owned()).collect();
