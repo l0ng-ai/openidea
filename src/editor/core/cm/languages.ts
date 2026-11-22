@@ -541,7 +541,29 @@ function unbalanced(code: string): boolean {
 }
 
 /** Extensions the stock modes lack, by CodeMirror language name. */
-const EXTRA_SUPPORT: Record<string, Extension[]> = { Java: [annotationIndent], Python: pythonDedent };
+const ACCESS_SPECIFIER = /^\s*(public|protected|private)\s*:(?!:)/;
+
+/**
+ * C++: an access specifier (`public:`) lines up with its class, not with the members below it, and
+ * moves there as its `:` is typed.
+ */
+const cppAccessSpecifierIndent = [
+  indentService.of((cx, pos) => {
+    const line = cx.state.doc.lineAt(pos);
+    if (pos !== line.from || !ACCESS_SPECIFIER.test(cx.textAfterPos(pos))) return undefined;
+    const at = line.from + /^\s*/.exec(line.text)![0].length;
+    for (let n: SyntaxNode | null = syntaxTree(cx.state).resolveInner(at, 1); n; n = n.parent)
+      if (n.name === "FieldDeclarationList") return cx.lineIndent(n.from, 1);
+    return undefined;
+  }),
+  EditorState.languageData.of(() => [{ indentOnInput: /^\s*(public|protected|private)\s*:$/ }]),
+];
+
+const EXTRA_SUPPORT: Record<string, Extension[]> = {
+  Java: [annotationIndent],
+  Python: pythonDedent,
+  "C++": cppAccessSpecifierIndent,
+};
 
 function patchSupport(desc: LanguageDescription, support: LanguageSupport): LanguageSupport {
   const extra = EXTRA_TAGS[desc.name];
