@@ -19,7 +19,7 @@ import {
   toggleExcluded,
   type ReplaceDeps,
 } from "../find/replaceFlow";
-import { buildFindTree, nodeGroups } from "../find/FindToolWindow";
+import { buildFindTree, nodeGroups } from "../find/findTree";
 
 const q: SearchQuery = {
   pattern: "foo",
