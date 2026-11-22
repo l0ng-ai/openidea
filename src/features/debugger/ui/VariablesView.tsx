@@ -390,36 +390,38 @@ export function VariablesView({
   };
 
   const onContextMenu = (node: VarNode | null, _sel: Set<string>, e: React.MouseEvent) => {
-    if (!node || node.kind === "message") return;
+    if (!node || node.kind === "message" || node.kind === "scope") return;
     e.preventDefault();
     const items: MenuItem[] = [];
-    if (editable(node))
-      items.push(
-        { label: "Set Value…", icon: "edit", shortcut: "F2", run: () => startEdit(node) },
-        { kind: "separator" },
-      );
     if (node.kind === "watch")
       items.push(
         { label: "Remove Watch", icon: "minus", run: () => removeWatch(node.name) },
         { label: "Remove All Watches", run: removeAllWatches },
-      );
-    if (node.kind !== "scope") {
-      items.push({ label: "Copy Value", icon: "copy", run: () => void copyValue(node) });
-      items.push({ label: "Copy Name", run: () => void writeClipboardText(node.name) });
-      if (node.kind === "var" && node.evaluateName)
-        items.push({ label: "Add to Watches", icon: "eye", run: () => addWatch(node.evaluateName!) });
-      if (canWatch(node))
-        items.push({
-          label: "Add Field Watchpoint",
-          icon: "breakpoint-field",
-          run: () => void addWatchpointFor(session!, node),
-        });
-      items.push(
         { kind: "separator" },
-        { label: "Jump to Source", shortcut: "F4", run: () => void jumpToDeclaration(node) },
       );
-    }
-    if (items.length) showContextMenu(e, items);
+    if (editable(node)) items.push({ label: "Set Value…", icon: "edit", shortcut: "F2", run: () => startEdit(node) });
+    items.push(
+      { label: "Copy Value", icon: "copy", run: () => void copyValue(node) },
+      { label: "Copy Name", run: () => void writeClipboardText(node.name) },
+    );
+
+    const watchActions: MenuItem[] = [];
+    const expression = node.evaluateName;
+    if (node.kind === "var" && expression)
+      watchActions.push({ label: "Add to Watches", icon: "eye", run: () => addWatch(expression) });
+    if (canWatch(node))
+      watchActions.push({
+        label: "Add Field Watchpoint",
+        icon: "breakpoint-field",
+        run: () => void addWatchpointFor(session!, node),
+      });
+    if (watchActions.length) items.push({ kind: "separator" }, ...watchActions);
+
+    items.push(
+      { kind: "separator" },
+      { label: "Jump to Source", shortcut: "F4", run: () => void jumpToDeclaration(node) },
+    );
+    showContextMenu(e, items);
   };
 
   const onKeyDown = (e: KeyboardEvent) => {

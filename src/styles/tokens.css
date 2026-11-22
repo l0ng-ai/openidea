@@ -393,6 +393,9 @@ html {
   --bg-island: #191a1c;
   --island-gap: 6px;
   --island-radius: 10px;
+  /* Tree horizontal inset. Together with the island gap it makes JetBrains'
+     Tree.border left/right padding: 6 + 6 = 12px (4 + 4 = 8px in compact). */
+  --tree-inset: 6px;
   --bg-stripe: var(--bg-frame);
   --bg-stripe-hover: #ffffff17;
   --bg-stripe-selected: #ffffff29;
@@ -1529,6 +1532,8 @@ html {
   --fs-chrome: calc(var(--fs-ui) - 1px);
   --island-gap: 4px;
   --island-radius: 8px;
+  /* Compact Tree.border is "2,8,2,8": island gap 4 + tree inset 4 = 8 horizontally. */
+  --tree-inset: 4px;
   --radius-control: 3px;
   --radius-toolbar-button: 4px;
 }
