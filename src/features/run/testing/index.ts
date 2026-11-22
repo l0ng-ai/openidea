@@ -5,11 +5,13 @@ import { goParser } from "./go";
 import { jsParser } from "./js";
 import { jvmParser } from "./jvm";
 import { phpunitParser, withTeamcity } from "./phpunit";
+import { playwrightParser } from "./playwright";
 import { pytestParser } from "./pytest";
 import { rubyParser } from "./ruby";
 import { unittestParser } from "./unittest";
 import { zigParser } from "./zig";
 import type { TestEvent, TestOutputParser } from "./types";
+import { appendScriptArgs } from "../scriptArgs";
 
 export type { TestEvent, TestOutputParser, TestStatus } from "./types";
 export { formatDuration, parseDuration } from "./types";
@@ -20,6 +22,7 @@ export {
   jsParser,
   jvmParser,
   phpunitParser,
+  playwrightParser,
   pytestParser,
   rubyParser,
   unittestParser,
@@ -37,6 +40,7 @@ export function combinedParser(parsers: TestOutputParser[]): TestOutputParser {
 export type Framework =
   | "cargo"
   | "js"
+  | "playwright"
   | "pytest"
   | "unittest"
   | "phpunit"
@@ -47,8 +51,12 @@ export type Framework =
   | "zig"
   | "auto";
 
-export function frameworkFor(config: Pick<RunConfig, "kind" | "command" | "args">): Framework {
+type FrameworkConfig = Pick<RunConfig, "kind" | "command" | "args"> & Partial<Pick<RunConfig, "testRunner">>;
+
+export function frameworkFor(config: FrameworkConfig): Framework {
   const cmd = [config.command, ...config.args].join(" ");
+  // A `package.json` script names its runner only in package.json: detection records it.
+  if (config.testRunner === "playwright" || /\bplaywright\s+test\b/.test(cmd)) return "playwright";
   switch (config.kind) {
     case "dotnet-test":
       return "dotnet";
@@ -111,7 +119,12 @@ function rubyVerbose<T extends Pick<RunConfig, "kind" | "command" | "args">>(con
  * reach the tree. `-v` (Django: `-v 2`) adds one line per test (live, like
  * IDEA's runner) unless the user chose a verbosity already.
  */
-export function withTestReporting<T extends Pick<RunConfig, "kind" | "command" | "args">>(config: T): T {
+export function withTestReporting<T extends FrameworkConfig>(config: T): T {
+  if (frameworkFor(config) === "playwright") {
+    // The list reporter prints a line per test; a project's own (`html`, `dot` on CI) may print none.
+    const chosen = config.args.some((a) => a === "--reporter" || a.startsWith("--reporter="));
+    return chosen ? config : { ...config, args: appendScriptArgs(config.command, config.args, ["--reporter=list"]) };
+  }
   if (frameworkFor(config) === "go" && config.args[0] === "test") {
     const boundary = config.args.findIndex((a) => a === "-args" || a === "--");
     const tool = boundary < 0 ? config.args : config.args.slice(0, boundary);
@@ -139,7 +152,7 @@ export function withTestReporting<T extends Pick<RunConfig, "kind" | "command" |
   return chosen ? config : { ...config, args: [...config.args, "-v"] };
 }
 
-export function createTestParser(config: Pick<RunConfig, "kind" | "command" | "args">): TestOutputParser {
+export function createTestParser(config: FrameworkConfig): TestOutputParser {
   switch (frameworkFor(config)) {
     case "dotnet":
       return { feed: () => [] };
@@ -147,6 +160,8 @@ export function createTestParser(config: Pick<RunConfig, "kind" | "command" | "a
       return cargoParser();
     case "js":
       return jsParser();
+    case "playwright":
+      return playwrightParser();
     case "pytest":
       return pytestParser();
     case "unittest":

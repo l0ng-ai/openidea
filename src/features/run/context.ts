@@ -9,6 +9,7 @@ import { djangoLabel, djangoTestsOf, hasDjangoTests } from "./djangoTypes";
 import { inGradleModule } from "./gradleModuleTests";
 import { systemPython } from "./pythonTypes";
 import { phpunitArgs } from "./testing/phpunit";
+import { frameworkFor } from "./testing";
 import { goTestParts } from "./goArguments";
 import { goBuildType } from "./goTypes";
 import { isWindows } from "./jvmTypes";
@@ -54,7 +55,7 @@ const stem = (p: string) => (p.split("/").pop() ?? p).replace(/\.[^.]+$/, "");
 /** Kinds whose test configs can run a file of this extension. */
 function testKinds(relPath: string): string[] {
   if (/\.cs$/i.test(relPath)) return ["dotnet-test"];
-  if (/\.[cm]?[jt]sx?$/.test(relPath)) return ["npm", "deno", "bun"];
+  if (/\.[cm]?[jt]sx?$/.test(relPath)) return ["npm", "deno", "bun", "node"];
   if (/\.py$/.test(relPath)) return ["pytest", "python", "django-test"];
   if (/\.php$/.test(relPath)) return ["phpunit"];
   if (/_spec\.rb$/.test(relPath)) return ["rspec", "rake", "ruby"];
@@ -198,18 +199,31 @@ function applyPytestTemplate(config: RunConfig): RunConfig {
   return { ...config, command: line.command, args: line.args };
 }
 
+/** A Playwright spec: it imports Playwright Test, or uses its `test.describe` / `test.step` / `test.use`. */
+export function isPlaywrightSpec(content: string): boolean {
+  return /['"]@playwright\/test['"]|\btest\.(?:describe|step|use)\s*[.(]/.test(content);
+}
+
+/** A project with Playwright and another JS runner: specs run on Playwright's configurations, other tests on the rest. */
+function byRunner(bases: RunConfig[], content: string): RunConfig[] {
+  const playwright = bases.filter((c) => frameworkFor(c) === "playwright");
+  if (!playwright.length || playwright.length === bases.length) return bases;
+  return isPlaywrightSpec(content) ? playwright : bases.filter((c) => !playwright.includes(c));
+}
+
 /**
  * Test configurations that can run `relPath` equally well (same, closest working
  * directory: `npm run test` and `npm run test:unit`…); the default one first.
+ * `content` (the file's text) tells a Playwright spec from other JS tests.
  */
-export function testBasesFor(relPath: string, configs: RunConfig[]): RunConfig[] {
+export function testBasesFor(relPath: string, configs: RunConfig[], content?: string): RunConfig[] {
   const kinds = testKinds(relPath);
   // Configurations produced from a test or file are results of narrowing, never bases for it.
   const candidates = configs
     .filter((c) => c.isTest && kinds.includes(c.kind) && !c.id.startsWith("context:"))
     .sort((a, b) => kinds.indexOf(a.kind) - kinds.indexOf(b.kind));
   const best = allClosest(candidates, relPath);
-  if (best.length) return best;
+  if (best.length) return content === undefined ? best : byRunner(best, content);
   const fallback = implicitPytest(relPath, configs);
   return fallback ? [fallback] : [];
 }
@@ -224,7 +238,7 @@ export function testConfigFor(
   base?: RunConfig,
   content?: string,
 ): RunConfig | null {
-  base ??= testBasesFor(relPath, configs)[0];
+  base ??= testBasesFor(relPath, configs, content)[0];
   if (!base) return null;
   const file = relToCwd(relPath, base);
   switch (base.kind) {
@@ -244,6 +258,7 @@ export function testConfigFor(
       return derived(base, relPath, { args });
     }
     case "deno":
+    case "node":
       return derived(base, relPath, { args: [...base.args, file] });
     case "pytest":
     case "python":
