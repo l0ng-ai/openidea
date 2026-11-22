@@ -31,8 +31,8 @@ describe("compact tree insets match JetBrains Tree.border", () => {
 });
 
 describe("compact combo box matches JetBrains ComboBox keys", () => {
-  it("keeps arc 4 (radius 2) and steps the label padding 9/6 → 6/6", () => {
-    expect(normal["--radius-combo"]).toBe("2px");
+  it("steps the radius 4px → 2px (Component.arc 8, ComboBox.arc.compact 4) and the label padding 9/6 → 6/6", () => {
+    expect(normal["--radius-combo"]).toBe("4px");
     expect(compact["--radius-combo"]).toBe("2px");
     expect(normal["--combo-pad-start"]).toBe("9px");
     expect(normal["--combo-pad-end"]).toBe("6px");
@@ -49,14 +49,9 @@ describe("compact editor tabs match JetBrains EditorTabs.tabInsets", () => {
 });
 
 describe("compact radii match JetBrains arc keys", () => {
-  it("keeps the toolbar button radius at 4px in compact (Button.arc.compact 8)", () => {
-    expect(normal["--radius-toolbar-button"]).toBe("4px");
-    expect(compact["--radius-toolbar-button"]).toBeUndefined();
-  });
-
-  it("steps the stripe button radius 4px → 3px (Component.arc 8 → 6)", () => {
-    expect(normal["--radius-stripe-button"]).toBe("4px");
-    expect(compact["--radius-stripe-button"]).toBe("3px");
+  it("steps toolbar and stripe button radii 6px → 4px (MainToolbar.Button.arc, Button.ToolWindow.arc 12 → 8)", () => {
+    expect(normal["--radius-toolbar-button"]).toBe("6px");
+    expect(compact["--radius-toolbar-button"]).toBe("4px");
   });
 
   it("steps the control radius 4px → 3px (Component.arc 8 → 6)", () => {
