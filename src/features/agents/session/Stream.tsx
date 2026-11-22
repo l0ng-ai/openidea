@@ -144,6 +144,39 @@ function useOffscreenRows(
       resize.disconnect();
     };
   }, [ref, visible, enabled, fitWindowWidth, fontZoom]);
+  // WebKit never clears the selection highlight of a row that skips rendering: once the
+  // selection moves, rows it covered off screen still show it when scrolled back. While the
+  // stream holds a selection every row renders (`data-selection`), and keeps rendering until
+  // the frame after it goes, when WebKit applies the change.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !enabled || !visible) return;
+    let frame = 0;
+    const selected = () => {
+      const sel = window.getSelection();
+      return !!sel && !sel.isCollapsed && sel.rangeCount > 0 && sel.getRangeAt(0).intersectsNode(el);
+    };
+    const update = () => {
+      cancelAnimationFrame(frame);
+      if (selected()) {
+        el.setAttribute("data-selection", "");
+        return;
+      }
+      if (!el.hasAttribute("data-selection")) return;
+      frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(() => {
+          if (!selected()) el.removeAttribute("data-selection");
+        });
+      });
+    };
+    update();
+    document.addEventListener("selectionchange", update);
+    return () => {
+      cancelAnimationFrame(frame);
+      document.removeEventListener("selectionchange", update);
+      el.removeAttribute("data-selection");
+    };
+  }, [ref, visible, enabled]);
 }
 
 interface StreamProps {
