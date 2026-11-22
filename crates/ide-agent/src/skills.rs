@@ -662,11 +662,12 @@ pub fn stage(
 /// Codex `[[skills.config]]` matches `path` against the canonical `SKILL.md` document path.
 fn codex_skill_md_path(skill_dir: &Path) -> String {
     let md = skill_dir.join("SKILL.md");
-    dunce::canonicalize(&md)
+    let md = dunce::canonicalize(&md)
         .or_else(|_| dunce::canonicalize(skill_dir).map(|dir| dir.join("SKILL.md")))
-        .unwrap_or(md)
-        .to_string_lossy()
-        .into_owned()
+        .unwrap_or(md);
+    // Skill roots are joined as `.agents/skills`; rebuilding from components gives Windows
+    // one separator when the path could not be canonicalized.
+    md.components().collect::<PathBuf>().to_string_lossy().into_owned()
 }
 
 fn direct_link_matches(root: &Path, name: &str, target: &Path) -> bool {
