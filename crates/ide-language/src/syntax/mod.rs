@@ -12,6 +12,7 @@ mod literals;
 mod outline;
 mod php_align;
 mod python_facts;
+mod python_imports;
 mod rst;
 mod selection;
 mod sfc;

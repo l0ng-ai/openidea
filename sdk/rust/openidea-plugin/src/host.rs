@@ -1027,6 +1027,35 @@ mod imp {
         wit::process::start(&c, cwd).map_err(error)
     }
 
+    pub fn run_captured(
+        cmd: &crate::host::Command,
+        cwd: Option<&ProjectRes>,
+        stdin: Option<&str>,
+        options: Option<crate::host::ProcessOptions>,
+    ) -> Result<ProcessOutput, Error> {
+        let c = wit::process::Command { program: cmd.program.clone(), args: cmd.args.clone(), env: cmd.env.clone() };
+        let opts = options.map(|o| wit::process::ProcessOptions {
+            max_output_bytes: o.max_output_bytes,
+            buffer_bytes: o.buffer_bytes,
+        });
+        wit::process::run_captured(&c, cwd, stdin, opts)
+            .map(|o| ProcessOutput { status: o.status, stdout: o.stdout, stderr: o.stderr })
+            .map_err(error)
+    }
+
+    pub fn start_stream(
+        cmd: &crate::host::Command,
+        cwd: Option<&ProjectRes>,
+        options: Option<crate::host::ProcessOptions>,
+    ) -> Result<ChildRes, Error> {
+        let c = wit::process::Command { program: cmd.program.clone(), args: cmd.args.clone(), env: cmd.env.clone() };
+        let opts = options.map(|o| wit::process::ProcessOptions {
+            max_output_bytes: o.max_output_bytes,
+            buffer_bytes: o.buffer_bytes,
+        });
+        wit::process::start_stream(&c, cwd, opts).map_err(error)
+    }
+
     pub fn child_poll(child: &ChildRes, max: u32) -> Result<crate::host::Chunk, Error> {
         child.poll(max).map(chunk_in).map_err(error)
     }
@@ -1519,6 +1548,30 @@ impl Child {
 /// variables; an existing key fails with an error naming it.
 pub fn run_command(cmd: &Command, project: Option<&Project>, stdin: Option<&str>) -> Result<ProcessOutput, Error> {
     imp::run_command(cmd, project.map(|p| &p.inner), stdin)
+}
+
+/// Options for process execution and streaming (API 1.15).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProcessOptions {
+    /// Maximum bytes captured per stream before returning an error (up to 128 MiB; default 16 MiB).
+    pub max_output_bytes: Option<u32>,
+    /// In-flight buffer size per stream for streaming backpressure (default 256 KiB, max 4 MiB).
+    pub buffer_bytes: Option<u32>,
+}
+
+/// Runs a [`Command`] with configurable capture options (API 1.15).
+pub fn run_captured(
+    cmd: &Command,
+    project: Option<&Project>,
+    stdin: Option<&str>,
+    options: Option<ProcessOptions>,
+) -> Result<ProcessOutput, Error> {
+    imp::run_captured(cmd, project.map(|p| &p.inner), stdin, options)
+}
+
+/// Starts a [`Command`] with backpressure-driven lossless streaming (API 1.15).
+pub fn start_stream(cmd: &Command, project: Option<&Project>, options: Option<ProcessOptions>) -> Result<Child, Error> {
+    imp::start_stream(cmd, project.map(|p| &p.inner), options).map(|inner| Child { inner })
 }
 
 /// Starts a [`Command`] and keeps it running behind a [`Child`] (at most 8 per

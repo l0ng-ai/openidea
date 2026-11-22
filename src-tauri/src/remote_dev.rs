@@ -88,10 +88,13 @@ pub struct Connection {
 /// A forwarded port's host (`None`: the remote host itself) and remote port.
 type ForwardKey = (Option<String>, u16);
 
-/// A forwarded port: through the SSH connection, or `docker exec` in a dev container.
+/// A forwarded port: through the SSH connection, `docker exec` in a dev container, or — for
+/// WSL — nothing, the distribution's `localhost` already being this machine's.
 enum Forward {
     Ssh(ide_ssh::Tunnel),
     Container(ide_remote::container_tunnel::Tunnel),
+    /// The remote port, reachable here on the same port without a tunnel.
+    Wsl(u16),
 }
 
 impl Forward {
@@ -99,6 +102,7 @@ impl Forward {
         match self {
             Self::Ssh(t) => t.port(),
             Self::Container(t) => t.port(),
+            Self::Wsl(port) => *port,
         }
     }
 }
@@ -954,20 +958,48 @@ pub async fn remote_forward_port(
     Ok(port)
 }
 
+/// How a remote port reaches this machine: through the SSH connection, an exec-based
+/// container tunnel, or — for WSL — nothing, the distribution's `localhost` being this
+/// machine's. `None`: not reachable (another host only from a dev container).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ForwardRoute {
+    Ssh,
+    Container,
+    Wsl,
+}
+
+fn forward_route(target: &RemoteTarget, host: Option<&str>) -> Option<ForwardRoute> {
+    match (target, host) {
+        (RemoteTarget::Ssh { .. }, None) => Some(ForwardRoute::Ssh),
+        (RemoteTarget::Ssh { .. }, Some(_)) => None,
+        (RemoteTarget::DevContainer { .. }, _) => Some(ForwardRoute::Container),
+        (RemoteTarget::Wsl { .. }, None) => Some(ForwardRoute::Wsl),
+        (RemoteTarget::Wsl { .. }, Some(_)) => None,
+    }
+}
+
 /// Forwards `remote_port` of `host` (`None`: the remote host itself) to the same local port
-/// when it is free, else to a free one. Another host is reached from a dev container only.
+/// when it is free, else to a free one. A WSL distribution shares this machine's loopback, so
+/// its port is already reachable on the same port here. Another host is reached from a dev
+/// container only.
 async fn open_forward(c: &Connection, host: Option<&str>, remote_port: u16) -> IdeResult<Forward> {
-    if let (Some(session), None) = (c.session.clone(), host) {
-        let tunnel = ide_ssh::Tunnel::listen_on(session, Some(remote_port), "localhost", remote_port).await?;
-        return Ok(Forward::Ssh(tunnel));
+    let unsupported = || IdeError::unavailable("Forwarding ports is not supported here yet");
+    match forward_route(&c.target, host) {
+        Some(ForwardRoute::Ssh) => {
+            let session = c.session.clone().ok_or_else(unsupported)?;
+            let tunnel = ide_ssh::Tunnel::listen_on(session, Some(remote_port), "localhost", remote_port).await?;
+            Ok(Forward::Ssh(tunnel))
+        }
+        Some(ForwardRoute::Container) => {
+            let exec = c.exec.clone().ok_or_else(unsupported)?;
+            let host = host.unwrap_or("localhost");
+            Ok(Forward::Container(
+                ide_remote::container_tunnel::Tunnel::listen(exec, remote_port, host, remote_port).await?,
+            ))
+        }
+        Some(ForwardRoute::Wsl) => Ok(Forward::Wsl(remote_port)),
+        None => Err(unsupported()),
     }
-    if let Some(exec) = c.exec.clone() {
-        let host = host.unwrap_or("localhost");
-        return Ok(Forward::Container(
-            ide_remote::container_tunnel::Tunnel::listen(exec, remote_port, host, remote_port).await?,
-        ));
-    }
-    Err(IdeError::unavailable("Forwarding ports is not supported in a WSL project yet"))
 }
 
 /// `web_url` answers with the remote host's built-in web server, on its loopback: the URL's
@@ -1282,6 +1314,19 @@ mod tests {
             assert_eq!(parse_remote_location(location), Some((target, path.to_owned())));
         }
         assert!(parse_remote_location(r"\\wsl.localhost\Ubuntu\home\me\app").is_none());
+    }
+
+    #[test]
+    fn a_port_is_routed_by_the_target_and_its_host() {
+        let ssh = RemoteTarget::Ssh { config: "box".into() };
+        let wsl = RemoteTarget::Wsl { distro: "Ubuntu".into() };
+        let container = RemoteTarget::DevContainer { folder: "/work/app".into(), config: String::new() };
+        assert_eq!(forward_route(&ssh, None), Some(ForwardRoute::Ssh));
+        assert_eq!(forward_route(&ssh, Some("selenium")), None);
+        assert_eq!(forward_route(&container, None), Some(ForwardRoute::Container));
+        assert_eq!(forward_route(&container, Some("selenium")), Some(ForwardRoute::Container));
+        assert_eq!(forward_route(&wsl, None), Some(ForwardRoute::Wsl));
+        assert_eq!(forward_route(&wsl, Some("selenium")), None);
     }
 
     #[test]
