@@ -53,6 +53,7 @@ import {
   languageFor,
   viewerBase,
 } from "./cm";
+import { collapsedDiffLines } from "./collapsedDiffLines";
 import { applyChunk, arrowControls, chunkAt, hoverRevert, onHunkButtonClick, revertUnifiedChunk } from "./diffControls";
 import {
   HIGHLIGHT_OPTIONS,
@@ -558,6 +559,7 @@ export function DiffEditor({
     const side = (att: DocumentAttachment | null, editable: boolean, notes?: "left" | "right"): Extension[] => [
       // The left pane of a side-by-side diff has its line numbers next to the divider, as in IDEA.
       viewerBase({ readOnly: !editable, findBar: true, lineNumbers: notes === "left" ? "after" : true }),
+      collapseUnchanged ? collapsedDiffLines() : [],
       changedRanges,
       wrapSlot.of(softWrapRef.current ? EditorView.lineWrapping : []),
       // Esc closes the find bar before it collapses the selection (a found match); open popups go first.
@@ -1523,65 +1525,67 @@ export function DiffEditor({
         )}
         <span className={styles.sep} />
         <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void reload()} />
-        <span className={styles.count}>
-          {binary && tx("Binary content")}
-          {!ready || binary
-            ? ""
-            : chunkInfo.count === 0
-              ? identical
-                ? modeChange
-                  ? tx`File mode changed: ${modeChange.from} → ${modeChange.to}`
-                  : tx("Contents are identical")
-                : eolOnly
-                  ? tx("Contents differ only in line separators")
-                  : chunkInfo.whitespaceOnly
-                    ? tx("Whitespace-only changes")
-                    : tx("No differences")
-              : chunkInfo.current >= 0
-                ? tx`${chunkInfo.current + 1} of ${chunkInfo.count} differences`
-                : chunkInfo.count === 1
-                  ? tx`${chunkInfo.count} difference`
-                  : tx`${chunkInfo.count} differences`}
-          {ready && !binary && chunkInfo.count > 0 && chunkInfo.whitespaceOnly && tx(" · Whitespace-only changes")}
-          {ready &&
-            !binary &&
-            chunkInfo.moves > 0 &&
-            (chunkInfo.moves === 1 ? tx(" · 1 moved block") : tx` · ${chunkInfo.moves} moved blocks`)}
-        </span>
-        {contribs.map((c, i) => c.Toolbar && <c.Toolbar key={i} host={viewer} />)}
-        {toolbarActions}
-        {canExternal && (
+        <div className={styles.statusTools}>
+          <span className={styles.count}>
+            {binary && tx("Binary content")}
+            {!ready || binary
+              ? ""
+              : chunkInfo.count === 0
+                ? identical
+                  ? modeChange
+                    ? tx`File mode changed: ${modeChange.from} → ${modeChange.to}`
+                    : tx("Contents are identical")
+                  : eolOnly
+                    ? tx("Contents differ only in line separators")
+                    : chunkInfo.whitespaceOnly
+                      ? tx("Whitespace-only changes")
+                      : tx("No differences")
+                : chunkInfo.current >= 0
+                  ? tx`${chunkInfo.current + 1} of ${chunkInfo.count} differences`
+                  : chunkInfo.count === 1
+                    ? tx`${chunkInfo.count} difference`
+                    : tx`${chunkInfo.count} differences`}
+            {ready && !binary && chunkInfo.count > 0 && chunkInfo.whitespaceOnly && tx(" · Whitespace-only changes")}
+            {ready &&
+              !binary &&
+              chunkInfo.moves > 0 &&
+              (chunkInfo.moves === 1 ? tx(" · 1 moved block") : tx` · ${chunkInfo.moves} moved blocks`)}
+          </span>
+          {contribs.map((c, i) => c.Toolbar && <c.Toolbar key={i} host={viewer} />)}
+          {toolbarActions}
+          {canExternal && (
+            <IconButton
+              icon="external-tools"
+              title="Show Diff in External Tool"
+              size="small"
+              onClick={() => void showInExternalTool()}
+            />
+          )}
+          {getAction("vcs.showDiffInNewWindow") && auxiliaryWindow()?.kind !== "diff" && (
+            <IconButton
+              icon="external-link"
+              title="Show Diff in New Window"
+              size="small"
+              onClick={() => void executeAction("vcs.showDiffInNewWindow", data)}
+            />
+          )}
+          {auxiliaryWindow()?.kind === "diff" && getAction("vcs.showDiffInEditorTab") && (
+            <IconButton
+              icon="editor-only"
+              title="Show Diff in Editor Tab"
+              size="small"
+              onClick={() => void executeAction("vcs.showDiffInEditorTab")}
+            />
+          )}
           <IconButton
-            icon="external-tools"
-            title="Show Diff in External Tool"
+            icon="settings"
+            title="Settings"
+            shortcut={shortcutLabel("diff.showSettings")}
             size="small"
-            onClick={() => void showInExternalTool()}
+            aria-haspopup="menu"
+            onClick={(e) => showSettings(e.currentTarget)}
           />
-        )}
-        {getAction("vcs.showDiffInNewWindow") && auxiliaryWindow()?.kind !== "diff" && (
-          <IconButton
-            icon="external-link"
-            title="Show Diff in New Window"
-            size="small"
-            onClick={() => void executeAction("vcs.showDiffInNewWindow", data)}
-          />
-        )}
-        {auxiliaryWindow()?.kind === "diff" && getAction("vcs.showDiffInEditorTab") && (
-          <IconButton
-            icon="editor-only"
-            title="Show Diff in Editor Tab"
-            size="small"
-            onClick={() => void executeAction("vcs.showDiffInEditorTab")}
-          />
-        )}
-        <IconButton
-          icon="settings"
-          title="Settings"
-          shortcut={shortcutLabel("diff.showSettings")}
-          size="small"
-          aria-haspopup="menu"
-          onClick={(e) => showSettings(e.currentTarget)}
-        />
+        </div>
       </div>
       {viewMode === "split" ? (
         <div className={labels}>

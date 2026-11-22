@@ -348,10 +348,10 @@ describe("debug tool window", () => {
 
 describe("variables the adapter computes after the stop", () => {
   const tick = () => act(() => new Promise((resolve) => setTimeout(resolve, 0)));
-  const setup = () => {
+  const setup = (current = session) => {
     adapterData.library = "Collecting data…";
     adapterData.scopes.mockClear();
-    useDebug.setState({ sessions: { 1: session }, active: 1, stopSeq: 1, variablesEpoch: 0 });
+    useDebug.setState({ sessions: { 1: current }, active: 1, stopSeq: 1, variablesEpoch: 0 });
     return render(<DebugToolWindow />);
   };
 
@@ -396,22 +396,42 @@ describe("variables the adapter computes after the stop", () => {
     }
   });
 
-  it("offers Remove All Watches on a watch's context menu", async () => {
+  it("groups variable and watch context menu actions", async () => {
     useDebug.setState({ watches: ["count + 1", "label.upper()"] });
     const menu = (text: string) => {
       fireEvent.contextMenu(screen.getByText(text).closest("[role=treeitem]")!);
       const items = useContextMenuStore.getState().menu?.items ?? [];
       act(() => hideContextMenu());
-      return items.flatMap((i) => ("label" in i && i.label ? [i] : []));
+      return items;
     };
+    const layout = (items: ReturnType<typeof menu>) =>
+      items.map((item) => (item.kind === "separator" ? "|" : item.label));
     try {
-      setup();
+      setup({ ...session, caps: { dataBreakpoints: true } as DebugSession["caps"] });
       await screen.findByText("label.upper()");
       await screen.findByText("'hi'");
-      expect(menu("label").map((i) => i.label)).not.toContain("Remove All Watches");
+      expect(layout(menu("label"))).toEqual([
+        "Set Value…",
+        "Copy Value",
+        "Copy Name",
+        "|",
+        "Add to Watches",
+        "Add Field Watchpoint",
+        "|",
+        "Jump to Source",
+      ]);
       const items = menu("count + 1");
-      expect(items.map((i) => i.label)).toContain("Remove Watch");
-      const removeAll = items.find((i) => i.label === "Remove All Watches");
+      expect(layout(items)).toEqual([
+        "Remove Watch",
+        "Remove All Watches",
+        "|",
+        "Set Value…",
+        "Copy Value",
+        "Copy Name",
+        "|",
+        "Jump to Source",
+      ]);
+      const removeAll = items.find((i) => "label" in i && i.label === "Remove All Watches");
       expect(removeAll).toBeTruthy();
       act(() => (removeAll as { run: () => void }).run());
       expect(useDebug.getState().watches).toEqual([]);

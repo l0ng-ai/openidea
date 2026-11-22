@@ -33,6 +33,7 @@ import styles from "./TitleBar.module.css";
 import { useNativeTitlebar } from "./nativeTitlebar";
 import { useDocumentTitle } from "./documentTitle";
 import { windowDragRegion } from "./window-drag";
+import { useToolbarLabelWidth } from "./toolbarLabelWidth";
 
 export function orderTitleItems(items: Iterable<TitleItemContribution>) {
   const all = [...items];
@@ -76,6 +77,7 @@ function ProjectButton() {
         variant="title"
         className={styles.widget}
         tooltip={root}
+        data-toolbar-icon-dropdown=""
         aria-label={label}
         aria-haspopup={Popup ? "dialog" : "menu"}
         aria-expanded={open}
@@ -84,7 +86,9 @@ function ProjectButton() {
         <span className={styles.avatar} aria-hidden="true">
           {projectInitials(label)}
         </span>
-        <span className={styles.widgetText}>{label}</span>
+        <span className={styles.widgetText} data-toolbar-label="">
+          {label}
+        </span>
         <Icon name="chevron-down" size={12} className={styles.chevron} />
       </BarButton>
       {Popup ? (
@@ -118,7 +122,7 @@ function VcsFallback() {
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       >
-        <span className={styles.widgetText}>
+        <span className={styles.widgetText} data-toolbar-label="">
           <T>Version Control</T>
         </span>
         <Icon name="chevron-down" size={12} className={styles.chevron} />
@@ -319,6 +323,8 @@ export function TitleBar({
   const separateMenu = useProject((s) => s.settings?.appearance?.mainMenuStyle === "toolbar");
   const [bar, setBar] = useState<HTMLElement | null>(null);
   useNativeTitlebar(bar);
+  const toolbar = !minimal && !lightEdit && !compact && !bare;
+  useToolbarLabelWidth(toolbar ? bar : null);
   const className = clsx(
     styles.bar,
     overlay && styles.overlay,
@@ -343,7 +349,6 @@ export function TitleBar({
       </header>
     );
   const entry = (id: string) => <ToolbarEntry key={id} id={id} items={map} />;
-  const toolbar = !minimal && !lightEdit;
   const menuRow = frameless && !minimal && separateMenu;
   const header = (
     <header
@@ -364,7 +369,7 @@ export function TitleBar({
         </span>
       )}
       {toolbar && !menuExpanded && shown.left.map(entry)}
-      <div className={styles.drag} {...windowDragRegion} />
+      <div className={styles.drag} {...windowDragRegion} data-toolbar-spacer="" />
       {!minimal && (
         <>
           {toolbar && !menuExpanded && shown.right.map(entry)}

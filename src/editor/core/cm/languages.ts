@@ -541,7 +541,24 @@ function unbalanced(code: string): boolean {
 }
 
 /** Extensions the stock modes lack, by CodeMirror language name. */
-const EXTRA_SUPPORT: Record<string, Extension[]> = { Java: [annotationIndent], Python: pythonDedent };
+/**
+ * Kotlin: Enter after a `when` branch's `->` or an assignment's `=` with nothing after it
+ * continues one level deeper (the branch body or the assigned expression follows), as IDEA does.
+ */
+const kotlinContinuation = indentService.of((cx, pos) => {
+  if (cx.simulatedBreak == null || cx.textAfterPos(pos).trim()) return undefined;
+  const line = cx.state.doc.lineAt(pos);
+  const before = line.text.slice(0, pos - line.from);
+  const code = indentationCode(before, "//");
+  if (!/(->|[^=!<>]=)$/.test(code) || unbalanced(code)) return undefined;
+  return cx.countColumn(before, before.search(/\S|$/)) + cx.unit;
+});
+
+const EXTRA_SUPPORT: Record<string, Extension[]> = {
+  Java: [annotationIndent],
+  Python: pythonDedent,
+  Kotlin: [kotlinContinuation],
+};
 
 function patchSupport(desc: LanguageDescription, support: LanguageSupport): LanguageSupport {
   const extra = EXTRA_TAGS[desc.name];

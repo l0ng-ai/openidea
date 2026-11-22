@@ -43,7 +43,9 @@ async function request<T>(title: string, run: (id: number) => Promise<Result<T>>
 /** Interactive resolution starts on invocation only, never while rendering a preview. */
 export async function runInteractiveCodeAction(doc: number, selected: CodeAction): Promise<boolean> {
   let action = selected;
-  if (!action.edit && !action.command) action = await lspRequest(() => commands.lspResolveCodeAction(doc, action));
+  // A lazy action may carry a follow-up command beside its unresolved edit (vtsls' refactorings).
+  if (!action.edit && (!action.command || action.data != null))
+    action = await lspRequest(() => commands.lspResolveCodeAction(doc, action));
   let answers: FormAnswer[] = [];
   if (action.command) {
     let form = await request(action.title, (r) =>
