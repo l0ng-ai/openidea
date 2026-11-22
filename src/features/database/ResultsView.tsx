@@ -26,6 +26,7 @@ import { notifications } from "@/workbench/contributions";
 import { ToolWindowContentTabs } from "@/workbench/toolwindows/ToolWindows";
 import { ChartView } from "./ChartView";
 import { ColumnsPopup } from "./ColumnsPopup";
+import { cellOf, cutLength, hasCutCells, loadCells, loadPage, rowsOf, useCutCells } from "./cutCells";
 import { DataView, ExtractorSelect, PanelToggle, copyFormatOf, exportMenu, type DataPanel } from "./DataView";
 import type { ExportData, ExportFormat } from "./export";
 import { buildRowEdits, emptyEdits, hasEdits, splitTarget, type Cell, type PendingEdits } from "./model";
@@ -340,16 +341,38 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
   };
   const loaded = r?.rows.length ?? 0;
   const rowCount = loaded + edits.inserts.length;
+  // Cells the page carries only the start of are read whole on demand and re-render the grid.
+  const wholeCells = useCutCells();
   const value = useCallback(
     (row: number, col: number): Cell => {
       const name = resultNames[col]!;
       if (row >= loaded) return edits.inserts[row - loaded]?.get(name) ?? null;
       const upd = edits.updates.get(row);
       if (upd?.has(name)) return upd.get(name)!;
-      return r?.rows[row]?.[col] ?? null;
+      return r ? cellOf(r, row, col) : null;
     },
-    [r, resultNames, loaded, edits],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `wholeCells` changes when a cut cell is read
+    [r, resultNames, loaded, edits, wholeCells],
   );
+  const truncated = useCallback(
+    (row: number, col: number) => (r && row < loaded ? cutLength(r, row, col) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `wholeCells` changes when a cut cell is read
+    [r, loaded, wholeCells],
+  );
+  /** Reads cut cells whole (failing with a notification: `null`). */
+  const loadFull = async (cells: ReadonlyArray<{ row: number; col: number }>): Promise<Cell[] | null> => {
+    try {
+      return await loadCells(tab, cells);
+    } catch (e) {
+      notifications().notify({
+        level: "error",
+        title: "Cannot read the whole value",
+        body: e instanceof Error ? e.message : String(e),
+        key: "db-whole-value",
+      });
+      return null;
+    }
+  };
 
   const onEdit = (row: number, col: number, v: Cell) => {
     if (!editable || busy || !sources[col]) return; // an aliased or computed column
@@ -362,7 +385,7 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
         next.inserts[row - loaded] = ins;
       } else {
         const upd = new Map(next.updates.get(row));
-        if ((r?.rows[row]?.[col] ?? null) === v) upd.delete(name);
+        if ((r ? cellOf(r, row, col) : null) === v) upd.delete(name);
         else upd.set(name, v);
         if (upd.size) next.updates.set(row, upd);
         else next.updates.delete(row);
@@ -400,8 +423,13 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
   const submit = async () => {
     if (!r || !target || !pk || !editable || busy || submittingResults.has(r)) return;
     setSubmittingResult(r, true);
-    const list = buildRowEdits(resultNames, r.rows, pk, edits);
     try {
+      // The key of a row identifies it by its whole value.
+      const keyCells = [...edits.updates.keys(), ...edits.deletes].flatMap((row) =>
+        pk.map((name) => ({ row, col: resultNames.indexOf(name) })).filter((c) => cutLength(r, c.row, c.col) !== null),
+      );
+      if (keyCells.length) await loadCells(tab, keyCells);
+      const list = buildRowEdits(resultNames, rowsOf(r), pk, edits);
       // The Output log shows what the submit is about to change.
       for (const s of editStatements(driver, target.schema ?? "", target.table, list)) log("statement", s);
       const n = await withConnection(tab.sourceId, () =>
@@ -425,16 +453,31 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
     }
   };
 
-  const showExport = (at: { x: number; y: number }) =>
-    r &&
+  const showExport = async (at: { x: number; y: number }) => {
+    if (!r) return;
+    // What is exported or copied is the whole values, not the starts the page carries.
+    if (hasCutCells(r)) {
+      try {
+        await loadPage(tab);
+      } catch (e) {
+        notifications().notify({
+          level: "error",
+          title: "Cannot read the whole values",
+          body: e instanceof Error ? e.message : String(e),
+          key: "db-whole-value",
+        });
+        return;
+      }
+    }
     showContextMenu(
       at,
       exportMenu(
-        { columns, rows: r.rows, driver, table: queryTable(text, { driver }) },
+        { columns, rows: rowsOf(r), driver, table: queryTable(text, { driver }) },
         queryTable(text, { driver }),
         extractor,
       ),
     );
+  };
 
   // Submit / Revert / Go to Column (⌘↩ / ⌥⌘Z / ⌘F12) reach the latest state through the handle, as in the table editor.
   const canSubmit = editable && dirty && !busy;
@@ -474,7 +517,7 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
             enabled: () => true,
             run: () => {
               const rect = viewRef.current?.querySelector("[data-db-export]")?.getBoundingClientRect();
-              if (rect) showExport({ x: rect.left, y: rect.bottom });
+              if (rect) void showExport({ x: rect.left, y: rect.bottom });
             },
           },
           deleteRows: { enabled: (rows) => rowsEditable && rows.length > 0, run: deleteRows },
@@ -564,7 +607,7 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
           title="Export Data"
           shortcut={shortcutLabel("db.exportData")}
           data-db-export=""
-          onClick={(e) => showExport({ x: e.clientX, y: e.clientY })}
+          onClick={(e) => void showExport({ x: e.clientX, y: e.clientY })}
         />
         {view === "table" && <PanelToggle panel={panel} onChange={setPanel} />}
         {onClose && <IconButton icon="close" title="Close" onClick={onClose} />}
@@ -587,6 +630,8 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
               fixedRows={loaded}
               driver={driver}
               value={value}
+              truncated={truncated}
+              loadFull={loadFull}
               panel={panel}
               onPanelChange={setPanel}
               copyFormat={copyFormatOf(extractor)}

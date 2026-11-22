@@ -9938,5 +9938,12 @@
   "Previous Rows": "上一组行",
   "Next Rows": "下一组行",
   "Previous Columns": "上一组列",
-  "Next Columns": "下一组列"
+  "Next Columns": "下一组列",
+  "truncated": "已截断",
+  "Only the first {shown} of {total} characters are shown.": "仅显示前 {shown} 个字符，共 {total} 个。",
+  "Only the first {shown} of {total} characters are shown. Double-click to load the whole value.": "仅显示前 {shown} 个字符，共 {total} 个。双击以加载完整值。",
+  "Load whole value": "加载完整值",
+  "Cannot read the whole value": "无法读取完整值",
+  "Cannot read the whole values": "无法读取完整值",
+  "The result changed since this page was read. Run the query again.": "自读取此页以来结果已更改，请重新运行查询。"
 }

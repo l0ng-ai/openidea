@@ -18,7 +18,7 @@ import {
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import clsx from "clsx";
-import { Checkbox, Dialog, Icon, lockDragCursor, Popup, SelectListbox, showContextMenu, type MenuItem } from "@/ui";
+import { Checkbox, Dialog, Icon, lockDragCursor, Popup, SelectListbox, showContextMenu, T, type MenuItem } from "@/ui";
 import { parseDelimited, toCsv, toOneRow, toTsv, type Cell } from "./model";
 import { initialJsonText, isJsonColumn, isJsonValue } from "./jsonValue";
 import { JsonValueWindow } from "./JsonValueEditor";
@@ -67,6 +67,10 @@ export interface GridProps {
   rowCount: number;
   /** Displayed value (pending edits applied). */
   value: (row: number, col: number) => Cell;
+  /** The whole length (UTF-16 units) of a cell shown cut short (a page carries only the start of a large value); `null` when it is whole. */
+  truncated?: (row: number, col: number) => number | null;
+  /** Reads the whole values of cut cells (the resolved values follow `cells`); `null` when they could not be read. */
+  loadFull?: (cells: ReadonlyArray<{ row: number; col: number }>) => Promise<Cell[] | null>;
   /** The format plain ⌘C copies in (the toolbar's extractor; TSV by default). */
   copyFormat?: CopyFormat;
   rowState?: (row: number) => "deleted" | "inserted" | null;
@@ -280,13 +284,23 @@ export function Grid(props: GridProps) {
     return Array.from({ length: n.bottom - n.top + 1 }, (_, i) => n.top + i);
   };
 
-  const copy = (format: CopyFormat, header: boolean, wholeRows = false) => {
+  const copy = async (format: CopyFormat, header: boolean, wholeRows = false) => {
     if (!sel) return;
     const n = norm(sel);
     const cols = wholeRows
       ? columns.map((_, i) => i)
       : Array.from({ length: n.right - n.left + 1 }, (_, i) => n.left + i);
-    const rows = selectedRows().map((r) => cols.map((c) => value(r, c)));
+    const picked = selectedRows();
+    const rows = picked.map((r) => cols.map((c) => value(r, c)));
+    // A cut cell copies as its whole value.
+    const cut = picked.flatMap((row, i) =>
+      cols.flatMap((col, j) => (props.truncated?.(row, col) != null ? [{ row, col, i, j }] : [])),
+    );
+    if (cut.length) {
+      const full = await props.loadFull?.(cut);
+      if (!full) return;
+      cut.forEach(({ i, j }, k) => (rows[i]![j] = full[k]!));
+    }
     const head = header ? cols.map((c) => columns[c]!.name) : null;
     const text =
       format === "onerow"
@@ -324,7 +338,15 @@ export function Grid(props: GridProps) {
   /** `maximized` (⇧Enter): the multi-line editor, which multi-line and long values always use. */
   const startEdit = (row: number, col: number, maximized = false) => {
     if (!editable || props.rowState?.(row) === "deleted") return;
-    const cell = value(row, col);
+    // A cut value is read whole first: editing its start would write that back.
+    if (props.truncated?.(row, col) != null) {
+      void props.loadFull?.([{ row, col }]).then((full) => full && openEditor(row, col, full[0]!, maximized));
+      return;
+    }
+    openEditor(row, col, value(row, col), maximized);
+  };
+
+  const openEditor = (row: number, col: number, cell: Cell, maximized: boolean) => {
     const text = cell ?? "";
     // JSON cells (type or content) edit in the JSON value editor when the dialog opens (#2333).
     const json = isJsonValue(columns[col]?.type ?? "", cell);
@@ -803,6 +825,8 @@ export function Grid(props: GridProps) {
                   );
                 }
                 const val = value(r, c);
+                const cut = props.truncated?.(r, c) ?? null;
+                const [shown, total] = [val?.length ?? 0, cut ?? 0];
                 // Boolean cells show a checkbox while the grid is editable (DataGrip); Space toggles too.
                 const lit =
                   editable && onEdit && bools[c] && state !== "deleted" ? booleanLiterals(props.driver) : null;
@@ -824,8 +848,19 @@ export function Grid(props: GridProps) {
                       if (dragging.current) setSel((s) => (s ? { ...s, r1: r, c1: c } : s));
                     }}
                     onDoubleClick={() => startEdit(r, c)}
-                    title={val != null && val.length > 40 ? val.slice(0, 2000) : undefined}
+                    title={
+                      cut !== null
+                        ? tx`Only the first ${shown} of ${total} characters are shown. Double-click to load the whole value.`
+                        : val != null && val.length > 40
+                          ? val.slice(0, 2000)
+                          : undefined
+                    }
                   >
+                    {cut !== null && (
+                      <span className={styles.cellCutMark}>
+                        <T>truncated</T>
+                      </span>
+                    )}
                     {lit ? (
                       <>
                         <span
