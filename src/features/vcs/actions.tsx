@@ -726,9 +726,8 @@ export function registerVcsActions(): () => void {
       icon: "plus",
       when: VCS,
       keywords: ["git add", "stage"],
-      run: ({ arg }) => {
-        return addToVcs(selectedPaths(arg));
-      },
+      // The Project view's selection only while it has focus: from the editor it is the open file.
+      run: ({ arg, ctx }) => addToVcs(ctx.projectViewFocus ? selectedPaths(arg) : contextPaths(arg)),
     },
     {
       id: "vcs.stash",

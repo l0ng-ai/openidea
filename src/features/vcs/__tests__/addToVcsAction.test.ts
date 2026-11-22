@@ -63,9 +63,15 @@ const addToVcs = () => getAction("vcs.addToVcs")!;
 describe("Add to VCS", () => {
   it("adds the unversioned files below the Project view's selected directory", async () => {
     project.paths = ["/repo/dir"];
-    await addToVcs().run({ arg: undefined, ctx: { vcsAvailable: true } });
+    await addToVcs().run({ arg: undefined, ctx: { vcsAvailable: true, projectViewFocus: true } });
     expect(stage).toHaveBeenCalledWith(["/repo/dir/new.ts", "/repo/dir/sub/n2.ts"]);
     expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("leaves the Project view's selection alone while another view has focus", async () => {
+    project.paths = ["/repo/dir"];
+    await addToVcs().run({ arg: undefined, ctx: { vcsAvailable: true } });
+    expect(stage).not.toHaveBeenCalled();
   });
 
   it("only adds the unversioned files under an explicit selection", async () => {
