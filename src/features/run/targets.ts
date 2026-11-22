@@ -18,6 +18,7 @@ import { scanJvmTargets, simpleClassName } from "./jvmTargets";
 import { escapeRegExp } from "./testing/rerun";
 import { pestFilter, phpunitArgs, phpunitFilter } from "./testing/phpunit";
 import { frameworkFor } from "./testing";
+import { withNodeTestNamePattern } from "./testing/nodeTest";
 
 export type TargetKind = "main" | "test" | "suite" | "generate";
 
@@ -473,6 +474,9 @@ export function targetConfig(
   });
   // Playwright selects by declaration line (`file:line`), which also covers a describe block.
   if (frameworkFor(file) === "playwright") return named(withLast(file.args, (f) => `${f}:${target.line + 1}`));
+  // node:test selects by full name, through NODE_OPTIONS (see `nodeTest.ts`).
+  if (frameworkFor(file) === "node-test")
+    return { ...named(file.args), env: withNodeTestNamePattern(file.env, jsNamePattern(target)) };
   switch (file.kind) {
     case "dotnet-test": {
       const methods =

@@ -4,6 +4,8 @@ import { cargoParser } from "./cargo";
 import { goParser } from "./go";
 import { jsParser } from "./js";
 import { jvmParser } from "./jvm";
+import { withNodeTestReporter } from "./nodeTest";
+import { recordsParser } from "./records";
 import { phpunitParser, withTeamcity } from "./phpunit";
 import { playwrightParser } from "./playwright";
 import { pytestParser } from "./pytest";
@@ -24,6 +26,7 @@ export {
   phpunitParser,
   playwrightParser,
   pytestParser,
+  recordsParser,
   rubyParser,
   unittestParser,
   zigParser,
@@ -41,6 +44,7 @@ export type Framework =
   | "cargo"
   | "js"
   | "playwright"
+  | "node-test"
   | "pytest"
   | "unittest"
   | "phpunit"
@@ -51,12 +55,14 @@ export type Framework =
   | "zig"
   | "auto";
 
-type FrameworkConfig = Pick<RunConfig, "kind" | "command" | "args"> & Partial<Pick<RunConfig, "testRunner">>;
+type FrameworkConfig = Pick<RunConfig, "kind" | "command" | "args"> & Partial<Pick<RunConfig, "testRunner" | "env">>;
 
 export function frameworkFor(config: FrameworkConfig): Framework {
   const cmd = [config.command, ...config.args].join(" ");
   // A `package.json` script names its runner only in package.json: detection records it.
   if (config.testRunner === "playwright" || /\bplaywright\s+test\b/.test(cmd)) return "playwright";
+  if (config.testRunner === "node-test" || /(^|[\s/\\])(node|tsx)(\.exe)?(\s+-\S*)*\s+--test(\s|$)/.test(cmd))
+    return "node-test";
   switch (config.kind) {
     case "dotnet-test":
       return "dotnet";
@@ -120,6 +126,7 @@ function rubyVerbose<T extends Pick<RunConfig, "kind" | "command" | "args">>(con
  * IDEA's runner) unless the user chose a verbosity already.
  */
 export function withTestReporting<T extends FrameworkConfig>(config: T): T {
+  if (frameworkFor(config) === "node-test") return { ...config, env: withNodeTestReporter(config.env ?? {}) };
   if (frameworkFor(config) === "playwright") {
     // The list reporter prints a line per test; a project's own (`html`, `dot` on CI) may print none.
     const chosen = config.args.some((a) => a === "--reporter" || a.startsWith("--reporter="));
@@ -162,6 +169,8 @@ export function createTestParser(config: FrameworkConfig): TestOutputParser {
       return jsParser();
     case "playwright":
       return playwrightParser();
+    case "node-test":
+      return recordsParser();
     case "pytest":
       return pytestParser();
     case "unittest":

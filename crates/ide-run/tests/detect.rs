@@ -77,6 +77,22 @@ fn playwright_scripts_and_configs() {
 }
 
 #[test]
+fn node_test_scripts() {
+    let dir = project(&[(
+        "package.json",
+        r#"{"scripts":{"test":"node --import tsx --test","check":"tsx --test src/","tap":"node --test --test-reporter=tap","start":"node server.js --test"}}"#,
+    )]);
+    let c = detect(dir.path());
+    assert_eq!(find(&c, "npm:test").extras.test_runner.as_deref(), Some("node-test"));
+    let check = find(&c, "npm:check");
+    assert!(check.is_test);
+    assert_eq!(check.extras.test_runner.as_deref(), Some("node-test"));
+    // A reporter of its own: run as written, without the IDE's.
+    assert_eq!(find(&c, "npm:tap").extras.test_runner, None);
+    assert_eq!(find(&c, "npm:start").extras.test_runner, None);
+}
+
+#[test]
 fn package_manager_selection() {
     for (lock, pm) in [("yarn.lock", "yarn"), ("bun.lockb", "bun"), ("bun.lock", "bun"), ("package-lock.json", "npm")] {
         let dir = project(&[("package.json", r#"{"scripts":{"start":"node ."}}"#), (lock, "")]);
