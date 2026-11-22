@@ -362,6 +362,16 @@ function SkillCard({
                   {skill.alsoIn?.map((s) => tx(SKILL_SOURCE_GROUPS[s].label)).join(", ")}
                 </span>
               )}
+              {skill.contextFork && (
+                <span className={page.tag} title={tx("Runs in a subagent where supported (context: fork)")}>
+                  context: fork
+                </span>
+              )}
+              {(skill.paths?.length ?? 0) > 0 && (
+                <span className={page.tag} title={skill.paths?.join(", ")}>
+                  {formatMessage(tx("paths ({count})"), { count: skill.paths?.length ?? 0 })}
+                </span>
+              )}
               {!skill.valid && (
                 <span className={clsx(page.tag, page.tagWarning)}>
                   <T>Invalid SKILL.md</T>
@@ -424,6 +434,14 @@ function SkillCard({
                     ?.map((s) => `${tx(SKILL_SOURCE_GROUPS[s].label)} (${SKILL_SOURCE_GROUPS[s].paths})`)
                     .join(" · ")}
                 </span>
+              </>
+            )}
+            {(skill.paths?.length ?? 0) > 0 && (
+              <>
+                <span className={page.metaLabel}>
+                  <T>Paths</T>
+                </span>
+                <span className={page.metaValue}>{skill.paths?.join(", ")}</span>
               </>
             )}
             <span className={page.metaLabel}>

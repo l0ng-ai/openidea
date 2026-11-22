@@ -277,4 +277,20 @@ describe("SkillsPage", () => {
     );
     await waitFor(() => expect(screen.getByText("deploy-script")).toBeInTheDocument());
   });
+
+  it("displays context: fork and paths badges and expands paths in the inspector", async () => {
+    const forked = [
+      state("verify-ux", "workspace", "auto", {
+        contextFork: true,
+        paths: ["src/**/*.tsx", "e2e/*.spec.ts"],
+      }),
+    ];
+    render(<SkillsPage backend={{ list: vi.fn(async () => forked), setMode: vi.fn(async () => forked) }} />);
+
+    await waitFor(() => expect(screen.getByText("verify-ux")).toBeInTheDocument());
+    expect(screen.getByText("context: fork")).toBeInTheDocument();
+    expect(screen.getByText("paths (2)")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^verify-ux/ }));
+    expect(await screen.findByText("src/**/*.tsx, e2e/*.spec.ts")).toBeInTheDocument();
+  });
 });

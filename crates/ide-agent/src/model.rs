@@ -948,6 +948,12 @@ pub struct AgentSkill {
     /// True when frontmatter sets `disable-model-invocation: true` (defaults to `slashOnly`).
     #[serde(default)]
     pub disable_model_invocation: bool,
+    /// True when frontmatter sets `context: fork` (passed through natively to supporting CLIs).
+    #[serde(default)]
+    pub context_fork: bool,
+    /// Optional `paths` / `globs` patterns from frontmatter (passed through natively to supporting CLIs).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
     /// The `SKILL.md` passes validation (`name` matches its folder, `description` present).
     pub valid: bool,
     /// What validation found (`name` mismatch, missing or over-long description…).
