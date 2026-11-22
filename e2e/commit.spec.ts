@@ -1024,27 +1024,51 @@ test("the Commit tool window restores the draft and author options for the inclu
   await expect(message).toHaveValue("Default draft");
 });
 
-test("commit message history opens above the message without an empty icon column", async ({ workbench: page }) => {
+test("commit message history shows compact message previews above the editor", async ({ workbench: page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
   await stubRepository(page);
   await page.keyboard.press("Meta+k");
   const message = page.getByRole("textbox", { name: "Commit message" });
   await expect(message).toBeVisible();
   await page.evaluate((root) => {
-    localStorage.setItem(`openidea.vcs.commitMessages:${root}`, JSON.stringify(["Previous commit message"]));
+    localStorage.setItem(
+      `openidea.vcs.commitMessages:${root}`,
+      JSON.stringify([
+        "Update inventory\n\nReview settlement totals",
+        "Update inventory\n\nReconcile export records",
+        ...Array.from({ length: 7 }, (_, index) => `Earlier message ${index + 1}`),
+      ]),
+    );
   }, ROOT);
   await message.fill("Draft");
-  await page.getByRole("button", { name: "Commit Message History" }).click();
+  const history = page.getByRole("button", { name: "Commit Message History" });
+  await history.click();
 
   const menu = page.getByRole("menu", { name: "Recent commit messages" });
-  const row = menu.getByRole("menuitem", { name: "Previous commit message" });
+  const row = menu.getByRole("menuitem", { name: /Update inventory.*Review settlement totals/ });
   await expect(row).toBeVisible();
-  const messageBox = await message.boundingBox();
-  const menuBox = await menu.locator("..").boundingBox();
-  expect(messageBox).not.toBeNull();
-  expect(menuBox).not.toBeNull();
-  expect(menuBox!.y + menuBox!.height).toBeLessThan(messageBox!.y);
-  expect(Math.abs(menuBox!.x - messageBox!.x)).toBeLessThan(2);
+  const messageBox = (await message.boundingBox())!;
+  const menuBox = (await menu.locator("..").boundingBox())!;
+  const rowBox = (await row.boundingBox())!;
+  expect(messageBox.y - menuBox.y - menuBox.height).toBeCloseTo(3, 0);
+  expect(Math.abs(menuBox.x - messageBox.x)).toBeLessThan(2);
+  expect(menuBox.height).toBeLessThan(rowBox.height * 8);
+  await expect(row).toHaveCSS("font-family", await message.evaluate((el) => getComputedStyle(el).fontFamily));
+  await expect(row).toHaveCSS("font-size", await message.evaluate((el) => getComputedStyle(el).fontSize));
   await expect(row.locator("span")).toHaveCount(1);
+
+  await row.press("Escape");
+  await expect(menu).toBeHidden();
+  await expect(message).toHaveValue("Draft");
+  await history.click();
+  await row.press("Home");
+  await expect(row).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  const second = menu.getByRole("menuitem", { name: /Update inventory.*Reconcile export records/ });
+  await expect(second).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(message).toHaveValue("Update inventory\n\nReconcile export records");
+  await expect(message).toBeFocused();
 });
 
 test("Amend shows the original author and warns when the committer differs", async ({ workbench: page }) => {

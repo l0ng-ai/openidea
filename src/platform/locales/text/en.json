@@ -28,6 +28,7 @@
   "The Git operation changed. Review the current changes and try again.": "The Git operation changed. Review the current changes and try again.",
   "Git operation has no current commit": "Git operation has no current commit",
   "Invalid commit message": "Invalid commit message",
+  "Recent commit messages": "Recent commit messages",
   "Invalid commit message file path": "Invalid commit message file path",
   "Review staged changes": "Review staged changes",
   "Commit and Continue": "Commit and Continue",

@@ -134,6 +134,22 @@
   gap: var(--space-0-5) var(--space-1);
   padding: var(--space-0-5) 6px var(--space-0-5) 12px;
 }
+.messageHistory {
+  --history-row-height: max(var(--h-list-row), calc(1em + var(--space-2)));
+  min-width: min(180px, calc(100vw - var(--space-3)));
+  max-height: calc(7 * var(--history-row-height) + var(--space-2) + 2px);
+  padding-block: var(--space-1);
+  overflow-x: hidden;
+}
+.messageHistory [role="menu"] {
+  max-width: calc(var(--history-columns) + var(--space-4) + var(--space-2));
+  font-size: inherit;
+}
+.messageHistory [role="menuitem"] {
+  height: var(--history-row-height);
+  margin-inline: var(--space-1);
+  padding-inline: var(--space-2);
+}
 .amendTarget {
   min-width: 0;
   max-width: 112px;
