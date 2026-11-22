@@ -665,21 +665,38 @@
   gap: var(--space-2);
 }
 .configFields {
+  flex: 1;
+  min-height: 0;
   display: grid;
   grid-template-columns: fit-content(40%) minmax(0, 1fr);
+  grid-template-rows: [notice] auto [header] auto [options] minmax(0, 1fr);
   column-gap: var(--space-3);
-  row-gap: var(--space-2);
-  align-content: start;
   min-width: 0;
 }
-.configFields > * {
+.configFields > *,
+.formSettings > * {
   grid-column: 1 / -1;
   min-width: 0;
 }
-.configFields:not(.configFieldsTomcat) > .field,
+.configFields > .notice {
+  grid-row: notice;
+}
+.configFields:not(.configFieldsTomcat) > .notice,
+.configFields:not(.configFieldsTomcat) > .formHeader {
+  margin-bottom: var(--space-2);
+}
 .configFields:not(.configFieldsTomcat) > .formHeader,
-.configFields:not(.configFieldsTomcat) > .formHeader > .field {
+.configFields:not(.configFieldsTomcat) > .formHeader > .field,
+.formSettings > .field {
   grid-template-columns: subgrid;
+}
+.formSettings {
+  display: grid;
+  grid-row: options;
+  grid-template-columns: subgrid;
+  row-gap: var(--space-2);
+  align-content: start;
+  overflow: auto;
 }
 .formHeader > .field {
   grid-column: 1 / -1;
@@ -688,8 +705,6 @@
   overflow: hidden;
 }
 .configFieldsTomcat {
-  flex: 1;
-  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
@@ -793,6 +808,7 @@
 }
 .formHeader {
   display: grid;
+  grid-row: header;
   grid-template-columns: minmax(0, 1fr);
   align-items: center;
   gap: var(--space-4);
