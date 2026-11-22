@@ -25,6 +25,24 @@ pub async fn vcs_status(host: &Host, window: &str) -> IdeResult<Vec<FileStatus>>
     .await
 }
 
+#[command(trust = always)]
+pub async fn vcs_ignored_files(host: &Host, window: &str) -> IdeResult<Vec<FileStatus>> {
+    let project = host.project(window)?;
+    host.blocking(move || {
+        let settings = project.settings.effective();
+        if project.is_trusted() {
+            apply_git_executable(&settings);
+        }
+        let repos = project.repos();
+        let ignored = settings.ignored_names();
+        for repo in repos.all() {
+            repo.set_ignored_names(ignored.clone());
+        }
+        repos.ignored_files()
+    })
+    .await
+}
+
 /// Changes of `paths` only: the dirty-scope refresh after a watcher batch.
 #[command(trust = always)]
 pub async fn vcs_status_paths(host: &Host, window: &str, paths: Vec<std::path::PathBuf>) -> IdeResult<Vec<FileStatus>> {
@@ -49,7 +67,10 @@ pub async fn vcs_status_paths(host: &Host, window: &str, paths: Vec<std::path::P
 }
 
 pub mod commands;
+mod rebase_editor;
+mod worktree_setup;
 pub use commands::*;
+pub(crate) use rebase_editor::RebaseEditors;
 
 /// Refuses (with `refusal`) to remove or move the worktree that holds the open project.
 fn check_worktree_away_from_project(
@@ -90,4 +111,4 @@ fn check_worktree_away_from_project(
     Ok(())
 }
 
-ide_command::domain!(vcs: vcs_status, vcs_status_paths);
+ide_command::domain!(vcs: vcs_status, vcs_status_paths, vcs_ignored_files);

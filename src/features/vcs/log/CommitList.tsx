@@ -61,6 +61,7 @@ export function CommitList({ fileHistory = false }: { fileHistory?: boolean }) {
   const shown = useGitLog((s) => s.shownLog);
   const active = !scope || scope === shown;
   const all = useGitLog((s) => s.commits);
+  const unmatchedByRepo = useGitLog((s) => s.cherryHighlight?.unmatched);
   const selection = useGitLog((s) => s.selection);
   const fileHistoryTarget = useGitLog((s) => {
     const id = scope ?? s.shownLog;
@@ -612,6 +613,7 @@ export function CommitList({ fileHistory = false }: { fileHistory?: boolean }) {
                 head={headKeys.has(commitKey(c))}
                 mine={opts.highlightMine && isMine(c, user)}
                 onBranch={!!onBranch?.has(commitKey(c))}
+                outsideUnpicked={unmatchedByRepo?.get(commitRepo(c) ?? null)?.has(c.id) === false}
                 opts={opts}
                 remoteNames={rowRemoteNames((c as RepoCommit).remoteNames, remoteNames)}
                 onPick={pick}

@@ -22,6 +22,7 @@ import { changeRepository, headerMenu } from "./toolwindow/PullRequestsToolWindo
 import { contextPullRequest, resetTabs } from "./toolwindow/store";
 import { activeTimelinePullRequest, openTimeline, timelineIcon, timelineTitle } from "./toolwindow/timelineInput";
 import { numberDialog } from "./ui/dialogs";
+import { activateWorktreeReviews } from "./worktreeReviews";
 
 /** The pull request an action applies to: its argument, the timeline editor, the active tab or the list selection. */
 function targetPullRequest(arg: unknown): number | null {
@@ -118,6 +119,7 @@ export function activate(): () => void {
     }),
     activateReviewDiff(),
     activateReviewMode(),
+    activateWorktreeReviews(),
   ];
   const stopEditors = maybeEditorService()?.onActiveInputChange?.(() =>
     setContext("githubTimelineActive", activeTimelinePullRequest() !== null),

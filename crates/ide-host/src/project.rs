@@ -1155,6 +1155,11 @@ impl Project {
         }
         repo.set_ignored_names(settings.ignored_names());
         repo.set_cli_status(settings.vcs.git.cli_status);
+        repo.set_automatic_shelf(
+            (settings.vcs.git.save_changes_policy == ide_core::workflow_settings::GitSaveChangesPolicy::Shelve)
+                .then(|| ide_core::project_dir::path(&self.root, "shelf")),
+            (!settings.vcs.git.staging_area).then(|| self.root.clone()),
+        );
         f(repo)
     }
 
@@ -1425,12 +1430,22 @@ impl Project {
     /// Use the open document's selected encoding, or the same detection/settings as opening it.
     pub fn vcs_encoding(&self, path: &Path, rev: Option<&str>) -> IdeResult<ide_vcs::TextEncoding> {
         let charset = self.file_encoding(path, rev)?;
+        Ok(self.vcs_text_encoding(path, charset))
+    }
+
+    pub fn staged_file_encoding(&self, path: &Path, bytes: &[u8]) -> ide_vcs::TextEncoding {
+        let defaults = self.documents.file_defaults();
+        let charset = ide_vfs::detect_encoding(bytes, defaults.fallback_for(path));
+        self.vcs_text_encoding(path, charset)
+    }
+
+    fn vcs_text_encoding(&self, path: &Path, charset: &'static encoding_rs::Encoding) -> ide_vcs::TextEncoding {
         let encoding = ide_vcs::TextEncoding::from(charset);
-        Ok(if self.documents.native_to_ascii_for(path) {
+        if self.documents.native_to_ascii_for(path) {
             encoding.with_ascii_conversion(ide_vfs::decode_properties_escapes, ide_vfs::encode_properties_ascii)
         } else {
             encoding
-        })
+        }
     }
 
     fn file_encoding(&self, path: &Path, rev: Option<&str>) -> IdeResult<&'static encoding_rs::Encoding> {

@@ -360,6 +360,9 @@ impl ClientHandler {
         else {
             return;
         };
+        if self.server.redirect_transient_diagnostics(&path, self.generation, params.version, &mut params.diagnostics) {
+            return;
+        }
         if self.server.name == crate::compose::SERVER {
             // Maven resource-filtering placeholders (`@profileActive@`) parse as invalid
             // YAML but are replaced before the file is ever read: their parser error is noise.
@@ -377,9 +380,8 @@ impl ClientHandler {
             return;
         }
         // Files opened only for a request (references search) are not the user's problems.
-        if (self.server.external_diagnostics.load(std::sync::atomic::Ordering::Acquire)
-            && !mgr.docs.lock().values().any(|d| d.path == path))
-            || self.server.suppresses_diagnostics(&path)
+        if self.server.external_diagnostics.load(std::sync::atomic::Ordering::Acquire)
+            && !mgr.docs.lock().values().any(|d| d.path == path)
         {
             return;
         }

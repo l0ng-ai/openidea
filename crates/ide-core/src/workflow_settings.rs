@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 pub struct VcsSettings {
     /// Colour folders that contain changed files (project tree, tabs).
     pub show_dirty_directories: bool,
+    pub create_changelists_automatically: bool,
     /// Diffs the user opens show in an editor tab; off, in a separate window.
     pub diff_as_editor_tab: bool,
     /// Stop file history (Show History) after `history_limit` commits.
@@ -57,6 +58,7 @@ impl Default for VcsSettings {
         Self {
             // IDEA's VcsConfiguration.SHOW_DIRTY_RECURSIVELY is off by default.
             show_dirty_directories: false,
+            create_changelists_automatically: false,
             diff_as_editor_tab: true,
             limit_history: true,
             history_limit: 1000,
@@ -70,9 +72,66 @@ impl Default for VcsSettings {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum EmptyCherryPickAction {
+    #[default]
+    Skip,
+    CreateEmpty,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum StashDiffTarget {
+    #[default]
+    Local,
+    Parent,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum GitSaveChangesPolicy {
+    #[default]
+    Shelve,
+    Stash,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum FetchTagsMode {
+    #[default]
+    Auto,
+    Sync,
+    Always,
+    Never,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum GitAnnotateMovement {
+    #[default]
+    None,
+    WithinFile,
+    AcrossFiles,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GitAnnotateSettings {
+    pub ignore_whitespace: bool,
+    pub movement: GitAnnotateMovement,
+}
+
+impl Default for GitAnnotateSettings {
+    fn default() -> Self {
+        Self { ignore_whitespace: true, movement: GitAnnotateMovement::None }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct GitSettings {
+    pub annotate: GitAnnotateSettings,
     /// Show blame after the current editor line.
     pub inline_blame: bool,
     /// A click (or Enter / Space) on the inline blame label opens its commit; off, the
@@ -83,20 +142,29 @@ pub struct GitSettings {
     pub sync_branch_operations: bool,
     /// Path to the git executable; empty = auto-detect.
     pub executable: String,
+    /// Clone all submodules along with the root repository.
+    pub clone_submodules: bool,
     /// Default of Update Project: `merge` | `rebase`.
     pub update_method: String,
+    /// Where Git operations keep local changes temporarily.
+    pub save_changes_policy: GitSaveChangesPolicy,
     /// Push rejected (non-fast-forward): update the branch and push again.
     pub auto_update_on_push_rejected: bool,
     pub warn_crlf: bool,
     pub warn_detached_head: bool,
-    /// Background check for incoming commits: `auto` | `always` | `never`.
+    /// Background check for incoming commits: `auto` | `always` | `check` | `never`.
     pub incoming_check: String,
     /// Minutes between background checks for incoming commits.
     pub incoming_check_interval: u32,
+    /// How an explicit fetch or project update handles remote tags.
+    pub fetch_tags_mode: FetchTagsMode,
     /// Branch name globs, `;`/`,`-separated; force push to them is prohibited.
     pub protected_branches: String,
     /// Initial state of Commit Options › Sign-off Commit.
     pub sign_off: bool,
+    /// Add Git's origin line when cherry-picking commits from protected remote branches.
+    pub add_cherry_pick_origin: bool,
+    pub empty_cherry_pick: EmptyCherryPickAction,
     /// Ask before committing files larger than `large_file_mb`.
     pub warn_large_files: bool,
     pub large_file_mb: u32,
@@ -108,6 +176,8 @@ pub struct GitSettings {
     pub push_dialog_only_protected: bool,
     /// Stashes and shelves share one tab.
     pub combine_stash_and_shelf: bool,
+    /// What the stash browser compares its saved files against.
+    pub stash_diff_target: StashDiffTarget,
     /// The non-modal Commit tool window works on the index: Staged / Unstaged groups,
     /// stage and unstage instead of inclusion checkboxes, and no change lists.
     pub staging_area: bool,
@@ -119,25 +189,32 @@ pub struct GitSettings {
 impl Default for GitSettings {
     fn default() -> Self {
         Self {
+            annotate: GitAnnotateSettings::default(),
             inline_blame: false,
             inline_blame_clickable: true,
             show_branch_in_project_view: false,
             sync_branch_operations: true,
             executable: String::new(),
+            clone_submodules: true,
             update_method: "merge".into(),
+            save_changes_policy: GitSaveChangesPolicy::default(),
             auto_update_on_push_rejected: false,
             warn_crlf: true,
             warn_detached_head: true,
             incoming_check: "auto".into(),
             incoming_check_interval: 15,
+            fetch_tags_mode: FetchTagsMode::Auto,
             protected_branches: "master; main".into(),
             sign_off: false,
+            add_cherry_pick_origin: true,
+            empty_cherry_pick: EmptyCherryPickAction::Skip,
             warn_large_files: true,
             large_file_mb: 50,
             warn_bad_file_names: true,
             show_push_dialog: true,
             push_dialog_only_protected: false,
             combine_stash_and_shelf: false,
+            stash_diff_target: StashDiffTarget::default(),
             staging_area: false,
             cli_status: false,
         }
@@ -152,9 +229,11 @@ pub struct CommitSettings {
     /// window and a Commit dialog.
     pub non_modal: bool,
     pub include_changes_by_default: bool,
+    pub commit_all_when_nothing_staged: bool,
     /// Start with an empty message instead of the last one / the changelist's.
     pub clear_initial_message: bool,
     pub analyze_code: bool,
+    pub postpone_slow_checks: bool,
     pub check_todo: bool,
     pub reformat: bool,
     pub optimize_imports: bool,
@@ -192,8 +271,10 @@ impl Default for CommitSettings {
         Self {
             non_modal: true,
             include_changes_by_default: true,
+            commit_all_when_nothing_staged: true,
             clear_initial_message: false,
             analyze_code: true,
+            postpone_slow_checks: true,
             check_todo: true,
             reformat: false,
             optimize_imports: false,
@@ -621,6 +702,14 @@ impl Default for AgentSecuritySettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clone_submodules_defaults_on_and_can_be_disabled() {
+        let missing: GitSettings = serde_json::from_str("{}").unwrap();
+        let off: GitSettings = serde_json::from_str(r#"{"cloneSubmodules":false}"#).unwrap();
+        assert!(missing.clone_submodules);
+        assert!(!off.clone_submodules);
+    }
 
     #[test]
     fn git_settings_without_sync_key_execute_on_all_repositories() {

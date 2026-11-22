@@ -36,6 +36,7 @@ import { DIFF_KIND, diffInput, vcsDiffInFront } from "../diffInput";
 import { buildFileTree, dirKeys, type FileTreeNode } from "../fileTree";
 import styles from "../GitLog.module.css";
 import {
+  canApplySelectedChanges,
   absolutePath,
   filesUnder,
   flatFileNodes,
@@ -310,7 +311,11 @@ export function CommitDetails({ commits, fileHistory = false }: { commits: Commi
     const target = sel.has(node.key) ? filesUnder(tree, sel) : filesUnder([node]);
     if (!target.length) return;
     e.preventDefault();
-    showContextMenu(e, changesMenu(target));
+    const source =
+      !readOnly && chosen.length === 1 && commit.parents.length <= 1 && files
+        ? { commit, total: files.length }
+        : undefined;
+    showContextMenu(e, changesMenu(target, source));
   };
 
   const messagePanel = (
@@ -503,8 +508,9 @@ export function CommitDetails({ commits, fileHistory = false }: { commits: Commi
 }
 
 /** IDEA's changes browser context menu in the Git Log; `changes` = the files it acts on. */
-export function changesMenu(changes: LogChange[]): MenuItem[] {
+export function changesMenu(changes: LogChange[], source?: { commit: Commit; total: number }): MenuItem[] {
   const one = changes.length === 1 ? changes[0]! : null;
+  const edit = source ? { arg: { commit: source.commit, changes }, disabled: changes.length >= source.total } : null;
   return [
     { kind: "action", action: "vcs.log.changes.showDiff", arg: changes },
     { kind: "action", action: "vcs.log.changes.compareWithLocal", arg: changes, disabled: !one?.after || one.readOnly },
@@ -524,6 +530,12 @@ export function changesMenu(changes: LogChange[]): MenuItem[] {
     { kind: "separator" },
     {
       kind: "action",
+      action: "vcs.log.changes.apply",
+      arg: changes,
+      disabled: !canApplySelectedChanges(changes),
+    },
+    {
+      kind: "action",
       action: "vcs.log.changes.revert",
       arg: changes,
       disabled: changes.some((c) => c.readOnly) || new Set(changes.map((c) => c.repo)).size > 1,
@@ -534,6 +546,12 @@ export function changesMenu(changes: LogChange[]): MenuItem[] {
       arg: changes,
       disabled: changes.some((c) => c.readOnly),
     },
+    ...(edit
+      ? ([
+          { kind: "action", action: "vcs.log.changes.extract", ...edit },
+          { kind: "action", action: "vcs.log.changes.drop", ...edit },
+        ] satisfies MenuItem[])
+      : []),
     { kind: "separator" },
     ...(one?.readOnly
       ? [{ label: "Show History for File", run: () => openLogTab("history", absolutePath(one.path, one.repo)) }]

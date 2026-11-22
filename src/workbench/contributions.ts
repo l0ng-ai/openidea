@@ -174,7 +174,7 @@ export interface EditorKindContribution {
    * the dirty mark, Save All, autosave and the close prompts. Tabs with equal
    * `input.key` (splits) share one document.
    */
-  document?: EditorDocumentLifecycle;
+  document?: EditorDocumentLifecycle | ((input: EditorInput) => EditorDocumentLifecycle | undefined);
 }
 
 /**
@@ -183,6 +183,8 @@ export interface EditorKindContribution {
  * document. Call `notifyEditorDocumentChanged` whenever `isDirty` may change.
  */
 export interface EditorDocumentLifecycle {
+  /** A clean document can use the preview slot. Any edit promotes its tabs. */
+  allowPreview?: boolean;
   /** Unsaved changes, pending edits not committed yet included. */
   isDirty(input: EditorInput): boolean;
   /** Commits pending edits; rejects when they can't be. */
@@ -201,6 +203,7 @@ export interface EditorDocumentLifecycle {
   /** Releases the document (and its kernel…) once no tab shows it any more. Called once per open. */
   close(input: EditorInput): Promise<void>;
   /** Edit › Undo / Redo while the editor has focus. */
+  handlesHistory?(input: EditorInput): boolean;
   undo?(input: EditorInput): Promise<void>;
   redo?(input: EditorInput): Promise<void>;
 }
@@ -387,6 +390,27 @@ export function registerGitLogChecks(cell: GitLogChecksCell): () => void {
   useGitLogChecks.setState({ cell });
   return () => {
     if (useGitLogChecks.getState().cell === cell) useGitLogChecks.setState({ cell: null });
+  };
+}
+
+export interface WorktreeReview {
+  title: string;
+  open: () => Promise<void>;
+}
+
+export interface WorktreeReviewQuery {
+  root: string;
+  paths: string[];
+  branches: string[];
+}
+
+type WorktreeReviewProvider = (query: WorktreeReviewQuery) => Promise<ReadonlyMap<string, WorktreeReview>>;
+export const useWorktreeReviewProvider = create<{ lookup: WorktreeReviewProvider | null }>(() => ({ lookup: null }));
+
+export function registerWorktreeReviewProvider(lookup: WorktreeReviewProvider): () => void {
+  useWorktreeReviewProvider.setState({ lookup });
+  return () => {
+    if (useWorktreeReviewProvider.getState().lookup === lookup) useWorktreeReviewProvider.setState({ lookup: null });
   };
 }
 
@@ -739,6 +763,8 @@ export interface EditorService {
   focus?(): void;
   /** Paths of the documents open in editor tabs (all panes, tab order). */
   openPaths?(): string[];
+  /** Observe tab changes, including open or closed background tabs. */
+  onOpenTabsChange?(fn: () => void): () => void;
   /** Every open tab, files or not, most recently active first (Switcher). */
   openTabs?(): OpenEditorTab[];
   /** Input of the tab `tabId` in pane `paneId` (dragging tabs between views), null if there is none. */
@@ -872,12 +898,27 @@ export interface RunOutputService {
   subscribe(process: RunId, listener: (kind: "stdout" | "stderr" | "system", text: string) => void): () => void;
 }
 
+export interface RunConfigurationCheckResult {
+  name: string;
+  status: "notStarted" | "stopped" | "finished";
+  exitCode?: number | null;
+  failedTests?: number;
+  review?: () => void;
+}
+
+export interface RunConfigurationCheckService {
+  configurations(): readonly RunConfig[];
+  subscribe(listener: () => void): () => void;
+  run(id: string, signal: AbortSignal): Promise<RunConfigurationCheckResult[]>;
+}
+
 const services: {
   editor?: EditorService;
   toolWindows?: ToolWindowService;
   notifications?: NotificationService;
   embeddedTerminal?: EmbeddedTerminalFactory;
   runOutput?: RunOutputService;
+  runConfigurationChecks?: RunConfigurationCheckService;
   hasRunConfiguration?: (kind: string, directory: string) => boolean;
 } = {};
 
@@ -891,6 +932,9 @@ export const provideToolWindowService = (s: ToolWindowService) => void (services
 export const provideNotificationService = (s: NotificationService) => void (services.notifications = s);
 export const provideEmbeddedTerminal = (f: EmbeddedTerminalFactory | undefined) => void (services.embeddedTerminal = f);
 export const provideRunOutput = (s: RunOutputService | undefined) => void (services.runOutput = s);
+export const provideRunConfigurationChecks = (s: RunConfigurationCheckService | undefined) =>
+  void (services.runConfigurationChecks = s);
+export const runConfigurationChecks = () => services.runConfigurationChecks;
 export const provideRunConfigurationLookup = (lookup: typeof services.hasRunConfiguration) =>
   void (services.hasRunConfiguration = lookup);
 export const hasRunConfiguration = (kind: string, directory: string): boolean =>

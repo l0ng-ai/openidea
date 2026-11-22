@@ -3,12 +3,11 @@ import { branchesByRepo } from "./multiRoot";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
-import type { Branch, BranchInfo } from "@/bindings";
+import type { Branch } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { bindingsFor, normalizeBinding, registerKeyClaim, shortcutLabel, strokeOf } from "@/platform/keymap";
-import { useEditorRegistry } from "@/editor/api";
 import {
   BarButton,
   HighlightedText,
@@ -26,6 +25,7 @@ import {
 } from "@/ui";
 import { useRowHeight } from "@/ui/density";
 import type { PopupAnchor } from "@/ui/Popup";
+import { useActiveRepository, useWidgetBranch } from "./activeRepository";
 import {
   buildBranchRows,
   preferredBranchRow,
@@ -36,22 +36,30 @@ import {
 } from "./branches";
 import { branchPresentation, extensionPopupActions, useBranchWidgetExtensions } from "./branchWidgetExtensions";
 import { branchMenu, commonBranchMenu, inRepo, tagMenu } from "./branchMenu";
-import { loadFavoriteBranches, recentBranches, toggleFavoriteBranch, useFavoriteBranches } from "./branchOps";
+import {
+  loadFavoriteBranches,
+  recentBranches,
+  configuredRemoteNames,
+  toggleFavoriteBranch,
+  useFavoriteBranches,
+} from "./branchOps";
 import { inProgress, operationTitle, type InProgress } from "./operations";
 import {
   branchRepositoryRoots,
   buildMultiRepoRows,
-  currentRepoFor,
   preferredRepoRow,
   repoHeadLabel,
   widgetShowsRepo,
   type RepoEntry,
   type RepoRow,
 } from "./repoBranches";
-import { currentRepo, focusRepo, loadBranches, repoName, useVcs } from "./store";
+import { currentRepo, currentRepoRoot, focusRepo, loadBranches, repoName, unfetchedBranch, useVcs } from "./store";
+import { useBranchWorktrees } from "./worktrees";
 import { BranchSync } from "./BranchSync";
-import { showSyncCommits } from "./SyncCommitsPopup";
-import type { SyncDirection } from "./syncCommits";
+import { summarizeBranchSync, type BranchSyncSummary } from "./branchSyncState";
+import { FetchButton } from "./FetchButton";
+import { showBranchSync } from "./SyncCommitsPopup";
+import { outgoingCount, outgoingDestination, type SyncDirection } from "./syncCommits";
 import styles from "./BranchWidget.module.css";
 import { tx } from "@/platform/i18n";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
@@ -81,12 +89,6 @@ export function headLabel(branch: { head: string | null; headCommit: string | nu
   return branch.headCommit ? branch.headCommit.slice(0, 8) : tx("No commits");
 }
 
-/** The current repository (see `currentRepoFor`): the widget and the popup show the same one. */
-function useCurrentRepo(): string | null {
-  const path = useEditorRegistry((s) => s.active?.ctx.path ?? null);
-  return useVcs((s) => currentRepoFor(path, s.roots, s.repo));
-}
-
 function useBranchRepositories(current: string | null) {
   const roots = useVcs((s) => s.roots);
   const branchRoots = useVcs((s) => s.branchRoots);
@@ -95,54 +97,49 @@ function useBranchRepositories(current: string | null) {
 
 export function BranchWidget() {
   const available = useVcs((s) => s.available);
-  const selected = useVcs((s) => s.branch);
-  const current = useCurrentRepo();
+  const current = useActiveRepository();
   const roots = useBranchRepositories(current);
+  const count = roots.length;
+  const branch = useWidgetBranch(current);
   const heads = useVcs((s) => s.heads);
   const branchRoot = useVcs((s) => (current ? (s.branchRoots[current] ?? current) : null));
+  const selected = useVcs((s) => s.repo ?? s.roots[0] ?? null);
   // Several repositories on different branches: the widget names the current one.
   const diverged = widgetShowsRepo(roots.map((r) => ({ head: heads[r]?.head ?? null })));
-  // The current repository is not the selected one: its HEAD from the last scan (no upstream).
-  const other = useVcs((s) =>
-    (diverged || roots.length === 1) && current && current !== s.repo ? (s.heads[current] ?? null) : null,
-  );
-  const otherOp = useVcs((s) => (current ? (s.operations[current] ?? null) : null));
+  const pending = useVcs((s) => unfetchedBranch(s.unfetched, current, branch?.head, branch?.trackedTip));
   const open = useBranchesPopup((s) => s.open);
   const extensions = useBranchWidgetExtensions((s) => s.extensions);
-  if (!available || !selected) return null;
+  if (!available || !branch) return null;
   // Another feature presents the current branch (the GitHub pull request on it).
-  const presented = other ? null : branchPresentation(extensions);
+  const presented = current === selected ? branchPresentation(extensions) : null;
   const repo = diverged && branchRoot ? repoName(branchRoot) : null;
-  const branch: BranchInfo = other
-    ? { head: other.head, headCommit: other.headCommit, upstream: null, ahead: 0, behind: 0, operation: otherOp }
-    : selected;
   const head = branch.operation ? `${headLabel(branch)} (${branch.operation})` : headLabel(branch);
+  const ahead = outgoingCount(branch);
+  const destination = outgoingDestination(branch.outgoing);
   const sync =
-    branch.behind > 0 && branch.ahead > 0
-      ? tx`${branch.behind} incoming, ${branch.ahead} outgoing commits`
+    branch.behind > 0 && ahead > 0
+      ? tx`${branch.behind} incoming, ${ahead} outgoing commits`
       : branch.behind > 0
         ? tx`${branch.behind} incoming commits`
-        : branch.ahead > 0
-          ? tx`${branch.ahead} outgoing commits`
+        : ahead > 0
+          ? tx`${ahead} outgoing commits`
           : "";
   const tooltip = [
     presented?.tooltip ?? "",
     repo ? tx`Repository: ${repo}` : "",
     tx`Git branch: ${head}`,
     branch.upstream ? tx`Tracking ${branch.upstream}` : "",
-    roots.length > 1 && !repo ? tx`In all ${roots.length} repositories` : "",
+    destination && destination !== branch.upstream ? tx`Push destination: ${destination}` : "",
+    count > 1 && !repo ? tx`In all ${count} repositories` : "",
     sync,
+    pending ? tx("Remote changes available to fetch") : "",
   ]
     .filter(Boolean)
     .join("\n");
   // A marker lists its commits; the rest of the widget keeps opening the branches popup.
   const openSync = (direction: SyncDirection) => {
     useBranchesPopup.setState({ open: false });
-    showSyncCommits({
-      repo: current,
-      branch: { branch: branch.head, upstream: branch.upstream, ahead: branch.ahead, behind: branch.behind },
-      direction,
-    });
+    showBranchSync(current, branch, direction);
   };
   return (
     <>
@@ -157,7 +154,7 @@ export function BranchWidget() {
         onClick={() => useBranchesPopup.setState({ open: !open })}
       >
         <Icon name={presented?.icon ?? (branch.head ? "branch" : "commit")} size={16} className={styles.icon} />
-        {repo && (
+        {diverged && repo && (
           <span className={styles.repo} data-toolbar-label="">
             {repo}
           </span>
@@ -171,7 +168,7 @@ export function BranchWidget() {
           <span className={styles.operation}>{branch.operation}</span>
         )}
         {/* Like IDEA's widget: icons only; counts are in the tooltip. */}
-        <BranchSync behind={branch.behind} ahead={branch.ahead} showCounts={false} onSelect={openSync} />
+        <BranchSync behind={branch.behind} ahead={ahead} unfetched={!!pending} showCounts={false} onSelect={openSync} />
         <Icon name="chevron-down" size={14} className={styles.chevron} />
       </BarButton>
     </>
@@ -190,15 +187,15 @@ const POPUP_ACTIONS: PopupAction[] = [
   { id: "vcs.commit", label: "Commit…", icon: "commit", group: "sync" },
   { id: "vcs.push", label: "Push…", icon: "git-push", group: "sync" },
   { id: "vcs.syncCommits", label: "Incoming and Outgoing Commits…", icon: "history", group: "sync" },
+  { id: "vcs.newWorktree", label: "New Worktree…", icon: "folder", group: "branch" },
   { id: "vcs.newBranch", label: "New Branch…", icon: "plus", group: "branch" },
-  { id: "vcs.newWorktree", label: "New Worktree…", group: "branch" },
   { id: "vcs.checkoutRevision", label: "Checkout Tag or Revision…", icon: "branch", group: "branch" },
 ];
 
 /** A single repository's own entries (its submenu in the popup with several repositories). */
 const REPO_ACTIONS: PopupAction[] = [
   { id: "vcs.newBranch", label: "New Branch…", icon: "plus", group: "branch" },
-  { id: "vcs.newWorktree", label: "New Worktree…", group: "branch" },
+  { id: "vcs.newWorktree", label: "New Worktree…", icon: "folder", group: "branch" },
   { id: "vcs.checkoutRevision", label: "Checkout Tag or Revision…", icon: "branch", group: "branch" },
 ];
 
@@ -412,10 +409,11 @@ const caretAt = (e: KeyboardEvent, where: "start" | "end") => {
 };
 
 function BranchesPopup({ anchor, onClose }: { anchor: PopupAnchor; onClose: () => void }) {
-  const current = useCurrentRepo();
+  const current = useActiveRepository();
   const roots = useBranchRepositories(current);
   const selected = useVcs((s) => s.repo);
   const multi = roots.length > 1;
+  const worktreeFor = useBranchWorktrees();
   const extensions = useBranchWidgetExtensions((s) => s.extensions);
   const actions = useMemo(() => [...POPUP_ACTIONS, ...extensionPopupActions(extensions)], [extensions]);
   // ⌥⌘N is also Inline (enabled while a popup is open over an editor): the search field handles it here.
@@ -438,11 +436,12 @@ function BranchesPopup({ anchor, onClose }: { anchor: PopupAnchor; onClose: () =
       onResized={savePopupSize}
     >
       {multi ? (
-        <MultiRepoPanel onClose={onClose} actions={actions} roots={roots} current={current} />
+        <MultiRepoPanel onClose={onClose} actions={actions} roots={roots} current={current} worktreeFor={worktreeFor} />
       ) : (
         <BranchesPanel
           onClose={onClose}
           actions={actions}
+          worktreeFor={worktreeFor}
           root={current !== selected ? (current ?? undefined) : undefined}
         />
       )}
@@ -453,6 +452,7 @@ function BranchesPopup({ anchor, onClose }: { anchor: PopupAnchor; onClose: () =
 interface BranchesPanelProps {
   onClose: () => void;
   actions: readonly PopupAction[];
+  worktreeFor: ReturnType<typeof useBranchWorktrees>;
   /** A repository other than the selected one (the submenu of a repository): it is selected before acting. */
   root?: string;
   /** Its branches until the selected repository's are loaded. */
@@ -461,8 +461,25 @@ interface BranchesPanelProps {
   onBack?: () => void;
 }
 
+function useBranchSubmenu() {
+  const [menuFor, setMenuFor] = useState<{ items: MenuItem[]; label: string; el: HTMLElement } | null>(null);
+  const openTagMenu = (tag: string, el: HTMLElement, done: () => void, root?: string) => {
+    const repo = root ?? currentRepoRoot();
+    const items = (remotes?: string[]) => {
+      const menu = tagMenu(tag, done, { repo, remotes });
+      return root ? inRepo(root, menu) : menu;
+    };
+    const pending = { items: items(), label: tx`Tag ${tag}`, el };
+    setMenuFor(pending);
+    void configuredRemoteNames(repo).then((remotes) =>
+      setMenuFor((menu) => (menu === pending && el.isConnected ? { ...menu, items: items(remotes) } : menu)),
+    );
+  };
+  return { menuFor, setMenuFor, openTagMenu };
+}
+
 /** Search, actions and the branches of one repository (the selected one, or `root`). */
-function BranchesPanel({ onClose, actions: baseActions, root, fallback, onBack }: BranchesPanelProps) {
+function BranchesPanel({ onClose, actions: baseActions, worktreeFor, root, fallback, onBack }: BranchesPanelProps) {
   const rowHeight = useRowHeight(ROW_HEIGHT);
   const selected = useVcs((s) => s.repo);
   const live = root === undefined || selected === root;
@@ -478,7 +495,7 @@ function BranchesPanel({ onClose, actions: baseActions, root, fallback, onBack }
   const [query, setQuery] = useState("");
   const [recent] = useState(recentBranches);
   const [active, setActive] = useState(0);
-  const [menuFor, setMenuFor] = useState<{ items: MenuItem[]; label: string; el: HTMLElement } | null>(null);
+  const { menuFor, setMenuFor, openTagMenu } = useBranchSubmenu();
   const listRef = useRef<HTMLDivElement>(null);
   const favorites = useFavoriteBranches((s) => s.names);
   const [tags, setTags] = useState<string[]>([]);
@@ -530,15 +547,29 @@ function BranchesPanel({ onClose, actions: baseActions, root, fallback, onBack }
     if (row?.type !== "branch" && row?.type !== "tag") return;
     const el = rowElement(listRef.current, row.key);
     if (!el) return;
-    setMenuFor(
-      row.type === "branch"
-        ? { items: scoped(branchMenu(row.branch, current, closeAll)), label: tx`Branch ${row.branch.name}`, el }
-        : { items: scoped(tagMenu(row.tag, closeAll)), label: tx`Tag ${row.tag}`, el },
-    );
+    if (row.type === "tag") {
+      openTagMenu(row.tag, el, closeAll, root);
+      return;
+    }
+    setMenuFor({
+      items: scoped(
+        branchMenu(row.branch, current, closeAll, {
+          branches,
+          headCommit: root ? (useVcs.getState().heads[root]?.headCommit ?? null) : undefined,
+          existingWorktree: worktreeFor(root ?? currentRepo(), row.branch.name),
+        }),
+      ),
+      label: tx`Branch ${row.branch.name}`,
+      el,
+    });
   };
 
   const run = (id: string, arg?: unknown) => {
     onClose();
+    if (root && (id === "vcs.newWorktree" || id === "vcs.checkoutRevision")) {
+      void executeAction(id, { repo: root });
+      return;
+    }
     void (root ? focusRepo(root) : Promise.resolve()).then(() => executeAction(id, arg));
   };
   const activate = (i: number) => {
@@ -607,7 +638,7 @@ function BranchesPanel({ onClose, actions: baseActions, root, fallback, onBack }
           variant="bare"
           onKeyDown={onKeyDown}
         />
-        {!root && <IconButton icon="git-fetch" title="Fetch" size="small" action="vcs.fetch" />}
+        {!root && <FetchButton />}
         {!root && <OptionsButton hasTags={tags.length > 0} />}
       </div>
       <div ref={listRef} style={{ height: listHeight(rows, rowHeight) }} className={styles.listWrap}>
@@ -632,7 +663,7 @@ function BranchesPanel({ onClose, actions: baseActions, root, fallback, onBack }
           aria-label="Branches"
           className={styles.list}
           empty={<span className={styles.empty}>{loaded ? tx("No matching branches") : tx("Loading…")}</span>}
-          renderItem={(r) => (r.type === "group" ? <GroupRowView row={r} /> : <BranchRowView row={r} />)}
+          renderItem={(r) => (r.type === "group" ? <GroupRowView row={r} /> : <BranchRowView row={r} repo={root} />)}
         />
       </div>
       {menuFor && <SubMenu {...menuFor} onClose={() => setMenuFor(null)} />}
@@ -677,9 +708,8 @@ function MultiRepoPanel({
   actions: popupActions,
   roots,
   current,
-}: {
-  onClose: () => void;
-  actions: readonly PopupAction[];
+  worktreeFor,
+}: Pick<BranchesPanelProps, "onClose" | "actions" | "worktreeFor"> & {
   roots: readonly string[];
   current: string | null;
 }) {
@@ -697,7 +727,8 @@ function MultiRepoPanel({
   const options = usePopupOptions();
   const sync = useWorkflowSettings((s) => s.vcs.git.syncBranchOperations);
   const [all, setAll] = useState<Record<string, Branch[]>>({});
-  const [menuFor, setMenuFor] = useState<{ items: MenuItem[]; label: string; el: HTMLElement } | null>(null);
+  const unfetched = useVcs((s) => s.unfetched);
+  const { menuFor, setMenuFor, openTagMenu } = useBranchSubmenu();
   const [repoMenu, setRepoMenu] = useState<{ root: string; el: HTMLElement; focus: boolean } | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -747,6 +778,7 @@ function MultiRepoPanel({
       ...operationActions(op, conflicts),
       ...popupActions.map((a) => {
         if (a.id === "vcs.newBranch" && sync) return { ...a, arg: { repos: roots } };
+        if (a.id === "vcs.checkoutRevision") return { ...a, arg: sync ? { repos: roots } : { repo: current } };
         if (a.id === "vcs.newWorktree") return { ...a, arg: { repo: current } };
         return a;
       }),
@@ -795,17 +827,25 @@ function MultiRepoPanel({
     }
     setRepoMenu(null);
     if (row.type === "common") {
+      const checkedOutInWorktree = !row.branch.remote && roots.some((root) => worktreeFor(root, row.branch.name));
       const shared = widgetShowsRepo(repos) ? null : (repos[0]?.head ?? null);
       setMenuFor({
-        items: commonBranchMenu(row.branch, roots, shared, closeAll),
+        items: commonBranchMenu(row.branch, roots, shared, closeAll, checkedOutInWorktree),
         label: tx`Branch ${row.branch.name}`,
         el,
       });
     } else if (row.type === "branch") {
-      const items = inRepo(row.repo.root, branchMenu(row.branch, row.repo.head, closeAll));
+      const items = inRepo(
+        row.repo.root,
+        branchMenu(row.branch, row.repo.head, closeAll, {
+          branches: all[row.repo.root],
+          headCommit: row.repo.headCommit,
+          existingWorktree: worktreeFor(row.repo.root, row.branch.name),
+        }),
+      );
       setMenuFor({ items, label: tx`Branch ${row.branch.name} of ${row.repo.name}`, el });
     } else if (row.type === "tag") {
-      setMenuFor({ items: inRepo(row.repo.root, tagMenu(row.tag, closeAll)), label: tx`Tag ${row.tag}`, el });
+      openTagMenu(row.tag, el, closeAll, row.repo.root);
     }
   };
   const activate = (i: number) => {
@@ -813,7 +853,7 @@ function MultiRepoPanel({
     if (!row) return;
     if (row.type === "action") {
       onClose();
-      void executeAction(row.action.id, row.action.arg);
+      void executeAction(row.action.id, row.action.id === "vcs.newWorktree" ? { repo: current } : row.action.arg);
     } else if (row.type === "group") {
       if (!query.trim()) setOpen(row.key, !row.expanded);
     } else {
@@ -878,7 +918,7 @@ function MultiRepoPanel({
           variant="bare"
           onKeyDown={onKeyDown}
         />
-        <IconButton icon="git-fetch" title="Fetch" size="small" action="vcs.fetch" />
+        <FetchButton />
         <OptionsButton hasTags={tags.length > 0} />
       </div>
       <div ref={listRef} style={{ height: listHeight(rows, rowHeight) }} className={styles.listWrap}>
@@ -914,7 +954,18 @@ function MultiRepoPanel({
             </span>
           }
           renderItem={(r) => (
-            <RepoRowView row={r} operation={r.type === "repo" ? operations[r.repo.root] : undefined} />
+            <RepoRowView
+              row={r}
+              operation={r.type === "repo" ? operations[r.repo.root] : undefined}
+              sync={
+                r.type === "common" && !r.branch.remote
+                  ? summarizeBranchSync(
+                      roots.map((root, i) => [root, r.branch.members[i]!]),
+                      unfetched,
+                    )
+                  : undefined
+              }
+            />
           )}
         />
       </div>
@@ -935,6 +986,7 @@ function MultiRepoPanel({
             root={repoMenu.root}
             fallback={all[repoMenu.root]}
             actions={REPO_ACTIONS}
+            worktreeFor={worktreeFor}
             onClose={closeAll}
             onBack={closeRepoMenu}
           />
@@ -949,10 +1001,11 @@ function branchIndent(depth: number) {
   return depth ? { paddingInlineStart: `min(${depth * INDENT}px, ${(30 * depth) / (depth + 3)}%)` } : undefined;
 }
 
-function RepoRowView({ row, operation }: { row: RepoRow; operation?: string }) {
+function RepoRowView({ row, operation, sync }: { row: RepoRow; operation?: string; sync?: BranchSyncSummary }) {
   switch (row.type) {
-    case "action":
     case "branch":
+      return <BranchRowView row={row} repo={row.repo.root} />;
+    case "action":
     case "tag":
       return <BranchRowView row={row} />;
     case "repo":
@@ -990,6 +1043,7 @@ function RepoRowView({ row, operation }: { row: RepoRow; operation?: string }) {
               <T>current</T>
             </span>
           )}
+          {sync && <BranchSync {...sync} />}
           <Icon name="chevron-right" size={10} className={styles.chevron} />
         </span>
       );
@@ -1014,7 +1068,18 @@ function GroupRowView({ row }: { row: { key: string; label: string; expanded: bo
   );
 }
 
-function BranchRowView({ row }: { row: BranchRow | Extract<RepoRow, { type: "action" | "branch" | "tag" }> }) {
+function BranchRowView({
+  row,
+  repo,
+}: {
+  row: BranchRow | Extract<RepoRow, { type: "action" | "branch" | "tag" }>;
+  repo?: string;
+}) {
+  const pending = useVcs((s) =>
+    row.type === "branch"
+      ? unfetchedBranch(s.unfetched, repo ?? s.repo ?? s.roots[0] ?? null, row.branch.name, row.branch.trackedTip)
+      : undefined,
+  );
   const indent = "depth" in row ? branchIndent(row.depth) : undefined;
   if (row.type === "action") {
     const keys = shortcutLabel(row.action.id);
@@ -1083,7 +1148,7 @@ function BranchRowView({ row }: { row: BranchRow | Extract<RepoRow, { type: "act
           <T>current</T>
         </span>
       )}
-      <BranchSync behind={b.behind} ahead={b.ahead} />
+      <BranchSync behind={b.behind} ahead={outgoingCount(b)} unfetched={!!pending} />
       {!b.remote && b.upstream && (
         <span className={styles.upstream} title={b.upstream}>
           {b.upstream}

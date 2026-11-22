@@ -192,3 +192,10 @@
   padding: 24px;
   color: var(--fg-subtle);
 }
+
+.binaryActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2);
+}

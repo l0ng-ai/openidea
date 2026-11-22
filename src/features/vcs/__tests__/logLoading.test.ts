@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Commit, LogQuery } from "@/bindings";
 
-const api = vi.hoisted(() => ({ log: vi.fn(), refs: vi.fn(), cancel: vi.fn(), choose: vi.fn() }));
+const api = vi.hoisted(() => ({
+  log: vi.fn(),
+  refs: vi.fn(),
+  cancel: vi.fn(),
+  choose: vi.fn(),
+  compare: vi.fn(),
+  chooseSource: vi.fn(),
+}));
 vi.mock("@/platform/ipc", async (original) => {
   const real = await original<typeof import("@/platform/ipc")>();
   return {
@@ -10,6 +17,8 @@ vi.mock("@/platform/ipc", async (original) => {
       ...real.commands,
       vcsLog: (repo: string | null, query: LogQuery) => api.log(repo, query),
       vcsLogRefs: () => api.refs(),
+      vcsNotCherryPicked: (repo: string | null, source: string, target: string, request: number) =>
+        api.compare(repo, source, target, request),
       cancelRequest: (id: number) => api.cancel(id),
       vcsBranches: () => Promise.resolve({ status: "ok", data: [] }),
       vcsBranchInfo: () => Promise.resolve({ status: "ok", data: { upstream: null } }),
@@ -19,6 +28,10 @@ vi.mock("@/platform/ipc", async (original) => {
   };
 });
 vi.mock("../CommitChooser", () => ({ chooseLogCommit: (commits: Commit[]) => api.choose(commits) }));
+vi.mock("../RevisionChooser", async (original) => ({
+  ...(await original<typeof import("../RevisionChooser")>()),
+  chooseRepositoryRevision: api.chooseSource,
+}));
 
 import { commitKey } from "../multiRoot";
 import { useVcs } from "../store";
@@ -27,10 +40,13 @@ import * as logPresentation from "../logPresentation";
 import {
   displayedLogGraph,
   emptyFilters,
+  ensureEditorLog,
+  focusLogView,
   extendCommitSelection,
   goToChild,
   goToParent,
   goToRef,
+  installGitLog,
   logState,
   openLogTab,
   selectGitTab,
@@ -38,6 +54,8 @@ import {
   reloadLog,
   revealCommit,
   setLogBranches,
+  setLogFilters,
+  toggleCherryHighlight,
   toggleCommitSelection,
   updateLogOptions,
   useGitLog,
@@ -61,6 +79,8 @@ beforeEach(() => {
   api.refs.mockReset().mockResolvedValue(ok({}));
   api.cancel.mockReset().mockResolvedValue(undefined);
   api.choose.mockReset().mockImplementation(async (commits: Commit[]) => commits[1]);
+  api.compare.mockReset().mockResolvedValue(ok([]));
+  api.chooseSource.mockReset().mockResolvedValue(null);
   useVcs.setState({ root: "/repo", repo: "/repo", roots: ["/repo"], branches: [] });
   useLogOptions.setState({ ...DEFAULT_LOG_OPTIONS });
   useGitLog.setState({
@@ -74,6 +94,7 @@ beforeEach(() => {
     seek: null,
     done: false,
     fragments: { expanded: new Set(), collapsed: new Set(), merges: new Set() },
+    cherryHighlight: null,
     generation: useGitLog.getState().generation + 1,
   });
 });
@@ -81,10 +102,124 @@ beforeEach(() => {
 afterEach(async () => {
   vi.restoreAllMocks();
   api.log.mockResolvedValue(ok([]));
+  useGitLog.setState({ cherryHighlight: null });
   await reloadLog();
 });
 
+describe("Not Cherry-Picked Commits", () => {
+  it("compares each editor range against the other branch and retains its range through filter changes", async () => {
+    ensureEditorLog("compare:incoming", "release", {
+      comparison: { from: "refs/heads/main", to: "refs/heads/release" },
+      repositories: ["/repo"],
+    });
+    ensureEditorLog("compare:outgoing", "main", {
+      comparison: { from: "refs/heads/release", to: "refs/heads/main" },
+      repositories: ["/repo"],
+    });
+    focusLogView("compare:incoming");
+    setLogFilters({ text: "ticket", branches: ["other"], range: "base..other" });
+    expect(logState().filters).toMatchObject({
+      text: "ticket",
+      branches: [],
+      range: "refs/heads/main..refs/heads/release",
+    });
+    await toggleCherryHighlight();
+    focusLogView("compare:outgoing");
+    await toggleCherryHighlight();
+    expect(api.compare.mock.calls.map(([repo, source, target]) => [repo, source, target])).toEqual([
+      ["/repo", "refs/heads/release", "refs/heads/main"],
+      ["/repo", "refs/heads/main", "refs/heads/release"],
+    ]);
+    expect(logState().filters.text).toBe("");
+    expect(logState("compare:incoming").filters.text).toBe("ticket");
+    expect(logState("log").filters.range).toBeUndefined();
+  });
+
+  it("asks for a source branch on HEAD and applies it to the Log filter", async () => {
+    useGitLog.setState({ filters: { ...emptyFilters(), branches: ["HEAD"] } });
+    let pick!: (choice: { rev: string; repositories: string[] }) => void;
+    api.chooseSource.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          pick = resolve;
+        }),
+    );
+    api.compare.mockResolvedValue(ok(["waiting"]));
+    const pending = toggleCherryHighlight();
+    await reloadLog();
+    pick({ rev: "release", repositories: ["/repo"] });
+    await pending;
+    expect(api.chooseSource).toHaveBeenCalledWith("Select Source Branch", {
+      branchesOnly: true,
+      repositories: ["/repo"],
+    });
+    expect(useGitLog.getState().filters.branches).toEqual(["release"]);
+    expect(useGitLog.getState().cherryHighlight?.unmatched?.get("/repo")).toEqual(new Set(["waiting"]));
+  });
+
+  it("compares an existing branch filter independently in each repository and keeps the setting in its own tab", async () => {
+    useVcs.setState({ roots: ["/repo", "/repo/lib"] });
+    useGitLog.setState({
+      filters: { ...emptyFilters(), branches: ["release"] },
+      commits: [{ ...c("waiting"), repo: "/repo" }],
+    });
+    api.compare.mockResolvedValueOnce(ok(["waiting"])).mockResolvedValueOnce(ok(null));
+    await toggleCherryHighlight();
+    expect(api.chooseSource).not.toHaveBeenCalled();
+    expect(api.compare.mock.calls.map(([repo, source, target]) => [repo, source, target])).toEqual([
+      ["/repo", "release", "HEAD"],
+      ["/repo/lib", "release", "HEAD"],
+    ]);
+    expect(new Set(api.compare.mock.calls.map(([, , , request]) => request)).size).toBe(2);
+    openLogTab("log", "Other");
+    expect(useGitLog.getState().cherryHighlight).toBeNull();
+    selectGitTab("log");
+    expect(useGitLog.getState().cherryHighlight?.unmatched?.has("/repo/lib")).toBe(false);
+  });
+
+  it("cancels the comparison when the source changes and ignores a late result", async () => {
+    useGitLog.setState({ filters: { ...emptyFilters(), branches: ["release"] } });
+    let finish!: (value: ReturnType<typeof ok<string[]>>) => void;
+    api.compare.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const pending = toggleCherryHighlight();
+    const request = api.compare.mock.calls[0]?.[3];
+    setLogBranches(["other"]);
+    expect(api.cancel).toHaveBeenCalledWith(request);
+    finish(ok(["waiting"]));
+    await pending;
+    expect(useGitLog.getState().cherryHighlight).toBeNull();
+  });
+});
+
 describe("incremental log refresh", () => {
+  it("refreshes both branch comparison panes when the repository list settles", async () => {
+    const stop = installGitLog();
+    try {
+      ensureEditorLog("compare:incoming", "topic", {
+        comparison: { from: "main", to: "topic" },
+        repositories: ["/repo"],
+      });
+      ensureEditorLog("compare:outgoing", "main", {
+        comparison: { from: "topic", to: "main" },
+        repositories: ["/repo"],
+      });
+      api.log.mockImplementation((_repo, query: LogQuery) => Promise.resolve(ok([c(query.ranges?.[0] ?? "unscoped")])));
+      focusLogView("compare:incoming");
+      useVcs.setState({ roots: ["/repo", "/repo/nested"] });
+      await vi.waitFor(() => {
+        expect(logState("compare:incoming").commits[0]?.id).toBe("main..topic");
+        expect(logState("compare:outgoing").commits[0]?.id).toBe("topic..main");
+      });
+    } finally {
+      stop();
+    }
+  });
+
   it("lets an inactive visible scope finish its own request without cancelling the active scope", async () => {
     let finish!: (value: ReturnType<typeof ok<Commit[]>>) => void;
     api.log.mockImplementationOnce(

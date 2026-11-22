@@ -5,6 +5,7 @@ import { commitMenu } from "../log/commitMenu";
 import { extendCommitSelection, selectCommit, selectedCommits, toggleCommitSelection, useGitLog } from "../logStore";
 import { controlLabel, inProgress, operationControls, operationTitle, validateTagName } from "../operations";
 import { suggestedPatchName } from "../patches";
+import { useVcs } from "../store";
 
 const commit = (summary: string, id = "0123456789abcdef0123456789abcdef01234567"): Commit => ({
   id,
@@ -128,7 +129,6 @@ describe("Git Log commit actions", () => {
   it("offers history rewriting for pushed commits too (IDEA allows it; the run confirms)", () => {
     const local = commit("Local", "1".repeat(40));
     const pushed = commit("Pushed", "2".repeat(40));
-    useGitLog.setState({ outgoing: new Set([local.id]) });
     const rewriting = (c: Commit) =>
       commitMenu(c).flatMap((i) =>
         i.kind === "action" &&
@@ -139,10 +139,31 @@ describe("Git Log commit actions", () => {
       );
     expect(rewriting(local)).toEqual([]);
     expect(rewriting(pushed)).toEqual([]);
-    // Push All up to Here keeps its own rule: it cannot push past a pushed commit.
-    const disabled = (c: Commit) => commitMenu(c).flatMap((i) => (i.kind === "action" && i.disabled ? [i.action] : []));
-    expect(disabled(pushed)).toContain("vcs.log.pushUpToHere");
-    useGitLog.setState({ outgoing: null });
+  });
+
+  it.each(["main", null])("offers pushing a single selected commit when HEAD is %s", (head) => {
+    const { branch } = useVcs.getState();
+    useVcs.setState({
+      branch: {
+        head,
+        headCommit: "1".repeat(40),
+        upstream: head ? "origin/main" : null,
+        ahead: 0,
+        behind: 0,
+        operation: null,
+      },
+    });
+    try {
+      const selected = commit("Selected commit");
+      expect(
+        commitMenu(selected).some(
+          (item) =>
+            item.kind === "action" && item.action === "vcs.log.pushUpToHere" && !item.disabled && item.arg === selected,
+        ),
+      ).toBe(true);
+    } finally {
+      useVcs.setState({ branch });
+    }
   });
 
   it("offers the multi-commit actions for a multiple selection", () => {

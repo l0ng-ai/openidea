@@ -159,6 +159,17 @@
   padding: 24px;
   color: var(--fg-subtle);
 }
+.stagedNotice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  color: var(--fg-subtle);
+}
+.indexDeletion {
+  --diff-inserted: var(--diff-deleted);
+  --diff-inserted-stripe: var(--diff-deleted-stripe);
+}
 .host {
   flex: 1;
   min-height: 0;
@@ -207,6 +218,35 @@
   color: var(--fg-strong);
   background: transparent;
 }
+.hunkGutter {
+  min-width: var(--h-row);
+}
+.host :global(.cm-openidea-withOverview .cm-gutters-after):has(> .hunkGutter) {
+  inset-inline-end: var(--space-3);
+  margin-inline-end: var(--space-3);
+}
+.hunkButtons {
+  display: inline-flex;
+  vertical-align: top;
+}
+.hunkButtons > button {
+  display: inline-grid;
+  place-items: center;
+  width: var(--h-row);
+  height: 100%;
+  min-height: var(--space-4);
+  border: 0;
+  border-radius: var(--radius-control);
+  padding: 0;
+  background: transparent;
+  color: var(--fg-secondary);
+  cursor: pointer;
+}
+.hunkButtons > button:hover,
+.hunkButtons > button:focus-visible {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
 .select {
   height: var(--h-control-small);
   font-size: var(--fs-small);
@@ -254,6 +294,9 @@
 .noHighlight :global(.cm-changedLine),
 .noHighlight :global(.cm-insertedLine),
 .noHighlight :global(.cm-changedText),
+.noHighlight :global(.cm-inlineChangedLine),
+.noHighlight :global(.cm-unifiedWorkingChunk),
+.noHighlight :global(.cm-unifiedWorkingWord),
 .noHighlight :global(.cm-diffLine),
 .noHighlight :global(.cm-diffChangedGutter) {
   background: none !important;

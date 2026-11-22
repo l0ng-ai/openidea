@@ -76,6 +76,9 @@
 .icon {
   flex: none;
 }
+.committerWarning {
+  --icon-color: var(--warning);
+}
 /* The name takes the whole row; when it doesn't fit, the grey detail after it gives way first. */
 .label {
   flex: 0 1 auto;
@@ -131,6 +134,25 @@
   gap: var(--space-0-5) var(--space-1);
   padding: var(--space-0-5) 6px var(--space-0-5) 12px;
 }
+.amendTarget {
+  min-width: 0;
+  max-width: 112px;
+}
+.amendTarget > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.amendPicker {
+  width: min(360px, calc(100vw - var(--space-4)));
+  padding-block: var(--space-1);
+}
+.amendPickerRows {
+  max-height: calc(5 * var(--h-list-row));
+}
+.amendPickerStatus {
+  color: var(--fg-muted);
+  padding: var(--space-1) var(--space-3);
+}
 .grow {
   flex: 1;
 }
@@ -173,6 +195,23 @@
   color: var(--fg-subtle);
   font-family: var(--font-ui);
   font-size: var(--fs-ui);
+}
+.commitAuthor {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3) 0;
+  color: var(--fg-subtle);
+}
+.authorLink {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.authorDate {
+  flex: none;
+  white-space: nowrap;
 }
 /* IDEA: Commit and Commit and Push… on one row under the message, the gear at its end. */
 .commitActions {
@@ -307,6 +346,10 @@
   align-items: center;
   gap: 10px;
 }
+.testConfiguration {
+  flex: 1;
+  min-width: 0;
+}
 .optField {
   display: flex;
   align-items: center;
@@ -314,6 +357,21 @@
   color: var(--fg);
 }
 .optField > :last-child {
+  flex: 1;
+  min-width: 0;
+}
+.optDate {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  color: var(--fg);
+}
+.optDateInput {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.optDateInput input {
   flex: 1;
   min-width: 0;
 }
@@ -325,19 +383,43 @@
   font: inherit;
   cursor: pointer;
 }
-.optLink:hover {
+.todoFilter {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.optLink:disabled {
+  color: var(--fg-muted);
+  cursor: default;
+}
+.optLink:not(:disabled):hover {
   color: var(--link-hover);
   text-decoration: underline;
 }
-/* Failed before-commit checks (IDEA's commit checks failure panel). */
+/* Commit checks and their retry action, above the commit buttons. */
+.checkFeedback {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-1);
+}
+.checkFeedback > .checkProblems {
+  flex: 1;
+}
+.checkFeedback > button {
+  flex: none;
+}
 .checkProblems {
   flex: none;
   display: flex;
   gap: var(--space-1-5);
+  min-width: 0;
   max-height: 120px;
   overflow: auto;
   padding: 4px 10px 0;
   color: var(--fg-secondary);
+  overflow-wrap: anywhere;
   font-size: var(--fs-small);
   line-height: 1.4;
 }
@@ -345,6 +427,11 @@
   flex: none;
   margin-top: 1px;
   color: var(--warning);
+}
+.checkPassedIcon {
+  flex: none;
+  margin-top: 1px;
+  color: var(--success);
 }
 .checkProblemsList {
   min-width: 0;

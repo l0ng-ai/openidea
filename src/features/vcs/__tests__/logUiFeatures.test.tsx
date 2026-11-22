@@ -3,7 +3,7 @@ import { ContextMenuHost, hideContextMenu } from "@/ui";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const api = vi.hoisted(() => ({ commits: [] as Commit[], details: vi.fn(), diff: vi.fn() }));
+const api = vi.hoisted(() => ({ commits: [] as Commit[], details: vi.fn(), diff: vi.fn(), invalidate: vi.fn() }));
 vi.mock("@/platform/ipc", async (original) => {
   const real = await original<typeof import("@/platform/ipc")>();
   const ok = <T,>(data: T) => Promise.resolve({ status: "ok" as const, data });
@@ -19,9 +19,10 @@ vi.mock("@/platform/ipc", async (original) => {
       vcsConfigGet: () => ok(null),
       vcsCommitFiles: () => ok([{ path: "src/a.ts", kind: "modified", oldPath: null }]),
       vcsLogDetails: () => api.details(),
+      vcsInvalidateLogSignatures: (...args: unknown[]) => api.invalidate(...args),
       vcsLogDetailsBatch: async (_repo: string, ids: string[]) => ({
         status: "ok",
-        data: await Promise.all(ids.map(async () => (await api.details()).data)),
+        data: await Promise.all(ids.map(async (id) => (await api.details(id)).data)),
       }),
       vcsDiffRevisions: (...args: unknown[]) => api.diff(...args),
     },
@@ -49,6 +50,7 @@ const c = (id: string, parents: string[] = [], refs: string[] = []): Commit => (
 });
 
 beforeEach(() => {
+  api.invalidate.mockReset().mockResolvedValue({ status: "ok", data: null });
   api.commits = [c("tip", ["middle"], ["HEAD"]), c("middle", ["base"]), c("base")];
   api.details.mockReset().mockResolvedValue({
     status: "ok",
@@ -397,6 +399,47 @@ describe("log controls", () => {
 });
 
 describe("commit details", () => {
+  it("checks visible signatures again when the log is refreshed", async () => {
+    api.commits = [c("refresh-signature")];
+    let signature = "E";
+    api.details.mockImplementation(async () => ({
+      status: "ok",
+      data: { signature, signer: "", fingerprint: "" },
+    }));
+    api.invalidate.mockImplementation(async () => {
+      signature = "G";
+      return { status: "ok", data: null };
+    });
+    useLogOptions.setState({ showSignature: true });
+    render(<LogView />);
+    const list = await screen.findByRole("listbox", { name: "Commits" });
+    expect(await within(list).findByRole("img", { name: "Could not verify" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(await within(list).findByRole("img", { name: "Verified" })).toBeVisible();
+    expect(api.invalidate).toHaveBeenCalledExactlyOnceWith("/repo");
+  });
+
+  it("shows verification icons with signer details and leaves unsigned rows empty", async () => {
+    api.commits = [c("verified-tip", ["unsigned-parent"]), c("unsigned-parent")];
+    api.details.mockImplementation(async (id: string) => ({
+      status: "ok",
+      data: {
+        signature: id === "verified-tip" ? "G" : "N",
+        signer: id === "verified-tip" ? "Test Signer" : "",
+        fingerprint: id === "verified-tip" ? "test-fingerprint" : "",
+      },
+    }));
+    useLogOptions.setState({ showSignature: true });
+    render(<LogView />);
+    const list = await screen.findByRole("listbox", { name: "Commits" });
+    const verified = await within(list).findByRole("img", { name: "Verified" });
+    expect(verified.parentElement).toHaveAttribute(
+      "title",
+      "Verified\nSigned by Test Signer\nKey fingerprint test-fingerprint",
+    );
+    expect(within(list).queryByText("Unsigned")).not.toBeInTheDocument();
+  });
+
   it("loads a full body, containing branches, and signature only when details are visible", async () => {
     useGitLog.setState({ selected: "/repo\0tip", selection: ["/repo\0tip"] });
     render(<LogView />);

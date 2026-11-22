@@ -8,6 +8,29 @@ async function selectPage(page: Page, id: string) {
   }, id);
 }
 
+test("Git settings expose fetch tag modes and the check-only mode", async ({ workbench: page }) => {
+  await page.keyboard.press("Meta+,");
+  const dialog = page.getByRole("dialog", { name: "Settings", exact: true });
+  await expect(dialog).toBeVisible();
+  await selectPage(page, "vcs.git");
+  const mode = dialog.getByRole("button", { name: "Fetch tags", exact: true });
+  await expect(mode).toHaveText("Auto");
+  await mode.click();
+  const choices = page.getByRole("listbox");
+  for (const label of ["Auto", "Sync", "Always", "Never"]) {
+    await expect(choices.getByRole("option", { name: new RegExp(`^${label}`) })).toBeVisible();
+  }
+  const sync = choices.getByRole("option", { name: /^Sync/ });
+  await expect(sync).toContainText("Delete local tags missing on remote");
+  await sync.click();
+  await expect(mode).toHaveText("Sync");
+  const incoming = dialog.getByRole("button", { name: "Explicitly check for incoming commits on remotes" });
+  await incoming.click();
+  await choices.getByRole("option", { name: "Check without fetching", exact: true }).click();
+  await expect(incoming).toHaveText("Check without fetching");
+  await expect(dialog.getByRole("button", { name: "Apply", exact: true })).toBeEnabled();
+});
+
 test("settings forms share control columns and keep font metrics on one row", async ({ workbench: page }) => {
   await page.keyboard.press("Meta+,");
   const dialog = page.getByRole("dialog", { name: "Settings", exact: true });

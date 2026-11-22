@@ -1,109 +1,67 @@
 /** Git menu dialogs: Pull…, Merge…, Rebase…, Manage Remotes… and Worktrees. */
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
-import type { Branch, BranchInfo, MergeOptions, Remote, Worktree } from "@/bindings";
+import type { Branch, BranchInfo, MergeOptions, Remote } from "@/bindings";
+import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
+import { workflowSettings } from "@/platform/workflowSettings";
 import { notifications } from "@/workbench/contributions";
-import { openWorktree } from "./openWorktree";
 import {
   Button,
-  Checkbox,
   Dialog,
-  HighlightedText,
   Icon,
   IconButton,
   Input,
   Menu,
   Select,
   T,
-  Tree,
   listNavigate,
-  useSanitizedField,
   type SelectOption,
   type SelectProps,
   type MenuItem,
 } from "@/ui";
-import { useRowHeight } from "@/ui/density";
 import { sortLocal, sortRemote } from "./branches";
-import { branchRef, conflictActions, openConflictsInstead, validateBranchName } from "./branchOps";
-import { joinPath } from "./clone";
-import { cleanUpBranchNameOnTyping } from "@/platform/gitRefName";
+import { branchRef, conflictActions, openConflictsInstead, openMergeConflicts } from "./branchOps";
 import { confirmDialog, openDialog } from "./dialogs";
-import { errorMessage, runOp, runRemote, saveAll } from "./ops";
-import { baseName } from "./model";
-import { currentRepo, loadBranches, refreshNow, repoName, useVcs } from "./store";
-import {
-  groupWorktrees,
-  isCurrentWorktree,
-  worktreeContainsProject,
-  worktreeMoveTarget,
-  type RepoWorktrees,
-} from "./worktrees";
+import { rebaseFeedback } from "./operations";
+import { errorMessage, notifyUpdated, runOp, runRemote, saveAll } from "./ops";
+import { splitTracked } from "./pushTarget";
+import { runRebaseWithEditor } from "./rebaseEditor";
+import { RepoPicker } from "./RepoPicker";
+import { currentRepo, loadBranches, refreshNow, selectRepo, useVcs } from "./store";
 import styles from "./common.module.css";
 import remoteStyles from "./GitRemotes.module.css";
 import commandStyles from "./GitCommandDialog.module.css";
-import worktreeStyles from "./Worktrees.module.css";
 import { tx } from "@/platform/i18n";
-import { useProject } from "@/platform/project";
 
 // --- shared -----------------------------------------------------------------
 
-export type MergeFlag = "noFf" | "ffOnly" | "squash" | "noCommit";
-
-/** Flags git refuses together with `flag`. */
-const EXCLUSIVE: Record<MergeFlag, MergeFlag[]> = {
+type IntegrationFlag = "noFf" | "ffOnly" | "squash" | "noCommit";
+const EXCLUSIVE: Record<IntegrationFlag, IntegrationFlag[]> = {
   noFf: ["ffOnly", "squash"],
-  ffOnly: ["noFf", "squash", "noCommit"],
+  ffOnly: ["noFf", "squash"],
   squash: ["noFf", "ffOnly"],
-  noCommit: ["ffOnly"],
+  noCommit: [],
 };
 
-/** Merge flags that cannot be turned on next to the `on` ones (and with `--rebase`). */
-export function disabledMergeFlags(on: ReadonlySet<MergeFlag>, rebase = false): Set<MergeFlag> {
-  if (rebase) return new Set<MergeFlag>(["noFf", "ffOnly", "squash", "noCommit"]);
-  const out = new Set<MergeFlag>();
-  for (const f of on) for (const x of EXCLUSIVE[f]) out.add(x);
-  return out;
-}
-
-export function mergeOptionsOf(on: ReadonlySet<MergeFlag>, message: string | null = null): MergeOptions {
+function mergeOptionsOf(on: Pick<ReadonlySet<IntegrationFlag>, "has">): MergeOptions {
   return {
     noFf: on.has("noFf"),
     ffOnly: on.has("ffOnly"),
     squash: on.has("squash"),
     noCommit: on.has("noCommit"),
-    message: message?.trim() || null,
   };
 }
 
-const FLAG_LABELS: Array<[MergeFlag, string]> = [
+const FLAG_LABELS: Array<[IntegrationFlag, string]> = [
   ["noFf", "--no-ff"],
   ["ffOnly", "--ff-only"],
   ["squash", "--squash"],
   ["noCommit", "--no-commit"],
 ];
 
-function mergeFlagItems(
-  flags: ReadonlySet<MergeFlag>,
-  setFlags: (flags: Set<MergeFlag>) => void,
-  rebase = false,
-): MenuItem[] {
-  const disabled = disabledMergeFlags(flags, rebase);
-  return FLAG_LABELS.map(([flag, label]) => ({
-    label,
-    verbatim: true,
-    checked: flags.has(flag),
-    disabled: disabled.has(flag) && !flags.has(flag),
-    run: () => {
-      const next = new Set(flags);
-      if (next.has(flag)) next.delete(flag);
-      else next.add(flag);
-      setFlags(next);
-    },
-  }));
-}
-
-function ModifyOptions({ items }: { items: MenuItem[] }) {
+function GitOptionMenu({ items }: { items: MenuItem[] }) {
   const [open, setOpen] = useState(false);
   const anchor = useRef<HTMLButtonElement>(null);
   return (
@@ -124,11 +82,67 @@ function ModifyOptions({ items }: { items: MenuItem[] }) {
   );
 }
 
-const emptyBranches: Branch[] = [];
+function GitOptionChips({ labels, name = tx("Options:") }: { labels: string[]; name?: string }) {
+  if (!labels.length) return null;
+  return (
+    <div className={styles.optionChips} role="group" aria-label={name}>
+      {labels.map((label) => (
+        <code key={label}>{label}</code>
+      ))}
+    </div>
+  );
+}
 
-function useBranches(repo: string | null): Branch[] {
+type GitVersion = readonly [number, number];
+
+function gitVersionAtLeast(version: GitVersion | null, major: number, minor: number): boolean {
+  return !!version && (version[0] > major || (version[0] === major && version[1] >= minor));
+}
+
+function useGitVersion(): GitVersion | null {
+  const [gitVersion, setVersion] = useState<GitVersion | null>(null);
+  const executable = workflowSettings().vcs.git.executable;
+  useEffect(() => {
+    let active = true;
+    void call(commands.vcsGitVersion(executable))
+      .then(({ version }) => {
+        const [, major, minor] = /^git version (\d+)\.(\d+)/.exec(version) ?? [];
+        if (active) setVersion(major && minor ? [Number(major), Number(minor)] : null);
+      })
+      .catch(() => {
+        if (active) setVersion(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [executable]);
+  return gitVersion;
+}
+
+function useGitSupportsNoVerify(): boolean {
+  return gitVersionAtLeast(useGitVersion(), 2, 24);
+}
+
+function restoreFlags<F extends string>(
+  saved: unknown,
+  options: ReadonlyArray<readonly [F, string]>,
+  exclusive: Record<F, readonly F[]>,
+): Set<F> {
+  const flags = new Set<F>();
+  if (Array.isArray(saved)) {
+    for (const [flag] of options) {
+      if (saved.includes(flag) && !exclusive[flag].some((other) => flags.has(other))) flags.add(flag);
+    }
+  }
+  return flags;
+}
+
+const NO_BRANCHES: Branch[] = [];
+
+export function useBranches(repo: string | null, enabled = true, refresh = 0): Branch[] {
   const [loaded, setLoaded] = useState<{ repo: string | null; branches: Branch[] } | null>(null);
   useEffect(() => {
+    if (!enabled) return;
     let live = true;
     void call(commands.vcsBranches(repo))
       .then((branches) => live && setLoaded({ repo, branches }))
@@ -136,8 +150,8 @@ function useBranches(repo: string | null): Branch[] {
     return () => {
       live = false;
     };
-  }, [repo]);
-  return loaded?.repo === repo ? loaded.branches : emptyBranches;
+  }, [enabled, repo, refresh]);
+  return loaded?.repo === repo ? loaded.branches : NO_BRANCHES;
 }
 
 const branchOptions = (list: readonly Branch[]): SelectOption[] =>
@@ -149,11 +163,13 @@ function BranchSelect(props: Omit<SelectProps, "searchable">) {
 }
 
 /** Remote branches of `remote` without the remote prefix (`origin/main` → `main`). */
-export function remoteBranchesOf(branches: readonly Branch[], remote: string): string[] {
+export function remoteBranchesOf(branches: readonly Branch[], remote: string, remotes = [remote]): string[] {
   const prefix = `${remote}/`;
-  return sortRemote(branches)
-    .filter((b) => b.name.startsWith(prefix) && b.name !== `${prefix}HEAD`)
-    .map((b) => b.name.slice(prefix.length));
+  return sortRemote(branches).flatMap(({ name }) => {
+    if (!name.startsWith(prefix)) return [];
+    const ref = splitTracked(name, remotes);
+    return ref.remote === remote && ref.branch !== "HEAD" ? [ref.branch] : [];
+  });
 }
 
 // --- Pull -------------------------------------------------------------------
@@ -161,32 +177,6 @@ export function remoteBranchesOf(branches: readonly Branch[], remote: string): s
 /** `repo`: the repository it starts on (the context's), else the selected one. */
 export function showPullDialog(repo?: string | null) {
   openDialog((close) => <PullDialog initialRepo={repo} onClose={close} />);
-}
-
-/** IDEA's Git Root choice: shown only when the project holds several repositories. */
-export function RepoPicker({
-  id,
-  repo,
-  onChange,
-  className,
-}: {
-  id?: string;
-  repo: string | null;
-  onChange: (root: string) => void;
-  className?: string;
-}) {
-  const [roots] = useState(() => useVcs.getState().roots);
-  if (roots.length < 2) return null;
-  return (
-    <Select
-      id={id}
-      aria-label="Repository"
-      className={className}
-      value={repo ?? roots[0] ?? null}
-      options={roots.map((root) => ({ value: root, label: repoName(root), verbatim: true }))}
-      onChange={onChange}
-    />
-  );
 }
 
 /** The repository's branch info: the store's for the selected repository, else read from git. */
@@ -207,70 +197,121 @@ export function useBranchInfo(repo: string | null) {
   return loaded?.repo === repo ? loaded.info : null;
 }
 
+type PullFlag = IntegrationFlag | "rebase" | "noVerify";
+
+const PULL_FLAGS: Array<[PullFlag, string]> = [["rebase", "--rebase"], ...FLAG_LABELS, ["noVerify", "--no-verify"]];
+const PULL_EXCLUSIVE: Record<PullFlag, readonly PullFlag[]> = {
+  rebase: ["noFf", "ffOnly", "squash", "noCommit"],
+  noFf: [...EXCLUSIVE.noFf, "rebase"],
+  ffOnly: ["noFf", "squash", "rebase"],
+  squash: [...EXCLUSIVE.squash, "rebase"],
+  noCommit: ["rebase"],
+  noVerify: [],
+};
+
+function savedPullFlags(key: string): Set<PullFlag> {
+  try {
+    return restoreFlags(JSON.parse(localStorage.getItem(key) ?? "null"), PULL_FLAGS, PULL_EXCLUSIVE);
+  } catch {
+    return new Set();
+  }
+}
+
 function PullDialog({ initialRepo, onClose }: { initialRepo?: string | null; onClose: () => void }) {
   const [repo, setRepo] = useState(() => (initialRepo === undefined ? currentRepo() : initialRepo));
-  const info = useBranchInfo(repo);
-  const branches = useBranches(repo);
-  const [remotes, setRemotes] = useState<Remote[] | null>(null);
-  const [remote, setRemote] = useState<string | null>(null);
+  const [source, setSource] = useState<{ repo: string | null; info: BranchInfo | null; remotes: Remote[] } | null>(
+    null,
+  );
+  const [selectedRemote, setRemote] = useState<string | null>(null);
   const [chosenBranch, setBranch] = useState<string | null>(null);
-  const [rebase, setRebase] = useState(false);
-  const [flags, setFlags] = useState<Set<MergeFlag>>(() => new Set());
+  const [refresh, setRefresh] = useState(0);
+  const remoteBusy = useVcs((s) => s.remoteBusy);
+  const branches = useBranches(repo, true, refresh);
+  const [optionsKey] = useState(() => `openidea.vcs.pullOptions:${useVcs.getState().root ?? ""}`);
+  const [flags, setFlags] = useState(() => savedPullFlags(optionsKey));
+  const supportsNoVerify = useGitSupportsNoVerify();
 
   const chooseRepo = (root: string) => {
     if (root === repo) return;
     setRepo(root);
-    setRemotes(null);
     setRemote(null);
     setBranch(null);
   };
 
   useEffect(() => {
     let alive = true;
-    call(commands.vcsRemotes(repo))
-      .then((list) => {
-        if (!alive) return;
-        setRemotes(list);
-        const upstreamRemote = info?.upstream?.split("/")[0];
-        setRemote(list.find((r) => r.name === upstreamRemote)?.name ?? list[0]?.name ?? null);
-      })
-      .catch(() => alive && setRemotes([]));
+    void Promise.all([
+      call(commands.vcsBranchInfo(repo)).catch(() => null),
+      call(commands.vcsRemotes(repo)).catch(() => []),
+    ]).then(([info, remotes]) => {
+      if (alive) setSource({ repo, info, remotes });
+    });
     return () => {
       alive = false;
     };
-  }, [repo, info?.upstream]);
+  }, [repo]);
 
-  const remoteBranches = useMemo(() => (remote ? remoteBranchesOf(branches, remote) : []), [branches, remote]);
-  // Default: the upstream's branch, else the same name as the current branch.
-  const upstream = remote && info?.upstream?.startsWith(`${remote}/`) ? info.upstream.slice(remote.length + 1) : null;
-  const preferred = upstream ?? info?.head ?? null;
+  const current = source?.repo === repo ? source : null;
+  const info = current?.info;
+  const remotes = current?.remotes;
+  const remoteNames = useMemo(() => remotes?.map((r) => r.name) ?? [], [remotes]);
+  const upstream = info?.upstreamTracking ?? (info?.upstream ? splitTracked(info.upstream, remoteNames) : null);
+  const remote =
+    [selectedRemote, upstream?.remote, "origin"].find((name) => name && remoteNames.includes(name)) ??
+    remoteNames[0] ??
+    null;
+  const availableBranches = useMemo(
+    () => (remote ? remoteBranchesOf(branches, remote, remoteNames) : []),
+    [branches, remote, remoteNames],
+  );
+  const remoteBranches =
+    upstream &&
+    remote === upstream.remote &&
+    !availableBranches.includes(upstream.branch) &&
+    branches.some((b) => b.remote && b.name === info?.upstream)
+      ? [upstream.branch, ...availableBranches]
+      : availableBranches;
   const branch =
-    chosenBranch && remoteBranches.includes(chosenBranch)
-      ? chosenBranch
-      : preferred && remoteBranches.includes(preferred)
-        ? preferred
-        : (remoteBranches[0] ?? null);
-  const selectedFlags = rebase
-    ? ["--rebase"]
-    : FLAG_LABELS.filter(([flag]) => flags.has(flag)).map(([, label]) => label);
-  const options: MenuItem[] = [
-    { label: "--rebase", verbatim: true, checked: rebase, run: () => setRebase(!rebase) },
-    ...mergeFlagItems(flags, setFlags, rebase),
-  ];
+    [chosenBranch, upstream?.branch, info?.head].find((name) => name && remoteBranches.includes(name)) ?? null;
+  const availableFlags = PULL_FLAGS.filter(([flag]) => flag !== "noVerify" || supportsNoVerify);
+  const selectedFlags = availableFlags.filter(([flag]) => flags.has(flag)).map(([, label]) => label);
+  const options: MenuItem[] = availableFlags.map(([flag, label]) => ({
+    label,
+    verbatim: true,
+    checked: flags.has(flag),
+    disabled: !flags.has(flag) && PULL_EXCLUSIVE[flag].some((other) => flags.has(other)),
+    run: () => {
+      const next = new Set(flags);
+      if (next.has(flag)) next.delete(flag);
+      else next.add(flag);
+      setFlags(next);
+    },
+  }));
+
+  const fetchBranches = async () => {
+    if (remote && !remoteBusy && (await executeAction("vcs.fetch", { repo, remote }))) {
+      setRefresh((value) => value + 1);
+    }
+  };
 
   const run = async () => {
-    if (!remote) return;
+    if (!remote || !branch || remoteBusy) return;
+    try {
+      localStorage.setItem(optionsKey, JSON.stringify([...flags]));
+    } catch {
+      // Workspace preferences may be unavailable.
+    }
     onClose();
     await saveAll();
     await runRemote(
       {
         op: "pullFrom",
         remote,
-        branches: branch ? [branch] : [],
-        rebase,
-        options: mergeOptionsOf(rebase ? new Set() : flags),
+        branches: [branch],
+        rebase: flags.has("rebase") ? true : null,
+        options: { ...mergeOptionsOf(flags), noVerify: supportsNoVerify && flags.has("noVerify") },
       },
-      `${info?.head ?? "HEAD"} ← ${remote}${branch ? `/${branch}` : ""}`,
+      `${info?.head ?? "HEAD"} ← ${remote}/${branch}`,
       [repo],
     );
   };
@@ -281,9 +322,9 @@ function PullDialog({ initialRepo, onClose }: { initialRepo?: string | null; onC
       title={tx`Pull to ${info?.head ?? "HEAD"}`}
       onClose={onClose}
       width={640}
-      footerStart={<ModifyOptions items={options} />}
+      footerStart={<GitOptionMenu items={options} />}
       buttons={[
-        { label: "Pull", role: "default", disabled: !remote, onClick: () => void run() },
+        { label: "Pull", role: "default", disabled: !branch || !!remoteBusy, onClick: () => void run() },
         { label: "Cancel", role: "cancel" },
       ]}
     >
@@ -302,26 +343,31 @@ function PullDialog({ initialRepo, onClose }: { initialRepo?: string | null; onC
                 className={commandStyles.remote}
                 value={remote}
                 options={(remotes ?? []).map((r) => ({ value: r.name, label: r.name, verbatim: true, detail: r.url }))}
-                onChange={setRemote}
+                onChange={(name) => {
+                  setRemote(name);
+                  setBranch(branch);
+                }}
               />
               <BranchSelect
                 aria-label="Remote branch"
                 className={commandStyles.branch}
                 value={branch}
+                disabled={!remote}
                 renderValue={(option) => (option ? <span title={option.label}>{option.label}</span> : <T>Branch</T>)}
                 options={remoteBranches.map((b) => ({ value: b, label: b, icon: "branch", verbatim: true }))}
                 onChange={setBranch}
               />
+              <IconButton
+                icon="refresh"
+                aria-label={tx("Fetch remote branches")}
+                title={tx("Fetch remote branches")}
+                disabled={!remote || !!remoteBusy}
+                onClick={() => void fetchBranches()}
+              />
             </div>
           )}
         </div>
-        {selectedFlags.length > 0 && (
-          <div className={commandStyles.flags} role="group" aria-label={tx("Options:")}>
-            {selectedFlags.map((label) => (
-              <code key={label}>{label}</code>
-            ))}
-          </div>
-        )}
+        <GitOptionChips labels={selectedFlags} />
         <div className={styles.hint}>
           <T>Uncommitted changes are stashed before the pull and restored afterwards.</T>
         </div>
@@ -337,54 +383,225 @@ export function showMergeDialog(repo?: string | null) {
   openDialog((close) => <MergeDialog initialRepo={repo} onClose={close} />);
 }
 
+type MergeFlag = IntegrationFlag | "message" | "noVerify" | "allowUnrelatedHistories";
+const MERGE_FLAGS: Array<[MergeFlag, string]> = [
+  ...FLAG_LABELS,
+  ["message", "-m"],
+  ["noVerify", "--no-verify"],
+  ["allowUnrelatedHistories", "--allow-unrelated-histories"],
+];
+const MERGE_EXCLUSIVE: Record<MergeFlag, readonly MergeFlag[]> = {
+  ...EXCLUSIVE,
+  ffOnly: [...EXCLUSIVE.ffOnly, "message"],
+  squash: [...EXCLUSIVE.squash, "message"],
+  noCommit: ["message"],
+  message: ["ffOnly", "squash", "noCommit"],
+  noVerify: [],
+  allowUnrelatedHistories: [],
+};
+
+function savedMerge(key: string) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(key) ?? "null") as { ref?: unknown; flags?: unknown } | null;
+    return {
+      ref: typeof saved?.ref === "string" ? saved.ref : null,
+      flags: restoreFlags(saved?.flags, MERGE_FLAGS, MERGE_EXCLUSIVE),
+    };
+  } catch {
+    return { ref: null, flags: new Set<MergeFlag>() };
+  }
+}
+
 function MergeDialog({ initialRepo, onClose }: { initialRepo?: string | null; onClose: () => void }) {
   const messageId = useId();
   const [repo, setRepo] = useState(() => (initialRepo === undefined ? currentRepo() : initialRepo));
-  const head = useBranchInfo(repo)?.head ?? null;
-  const branches = useBranches(repo);
-  const [branch, setBranch] = useState<string | null>(null);
-  const [flags, setFlags] = useState<Set<MergeFlag>>(() => new Set());
-  const [withMessage, setWithMessage] = useState(false);
+  const info = useBranchInfo(repo);
+  const liveHead = useVcs((state) => state.heads[repo ?? state.roots[0] ?? ""]);
+  const head = liveHead ? liveHead.head : info?.head;
+  const version = useVcs((state) => state.version);
+  const branches = useBranches(repo, true, version);
+  const [settingsKey] = useState(() => `openidea.vcs.mergeOptions:${useVcs.getState().root ?? ""}`);
+  const [saved] = useState(() => savedMerge(settingsKey));
+  const [chosenRef, setRef] = useState(saved.ref);
+  const [flags, setFlags] = useState(saved.flags);
   const [message, setMessage] = useState("");
-  const branchChoices = useMemo(
-    () => [...branchOptions(sortLocal(branches).filter((b) => !b.current)), ...branchOptions(sortRemote(branches))],
-    [branches],
-  );
-  const optionItems: MenuItem[] = [
-    ...mergeFlagItems(flags, setFlags),
-    { label: "-m (commit message)", checked: withMessage, run: () => setWithMessage(!withMessage) },
-  ];
-  const selectedFlags = FLAG_LABELS.filter(([flag]) => flags.has(flag)).map(([, label]) => label);
-  if (withMessage) selectedFlags.push("-m");
+  const supportsNoVerify = useGitSupportsNoVerify();
+  const options = useMemo(() => {
+    const choices = [...sortLocal(branches).filter((b) => !b.current), ...sortRemote(branches)];
+    const local = new Set(choices.filter((b) => !b.remote).map((b) => b.name));
+    const remote = new Set(choices.filter((b) => b.remote).map((b) => b.name));
+    return choices.map((branch) => ({
+      branch,
+      value: branchRef(branch.name, branch.remote),
+      label: branch.name,
+      verbatim: true,
+      icon: "branch",
+      detail: local.has(branch.name) && remote.has(branch.name) ? (branch.remote ? "Remote" : "Local") : undefined,
+    }));
+  }, [branches]);
+  const selected =
+    options.find(({ value }) => value === chosenRef) ??
+    options.find(({ branch }) => branch.remote && branch.name === info?.upstream) ??
+    (info ? options[0] : undefined);
+  const tip = selected?.branch.commit || null;
+  const [validation, setValidation] = useState<{
+    repo: string | null;
+    version: number;
+    tip: string;
+    merged: boolean;
+  } | null>(null);
+  useEffect(() => {
+    if (!tip) return;
+    let active = true;
+    void call(commands.vcsMergeBase(repo, "HEAD", tip))
+      .catch(() => null)
+      .then((base) => {
+        if (active) setValidation({ repo, version, tip, merged: base === tip });
+      });
+    return () => {
+      active = false;
+    };
+  }, [repo, version, tip]);
+  const checked = validation?.repo === repo && validation.version === version && validation.tip === tip;
+  const alreadyMerged = checked && validation.merged;
+  const canMerge = !!selected && (!tip || (checked && !alreadyMerged));
+
+  const availableFlags = MERGE_FLAGS.filter(([flag]) => flag !== "noVerify" || supportsNoVerify);
+  const selectedFlags = availableFlags.filter(([flag]) => flags.has(flag)).map(([, label]) => label);
+  const menu: MenuItem[] = availableFlags.map(([flag, label]) => ({
+    label: flag === "message" ? tx("-m (commit message)") : label,
+    verbatim: true,
+    checked: flags.has(flag),
+    disabled: !flags.has(flag) && MERGE_EXCLUSIVE[flag].some((other) => flags.has(other)),
+    run: () => {
+      const next = new Set(flags);
+      if (next.delete(flag)) {
+        if (flag === "message") setMessage("");
+      } else {
+        next.add(flag);
+      }
+      setFlags(next);
+    },
+  }));
 
   const chooseRepo = (root: string) => {
     if (root === repo) return;
     setRepo(root);
-    setBranch(null);
   };
 
   const run = async () => {
-    if (!branch) return;
+    if (!selected || !canMerge) return;
+    const project = useProject.getState().project;
+    const { value: ref, label: branch } = selected;
+    try {
+      localStorage.setItem(settingsKey, JSON.stringify({ ref, flags: [...flags] }));
+    } catch {
+      // Workspace preferences may be unavailable.
+    }
     onClose();
     await saveAll();
     const target = head ?? "HEAD";
-    await runOp(
+    const root = repo ?? useVcs.getState().roots[0] ?? useVcs.getState().root;
+    const key = `vcs.mergeResult:${root}`;
+    const isCurrentProject = () => useProject.getState().project === project;
+    const publishedTip = () => call(commands.vcsMergeBase(repo, "HEAD", ref)).catch(() => null);
+    const before = flags.has("squash") ? null : await publishedTip();
+    if (!isCurrentProject()) return;
+    const reportCompleted = async () => {
+      if (!isCurrentProject()) return;
+      const after = before ? await publishedTip() : null;
+      if (!isCurrentProject()) return;
+      if (before && after && before !== after) await notifyUpdated([{ repo: root, from: before, to: after }], key);
+      else {
+        notifications().notify({
+          group: "vcs",
+          userInitiated: true,
+          level: "info",
+          key,
+          title: tx`Merged ${branch} into ${target}`,
+        });
+      }
+    };
+    const outcome = await runOp(
       tx`Merge ${branch} into ${target}`,
-      () => call(commands.vcsMergeWith(repo, [branch], mergeOptionsOf(flags, withMessage ? message : null))),
-      { success: tx`Merged ${branch} into ${target}`, errorActions: conflictActions, onError: openConflictsInstead },
+      () =>
+        call(
+          commands.vcsMergeWith(repo, [ref], {
+            ...mergeOptionsOf(flags),
+            noVerify: supportsNoVerify && flags.has("noVerify"),
+            allowUnrelatedHistories: flags.has("allowUnrelatedHistories"),
+            message: flags.has("message") ? message.trim() || null : null,
+          }),
+        ),
+      {
+        errorActions: conflictActions,
+        onError: openConflictsInstead,
+      },
     );
-    await refreshNow();
+    if (!isCurrentProject()) return;
+    if (outcome?.kind === "done") {
+      await reportCompleted();
+    } else if (outcome?.kind === "alreadyUpToDate") {
+      notifications().notify({
+        group: "vcs",
+        userInitiated: true,
+        level: "info",
+        key,
+        title: "All files are up to date",
+      });
+    } else if (outcome?.kind === "readyToCommit" || outcome?.kind === "squashed") {
+      notifications().notify({
+        group: "vcs",
+        userInitiated: true,
+        level: "info",
+        key,
+        title:
+          outcome.kind === "readyToCommit" ? tx("Merge is ready to commit") : tx("Squash merge is ready to commit"),
+        actions: [
+          {
+            label: "Commit…",
+            run: async () => {
+              if (!isCurrentProject()) return;
+              if (root) await selectRepo(root);
+              if (isCurrentProject()) await executeAction("vcs.commit");
+            },
+          },
+        ],
+      });
+    } else if (outcome?.kind === "conflicts") {
+      if (flags.has("noCommit") || flags.has("squash")) await openConflictsInstead();
+      else {
+        await openMergeConflicts(root, project, () => void reportCompleted());
+      }
+    } else if (outcome?.kind === "localChanges") {
+      notifications().notify({
+        group: "vcs",
+        userInitiated: true,
+        level: "error",
+        title: "Merge failed",
+        body: "Merge would overwrite the local changes in these files.",
+        actions: [
+          {
+            label: "View Files…",
+            run: () =>
+              void import("./LocalChangesReviewDialog").then(({ reviewLocalChanges }) =>
+                reviewLocalChanges("blockedMerge", [[root, outcome.files]], false),
+              ),
+          },
+        ],
+      });
+    }
   };
 
   return (
     <Dialog
       open
-      title={tx`Merge into ${head ?? "HEAD"}`}
+      title={head ? tx`Merge into ${head}` : "Merge"}
       onClose={onClose}
       width={640}
-      footerStart={<ModifyOptions items={optionItems} />}
+      footerStart={<GitOptionMenu items={menu} />}
       buttons={[
-        { label: "Merge", role: "default", disabled: !branch, onClick: () => void run() },
+        { label: "Merge", role: "default", disabled: !canMerge, onClick: () => void run() },
         { label: "Cancel", role: "cancel" },
       ]}
     >
@@ -396,21 +613,20 @@ function MergeDialog({ initialRepo, onClose }: { initialRepo?: string | null; on
             <BranchSelect
               aria-label="Branch to merge"
               className={commandStyles.branch}
-              value={branch}
+              value={selected?.value ?? null}
               placeholder="Select branch"
-              options={branchChoices}
-              onChange={setBranch}
+              options={options}
+              onChange={setRef}
             />
           </div>
         </div>
-        {selectedFlags.length > 0 && (
-          <div className={commandStyles.flags} role="group" aria-label={tx("Merge options")}>
-            {selectedFlags.map((label) => (
-              <code key={label}>{label}</code>
-            ))}
+        {alreadyMerged && selected && (
+          <div className={styles.error} role="status">
+            {tx`Branch '${selected.label}' is already merged.`}
           </div>
         )}
-        {withMessage && (
+        <GitOptionChips labels={selectedFlags} name={tx("Merge options")} />
+        {flags.has("message") && (
           <div className={commandStyles.message}>
             <label htmlFor={messageId}>
               <T>Commit message</T>
@@ -420,7 +636,7 @@ function MergeDialog({ initialRepo, onClose }: { initialRepo?: string | null; on
               className={styles.textarea}
               rows={4}
               value={message}
-              placeholder={branch ? tx`Merge branch '${branch}' into ${head ?? "HEAD"}` : ""}
+              placeholder={selected ? tx`Merge branch '${selected.label}' into ${head ?? "HEAD"}` : ""}
               onChange={(e) => setMessage(e.target.value)}
             />
           </div>
@@ -437,76 +653,236 @@ export function showRebaseDialog(repo?: string | null) {
   openDialog((close) => <RebaseDialog initialRepo={repo} onClose={close} />);
 }
 
+type RebaseFlag =
+  | "switchBranch"
+  | "onto"
+  | "interactive"
+  | "rebaseMerges"
+  | "keepEmpty"
+  | "root"
+  | "updateRefs"
+  | "autosquash"
+  | "noAutosquash";
+const REBASE_FLAGS: Array<[RebaseFlag, string]> = [
+  ["switchBranch", "Switch to branch"],
+  ["onto", "--onto"],
+  ["interactive", "--interactive"],
+  ["rebaseMerges", "--rebase-merges"],
+  ["keepEmpty", "--keep-empty"],
+  ["root", "--root"],
+  ["updateRefs", "--update-refs"],
+  ["autosquash", "--autosquash"],
+  ["noAutosquash", "--no-autosquash"],
+];
+const REBASE_EXCLUSIVE: Record<RebaseFlag, readonly RebaseFlag[]> = {
+  switchBranch: [],
+  onto: [],
+  interactive: [],
+  rebaseMerges: [],
+  keepEmpty: [],
+  root: [],
+  updateRefs: [],
+  autosquash: ["noAutosquash"],
+  noAutosquash: ["autosquash"],
+};
+
+function savedRebase(key: string) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(key) ?? "null") as { base?: unknown; flags?: unknown } | null;
+    return {
+      base: typeof saved?.base === "string" ? saved.base : null,
+      flags: restoreFlags(saved?.flags, REBASE_FLAGS, REBASE_EXCLUSIVE),
+    };
+  } catch {
+    return { base: null, flags: new Set<RebaseFlag>() };
+  }
+}
+
+function useRebaseRevision(repo: string | null, value: string | null) {
+  const [checked, setChecked] = useState<{ repo: string | null; value: string; valid: boolean } | null>(null);
+  useEffect(() => {
+    if (!value) return;
+    let active = true;
+    void call(commands.vcsHasCommit(repo, value))
+      .catch(() => false)
+      .then((valid) => {
+        if (active) setChecked({ repo, value, valid });
+      });
+    return () => {
+      active = false;
+    };
+  }, [repo, value]);
+  return checked?.repo === repo && checked.value === value ? checked.valid : null;
+}
+
+function RebaseRevisionSelect({ options, value, placeholder, ...props }: SelectProps) {
+  return (
+    <BranchSelect
+      {...props}
+      options={options}
+      value={value}
+      placeholder={placeholder}
+      renderValue={(option) => option?.label ?? value ?? tx(placeholder ?? "Select branch")}
+      customOption={(query) => ({ value: query, label: query, verbatim: true })}
+    />
+  );
+}
+
 function RebaseDialog({ initialRepo, onClose }: { initialRepo?: string | null; onClose: () => void }) {
   const upstreamId = useId();
+  const branchId = useId();
   const [repo, setRepo] = useState(() => (initialRepo === undefined ? currentRepo() : initialRepo));
   const head = useBranchInfo(repo)?.head ?? null;
   const branches = useBranches(repo);
-  const [upstream, setUpstream] = useState<string | null>(null);
-  const [useOnto, setUseOnto] = useState(false);
+  const operation = useVcs((s) => s.operations[repo ?? s.roots[0] ?? ""]);
+  const [tagList, setTagList] = useState<{ repo: string | null; tags: string[] } | null>(null);
+  const [settingsKey] = useState(() => `openidea.vcs.rebaseOptions:${useVcs.getState().root ?? ""}`);
+  const [saved] = useState(() => savedRebase(settingsKey));
+  const [flags, setFlags] = useState(saved.flags);
+  const [upstream, setUpstream] = useState(saved.base);
   const [onto, setOnto] = useState<string | null>(null);
-  const [rebaseMerges, setRebaseMerges] = useState(false);
-  const [keepEmpty, setKeepEmpty] = useState(false);
-  const branchChoices = useMemo(
-    () => [...branchOptions(sortLocal(branches).filter((b) => !b.current)), ...branchOptions(sortRemote(branches))],
-    [branches],
-  );
-  const optionItems: MenuItem[] = [
-    { label: "--onto", verbatim: true, checked: useOnto, run: () => setUseOnto(!useOnto) },
-    { label: "--rebase-merges", verbatim: true, checked: rebaseMerges, run: () => setRebaseMerges(!rebaseMerges) },
-    { label: "--keep-empty", verbatim: true, checked: keepEmpty, run: () => setKeepEmpty(!keepEmpty) },
-  ];
-  const selectedFlags = [rebaseMerges ? "--rebase-merges" : null, keepEmpty ? "--keep-empty" : null].filter(
-    (label) => label !== null,
-  );
-  const ready = !!upstream && (!useOnto || !!onto);
-  const upstreamPicker = (
-    <BranchSelect
-      id={upstreamId}
-      aria-label={useOnto ? "Old base" : "Upstream"}
-      className={commandStyles.branch}
-      value={upstream}
-      placeholder="Select branch"
-      options={branchChoices}
-      onChange={setUpstream}
-    />
-  );
+  const [branch, setBranch] = useState<string | null>(null);
+  const supportsUpdateRefs = gitVersionAtLeast(useGitVersion(), 2, 38);
+  const useOnto = flags.has("onto");
+  const root = flags.has("root");
+  const switchBranch = flags.has("switchBranch");
+  const local = useMemo(() => sortLocal(branches), [branches]);
+  const selectedBranch = switchBranch ? local.find((b) => b.name === (branch ?? head))?.name : undefined;
+  const current = selectedBranch ?? head ?? "HEAD";
 
-  const chooseRepo = (root: string) => {
-    if (root === repo) return;
-    setRepo(root);
+  useEffect(() => {
+    let active = true;
+    void call(commands.vcsTags(repo))
+      .catch(() => [])
+      .then((tags) => {
+        if (active) setTagList({ repo, tags });
+      });
+    return () => {
+      active = false;
+    };
+  }, [repo]);
+
+  const options = useMemo(
+    () => [
+      ...[...local.filter((b) => b.name !== current), ...sortRemote(branches)].map((b) => {
+        const value = branchRef(b.name, b.remote);
+        return { value, label: b.name, keywords: value, icon: "branch", verbatim: true };
+      }),
+      ...(tagList?.repo === repo ? tagList.tags : []).map((tag) => ({
+        value: `refs/tags/${tag}`,
+        label: tag,
+        keywords: `refs/tags/${tag}`,
+        icon: "tag",
+        verbatim: true,
+      })),
+    ],
+    [branches, current, local, repo, tagList],
+  );
+  const upstreamValid = useRebaseRevision(repo, root ? null : upstream);
+  const ontoValid = useRebaseRevision(repo, useOnto ? onto : null);
+  const ready =
+    !operation &&
+    (root || upstreamValid === true) &&
+    (!useOnto || ontoValid === true || (root && !onto)) &&
+    (!switchBranch || !!selectedBranch);
+
+  const available = REBASE_FLAGS.filter(([flag]) => flag !== "updateRefs" || supportsUpdateRefs);
+  const menu: MenuItem[] = available.map(([flag, label]) => ({
+    label: flag === "switchBranch" ? tx(label) : label,
+    verbatim: true,
+    checked: flags.has(flag),
+    disabled: !flags.has(flag) && REBASE_EXCLUSIVE[flag].some((other) => flags.has(other)),
+    run: () => {
+      const next = new Set(flags);
+      if (!next.delete(flag)) next.add(flag);
+      if (flag === "onto") {
+        setUpstream(useOnto ? onto : null);
+        setOnto(useOnto ? null : upstream);
+      }
+      setFlags(next);
+    },
+  }));
+
+  const chooseRepo = (next: string) => {
+    if (next === repo) return;
+    setRepo(next);
     setUpstream(null);
     setOnto(null);
+    setBranch(null);
   };
 
   const run = async () => {
-    if (!ready || !upstream) return;
+    if (!ready) return;
+    const base = useOnto ? onto : upstream;
+    try {
+      localStorage.setItem(
+        settingsKey,
+        JSON.stringify({
+          base,
+          flags: [...flags].filter((flag) => flag !== "switchBranch" && flag !== "onto"),
+        }),
+      );
+    } catch {
+      // Workspace preferences may be unavailable.
+    }
     onClose();
+    const target = root && !(useOnto && onto) ? null : (options.find((item) => item.value === base)?.label ?? base);
+    const rebaseOptions = {
+      onto: useOnto ? onto : null,
+      branch: selectedBranch ?? null,
+      rebaseMerges: flags.has("rebaseMerges"),
+      keepEmpty: flags.has("keepEmpty"),
+      updateRefs: supportsUpdateRefs && flags.has("updateRefs"),
+      autosquash: flags.has("autosquash") ? true : flags.has("noAutosquash") ? false : null,
+    };
+    const feedback = {
+      success: target ? tx`Rebased ${current} onto ${target}` : tx`Rebased ${current} from the root`,
+      errorActions: conflictActions,
+      onError: openConflictsInstead,
+    };
+    if (flags.has("interactive")) {
+      await runRebaseWithEditor(
+        repo,
+        root ? null : upstream,
+        rebaseOptions,
+        rebaseFeedback(repo, {
+          success: feedback.success,
+          errorActions: feedback.errorActions,
+          progress: tx("Rebasing"),
+          failure: tx("Rebase failed"),
+        }),
+      );
+      return;
+    }
     await saveAll();
-    const target = useOnto && onto ? onto : upstream;
-    const current = head ?? "HEAD";
     await runOp(
-      tx`Rebase ${current} onto ${target}`,
-      () =>
-        call(
-          commands.vcsRebaseWith(repo, upstream, {
-            onto: useOnto ? onto : null,
-            rebaseMerges,
-            keepEmpty,
-          }),
-        ),
-      { success: tx`Rebased ${current} onto ${target}`, errorActions: conflictActions, onError: openConflictsInstead },
+      target ? tx`Rebase ${current} onto ${target}` : tx`Rebase ${current} from the root`,
+      () => call(commands.vcsRebaseWith(repo, root ? null : upstream, rebaseOptions)),
+      feedback,
     );
     await refreshNow();
   };
 
+  const upstreamPicker = (
+    <RebaseRevisionSelect
+      id={upstreamId}
+      aria-label={useOnto ? "Old base" : "Upstream"}
+      autoFocus
+      className={commandStyles.branch}
+      value={upstream}
+      placeholder="Select branch"
+      options={options}
+      onChange={setUpstream}
+    />
+  );
+
   return (
     <Dialog
       open
-      title={tx`Rebase ${head ?? "HEAD"}`}
+      title={head ? tx`Rebase ${head}` : "Rebase"}
       onClose={onClose}
       width={640}
-      footerStart={<ModifyOptions items={optionItems} />}
+      footerStart={<GitOptionMenu items={menu} />}
       buttons={[
         { label: "Rebase", role: "default", disabled: !ready, onClick: () => void run() },
         { label: "Cancel", role: "cancel" },
@@ -520,33 +896,57 @@ function RebaseDialog({ initialRepo, onClose }: { initialRepo?: string | null; o
             {useOnto ? (
               <>
                 <code className={commandStyles.verb}>--onto</code>
-                <BranchSelect
+                <RebaseRevisionSelect
                   aria-label="New base"
                   className={commandStyles.branch}
+                  autoFocus={root}
                   value={onto}
                   placeholder="New base"
-                  options={branchChoices}
+                  options={options}
                   onChange={setOnto}
                 />
               </>
             ) : (
-              upstreamPicker
+              !root && upstreamPicker
             )}
           </div>
         </div>
-        {useOnto && (
+        {switchBranch && (
           <div className={commandStyles.rebaseBase}>
-            <label htmlFor={upstreamId} title={tx`Rebase commits of ${head ?? "HEAD"} not on:`}>
+            <label htmlFor={branchId}>
+              <T>Branch to rebase</T>
+            </label>
+            <BranchSelect
+              id={branchId}
+              aria-label="Branch to rebase"
+              className={commandStyles.branch}
+              value={selectedBranch ?? null}
+              options={branchOptions(local)}
+              onChange={setBranch}
+            />
+          </div>
+        )}
+        {useOnto && !root && (
+          <div className={commandStyles.rebaseBase}>
+            <label htmlFor={upstreamId} title={tx`Rebase commits of ${current} not on:`}>
               <T>Old base</T>
             </label>
             {upstreamPicker}
           </div>
         )}
-        {selectedFlags.length > 0 && (
-          <div className={commandStyles.flags} role="group" aria-label={tx("Rebase options")}>
-            {selectedFlags.map((label) => (
-              <code key={label}>{label}</code>
-            ))}
+        {upstreamValid === false && (
+          <div className={styles.error} role="status">{tx`Commit '${upstream}' was not found.`}</div>
+        )}
+        {ontoValid === false && <div className={styles.error} role="status">{tx`Commit '${onto}' was not found.`}</div>}
+        <GitOptionChips
+          name={tx("Rebase options")}
+          labels={available
+            .filter(([flag]) => flag !== "switchBranch" && flag !== "onto" && flags.has(flag))
+            .map(([, label]) => label)}
+        />
+        {operation && (
+          <div className={styles.error} role="status">
+            {operation === "rebase" ? tx("Rebase in progress") : tx("Another Git operation is in progress.")}
           </div>
         )}
         <div className={styles.hint}>
@@ -570,6 +970,35 @@ export function validateRemoteName(name: string, existing: readonly string[]): s
 
 export function showManageRemotes() {
   openDialog((close) => <RemotesDialog onClose={close} />);
+}
+
+export interface DefineRemoteTarget {
+  repo?: string | null;
+  onAdded?: () => void;
+}
+
+export async function showDefineRemote(target: DefineRemoteTarget = {}) {
+  const repo = target.repo ?? currentRepo();
+  const project = useProject.getState().project;
+  const remotes = await runOp("Define Remote", () => call(commands.vcsRemotes(repo)), { refresh: false });
+  if (!remotes || useProject.getState().project !== project) return;
+  openDialog((close) => (
+    <RemoteEditDialog
+      existing={remotes.map(({ name }) => name)}
+      onDone={async (remote) => {
+        if (!remote || useProject.getState().project !== project) {
+          close();
+          return;
+        }
+        await call(commands.vcsEditRemote(repo, { op: "add", ...remote }));
+        close();
+        if (useProject.getState().project === project) {
+          target.onAdded?.();
+          void loadBranches().catch(() => undefined);
+        }
+      }}
+    />
+  ));
 }
 
 function RemotesDialog({ onClose }: { onClose: () => void }) {
@@ -735,502 +1164,82 @@ function RemoteEditDialog({
 }: {
   remote?: Remote;
   existing: readonly string[];
-  onDone: (r: { name: string; url: string } | null) => void;
+  onDone: (r: { name: string; url: string } | null) => void | Promise<void>;
 }) {
   const [name, setName] = useState(remote?.name ?? (existing.includes("origin") ? "" : "origin"));
   const [url, setUrl] = useState(remote?.url ?? "");
   const nameId = useId();
   const urlId = useId();
+  const [saving, setSaving] = useState(false);
+  const [serverError, setServerError] = useState<string | null>(null);
   const error = validateRemoteName(name, existing) ?? (url.trim() ? null : "Enter the remote URL");
-  const submit = () => {
-    if (!error) onDone({ name: name.trim(), url: url.trim() });
+  const visibleError = error ?? serverError;
+  const submit = async () => {
+    if (error || saving) return;
+    setSaving(true);
+    setServerError(null);
+    try {
+      await onDone({ name: name.trim(), url: url.trim() });
+    } catch (e) {
+      setServerError(errorMessage(e));
+    } finally {
+      setSaving(false);
+    }
   };
   return (
     <Dialog
       open
       title={remote ? "Edit Remote" : "Define Remote"}
-      onClose={() => onDone(null)}
+      onClose={() => {
+        if (!saving) void onDone(null);
+      }}
       width={460}
       buttons={[
-        { label: "OK", role: "default", disabled: !!error, onClick: submit },
-        { label: "Cancel", role: "cancel" },
+        { label: "OK", role: "default", disabled: !!error || saving, onClick: () => void submit() },
+        { label: "Cancel", role: "cancel", disabled: saving },
       ]}
     >
       <form
         className={remoteStyles.editor}
         onSubmit={(e) => {
           e.preventDefault();
-          submit();
+          void submit();
         }}
       >
         <label htmlFor={nameId}>
           <T>Name:</T>
         </label>
-        <Input id={nameId} data-autofocus aria-label="Name" value={name} onChange={(e) => setName(e.target.value)} />
+        <Input
+          id={nameId}
+          data-autofocus
+          aria-label="Name"
+          value={name}
+          disabled={saving}
+          onChange={(e) => {
+            setName(e.target.value);
+            setServerError(null);
+          }}
+        />
         <label htmlFor={urlId}>
           <T>URL:</T>
         </label>
-        <Input id={urlId} aria-label="URL" mono value={url} onChange={(e) => setUrl(e.target.value)} />
-        {error && (name || url) && (
+        <Input
+          id={urlId}
+          aria-label="URL"
+          mono
+          value={url}
+          disabled={saving}
+          onChange={(e) => {
+            setUrl(e.target.value);
+            setServerError(null);
+          }}
+        />
+        {visibleError && (name || url) && (
           <div className={clsx(styles.error, remoteStyles.error)} role="alert">
-            {error}
+            {tx(visibleError)}
           </div>
         )}
       </form>
-    </Dialog>
-  );
-}
-
-// --- Worktrees --------------------------------------------------------------
-
-/** Default folder of a new worktree: next to the repository, `<repo>-<branch>`. */
-export function defaultWorktreePath(repoRoot: string, branch: string): string {
-  const sep = repoRoot.includes("\\") && !repoRoot.includes("/") ? "\\" : "/";
-  const trimmed = repoRoot.replace(/[\\/]+$/, "");
-  const cut = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
-  const parent = cut > 0 ? trimmed.slice(0, cut) : trimmed;
-  const name = trimmed.slice(cut + 1);
-  const suffix = branch.replace(/[\\/]/g, "-");
-  return `${parent}${sep}${name}-${suffix || "worktree"}`;
-}
-
-export function showWorktrees() {
-  openDialog((close) => <WorktreesDialog onClose={close} />);
-}
-
-type WorktreeSource = Pick<Branch, "name" | "remote" | "current">;
-
-export function showNewWorktree({
-  onCreated,
-  repo,
-  branch,
-  open = false,
-}: {
-  onCreated?: () => void;
-  repo?: string | null;
-  branch?: WorktreeSource;
-  open?: boolean;
-} = {}) {
-  openDialog((close) => (
-    <NewWorktreeDialog
-      repo={repo}
-      branch={branch}
-      openAfterCreate={open}
-      onClose={(created) => {
-        close();
-        if (created) onCreated?.();
-      }}
-    />
-  ));
-}
-
-function WorktreesDialog({ onClose }: { onClose: () => void }) {
-  return (
-    <Dialog
-      open
-      title="Worktrees"
-      onClose={onClose}
-      width={620}
-      buttons={[{ label: "Close", role: "default", autoFocus: true, onClick: onClose }]}
-    >
-      <WorktreesPanel className={styles.form} />
-    </Dialog>
-  );
-}
-
-/** A repository section of the Worktrees tree; its children are the repository's worktrees. */
-interface WorktreeNode {
-  key: string;
-  label: string;
-  worktree?: { entry: Worktree; branch: string };
-  children?: WorktreeNode[];
-}
-
-/**
- * The worktrees of every project repository, shown in the dialog and in the Git tool window.
- */
-export function WorktreesPanel({ className, listClassName }: { className?: string; listClassName?: string }) {
-  const rowHeight = useRowHeight(40);
-  const projectRoot = useProject((s) => s.project?.root);
-  const repo = useVcs((s) => s.repo);
-  const repos = useVcs((s) => s.roots);
-  const [groups, setGroups] = useState<RepoWorktrees[]>([]);
-  /** The selected tree row (`r:` repository, `w:` worktree). */
-  const [selected, setSelected] = useState<string | null>(null);
-  const [mutationError, setMutationError] = useState<{ project: string | undefined; message: string } | null>(null);
-  /** The last reload wins: a scan of the roots may change them while it runs. */
-  const run = useRef(0);
-  const mutationRun = useRef(0);
-  const reload = () => {
-    const id = ++run.current;
-    return Promise.all(
-      useVcs.getState().roots.map((root) =>
-        call(commands.vcsWorktrees(root)).then(
-          (worktrees): RepoWorktrees => ({ root, worktrees }),
-          (e): RepoWorktrees => ({ root, worktrees: [], error: errorMessage(e) }),
-        ),
-      ),
-    ).then((lists) => {
-      if (id !== run.current) return;
-      setGroups(groupWorktrees(lists));
-    });
-  };
-  useEffect(() => {
-    void reload();
-  }, [repos]);
-  const tree = useMemo(
-    () =>
-      groups.map((group): WorktreeNode => ({
-        // The main worktree names a repository across reloads (its linked roots come and go).
-        key: `r:${group.worktrees.find((w) => w.main)?.path ?? group.root}`,
-        label: repoName(group.root),
-        children: group.worktrees.map((w): WorktreeNode => ({
-          key: `w:${w.path}`,
-          label: baseName(w.path.replaceAll("\\", "/")) || w.path,
-          worktree: { entry: w, branch: w.branch ?? (w.head ? w.head.slice(0, 8) : tx("(bare)")) },
-        })),
-      })),
-    [groups],
-  );
-  const currentGroup = selected?.startsWith("w:")
-    ? groups.find((g) => g.worktrees.some((w) => `w:${w.path}` === selected))
-    : undefined;
-  const current = currentGroup?.worktrees.find((w) => `w:${w.path}` === selected);
-  const containsProject = !!current && worktreeContainsProject(current.path, projectRoot);
-  const selectedKeys = useMemo(() => new Set(selected ? [selected] : []), [selected]);
-  const isCurrent = (path: string) => repos.some((root) => isCurrentWorktree(path, root));
-
-  const mutate = async (task: () => Promise<unknown>, selection: string | null) => {
-    if (projectRoot !== useProject.getState().project?.root) return;
-    const id = ++mutationRun.current;
-    let failure: string | null = null;
-    try {
-      await task();
-    } catch (e) {
-      failure = errorMessage(e);
-    }
-    if (projectRoot !== useProject.getState().project?.root) return;
-    if (id === mutationRun.current) {
-      setMutationError(failure === null ? null : { project: projectRoot, message: failure });
-      if (failure === null) setSelected(selection);
-    }
-    await reload();
-  };
-
-  const remove = async () => {
-    if (!current || !currentGroup || current.main || containsProject) return;
-    const ok = await confirmDialog({
-      title: "Remove Worktree",
-      message: tx`Remove the worktree at ${current.path}? Its folder is deleted.`,
-      okLabel: "Remove",
-      danger: true,
-    });
-    if (!ok) return;
-    await mutate(async () => {
-      try {
-        await call(commands.vcsRemoveWorktree(currentGroup.root, current.path, false));
-      } catch (e) {
-        if (projectRoot !== useProject.getState().project?.root) return;
-        const force = await confirmDialog({
-          title: "Remove Worktree",
-          message: tx`${errorMessage(e)}\n\nRemove it anyway, discarding its changes?`,
-          okLabel: "Force Remove",
-          danger: true,
-        });
-        if (!force) throw e;
-        if (projectRoot === useProject.getState().project?.root)
-          await call(commands.vcsRemoveWorktree(currentGroup.root, current.path, true));
-      }
-    }, null);
-  };
-
-  const move = async () => {
-    if (!current || !currentGroup || current.main || containsProject) return;
-    const { open } = await import("@/platform/dialog");
-    const picked = await open({
-      directory: true,
-      multiple: false,
-      title: tx("Move Worktree"),
-      defaultPath: current.path.replace(/[\\/][^\\/]+[\\/]?$/, "") || undefined,
-    });
-    const folder = Array.isArray(picked) ? picked[0] : picked;
-    if (!folder) return;
-    const to = worktreeMoveTarget(current.path, folder);
-    if (isCurrentWorktree(to, current.path)) return;
-    const ok = await confirmDialog({
-      title: "Move Worktree",
-      message: tx`Move the worktree at ${current.path} to ${to}?`,
-      okLabel: "Move",
-    });
-    if (!ok) return;
-    await mutate(() => call(commands.vcsMoveWorktree(currentGroup.root, current.path, to)), `w:${to}`);
-  };
-
-  return (
-    <div className={clsx(worktreeStyles.panel, className)}>
-      <div className={worktreeStyles.body}>
-        <div className={worktreeStyles.toolbar} role="toolbar" aria-label={tx("Worktrees")} aria-orientation="vertical">
-          <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void reload()} />
-          <IconButton
-            icon="plus"
-            title="New Worktree…"
-            size="small"
-            onClick={() =>
-              showNewWorktree({ onCreated: () => void reload(), repo: currentGroup?.root ?? repo ?? repos[0] })
-            }
-          />
-          <IconButton
-            icon="minus"
-            title={containsProject ? "Cannot remove a worktree containing the open project." : "Remove Worktree"}
-            aria-label="Remove Worktree"
-            size="small"
-            disabled={!current || current.main || containsProject}
-            onClick={() => void remove()}
-          />
-          <IconButton
-            icon="export"
-            title={containsProject ? "Cannot move a worktree containing the open project." : "Move Worktree…"}
-            aria-label="Move Worktree…"
-            size="small"
-            disabled={!current || current.main || containsProject}
-            onClick={() => void move()}
-          />
-          <IconButton
-            icon="folder"
-            title="Open in New Window"
-            size="small"
-            disabled={!current}
-            onClick={() => current && void openWorktree(current.path)}
-          />
-        </div>
-        <Tree<WorktreeNode>
-          // A new set of repositories starts with every section expanded.
-          key={tree.map((n) => n.key).join("|")}
-          roots={tree}
-          getKey={(n) => n.key}
-          getLabel={(n) => (n.worktree ? `${n.label} ${n.worktree.branch}` : n.label)}
-          getChildren={(n) => n.children}
-          isExpandable={(n) => !!n.children}
-          renderNode={(node, { matches }) => {
-            if (!node.worktree) {
-              return (
-                <>
-                  <Icon name="folder" size={16} className={worktreeStyles.icon} />
-                  <HighlightedText
-                    className={worktreeStyles.truncated}
-                    text={node.label}
-                    indices={matches}
-                    tone="accent"
-                  />
-                </>
-              );
-            }
-            const { entry, branch } = node.worktree;
-            const current = isCurrent(entry.path);
-            const branchStart = node.label.length + 1;
-            return (
-              <>
-                <Icon
-                  name={current ? "check" : "folder"}
-                  size={16}
-                  label={current ? tx("current") : undefined}
-                  className={clsx(worktreeStyles.icon, worktreeStyles.leading)}
-                />
-                <div className={worktreeStyles.details}>
-                  <span className={worktreeStyles.line}>
-                    <HighlightedText
-                      className={clsx(worktreeStyles.truncated, entry.main && worktreeStyles.main)}
-                      text={node.label}
-                      indices={matches?.filter((i) => i < node.label.length)}
-                      tone="accent"
-                    />
-                    {entry.locked && <Icon name="lock" size={12} label={tx("locked")} />}
-                    {entry.prunable && <Icon name="warning" size={12} label={tx("prunable")} />}
-                  </span>
-                  <span className={worktreeStyles.secondary}>
-                    <Icon name="branch" size={12} />
-                    <HighlightedText
-                      className={worktreeStyles.truncated}
-                      text={branch}
-                      indices={matches?.filter((i) => i >= branchStart).map((i) => i - branchStart)}
-                      tone="accent"
-                    />
-                    <span className={clsx(worktreeStyles.path, worktreeStyles.truncated)} title={entry.path}>
-                      {entry.path}
-                    </span>
-                  </span>
-                </div>
-              </>
-            );
-          }}
-          defaultExpanded={tree.map((n) => n.key)}
-          selected={selectedKeys}
-          multiSelect={false}
-          onSelectionChange={(selection) => setSelected([...selection][0] ?? null)}
-          onActivate={(n) => n.worktree && void openWorktree(n.worktree.entry.path)}
-          className={clsx(worktreeStyles.tree, listClassName ?? worktreeStyles.dialogTree)}
-          rowHeight={rowHeight}
-          aria-label="Worktrees"
-        />
-      </div>
-      {groups.map(
-        (group) =>
-          group.error && (
-            <div key={group.root} className={styles.error}>
-              {group.error}
-            </div>
-          ),
-      )}
-      {mutationError && mutationError.project === projectRoot && (
-        <div className={styles.error} role="alert">
-          {mutationError.message}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function NewWorktreeDialog({
-  repo: initialRepo,
-  branch,
-  openAfterCreate,
-  onClose,
-}: {
-  /** The repository to add the worktree to; the selected one when omitted. */
-  repo?: string | null;
-  branch?: WorktreeSource;
-  openAfterCreate: boolean;
-  onClose: (created: boolean) => void;
-}) {
-  const [repo] = useState(() => initialRepo ?? currentRepo());
-  const [root] = useState(() => initialRepo ?? useVcs.getState().repo ?? useVcs.getState().root ?? "");
-  const branches = useBranches(repo);
-  const initialRef = branch ? branchRef(branch.name, branch.remote) : null;
-  const [source, setSource] = useState(initialRef);
-  const [createBranchChoice, setCreateBranch] = useState<boolean | null>(null);
-  const [newBranch, setNewBranch] = useState("");
-  const { ref: branchInput, clean: cleanBranch } = useSanitizedField(cleanUpBranchNameOnTyping);
-  const [path, setPath] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [worktrees, setWorktrees] = useState<Worktree[]>([]);
-  useEffect(() => {
-    let live = true;
-    call(commands.vcsWorktrees(repo)).then(
-      (worktrees) => live && setWorktrees(worktrees),
-      () => undefined,
-    );
-    return () => {
-      live = false;
-    };
-  }, [repo]);
-  const sources = useMemo(
-    () => [...sortLocal(branches), ...sortRemote(branches)].filter((b) => !b.remote || !b.name.endsWith("/HEAD")),
-    [branches],
-  );
-  const options: SelectOption[] = sources.map((b) => ({
-    value: branchRef(b.name, b.remote),
-    label: b.name,
-    icon: "branch",
-  }));
-  if (branch && initialRef && !options.some((option) => option.value === initialRef)) {
-    options.unshift({ value: initialRef, label: branch.name, icon: "branch" });
-  }
-  const selected =
-    sources.find((b) => branchRef(b.name, b.remote) === source) ?? (source === initialRef ? branch : null);
-  const checkedOut =
-    !!selected && !selected.remote && (selected.current || worktrees.some((w) => w.branch === selected.name));
-  const createBranch = checkedOut || selected?.remote || (createBranchChoice ?? !branch);
-  const shortSource = selected?.remote ? selected.name.slice(selected.name.indexOf("/") + 1) : (selected?.name ?? "");
-  const suggestedBranch =
-    selected?.remote && !sources.some((b) => !b.remote && b.name === shortSource)
-      ? shortSource
-      : shortSource && `${shortSource}-wt`;
-  const branchName = newBranch.trim() || suggestedBranch;
-  const target = path ?? (source ? defaultWorktreePath(root, createBranch ? branchName : shortSource) : "");
-  const invalid = !source
-    ? "Choose what to check out"
-    : !target.trim()
-      ? "Enter a folder"
-      : createBranch
-        ? validateBranchName(branchName)
-        : null;
-
-  const create = async () => {
-    if (invalid || !source || !selected || busy) return;
-    const folder = target.trim();
-    const absolute = /^([a-zA-Z]:)?[\\/]/.test(folder) ? folder : joinPath(root, folder);
-    setBusy(true);
-    setError(null);
-    try {
-      await call(
-        commands.vcsAddWorktree(
-          repo,
-          absolute,
-          createBranch ? source : selected.name,
-          createBranch ? branchName : null,
-        ),
-      );
-    } catch (e) {
-      setError(errorMessage(e));
-      setBusy(false);
-      return;
-    }
-    notifications().notify({ group: "vcs", level: "info", title: `Created worktree at ${absolute}` });
-    void loadBranches().catch(() => undefined);
-    onClose(true);
-    if (openAfterCreate) void openWorktree(absolute, true);
-  };
-
-  return (
-    <Dialog
-      open
-      title="New Worktree"
-      onClose={() => onClose(false)}
-      width={520}
-      buttons={[
-        {
-          label: openAfterCreate ? "Create and Open Worktree" : "Create",
-          role: "default",
-          disabled: busy || !!invalid,
-          onClick: () => void create(),
-        },
-        { label: "Cancel", role: "cancel" },
-      ]}
-    >
-      <div className={styles.form}>
-        <div className={styles.fieldLabel}>
-          <T>Check out:</T>
-        </div>
-        <BranchSelect
-          aria-label="Check out"
-          value={source}
-          placeholder="Select branch"
-          options={options}
-          onChange={setSource}
-        />
-        <Checkbox
-          label="Create a new branch"
-          checked={!!createBranch}
-          disabled={checkedOut || selected?.remote}
-          onChange={setCreateBranch}
-        />
-        {createBranch && (
-          <Input
-            ref={branchInput}
-            aria-label="New branch name"
-            mono
-            value={newBranch}
-            placeholder={suggestedBranch}
-            onChange={(e) => setNewBranch(cleanBranch(e))}
-          />
-        )}
-        <div className={styles.fieldLabel}>
-          <T>Folder:</T>
-        </div>
-        <Input aria-label="Folder" mono value={target} onChange={(e) => setPath(e.target.value)} />
-        {(error ?? (source && invalid)) && <div className={styles.error}>{error ?? invalid}</div>}
-      </div>
     </Dialog>
   );
 }

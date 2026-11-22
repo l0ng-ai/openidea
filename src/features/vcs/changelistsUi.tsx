@@ -33,7 +33,7 @@ interface FormValue {
   active: boolean;
 }
 
-function ChangelistNamePicker({
+export function ChangelistNamePicker({
   field,
   options,
   newName,
@@ -77,7 +77,7 @@ function ChangelistNamePicker({
           size="small"
           aria-haspopup="listbox"
           aria-expanded={open}
-          disabled={!options.length}
+          disabled={field.disabled || !options.length}
           onClick={() => {
             input.current?.focus();
             setOpen(!open);
@@ -284,7 +284,7 @@ export function commitChangelist(id: string) {
   const { status, root } = useVcs.getState();
   const checks = checksForList(status, root ?? "", useChangelists.getState().state, id);
   useCommit.setState((s) => ({ checks, tab: "changes", focusTick: s.focusTick + 1 }));
-  if (isModalCommit()) openCommit();
+  openCommit();
 }
 
 /**

@@ -13,10 +13,18 @@ import { call, commands } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { useContextMenuStore, type MenuItem } from "@/ui/Menu";
 import { ChangesTree, nodeMenu, stageOperation } from "../CommitView";
-import { buildChangeTree, planCommit } from "../changes";
+import { buildChangeTree, changeFileNodes, planCommit, stagingPatchEntries } from "../changes";
 import { useChangelists } from "../changelists";
 import { useCommit } from "../commitStore";
-import { inclusionChecks, isCommitAll, stagingChecks } from "../staging";
+import {
+  bulkStagePaths,
+  inclusionChecks,
+  isCommitAll,
+  ROLLBACK_UNSTAGED,
+  STAGE_WITHOUT_CONTENT,
+  stagingChecks,
+} from "../staging";
+import { changeNodeDiff, oneSided } from "../diffInput";
 import { useVcs } from "../store";
 import { provideEditorService } from "@/workbench/contributions";
 
@@ -84,6 +92,13 @@ describe("staging area inclusion", () => {
     expect(isCommitAll([untracked])).toBe(false);
   });
 
+  it("requires index changes in staging mode when Commit All is disabled", () => {
+    expect(planCommit([unstagedOnly, untracked], stagingChecks([unstagedOnly, untracked], false)).included).toEqual([]);
+    expect(planCommit([stagedOnly, unstagedOnly], stagingChecks([stagedOnly, unstagedOnly], false)).included).toEqual([
+      stagedOnly,
+    ]);
+  });
+
   it("ignores the checkboxes and change lists", () => {
     const status = [stagedOnly, unstagedOnly];
     const lists = {
@@ -105,6 +120,33 @@ describe("staging area inclusion", () => {
 describe("staging operations of the tree's nodes", () => {
   const roots = buildChangeTree([stagedOnly, partial, unstagedOnly, untracked], "/p", false, undefined, [], true);
   const group = (id: string) => roots.find((n) => n.group === id)!;
+
+  it("bulk-stages the working side, with untracked paths only for Stage All", () => {
+    const removed = file("src/Removed.kt", null, "deleted");
+    const renamed = { ...file("src/Renamed.kt", null, "renamed"), renamedFrom: "src/Old.kt" };
+    const intent = file("src/Intent.kt", null, "added");
+    const status = [
+      stagedOnly,
+      partial,
+      removed,
+      renamed,
+      intent,
+      untracked,
+      file("conflict", "conflicted", "conflicted"),
+      file("ignored", null, "ignored"),
+    ];
+    const tracked = [partial.path, removed.path, renamed.path, "/p/src/Old.kt", intent.path];
+    expect(bulkStagePaths(status, false)).toEqual(tracked);
+    expect(bulkStagePaths(status, true)).toEqual([...tracked, untracked.path]);
+  });
+
+  it("preserves rename paths only for the selected side of a patch", () => {
+    const renamed = { ...file("src/Renamed.kt", "renamed", "modified"), renamedFrom: "src/Old.kt" };
+    const tree = buildChangeTree([renamed], "/p", true, undefined, [], true);
+    const unstaged = tree.find((node) => node.group === "unstaged")!;
+    expect(stagingPatchEntries([unstaged])).toEqual([{ path: renamed.path, renamedFrom: null, side: "unstaged" }]);
+    expect(stagingPatchEntries(tree)).toEqual([{ path: renamed.path, renamedFrom: "/p/src/Old.kt", side: "both" }]);
+  });
 
   it("unstages under Staged and stages under Unstaged and Unversioned Files", () => {
     const op = (id: string) => {
@@ -131,7 +173,7 @@ describe("staging operations of the tree's nodes", () => {
     ]).toEqual([true, false]);
   });
 
-  it("shows a row's side of the index from Show Diff: HEAD ↔ Index under Staged, Index ↔ working copy under Unstaged", async () => {
+  it("shows HEAD ↔ index under Staged and index ↔ working copy under Unstaged", async () => {
     useSettings(true);
     const openInput = vi.fn(async () => undefined);
     provideEditorService({ openInput } as never);
@@ -146,12 +188,52 @@ describe("staging operations of the tree's nodes", () => {
     show(group("staged").children!.find((n) => n.label === "Partial.kt")!);
     await vi.waitFor(() => expect(openInput).toHaveBeenCalledTimes(1));
     expect(sides()).toEqual([
-      { type: "rev", rev: "HEAD" },
-      { type: "rev", rev: ":0", label: "Index" },
+      { type: "rev", rev: "HEAD", label: "HEAD" },
+      { type: "rev", rev: ":0" },
     ]);
     show(group("unstaged").children!.find((n) => n.label === "Partial.kt")!);
     await vi.waitFor(() => expect(openInput).toHaveBeenCalledTimes(2));
-    expect(sides()).toEqual([{ type: "rev", rev: ":0", label: "Index" }, { type: "worktree" }]);
+    expect(sides()).toEqual([
+      { type: "rev", rev: ":0" },
+      { type: "worktree", label: "Local Version" },
+    ]);
+  });
+
+  it("compares additions, deletions, and renames against the selected index side", () => {
+    useSettings(true);
+    const added = file("src/Added.kt", "added", null);
+    const removed = file("src/Removed.kt", null, "deleted");
+    const renamed = { ...file("src/Renamed.kt", "renamed", null), renamedFrom: "src/Before.kt" };
+    const nodes = changeFileNodes(buildChangeTree([added, removed, renamed], "/p", false, undefined, [], true));
+    const diff = (path: string) => changeNodeDiff(nodes.find((node) => node.path === path)!);
+    expect(oneSided(diff(added.path))).toBe(true);
+    expect(diff(added.path).right).toMatchObject({ type: "rev", rev: ":0" });
+    expect(oneSided(diff(removed.path))).toBe(true);
+    expect(diff(removed.path).left).toMatchObject({ type: "rev", rev: ":0" });
+    expect(diff(renamed.path).left).toMatchObject({ type: "rev", rev: "HEAD", path: "/p/src/Before.kt" });
+    expect(stageOperation(nodes.find((node) => node.path === renamed.path)!)?.paths).toEqual([
+      renamed.path,
+      "/p/src/Before.kt",
+    ]);
+  });
+
+  it("offers index-preserving Rollback for eligible unstaged rows and intent-to-add for new files", () => {
+    useSettings(true);
+    const removedAddition = file("src/StagedAndRemoved.kt", "added", "deleted");
+    const intent = file("src/Intent.kt", null, "added");
+    const nodes = changeFileNodes(
+      buildChangeTree([partial, untracked, removedAddition, intent], "/p", false, undefined, [], true),
+    );
+    const actions = nodeMenu(nodes, []).filter((item) => item.kind === "action");
+    expect(actions).toContainEqual(
+      expect.objectContaining({
+        action: ROLLBACK_UNSTAGED,
+        arg: expect.arrayContaining([partial.path, removedAddition.path]),
+      }),
+    );
+    expect(actions.find((item) => item.action === ROLLBACK_UNSTAGED)?.arg).not.toContain(intent.path);
+    expect(actions).toContainEqual(expect.objectContaining({ action: STAGE_WITHOUT_CONTENT, arg: [untracked.path] }));
+    expect(actions.some((item) => item.action === "vcs.rollback")).toBe(false);
   });
 
   it("has no Commit File…: a commit takes the whole index", () => {
@@ -174,19 +256,20 @@ describe("staging operations of the tree's nodes", () => {
     }
     expect(groups[0]).toEqual(
       staging
-        ? ["Stage", "Unstage", "vcs.stashSelected", "vcs.rollback", "Delete…"]
+        ? ["Stage", "Unstage", "vcs.stashSelected", "vcs.rollbackUnstaged", "Delete…"]
         : ["Commit File…", "vcs.rollback", "vcs.changelist.move"],
     );
     expect(groups[1]).toEqual([
       "Show Diff",
       "vcs.showDiffInNewWindow",
+      ...(staging ? ["vcs.showThreeSideDiff"] : []),
       "Jump to Source",
       "Copy Path",
       "Copy File Name",
     ]);
     expect(groups).toContainEqual([
       "vcs.createPatch",
-      "Copy as Patch to Clipboard",
+      "vcs.copyPatch",
       "vcs.shelve",
       ...(staging ? [] : ["vcs.stashSelected"]),
     ]);

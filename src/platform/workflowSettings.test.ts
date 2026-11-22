@@ -3,6 +3,22 @@ import { splitCommandLine } from "./commandLine";
 import { DEFAULT_WORKFLOW, validateWorkflow } from "./workflowSettings";
 
 describe("validateWorkflow", () => {
+  it("recurses into submodules when cloning unless switched off", () => {
+    const recurse = (cloneSubmodules: unknown) =>
+      validateWorkflow({ vcs: { git: { cloneSubmodules } } }).vcs.git.cloneSubmodules;
+    expect(recurse(undefined)).toBe(true);
+    expect(recurse(false)).toBe(false);
+    expect(recurse("off")).toBe(true);
+  });
+
+  it("keeps all four Git fetch tag modes and uses Auto for older projects", () => {
+    const mode = (fetchTagsMode: unknown) =>
+      validateWorkflow({ vcs: { git: { fetchTagsMode } } }).vcs.git.fetchTagsMode;
+    expect(["auto", "sync", "always", "never"].map(mode)).toEqual(["auto", "sync", "always", "never"]);
+    expect(mode(undefined)).toBe("auto");
+    expect(mode("prune")).toBe("auto");
+  });
+
   it("defaults inline blame off and accepts only boolean values", () => {
     expect(DEFAULT_WORKFLOW.vcs.git.inlineBlame).toBe(false);
     expect(validateWorkflow({ vcs: { git: { inlineBlame: true } } }).vcs.git.inlineBlame).toBe(true);
@@ -23,6 +39,38 @@ describe("validateWorkflow", () => {
     expect(DEFAULT_WORKFLOW.vcs.git.syncBranchOperations).toBe(true);
     expect(sync(false)).toBe(false);
     expect(sync("off")).toBe(true);
+  });
+
+  it("records the cherry-pick origin unless explicitly turned off", () => {
+    const origin = (addCherryPickOrigin: unknown) =>
+      validateWorkflow({ vcs: { git: { addCherryPickOrigin } } }).vcs.git.addCherryPickOrigin;
+    expect(origin(undefined)).toBe(true);
+    expect(origin(false)).toBe(false);
+    expect(origin("false")).toBe(true);
+  });
+
+  it("skips empty picks by default and accepts the create-empty choice", () => {
+    const action = (emptyCherryPick: unknown) =>
+      validateWorkflow({ vcs: { git: { emptyCherryPick } } }).vcs.git.emptyCherryPick;
+    expect(action(undefined)).toBe("skip");
+    expect(action("createEmpty")).toBe("createEmpty");
+    expect(action("other")).toBe("skip");
+  });
+
+  it("compares stashed files against the working copy unless the parent is selected", () => {
+    const target = (stashDiffTarget: unknown) =>
+      validateWorkflow({ vcs: { git: { stashDiffTarget } } }).vcs.git.stashDiffTarget;
+    expect(target(undefined)).toBe("local");
+    expect(target("parent")).toBe("parent");
+    expect(target("other")).toBe("local");
+  });
+
+  it("shelves automatically saved changes by default and accepts Stash", () => {
+    const policy = (saveChangesPolicy: unknown) =>
+      validateWorkflow({ vcs: { git: { saveChangesPolicy } } }).vcs.git.saveChangesPolicy;
+    expect(policy(undefined)).toBe("shelve");
+    expect(policy("stash")).toBe("stash");
+    expect(policy("other")).toBe("shelve");
   });
 
   it("includes commit changes by default unless explicitly switched off", () => {

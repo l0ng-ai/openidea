@@ -31,6 +31,36 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
     Ok(collect(r, &ignored, map, conflicts))
 }
 
+/// Git-ignored working-tree entries, with ignored directories reported as one entry each.
+pub(crate) fn ignored_files(r: &Repo) -> IdeResult<Vec<FileStatus>> {
+    let ignored = r.ignored.read().unwrap_or_else(|p| p.into_inner()).clone();
+    let overrides = crate::cli::filter_overrides(r.root(), &ide_core::CancellationToken::new())?;
+    let mut args: Vec<&str> = overrides.iter().map(String::as_str).collect();
+    args.extend([
+        "status",
+        "--porcelain=v2",
+        "-z",
+        "--untracked-files=normal",
+        "--ignored=matching",
+        "--no-renames",
+        "--ignore-submodules=all",
+    ]);
+    let output = crate::cli::run_env(r.root(), &args, None, &read_only())?;
+    Ok(output
+        .stdout
+        .split(|b| *b == 0)
+        .filter_map(|record| std::str::from_utf8(record.strip_prefix(b"! ")?).ok())
+        .filter(|rel| !rel.is_empty() && !ignored.is_ignored_path(rel))
+        .map(|rel| FileStatus {
+            path: r.abs_path(rel).into(),
+            rel_path: rel.into(),
+            staged: None,
+            unstaged: Some(ChangeKind::Ignored),
+            renamed_from: None,
+        })
+        .collect())
+}
+
 /// Status of `paths` only (repository-relative, `/`-separated): the dirty-scope refresh.
 ///
 /// A watcher batch touches a few files, and the full status walks the whole tree; git's own
@@ -210,9 +240,11 @@ fn gix_status(r: &Repo, ignored: &IgnoredNames) -> IdeResult<Entries> {
             }
         }
     }
+    // Gitoxide's index writer omits resolve-undo data. Keep those saved conflicts.
     // Serialize write-back and identity capture with watcher queries.
     if let Some(mut outcome) = iter.into_outcome()
         && outcome.has_changes()
+        && outcome.worktree_index.resolve_undo().is_none()
     {
         let mut writes = crate::index_writes::lock();
         // Another process rewrote the index while this status run was reading it

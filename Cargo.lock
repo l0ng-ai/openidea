@@ -5010,6 +5010,7 @@ dependencies = [
  "ide-core",
  "ignore",
  "libc",
+ "notify",
  "redb",
  "regex-lite",
  "serde",

@@ -11,6 +11,7 @@ import { promptText } from "./dialogs";
 import { focusedDiffNavigator } from "./diffNavigator";
 import { compareFilesData, displayPath } from "./compareData";
 import { showDirectoryComparison } from "./directoryCompareKind";
+import { commitLineTarget, EXCLUDE_COMMIT_LINES, INCLUDE_COMMIT_LINES, setCommitLineInclusion } from "./hunkInclusion";
 export { compareFilesData, displayPath } from "./compareData";
 import { openDiff, openVcsDiff, type DiffData } from "./diffInput";
 import { baseName, dirName } from "./model";
@@ -182,6 +183,22 @@ export function registerCompareActions(): () => void {
       when: "diffEditorFocus",
       run: () => focusedDiffNavigator()?.prev(),
     },
+    ...(
+      [
+        [INCLUDE_COMMIT_LINES, "Include Selected Lines in Commit", true],
+        [EXCLUDE_COMMIT_LINES, "Exclude Selected Lines from Commit", false],
+      ] as const
+    ).map(([id, title, include]) => ({
+      id,
+      title,
+      category: "Git",
+      hidden: true,
+      enabled: ({ arg }: { arg?: unknown }) => !!commitLineTarget(arg, include),
+      run: ({ arg }: { arg?: unknown }) => {
+        const target = commitLineTarget(arg, include);
+        if (target) setCommitLineInclusion(target.path, target.view, target.selection, include);
+      },
+    })),
     {
       id: "diff.showSettings",
       title: "Diff Settings",

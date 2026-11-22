@@ -161,7 +161,7 @@ fn pattern(path: &Path, directory: bool) -> IdeResult<String> {
 }
 
 /// A symlink, or a Windows reparse point such as a junction, is a single entry for Git.
-fn is_link(meta: &fs::Metadata) -> bool {
+pub(crate) fn is_link(meta: &fs::Metadata) -> bool {
     if meta.file_type().is_symlink() {
         return true;
     }

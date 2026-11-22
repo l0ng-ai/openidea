@@ -800,7 +800,10 @@ impl EventFilter {
             // registration event (`git init`, the first `git worktree add`);
             // they must surface even though the depth below them is handled
             // separately.
-            [one] => matches!(one.to_str(), Some("HEAD" | "index" | "packed-refs" | "refs" | "worktrees" | "info")),
+            [one] => matches!(
+                one.to_str(),
+                Some("HEAD" | "index" | "config" | "config.worktree" | "packed-refs" | "refs" | "worktrees" | "info")
+            ),
             [first, ..] => {
                 let metadata = *first == "refs"
                     // Linked-worktree gitdirs: a worktree added or removed below
@@ -1480,6 +1483,9 @@ mod tests {
         assert_eq!(g("src/main.rs"), None);
         assert_eq!(g(".git/HEAD"), Some(true));
         assert_eq!(g(".git/index"), Some(true));
+        assert_eq!(g(".git/config"), Some(true));
+        assert_eq!(g(".git/config.worktree"), Some(true));
+        assert_eq!(g(".git/config.lock"), Some(false));
         assert_eq!(g(".git/refs/heads/main"), Some(true));
         assert_eq!(g(".git/refs/heads/main.lock"), Some(false));
         assert_eq!(g(".git/objects/aa/bb"), Some(false));

@@ -8,7 +8,7 @@ import { useVcs } from "../store";
 import { useCommit } from "../commitStore";
 import { initialChangelists, useChangelists } from "../changelists";
 import { useGitLog } from "../logStore";
-import { compareChangeWithLocal } from "../logChanges";
+import { compareChangesWithLocal, type LogChange } from "../logChanges";
 import { chainNeighbour, openVcsDiff, type DiffData } from "../diffInput";
 
 const opened = vi.hoisted(() => vi.fn());
@@ -172,9 +172,9 @@ it("openVcsDiff keeps editor tabs without the modal interface", async () => {
   expect(opened).toHaveBeenCalled();
 });
 
-it("Compare with Local opens the front window under the modal interface", async () => {
+it("Compare with Local opens selected files as a chain in the front window under the modal interface", async () => {
   modal();
-  await compareChangeWithLocal({
+  const change: LogChange = {
     path: "b.ts",
     repo: "/repo",
     oldPath: null,
@@ -184,9 +184,16 @@ it("Compare with Local opens the front window under the modal interface", async 
     statsFrom: "p",
     statsTo: "c",
     diff: { path: "/repo/b.ts", left: { type: "rev", rev: "p" }, right: { type: "rev", rev: "c" } },
-  });
+  };
+  await compareChangesWithLocal([change, { ...change, path: "z.ts", after: "def456" }]);
   expect(diffWindow).toHaveBeenCalledTimes(1);
-  expect(diffWindow.mock.calls[0]![0]).toMatchObject({ path: "/repo/b.ts" });
+  const data = diffWindow.mock.calls[0]![0];
+  expect(data).toMatchObject({ path: "/repo/b.ts", left: { rev: "abc123" }, right: { type: "worktree" } });
+  expect(chainNeighbour(data, 1)).toMatchObject({
+    path: "/repo/z.ts",
+    left: { rev: "def456" },
+    right: { type: "worktree" },
+  });
 });
 
 it("keeps the hunk's line when Show Diff opens the front window (gutter popup)", async () => {

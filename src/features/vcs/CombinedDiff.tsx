@@ -9,10 +9,11 @@ import { tx } from "@/platform/i18n";
 import { relativeDir, useProject } from "@/platform/project";
 import { Icon, IconButton, T, fileIconName } from "@/ui";
 import { editorService, type EditorInput } from "@/workbench/contributions";
-import { setAllInOneDiff, type CombinedDiffData } from "./allInOneDiff";
-import { DiffEditor } from "./DiffEditor";
-import { diffInput, openDiff, withChain, type DiffData } from "./diffInput";
+import { combinedDiffDocumentOwner, setAllInOneDiff, type CombinedDiffData } from "./allInOneDiff";
+import { ResolvedDiffEditor } from "./DiffEditor";
+import { diffInput, hasGitlink, openDiff, withChain, type DiffData } from "./diffInput";
 import { loadDiffOptions, saveDiffOptions } from "./diffOptions";
+import { useGitDiffEntries } from "./gitDiffEntries";
 import { KIND_COLOR, KIND_LABEL, baseName, fileCount } from "./model";
 import styles from "./CombinedDiff.module.css";
 
@@ -34,6 +35,7 @@ function Block({
   collapsed,
   onToggle,
   mode,
+  tabKey,
 }: {
   item: DiffData;
   index: number;
@@ -41,6 +43,7 @@ function Block({
   collapsed: boolean;
   onToggle: () => void;
   mode: "split" | "unified";
+  tabKey: string;
 }) {
   const ref = useRef<HTMLElement>(null);
   // Without IntersectionObserver (tests), every block loads at once.
@@ -57,7 +60,10 @@ function Block({
     io.observe(el);
     return () => io.disconnect();
   }, [near]);
-  const input: EditorInput = useMemo(() => diffInput({ ...item, mode }), [item, mode]);
+  const request = useMemo(() => ({ ...item, mode }), [item, mode]);
+  const input = useMemo(() => diffInput(request), [request]);
+  const diff = useGitDiffEntries(request, near);
+  const gitlink = hasGitlink(diff.data);
   const kind = blockKind(item);
   const name = baseName(item.path);
   const root = useProject((s) => s.project?.root ?? "");
@@ -85,7 +91,7 @@ function Block({
           // The file's own diff, still knowing its siblings for Compare Next File.
           onClick={() => void editorService().openInput(diffInput(withChain(items, index)), { focus: true })}
         />
-        {item.right.type === "worktree" && (
+        {near && !diff.loading && !gitlink && item.right.type === "worktree" && (
           <IconButton
             icon="edit"
             title="Jump to Source"
@@ -99,6 +105,7 @@ function Block({
           <span className={styles.name} style={{ color: KIND_COLOR[kind] }}>
             {name}
           </span>
+          {gitlink && <span className={styles.dir}>{tx("Submodule")}</span>}
           {dir && <span className={styles.dir}>{dir}</span>}
         </div>
       </div>
@@ -106,7 +113,12 @@ function Block({
           working-tree document and, with autosave off, drop its unsaved edits. */}
       {near ? (
         <div className={styles.body} hidden={collapsed}>
-          <DiffEditor input={input} fit />
+          <ResolvedDiffEditor
+            diff={diff}
+            input={input}
+            documentOwner={combinedDiffDocumentOwner(tabKey, input.key)}
+            fit
+          />
         </div>
       ) : (
         !collapsed && <div className={styles.placeholder} />
@@ -215,6 +227,7 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
               collapsed={collapsed.has(item.path)}
               onToggle={() => toggle(item.path)}
               mode={mode}
+              tabKey={input.key}
             />
           ))
         ) : (

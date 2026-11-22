@@ -130,17 +130,14 @@ describe("vcs.rollback targets", () => {
     }
   });
 
-  it("explains a nested repository entry chosen explicitly", async () => {
+  it("opens Rollback for an explicitly selected submodule entry", async () => {
     const unregister = registerVcsActions();
     try {
       const status = [fs("app.txt", "modified"), fs("libs/core", "modified"), fs("libs/core/core.txt", "modified")];
       useVcs.setState({ status, root: "/r", roots: ["/r", "/r/libs/core"] });
       toolWindow = "commit";
       await getAction("vcs.rollback")!.run({ arg: { path: "/r/libs/core" }, ctx: { vcsAvailable: true } });
-      expect(mocks.showDialog).not.toHaveBeenCalled();
-      expect(mocks.notify).toHaveBeenCalledWith(
-        expect.objectContaining({ title: "Submodule changes cannot be rolled back here" }),
-      );
+      expect(mocks.showDialog).toHaveBeenCalledWith([status[1]]);
     } finally {
       unregister();
     }
