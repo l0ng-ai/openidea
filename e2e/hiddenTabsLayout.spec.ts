@@ -12,6 +12,30 @@ const names = [
   "InvoicePublisher.ts",
 ];
 
+test("a pinned editor tab can be unpinned from the hidden tabs list", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 700, height: 650 });
+  await page.evaluate(async (first) => {
+    const module = "/src/workbench/contributions.ts";
+    const { editorService } = await import(/* @vite-ignore */ module);
+    await editorService().openFile(`/dev/acme-api/${first}`);
+  }, names[0]!);
+  const strip = page.getByRole("tablist", { name: "Editor tabs" });
+  const tab = strip.getByRole("tab", { name: names[0], exact: true });
+  await tab.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Pin Tab", exact: true }).click();
+  await page.evaluate(async (files) => {
+    const module = "/src/workbench/contributions.ts";
+    const { editorService } = await import(/* @vite-ignore */ module);
+    for (const name of files) await editorService().openFile(`/dev/acme-api/${name}`);
+  }, names.slice(1));
+  await strip.evaluate((element) => (element.scrollLeft = element.scrollWidth));
+  await page.getByRole("button", { name: "Show Hidden Tabs" }).click();
+  const row = page.getByRole("grid", { name: "Hidden Editor Tabs" }).getByRole("row").filter({ hasText: names[0]! });
+  await expect(row.getByRole("button", { name: "Close Tab", exact: true })).toHaveCount(0);
+  await row.getByRole("button", { name: "Unpin Tab", exact: true }).click();
+  await expect(tab).toHaveCount(1);
+});
+
 test("the editor overflow lists clipped tabs and can close or open one without touching visible tabs", async ({
   workbench: page,
 }) => {

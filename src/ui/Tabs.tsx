@@ -34,10 +34,7 @@ export interface TabItem {
   text?: string;
   icon?: IconName | (string & {});
   closable?: boolean;
-  /**
-   * Pinned (IDEA's content tabs): with `onTogglePin`, an Unpin button takes the close
-   * button's place, and the strip's close gestures leave the tab alone.
-   */
+  /** With `onTogglePin`, the tab shows Unpin in the action slot. */
   pinned?: boolean;
   /**
    * Visual only: hide this tab's close button without disabling its close
@@ -129,7 +126,7 @@ export interface TabsProps {
   onClose?: (id: string) => void;
   /** Alt+click on a close button (IDEA: close all other tabs). */
   onCloseOthers?: (id: string) => void;
-  /** Pin / Unpin Tab on the selected tab, from the container (a tool window's content tabs). */
+  /** Toggle the pinned state of a tab. */
   onTogglePin?: (id: string) => void;
   /** Shift+left-click a tab closes it (editor tabs; plain clicks still select). */
   closeOnShiftClick?: boolean;
@@ -183,6 +180,7 @@ export function Tabs({
   ...aria
 }: TabsProps) {
   const vertical = orientation === "vertical";
+  const protectPinned = variant !== "editor" && !!onTogglePin;
   const given = useGivenTx();
   const scrollRef = useRef<HTMLDivElement>(null);
   const tabRefs = useRef(new Map<string, HTMLButtonElement>());
@@ -194,17 +192,17 @@ export function Tabs({
   const [dragging, setDragging] = useState<string | null>(null);
 
   const register = useContext(TabStripRegistry);
-  const latest = useRef({ items, activeId, onClose, onTogglePin });
+  const latest = useRef({ items, activeId, onClose, onTogglePin, protectPinned });
   useLayoutEffect(() => {
-    latest.current = { items, activeId, onClose, onTogglePin };
+    latest.current = { items, activeId, onClose, onTogglePin, protectPinned };
   });
   useEffect(
     () =>
       register?.({
         closeSelected: () => {
-          const { items, activeId, onClose, onTogglePin } = latest.current;
+          const { items, activeId, onClose, protectPinned } = latest.current;
           const item = items.find((it) => it.id === activeId);
-          if (!item || !onClose || item.closable === false || (item.pinned && onTogglePin)) return false;
+          if (!item || !onClose || !canCloseTab(item, protectPinned)) return false;
           onClose(item.id);
           return true;
         },
@@ -341,7 +339,7 @@ export function Tabs({
         break;
       case "Delete":
       case "Backspace":
-        if (onClose && item.closable !== false && !(item.pinned && onTogglePin)) onClose(item.id);
+        if (onClose && canCloseTab(item, protectPinned)) onClose(item.id);
         else return;
         break;
       case "Tab":
@@ -399,8 +397,9 @@ export function Tabs({
           const pinned = !!onTogglePin && !!item.pinned;
           // Whether a tab can be closed at all (gestures and the button). A hidden
           // close button is visual only: middle click, Shift+click and Delete still work.
-          const closable = !!onClose && item.closable !== false && !pinned;
-          const showClose = closable && item.showCloseButton !== false;
+          const closable = !!onClose && canCloseTab(item, protectPinned);
+          const showClose = closable && !pinned && item.showCloseButton !== false;
+          const pinModified = pinned && variant === "editor" && item.modified;
           return (
             <div
               key={item.id}
@@ -476,6 +475,7 @@ export function Tabs({
                 id={panelIdPrefix ? `${panelIdPrefix}-tab-${item.id}` : undefined}
                 aria-controls={panelIdPrefix ? `${panelIdPrefix}-panel-${item.id}` : undefined}
                 aria-selected={selected}
+                aria-label={pinned && variant === "editor" && item.text ? `${item.text} ${tx("Pinned")}` : undefined}
                 tabIndex={selected || (!activeId && index === 0) ? 0 : -1}
                 className={clsx(styles.tabButton, item.dimmed && styles.dimmed)}
                 style={item.color ? { color: item.color } : undefined}
@@ -500,7 +500,9 @@ export function Tabs({
                   {typeof item.label === "string" ? <Given>{item.label}</Given> : item.label}
                 </span>
                 {item.trailing}
-                {item.modified && !showClose && <span className={styles.modified} aria-label={tx("Modified")} />}
+                {item.modified && !showClose && !pinModified && (
+                  <span className={styles.modified} aria-label={tx("Modified")} />
+                )}
               </button>
               {pinned && (
                 <span className={styles.closeSlot} data-tab-close>
@@ -516,6 +518,7 @@ export function Tabs({
                       onTogglePin!(item.id);
                     }}
                   />
+                  {pinModified && <span className={styles.pinModified} aria-label={tx("Modified")} />}
                 </span>
               )}
               {showClose && (
@@ -564,6 +567,7 @@ export function Tabs({
                 onSelect={onSelect}
                 onCloseTab={onClose}
                 onCloseOthers={onCloseOthers}
+                onTogglePin={onTogglePin}
                 onDismiss={closeMenu}
               />
             )
@@ -582,6 +586,10 @@ export function Tabs({
       {!vertical && trailing && <div className={styles.trailing}>{trailing}</div>}
     </div>
   );
+}
+
+function canCloseTab(item: TabItem, protectPinned: boolean): boolean {
+  return item.closable !== false && !(protectPinned && item.pinned);
 }
 
 /** Scrolls `scroller` horizontally just enough to show all of `child`. */
