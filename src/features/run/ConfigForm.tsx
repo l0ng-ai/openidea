@@ -507,7 +507,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
       {config.kind === "tomcat" ? (
         <TomcatSettings config={config} onChange={onChange} />
       ) : (
-        <>
+        <div className={styles.formSettings}>
           {!noProcess && (
             <Field
               label="Run on"
@@ -860,7 +860,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
               }}
             />
           )}
-        </>
+        </div>
       )}
     </div>
   );
