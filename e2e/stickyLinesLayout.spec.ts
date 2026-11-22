@@ -89,6 +89,8 @@ test("Sticky Lines follows editor text, line numbers and the viewport below Find
   expect(pinnedGutter!.width).toBeCloseTo(liveGutter!.width, 0);
   expect(await codeStart(text)).toBeCloseTo(liveX, 0);
   await expect(sticky).toHaveCSS("font-size", "16px");
+  await expect(sticky.locator(".cm-openidea-stickyNumber").first()).toHaveCSS("font-size", "15px");
+  await expect(editor.locator(".cm-lineNumbers .cm-gutterElement").first()).toHaveCSS("font-size", "15px");
   await expect(sticky).toHaveCSS("tab-size", await content.evaluate((element) => getComputedStyle(element).tabSize));
   await scroller.evaluate((element) => {
     element.scrollLeft = 32;

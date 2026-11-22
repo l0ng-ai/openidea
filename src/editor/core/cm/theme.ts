@@ -255,8 +255,9 @@ export const openideaTheme = EditorView.theme({
     userSelect: "none",
   },
   ".cm-lineNumbers .cm-gutterElement, .cm-openidea-stickyNumber": {
-    minWidth: "32px",
-    padding: "0 8px 0 10px",
+    minWidth: "calc(max(16px, var(--openidea-editor-font-size, var(--fs-code))) + var(--space-2))",
+    paddingInline: "var(--space-1)",
+    fontSize: "max(1px, calc(var(--openidea-editor-font-size, var(--fs-code)) - 1px))",
     textAlign: "right",
     fontVariantNumeric: "tabular-nums",
   },
