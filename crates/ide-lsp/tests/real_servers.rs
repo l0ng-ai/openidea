@@ -947,6 +947,73 @@ async fn angular_language_server_end_to_end() {
     tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
 }
 
+/// The Tailwind CSS server on `fixtures/tailwind-app` (Tailwind 4, `@theme` colours), with
+/// the built-in definitions: class completion in JSX and `@apply`, hover with the generated
+/// CSS, and the class conflict warning. Set `OPENIDEA_TEST_NPM_TOOLS` to a dir with
+/// `npm i @tailwindcss/language-server`; the fixture's own `tailwindcss` isn't needed.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires @tailwindcss/language-server (OPENIDEA_TEST_NPM_TOOLS)"]
+async fn tailwindcss_language_server_end_to_end() {
+    let tools = std::path::PathBuf::from(std::env::var("OPENIDEA_TEST_NPM_TOOLS").expect("OPENIDEA_TEST_NPM_TOOLS"));
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/tailwind-app");
+    for file in ["package.json", "index.html", "src/app.css", "src/App.tsx"] {
+        std::fs::create_dir_all(root.join(file).parent().unwrap()).unwrap();
+        std::fs::copy(fixture.join(file), root.join(file)).unwrap();
+    }
+    let builtin = LanguageRegistry::load(None).unwrap();
+    let languages = ["typescriptreact", "css"].map(|id| {
+        let mut cfg = builtin.get(&LanguageId::new(id)).unwrap();
+        cfg.language_servers.retain(|s| s.name == "tailwindcss-language-server");
+        let bin = tools.join("node_modules/.bin/tailwindcss-language-server");
+        cfg.language_servers[0].command = bin.to_string_lossy().into_owned();
+        cfg
+    });
+    let (mgr, events) = manager(&root, LanguageRegistry::from_configs(languages.to_vec()));
+    let (tsx, css) = (DocId::next(), DocId::next());
+    let tsx_path = root.join("src/App.tsx");
+    let css_path = root.join("src/app.css");
+    let tsx_text = std::fs::read_to_string(&tsx_path).unwrap();
+    let css_text = std::fs::read_to_string(&css_path).unwrap();
+    mgr.did_open(tsx, &tsx_path, &LanguageId::new("typescriptreact"), 1, &tsx_text);
+    mgr.did_open(css, &css_path, &LanguageId::new("css"), 1, &css_text);
+    let at = |text: &str, needle: &str, offset: usize| {
+        let (line, l) = text.lines().enumerate().find(|(_, l)| l.contains(needle)).unwrap();
+        Pos::new(line as u32, (l.find(needle).unwrap() + offset) as u32)
+    };
+
+    // The project's own `@theme` colour, in `className` and after `@apply`.
+    let in_class = at(&tsx_text, "className=\"flex flex-col", "className=\"".len());
+    let in_apply = at(&css_text, "@apply rounded-md", "@apply ".len());
+    for (doc, pos) in [(tsx, in_class), (css, in_apply)] {
+        retry("class completion", Duration::from_secs(60), || {
+            let mgr = mgr.clone();
+            async move {
+                let list = mgr.completion(doc, pos, None, Default::default()).await.ok()?;
+                list.items.iter().any(|i| i.label == "bg-brand-500").then_some(())
+            }
+        })
+        .await;
+    }
+    let hover = mgr.hover(tsx, at(&tsx_text, "bg-white", 1), Default::default()).await.unwrap().unwrap();
+    assert!(hover.contents.value.contains("background-color"), "{}", hover.contents.value);
+    let hover = mgr.hover(tsx, at(&tsx_text, "text-brand-700", 1), Default::default()).await.unwrap().unwrap();
+    assert!(hover.contents.value.contains("--color-brand-700"), "{}", hover.contents.value);
+
+    // `flex block`: both set `display`.
+    retry("class conflict", Duration::from_secs(30), || {
+        let found = events.lock().iter().any(|e| {
+            matches!(e, IdeEvent::Diagnostics { path, items, .. }
+                if path.ends_with("src/App.tsx")
+                    && items.iter().any(|d| d.message.contains("applies the same CSS properties")))
+        });
+        async move { found.then_some(()) }
+    })
+    .await;
+    tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+}
+
 /// A notebook's code cells on basedpyright and Ruff (LSP 3.17 notebook sync): names flow from
 /// earlier cells, IPython magics parse, and locations and diagnostics name the cells.
 #[tokio::test(flavor = "multi_thread")]

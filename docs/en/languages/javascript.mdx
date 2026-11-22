@@ -7,16 +7,17 @@ OpenIDEA edits JavaScript (`.js`, `.mjs`, `.cjs`, `.jsx`) and TypeScript (`.ts`,
 
 ## Language servers
 
-| Files                           | Server                                   | Notes                                                                                                                                      |
-| ------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| JS, JSX, TS, TSX                | `vtsls`                                  | Default TypeScript server.                                                                                                                 |
-| JS, JSX, TS, TSX                | `typescript-language-server`             | Fallback: used only while `vtsls` is not installed.                                                                                        |
-| `.vue`                          | `vue-language-server` + `vtsls`          | Vue's hybrid mode: TypeScript inside `.vue` files comes from `vtsls` with `@vue/typescript-plugin`.                                        |
-| `.svelte`                       | `svelte-language-server`                 |                                                                                                                                            |
-| `.astro`                        | `astro-ls`                               | Needs Node.js and a TypeScript library.                                                                                                    |
-| TS and HTML in Angular projects | `angular-language-server` (`ngserver`)   | Only below `angular.json` or `node_modules/@angular/core`.                                                                                 |
-| All of the above                | `oxlint`                                 | Only below an `.oxlintrc.json`, `.oxlintrc.jsonc`, `oxlint.config.ts` or `oxlint.config.mts`.                                              |
-| All of the above                | `vscode-eslint-language-server` (ESLint) | Only below an ESLint configuration (`eslint.config.*`, `.eslintrc*` or `eslintConfig` in `package.json`); runs the project's own `eslint`. |
+| Files                           | Server                                       | Notes                                                                                                                                                      |
+| ------------------------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| JS, JSX, TS, TSX                | `vtsls`                                      | Default TypeScript server.                                                                                                                                 |
+| JS, JSX, TS, TSX                | `typescript-language-server`                 | Fallback: used only while `vtsls` is not installed.                                                                                                        |
+| `.vue`                          | `vue-language-server` + `vtsls`              | Vue's hybrid mode: TypeScript inside `.vue` files comes from `vtsls` with `@vue/typescript-plugin`.                                                        |
+| `.svelte`                       | `svelte-language-server`                     |                                                                                                                                                            |
+| `.astro`                        | `astro-ls`                                   | Needs Node.js and a TypeScript library.                                                                                                                    |
+| TS and HTML in Angular projects | `angular-language-server` (`ngserver`)       | Only below `angular.json` or `node_modules/@angular/core`.                                                                                                 |
+| All of the above                | `oxlint`                                     | Only below an `.oxlintrc.json`, `.oxlintrc.jsonc`, `oxlint.config.ts` or `oxlint.config.mts`.                                                              |
+| All of the above                | `vscode-eslint-language-server` (ESLint)     | Only below an ESLint configuration (`eslint.config.*`, `.eslintrc*` or `eslintConfig` in `package.json`); runs the project's own `eslint`.                 |
+| All of the above, HTML and CSS  | `tailwindcss-language-server` (Tailwind CSS) | Only below a `tailwind.config.*` or a `package.json` that depends on `tailwindcss`: class completion, hover with the generated CSS, and class diagnostics. |
 
 The TypeScript servers start for a workspace marked by `tsconfig.json`, `jsconfig.json` or `package.json`. Files outside any `tsconfig.json` / `jsconfig.json` are still registered with tsserver, so loose scripts get code insight too.
 
@@ -47,6 +48,7 @@ All servers, debuggers and formatters are listed in **Settings › Languages & F
 | `vtsls`, `typescript-language-server`                                                  | npm (`@vtsls/language-server`; `typescript-language-server` + `typescript@6`) |
 | `vue-language-server`, `svelte-language-server`, `astro-ls`, `angular-language-server` | npm                                                                           |
 | `oxlint`                                                                               | npm                                                                           |
+| `tailwindcss-language-server`                                                          | npm (`@tailwindcss/language-server`)                                          |
 | Prettier, oxfmt                                                                        | npm                                                                           |
 | JavaScript Debugger (vscode-js-debug)                                                  | GitHub release (`microsoft/vscode-js-debug`)                                  |
 
