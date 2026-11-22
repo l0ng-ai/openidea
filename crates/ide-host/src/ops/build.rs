@@ -906,6 +906,7 @@ pub async fn build_run(
     let detected = project.detected_roots.read().clone();
     let config_dir = host.config_dir.clone();
     let token = host.begin_project_request(window, request);
+    let launch_project = project.clone();
     let result = tokio::task::spawn_blocking(move || {
         // Fast path (#2476): an unchanged single-project Maven build skips
         // Maven entirely. Previous diagnostics stay: nothing changed, so they
@@ -1003,7 +1004,12 @@ pub async fn build_run(
         };
         let result = compile::run(&root, &plan, &token, &|e| {
             let _ = on_event.send(e);
-        })?;
+        });
+        if kind == BuildKind::Rebuild {
+            // The clean removed outputs that earlier launch snapshots still hold.
+            launch_project.java_launch_snapshots.lock().forget_reusable_snapshots();
+        }
+        let result = result?;
         if result.success && single && kind == BuildKind::Build {
             let model = with_profiles(load(&root, &cache, &settings), &cache);
             compile::record_menu_build(&cache, &root, &model, file.as_deref(), &token);
