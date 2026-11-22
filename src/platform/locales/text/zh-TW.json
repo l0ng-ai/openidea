@@ -7412,6 +7412,8 @@
   "Add Imports": "新增匯入",
   "Copy Path with Line Number": "複製帶行號的路徑",
   "Path with line number": "帶行號的路徑",
+  "Absolute Path with line number": "帶行號的絕對路徑",
+  "Copy Absolute Path with Line Number": "複製帶行號的絕對路徑",
   "1 line": "1 行",
   "Add Imports on Paste": "貼上時新增匯入",
   "(whitespace)": "（空白）",

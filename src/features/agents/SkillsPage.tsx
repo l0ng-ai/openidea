@@ -322,6 +322,12 @@ function SkillCard({
                   <T>CLI-discovered</T>
                 </span>
               )}
+              {(skill.alsoIn?.length ?? 0) > 0 && (
+                <span className={page.tag} title={skill.alsoIn?.map((s) => SKILL_SOURCE_GROUPS[s].paths).join(", ")}>
+                  <Icon name="symlink-mark" size={12} />
+                  {skill.alsoIn?.map((s) => tx(SKILL_SOURCE_GROUPS[s].label)).join(", ")}
+                </span>
+              )}
               {!skill.valid && (
                 <span className={clsx(page.tag, page.tagWarning)}>
                   <T>Invalid SKILL.md</T>
@@ -374,6 +380,18 @@ function SkillCard({
               <T>Path</T>
             </span>
             <span className={page.metaValue}>{skill.path}</span>
+            {(skill.alsoIn?.length ?? 0) > 0 && (
+              <>
+                <span className={page.metaLabel}>
+                  <T>Also linked in</T>
+                </span>
+                <span className={page.metaValue}>
+                  {skill.alsoIn
+                    ?.map((s) => `${tx(SKILL_SOURCE_GROUPS[s].label)} (${SKILL_SOURCE_GROUPS[s].paths})`)
+                    .join(" · ")}
+                </span>
+              </>
+            )}
             <span className={page.metaLabel}>
               <T>Validation</T>
             </span>
