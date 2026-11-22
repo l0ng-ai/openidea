@@ -244,12 +244,15 @@ pub(crate) fn is_test_script(name: &str) -> bool {
 }
 
 /// The test runner a `package.json` script starts, when its output and test selection differ
-/// from Jest / Vitest's: `playwright test`, or `node --test` (`tsx --test`) with Node's own
+/// from Jest / Vitest's: `playwright test`, `mocha`, or `node --test` (`tsx --test`) with Node's own
 /// reporters (the IDE adds its reporter next to them, which a reporter chosen here would clash with).
 fn script_test_runner(script: &str) -> Option<&'static str> {
     let tokens: Vec<&str> = script.split(|c: char| c.is_whitespace() || matches!(c, '&' | '|' | ';')).collect();
     if tokens.windows(2).any(|w| w[0] == "playwright" && w[1] == "test") {
         return Some("playwright");
+    }
+    if tokens.iter().any(|t| matches!(t.rsplit('/').next(), Some("mocha" | "_mocha"))) {
+        return Some("mocha");
     }
     let node = tokens.iter().position(|t| matches!(*t, "node" | "tsx"))?;
     // Node's own options: up to the script (`node server.js --test` passes `--test` to the program).
