@@ -17,6 +17,7 @@ import {
   createTableSql,
   draftOf,
   dropDatabaseSql,
+  renameDatabaseSql,
   dropSql,
   ident,
   reference,
@@ -33,6 +34,7 @@ import {
   connectedTargets,
   createDatabase,
   dropDatabase,
+  renameDatabase,
   loadDetails,
   openSourceDialog,
   readableDdl,
@@ -103,20 +105,34 @@ function useRunner() {
 
 // ---- Rename ------------------------------------------------------------------
 
-function RenameDialog({ id, object }: { id: string; object: DbObjectRef | null }) {
+/** Renames a data source, a schema object, or (with `database`) a database of the server. */
+function RenameDialog({ id, object, database }: { id: string; object: DbObjectRef | null; database?: string }) {
   const source = sourceById(id);
-  const initial = object ? objectName(object) : (source?.name ?? "");
+  const initial = database ?? (object ? objectName(object) : (source?.name ?? ""));
   const [name, setName] = useState(initial);
   const { busy, runAndClose } = useRunner();
+  const [renaming, setRenaming] = useState(false);
   const driver = driverOf(id);
   const changed = !!name.trim() && name.trim() !== initial;
-  const sql = object && changed ? renameSql(driver, object, name.trim()) : "";
-  const submit = () => {
+  const sql = !changed
+    ? ""
+    : database !== undefined
+      ? renameDatabaseSql(driver, database, name.trim())
+      : object
+        ? renameSql(driver, object, name.trim())
+        : "";
+  const submit = async () => {
     if (!changed) return closeDialog();
+    if (database !== undefined) {
+      setRenaming(true);
+      if (await renameDatabase(id, database, sql)) closeDialog();
+      else setRenaming(false);
+      return;
+    }
     if (!object) return void renameSource(id, name).then(closeDialog);
     void runAndClose(id, [sql]);
   };
-  const what = object ? KIND_LABEL[object.kind] : "data source";
+  const what = database !== undefined ? "database" : object ? KIND_LABEL[object.kind] : "data source";
   return (
     <Dialog
       open
@@ -125,7 +141,12 @@ function RenameDialog({ id, object }: { id: string; object: DbObjectRef | null }
       width={480}
       buttons={[
         { label: "Cancel", role: "cancel" },
-        { label: "Refactor", role: "default", disabled: busy || !name.trim(), onClick: () => void submit() },
+        {
+          label: "Refactor",
+          role: "default",
+          disabled: busy || renaming || !name.trim(),
+          onClick: () => void submit(),
+        },
       ]}
     >
       <div className={styles.dialogBody}>
@@ -139,7 +160,7 @@ function RenameDialog({ id, object }: { id: string; object: DbObjectRef | null }
           onFocus={(e) => e.currentTarget.select()}
           onChange={(e) => setName(e.target.value)}
         />
-        {object && <SqlPreview sql={sql || `-- ${what} keeps its name`} />}
+        {(object || database !== undefined) && <SqlPreview sql={sql || `-- ${what} keeps its name`} />}
       </div>
     </Dialog>
   );
@@ -895,6 +916,10 @@ export function ObjectDialogs() {
   switch (dialog.kind) {
     case "rename":
       return <RenameDialog key={`${dialog.id}`} id={dialog.id} object={dialog.object} />;
+    case "renameDatabase":
+      return (
+        <RenameDialog key={`${dialog.id}:${dialog.database}`} id={dialog.id} object={null} database={dialog.database} />
+      );
     case "drop":
       return <DropDialog id={dialog.id} object={dialog.object} />;
     case "truncate":

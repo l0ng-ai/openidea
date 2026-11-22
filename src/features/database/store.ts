@@ -135,6 +135,7 @@ export type DialogState =
   | { kind: "sourceUrl" }
   /** Rename a data source (`object` null) or a schema object of target `id`. */
   | { kind: "rename"; id: string; object: DbObjectRef | null }
+  | { kind: "renameDatabase"; id: string; database: string }
   /** Confirm Drop / Truncate, with a preview of the statement. */
   | { kind: "drop"; id: string; object: DbObjectRef }
   | { kind: "truncate"; id: string; schema: string; table: string }
@@ -1345,6 +1346,14 @@ export async function dropDatabase(id: string, database: string, sql: string): P
     notifications().notify({ level: "error", title: tx`Cannot drop database ${database}`, body: message(e) });
     return false;
   }
+  void refresh(id);
+  return true;
+}
+
+/** Renames `database` of data source `id` with `sql` after closing the sessions on it. */
+export async function renameDatabase(id: string, database: string, sql: string): Promise<boolean> {
+  await disconnect(`${id}:${database}`);
+  if (!(await runSql(id, [sql]))) return false;
   void refresh(id);
   return true;
 }
