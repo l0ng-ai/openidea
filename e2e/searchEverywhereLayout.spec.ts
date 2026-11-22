@@ -1,6 +1,60 @@
 import { doubleShift, expect, stubDesktop, test } from "./fixtures";
 import type { Page } from "@playwright/test";
 
+test("action names stay readable beside shortcuts and categories", async ({ workbench: page }) => {
+  const titles = ["Reconcile warehouse totals", "Reconcile settlement exports"];
+  const shortcuts = await page.evaluate(async (titles) => {
+    const actionsModule = "/src/platform/actions.ts";
+    const keymapModule = "/src/platform/keymap.ts";
+    const { registerActions, executeAction } = await import(/* @vite-ignore */ actionsModule);
+    const platformModule = "/src/platform/platformInfo.ts";
+    const { registerExtensionBindings, shortcutLabel } = await import(/* @vite-ignore */ keymapModule);
+    const { usePlatform } = await import(/* @vite-ignore */ platformModule);
+    usePlatform.setState({ os: "windows" });
+    const ids = ["review.reconcileWarehouse", "review.reconcileSettlement"];
+    const bindings = ["Ctrl+K Ctrl+R", "Ctrl+Alt+Shift+PageDown Ctrl+Alt+Shift+PageUp"];
+    registerActions(
+      titles.map((title, index) => ({
+        id: ids[index]!,
+        title,
+        category: "Warehouse reconciliation and settlement reports",
+        icon: "check",
+        run: () => document.body.setAttribute("data-review-action", title),
+      })),
+    );
+    ids.forEach((id, index) => registerExtensionBindings(id, [bindings[index]!]));
+    await executeAction("navigate.findAction");
+    return ids.map((id) => shortcutLabel(id) as string);
+  }, titles);
+  const dialog = page.locator('[role="dialog"]:has(#se-query)');
+  await dialog.getByRole("combobox", { name: "Search query" }).fill("Reconcile");
+
+  for (const width of [400, 1120]) {
+    await page.setViewportSize({ width, height: 630 });
+    for (const [index, title] of titles.entries()) {
+      const row = dialog.getByRole("option").filter({ hasText: title });
+      const keys = row.getByText(shortcuts[index]!, { exact: true });
+      await expect(keys).toBeAttached();
+      const geometry = await keys.evaluate((el) => {
+        const name = el.previousElementSibling!.getBoundingClientRect();
+        const main = el.parentElement!.getBoundingClientRect();
+        const key = el.getBoundingClientRect();
+        return { name: name.width, inside: key.left >= name.right && key.right <= main.right + 1 };
+      });
+      expect(geometry.name).toBeGreaterThanOrEqual(80);
+      expect(geometry.inside).toBe(true);
+      await expect(keys).toHaveCSS("font-size", "12px");
+      await expect(keys).toHaveCSS("font-weight", "600");
+      await expect(keys).toHaveAttribute("title", shortcuts[index]!);
+      if (index === 0) expect(await keys.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+    }
+  }
+
+  await dialog.getByRole("option").filter({ hasText: titles[1]! }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.locator("body")).toHaveAttribute("data-review-action", titles[1]!);
+});
+
 async function searchFiles(page: Page) {
   await stubDesktop(page);
   await page.evaluate(() => {
