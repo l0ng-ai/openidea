@@ -58,3 +58,14 @@ url = "https://swc.rs/schema.json"
 [[language-servers.settings.json.schemas]]
 fileMatch = ["composer.json"]
 url = "https://getcomposer.org/schema.json"
+
+# Biome: lint diagnostics, quick fixes and fix-all below a Biome configuration or installation,
+# from the project's own biome. Formatting is Reformat Code's (Settings › Biome).
+[[language-servers]]
+name = "biome"
+command = "biome"
+args = ["lsp-proxy"]
+root-markers = ["biome.json", "biome.jsonc", "node_modules/@biomejs/biome"]
+require-root-marker = true
+features = ["code-action", "diagnostics"]
+install-hint = "npm i -D @biomejs/biome"

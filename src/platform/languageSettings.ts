@@ -26,7 +26,7 @@ const DEFAULT_GO_BUILD_TAGS: GoBuildTags = {
   experiments: "",
 };
 
-/** An external formatter (Prettier, oxfmt, Ruff) and the languages it formats. */
+/** An external formatter (Prettier, oxfmt, Biome, Ruff) and the languages it formats. */
 interface ExternalFormatterValid {
   path: string;
   configurationDirectory: string;
@@ -56,6 +56,12 @@ const DEFAULT_FORMATTER: ExternalFormatterValid = {
   ],
   prefer: false,
   runOnSave: false,
+};
+
+/** Biome formats these of Prettier's languages (`BIOME_LANGUAGES` in `ide-core`). */
+const DEFAULT_BIOME_FORMATTER: ExternalFormatterValid = {
+  ...DEFAULT_FORMATTER,
+  languages: ["css", "graphql", "javascript", "javascriptreact", "typescript", "typescriptreact", "json", "jsonc"],
 };
 
 const DEFAULT_RUFF_FORMATTER: ExternalFormatterValid = {
@@ -201,6 +207,7 @@ export interface LanguagesValid {
   typescript: { version: string };
   prettier: ExternalFormatterValid;
   oxfmt: ExternalFormatterValid;
+  biome: ExternalFormatterValid;
   ruff: ExternalFormatterValid;
   java: {
     jdk: string;
@@ -312,6 +319,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
   typescript: { version: "bundled" },
   prettier: DEFAULT_FORMATTER,
   oxfmt: DEFAULT_FORMATTER,
+  biome: DEFAULT_BIOME_FORMATTER,
   ruff: DEFAULT_RUFF_FORMATTER,
   java: {
     jdk: "",
@@ -486,6 +494,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
     typescript: { version: text(ts.version, d.typescript.version) || d.typescript.version },
     prettier: validateFormatter(l.prettier),
     oxfmt: validateFormatter(l.oxfmt),
+    biome: validateFormatter(l.biome, DEFAULT_BIOME_FORMATTER),
     ruff: validateFormatter(l.ruff, DEFAULT_RUFF_FORMATTER),
     java: {
       jdk: text(java.jdk, d.java.jdk),

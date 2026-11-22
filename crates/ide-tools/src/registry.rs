@@ -201,6 +201,18 @@ pub static TOOLS: &[ToolSpec] = &[
         needs: NODE,
         homepage: "https://oxc.rs/docs/guide/usage/linter",
     },
+    // Linter and formatter: `biome lsp-proxy` lints, and Reformat Code runs `biome format`.
+    ToolSpec {
+        name: "biome",
+        display: "Biome",
+        kind: LanguageServer,
+        commands: &["biome"],
+        method: Method::Npm { packages: &["@biomejs/biome"] },
+        fallback: None,
+        version: ver("biome"),
+        needs: NODE,
+        homepage: "https://biomejs.dev",
+    },
     ToolSpec {
         name: "eslint",
         display: "ESLint Language Server",
@@ -1286,7 +1298,7 @@ mod tests {
                 known.insert((d.adapter.clone(), d.command.clone()));
             }
         }
-        // The host selects the formatter of each file (Prettier or oxfmt) and runs its own CLIs.
+        // The host selects the formatter of each file (Prettier, oxfmt or Biome) and runs its own CLIs.
         for t in TOOLS.iter().filter(|t| !matches!(t.kind, Plugin | Formatter | Cli)) {
             assert!(
                 known.contains(&(t.name.to_string(), t.commands[0].to_string())),

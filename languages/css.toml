@@ -13,3 +13,14 @@ command = "vscode-css-language-server"
 args = ["--stdio"]
 initialization-options = { provideFormatter = true, css = {}, scss = {}, less = {} }
 install-hint = "npm i -g vscode-langservers-extracted"
+
+# Biome: lint diagnostics, quick fixes and fix-all below a Biome configuration or installation,
+# from the project's own biome. Formatting is Reformat Code's (Settings › Biome).
+[[language-servers]]
+name = "biome"
+command = "biome"
+args = ["lsp-proxy"]
+root-markers = ["biome.json", "biome.jsonc", "node_modules/@biomejs/biome"]
+require-root-marker = true
+features = ["code-action", "diagnostics"]
+install-hint = "npm i -D @biomejs/biome"
