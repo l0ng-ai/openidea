@@ -55,7 +55,10 @@ export const commands = {
 	 */
 	agentCustomSave: (input: CustomAgentInput) => typedError<null, IdeError>(__TAURI_INVOKE("agent_custom_save", { input })),
 	agentDelete: (task: string, removeWorktree: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("agent_delete", { task, removeWorktree })),
-	/**  Entries of `task`'s conversation, or of its subagent `subagent`'s. */
+	/**
+	 *  Entries of `task`'s conversation, or of its subagent `subagent`'s. Async so a long
+	 *  conversation is cloned and serialised off the main thread.
+	 */
 	agentEntries: (task: string, subagent: string | null) => typedError<AgentEntry[], IdeError>(__TAURI_INVOKE("agent_entries", { task, subagent })),
 	/**  Sessions of the project on this machine that no task holds yet, newest first. */
 	agentExternalSessions: () => typedError<ExternalSession[], IdeError>(__TAURI_INVOKE("agent_external_sessions")),
@@ -95,6 +98,10 @@ export const commands = {
 	agentProbe: (provider: string, refresh: boolean) => typedError<AgentProbe, IdeError>(__TAURI_INVOKE("agent_probe", { provider, refresh })),
 	/**  Sends a message; while the agent works it is queued, or with `now` it interrupts the turn. */
 	agentPrompt: (task: string, prompt: AgentPrompt, now: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("agent_prompt", { task, prompt, now })),
+	/**
+	 *  Reads the ACP registry's install state for every provider from disk, so it runs on the
+	 *  blocking pool.
+	 */
 	agentProviders: () => typedError<AgentProvider[], IdeError>(__TAURI_INVOKE("agent_providers")),
 	/**  Refreshes the model catalog; force bypasses freshness, not the cooldown. */
 	agentRefreshModels: (provider: string, force: boolean, model: string | null) => typedError<AgentModelCatalog, IdeError>(__TAURI_INVOKE("agent_refresh_models", { provider, force, model })),
@@ -1256,7 +1263,10 @@ export const commands = {
 	pluginSetEnabled: (id: string, enabled: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_set_enabled", { id, enabled })),
 	/**  Sets the marketplace index URL (an `https://…/index.json` or a local path; `None` for the default). */
 	pluginSetMarketUrl: (url: string | null) => __TAURI_INVOKE<void>("plugin_set_market_url", { url }),
-	/**  Stores a plugin secret (`None` or empty deletes it). The value never goes back to the UI or the plugin. */
+	/**
+	 *  Stores a plugin secret (`None` or empty deletes it). The value never goes back to the UI or the plugin.
+	 *  The keychain call takes up to hundreds of milliseconds, so it runs on the blocking pool.
+	 */
 	pluginSetSecret: (pluginId: string, name: string, value: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_set_secret", { pluginId, name, value })),
 	/**  Selects a plugin theme; both `None` restores the built-in theme. */
 	pluginSetTheme: (pluginId: string | null, themeId: string | null) => typedError<{

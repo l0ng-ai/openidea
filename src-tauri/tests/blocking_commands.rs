@@ -4,8 +4,8 @@
 use ide_host::catalogue::Mode;
 
 /// Commands that read or write project files, Local History or `.env` files, diff two
-/// arbitrary texts, or scan the project index in parallel: they must do that work off the
-/// main thread.
+/// arbitrary texts, scan the project index or tree, read agent registries and transcripts, or
+/// call the OS keychain: they must do that work off the main thread.
 const OFF_MAIN_THREAD: &[&str] = &[
     "history_list",
     "history_content",
@@ -24,6 +24,11 @@ const OFF_MAIN_THREAD: &[&str] = &[
     "run_import_sources",
     "run_import_configs",
     "run_env_files",
+    "agent_entries",
+    "agent_providers",
+    "plugin_secrets",
+    "plugin_set_secret",
+    "spring_route_sources",
 ];
 
 #[test]
