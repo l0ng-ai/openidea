@@ -3602,5 +3602,8 @@
   "Mail:": "Mail:",
   "A folder with this name already exists and is not empty": "A folder with this name already exists and is not empty",
   "Show Only Affected Changes": "Show Only Affected Changes",
-  "Layout": "Layout"
+  "Layout": "Layout",
+  "Show Repository at Revision": "Show Repository at Revision",
+  "Toggle Commit Bookmark": "Toggle Commit Bookmark",
+  "Toggle Commit Bookmark with Mnemonic": "Toggle Commit Bookmark with Mnemonic"
 }

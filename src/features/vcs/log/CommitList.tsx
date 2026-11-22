@@ -1,5 +1,6 @@
 import type { Commit } from "@/bindings";
 import { setContext } from "@/platform/context";
+import { registerKeyClaim } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { Scrollbar, Spinner, T, hideNativeScrollbar } from "@/ui";
@@ -226,6 +227,19 @@ export function CommitList({ fileHistory = false }: { fileHistory?: boolean }) {
   const selectedSet = useMemo(() => new Set(selection), [selection]);
   const revealTick = useGitLog((s) => s.revealTick);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // While a speed search is active, F3 moves between its matches instead of toggling a bookmark.
+  const speedSearchRef = useRef(speedSearch);
+  speedSearchRef.current = speedSearch;
+  useEffect(
+    () =>
+      registerKeyClaim(
+        (e, stroke) =>
+          !!speedSearchRef.current &&
+          (stroke === "F3" || stroke === "Shift+F3") &&
+          !!scrollRef.current?.contains(e.target as Node | null),
+      ),
+    [],
+  );
   // Commit rows shrink in compact mode; the column header (the scroll margin) keeps ROW.
   const row = useRowHeight(ROW);
   const selectedIndex = useMemo(
@@ -540,9 +554,14 @@ export function CommitList({ fileHistory = false }: { fileHistory?: boolean }) {
         aria-multiselectable
         aria-activedescendant={selectedIndex >= 0 ? `commit-${scope ?? "log"}-${selectedIndex}` : undefined}
         tabIndex={0}
-        onFocusCapture={() => setContext("vcsLogRevisionFocus", !!active && !!fileHistoryTarget)}
+        onFocusCapture={() => {
+          setContext("vcsLogRevisionFocus", !!active && !!fileHistoryTarget);
+          setContext("vcsLogCommitsFocus", !!active);
+        }}
         onBlurCapture={(e) => {
-          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setContext("vcsLogRevisionFocus", false);
+          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+          setContext("vcsLogRevisionFocus", false);
+          setContext("vcsLogCommitsFocus", false);
         }}
         onScroll={(e) => {
           if (!e.currentTarget.hasAttribute("data-hover-paused")) e.currentTarget.dataset.hoverPaused = "";

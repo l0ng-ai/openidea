@@ -329,6 +329,12 @@ export const intellijMacos: Record<string, string[]> = {
   "vcs.changelist.edit": ["F2", "Shift+F6"],
   "vcs.log.copyRevision": ["Meta+Alt+Shift+C"],
   "vcs.log.goToRef": ["Meta+F"],
+  "vcs.log.editMessage": ["F2", "Shift+F6"],
+  "vcs.log.newBranch": ["Meta+Alt+N"],
+  "vcs.log.goToChild": ["Left"],
+  "vcs.log.goToParent": ["Right"],
+  "vcs.log.toggleBookmark": ["F3"],
+  "vcs.log.toggleBookmarkWithMnemonic": ["Alt+F3"],
   // View › Appearance › Zoom IDE
   "view.zoomIn": ["Ctrl+Alt+="],
   "view.zoomOut": ["Ctrl+Alt+-"],

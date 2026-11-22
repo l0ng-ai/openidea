@@ -59,19 +59,18 @@ describe("operations in progress", () => {
 });
 
 describe("Git Log commit actions", () => {
-  it("groups single-commit actions by purpose, all bound to the commit", () => {
+  it("lists single-commit actions in the IDE's Git Log menu order, all bound to the commit", () => {
     const c = commit("Fix it");
     const items = commitMenu(c);
     expect(menuOrder(items)).toEqual([
       "vcs.log.copyRevision",
-      "Copy Commit Message",
       "vcs.log.createPatch",
+      "vcs.log.cherryPick",
       "-",
       "vcs.log.checkoutRevision",
-      "Browse Repository at Revision",
+      "Show Repository at Revision",
       "vcs.log.compareWithLocal",
       "-",
-      "vcs.log.cherryPick",
       "vcs.log.resetToHere",
       "vcs.log.revert",
       "vcs.log.undoCommit",
@@ -90,28 +89,35 @@ describe("Git Log commit actions", () => {
       "vcs.log.goToChild",
       "vcs.log.goToParent",
       "-",
-      "Bookmark Commit",
-      "Assign Mnemonic",
-      "-",
       "vcs.log.openInBrowser",
     ]);
     expect(items.every((i) => !("arg" in i) || i.arg === c)).toBe(true);
+    // Only these rows carry an icon; the others are explicitly drawn without one.
+    const icons = Object.fromEntries(
+      items.flatMap((i) => (i.kind === "action" && i.icon !== undefined ? [[i.action, i.icon]] : [])),
+    );
+    expect(icons).toMatchObject({
+      "vcs.log.createPatch": "patch",
+      "vcs.log.cherryPick": "cherry-pick",
+      "vcs.log.resetToHere": "revert",
+      "vcs.log.revert": null,
+      "vcs.log.compareWithLocal": null,
+      "vcs.log.goToChild": null,
+    });
+    expect(icons).not.toHaveProperty("vcs.log.copyRevision");
+    expect(icons).not.toHaveProperty("vcs.log.openInBrowser");
   });
 
-  it("groups read-only commit actions into copy, revision, navigation and bookmarks", () => {
+  it("keeps read-only commits to copying, the revision and navigation", () => {
     const c = { ...commit("Read-only"), readOnly: true };
     expect(menuOrder(commitMenu(c, [c], "/repo/file.ts"))).toEqual([
       "vcs.log.copyRevision",
-      "Copy Commit Message",
       "-",
-      "Browse Repository at Revision",
+      "Show Repository at Revision",
       "vcs.log.showFileAtRevision",
       "-",
       "vcs.log.goToChild",
       "vcs.log.goToParent",
-      "-",
-      "Bookmark Commit",
-      "Assign Mnemonic",
     ]);
   });
 
@@ -166,32 +172,48 @@ describe("Git Log commit actions", () => {
     }
   });
 
-  it("offers the multi-commit actions for a multiple selection", () => {
+  it("hides one-commit edits and disables the other single-commit actions for a multiple selection", () => {
     const a = commit("A", "a".repeat(40));
     const b = commit("B", "b".repeat(40));
     const c = commit("C", "c".repeat(40));
     const order = (selection: Commit[]) => menuOrder(commitMenu(a, selection));
-    expect(order([a, b])).toEqual([
+    const multi = (compare: string[]) => [
       "vcs.log.copyRevision",
       "vcs.log.createPatch",
+      "vcs.log.cherryPick",
       "-",
+      "Show Repository at Revision",
+      ...compare,
+      "vcs.log.compareWithLocal",
+      "-",
+      "vcs.log.resetToHere",
+      "vcs.log.revert",
+      "-",
+      "vcs.log.dropCommit",
+      "vcs.log.squashCommits",
+      "vcs.log.pushUpToHere",
+      "-",
+      "vcs.log.newBranch",
+      "vcs.log.newTag",
+      "-",
+      "vcs.log.goToChild",
+      "vcs.log.goToParent",
+      "-",
+      "vcs.log.openInBrowser",
+    ];
+    expect(order([a, b])).toEqual(multi(["vcs.log.compareVersions"]));
+    expect(order([a, b, c])).toEqual(multi([]));
+    const enabled = commitMenu(a, [a, b])
+      .filter((i) => i.kind === "action" && !i.disabled)
+      .map((i) => (i.kind === "action" ? i.action : ""));
+    expect(enabled).toEqual([
+      "vcs.log.copyRevision",
+      "vcs.log.createPatch",
+      "vcs.log.cherryPick",
       "vcs.log.compareVersions",
-      "-",
-      "vcs.log.cherryPick",
       "vcs.log.revert",
-      "-",
-      "vcs.log.squashCommits",
       "vcs.log.dropCommit",
-    ]);
-    expect(order([a, b, c])).toEqual([
-      "vcs.log.copyRevision",
-      "vcs.log.createPatch",
-      "-",
-      "vcs.log.cherryPick",
-      "vcs.log.revert",
-      "-",
       "vcs.log.squashCommits",
-      "vcs.log.dropCommit",
     ]);
   });
 

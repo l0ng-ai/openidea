@@ -539,6 +539,8 @@ const ICONS = {
   "vcs-outgoing": "vcs/changesPush@12x12",
   diff: "vcs/diff",
   revert: "vcs/revert",
+  patch: "vcs/patch",
+  "cherry-pick": "vcs/cherryPick",
   // The merge tool's own controls (IntelliJ's AllIcons.Diff)
   "diff-side-by-side": "diff/sideBySide",
   "diff-unified": "diff/unified",

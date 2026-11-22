@@ -799,6 +799,8 @@ test("Commit and Push uses the checked staging repositories", async ({ workbench
         committed.add(String(repo));
         return "2222222";
       };
+      // The commit checks read the staged and HEAD versions.
+      h.vcs_file_at = () => "changes\n";
       h.vcs_remotes = () => [];
       h.vcs_branches = () => [];
       h.vcs_log = () => [];

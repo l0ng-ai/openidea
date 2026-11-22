@@ -157,7 +157,7 @@ async function publishToProtectedBranch(page: Page, commit: string) {
 for (const [menu, title] of [
   [/^Edit Commit Message/, "Cannot edit commit message"],
   [/^Interactively Rebase from Here/, "Cannot rebase"],
-  [/^Drop Commit$/, "Cannot drop commit"],
+  [/^Drop Commits$/, "Cannot drop commit"],
 ] as const) {
   test(`${title} when the oldest affected commit is on a protected remote without an upstream`, async ({
     workbench: page,

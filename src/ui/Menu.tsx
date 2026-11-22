@@ -33,7 +33,8 @@ export type MenuItem =
       label?: string;
       /** A check mark in this state instead of the action's own `toggled` (one row per argument). */
       checked?: boolean;
-      icon?: IconName | (string & {});
+      /** Overrides the action's icon; `null` shows the row without one. */
+      icon?: IconName | (string & {}) | null;
       disabled?: boolean;
     }
   | {
@@ -99,7 +100,7 @@ export function resolveMenuItems(items: MenuItem[]): Resolved[] {
         kind: "item",
         key: typeof item.arg === "string" ? `${item.action}|${item.arg}` : item.action,
         label: tx(item.label) ?? a.title,
-        icon: item.icon ?? a.icon,
+        icon: item.icon === null ? undefined : (item.icon ?? a.icon),
         shortcut: shortcutLabel(item.action),
         disabled: !!item.disabled || !isActionEnabled(a, undefined, item.arg),
         checked: item.checked ?? actionToggled(a),

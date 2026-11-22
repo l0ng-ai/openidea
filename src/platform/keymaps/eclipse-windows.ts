@@ -146,6 +146,8 @@ export const eclipseWindows: Record<string, string[]> = {
   "file.reloadFromDisk": [],
   "project.reloadFromDisk": [],
   "navigate.toggleBookmark": ["Shift+Ctrl+F11"],
+  "vcs.log.toggleBookmark": ["Shift+Ctrl+F11"],
+  "vcs.log.toggleBookmarkWithMnemonic": ["Shift+Alt+Ctrl+F11"],
   "navigate.toggleBookmarkWithMnemonic": ["Shift+Alt+Ctrl+F11"],
   "debug.toggleBreakpoint": ["Shift+Ctrl+B", "Ctrl+F8"],
   "navigate.typeHierarchy": ["F4"],

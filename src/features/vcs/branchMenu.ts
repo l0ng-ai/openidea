@@ -399,7 +399,7 @@ export function inRepo(root: string, items: MenuItem[]): MenuItem[] {
     if (item.kind === "action")
       return {
         label: item.label ?? item.action,
-        icon: item.icon,
+        icon: item.icon ?? undefined,
         disabled: item.disabled,
         run: runInRepo(() => executeAction(item.action, item.arg)),
       };

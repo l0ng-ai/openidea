@@ -1,5 +1,6 @@
 import { writeClipboardText } from "@/platform/clipboard";
-import { parseCommitBookmark } from "./logBookmarks";
+import { useBookmarkPopups } from "@/features/search/bookmarks/store";
+import { commitBookmarkPath, parseCommitBookmark } from "./logBookmarks";
 import { commitKey, commitRepo } from "./multiRoot";
 /**
  * Actions for operations in progress, Git Log commits, change lists, the shelf
@@ -28,7 +29,15 @@ import { selectedChangeNodes, stagingPatchEntries } from "./changes";
 import { stagingAreaOn } from "./staging";
 import { useCommit } from "./commitStore";
 import { openCommit } from "./commitUi";
-import { goToChild, goToParent, goToRef, openLogTab, selectedCommits, useGitLog } from "./logStore";
+import {
+  goToChild,
+  goToParent,
+  goToRef,
+  openLogTab,
+  selectedCommits,
+  toggleCommitBookmark,
+  useGitLog,
+} from "./logStore";
 import { chooseRevision } from "./RevisionChooser";
 import {
   cherryPick,
@@ -78,6 +87,8 @@ import type { PatchDiffRequest } from "./patchDiff";
 const VCS = "vcsAvailable";
 const IN_GIT_LOG = "(vcsAvailable || projectOpen) && (activeToolWindow == git || vcsLogFocus)";
 const IN_COMMIT = "vcsAvailable && activeToolWindow == commit";
+/** Shortcuts that act on the selected commit: only while the commit list has focus. */
+const IN_COMMITS = "vcsLogCommitsFocus";
 
 /** The commit an action refers to: its argument (commit or id), else the Git Log selection. */
 export function commitArg(arg: unknown): Commit | null {
@@ -491,6 +502,7 @@ export function registerHistoryActions(): () => void {
       category: "Git Log",
       when: VCS,
       keywords: ["reword"],
+      keyWhen: IN_COMMITS,
       run: withCommit(editCommitMessage),
     },
     {
@@ -544,6 +556,7 @@ export function registerHistoryActions(): () => void {
       category: "Git Log",
       icon: "arrow-left",
       when: "vcsAvailable || projectOpen || vcsLogFocus",
+      keyWhen: IN_COMMITS,
       run: withCommit(goToChild, true),
     },
     {
@@ -552,6 +565,7 @@ export function registerHistoryActions(): () => void {
       category: "Git Log",
       icon: "arrow-right",
       when: "vcsAvailable || projectOpen || vcsLogFocus",
+      keyWhen: IN_COMMITS,
       run: withCommit(goToParent, true),
     },
     {
@@ -576,7 +590,32 @@ export function registerHistoryActions(): () => void {
       category: "Git Log",
       icon: "branch",
       when: VCS,
+      keyWhen: IN_COMMITS,
       run: withCommit((c) => newBranch(c.id, commitRepo(c) ?? currentRepo())),
+    },
+    {
+      id: "vcs.log.toggleBookmark",
+      title: "Toggle Commit Bookmark",
+      category: "Git Log",
+      icon: "bookmark",
+      when: "vcsAvailable || projectOpen || vcsLogFocus",
+      keyWhen: IN_COMMITS,
+      hidden: true,
+      keymap: true,
+      run: withCommit(toggleCommitBookmark, true),
+    },
+    {
+      id: "vcs.log.toggleBookmarkWithMnemonic",
+      title: "Toggle Commit Bookmark with Mnemonic",
+      category: "Git Log",
+      when: "vcsAvailable || projectOpen || vcsLogFocus",
+      keyWhen: IN_COMMITS,
+      hidden: true,
+      keymap: true,
+      run: withCommit(
+        (c) => useBookmarkPopups.setState({ chooser: { path: commitBookmarkPath(c), line: 0, text: c.summary } }),
+        true,
+      ),
     },
     {
       id: "vcs.log.newTag",

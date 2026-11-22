@@ -1504,7 +1504,6 @@
   "Copy": "复制",
   "Copy / Paste Special": "复制/选择性粘贴",
   "Copy All": "全部复制",
-  "Copy Commit Message": "复制提交消息",
   "Copy Configuration": "复制配置",
   "Copy Container ID": "复制容器 ID",
   "Copy Coordinates": "复制坐标",
@@ -1522,7 +1521,6 @@
   "Copy Problem Description": "复制问题描述",
   "Copy Reference": "复制引用",
   "Copy Revision Number": "复制修订号",
-  "Copy Revision Numbers": "复制修订号",
   "Copy Rows as CSV": "将行复制为 CSV",
   "Copy Rows as TSV": "将行复制为 TSV",
   "Copy as": "复制为",
@@ -3044,7 +3042,6 @@
   "Revert": "还原",
   "Revert Change": "还原更改",
   "Revert Commit": "还原提交",
-  "Revert Commits": "还原提交",
   "Reverts the last file move or rename and its reference updates": "还原上一次文件移动或重命名及其引用更新",
   "Review comment": "审查评论",
   "Reviewers": "审查者",
@@ -7549,9 +7546,6 @@
   "All commits": "所有提交",
   "Incoming Commits First": "优先显示传入提交",
   "Linearize Merges": "线性显示合并",
-  "Remove Commit Bookmark": "移除提交书签",
-  "Bookmark Commit": "为提交添加书签",
-  "Browse Repository at Revision": "浏览此修订版本的仓库",
   "Signature": "签名",
   "Commit is outside the loaded history": "提交位于已加载历史记录之外",
   "Move Left": "向左移动",
@@ -9867,5 +9861,8 @@
   "Homepage:": "主页：",
   "Mail:": "邮件：",
   "Show Only Affected Changes": "仅显示受影响的变更",
-  "Layout": "布局"
+  "Layout": "布局",
+  "Show Repository at Revision": "显示此修订版本的仓库",
+  "Toggle Commit Bookmark": "切换提交书签",
+  "Toggle Commit Bookmark with Mnemonic": "使用助记符切换提交书签"
 }

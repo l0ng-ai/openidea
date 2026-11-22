@@ -165,7 +165,7 @@ test("Revert stops after the first failed repository and reports the work alread
   workbench: page,
 }) => {
   const menu = await openMixedSelection(page, "failure");
-  await menu.getByRole("menuitem", { name: "Revert Commits", exact: true }).click();
+  await menu.getByRole("menuitem", { name: "Revert Commit", exact: true }).click();
   const failure = page.getByRole("alert").filter({ hasText: "Revert failed" });
   await expect(failure).toContainText("Stopped in worker.");
   await expect(failure).toContainText("Completed in acme-api.");
