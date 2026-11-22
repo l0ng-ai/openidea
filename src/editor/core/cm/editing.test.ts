@@ -309,6 +309,30 @@ describe("Python indentation", async () => {
   });
 });
 
+describe("C++ access specifiers", async () => {
+  const cpp = (await loadSupport(languages.find((l) => l.name === "C++")!))!;
+
+  it("lines up with the class as its colon is typed, and the members below stay indented", () => {
+    const v = make("namespace n {\n    class A {\n        |\n    };\n}", [cpp, indentUnit.of("    "), indentOnInput()]);
+    for (const ch of "public:") {
+      const at = v.state.selection.main.head;
+      v.dispatch({ changes: { from: at, insert: ch }, selection: { anchor: at + 1 }, userEvent: "input.type" });
+    }
+    expect(show(v)).toBe("namespace n {\n    class A {\n    public:|\n    };\n}");
+    insertNewlineAndIndent(v);
+    expect(show(v)).toBe("namespace n {\n    class A {\n    public:\n        |\n    };\n}");
+  });
+
+  it("leaves a scope qualifier alone", () => {
+    const v = make("class A {\n    |\n};", [cpp, indentUnit.of("    "), indentOnInput()]);
+    for (const ch of "std::") {
+      const at = v.state.selection.main.head;
+      v.dispatch({ changes: { from: at, insert: ch }, selection: { anchor: at + 1 }, userEvent: "input.type" });
+    }
+    expect(show(v)).toBe("class A {\n    std::|\n};");
+  });
+});
+
 describe("Enter after a case label", async () => {
   const load = async (name: string) => (await loadSupport(languages.find((l) => l.name === name)!))!;
   const [c, cpp, php] = await Promise.all([load("C"), load("C++"), load("PHP")]);
