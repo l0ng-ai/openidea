@@ -727,7 +727,7 @@ export function registerVcsActions(): () => void {
       when: VCS,
       keywords: ["git add", "stage"],
       run: ({ arg }) => {
-        return addToVcs(contextPaths(arg));
+        return addToVcs(selectedPaths(arg));
       },
     },
     {
