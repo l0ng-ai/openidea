@@ -9,6 +9,8 @@
 import type { EditorView } from "@codemirror/view";
 import { forEachDiagnostic } from "@codemirror/lint";
 import type { CodeAction, CodeActionQuery } from "@/bindings";
+import { executeAction } from "@/platform/actions";
+import { tx } from "@/platform/i18n";
 import { commands, isCancelled } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
 import { whenSynced } from "@/editor/api";
@@ -45,6 +47,17 @@ import { EXTRACT_INTERFACE_LANGUAGES, startExtractInterface } from "./extractInt
 
 /** Languages with a server that runs the class-hierarchy refactorings (the app-owned JDT extension; Phoxite for PHP). */
 const HIERARCHY_LANGUAGES = new Set(["java", "php"]);
+
+/**
+ * Companion servers that alone provide these refactorings for a language: when one is
+ * missing, invoking a refactoring there offers to install it.
+ */
+const REFACTORING_SERVERS: Readonly<Record<string, { server: string; ids: ReadonlySet<RefactoringId> }>> = {
+  python: {
+    server: "pylsp",
+    ids: new Set(["extractMethod", "extractVariable", "extractConstant", "extractParameter", "inline"]),
+  },
+};
 
 /** Outcome of the server query: its answer, or why there is none. */
 export type ServerAnswer =
@@ -221,6 +234,11 @@ export async function runRefactoring(view: EditorView, id: RefactoringId): Promi
           ? "notReady"
           : "error";
     if (await introduceFallback(view, introduce, reason)) return;
+  }
+  const companion = REFACTORING_SERVERS[ctx.language];
+  if (companion?.ids.has(id)) {
+    // Only offered when the companion server is not installed (`tools.promptInstall` checks).
+    void executeAction("tools.promptInstall", { name: companion.server, refactoring: tx(r.label).replace(/…$/, "") });
   }
   showHint(view, cannotPerform(await unavailableReason(view, r, answer, all)));
 }

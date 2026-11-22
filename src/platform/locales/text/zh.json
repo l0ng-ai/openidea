@@ -2519,6 +2519,7 @@
   "Ruff reads the nearest pyproject.toml ([tool.ruff]), ruff.toml, or .ruff.toml. Use it before the language server when preferred.": "Ruff 会读取最近的 pyproject.toml（[tool.ruff]）、ruff.toml 或 .ruff.toml。选择优先使用 Ruff 时，将优先于语言服务器。",
   "Enabled languages": "启用的语言",
   "Reformat Code needs {name}. Install it via {method}?": "重新格式化代码需要 {name}。是否通过 {method} 安装？",
+  "{refactoring} needs {name}. Install it via {method}?": "{refactoring}需要 {name}。是否通过 {method} 安装？",
   "Install Missing Tool": "安装缺失的工具",
   "Prettier formatting failed": "Prettier 格式化失败",
   "Prettier formatting timed out": "Prettier 格式化超时",
