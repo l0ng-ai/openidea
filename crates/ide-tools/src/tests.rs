@@ -797,9 +797,14 @@ esac"#,
     assert!(!env.root.join("ruby-lsp").exists());
 }
 
+/// Installs of one tool name share a slot, so parallel csharp-ls tests would join each other's install.
+#[cfg(unix)]
+static CSHARP_LS_INSTALL: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
 #[cfg(unix)]
 #[test]
 fn dotnet_tool_install_into_tool_path() {
+    let _serial = CSHARP_LS_INSTALL.lock();
     let env = Env::new();
     env.script(
         &env.sys,
@@ -809,6 +814,7 @@ install) /bin/mkdir -p "$5"; printf '#!/bin/sh\necho "$DOTNET_ROOT"\n' > "$5/csh
 list) printf 'Package Id      Version      Commands\n----\ncsharp-ls       0.15.0       csharp-ls\n' ;;
 esac
 [ "$1" = --list-runtimes ] && echo 'Microsoft.NETCore.App 9.0.1 [/opt/dotnet/shared/Microsoft.NETCore.App]'
+[ "$1" = --list-sdks ] && echo '9.0.100 [/opt/dotnet/sdk]'
 exit 0"#,
     );
     let info = env.tools().install("csharp-ls", &langs(), &CancellationToken::new(), &|_| {}).unwrap();
@@ -818,6 +824,159 @@ exit 0"#,
     assert_eq!(info.path.as_deref(), Some(wrapper.as_path()));
     let out = std::process::Command::new(&wrapper).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "/opt/dotnet");
+}
+
+/// A fake `dotnet` with SDK `sdk` that logs `tool install` arguments to `calls`, and a fake
+/// `curl` serving csharp-ls 0.28.0 (net10.0) and 0.29.0 (net11.0) as nuget.org would.
+#[cfg(unix)]
+fn dotnet_with_nuget(env: &Env, sdk: &str, install: &str) -> PathBuf {
+    let calls = env.root.parent().unwrap().join("dotnet-calls");
+    env.script(
+        &env.sys,
+        "dotnet",
+        &format!(
+            r#"case "$1 $2" in
+"tool install") echo "$@" >> '{calls}'; {install} ;;
+"tool list") printf 'Package Id      Version      Commands\n----\ncsharp-ls       0.28.0       csharp-ls\n' ;;
+"--list-sdks ") [ -n '{sdk}' ] && echo '{sdk} [/opt/dotnet/sdk]' ;;
+esac
+exit 0"#,
+            calls = calls.display(),
+        ),
+    );
+    let leaf = |v: &str| {
+        format!(
+            r#"{{"catalogEntry":{{"@id":"https://api.nuget.org/v3/catalog0/data/x/csharp-ls.{v}.json","version":"{v}","listed":true}}}}"#
+        )
+    };
+    let fixtures = env.root.parent().unwrap().join("nuget");
+    fs::create_dir_all(&fixtures).unwrap();
+    let index = fixtures.join("index.json");
+    fs::write(
+        &index,
+        format!(r#"{{"items":[{{"@id":"https://reg/page","items":[{},{}]}}]}}"#, leaf("0.28.0"), leaf("0.29.0")),
+    )
+    .unwrap();
+    for (v, tfm) in [("0.28.0", "net10.0"), ("0.29.0", "net11.0")] {
+        fs::write(
+            fixtures.join(format!("{v}.json")),
+            format!(r#"{{"packageEntries":[{{"fullName":"tools/{tfm}/any/CSharpLanguageServer.dll"}}]}}"#),
+        )
+        .unwrap();
+    }
+    env.script(
+        &env.sys,
+        "curl",
+        &format!(
+            r#"url=""
+while [ $# -gt 0 ]; do case "$1" in -o|-A|-H|--retry|--connect-timeout|--speed-limit|--speed-time) shift 2;; -*) shift;; *) url="$1"; shift;; esac; done
+case "$url" in
+  */registration5-semver1/csharp-ls/index.json) /bin/cat '{dir}/index.json';;
+  */csharp-ls.0.28.0.json) /bin/cat '{dir}/0.28.0.json';;
+  */csharp-ls.0.29.0.json) /bin/cat '{dir}/0.29.0.json';;
+  *) exit 22;;
+esac"#,
+            dir = fixtures.display()
+        ),
+    );
+    calls
+}
+
+#[cfg(unix)]
+const FAKE_TOOL_INSTALL: &str =
+    r#"/bin/mkdir -p "$5"; printf '#!/bin/sh\n' > "$5/csharp-ls"; /bin/chmod +x "$5/csharp-ls""#;
+
+#[cfg(unix)]
+#[test]
+fn dotnet_tool_too_new_for_every_sdk_names_the_sdk_it_needs() {
+    let _serial = CSHARP_LS_INSTALL.lock();
+    let env = Env::new();
+    let calls = dotnet_with_nuget(&env, "6.0.300", FAKE_TOOL_INSTALL);
+    let err = env.tools().install("csharp-ls", &langs(), &CancellationToken::new(), &|_| {}).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Unavailable);
+    assert_eq!(
+        err.message,
+        "csharp-ls 0.29.0 requires the .NET 11 SDK; found 6.0.300. Install it from https://dotnet.microsoft.com/download"
+    );
+    assert!(!calls.exists(), "dotnet tool install ran");
+}
+
+#[cfg(unix)]
+#[test]
+fn dotnet_tool_falls_back_to_the_newest_version_the_sdk_runs() {
+    let _serial = CSHARP_LS_INSTALL.lock();
+    let env = Env::new();
+    let calls = dotnet_with_nuget(&env, "10.0.403", FAKE_TOOL_INSTALL);
+    let events = Mutex::new(Vec::new());
+    let emit = |e: InstallEvent| events.lock().push(e);
+    let info = env.tools().install("csharp-ls", &langs(), &CancellationToken::new(), &emit).unwrap();
+    assert_eq!(info.status, ToolStatus::Installed);
+    assert_eq!(info.version.as_deref(), Some("0.28.0"));
+    let call = fs::read_to_string(&calls).unwrap();
+    assert!(call.trim_end().ends_with("--verbosity normal --version 0.28.0"), "{call}");
+    let said = events.into_inner().into_iter().any(|e| {
+        matches!(e, InstallEvent::Line { text } if text == "csharp-ls 0.29.0 needs the .NET 11 SDK, found 10.0.403; installing 0.28.0, the newest version that runs on it")
+    });
+    assert!(said);
+}
+
+#[cfg(unix)]
+#[test]
+fn dotnet_tool_installs_the_latest_on_a_new_enough_sdk() {
+    let _serial = CSHARP_LS_INSTALL.lock();
+    let env = Env::new();
+    let calls = dotnet_with_nuget(&env, "11.0.100", FAKE_TOOL_INSTALL);
+    env.tools().install("csharp-ls", &langs(), &CancellationToken::new(), &|_| {}).unwrap();
+    let call = fs::read_to_string(&calls).unwrap();
+    assert!(!call.contains("--version"), "{call}");
+}
+
+#[cfg(unix)]
+#[test]
+fn dotnet_without_an_sdk_is_reported_before_installing() {
+    let _serial = CSHARP_LS_INSTALL.lock();
+    let env = Env::new();
+    let calls = dotnet_with_nuget(&env, "", FAKE_TOOL_INSTALL);
+    let err = env.tools().install("csharp-ls", &langs(), &CancellationToken::new(), &|_| {}).unwrap_err();
+    assert!(
+        err.message.starts_with("csharp-ls needs the .NET SDK, but `dotnet --list-sdks` lists none"),
+        "{}",
+        err.message
+    );
+    assert!(!calls.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn dotnet_tool_failure_quotes_the_nuget_error_not_the_generic_hint() {
+    let _serial = CSHARP_LS_INSTALL.lock();
+    let env = Env::new();
+    let calls = dotnet_with_nuget(
+        &env,
+        "6.0.300",
+        r#"echo '  1>/tmp/x/restore.csproj : error NU1202: Package csharp-ls 0.29.0 is not compatible with net6.0 (.NETCoreApp,Version=v6.0) / any.'
+echo "Tool 'csharp-ls' failed to install. This failure may have been caused by:"
+echo '* You mistyped the name of the tool.'
+echo 'For more reasons, including package naming enforcement, visit https://aka.ms/failure-installing-tool'
+exit 1"#,
+    );
+    // nuget.org unreachable: the version check is skipped and the install itself fails.
+    env.script(&env.sys, "curl", "exit 6");
+    let events = Mutex::new(Vec::new());
+    let emit = |e: InstallEvent| events.lock().push(e);
+    let err = env.tools().install("csharp-ls", &langs(), &CancellationToken::new(), &emit).unwrap_err();
+    assert!(calls.exists());
+    assert!(
+        err.message.ends_with(
+            "failed (exit status: 1): error NU1202: Package csharp-ls 0.29.0 is not compatible with net6.0 (.NETCoreApp,Version=v6.0) / any."
+        ),
+        "{}",
+        err.message
+    );
+    let skipped = events.into_inner().into_iter().any(
+        |e| matches!(e, InstallEvent::Line { text } if text.starts_with("Could not check which csharp-ls version runs on .NET 6.0.300")),
+    );
+    assert!(skipped);
 }
 
 #[test]

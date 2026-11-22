@@ -590,6 +590,10 @@ const C_TYPE_LANGS = new Set(["c", "cpp", "objective-c", "objective-cpp"]);
 /** `struct S`, `class A : public B`, `enum class E : int`, `template <typename T> class A`. */
 const C_TYPE_HEAD =
   /^\s*(template\s*<[^>]*>\s*)?(typedef\s+)?(struct|class|union|enum(\s+(class|struct))?)(\s+[\w:]+)?(\s+final)?(\s*:\s*[^{};()]+)?\s*$/;
+/** A function header that names the function but has no parameter list yet. */
+const FUNCTION_NAME_ONLY = new RegExp(
+  String.raw`^\s*((pub(\([^)]*\))?|async|const|unsafe|extern|export|default|static|private|public|protected|internal|open|override|suspend|inline|operator|infix|tailrec)\s+)*(func|fn|fun|function)\s+[\w$]+(<[^>]*>)?$`,
+);
 
 /** Languages whose `if` / `for` / `while`… take their condition in parentheses. */
 const PAREN_CONDITION_LANGS = new Set([
@@ -628,7 +632,7 @@ const METHOD_HEAD_LANGS = new Set(["java", "csharp", "groovy"]);
 /** Whether `code` (a line without its comment) opens a block that ⌘⇧↵ completes with `{ }`. */
 export function isBlockHead(code: string, language: string): boolean {
   if (KEYWORD_BLOCK_LANGS.has(language) || /[{;,]$/.test(code)) return false;
-  if (BLOCK_HEAD.test(code) || DECLARATION_HEAD.test(code)) return true;
+  if (BLOCK_HEAD.test(code) || DECLARATION_HEAD.test(code) || FUNCTION_NAME_ONLY.test(code)) return true;
   if (C_TYPE_LANGS.has(language) && C_TYPE_HEAD.test(code)) return true;
   return (
     METHOD_HEAD_LANGS.has(language) &&
@@ -759,18 +763,22 @@ export function completeStatementSpec(state: EditorState, language: string): Tra
     };
   }
   if (braces && !comment && isBlockHead(text, language)) {
+    // `func f` / `fn f` / `fun f` → `f()`: a function needs its parameter list.
+    const params = FUNCTION_NAME_ONLY.test(text) ? "()" : "";
     // A C / C++ type definition ends with `};`.
     const close = C_TYPE_LANGS.has(language) && C_TYPE_HEAD.test(text) ? "};" : "}";
-    const insert = ` {${br}${baseIndent}${unit}${br}${baseIndent}${close}`;
+    const insert = `${params} {${br}${baseIndent}${unit}${br}${baseIndent}${close}`;
     const from = line.from + text.length;
     return {
       // A trailing comment moves to the end of the header line.
       changes: {
         from,
         to: line.from + full.length,
-        insert: insert.slice(0, 2) + full.slice(text.length) + insert.slice(2),
+        insert: insert.slice(0, params.length + 2) + full.slice(text.length) + insert.slice(params.length + 2),
       },
-      selection: { anchor: from + 2 + full.length - text.length + br.length + baseIndent.length + unit.length },
+      selection: {
+        anchor: from + params.length + 2 + full.length - text.length + br.length + baseIndent.length + unit.length,
+      },
       scrollIntoView: true,
       userEvent: "input.complete",
     };

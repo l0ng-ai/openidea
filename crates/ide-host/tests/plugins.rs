@@ -824,6 +824,11 @@ fn plugin_processes_end_with_their_owner() {
             String::from_utf8_lossy(&ps.stdout).lines().any(|line| line.contains(&marker))
         };
         f.run("misbehave", "childkeep", marker.strip_prefix("--path=")).unwrap();
+        // fork+exec is not atomic: `ps` can still report the owner until the child execs.
+        let started = Instant::now() + Duration::from_secs(5);
+        while !alive() && Instant::now() < started {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         assert!(alive(), "{mode}: the process started");
         match mode {
             "disable" => f.host.set_enabled("misbehave", false).unwrap(),
@@ -6466,6 +6471,7 @@ fn api14_settings_and_input_events_use_other_and_capture_the_editor() {
                 mode: "visual".into(),
                 sub: Some("linewise".into()),
             }),
+            E::CaretMoved(ide_plugin::CaretMoved { path: path.clone(), line: 4, col: 2, settled: true }),
         ],
         Some(PluginEditor {
             path: path.clone(),
@@ -6477,7 +6483,7 @@ fn api14_settings_and_input_events_use_other_and_capture_the_editor() {
     assert!(f.host.wait_events(Duration::from_secs(5)));
     let received: serde_json::Value = serde_json::from_str(&f.run("api14", "events", None).unwrap().unwrap()).unwrap();
     let events = received.as_array().unwrap();
-    assert_eq!(events.len(), 4, "{received}");
+    assert_eq!(events.len(), 5, "{received}");
     // The first synthetic post hands over the current keys ("enabled": false);
     // the second is a real diff to true. Keys come from the recomputed
     // snapshot, never from the event payload ("another-plugin-key").
@@ -6486,6 +6492,14 @@ fn api14_settings_and_input_events_use_other_and_capture_the_editor() {
     assert_eq!(events[1]["kind"], "settings-changed");
     assert_eq!(events[1]["data"], "[\"enabled\"]");
     assert_eq!(events[3]["kind"], "input-mode-changed");
+    assert_eq!(events[4]["kind"], "caret-moved");
+    let caret: serde_json::Value =
+        serde_json::from_str(events[4]["data"].as_str().expect("caret data is JSON")).unwrap();
+    assert_eq!(caret["path"], path.as_str());
+    assert_eq!(caret["line"], 4);
+    assert_eq!(caret["col"], 2);
+    assert_eq!(caret["settled"], true);
+    assert_eq!(events[4]["editor"][0], path.as_str());
     assert_eq!(events[2]["editor"][0], path);
     assert_eq!(events[2]["editor"][1][0], serde_json::json!([0, 0, 0, 0]));
 }

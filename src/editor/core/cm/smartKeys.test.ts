@@ -276,6 +276,44 @@ describe("typing over a closing bracket", () => {
   });
 });
 
+describe("Rust lifetimes", () => {
+  const typed = (text: string, chars: string) => {
+    const v = make(text, [
+      closeBrackets(),
+      prefsExtension({
+        prefs: validateEditorExtras({}),
+        path: "",
+        softWrap: false,
+        showWhitespace: false,
+        hardWrapAt: 120,
+        readOnly: false,
+        language: "rust",
+      }),
+    ]);
+    for (const ch of chars) {
+      const r = v.state.selection.main;
+      const insert = () => v.state.update(v.state.replaceSelection(ch), { userEvent: "input.type" });
+      if (!v.state.facet(EditorView.inputHandler).some((h) => h(v, r.from, r.to, ch, insert))) {
+        const tr = insertBracket(v.state, ch);
+        v.dispatch(tr ?? insert());
+      }
+    }
+    return show(v);
+  };
+
+  it("keeps a lifetime's apostrophe single", () => {
+    expect(typed("fn borrow<|>() {}", "'a")).toBe("fn borrow<'a|>() {}");
+    expect(typed("fn f(x: &|str) {}", "'a ")).toBe("fn f(x: &'a |str) {}");
+    expect(typed("struct S<'a, |> {}", "'b")).toBe("struct S<'a, 'b|> {}");
+    expect(typed("fn f<T: |>() {}", "'static")).toBe("fn f<T: 'static|>() {}");
+  });
+
+  it("still pairs a char literal", () => {
+    expect(typed("let c = |;", "'")).toBe("let c = '|';");
+    expect(typed("f('a', |)", "'")).toBe("f('a', '|')");
+  });
+});
+
 describe("smart angle brackets", () => {
   /** The real wiring: prefsExtension attaches the `<` handler for the document's language. */
   const prefs = (language: string | undefined, smartKeys: Record<string, unknown> = {}) =>
@@ -314,8 +352,27 @@ describe("smart angle brackets", () => {
   const KOTLIN = StreamLanguage.define(interpolationParser(kotlin, "Kotlin"));
   const CSHARP = StreamLanguage.define(interpolationParser(csharp, "C#"));
   let RUST: LanguageSupport;
+  let CPP: LanguageSupport;
   beforeAll(async () => {
     RUST = (await cmLanguages.find((l) => l.name === "Rust")!.load()) as LanguageSupport;
+    CPP = (await cmLanguages.find((l) => l.name === "C++")!.load()) as LanguageSupport;
+  });
+
+  it("pairs include brackets in C and C++, and template arguments in C++", () => {
+    pair("c", CPP, "#include |", "#include <|>");
+    pair("cpp", CPP, "#include |", "#include <|>");
+    pair("cpp", CPP, "std::vector|", "std::vector<|>");
+    pair("cpp", CPP, "auto p = std::make_unique|", "auto p = std::make_unique<|>");
+    pair("cpp", CPP, "auto n = static_cast|", "auto n = static_cast<|>");
+    pair("cpp", CPP, "template |", "template <|>");
+    pair("cpp", CPP, "Box|", "Box<|>");
+  });
+
+  it("does not pair comparisons, shifts or macros in C and C++", () => {
+    pair("c", CPP, "int f() { return a |", "int f() { return a <|");
+    pair("cpp", CPP, "for (int i = 0; i|", "for (int i = 0; i<|");
+    pair("cpp", CPP, "std::cout |", "std::cout <|");
+    pair("cpp", CPP, "if (x < MAX|", "if (x < MAX<|");
   });
 
   it("pairs after a type name in Java: fields, type arguments and class declarations", () => {
@@ -375,6 +432,20 @@ describe("smart angle brackets", () => {
     pair("kotlin", KOTLIN, "fun |", "fun <|>");
     // Lowercase values are comparisons, not types.
     pair("kotlin", KOTLIN, "fun f() {\n  val c = a |\n}", "fun f() {\n  val c = a <|\n}");
+    pair("kotlin", KOTLIN, "fun f() {\n  val c = count|\n}", "fun f() {\n  val c = count<|\n}");
+    // …but a generic factory call written against its `<` takes type arguments.
+    pair("kotlin", KOTLIN, "fun f() {\n  val v = mutableListOf|\n}", "fun f() {\n  val v = mutableListOf<|>\n}");
+    pair("kotlin", KOTLIN, "fun f() {\n  val m = emptyMap|\n}", "fun f() {\n  val m = emptyMap<|>\n}");
+    pair("kotlin", KOTLIN, "fun f() {\n  val ok = listOf |\n}", "fun f() {\n  val ok = listOf <|\n}");
+  });
+
+  it("pairs a string template's braces", () => {
+    const v = make('fun f() {\n  val s = "$|"\n}', [KOTLIN, prefs("kotlin", {})]);
+    type(v, "{");
+    expect(show(v)).toBe('fun f() {\n  val s = "${|}"\n}');
+    const outside = make("fun f() {\n  val s = $|x\n}", [KOTLIN, prefs("kotlin", {})]);
+    type(outside, "{");
+    expect(show(outside)).toBe("fun f() {\n  val s = ${|x\n}");
   });
 
   it("pairs capitalized type positions in C# (stream parser)", () => {

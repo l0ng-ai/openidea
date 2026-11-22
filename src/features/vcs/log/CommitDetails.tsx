@@ -176,21 +176,21 @@ export function CommitDetails({ commits, fileHistory = false }: { commits: Commi
   const treeRef = useRef<TreeHandle>(null);
   const [diffToReveal, setDiffToReveal] = useState<{ key: string } | null>(null);
   const syncingDiff = useRef(false);
+  const affectedPaths = filters.paths?.length ? filters.paths : filters.path;
   const changes = useMemo(() => {
     const changes = files ?? [];
-    const paths = filters.paths?.length ? filters.paths : filters.path ? [filters.path] : [];
-    return onlyAffected && paths.length
-      ? changes.filter((c) =>
-          paths.some((p) => {
-            const matches = (rel: string) => {
-              const abs = absolutePath(rel, c.repo);
-              return abs === p || abs.startsWith(`${p}/`) || (!many && commit?.historyPath === rel);
-            };
-            return matches(c.path) || (c.oldPath != null && matches(c.oldPath));
-          }),
-        )
-      : changes;
-  }, [files, commit, many, filters.path, filters.paths, onlyAffected]);
+    if (!onlyAffected || !affectedPaths) return changes;
+    const paths = typeof affectedPaths === "string" ? [affectedPaths] : affectedPaths;
+    return changes.filter((c) =>
+      paths.some((p) => {
+        const matches = (rel: string) => {
+          const abs = absolutePath(rel, c.repo);
+          return abs === p || abs.startsWith(`${p}/`) || (!many && commit?.historyPath === rel);
+        };
+        return matches(c.path) || (c.oldPath != null && matches(c.oldPath));
+      }),
+    );
+  }, [files, commit, many, affectedPaths, onlyAffected]);
   const lineTotals = useMemo(() => {
     if (!showLineStats || !changes.length) return null;
     if (changes.some((f) => f.added === undefined || f.removed === undefined)) return null;
@@ -289,10 +289,12 @@ export function CommitDetails({ commits, fileHistory = false }: { commits: Commi
       { kind: "header", label: "Group By" },
       { kind: "action", action: "vcs.log.changes.groupByDirectory" },
       { kind: "separator" },
-      { kind: "action", action: "vcs.log.changes.diffPreview" },
-      toggle("Show Only Affected Changes", logOptions(), "showOnlyAffected"),
+      { kind: "header", label: "Show" },
       toggle("Show lines added and deleted", logOptions(), "showLineStats"),
       toggle("Show Changes from Parents", logOptions(), "changesFromParents"),
+      { kind: "separator" },
+      { kind: "header", label: "Layout" },
+      { kind: "action", action: "vcs.log.changes.diffPreview" },
       {
         label: "Diff Preview Location",
         submenu: (["editor", "right", "bottom"] as const).map((location) => ({
@@ -368,6 +370,9 @@ export function CommitDetails({ commits, fileHistory = false }: { commits: Commi
               actionArg={chosenChanges}
               disabled={readOnly || !chosenChanges.length || new Set(chosenChanges.map((c) => c.repo)).size > 1}
             />
+            {affectedPaths && (
+              <IconButton icon="folder" action="vcs.log.changes.showOnlyAffected" size="small" pressed={onlyAffected} />
+            )}
             <IconButton icon="eye" title="View Options" size="small" aria-haspopup="menu" onClick={openViewOptions} />
             {!many && fromParents && commit.parents.length > 1 && (
               <button
