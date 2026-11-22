@@ -247,6 +247,17 @@ pub fn discover_skills(workspace: &Path, home: Option<&Path>) -> Vec<AgentSkill>
 /// folders) and `home`, in source precedence order, symlinked duplicates collapsed by
 /// canonical path while recording secondary sources in [`AgentSkill::also_in`].
 pub fn discover_skills_in(workspaces: &[PathBuf], home: Option<&Path>) -> Vec<AgentSkill> {
+    discover_skills_with_plugins(workspaces, home, &[])
+}
+
+/// [`discover_skills_in`] plus the `<dir>` skill folders contributed by enabled OpenIDEA
+/// plugins (`[[contributes.skills]]`). Workspace and user skills take precedence on a name
+/// clash; a plugin skill is never silently renamed.
+pub fn discover_skills_with_plugins(
+    workspaces: &[PathBuf],
+    home: Option<&Path>,
+    plugin_skill_dirs: &[PathBuf],
+) -> Vec<AgentSkill> {
     let mut out: Vec<AgentSkill> = Vec::new();
     let mut seen_paths: HashSet<PathBuf> = HashSet::new();
     let mut seen_names: HashSet<String> = HashSet::new();
@@ -273,27 +284,57 @@ pub fn discover_skills_in(workspaces: &[PathBuf], home: Option<&Path>) -> Vec<Ag
     }
     if let Some(home) = home {
         roots.extend(HOME_ROOTS.iter().map(|(rel, source)| (home.join(rel), *source)));
-        roots.extend(copilot_installed_plugin_roots(&home.join(".copilot")));
     }
+    let mut push_skill = |skill: AgentSkill| {
+        let path = dunce::canonicalize(&skill.path.0).unwrap_or_else(|_| skill.path.0.clone());
+        if !seen_paths.insert(path.clone()) {
+            if let Some(existing) = out.iter_mut().find(|s| s.path.0 == path)
+                && existing.source != skill.source
+                && !existing.also_in.contains(&skill.source)
+            {
+                existing.also_in.push(skill.source);
+            }
+            return;
+        }
+        if !seen_names.insert(skill.name.to_ascii_lowercase()) {
+            return;
+        }
+        out.push(AgentSkill { path: path.into(), ..skill });
+    };
     for (root, source) in roots {
         for skill in skills_of(&root, source) {
-            let path = dunce::canonicalize(&skill.path.0).unwrap_or_else(|_| skill.path.0.clone());
-            if !seen_paths.insert(path.clone()) {
-                if let Some(existing) = out.iter_mut().find(|s| s.path.0 == path)
-                    && existing.source != source
-                    && !existing.also_in.contains(&source)
-                {
-                    existing.also_in.push(source);
-                }
-                continue;
+            push_skill(skill);
+        }
+    }
+    for dir in plugin_skill_dirs {
+        let Some(folder) = file_name(dir) else { continue };
+        if !dir.is_dir() {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(dir.join("SKILL.md")) else { continue };
+        push_skill(parse_skill_file(dir, &folder, &text, AgentSkillSource::Plugin));
+    }
+    if let Some(home) = home {
+        for (root, source) in copilot_installed_plugin_roots(&home.join(".copilot")) {
+            for skill in skills_of(&root, source) {
+                push_skill(skill);
             }
-            if !seen_names.insert(skill.name.to_ascii_lowercase()) {
-                continue;
-            }
-            out.push(AgentSkill { path: path.into(), ..skill });
         }
     }
     out
+}
+
+/// Validates a plugin-contributed `<folder>/SKILL.md` against the hub's folder-name and
+/// frontmatter rules (`name` 1–64 `[a-z0-9-]`, matching `folder`, non-empty `description` ≤ 1024 chars).
+pub fn validate_plugin_skill(dir: &Path, folder: &str, text: &str) -> Result<AgentSkill, String> {
+    if !valid_name(folder) {
+        return Err(format!("skill folder `{folder}` must be 1-64 lowercase letters, digits or hyphens"));
+    }
+    let skill = parse_skill_file(dir, folder, text, AgentSkillSource::Plugin);
+    if !skill.valid {
+        return Err(skill.warnings.join("; "));
+    }
+    Ok(skill)
 }
 
 const SKIP_MONOREPO_DIRS: &[&str] =
@@ -1329,5 +1370,68 @@ mod tests {
                 "symlinked `.claude/skills/coverage` not duplicated"
             );
         }
+    }
+
+    #[test]
+    fn plugin_skills_yield_to_workspace_and_user_and_stage_to_all_clis() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let ws = root.join("ws");
+        let home = root.join("home");
+        let plugin_pkg = root.join("plugins/acme.tools/1.0.0");
+
+        write(&ws.join(".agents/skills/clash-ws/SKILL.md"), "---\nname: clash-ws\ndescription: workspace copy\n---\n");
+        write(&home.join(".agents/skills/clash-user/SKILL.md"), "---\nname: clash-user\ndescription: user copy\n---\n");
+        write(&plugin_pkg.join("skills/clash-ws/SKILL.md"), "---\nname: clash-ws\ndescription: plugin copy\n---\n");
+        write(&plugin_pkg.join("skills/clash-user/SKILL.md"), "---\nname: clash-user\ndescription: plugin copy\n---\n");
+        write(
+            &plugin_pkg.join("skills/release-notes/SKILL.md"),
+            "---\nname: release-notes\ndescription: draft release notes\n---\n",
+        );
+
+        let plugin_dirs = vec![
+            plugin_pkg.join("skills/clash-ws"),
+            plugin_pkg.join("skills/clash-user"),
+            plugin_pkg.join("skills/release-notes"),
+        ];
+        let found = discover_skills_with_plugins(std::slice::from_ref(&ws), Some(&home), &plugin_dirs);
+        let summary: Vec<(&str, AgentSkillSource, &str)> =
+            found.iter().map(|s| (s.name.as_str(), s.source, s.description.as_str())).collect();
+        assert_eq!(
+            summary,
+            [
+                ("clash-ws", AgentSkillSource::Workspace, "workspace copy"),
+                ("clash-user", AgentSkillSource::User, "user copy"),
+                ("release-notes", AgentSkillSource::Plugin, "draft release notes"),
+            ],
+            "workspace and user skills win on name clash without renaming plugin skills"
+        );
+        assert!(!AgentSkillSource::Plugin.discovered());
+
+        let states = resolve(found.clone(), None, &BTreeMap::new(), &BTreeMap::new(), true);
+        for provider in ["claude", "copilot", "codex"] {
+            let farm = farm_dir(&root.join("store"), &format!("plugin-{provider}"));
+            let _ = stage(&farm, provider, &states, &ws, Some(&home)).unwrap();
+        }
+        assert!(
+            listed(&farm_dir(&root.join("store"), "plugin-claude").join(".claude/skills"))
+                .contains(&"release-notes".into())
+        );
+        assert!(
+            listed(&farm_dir(&root.join("store"), "plugin-copilot").join("copilot")).contains(&"release-notes".into())
+        );
+        assert!(listed(&farm_dir(&root.join("store"), "plugin-codex").join("codex")).contains(&"release-notes".into()));
+
+        // Turning a plugin skill off omits it from every CLI's staged farm.
+        let off_states = resolve(
+            found,
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::from([("release-notes".to_owned(), policy(AgentSkillMode::Off).unwrap())]),
+            true,
+        );
+        let farm = farm_dir(&root.join("store"), "plugin-off");
+        let _ = stage(&farm, "claude", &off_states, &ws, Some(&home)).unwrap();
+        assert!(!farm.join(".claude/skills/release-notes").exists());
     }
 }
