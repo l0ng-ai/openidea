@@ -1045,11 +1045,10 @@ pub fn agent_set_skill_overrides(
 #[command(trust = always)]
 pub async fn agent_skills_list(host: &Host, window: &str) -> IdeResult<Vec<AgentSkillState>> {
     let project = host.project(window)?;
-    let root = project.root.clone();
     let (policy, home) = (skills_policy(&project), dirs::home_dir());
     tokio::task::spawn_blocking(move || {
         Ok(ide_agent::skills::resolve(
-            ide_agent::skills::discover_skills(&root, home.as_deref()),
+            ide_agent::skills::discover_skills_in(&policy.workspace_roots, home.as_deref()),
             None,
             &policy.workspace,
             &policy.user,
@@ -1103,11 +1102,10 @@ pub fn agent_skills_set_mode(
     }
     match project {
         Some(project) => {
-            let root = project.root.clone();
             let policy = skills_policy(&project);
             let home = dirs::home_dir();
             Ok(ide_agent::skills::resolve(
-                ide_agent::skills::discover_skills(&root, home.as_deref()),
+                ide_agent::skills::discover_skills_in(&policy.workspace_roots, home.as_deref()),
                 None,
                 &policy.workspace,
                 &policy.user,
@@ -1162,12 +1160,26 @@ fn persist_skills_map(
     Ok(())
 }
 
+/// Workspace folders to scan for skills: the project root plus any multi-repo workspace members.
+pub(crate) fn workspace_skill_roots(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut roots = vec![root.to_path_buf()];
+    if let Ok(Some(ws)) = ide_workspace::workspace::Workspace::load(root) {
+        for member in ws.projects {
+            if member.exists() && !roots.contains(&member) {
+                roots.push(member);
+            }
+        }
+    }
+    roots
+}
+
 /// The skill policies a session of `project` resolves against.
 fn skills_policy(project: &crate::Project) -> SkillsPolicy {
     SkillsPolicy {
         user: project.settings.layer(ide_workspace::settings::SettingsScope::Global).agents.skills.clone(),
         workspace: project.settings.layer(ide_workspace::settings::SettingsScope::Project).agents.skills.clone(),
         workspace_trusted: project.trusted.load(std::sync::atomic::Ordering::Acquire),
+        workspace_roots: workspace_skill_roots(&project.root),
     }
 }
 

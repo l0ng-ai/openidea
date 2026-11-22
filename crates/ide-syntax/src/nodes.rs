@@ -133,15 +133,26 @@ fn enclosing_expression<'t>(cx: &Ctx, node: Node<'t>) -> Option<Node<'t>> {
 
 /// Nearest ancestor-or-self that is a direct named child of a block.
 fn statement_of<'t>(cx: &Ctx, node: Node<'t>) -> Option<Node<'t>> {
+    statement_or_clause_of(cx, node, false)
+}
+
+/// Like [`statement_of`], but a `switch` / `when` branch reached from its header counts too.
+fn statement_or_clause_of<'t>(cx: &Ctx, node: Node<'t>, clauses: bool) -> Option<Node<'t>> {
     let mut cur = Some(node);
     while let Some(n) = cur {
         let parent = n.parent()?;
-        if n.is_named() && !n.is_extra() && cx.kinds.is_block(&parent) {
+        if n.is_named() && !n.is_extra() && (cx.kinds.is_block(&parent) || clauses && cx.kinds.is_clause(&n)) {
             return Some(n);
         }
         cur = Some(parent);
     }
     None
+}
+
+/// The neighbouring statement; a branch's neighbours are the other branches (not the `switch` subject).
+fn statement_sibling<'t>(cx: &Ctx, node: Node<'t>, next: bool) -> Option<Node<'t>> {
+    let s = sibling(node, next)?;
+    (!cx.kinds.is_clause(&node) || cx.kinds.is_clause(&s)).then_some(s)
 }
 
 /// Nearest ancestor-or-self that is a direct named child of a class body or the file.
@@ -188,12 +199,12 @@ pub(crate) fn structural_ranges(cx: &Ctx, pos: Pos) -> StructuralRanges {
     let root = cx.tree.root_node();
     let end = (b + text[b..].chars().next().map_or(0, char::len_utf8)).min(text.len());
     let Some(node) = root.descendant_for_byte_range(b, end) else { return StructuralRanges::default() };
-    let statement = statement_of(cx, node);
+    let statement = statement_or_clause_of(cx, node, true);
     let declaration = declaration_of(cx, node);
     StructuralRanges {
         selection: Vec::new(),
-        prev_statement: statement.and_then(|s| sibling(s, false)).map(|n| cx.node(&n)),
-        next_statement: statement.and_then(|s| sibling(s, true)).map(|n| cx.node(&n)),
+        prev_statement: statement.and_then(|s| statement_sibling(cx, s, false)).map(|n| cx.node(&n)),
+        next_statement: statement.and_then(|s| statement_sibling(cx, s, true)).map(|n| cx.node(&n)),
         block: statement.and_then(|s| s.parent()).map(|n| cx.node(&n)),
         statement: statement.map(|n| cx.node(&n)),
         prev_declaration: declaration.and_then(|s| sibling(s, false)).map(|n| cx.node(&n)),

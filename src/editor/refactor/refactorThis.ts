@@ -209,7 +209,17 @@ export async function runRefactoring(view: EditorView, id: RefactoringId): Promi
   }
   const introduce = INTRODUCE[id];
   if (introduce) {
-    const reason = answer.status === "ok" ? "empty" : answer.status === "notReady" ? "notReady" : "error";
+    // A server offering another extraction there (gopls has only Extract constant for `1 + 2`)
+    // takes the selection for an expression: build the variable from the syntax.
+    const otherExtraction = [...groupActions(all).mapped.keys()].some((k) => INTRODUCE[k] && k !== id);
+    const reason =
+      answer.status === "ok"
+        ? otherExtraction
+          ? "otherKind"
+          : "empty"
+        : answer.status === "notReady"
+          ? "notReady"
+          : "error";
     if (await introduceFallback(view, introduce, reason)) return;
   }
   showHint(view, cannotPerform(await unavailableReason(view, r, answer, all)));
