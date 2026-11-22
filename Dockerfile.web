@@ -12,11 +12,7 @@ RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY patches ./patches
 RUN pnpm install --frozen-lockfile --ignore-scripts
-COPY index.html tsconfig.json tsconfig.node.json vite.config.ts ./
-COPY public ./public
-COPY scripts ./scripts
-COPY src ./src
-COPY src-tauri/icons ./src-tauri/icons
+COPY . .
 RUN pnpm build
 
 FROM rust:1-bookworm AS backend
@@ -26,19 +22,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl-dev \
     cmake \
     g++ \
+    clang \
+    libclang-dev \
     && rm -rf /var/lib/apt/lists/*
-COPY Cargo.toml Cargo.lock ./
-COPY crates ./crates
-COPY languages ./languages
-COPY java ./java
-COPY wit ./wit
-COPY plugins/official/harbor-night/themes ./plugins/official/harbor-night/themes
-COPY src-tauri/Cargo.toml src-tauri/Cargo.toml
-RUN mkdir -p src-tauri/src \
-    && echo "pub fn dummy() {}" > src-tauri/src/lib.rs \
-    && echo "fn main() {}" > src-tauri/src/main.rs \
-    && echo "fn main() {}" > src-tauri/build.rs
-RUN cargo build --release -p ide-host --bin openidea-server
+COPY . .
+# Thin LTO keeps full opt-level=3 performance while avoiding OOM in container builds.
+RUN CARGO_PROFILE_RELEASE_LTO=thin CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+    cargo build --release --locked -p ide-host --bin openidea-server
 
 FROM debian:bookworm-slim AS runtime
 ENV DEBIAN_FRONTEND=noninteractive
