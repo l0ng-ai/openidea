@@ -60,11 +60,18 @@ export function quickFixIcon(view: EditorView): "bulb" | "bulb-fix" {
 
 const isFixItem = (item: ListPopupItem) => item.quickFix ?? item.icon === "bulb-fix";
 
-/** Local and language-server fixes share icons and the same stable ordering. */
+/** Local and language-server fixes share icons and are grouped separately from other actions. */
 export function listedIntentions(view: EditorView, items: ListPopupItem[]): ListPopupItem[] {
   const rank = (item: ListPopupItem) => (item.disabled ? 4 : 0) + (isFixItem(item) ? 0 : 2) + (item.emphasis ? 0 : 1);
   return items
-    .map((item) => (isFixItem(item) ? { ...item, quickFix: true, icon: quickFixIcon(view) } : item))
+    .map((item) => {
+      const fix = isFixItem(item);
+      return {
+        ...item,
+        ...(fix && { quickFix: true, icon: quickFixIcon(view) }),
+        section: item.section ?? { id: item.disabled ? "unavailable" : fix ? "quick-fixes" : "intentions" },
+      };
+    })
     .sort((a, b) => rank(a) - rank(b));
 }
 
@@ -497,6 +504,7 @@ export function withInspectionControls(view: EditorView, items: ListPopupItem[])
     ...inspections.map((inspection) => ({
       id: `inspection:${inspection.id}`,
       label: tx`Inspection '${txPart(inspection.name)}' options`,
+      section: { id: "inspection-options" },
       icon: "settings",
       run: () => editInspectionSettings(inspection.id),
       submenu: intentionControls(inspection),
