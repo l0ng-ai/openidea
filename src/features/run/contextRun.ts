@@ -34,6 +34,7 @@ import {
 } from "./producers";
 import { runWithExecutor } from "./executors";
 import { jdwpLaunch } from "./javaDebug";
+import { scriptEntries, scriptMenuItems, type ScriptEntry } from "./npmGutter";
 import { goModulePath, loadGoModules } from "./goModules";
 import { isPythonPackage, loadPythonPackages } from "./pythonPackages";
 import { remoteDebugBlocked } from "./remote";
@@ -392,6 +393,19 @@ export async function prepareMenu(_menu: ContextMenuId, ctx: MenuGroupContext): 
   peeked.set(path, { at: Date.now(), text: text.slice(0, CONTENT_LIMIT) });
 }
 
+/** Run / Debug for a `package.json` script line, through `scriptMenuItems`. */
+function npmScriptItems(entry: ScriptEntry, path: string, content: string): MenuItem[] {
+  const run = async (debug: boolean) => {
+    const items = await scriptMenuItems(entry, path, content);
+    const item = items[debug ? 1 : 0];
+    if (item && "run" in item) item.run?.();
+  };
+  return [
+    { label: tx`Run '${entry.name}'`, icon: "run", run: () => void run(false) },
+    { label: tx`Debug '${entry.name}'`, icon: "debug", run: () => void run(true) },
+  ];
+}
+
 /** The run group of a context menu: Run / Debug '<name>', Modify Run Configuration…. */
 export function contextMenuItems(menu: ContextMenuId, ctx: MenuGroupContext): MenuItem[] {
   if (ctx.paths.length !== 1) return [];
@@ -402,6 +416,11 @@ export function contextMenuItems(menu: ContextMenuId, ctx: MenuGroupContext): Me
   const dir = !!ctx.dirs?.[0];
   const content = ctx.text ?? peekContent(path);
   const line = menu === "editor" ? ctx.line : undefined;
+  // A `package.json` script line runs that script.
+  if (!dir && /(^|\/)package\.json$/.test(path) && content !== undefined && line !== undefined) {
+    const entry = scriptEntries(content.slice(0, CONTENT_LIMIT)).find((e) => e.line === line);
+    if (entry) return npmScriptItems(entry, path, content);
+  }
   const input: ContextInput = {
     ...projectContext(),
     root,

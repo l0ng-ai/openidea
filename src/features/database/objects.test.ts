@@ -13,7 +13,9 @@ import {
   dropSql,
   ident,
   reference,
+  canRename,
   renameSql,
+  renameDatabaseSql,
   scriptSql,
   truncateSql,
   quoteIdent,
@@ -112,6 +114,17 @@ describe("database object SQL", () => {
     expect(renameSql("postgres", { kind: "column", schema: "public", name: "users", column: "email" }, "mail")).toBe(
       "alter table public.users rename column email to mail;",
     );
+  });
+
+  it("renames schemas and databases where the server can", () => {
+    const schema = { kind: "schema" as const, schema: "sales", name: "sales" };
+    expect(canRename("postgres", schema)).toBe(true);
+    expect(canRename("snowflake", schema)).toBe(true);
+    expect(canRename("mysql", schema)).toBe(false);
+    expect(canRename("sqlServer", schema)).toBe(false);
+    expect(renameSql("postgres", schema, "Old Sales")).toBe('alter schema sales rename to "Old Sales";');
+    expect(renameDatabaseSql("postgres", "shop", "store")).toBe("alter database shop rename to store;");
+    expect(renameDatabaseSql("sqlServer", "shop", "store")).toBe("alter database shop modify name = store;");
   });
 
   it("drops with IF EXISTS / CASCADE", () => {

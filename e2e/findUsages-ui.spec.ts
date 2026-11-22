@@ -163,3 +163,68 @@ for (const theme of ["light", "dark"] as const) {
     await expect(popup).toBeHidden();
   });
 }
+
+test("Find Usages lines use the tree font and keep line numbers beside the snippet", async ({ workbench: page }) => {
+  await stubDesktop(page);
+  await page.evaluate(async () => {
+    const modulePath = "/src/features/code-insight/usages.ts";
+    const { useUsagesPopup } = await import(modulePath);
+    const path = "/dev/acme-api/src/TaskScheduler.ts";
+    const lines = Array<string>(1001).fill("");
+    const usageLines = [6, 97, 1001];
+    const text = "  scheduler.schedule(task);";
+    for (const line of usageLines) lines[line - 1] = text;
+    window.__ipc.handlers.fs_read_text = () => lines.join("\n");
+    useUsagesPopup.setState({
+      open: true,
+      anchor: { x: 100, y: 150 },
+      symbol: "scheduler",
+      loading: false,
+      groups: [
+        {
+          path,
+          usages: usageLines.map((line) => ({
+            path,
+            line: line - 1,
+            col: 2,
+            endCol: 11,
+            text,
+          })),
+        },
+      ],
+    });
+  });
+
+  const popup = page.getByRole("dialog", { name: "Usages", exact: true });
+  const popupMatch = popup.getByRole("option").first().locator("mark");
+  const popupFont = await popupMatch.evaluate((node) => getComputedStyle(node).fontFamily);
+  await popup.getByRole("button", { name: /Open in Find Window/ }).click();
+
+  const usages = page.getByRole("region", { name: "Find Usages", exact: true });
+  await expect(usages.locator("mark")).toHaveCount(3);
+  for (const width of [1200, 540]) {
+    await page.setViewportSize({ width, height: 740 });
+    for (const line of ["6", "97", "1001"]) {
+      const row = usages.getByRole("treeitem").filter({ has: page.getByText(line, { exact: true }) });
+      const mark = row.locator("mark");
+      await expect(mark).toHaveText("scheduler");
+      const number = await row.getByText(line, { exact: true }).evaluate((node) => {
+        const text = new Range();
+        text.selectNodeContents(node);
+        const { right } = text.getBoundingClientRect();
+        return { right, font: getComputedStyle(node).fontFamily, size: getComputedStyle(node).fontSize };
+      });
+      const snippet = await mark.evaluate((node) => ({
+        left: node.getBoundingClientRect().left,
+        font: getComputedStyle(node).fontFamily,
+        size: getComputedStyle(node).fontSize,
+      }));
+      const treeFont = await row.evaluate((node) => getComputedStyle(node).fontFamily);
+      expect(snippet.font).toBe(treeFont);
+      expect(number.font).toBe(treeFont);
+      expect(popupFont).not.toBe(treeFont);
+      expect(snippet.size).toBe(number.size);
+      expect(snippet.left - number.right).toBeCloseTo(4, 0);
+    }
+  }
+});

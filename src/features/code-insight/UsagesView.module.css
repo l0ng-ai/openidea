@@ -98,13 +98,13 @@
   flex: none;
   color: var(--fg-subtle);
 }
+.occurrence {
+  gap: var(--space-1);
+}
 .line {
   flex: none;
-  min-width: 3ch;
-  text-align: right;
-  font-family: var(--font-mono);
-  font-size: var(--fs-ui);
-  color: var(--fg-line-number);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-subtle);
 }
 .preview {
   min-width: 0;
@@ -113,6 +113,9 @@
   font-family: var(--font-mono);
   font-size: var(--fs-code);
   color: var(--fg);
+}
+.occurrence .preview {
+  font: inherit;
 }
 .match {
   background: var(--bg-search-match);

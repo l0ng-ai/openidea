@@ -261,7 +261,7 @@ export function UsagesView() {
       );
     }
     return (
-      <span className={clsx(styles.row, excluded.has(n.key) && styles.excluded)}>
+      <span className={clsx(styles.row, styles.occurrence, excluded.has(n.key) && styles.excluded)}>
         <span className={styles.line}>{n.usage.line + 1}</span>
         <UsagePreview usage={n.usage} />
       </span>

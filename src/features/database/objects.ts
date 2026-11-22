@@ -86,12 +86,15 @@ export const canRename = (driver: DbDriver, o: DbObjectRef) =>
   (o.kind === "table" ||
     o.kind === "column" ||
     (o.kind === "view" && driver !== "sqlite") ||
-    (o.kind === "index" && driver === "postgres"));
+    (o.kind === "index" && driver === "postgres") ||
+    (o.kind === "schema" && (driver === "postgres" || driver === "snowflake")));
 
 /** The statement renaming `o` to `to`. */
 export function renameSql(driver: DbDriver, o: DbObjectRef, to: string): string {
   const q = qualifiedName(driver, o.schema, o.name);
   switch (o.kind) {
+    case "schema":
+      return `alter schema ${ident(driver, o.name)} rename to ${ident(driver, to)};`;
     case "column":
       return `alter table ${q} rename column ${ident(driver, o.column ?? "")} to ${ident(driver, to)};`;
     case "index":
@@ -237,6 +240,12 @@ export function dropDatabaseSql(driver: DbDriver, name: string, force: boolean):
   if (driver === "sqlServer" && force)
     return `alter database ${db} set single_user with rollback immediate;\ndrop database ${db};`;
   return `drop database ${db}${force && driver === "postgres" ? " with (force)" : ""};`;
+}
+
+/** The statement renaming database `name` of a server to `to` (PostgreSQL, SQL Server). */
+export function renameDatabaseSql(driver: DbDriver, name: string, to: string): string {
+  if (driver === "sqlServer") return `alter database ${ident(driver, name)} modify name = ${ident(driver, to)};`;
+  return `alter database ${ident(driver, name)} rename to ${ident(driver, to)};`;
 }
 
 export type ScriptKind = "selectAll" | "selectFirst" | "insert" | "update" | "delete";
