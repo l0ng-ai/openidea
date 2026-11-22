@@ -583,6 +583,19 @@ pub trait HostApi: Send + Sync {
         cancel: &CancellationToken,
         timeout: Duration,
     ) -> Result<ProcessOutput, HostError>;
+    /// Runs `cmd` with configurable capture options (API 1.15).
+    fn run_process_with_options(
+        &self,
+        cmd: ProcessCommand,
+        cwd: Option<&Path>,
+        stdin: Option<String>,
+        cancel: &CancellationToken,
+        timeout: Duration,
+        options: Option<crate::types::ProcessOptions>,
+    ) -> Result<ProcessOutput, HostError> {
+        let _ = options;
+        self.run_process(cmd, cwd, stdin, cancel, timeout)
+    }
     /// Delivers every event of `kind`, dropping its path filter.
     fn subscribe(&self, kind: EventKind);
     /// Delivers `kind` (`file-opened`, `file-saved`, `files-changed`) only for matching paths.
@@ -590,6 +603,17 @@ pub trait HostApi: Send + Sync {
     fn unsubscribe(&self, kind: &str);
     /// Starts `cmd` and returns the handle to it without waiting.
     fn start_process(&self, cmd: ProcessCommand, cwd: Option<&Path>, client: Option<&str>) -> Result<u64, HostError>;
+    /// Starts `cmd` with streaming options (API 1.15).
+    fn start_process_stream(
+        &self,
+        cmd: ProcessCommand,
+        cwd: Option<&Path>,
+        client: Option<&str>,
+        options: Option<crate::types::ProcessOptions>,
+    ) -> Result<u64, HostError> {
+        let _ = options;
+        self.start_process(cmd, cwd, client)
+    }
     /// What process `id` printed since the last call, each stream at most
     /// `max` bytes (the rest waits for the next call), and its status once it
     /// ended.

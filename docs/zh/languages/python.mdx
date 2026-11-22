@@ -21,6 +21,8 @@ basedpyright 以 `standard` 类型检查模式启动，而不是它自带的更�
 
 Ruff 只为位于 Ruff 配置之下的文件启动：`ruff.toml`、`.ruff.toml`，或包含 `[tool.ruff]` 表的 `pyproject.toml`。basedpyright 本身不提供格式化，格式化由 Ruff 负责。
 
+移动或重命名模块、包时（项目视图中，勾选 **搜索引用**），引用它的 `import` 和 `from … import` 语句（包括相对导入）会一起更新，和移动操作显示在同一个预览里。basedpyright 不支持文件移动，所以这些导入由 IDE 根据语法树自己查找。如果重命名改变了导入绑定的名字，导入会用别名保留原名：`from pkg import models` 变成 `from pkg import domain as models`。
+
 想手动指定类型检查器，打开 **设置 › 语言和框架 › 语言服务器**，选中这四个服务器中的任意一个，修改 **Python 语言服务器**。**自动** 会按上表顺序使用第一个已安装的服务器；也可以固定选一个，或选 **无**。
 
 ## 环境配置

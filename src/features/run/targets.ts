@@ -17,6 +17,7 @@ import { djangoLabel, djangoTestsOf } from "./djangoTypes";
 import { scanJvmTargets, simpleClassName } from "./jvmTargets";
 import { escapeRegExp } from "./testing/rerun";
 import { pestFilter, phpunitArgs, phpunitFilter } from "./testing/phpunit";
+import { frameworkFor } from "./testing";
 
 export type TargetKind = "main" | "test" | "suite" | "generate";
 
@@ -132,8 +133,9 @@ function rustTargets(lines: string[], relPath: string): RunTarget[] {
   );
 }
 
+/** Jest / Vitest `describe` / `test` / `it`, and Playwright's `test.describe` and modifiers. */
 const JS_RE =
-  /^(\s*)(describe|suite|context|test|it)\b(?:\.(?:only|skip|todo|concurrent|failing|sequential))*(\.each\s*(?:\(.*?\)|`[^`]*`))?\s*\(\s*(['"`])((?:\\.|(?!\4).)*)\4/;
+  /^(\s*)(test\.describe|describe|suite|context|test|it)\b(?:\.(?:only|skip|todo|concurrent|failing|sequential|fixme|fail|serial|parallel))*(\.each\s*(?:\(.*?\)|`[^`]*`))?\s*\(\s*(['"`])((?:\\.|(?!\4).)*)\4/;
 
 function jsTargets(lines: string[]): RunTarget[] {
   const out: RunTarget[] = [];
@@ -146,7 +148,7 @@ function jsTargets(lines: string[]): RunTarget[] {
     const name = m[5]!.replace(/\\(.)/g, "$1");
     const parameterized = !!m[3] || (m[4] === "`" && name.includes("${")) || /%[sdifjo#%p]|\$\w+/.test(name);
     const path = [...stack.map((s) => s.name), name];
-    const isSuite = m[2] === "describe" || m[2] === "suite" || m[2] === "context";
+    const isSuite = m[2] === "test.describe" || m[2] === "describe" || m[2] === "suite" || m[2] === "context";
     out.push({ line: i, kind: isSuite ? "suite" : "test", name: path.join(" > "), path, parameterized });
     if (isSuite) stack.push({ indent, name });
   }
@@ -469,6 +471,8 @@ export function targetConfig(
     env: { ...file.env },
     detected: true,
   });
+  // Playwright selects by declaration line (`file:line`), which also covers a describe block.
+  if (frameworkFor(file) === "playwright") return named(withLast(file.args, (f) => `${f}:${target.line + 1}`));
   switch (file.kind) {
     case "dotnet-test": {
       const methods =
@@ -482,6 +486,7 @@ export function targetConfig(
     case "npm":
     case "bun":
     case "deno":
+    case "node":
       return named([...file.args, "-t", jsNamePattern(target)]);
     case "pytest":
     case "python":

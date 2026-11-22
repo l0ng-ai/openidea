@@ -11161,6 +11161,12 @@ export type RunExtras_Deserialize = {
 	stopCommand?: string | null,
 	/**  Settings › Run Targets id the process runs on (over SSH); `None` = this machine. */
 	target?: string | null,
+	/**
+	 *  The test framework a test configuration runs when detection recognised one that the
+	 *  command line doesn't name (a `package.json` script running `playwright test`): picks the
+	 *  test output parser and how a single test is selected.
+	 */
+	testRunner?: string | null,
 };
 
 export type RunExtras_Serialize = {
@@ -11205,6 +11211,12 @@ export type RunExtras_Serialize = {
 	stopCommand?: string | null,
 	/**  Settings › Run Targets id the process runs on (over SSH); `None` = this machine. */
 	target?: string | null,
+	/**
+	 *  The test framework a test configuration runs when detection recognised one that the
+	 *  command line doesn't name (a `package.json` script running `playwright test`): picks the
+	 *  test output parser and how a single test is selected.
+	 */
+	testRunner?: string | null,
 };
 
 /**  A process started from a run configuration. */
