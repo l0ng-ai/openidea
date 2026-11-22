@@ -1155,6 +1155,60 @@ async function stubEarlierAmend(page: Page) {
   });
 }
 
+test("Amend sizes the chooser for long subjects while keeping the last commit action distinct", async ({
+  workbench: page,
+}) => {
+  await stubEarlierAmend(page);
+  const tip = "Record regional settlement adjustments across the quarterly audit and reconciliation reports";
+  const earlier = "Expand the warehouse reconciliation report with monthly ledger and inventory audit totals";
+  await page.evaluate(
+    ({ tip, earlier }) => {
+      const handlers = window.__ipc.handlers;
+      const log = handlers.vcs_log!;
+      handlers.vcs_log = (args) =>
+        (log(args) as { id: string; summary: string; message: string }[]).map((commit) => {
+          const subject = commit.id === "1111111" ? tip : commit.id === "aaaaaaa" ? earlier : commit.summary;
+          return { ...commit, summary: subject, message: subject };
+        });
+    },
+    { tip, earlier },
+  );
+  await page.setViewportSize({ width: 1040, height: 700 });
+  await page.keyboard.press("Meta+k");
+  const panel = page.getByRole("region", { name: "Commit", exact: true });
+  const choose = panel.getByRole("button", { name: "Choose Commit to Amend", exact: true });
+  await choose.click();
+  const list = page.getByRole("listbox", { name: "Choose Commit to Amend", exact: true });
+  const popup = list.locator("xpath=ancestor::*[@data-popup]");
+  const search = popup.getByRole("textbox", { name: "Search commits", exact: true });
+  const last = list.getByRole("option", { name: /^Amend Last Commit/ });
+  const previous = list.getByRole("option", { name: earlier, exact: true });
+
+  await expect(previous).toBeVisible();
+  const wide = (await popup.boundingBox())!;
+  expect(wide.width).toBeGreaterThan(360);
+  expect(wide.width).toBeLessThanOrEqual(522);
+  await expect(last.getByText("Amend Last Commit", { exact: true })).toHaveCSS("font-weight", "600");
+  await expect(last.getByText(tip, { exact: true })).toHaveAttribute("title", tip);
+  await expect(previous.getByText(earlier, { exact: true })).toHaveAttribute("title", earlier);
+
+  await page.setViewportSize({ width: 440, height: 520 });
+  await expect
+    .poll(async () => {
+      const box = (await popup.boundingBox())!;
+      return box.x >= 0 && box.x + box.width <= 440 && box.width < wide.width;
+    })
+    .toBe(true);
+  await expect(search).toBeFocused();
+  await search.fill("inventory audit");
+  await expect(previous).toBeVisible();
+  await search.press("Enter");
+  await expect(list).toBeHidden();
+  await page.setViewportSize({ width: 1040, height: 700 });
+  await page.keyboard.press("Meta+k");
+  await expect(panel.getByRole("textbox", { name: "Commit message" })).toHaveValue(earlier);
+});
+
 test("Amend can select an earlier commit before protected history", async ({ workbench: page }) => {
   await stubEarlierAmend(page);
   await page.keyboard.press("Meta+k");
