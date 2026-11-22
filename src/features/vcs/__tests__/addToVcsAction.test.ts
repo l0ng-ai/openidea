@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileStatus } from "@/bindings";
 
 const stage = vi.hoisted(() => vi.fn(async () => ({ status: "ok", data: null })));
+const ignore = vi.hoisted(() => vi.fn(async () => ({ status: "ok", data: [] })));
 const notify = vi.hoisted(() => vi.fn());
 const project = vi.hoisted(() => ({ paths: [] as string[] }));
 
@@ -12,6 +13,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     commands: {
       ...real.commands,
       vcsStage: stage,
+      vcsAddToIgnore: ignore,
       vcsStatus: async () => ({ status: "ok", data: [] }),
       vcsBranchInfo: async () => ({ status: "ok", data: null }),
       vcsRoots: async () => ({ status: "ok", data: [{ root: "/repo", operation: null }] }),
@@ -43,6 +45,7 @@ let unregister: () => void;
 
 beforeEach(() => {
   stage.mockClear();
+  ignore.mockClear();
   notify.mockClear();
   project.paths = [];
   const files = [fs("dir/new.ts", "untracked"), fs("dir/sub/n2.ts", "untracked"), fs("dir/tracked.ts", "modified")];
@@ -80,5 +83,16 @@ describe("Add to VCS", () => {
     expect(notify).toHaveBeenCalledWith(
       expect.objectContaining({ title: "Nothing to add: the files are already under version control" }),
     );
+  });
+});
+
+describe("Add to .gitignore", () => {
+  it("ignores the Project view's selection while it has focus, and not otherwise", async () => {
+    project.paths = ["/repo/dir/new.ts"];
+    await getAction("vcs.ignoreShared")!.run({ arg: undefined, ctx: { vcsAvailable: true, projectViewFocus: true } });
+    expect(ignore).toHaveBeenCalledWith(["/repo/dir/new.ts"], "gitignore");
+    ignore.mockClear();
+    await getAction("vcs.ignoreShared")!.run({ arg: undefined, ctx: { vcsAvailable: true } });
+    expect(ignore).not.toHaveBeenCalledWith(["/repo/dir/new.ts"], "gitignore");
   });
 });
