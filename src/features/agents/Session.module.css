@@ -228,6 +228,10 @@
 .conversationRow[data-measured] {
   content-visibility: auto;
 }
+/* WebKit leaves a stale selection highlight on rows that skipped rendering (`useOffscreenRows`). */
+.stream[data-selection] > .conversationRow[data-measured] {
+  content-visibility: visible;
+}
 /* Keep turns distinct and the work within a turn close to its author. Not `* + *`: a
    universal adjacent-sibling rule makes Chromium restyle whole sibling subtrees on every
    DOM insertion anywhere in the window, which costs every editor scroll frame. */
