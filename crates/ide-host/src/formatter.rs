@@ -13,6 +13,22 @@ const OXFMT_CONFIGS: [&str; 4] = [".oxfmtrc.json", ".oxfmtrc.jsonc", "oxfmt.conf
 /// A Biome configuration, or Biome installed as a project dependency (it then uses its defaults).
 const BIOME_MARKERS: [&str; 3] = ["biome.json", "biome.jsonc", "node_modules/@biomejs/biome/package.json"];
 
+/// Reformat Code uses Biome below a Biome configuration or installation, unless the nearest
+/// configuration turns its formatter off (Biome lints, another tool formats).
+fn biome_formats(file: &Path) -> bool {
+    let config = ["biome.json", "biome.jsonc"]
+        .iter()
+        .filter_map(|name| formatter::find_up(file, Path::new(name)))
+        .max_by_key(|path| path.components().count());
+    match config {
+        Some(config) => !std::fs::read_to_string(&config)
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&ide_core::jsonc::strip(&text)).ok())
+            .is_some_and(|v| v.pointer("/formatter/enabled") == Some(&serde_json::Value::Bool(false))),
+        None => BIOME_MARKERS.iter().any(|name| formatter::find_up(file, Path::new(name)).is_some()),
+    }
+}
+
 fn supports_external_format(language: &LanguageConfig, tool: ExternalFormatter) -> bool {
     match language.formatter.as_ref().map(|f| f.tool.as_str()) {
         Some("prettier") if tool == ExternalFormatter::Biome => BIOME_LANGUAGES.contains(&language.id.as_str()),
@@ -61,7 +77,7 @@ fn external_tool(
     }
     let found = |names: &[&str]| names.iter().any(|name| formatter::find_up(file, Path::new(name)).is_some());
     let biome = enabled(Biome) && supports_external_format(language, Biome);
-    Ok(if biome && (settings.biome.prefer || found(&BIOME_MARKERS)) {
+    Ok(if biome && (settings.biome.prefer || biome_formats(file)) {
         Some(Biome)
     } else if enabled(Oxfmt) && (settings.oxfmt.prefer || found(&OXFMT_CONFIGS)) {
         Some(Oxfmt)
@@ -460,6 +476,10 @@ mod tests {
         assert_eq!(tool(None, "css", &web, &settings).unwrap(), Some(Biome));
         settings.biome.languages.retain(|l| l != "css");
         assert_eq!(tool(None, "css", &web, &settings).unwrap(), Some(Oxfmt));
+        // Biome only lints here: Prettier keeps formatting.
+        std::fs::remove_file(root.join("web/.oxfmtrc.json")).unwrap();
+        std::fs::write(root.join("web/biome.json"), r#"{ "formatter": { "enabled": false } }"#).unwrap();
+        assert_eq!(tool(None, "typescript", &web, &settings).unwrap(), Some(Prettier));
         settings.biome.prefer = true;
         assert_eq!(tool(None, "typescript", &api, &settings).unwrap(), Some(Biome));
         let markdown = tool(Some(Biome), "markdown", &readme, &settings).unwrap_err();

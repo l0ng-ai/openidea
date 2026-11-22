@@ -70,7 +70,7 @@ The Astro and Angular servers also run from the project's own `node_modules/.bin
 
 - **Prettier** (**Settings › Languages & Frameworks › Prettier**) formats JavaScript, JSX, TypeScript, TSX, JSON, Vue, HTML, CSS, SCSS, Less, GraphQL, YAML and Markdown by default. The executable is found in the project's `node_modules`, then the managed installation, then `PATH`, unless you set **Prettier path**.
 - **oxfmt** (**Settings › Languages & Frameworks › oxfmt**) replaces Prettier for an enabled language in files below an oxfmt configuration (`.oxfmtrc.json`, `oxfmt.config.ts`), or when it is the selected provider.
-- **Biome** (**Settings › Languages & Frameworks › Biome**) replaces Prettier and oxfmt for JavaScript, JSX, TypeScript, TSX, JSON, CSS and GraphQL in files below a `biome.json` / `biome.jsonc` or an installed `@biomejs/biome`, or when it is the selected provider. It formats whole files and reads its own configuration.
+- **Biome** (**Settings › Languages & Frameworks › Biome**) replaces Prettier and oxfmt for JavaScript, JSX, TypeScript, TSX, JSON, CSS and GraphQL in files below a `biome.json` / `biome.jsonc` or an installed `@biomejs/biome` (unless the configuration sets `formatter.enabled` to `false`), or when it is the selected provider. It formats whole files and reads its own configuration.
 
 On these pages, **Formatting provider** chooses between **Automatic (language server first)** and the tool itself, **Run on save** formats on save, and **Enabled languages** limits which languages the tool handles.
 
