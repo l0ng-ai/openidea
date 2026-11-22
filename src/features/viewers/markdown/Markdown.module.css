@@ -137,6 +137,23 @@
   color: var(--fg-editor, var(--fg-secondary));
   opacity: 0.8;
 }
+.preview :global([data-math-svg]) {
+  position: relative;
+}
+.preview :global([data-math-svg="display"]) {
+  display: block;
+  margin: 1em 0;
+  overflow: auto hidden;
+  padding: 2px 0;
+  text-align: center;
+}
+.preview :global(mjx-assistive-mml) {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  user-select: none;
+}
 .preview :global(table) {
   display: block;
   width: max-content;
