@@ -69,7 +69,9 @@ export function hostFromConfig(configs: Map<string, string>[]): string {
     return null;
   };
   const port = get("server.port");
-  const ssl = /^true$/i.test(get("server.ssl.enabled") ?? "") || !!get("server.ssl.key-store");
+  // `server.ssl.enabled` defaults to true, so a key store alone turns TLS on; an explicit false turns it off.
+  const enabled = get("server.ssl.enabled") ?? "";
+  const ssl = /^true$/i.test(enabled) || (!/^false$/i.test(enabled) && !!get("server.ssl.key-store"));
   const scheme = ssl ? "https" : "http";
   const portNum = port && /^\d+$/.test(port) && port !== "0" ? Number(port) : 8080;
   const context = [

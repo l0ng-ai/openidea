@@ -68,6 +68,7 @@ vi.mock("./hierarchy", () => ({ startHierarchyRefactoring }));
 const startExtractInterface = vi.fn();
 vi.mock("./extractInterface", () => ({ EXTRACT_INTERFACE_LANGUAGES: new Set(["java"]), startExtractInterface }));
 
+const { registerAction } = await import("@/platform/actions");
 const { classifyAction, kindAdvertised, cannotPerform } = await import("./catalog");
 const { refactorThis, requestKind, runRefactoring } = await import("./refactorThis");
 const { useLspPopup, closePopup } = await import("@/editor/lsp/popupStore");
@@ -320,6 +321,33 @@ describe("Refactor menu actions", () => {
     query = async () => unavailable;
     await runRefactoring(v, "changeSignature");
     expect(showHint).toHaveBeenLastCalledWith(v, "Cannot perform refactoring. No language server for Rust is running");
+  });
+
+  it("offer to install pylsp-rope when a Python refactoring it provides finds nothing", async () => {
+    const prompt = vi.fn();
+    const dispose = registerAction({
+      id: "tools.promptInstall",
+      title: "Install Missing Tool",
+      run: ({ arg }) => prompt(arg),
+    });
+    try {
+      const py = editor("total = price * 2", "python");
+      for (const id of ["extractMethod", "inline", "extractParameter"] as const) await runRefactoring(py, id);
+      expect(prompt.mock.calls.map((c) => c[0])).toEqual([
+        { name: "pylsp", refactoring: "Extract Method" },
+        { name: "pylsp", refactoring: "Inline" },
+        { name: "pylsp", refactoring: "Introduce Parameter" },
+      ]);
+      prompt.mockClear();
+      // Not a rope refactoring, another language, or the server already offers it.
+      await runRefactoring(py, "move");
+      await runRefactoring(editor(), "extractMethod");
+      query = answer([action("Extract method", "refactor.extract")]);
+      await runRefactoring(editor("total = price * 2", "python"), "extractMethod");
+      expect(prompt).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+    }
   });
 
   it("Introduce Variable falls back to the syntax refactoring", async () => {
