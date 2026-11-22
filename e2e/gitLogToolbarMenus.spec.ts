@@ -60,6 +60,58 @@ test.beforeEach(async ({ workbench: page }) => {
   await expect(page.getByRole("listbox", { name: "Commits" }).getByRole("option").first()).toBeVisible();
 });
 
+test("Git Log separates commit message typography from compact metadata", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 860, height: 720 });
+  await page.evaluate(() => {
+    window.__ipc.handlers.vcs_log_details_batch = ({ revisions }) =>
+      (revisions as string[]).map(() => ({
+        message: "Commit 1\n\nUpdate checkout totals after applying shipping discounts.",
+        containingBranches: ["feature/update-checkout-totals-and-apply-shipping-discounts".repeat(3)],
+        signature: "N",
+        signer: "",
+        key: "",
+        fingerprint: "",
+      }));
+  });
+  const setEditorSize = (fontSize: number) =>
+    page.evaluate(async (fontSize) => {
+      const module = "/src/platform/project.ts";
+      const { useProject } = await import(/* @vite-ignore */ module);
+      const { settings } = useProject.getState();
+      useProject.setState({
+        settings: { ...settings, editor: { ...settings?.editor, fontFamily: "Consolas", fontSize } },
+      });
+    }, fontSize);
+  await setEditorSize(18);
+  const commits = page.getByRole("listbox", { name: "Commits" });
+  await commits.getByRole("option").filter({ hasText: "Commit 1" }).first().click();
+
+  const message = page.locator("#message");
+  const subject = message.getByText("Commit 1", { exact: true });
+  const body = message.getByText("Update checkout totals after applying shipping discounts.", { exact: true });
+  await expect(body).toHaveCSS("font-size", "18px");
+  await expect(body).toHaveCSS("font-family", /Consolas/);
+  await expect(subject).toHaveCSS("font-size", "18px");
+  const author = message.getByTitle("Copy revision number").locator("..");
+  const parent = message.getByText(/^Parent\s/);
+  await expect(author).toHaveCSS("font-size", "12px");
+  const authorBox = (await author.boundingBox())!;
+  const parentBox = (await parent.boundingBox())!;
+  expect(parentBox.y - authorBox.y - authorBox.height).toBeLessThanOrEqual(4);
+  const signature = message.getByText(/Signature: Unsigned/);
+  await signature.scrollIntoViewIfNeeded();
+  await expect(signature).toBeInViewport();
+  const overflow = await message.evaluate((el) => {
+    const scroller = el.querySelector('[class*="_messageBox_"]')!;
+    return scroller.scrollWidth - scroller.clientWidth;
+  });
+  expect(overflow).toBeLessThanOrEqual(1);
+
+  await setEditorSize(15);
+  await expect(body).toHaveCSS("font-size", "15px");
+  await expect(author).toHaveCSS("font-size", "12px");
+});
+
 test("a second click on a Git Log toolbar button closes its popup", async ({ workbench: page }) => {
   const toolbar = page.getByRole("toolbar", { name: "Log filters" });
   const branchPopup = page.getByRole("dialog", { name: "Filter by Branch" });
@@ -120,6 +172,74 @@ test("Git Log keeps filters and actions inside the commit pane at the minimum wi
   await page.keyboard.press("Escape");
   await toolbar.getByRole("button", { name: "More Filters" }).click();
   await expect(page.getByRole("menuitem", { name: "Paths" })).toBeVisible();
+});
+
+test("Git Log puts affected changes on the changed-files toolbar and groups preview options", async ({
+  workbench: page,
+}) => {
+  await page.setViewportSize({ width: 1100, height: 720 });
+  await page.evaluate(() => {
+    window.__ipc.handlers.vcs_commit_files = () => [
+      { path: "src/prices.ts", oldPath: null, kind: "modified" },
+      { path: "docs/checkout.md", oldPath: null, kind: "modified" },
+    ];
+  });
+  const commit = page.getByRole("listbox", { name: "Commits" }).getByRole("option").first();
+  const toolbar = page.getByRole("toolbar", { name: "Changed files" });
+  const tree = page.getByRole("tree", { name: "Changed files" });
+  const prices = tree.getByText("prices.ts", { exact: true });
+  const notes = tree.getByText("checkout.md", { exact: true });
+  const affected = toolbar.getByRole("button", { name: "Show Only Affected Changes" });
+  const viewOptions = toolbar.getByRole("button", { name: "View Options" });
+  const menu = page.getByRole("menu");
+
+  await commit.click();
+  await expect(notes).toBeVisible();
+  await expect(affected).toHaveCount(0);
+
+  const filter = (paths: string[]) =>
+    page.evaluate(async (paths) => {
+      const mod = "/src/features/vcs/logStore.ts";
+      const { setLogFilters } = await import(/* @vite-ignore */ mod);
+      setLogFilters({ paths });
+    }, paths);
+  await filter(["/dev/acme-api/src"]);
+  await commit.click();
+  await expect(affected).toHaveAttribute("aria-pressed", "false");
+  await affected.press("Space");
+  await expect(affected).toHaveAttribute("aria-pressed", "true");
+  await expect(prices).toBeVisible();
+  await expect(notes).toHaveCount(0);
+
+  await page.setViewportSize({ width: 490, height: 550 });
+  await expect(affected).toBeInViewport({ ratio: 1 });
+  await expect
+    .poll(() =>
+      toolbar.evaluate((el) => {
+        const bounds = el.getBoundingClientRect();
+        return [...el.querySelectorAll("button")].every((button) => {
+          const box = button.getBoundingClientRect();
+          return box.left >= bounds.left && box.right <= bounds.right && box.bottom <= bounds.bottom;
+        });
+      }),
+    )
+    .toBe(true);
+  await viewOptions.click();
+  await expect(menu.getByText("Layout", { exact: true })).toBeVisible();
+  await expect(menu.getByRole("menuitemcheckbox", { name: "Show Only Affected Changes" })).toHaveCount(0);
+  const preview = menu.getByRole("menuitemcheckbox", { name: "Show Diff Preview" });
+  await expect(preview).toHaveAttribute("aria-checked", "true");
+  await preview.click();
+  await viewOptions.click();
+  await expect(preview).toHaveAttribute("aria-checked", "false");
+  await page.keyboard.press("Escape");
+  await affected.click();
+  await expect(notes).toBeVisible();
+
+  await filter([]);
+  await commit.click();
+  await expect(affected).toHaveCount(0);
+  await expect(notes).toBeVisible();
 });
 
 test("the Paths filter replaces the repository filter and can be cleared from overflow", async ({

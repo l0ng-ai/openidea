@@ -46,7 +46,8 @@ test("sorts collapsed workspace roots by project type, shows their icons and ref
     .getByRole("region", { name: "Project", exact: true })
     .getByRole("button", { name: "Options", exact: true })
     .click();
-  await page.getByRole("menuitemcheckbox", { name: "Sort by Type", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Sort By", exact: true }).hover();
+  await page.getByRole("menuitemcheckbox", { name: "Type", exact: true }).click();
   await expect(tree.locator("[data-project-path]")).toHaveText([
     "rust/work/rust",
     "dart/work/dart",
@@ -185,7 +186,8 @@ test("keeps surviving workspace icons and type order during removal", async ({ w
   const panel = page.getByRole("region", { name: "Project", exact: true });
   await panel.getByRole("button", { name: "Collapse All", exact: true }).click();
   await panel.getByRole("button", { name: "Options", exact: true }).click();
-  await page.getByRole("menuitemcheckbox", { name: "Sort by Type", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Sort By", exact: true }).hover();
+  await page.getByRole("menuitemcheckbox", { name: "Type", exact: true }).click();
   const rows = tree.locator('[data-project-path^="/work/"]');
   await expect(rows).toHaveText(["z-rust/work/z-rust", "a-go/work/a-go", "b-web/work/b-web"]);
   const before = await icons();

@@ -770,7 +770,8 @@ impl Host {
             ide_agent::SkillsPolicy {
                 user: layer(ide_workspace::settings::SettingsScope::Global),
                 workspace: layer(ide_workspace::settings::SettingsScope::Project),
-                workspace_trusted: trust.trusted(&skill_root).unwrap_or(false),
+                workspace_trusted: trust.window_trusted(&skill_root).unwrap_or(false),
+                workspace_roots: crate::ops::agent::workspace_skill_roots(&skill_root),
             }
         }));
         agents.set_mcp_servers_hook(Box::new(move || {

@@ -17,6 +17,7 @@
 
 pub mod archive;
 mod bundled;
+mod dotnet;
 pub mod formatter;
 pub mod jdk;
 pub mod mirror;
@@ -36,11 +37,11 @@ use ide_language::LanguageConfig;
 use parking_lot::Mutex;
 use platform::{Os, Platform};
 pub use process::progress_event;
-use process::run_collect;
 pub use process::{
     Emit, Http, PUBLIC_NPM_REGISTRY, is_npm_registry_miss, npm_public_registry_args, run_npm_with_public_fallback,
     run_quiet, run_streamed,
 };
+use process::{run_collect, run_streamed_picking};
 pub use registry::{Method, ReleaseSource, TOOLS, ToolKind, ToolSpec};
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -1190,9 +1191,13 @@ impl Tools {
         let tool = dir.join("tool");
         std::fs::create_dir_all(&tool)?;
         let dotnet = self.which("dotnet").expect("checked");
+        let version = self.dotnet_tool_version(spec, package, &dotnet, cancel, emit)?;
         let mut c = self.command(&dotnet);
-        c.args(["tool", "install", package, "--tool-path"]).arg(&tool);
-        let result = run_streamed(c, cancel, emit).and_then(|_| {
+        c.args(["tool", "install", package, "--tool-path"]).arg(&tool).args(["--verbosity", "normal"]);
+        if let Some(version) = &version {
+            c.args(["--version", version]);
+        }
+        let result = run_streamed_picking(c, cancel, emit, dotnet::nuget_errors).and_then(|_| {
             // The tool's apphost looks for .NET in the default location only; a
             // Homebrew / user-local SDK must be named through DOTNET_ROOT.
             let root = self.dotnet_root(&dotnet);
@@ -1222,6 +1227,58 @@ impl Tools {
             })
         });
         self.write_manifest(spec.name, &Manifest { version, source: Some(format!("nuget:{package}")) })
+    }
+
+    /// The `--version` to install `package` with: `None` for the latest, or the newest version
+    /// the installed SDK supports. Fails when there is no SDK, or no version runs on it.
+    fn dotnet_tool_version(
+        &self,
+        spec: &ToolSpec,
+        package: &str,
+        dotnet: &Path,
+        cancel: &CancellationToken,
+        emit: Emit,
+    ) -> IdeResult<Option<String>> {
+        let mut c = self.command(dotnet);
+        c.arg("--list-sdks");
+        let Some((true, out)) = run_quiet(c, Duration::from_secs(20)) else { return Ok(None) };
+        let Some(sdk) = dotnet::newest_sdk(&out) else {
+            return Err(IdeError::unavailable(format!(
+                "{} needs the .NET SDK, but `dotnet --list-sdks` lists none. Install it from {}",
+                spec.display,
+                dotnet::SDK_DOWNLOAD_URL
+            )));
+        };
+        let pick = Http::new(&self.system_path)
+            .and_then(|http| dotnet::pick_tool_version(package, sdk.major, |url| http.get_text(url, cancel)));
+        match pick {
+            Ok(dotnet::ToolPick::Latest) => Ok(None),
+            Ok(dotnet::ToolPick::Older { version, latest, needs }) => {
+                emit(InstallEvent::Line {
+                    text: format!(
+                        "{package} {latest} needs the .NET {needs} SDK, found {}; installing {version}, the newest version that runs on it",
+                        sdk.version
+                    ),
+                });
+                Ok(Some(version))
+            }
+            Ok(dotnet::ToolPick::Incompatible { latest, needs }) => Err(IdeError::unavailable(format!(
+                "{} {latest} requires the .NET {needs} SDK; found {}. Install it from {}",
+                spec.display,
+                sdk.version,
+                dotnet::SDK_DOWNLOAD_URL
+            ))),
+            Err(e) if e.kind == ErrorKind::Cancelled => Err(e),
+            Err(e) => {
+                emit(InstallEvent::Line {
+                    text: format!(
+                        "Could not check which {package} version runs on .NET {}: {}",
+                        sdk.version, e.message
+                    ),
+                });
+                Ok(None)
+            }
+        }
     }
 
     /// The .NET install `dotnet` runs from: `Microsoft.NETCore.App 9.0.1 [<root>/shared/Microsoft.NETCore.App]`.
