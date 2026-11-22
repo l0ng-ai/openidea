@@ -463,6 +463,28 @@ pub async fn sdk_python_pip(
     result
 }
 
+/// Installs the lines of a requirements file (options and requirements); output streams through `on_output`.
+#[command(trust = outside_restricted)]
+pub async fn sdk_python_install_requirements(
+    host: &Host,
+    window: &str,
+    python: PathBuf,
+    lines: Vec<String>,
+    request: RequestId,
+    on_output: Channel<String>,
+) -> IdeResult<()> {
+    host.require_trust_if_project(window)?;
+    let cancel = host.begin_project_request(window, request);
+    let result = blocking(move || {
+        ide_sdk::python::install_requirements(&python, &lines, &cancel, &|line| {
+            let _ = on_output.send(line);
+        })
+    })
+    .await;
+    host.end_request(request);
+    result
+}
+
 /// The JDK whose home is `path`, as the SDK list shows it; `None` when it is no JDK home.
 #[command(trust = trusted)]
 pub async fn sdk_jdk_at(path: String) -> IdeResult<Option<Sdk>> {
@@ -664,6 +686,7 @@ ide_command::domain!(
     sdk_python_packages,
     sdk_python_package_index,
     sdk_python_pip,
+    sdk_python_install_requirements,
     sdk_python_project_interpreters,
     sdk_python_sys_path,
     sdk_python_user_path_problems,

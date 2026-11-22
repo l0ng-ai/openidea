@@ -277,12 +277,11 @@ pub async fn python_requirements(
     let result = host
         .blocking(move || {
             let snap = project.documents.snapshot(doc)?;
-            let name = snap.path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
             if snap.large || snap.read_only {
                 return Ok(None);
             }
-            let dependencies = python::requirements(name, &snap.text);
-            if dependencies.is_empty() {
+            let manifest = python::manifest(snap.path.as_ref(), &snap.text, &|path| std::fs::read_to_string(path).ok());
+            if manifest.requirements.is_empty() {
                 return Ok(None);
             }
             // Running the interpreter runs project code (sitecustomize, .pth files).
@@ -290,16 +289,23 @@ pub async fn python_requirements(
             let Some(python) = crate::ops::sdk::effective_python(&config_dir, &project, snap.path.parent()) else {
                 return Ok(None);
             };
-            let requirements: Vec<&str> = dependencies.iter().map(|d| d.requirement.as_str()).collect();
+            let requirements: Vec<&str> =
+                manifest.requirements.iter().map(|r| r.dependency.requirement.as_str()).collect();
             let states = ide_sdk::python::unsatisfied_requirements(&python, &requirements, &cancel)?;
-            let unsatisfied = dependencies
+            let unsatisfied = manifest
+                .requirements
                 .into_iter()
                 .zip(states)
-                .filter_map(|(dependency, state)| {
-                    state.map(|s| UnsatisfiedRequirement { dependency, installed: s.installed })
+                .filter_map(|(r, state)| {
+                    state.map(|s| UnsatisfiedRequirement {
+                        dependency: r.dependency,
+                        installed: s.installed,
+                        install: r.install,
+                    })
                 })
                 .collect();
-            Ok(Some(PythonRequirements { python: python.into(), unsatisfied }))
+            let options = manifest.options;
+            Ok(Some(PythonRequirements { python: python.into(), unsatisfied, options }))
         })
         .await;
     host.end_request(request);
@@ -447,6 +453,8 @@ mod tests {
         assert_eq!(found.unsatisfied.len(), 1);
         assert_eq!(found.unsatisfied[0].dependency.package, "openidea-missing-xyz");
         assert_eq!(found.unsatisfied[0].installed, None);
+        assert_eq!(found.unsatisfied[0].install.as_deref(), Some("openidea-missing-xyz>=1"));
+        assert!(found.options.is_empty());
         let other = root.join("notes.txt");
         std::fs::write(&other, text).unwrap();
         let info = project.documents.open(&other).unwrap();

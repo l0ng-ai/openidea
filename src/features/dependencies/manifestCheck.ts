@@ -17,8 +17,8 @@ export interface ManifestCheck<T> {
   reset?(path: string): void;
   /** Other reasons to check again (an install finished); returns the unsubscribe. */
   watch?(recheck: () => void): () => void;
-  /** Check again when the editor gains focus (the environment may have changed meanwhile). */
-  onFocus?: boolean;
+  /** Check again when the editor gains focus, at most once in this many ms (the environment may have changed). */
+  onFocus?: number;
 }
 
 export const checkEnabled = (inspection: string) => inspectionProfile()[inspection]?.enabled !== false;
@@ -44,8 +44,10 @@ export function manifestCheck<T>(doc: EditorDocContext, check: ManifestCheck<T>)
       if (request !== null) void commands.cancelRequest(request);
       request = null;
     };
+    let lastRun = 0;
     const run = async () => {
       if (disposed || !checkEnabled(check.inspection)) return;
+      lastRun = Date.now();
       const mine = sequence;
       const text = view.state.doc;
       const root = useProject.getState().project?.root;
@@ -91,7 +93,7 @@ export function manifestCheck<T>(doc: EditorDocContext, check: ManifestCheck<T>)
     return {
       update: (u) => {
         if (u.docChanged) schedule();
-        else if (check.onFocus && u.focusChanged && view.hasFocus) recheck();
+        else if (check.onFocus && u.focusChanged && view.hasFocus && Date.now() - lastRun >= check.onFocus) recheck();
       },
       destroy: () => {
         disposed = true;

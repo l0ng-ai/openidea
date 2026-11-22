@@ -3581,16 +3581,13 @@ fn server_command_paths_report_executables_set_for_built_in_servers() {
 }
 
 #[test]
-fn unsatisfied_requirements_are_judged_by_the_interpreter() {
+fn unsatisfied_requirements_are_judged_without_pip_or_packaging() {
     let Some(base) = crate::exec::which("python3").or_else(|| crate::exec::which("python")) else { return };
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path().join("env");
-    // System site packages: pip's vendored `packaging` when the base has pip.
-    let status = std::process::Command::new(base)
-        .args(["-I", "-m", "venv", "--without-pip", "--system-site-packages"])
-        .arg(&home)
-        .status()
-        .unwrap();
+    // Like a uv environment: neither pip nor packaging.
+    let status =
+        std::process::Command::new(base).args(["-I", "-m", "venv", "--without-pip"]).arg(&home).status().unwrap();
     assert!(status.success());
     let python = home.join(bin_dir()).join(exe("python"));
     let site = std::process::Command::new(&python)
@@ -3601,11 +3598,7 @@ fn unsatisfied_requirements_are_judged_by_the_interpreter() {
     let info = site.join("Fake.Dist_Pkg-1.0.dist-info");
     std::fs::create_dir_all(&info).unwrap();
     std::fs::write(info.join("METADATA"), "Metadata-Version: 2.1\nName: Fake.Dist_Pkg\nVersion: 1.0\n").unwrap();
-    let packaging = std::process::Command::new(&python)
-        .args(["-c", "import pip._vendor.packaging.requirements"])
-        .status()
-        .is_ok_and(|s| s.success());
-    let cancel = CancellationToken::new();
+    let this_platform = if cfg!(target_os = "macos") { "darwin" } else { std::env::consts::OS };
     let found = crate::python::unsatisfied_requirements(
         &python,
         &[
@@ -3614,13 +3607,57 @@ fn unsatisfied_requirements_are_judged_by_the_interpreter() {
             "fake-dist-pkg>=2",
             "openidea-not-installed-xyz[extra]==1",
             "openidea-not-installed-xyz; sys_platform == 'nowhere'",
+            &format!("openidea-not-installed-xyz; sys_platform == '{this_platform}'"),
         ],
-        &cancel,
+        &CancellationToken::new(),
     )
     .unwrap();
     let missing = || Some(crate::python::Unsatisfied { installed: None });
-    let old = packaging.then(|| crate::python::Unsatisfied { installed: Some("1.0".into()) });
-    assert_eq!(found, [None, None, old, missing(), None]);
+    let old = Some(crate::python::Unsatisfied { installed: Some("1.0".into()) });
+    assert_eq!(found, [None, None, old, missing(), None, missing()]);
+}
+
+#[test]
+fn requirements_are_judged_by_pep_440_and_pep_508() {
+    let env: std::collections::HashMap<String, String> = [
+        ("implementation_name", "cpython"),
+        ("implementation_version", "3.12.1"),
+        ("os_name", "posix"),
+        ("platform_machine", "arm64"),
+        ("platform_python_implementation", "CPython"),
+        ("platform_release", "24.0.0"),
+        ("platform_system", "Darwin"),
+        ("platform_version", "Darwin Kernel"),
+        ("python_full_version", "3.12.1"),
+        ("python_version", "3.12"),
+        ("sys_platform", "darwin"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_owned(), v.to_owned()))
+    .collect();
+    let installed = [("django", "4.2"), ("numpy", "2.0.0rc1"), ("legacy", "not a version")]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .collect();
+    let found = crate::python::Environment { installed, env };
+    let old = |v: &str| Some(crate::python::Unsatisfied { installed: Some(v.into()) });
+    let missing = Some(crate::python::Unsatisfied { installed: None });
+    let cases: [(&str, Option<crate::python::Unsatisfied>); 11] = [
+        ("Django>=5", old("4.2")),
+        ("django~=4.1", None),
+        ("Django==4.*", None),
+        ("django!=4.2", old("4.2")),
+        ("numpy>=2.0.0rc1", None),
+        ("missing-pkg; sys_platform == 'darwin'", missing),
+        ("missing-pkg; python_version < '3.8'", None),
+        ("missing-pkg; extra == 'docs'", None),
+        ("legacy>=1", None),
+        ("django @ https://example.com/django.zip", None),
+        ("not a requirement !!", None),
+    ];
+    for (requirement, expected) in cases {
+        assert_eq!(crate::python::judge(&found, &[requirement]), [expected], "{requirement}");
+    }
 }
 
 #[test]

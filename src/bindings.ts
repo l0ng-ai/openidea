@@ -1544,6 +1544,8 @@ export const commands = {
 	/**  The interpreter checked, which installs go to. */
 	python: IpcPath,
 	unsatisfied: UnsatisfiedRequirement[],
+	/**  Lines every install from this manifest starts with (its indexes, constraints, hash mode). */
+	options: string[],
 } | null, IdeError>(__TAURI_INVOKE("python_requirements", { doc, request })),
 	/**  Recently opened files, most recent first (⌘E). */
 	recentFiles: () => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("recent_files")),
@@ -1842,6 +1844,8 @@ export const commands = {
 	sdkPythonEffective: (near: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_effective", { near })),
 	/**  The environments the window's project defines for Hatch, `default` first (hatch must be on PATH). */
 	sdkPythonHatchEnvs: (request: RequestId) => typedError<string[], IdeError>(__TAURI_INVOKE("sdk_python_hatch_envs", { request })),
+	/**  Installs the lines of a requirements file (options and requirements); output streams through `on_output`. */
+	sdkPythonInstallRequirements: (python: string, lines: string[], request: RequestId, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("sdk_python_install_requirements", { python, lines, request, onOutput })),
 	/**  An existing Python executable or virtualenv folder as an SDK; `None` if Python cannot run. */
 	sdkPythonInterpreter: (path: string) => typedError<{
 	/**
@@ -12078,6 +12082,8 @@ export type PythonRequirements = {
 	/**  The interpreter checked, which installs go to. */
 	python: IpcPath,
 	unsatisfied: UnsatisfiedRequirement[],
+	/**  Lines every install from this manifest starts with (its indexes, constraints, hash mode). */
+	options: string[],
 };
 
 export type PythonSettings = {
@@ -14538,6 +14544,8 @@ export type UnsatisfiedRequirement = {
 	dependency: ManifestDependency,
 	/**  The installed version that misses the specifier; `None` when not installed. */
 	installed: string | null,
+	/**  The requirements-file line that installs it; `None` when the IDE can't install it faithfully. */
+	install: string | null,
 };
 
 export type UpdateCheck = {

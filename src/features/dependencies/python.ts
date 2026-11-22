@@ -1,7 +1,7 @@
 /**
  * Requirements of `requirements*.txt` / `pyproject.toml` that the project's interpreter doesn't
  * satisfy (PyCharm's "Package requirements are not satisfied"): a warning on each, quick fixes
- * and a banner that install them with pip / uv as Settings › Python Interpreter does.
+ * and a banner that install them with pip / uv, the installer Settings › Python Interpreter uses.
  */
 import { StateEffect, StateField, type Extension } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
@@ -15,26 +15,26 @@ import {
   type ContributedIntention,
   type EditorDocContext,
 } from "@/editor/api";
-import { call, commands, nextRequestId, onIdeEvent, type PythonRequirements, type RequestId } from "@/platform/ipc";
+import { call, commands, isCancelled, nextRequestId, onIdeEvent, type PythonRequirements } from "@/platform/ipc";
 import { PYTHON_REQUIREMENTS_INSPECTION, PYTHON_REQUIREMENTS_PRODUCER } from "@/platform/inspections";
 import { useProject } from "@/platform/project";
 import { tx } from "@/platform/i18n";
 import { notifications, registerEditorBanner } from "@/workbench/contributions";
-import { upsertTask } from "@/workbench/tasks";
+import { queueTask, upsertTask } from "@/workbench/tasks";
 import { checkEnabled, manifestCheck, type ManifestCheck } from "./manifestCheck";
 
 interface State {
   /** By file: its last check, when something was unsatisfied. */
   byPath: Map<string, PythonRequirements>;
-  /** Interpreters an install is running for. */
-  installing: Set<string>;
+  /** Installs running or queued, by interpreter. */
+  installing: Map<string, number>;
   /** Banner dismissed until the project is reopened. */
   ignored: boolean;
   /** Bumped when an install ends: open manifests check again. */
   installs: number;
 }
 
-const initial = (): State => ({ byPath: new Map(), installing: new Set(), ignored: false, installs: 0 });
+const initial = (): State => ({ byPath: new Map(), installing: new Map(), ignored: false, installs: 0 });
 export const useRequirements = create<State>(initial);
 
 export const isPythonManifest = (path: string) => /(?:^|\/)(?:requirements[^/]*\.txt|pyproject\.toml)$/.test(path);
@@ -49,54 +49,57 @@ function setResult(path: string, result: PythonRequirements | null) {
   });
 }
 
-function setInstalling(python: string, on: boolean) {
+function countInstall(python: string, delta: 1 | -1) {
   useRequirements.setState((s) => {
-    const installing = new Set(s.installing);
-    if (on) installing.add(python);
+    const installing = new Map(s.installing);
+    const count = (installing.get(python) ?? 0) + delta;
+    if (count > 0) installing.set(python, count);
     else installing.delete(python);
-    return on ? { installing } : { installing, installs: s.installs + 1 };
+    return delta > 0 ? { installing } : { installing, installs: s.installs + 1 };
   });
 }
 
-/** Installs `requirements` one by one into `python`, as a background task; failures end in one notification. */
-export async function installRequirements(python: string, requirements: readonly string[]): Promise<void> {
-  if (!requirements.length || useRequirements.getState().installing.has(python)) return;
-  setInstalling(python, true);
-  const id = `python-requirements:${python}`;
+/** The lines that install `unsatisfied`, leaving out what the IDE can't install faithfully. */
+const installLines = (unsatisfied: PythonRequirements["unsatisfied"]) =>
+  unsatisfied.flatMap((u) => (u.install === null ? [] : [u.install]));
+
+let installSeq = 0;
+
+/**
+ * Installs requirement `lines` into the checked interpreter with one `pip install -r` that also
+ * carries the manifest's options (indexes, constraints, hash mode), as a background task queued
+ * behind other installs into that interpreter; a failure ends in a notification.
+ */
+export async function installRequirements(found: PythonRequirements, lines: readonly string[]): Promise<void> {
+  if (!lines.length) return;
+  const { python, options } = found;
+  const id = `python-requirements:${++installSeq}`;
   const title = tx("Installing package requirements");
-  let current: RequestId | null = null;
-  let cancelled = false;
-  const cancel = () => {
-    cancelled = true;
-    if (current !== null) void commands.cancelRequest(current);
-  };
-  const failures: string[] = [];
+  countInstall(python, 1);
   try {
-    for (const [i, requirement] of requirements.entries()) {
-      if (cancelled) break;
-      const progress = (message: string) =>
-        upsertTask({ id, title, message, fraction: i / requirements.length, done: false, cancel });
-      progress(requirement);
+    await queueTask(`python-requirements:${python}`, { id, title }, async () => {
+      const request = nextRequestId();
+      const cancel = () => void commands.cancelRequest(request);
+      const progress = (message: string) => upsertTask({ id, title, message, fraction: null, done: false, cancel });
+      progress(lines.join(", "));
       const channel = new Channel<string>();
       channel.onmessage = (line) => line.trim() && progress(line.trim());
-      current = nextRequestId();
       try {
-        // oxlint-disable-next-line no-await-in-loop -- installs are one at a time with a shared cancellable request and progress
-        await call(commands.sdkPythonPip(python, requirement, false, false, current, channel));
-      } catch (e) {
-        if (!cancelled) failures.push(`${requirement}: ${e instanceof Error ? e.message : String(e)}`);
+        await call(commands.sdkPythonInstallRequirements(python, [...options, ...lines], request, channel));
+      } finally {
+        upsertTask({ id, title, message: null, fraction: 1, done: true });
       }
-    }
-  } finally {
-    upsertTask({ id, title, message: null, fraction: 1, done: true });
-    setInstalling(python, false);
-  }
-  if (failures.length)
-    notifications().notify({
-      level: "error",
-      title: "Cannot install package requirements",
-      body: failures.join("\n"),
     });
+  } catch (e) {
+    if (!isCancelled(e))
+      notifications().notify({
+        level: "error",
+        title: "Cannot install package requirements",
+        body: e instanceof Error ? e.message : String(e),
+      });
+  } finally {
+    countInstall(python, -1);
+  }
 }
 
 const setFound = StateEffect.define<PythonRequirements | null>();
@@ -113,25 +116,23 @@ export function requirementFixes(view: EditorView, from: number, to: number): Co
   if (!checkEnabled(PYTHON_REQUIREMENTS_INSPECTION)) return [];
   const found = view.state.field(foundField, false);
   if (!found) return [];
-  const { python, unsatisfied } = found;
-  const at = unsatisfied.filter(({ dependency }) => from <= dependency.to && to >= dependency.from);
+  const at = found.unsatisfied.filter(
+    ({ dependency, install }) => install !== null && from <= dependency.to && to >= dependency.from,
+  );
   if (!at.length) return [];
-  const fixes: ContributedIntention[] = at.map(({ dependency }) => ({
+  const fixes: ContributedIntention[] = at.map(({ dependency, install }) => ({
     id: `python.installRequirement:${dependency.from}`,
     label: tx("Install requirement"),
     quickFix: true,
-    run: () => void installRequirements(python, [dependency.requirement]),
+    run: () => void installRequirements(found, [install!]),
   }));
-  if (unsatisfied.length > 1)
+  const all = installLines(found.unsatisfied);
+  if (all.length > 1)
     fixes.push({
       id: "python.installRequirements",
       label: tx("Install all missing requirements"),
       quickFix: true,
-      run: () =>
-        void installRequirements(
-          python,
-          unsatisfied.map(({ dependency }) => dependency.requirement),
-        ),
+      run: () => void installRequirements(found, all),
     });
   return fixes;
 }
@@ -139,7 +140,8 @@ export function requirementFixes(view: EditorView, from: number, to: number): Co
 const requirementsCheck = (path: string): ManifestCheck<PythonRequirements | null> => ({
   inspection: PYTHON_REQUIREMENTS_INSPECTION,
   producer: PYTHON_REQUIREMENTS_PRODUCER,
-  onFocus: true,
+  // An install in a terminal shows when the editor is back in focus, at most twice a minute.
+  onFocus: 30_000,
   fetch: (doc, id) => call(commands.pythonRequirements(doc.doc, id)),
   apply(view, result, text) {
     view.dispatch({ effects: [setFound.of(result), intentionsChanged.of(null)] });
@@ -161,8 +163,9 @@ const requirementsCheck = (path: string): ManifestCheck<PythonRequirements | nul
       if (s.installs !== prev.installs) recheck();
     });
     // Another interpreter chosen.
+    const interpreter = (s: ReturnType<typeof useProject.getState>) => s.settings?.languages?.python?.interpreter;
     const offSettings = useProject.subscribe((s, prev) => {
-      if (s.settings !== prev.settings) recheck();
+      if (interpreter(s) !== interpreter(prev)) recheck();
     });
     // Restricted Mode never runs the interpreter: check once the project is trusted.
     const offTrust = onIdeEvent("projectTrustChanged", (e) => {
@@ -192,20 +195,14 @@ function useRequirementsBanner(path: string) {
   const found = useRequirements((s) => (s.ignored ? undefined : s.byPath.get(path)));
   const installing = useRequirements((s) => !!found && s.installing.has(found.python));
   if (!found || installing) return null;
+  const lines = installLines(found.unsatisfied);
+  const ignore = { label: "Ignore", run: () => useRequirements.setState({ ignored: true }) };
   return {
     text: "Package requirements are not satisfied",
     level: "warning" as const,
-    actions: [
-      {
-        label: "Install requirements",
-        run: () =>
-          void installRequirements(
-            found.python,
-            found.unsatisfied.map((u) => u.dependency.requirement),
-          ),
-      },
-      { label: "Ignore", run: () => useRequirements.setState({ ignored: true }) },
-    ],
+    actions: lines.length
+      ? [{ label: "Install requirements", run: () => void installRequirements(found, lines) }, ignore]
+      : [ignore],
   };
 }
 

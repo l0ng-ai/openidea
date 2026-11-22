@@ -14,6 +14,7 @@ ide-core.workspace = true
 ide-language.workspace = true
 ide-run.workspace = true
 ide-vfs.workspace = true
+pep508_rs = "0.9.2"
 quick-xml = "0.42"
 serde.workspace = true
 serde_json.workspace = true
