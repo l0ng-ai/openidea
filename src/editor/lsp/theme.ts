@@ -164,19 +164,28 @@ export const lspTheme = EditorView.theme({
     justifyContent: "center",
   },
   ".cm-lsp-completion .cm-completionLabel": {
-    flex: "0 1 auto",
+    flex: "none",
+    maxWidth:
+      "calc(100% - var(--cm-completion-icon) - var(--cm-completion-gap) - var(--cm-completion-detail-gap, 0px) - var(--cm-completion-type-space, 0px))",
     minWidth: "0",
     overflow: "hidden",
     textOverflow: "ellipsis",
   },
   ".cm-lsp-completion .cm-completionDetail": {
-    flex: "0 1 auto",
+    // Parameters use the space left by the name and type.
+    flex: "1 1 0px",
     minWidth: "0",
     marginLeft: "0",
     fontStyle: "normal",
     color: "var(--fg-subtle)",
     overflow: "hidden",
     textOverflow: "ellipsis",
+  },
+  ".cm-lsp-completion li:not(.cm-lsp-option):has(> .cm-completionDetail)": {
+    "--cm-completion-detail-gap": "var(--cm-completion-gap)",
+  },
+  ".cm-lsp-completion li:has(> .cm-lsp-type)": {
+    "--cm-completion-type-space": "calc(2 * var(--space-4) + var(--cm-completion-gap))",
   },
   ".cm-lsp-completion .cm-completionMatchedText": {
     textDecoration: "none",
@@ -190,7 +199,6 @@ export const lspTheme = EditorView.theme({
   ".cm-lsp-completion .cm-lsp-type": {
     flex: "0 1 auto",
     minWidth: "0",
-    maxWidth: "60%",
     marginLeft: "auto",
     paddingLeft: "16px",
     textAlign: "right",

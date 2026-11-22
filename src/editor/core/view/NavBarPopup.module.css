@@ -53,14 +53,15 @@
 .childPopup {
   display: flex;
   flex-direction: column;
-  min-width: min(200px, calc(100vw - 12px));
 }
 .list {
+  --nav-child-row: calc(max(16px, 1.2em) + var(--space-0-5));
+  --nav-child-list-padding: 5px;
   min-height: 0;
   min-width: 0;
   max-width: min(480px, calc(100vw - 14px));
-  max-height: min(360px, 62vh);
-  padding: var(--space-1);
+  max-height: min(calc(20 * var(--nav-child-row) + 2 * var(--nav-child-list-padding)), 62vh);
+  padding: var(--nav-child-list-padding);
   overflow: auto;
   overflow-x: hidden;
   outline: none;
@@ -69,10 +70,11 @@
   display: flex;
   align-items: center;
   gap: var(--space-1);
-  height: var(--h-list-row);
-  padding: 0 var(--space-2);
+  height: var(--nav-child-row);
+  padding: 0 var(--space-0-5);
   border-radius: var(--radius-selection);
   color: var(--fg);
+  line-height: 1.2;
   white-space: nowrap;
 }
 .rowActive {

@@ -65,3 +65,49 @@ test("tool window header keeps its actions visible as the Project pane narrows",
   await hide.click();
   await expect(project).toBeHidden();
 });
+
+test("Project options expose behavior, appearance, and sorting as submenus", async ({ workbench: page }) => {
+  await openFromTree(page, "build.gradle.kts");
+  await page.setViewportSize({ width: 700, height: 500 });
+  await page.evaluate(async () => {
+    const path = "/src/workbench/toolwindows/store.ts";
+    (await import(/* @vite-ignore */ path)).setToolWindowSize("left", 185);
+  });
+  const header = page.locator('[data-toolwindow="project"] header');
+  const options = header.getByRole("button", { name: "Options", exact: true });
+  const locate = header.getByRole("button", { name: "Select Opened File", exact: true });
+  await options.press("Enter");
+
+  const menu = page.getByRole("menu", { name: "Project options", exact: true });
+  const behavior = menu.getByRole("menuitem", { name: "Behavior", exact: true });
+  const appearance = menu.getByRole("menuitem", { name: "Appearance", exact: true });
+  const sort = menu.getByRole("menuitem", { name: "Sort By", exact: true });
+  await expect(behavior).toBeVisible();
+  await expect(behavior).toBeFocused();
+  await behavior.press("ArrowRight");
+  const alwaysSelect = page.getByRole("menuitemcheckbox", { name: "Always Select Opened File", exact: true });
+  await expect(alwaysSelect).toBeFocused();
+  await expect(alwaysSelect).toHaveAttribute("aria-checked", "false");
+  await alwaysSelect.press("Enter");
+  await expect(menu).toBeHidden();
+  await expect(locate).toBeHidden();
+
+  await options.press("Enter");
+  await page.keyboard.press("ArrowDown");
+  await expect(appearance).toBeFocused();
+  await appearance.press("ArrowRight");
+  const rootPaths = page.getByRole("menuitemcheckbox", { name: "Show Root Paths", exact: true });
+  await expect(rootPaths).toBeInViewport({ ratio: 1 });
+  await page.keyboard.press("ArrowLeft");
+  await expect(rootPaths).toBeHidden();
+  await expect(appearance).toBeFocused();
+
+  await sort.click();
+  const type = page.getByRole("menuitemcheckbox", { name: "Type", exact: true });
+  await expect(type).toBeInViewport({ ratio: 1 });
+  await expect(page.getByRole("menuitemcheckbox", { name: "Sort Folders First", exact: true })).toBeVisible();
+  await type.click();
+  await options.press("Enter");
+  await sort.click();
+  await expect(type).toHaveAttribute("aria-checked", "true");
+});
