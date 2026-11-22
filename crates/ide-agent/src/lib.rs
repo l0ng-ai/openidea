@@ -150,11 +150,19 @@ pub struct SkillsPolicy {
     pub workspace_trusted: bool,
     /// All workspace folders (the project root plus any multi-repo workspace members).
     pub workspace_roots: Vec<PathBuf>,
+    /// Validated `<dir>` folders contributed by live OpenIDEA plugins (`[[contributes.skills]]`).
+    pub plugin_dirs: Vec<PathBuf>,
 }
 
 impl Default for SkillsPolicy {
     fn default() -> Self {
-        Self { user: BTreeMap::new(), workspace: BTreeMap::new(), workspace_trusted: true, workspace_roots: Vec::new() }
+        Self {
+            user: BTreeMap::new(),
+            workspace: BTreeMap::new(),
+            workspace_trusted: true,
+            workspace_roots: Vec::new(),
+            plugin_dirs: Vec::new(),
+        }
     }
 }
 
@@ -823,10 +831,11 @@ impl AgentManager {
                     (policy, shared.paths.project_root.clone())
                 };
                 let roots = if policy.workspace_roots.is_empty() { vec![root] } else { policy.workspace_roots };
+                let plugin_dirs = policy.plugin_dirs;
                 let home = self.shared.paths.home_dir.clone();
                 blocking(move || {
                     Ok(skills::resolve(
-                        skills::discover_skills_in(&roots, home.as_deref()),
+                        skills::discover_skills_with_plugins(&roots, home.as_deref(), &plugin_dirs),
                         None,
                         &policy.workspace,
                         &policy.user,
@@ -2147,7 +2156,7 @@ impl Task {
         };
         blocking(move || {
             Ok(skills::resolve(
-                skills::discover_skills_in(&roots, home.as_deref()),
+                skills::discover_skills_with_plugins(&roots, home.as_deref(), &policy.plugin_dirs),
                 Some(&overrides),
                 &policy.workspace,
                 &policy.user,

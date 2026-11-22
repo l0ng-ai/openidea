@@ -113,6 +113,22 @@ const initialSkills: AgentSkillState[] = [
   },
   {
     skill: {
+      name: "release-notes",
+      description: "Draft concise release notes from merged commits and pull requests",
+      hint: "[tag]",
+      path: "/Users/dev/Library/Application Support/ai.l0ng.openidea/plugins/acme.release-tools/1.0.0/skills/release-notes",
+      source: "plugin",
+      alsoIn: [],
+      userInvocable: true,
+      disableModelInvocation: false,
+      valid: true,
+      warnings: [],
+    },
+    mode: "auto",
+    origin: "none",
+  },
+  {
+    skill: {
       name: "pg-tune",
       description: "Tune PostgreSQL queries from 2-level Copilot marketplace plugin",
       hint: null,
@@ -311,6 +327,8 @@ test("manages multi-level skills in Settings and per-session overrides via Compo
   await expect(sessionPopup).toBeVisible();
   await expect(sessionPopup).toContainText("verify");
   await expect(sessionPopup).toContainText("impeccable");
+  await expect(sessionPopup).toContainText("Plugins");
+  await expect(sessionPopup).toContainText("release-notes");
   await expect(sessionPopup).toContainText("Untrusted workspace");
 
   // Enable default-off `impeccable` for this session and turn `pg-tune` off for this session.
@@ -339,8 +357,14 @@ test("manages multi-level skills in Settings and per-session overrides via Compo
   await expect(settingsDialog.getByText("Claude Code (.claude/skills)")).toBeVisible();
   await expect(settingsDialog.getByText("SKILL.md is valid")).toBeVisible();
 
+  await settingsDialog.getByRole("tab", { name: /Plugins/ }).click();
+  await expect(settingsDialog.getByText("release-notes")).toBeVisible();
+  await expect(settingsDialog.getByText("[[contributes.skills]]")).toBeVisible();
+
   if (screenshotDir) {
-    await settingsDialog.screenshot({ path: `${screenshotDir}/after-settings-skills-header.png` });
+    await settingsDialog.screenshot({ path: `${screenshotDir}/after-settings-skills-plugins.png` });
+    await settingsDialog.getByRole("tab", { name: /All Sources/ }).click();
+    await settingsDialog.screenshot({ path: `${screenshotDir}/after-settings-skills.png` });
   }
 
   // Open Install Skill… dialog, fetch repository, verify static scan warning gate, confirm, and install.

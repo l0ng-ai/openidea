@@ -6,6 +6,7 @@ use crate::apply::{
 };
 use crate::python::parse_pip_list;
 use crate::{bin_dir, exe, venv_of};
+use ide_core::CancellationToken;
 use ide_core::settings::Settings;
 use ide_language::LanguageServerConfig;
 use ide_run::RunConfig;
@@ -3183,4 +3184,47 @@ fn server_command_paths_report_executables_set_for_built_in_servers() {
             ("jdtls".to_owned(), root.join("bin/jdtls")),
         ]
     );
+}
+
+#[test]
+fn unsatisfied_requirements_are_judged_by_the_interpreter() {
+    let Some(base) = crate::exec::which("python3").or_else(|| crate::exec::which("python")) else { return };
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("env");
+    // System site packages: pip's vendored `packaging` when the base has pip.
+    let status = std::process::Command::new(base)
+        .args(["-I", "-m", "venv", "--without-pip", "--system-site-packages"])
+        .arg(&home)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let python = home.join(bin_dir()).join(exe("python"));
+    let site = std::process::Command::new(&python)
+        .args(["-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"])
+        .output()
+        .unwrap();
+    let site = std::path::PathBuf::from(String::from_utf8(site.stdout).unwrap().trim());
+    let info = site.join("Fake.Dist_Pkg-1.0.dist-info");
+    std::fs::create_dir_all(&info).unwrap();
+    std::fs::write(info.join("METADATA"), "Metadata-Version: 2.1\nName: Fake.Dist_Pkg\nVersion: 1.0\n").unwrap();
+    let packaging = std::process::Command::new(&python)
+        .args(["-c", "import pip._vendor.packaging.requirements"])
+        .status()
+        .is_ok_and(|s| s.success());
+    let cancel = CancellationToken::new();
+    let found = crate::python::unsatisfied_requirements(
+        &python,
+        &[
+            "fake-dist-pkg",
+            "FAKE_dist.pkg>=0.5",
+            "fake-dist-pkg>=2",
+            "openidea-not-installed-xyz[extra]==1",
+            "openidea-not-installed-xyz; sys_platform == 'nowhere'",
+        ],
+        &cancel,
+    )
+    .unwrap();
+    let missing = || Some(crate::python::Unsatisfied { installed: None });
+    let old = packaging.then(|| crate::python::Unsatisfied { installed: Some("1.0".into()) });
+    assert_eq!(found, [None, None, old, missing(), None]);
 }

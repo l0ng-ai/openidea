@@ -374,6 +374,7 @@ export const intellijMacos: Record<string, string[]> = {
   "db.openValueWindow": [],
   "db.findInValue": ["Meta+F"],
   "db.execute": ["Meta+Enter"],
+  "python.console.executeSelection": ["Alt+Shift+E"],
   "db.nextResultTab": ["Meta+Shift+]", "Ctrl+Right"],
   "db.previousResultTab": ["Meta+Shift+[", "Ctrl+Left"],
   // Table editor with pending changes (after `vcs.rollback`, so ⌥⌘Z reverts the table's edits there).
