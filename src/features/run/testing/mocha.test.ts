@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
-import { detectRunTargets, targetConfig } from "../targets";
+import { detectRunTargets, targetConfig, testsInTestDirectory } from "../targets";
 import { createTestParser, frameworkFor, nodeOutput, parseAll, TestResults, withTestReporting } from "./index";
 import { failedTestPaths, rerunFailedConfigs } from "./rerun";
 
@@ -95,18 +95,28 @@ describe("Mocha gutter targets", () => {
     "});",
   ].join("\n");
 
-  it("are found in test/ whatever the file's name, `specify` included", () => {
-    expect(detectRunTargets(src, "test/pricing.js").map((t) => [t.line, t.kind, t.path.join("/")])).toEqual([
+  it("are found in test/ whatever the file's name in Mocha projects, `specify` included", () => {
+    expect(testsInTestDirectory([script])).toBe(true);
+    expect(
+      detectRunTargets(src, "test/pricing.js", false, true).map((t) => [t.line, t.kind, t.path.join("/")]),
+    ).toEqual([
       [0, "suite", "pricing"],
       [1, "test", "pricing/adds tax"],
       [2, "suite", "pricing/bulk"],
       [3, "test", "pricing/bulk/discounts"],
     ]);
-    expect(detectRunTargets(src, "lib/pricing.js")).toEqual([]);
+    expect(detectRunTargets(src, "lib/pricing.js", false, true)).toEqual([]);
+  });
+
+  it("are not looked for in test/ of a Jest or Vitest project", () => {
+    const vitest = cfg({ id: "npm:test", kind: "npm", command: "npm", args: ["run", "test"] });
+    expect(testsInTestDirectory([vitest])).toBe(false);
+    expect(detectRunTargets(src, "test/pricing.js")).toEqual([]);
+    expect(detectRunTargets(src, "test/pricing.test.js")).toHaveLength(4);
   });
 
   it("run by file and full title", () => {
-    const targets = detectRunTargets(src, "test/pricing.js");
+    const targets = detectRunTargets(src, "test/pricing.js", false, true);
     expect(targetConfig(targets[3]!, "test/pricing.js", [script], src)?.args).toEqual([
       "run",
       "test",

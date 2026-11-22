@@ -32,7 +32,7 @@ OpenIDEA 用一个小的定义文件 `languages/<id>.toml` 描述每种语言：
 一种语言可以配置多个服务器：
 
 - **备选**（下表中写作 `a → b`）：只运行第一个已安装的。例如 Python 默认用 basedpyright，只有它缺失时才退回 pyright、ty 或 pyrefly。在 **设置 › 语言和框架 › 语言服务器** 中可以指定其中一个，或选 **自动**（使用第一个可用的）。
-- **附加**（写作 `+ b`）：和主服务器同时运行，通常只在用到它的项目中启用。带 Ruff 配置的项目里 Ruff 与 basedpyright 一起运行；带 oxlint 配置的项目里 oxlint 与 vtsls 一起运行；带 Biome 配置或安装了 Biome 的项目里 Biome 与 JavaScript、TypeScript、JSON、CSS 和 GraphQL 的服务器一起运行；Angular 和 Laravel 项目里分别加上 Angular 和 Laravel 的服务器。
+- **附加**（写作 `+ b`）：和主服务器同时运行，通常只在用到它的项目中启用。带 Ruff 配置的项目里 Ruff 与 basedpyright 一起运行；带 oxlint 配置的项目里 oxlint 与 vtsls 一起运行；带 Biome 配置或安装了 Biome 的项目里 Biome 与 JavaScript、TypeScript、JSON、CSS 和 GraphQL 的服务器一起运行；Angular、Laravel 和 Tailwind CSS 项目里分别加上 Angular、Laravel 和 Tailwind CSS 的服务器。
 
 ## 安装语言服务器和调试器
 
