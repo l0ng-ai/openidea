@@ -26,6 +26,18 @@ test("the popup leaves room around results with or without the preview", async (
   const dialog = await searchFiles(page);
   const preview = dialog.getByRole("region", { name: "Preview", exact: true });
   const footer = dialog.locator("footer");
+  const query = dialog.getByRole("combobox", { name: "Search query" });
+  const field = query.locator("..");
+  await expect(query).toBeFocused();
+  await expect(field).toHaveCSS("border-top-width", "0px");
+  await expect(field).toHaveCSS("border-left-width", "0px");
+  await expect(field).toHaveCSS("border-bottom-width", "1px");
+  const focusedDivider = await field.evaluate((el) => getComputedStyle(el).borderBottomColor);
+  await dialog.getByRole("button", { name: "Search history", exact: true }).focus();
+  await expect(field).toHaveCSS("border-bottom-color", focusedDivider);
+  await dialog.getByRole("tab", { name: "Files", exact: true }).focus();
+  await expect(field).not.toHaveCSS("border-bottom-color", focusedDivider);
+  await query.focus();
   const expectPopupSize = async () => {
     const { width, height } = (await dialog.boundingBox())!;
     expect(width).toBeCloseTo(700, 0);
