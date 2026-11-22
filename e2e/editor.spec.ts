@@ -526,7 +526,7 @@ test("Markdown preview keeps following find and edits after scrolling the source
   await content.focus();
   await page.keyboard.press("Meta+a");
   await page.keyboard.insertText("- **$`v_0`$ Flat wings.**");
-  await expect(preview.locator("strong .katex annotation")).toHaveText("v_0");
+  await expect(preview.locator("strong [data-math-svg] > svg")).toHaveAttribute("aria-label", "v_0");
 });
 
 test("Markdown preview aligns Mermaid diagrams to their container align attribute", async ({ workbench: page }) => {

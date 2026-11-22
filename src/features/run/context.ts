@@ -221,6 +221,8 @@ export function testBasesFor(relPath: string, configs: RunConfig[], content?: st
   // Configurations produced from a test or file are results of narrowing, never bases for it.
   const candidates = configs
     .filter((c) => c.isTest && kinds.includes(c.kind) && !c.id.startsWith("context:"))
+    // `node` configurations run a file of their own; only Playwright's (`npx playwright test`) take a test file.
+    .filter((c) => c.kind !== "node" || frameworkFor(c) === "playwright")
     .sort((a, b) => kinds.indexOf(a.kind) - kinds.indexOf(b.kind));
   const best = allClosest(candidates, relPath);
   if (best.length) return content === undefined ? best : byRunner(best, content);

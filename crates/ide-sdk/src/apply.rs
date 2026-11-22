@@ -1424,6 +1424,14 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     if name == astro::SERVER {
         astro::configure(cfg, root, server_root, s);
     }
+    // Biome lints with the project's own version (its configuration follows that version's
+    // schema); an explicit executable setting still wins.
+    if name == "biome"
+        && cfg.command == "biome"
+        && let Some(bin) = crate::npm::project_bin("biome", root, server_root)
+    {
+        cfg.command = bin.to_string_lossy().into_owned();
+    }
     if name == crate::arduino::SERVER {
         crate::arduino::configure(cfg, root, server_root, s);
     }
@@ -2741,5 +2749,44 @@ mod conda_activation_tests {
         let plain = tmp.path().join("python");
         touch(&plain.join("bin").join("python"));
         assert_eq!(conda_activation(&plain.join("bin").join("python"), "bash", Some(conda), None), None);
+    }
+}
+
+#[cfg(test)]
+mod biome_tests {
+    use super::*;
+
+    fn binary(dir: &Path) -> PathBuf {
+        let bin = dir.join(if cfg!(windows) { "biome.cmd" } else { "biome" });
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(&bin, "").unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        bin
+    }
+
+    #[test]
+    fn biome_runs_the_projects_own_biome_unless_an_executable_is_set() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        let web = root.join("apps/web");
+        let configured = |s: &Settings, server_root: &Path| {
+            let mut cfg = custom_server("biome", &LanguageServerSettings::default());
+            cfg.command = "biome".into();
+            configure_server(&mut cfg, &root, server_root, s);
+            PathBuf::from(cfg.command)
+        };
+        let workspace = binary(&root.join("node_modules/.bin"));
+        assert_eq!(configured(&Settings::default(), &web), workspace);
+        let member = binary(&web.join("node_modules/.bin"));
+        assert_eq!(configured(&Settings::default(), &web), member);
+        // Outside the project: not the project's installation.
+        binary(&tmp.path().join("node_modules/.bin"));
+        assert_eq!(configured(&Settings::default(), &tmp.path().join("other")), PathBuf::from("biome"));
+        let custom = binary(&tmp.path().join("custom"));
+        let mut s = Settings::default();
+        s.tools
+            .insert("biome".into(), ide_core::settings::ToolSettings { path: custom.to_string_lossy().into_owned() });
+        assert_eq!(configured(&s, &web), custom);
     }
 }

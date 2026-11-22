@@ -1,0 +1,16 @@
+{
+  "name": "openidea-fixture-biome",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenIDEA QA fixture: Biome lint diagnostics, fixes and formatting",
+  "type": "module",
+  "scripts": {
+    "start": "node --experimental-strip-types src/index.ts",
+    "lint": "biome lint",
+    "format": "biome format --write",
+    "check": "biome check"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.8"
+  }
+}
