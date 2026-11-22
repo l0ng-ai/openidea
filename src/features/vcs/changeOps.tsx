@@ -35,7 +35,7 @@ import { commitTestSelection } from "./commitTests";
 import { commitTodoRules } from "./commitTodo";
 import { controlLabel, controlOperation } from "./operations";
 import { FileChecklist } from "./shelf";
-import { currentRepo, loadStashes, refreshNow, repoName, useVcs } from "./store";
+import { currentRepo, loadStashes, refreshNow, repoName, repoOf, useVcs } from "./store";
 import styles from "./common.module.css";
 import rollbackStyles from "./RollbackDialog.module.css";
 import unstashStyles from "./UnstashDialog.module.css";
@@ -749,9 +749,22 @@ export async function addToVcs(paths: readonly string[]) {
     });
     return;
   }
-  await runOp(targets.length === 1 ? tx("Add 1 file to Git") : tx`Add ${targets.length} files to Git`, () =>
-    call(commands.vcsStage(targets.map(stripSlash))),
-  );
+  const project = useProject.getState().project;
+  const byRepo = new Map<string | null, string[]>();
+  for (const path of targets) {
+    const repo = repoOf(path);
+    const group = byRepo.get(repo);
+    if (group) group.push(path);
+    else byRepo.set(repo, [path]);
+  }
+  // A locked index in one repository must not skip the remaining repositories.
+  for (const [repo, files] of byRepo) {
+    if (useProject.getState().project !== project) return;
+    const action = files.length === 1 ? tx("Add 1 file to Git") : tx`Add ${files.length} files to Git`;
+    const title = repo && byRepo.size > 1 ? `${repoName(repo)}: ${action}` : action;
+    await runOp(title, () => call(commands.vcsStage(files)), { refresh: false });
+  }
+  void refreshNow();
 }
 
 export async function stageWithoutContent(paths: readonly string[]) {
