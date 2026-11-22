@@ -48,6 +48,7 @@ import {
 } from "./testing";
 import { PluginTestOutput } from "./testing/plugin";
 import { GoTestOutput } from "./testing/go";
+import { RecordsOutput } from "./testing/records";
 import { DotnetReports } from "./testing/dotnet";
 import { moveToReportedClasses } from "./testing/jvm";
 import { RubyTestOutput } from "./testing/ruby";
@@ -713,8 +714,8 @@ function newRuntime(config: RunConfig): SessionRuntime {
     if (tests && parser) tests.apply(parser.feed(line));
   };
   const framework = tests && parser ? frameworkFor(config) : null;
-  // PHPUnit `--teamcity` and Gradle's test init script report through service messages, Minitest through
-  // the IDE's own reporter (RSpec has none: its progress dots must show as they come).
+  // PHPUnit `--teamcity` and Gradle's test init script report through service messages, Minitest,
+  // node:test and Mocha through the IDE's own reporters (RSpec has none: its progress dots must show as they come).
   const stdout =
     framework === "go"
       ? new GoTestOutput(feed)
@@ -722,7 +723,9 @@ function newRuntime(config: RunConfig): SessionRuntime {
         ? new TeamcityOutput(feed)
         : framework === "ruby" && config.kind !== "rspec"
           ? new RubyTestOutput(feed)
-          : null;
+          : framework === "node-test" || framework === "mocha"
+            ? new RecordsOutput(feed)
+            : null;
   const runtime: SessionRuntime = {
     stdout,
     tests,

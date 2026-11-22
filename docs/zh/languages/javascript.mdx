@@ -74,7 +74,7 @@ Vue、Astro 和 Angular 服务器也会使用这里选择的版本。TypeScript 
 
 打开项目时，OpenIDEA 会自动检测运行配置：
 
-- 每个 `package.json` 脚本一个配置（`npm run build`、`pnpm run dev` 等），覆盖根包、嵌套包和 workspace 成员。名为 `test`、`jest`、`vitest` 或 `test:*` 的脚本，以及运行 `playwright test` 的脚本，是测试配置。
+- 每个 `package.json` 脚本一个配置（`npm run build`、`pnpm run dev` 等），覆盖根包、嵌套包和 workspace 成员。名为 `test`、`jest`、`vitest` 或 `test:*` 的脚本，以及运行 `playwright test`、`node --test` 或 `mocha` 的脚本，是测试配置。
 - 有 `playwright.config.*` 但没有脚本运行它的包：通过 `npx` 运行的 `playwright test`。
 - `deno.json` / `deno.jsonc` 中每个 task 一个配置（`deno task <name>`）。
 
@@ -86,7 +86,7 @@ Vue、Astro 和 Angular 服务器也会使用这里选择的版本。TypeScript 
 - 其他 `.js` 文件用 `node` 运行（项目含 `deno.json` 或 `bun.lock` 时改用 `deno run` 或 `bun run`）。
 - `.ts` 文件在 Node.js 22.18+ / 23.6+ 上直接运行，在 22.6–22.17 和 23.0–23.5 上加 `--experimental-strip-types`，更早的版本则通过 `tsx` 或 `ts-node` 运行。
 
-Jest、Vitest 和 Playwright Test 的输出会解析成测试树，支持 **重新运行失败的测试**。Playwright 运行时使用它的 `list` 报告器（配置里指定了其他报告器时除外）；从行号栏运行单个测试时按行号选择（`file:line`），有多个 project 的运行会在文件下按 project 分组。**使用覆盖率运行** 支持调用 `vitest` 或 `jest` 的脚本（Vitest 需要 `@vitest/coverage-v8` 之类的覆盖率 provider，缺失时 IDE 会提示添加），以及通过 `c8` 运行的 `node` / `tsx` / `ts-node`。详见[测试](/zh/guide/testing)和[覆盖率](/zh/guide/coverage)。
+Jest、Vitest、Playwright Test、`node --test` 和 Mocha 的输出会解析成测试树，支持 **重新运行失败的测试**。Playwright 运行时使用它的 `list` 报告器（配置里指定了其他报告器时除外）；从行号栏运行单个测试时按行号选择（`file:line`），有多个 project 的运行会在文件下按 project 分组。`node --test` 运行时，IDE 通过 `NODE_OPTIONS` 在 `spec` 旁加上自己的报告器（脚本自己指定了 `--test-reporter` 时不显示测试树）；单个测试和重新运行按完整名称选择（`--test-name-pattern`）。Mocha 运行保留它自己的报告器，并通过 `NODE_OPTIONS` 加载 IDE 的钩子，逐个报告测试及其所在行；单个测试和重新运行使用 `--grep`，`test/` 目录下的测试不论文件名都有行号栏图标。**使用覆盖率运行** 支持调用 `vitest` 或 `jest` 的脚本（Vitest 需要 `@vitest/coverage-v8` 之类的覆盖率 provider，缺失时 IDE 会提示添加），以及通过 `c8` 运行的 `node` / `tsx` / `ts-node`。详见[测试](/zh/guide/testing)和[覆盖率](/zh/guide/coverage)。
 
 ## 调试
 

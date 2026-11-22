@@ -244,11 +244,32 @@ pub(crate) fn is_test_script(name: &str) -> bool {
 }
 
 /// The test runner a `package.json` script starts, when its output and test selection differ
-/// from Jest / Vitest's: `playwright test`.
+/// from Jest / Vitest's: `playwright test`, `mocha`, or `node --test` (`tsx --test`) with Node's own
+/// reporters (the IDE adds its reporter next to them, which a reporter chosen here would clash with).
 fn script_test_runner(script: &str) -> Option<&'static str> {
     let tokens: Vec<&str> = script.split(|c: char| c.is_whitespace() || matches!(c, '&' | '|' | ';')).collect();
-    tokens.windows(2).any(|w| w[0] == "playwright" && w[1] == "test").then_some("playwright")
+    if tokens.windows(2).any(|w| w[0] == "playwright" && w[1] == "test") {
+        return Some("playwright");
+    }
+    if tokens.iter().any(|t| matches!(t.rsplit('/').next(), Some("mocha" | "_mocha"))) {
+        return Some("mocha");
+    }
+    let node = tokens.iter().position(|t| matches!(*t, "node" | "tsx"))?;
+    // Node's own options: up to the script (`node server.js --test` passes `--test` to the program).
+    let mut options = Vec::new();
+    for t in &tokens[node + 1..] {
+        let value = options.last().is_some_and(|o| NODE_VALUE_OPTIONS.contains(o));
+        if !value && !t.starts_with('-') {
+            break;
+        }
+        options.push(*t);
+    }
+    (options.contains(&"--test") && !options.iter().any(|t| t.starts_with("--test-reporter"))).then_some("node-test")
 }
+
+/// Node options whose value is the next argument.
+const NODE_VALUE_OPTIONS: &[&str] =
+    &["-r", "--require", "--import", "--loader", "--experimental-loader", "-C", "--conditions", "--env-file"];
 
 const PLAYWRIGHT_CONFIGS: &[&str] = &[
     "playwright.config.ts",

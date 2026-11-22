@@ -13,6 +13,7 @@ import { withMavenTests } from "../mavenTests";
 import { frameworkFor } from "./index";
 import { dotnetFilter } from "./dotnet";
 import { playwrightProject, playwrightTitles } from "./playwright";
+import { withNodeTestNamePattern } from "./nodeTest";
 import { nodeStatus, type TestNode, type TestResults } from "./results";
 
 /** Paths of failed tests: failed leaves, plus failed suites without any failed children reported. */
@@ -262,6 +263,28 @@ function builtinTestsConfig(config: RunConfig, paths: string[][], name: string):
     case "playwright":
       args = playwrightArgs(config, paths);
       break;
+    case "node-test": {
+      // The files narrow a script's run when it gives `node --test` no patterns of its own; the names always do.
+      const files = unique(paths.map((p) => p[0]!).filter(Boolean));
+      const names = unique(paths.filter((p) => p.length > 1).map((p) => p.slice(1).join(" ")));
+      if (!files.length) return null;
+      const env = names.length
+        ? withNodeTestNamePattern(config.env, `^(?:${names.map(escapeRegExp).join("|")})$`)
+        : { ...config.env };
+      return { ...config, args: appendScriptArgs(config.command, config.args, files), name, detected: true, env };
+    }
+    case "mocha": {
+      // Mocha's `--grep` matches a test's full title: its describe chain and name, space separated.
+      const files = unique(paths.map((p) => p[0]!).filter(Boolean));
+      const names = unique(paths.filter((p) => p.length > 1).map((p) => p.slice(1).join(" ")));
+      if (!files.length) return null;
+      const { before, after } = splitDashDash(config.args);
+      const flags = ["-g", "--grep", "-f", "--fgrep"];
+      const base = after === null ? dropFlag(before, flags) : [...before, "--", ...dropFlag(after, flags)];
+      const grep = names.length ? ["--grep", `^(?:${names.map(escapeRegExp).join("|")})$`] : [];
+      args = appendScriptArgs(config.command, base, [...files, ...grep]);
+      break;
+    }
     case "pytest":
       args = pytestArgs(config.args, paths);
       break;
