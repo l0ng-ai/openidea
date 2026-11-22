@@ -333,6 +333,29 @@ describe("Enter after a case label", async () => {
   });
 });
 
+describe("Kotlin continuation indentation", async () => {
+  const kt = (await loadSupport(languages.find((l) => l.name === "Kotlin")!))!;
+  const ext = [kt, indentUnit.of("    ")];
+
+  it("indents a when branch body and an assigned expression one level", () => {
+    const v = make("fun f(x: Int) {\n    when (x) {\n        1 ->|\n    }\n}", ext);
+    insertNewlineAndIndent(v);
+    expect(show(v)).toBe("fun f(x: Int) {\n    when (x) {\n        1 ->\n            |\n    }\n}");
+    const w = make("fun f() {\n    val answer =|\n}", ext);
+    insertNewlineAndIndent(w);
+    expect(show(w)).toBe("fun f() {\n    val answer =\n        |\n}");
+  });
+
+  it("leaves comparisons and finished statements alone", () => {
+    const v = make("fun f() {\n    val ok = a ==|\n}", ext);
+    insertNewlineAndIndent(v);
+    expect(show(v).split("\n")[2]).not.toBe("        |");
+    const w = make("fun f() {\n    val a = 1|\n}", ext);
+    insertNewlineAndIndent(w);
+    expect(show(w)).toBe("fun f() {\n    val a = 1\n    |\n}");
+  });
+});
+
 describe("fallback indentation for GDScript", () => {
   const gd = [
     EditorState.tabSize.of(4),
