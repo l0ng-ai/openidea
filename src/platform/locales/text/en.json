@@ -1484,6 +1484,7 @@
   "Updated to {0}. New sessions will use this version.": "Updated to {0}. New sessions will use this version.",
   "Installed: {0} · No newer npm release.": "Installed: {0} · No newer npm release.",
   "Installed: {0}. Use your installer to manage this release channel.": "Installed: {0}. Use your installer to manage this release channel.",
+  "npm scripts": "npm scripts",
   "npm could not complete the operation ({0}).": "npm could not complete the operation ({0}).",
   "An update for this agent is already running.": "An update for this agent is already running.",
   "This is not a global npm install OpenIDEA can update. Use its original installer.": "This is not a global npm install OpenIDEA can update. Use its original installer.",

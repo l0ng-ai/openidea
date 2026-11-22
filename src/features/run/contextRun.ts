@@ -393,7 +393,7 @@ export async function prepareMenu(_menu: ContextMenuId, ctx: MenuGroupContext): 
   peeked.set(path, { at: Date.now(), text: text.slice(0, CONTENT_LIMIT) });
 }
 
-/** package.json script 行的菜单项：Run / Debug（scriptMenuItems 已处理配置复用/临时配置）。 */
+/** Run / Debug for a `package.json` script line, through `scriptMenuItems`. */
 function npmScriptItems(entry: ScriptEntry, path: string, content: string): MenuItem[] {
   const run = async (debug: boolean) => {
     const items = await scriptMenuItems(entry, path, content);
@@ -416,7 +416,7 @@ export function contextMenuItems(menu: ContextMenuId, ctx: MenuGroupContext): Me
   const dir = !!ctx.dirs?.[0];
   const content = ctx.text ?? peekContent(path);
   const line = menu === "editor" ? ctx.line : undefined;
-  // package.json scripts 行（IDEA）：右键直接 Run / Debug 该脚本，有配置复用，无则临时配置。
+  // A `package.json` script line runs that script.
   if (!dir && /(^|\/)package\.json$/.test(path) && content !== undefined && line !== undefined) {
     const entry = scriptEntries(content.slice(0, CONTENT_LIMIT)).find((e) => e.line === line);
     if (entry) return npmScriptItems(entry, path, content);

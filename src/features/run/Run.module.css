@@ -6,7 +6,6 @@
   min-width: 0;
 }
 
-/* npm scripts 工具窗口（IDEA Maven 面板风格）的树行 */
 .scriptsRow {
   display: flex;
   align-items: center;
@@ -15,7 +14,7 @@
 }
 
 .scriptsStrong {
-  font-weight: var(--fw-medium, 500);
+  font-weight: 500;
 }
 
 .scriptsMeta {

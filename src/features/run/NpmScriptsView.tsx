@@ -1,12 +1,8 @@
-/**
- * npm 工具窗口（IDEA 的 Maven 面板风格）：自己扫描项目里的 package.json
- * （`npmScripts.ts` 独立数据源，不依赖运行配置检测），按包目录分组为树，
- * 双击 / 回车运行，右键 Run / Debug（运行仍复用 scriptMenuItems 的配置链路）。
- */
+/** The npm tool window: the project's packages and their scripts; activating a script runs it. */
 import { useMemo, useState, type ReactNode } from "react";
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
-import { EmptyState, Icon, Tree, showContextMenu, type MenuItem, type TreeRowState } from "@/ui";
+import { Icon, Tree, showContextMenu, type MenuItem, type TreeRowState } from "@/ui";
 import { runScriptNode, useNpmScripts, type NpmNode } from "./npmScripts";
 import { scriptMenuItems } from "./npmGutter";
 import { call, commands } from "@/platform/ipc";
@@ -31,14 +27,7 @@ export function NpmScriptsView() {
     [roots, collapsed],
   );
 
-  if (!loaded || !hasProject) return null;
-  if (roots.length === 0) {
-    return (
-      <EmptyState title={tx`No npm scripts`}>
-        {tx`Open a project with a package.json to see its scripts here.`}
-      </EmptyState>
-    );
-  }
+  if (!loaded || !hasProject || roots.length === 0) return null;
 
   const renderNode = (n: NpmNode, state: TreeRowState): ReactNode => {
     if (n.kind === "package") {
@@ -60,7 +49,7 @@ export function NpmScriptsView() {
 
   return (
     <Tree<NpmNode>
-      aria-label="npm scripts"
+      aria-label={tx`npm scripts`}
       roots={roots}
       getKey={(n) => n.key}
       getLabel={(n) => (n.kind === "package" ? n.label : n.name)}
