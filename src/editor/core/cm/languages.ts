@@ -540,7 +540,29 @@ function unbalanced(code: string): boolean {
   return depth > 0;
 }
 
-/** Extensions the stock modes lack, by CodeMirror language name. */
+/** Enter after a `case 1:` / `default:` label with nothing after the caret: the branch body goes one level deeper. */
+const caseBodyIndent = indentService.of((cx, pos) => {
+  if (cx.simulatedBreak == null || cx.textAfterPos(pos).trim()) return undefined;
+  const line = cx.state.doc.lineAt(pos);
+  const before = line.text.slice(0, pos - line.from);
+  const code = indentationCode(before, "//").trimEnd();
+  if (!/^\s*(case\b[^;{}]*|default\s*):$/.test(code) || /::$/.test(code)) return undefined;
+  return cx.countColumn(before, before.search(/\S|$/)) + cx.unit;
+});
+
+/**
+ * Kotlin: Enter after a `when` branch's `->` or an assignment's `=` with nothing after it
+ * continues one level deeper (the branch body or the assigned expression follows), as IDEA does.
+ */
+const kotlinContinuation = indentService.of((cx, pos) => {
+  if (cx.simulatedBreak == null || cx.textAfterPos(pos).trim()) return undefined;
+  const line = cx.state.doc.lineAt(pos);
+  const before = line.text.slice(0, pos - line.from);
+  const code = indentationCode(before, "//");
+  if (!/(->|[^=!<>]=)$/.test(code) || unbalanced(code)) return undefined;
+  return cx.countColumn(before, before.search(/\S|$/)) + cx.unit;
+});
+
 const ACCESS_SPECIFIER = /^\s*(public|protected|private)\s*:(?!:)/;
 
 /**
@@ -559,10 +581,14 @@ const cppAccessSpecifierIndent = [
   EditorState.languageData.of(() => [{ indentOnInput: /^\s*(public|protected|private)\s*:$/ }]),
 ];
 
+/** Extensions the stock modes lack, by CodeMirror language name. */
 const EXTRA_SUPPORT: Record<string, Extension[]> = {
   Java: [annotationIndent],
   Python: pythonDedent,
-  "C++": cppAccessSpecifierIndent,
+  C: [caseBodyIndent],
+  "C++": [...cppAccessSpecifierIndent, caseBodyIndent],
+  PHP: [caseBodyIndent],
+  Kotlin: [kotlinContinuation],
 };
 
 function patchSupport(desc: LanguageDescription, support: LanguageSupport): LanguageSupport {

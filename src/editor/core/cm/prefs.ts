@@ -48,10 +48,11 @@ import {
   selectHumpLeft,
   selectHumpRight,
 } from "./editing";
-import { enterInLineComment, lineCommentStyle, type LineCommentStyle } from "./comments";
+import { enterAfterDocLineComment, enterInLineComment, lineCommentStyle, type LineCommentStyle } from "./comments";
 import { enterInBlockComment, enterInDocComment, enterInDocstring } from "./docComment";
 import { renderDocComments } from "./renderedDocs";
 import {
+  rustLifetimeQuote,
   skipClosingBracket,
   enterInStringLiteral,
   semicolonAtStatementEnd,
@@ -60,8 +61,10 @@ import {
   smartBackspace,
   smartBackspaceApplies,
   tabOut,
+  templateBrace,
 } from "./smartKeys";
 import { linkedTags } from "./linkedTags";
+import { textDrag } from "./textDrag";
 import { stringClipboard } from "./stringClipboard";
 import { filterCopiedText } from "./clipboard";
 import { LINE_INSET } from "./lineInset";
@@ -696,7 +699,7 @@ export function prefsExtension(o: PrefsOptions): Extension {
       EditorView.editorAttributes.of({ class: hidden.map((grp) => `cm-openidea-hideGutter-${grp.id}`).join(" ") }),
     );
   if (g.wheelZoom) out.push(wheelZoom);
-  if (!g.dragAndDrop) out.push(noTextDrag);
+  out.push(g.dragAndDrop ? textDrag : noTextDrag);
   if (g.caretScroll === "center") out.push(centerCaret);
   if (g.richTextCopy) out.push(richCopy);
   if (k.escapeOnPaste) out.push(stringClipboard(o.language));
@@ -710,8 +713,10 @@ export function prefsExtension(o: PrefsOptions): Extension {
   out.push(Prec.highest(EditorState.languageData.of(() => [{ closeBrackets: pairing }])));
   // `<` pairs where the syntax says a generic type list starts, as in IDEA — no separate option.
   if (k.pairBrackets && !o.readOnly) out.push(smartAngleBrackets(o.language));
+  if (k.pairBrackets && !o.readOnly) out.push(Prec.highest(templateBrace(o.language ?? "")));
   if (!k.surroundSelection) out.push(Prec.highest(noSurround));
   if (k.pairQuotes) out.push(Prec.highest(skipClosingQuote));
+  if (k.pairQuotes && !o.readOnly && o.language === "rust") out.push(Prec.highest(rustLifetimeQuote));
   if (k.pairBrackets && !o.readOnly) out.push(Prec.highest(skipClosingBracket));
   if (k.tabOutOfPair) out.push(tabOut);
   if (!o.readOnly && k.semicolonAtStatementEnd) out.push(semicolonAtStatementEnd(o.language));
@@ -746,6 +751,7 @@ export function prefsExtension(o: PrefsOptions): Extension {
     keys.push(
       { key: "Enter", run: enterInBlockComment },
       { key: "Enter", run: enterInLineComment },
+      { key: "Enter", run: enterAfterDocLineComment(o.language ?? "") },
       { key: "Enter", run: enterInStringLiteral(o.language ?? "") },
     );
   if (!k.smartIndent) keys.push({ key: "Enter", run: insertNewlineKeepIndent });

@@ -240,31 +240,54 @@ const HOME_ROOTS: &[(&str, AgentSkillSource)] = &[
 /// duplicates collapsed by canonical path: the first of a path wins, and so does the first
 /// of a name (the higher source), so a session never sees one skill twice.
 pub fn discover_skills(workspace: &Path, home: Option<&Path>) -> Vec<AgentSkill> {
+    discover_skills_in(&[workspace.to_path_buf()], home)
+}
+
+/// Every skill found across `workspaces` (a project and any workspace/monorepo member
+/// folders) and `home`, in source precedence order, symlinked duplicates collapsed by
+/// canonical path while recording secondary sources in [`AgentSkill::also_in`].
+pub fn discover_skills_in(workspaces: &[PathBuf], home: Option<&Path>) -> Vec<AgentSkill> {
     let mut out: Vec<AgentSkill> = Vec::new();
     let mut seen_paths: HashSet<PathBuf> = HashSet::new();
     let mut seen_names: HashSet<String> = HashSet::new();
     let mut roots: Vec<(PathBuf, AgentSkillSource)> = Vec::new();
-    roots.extend(WORKSPACE_ROOTS.iter().map(|(rel, source)| (workspace.join(rel), *source)));
-    let mut plugin_roots = Vec::new();
-    if let Some(home) = home {
-        roots.extend(HOME_ROOTS.iter().map(|(rel, source)| (home.join(rel), *source)));
-        // `copilot install` unpacks plugins under `installed-plugins/<plugin>/`, whose skills
-        // sit in a `skills` folder (or directly in the plugin folder).
-        let plugins = home.join(".copilot/installed-plugins");
-        if let Ok(plugins) = plugins.read_dir() {
-            for plugin in plugins.flatten() {
-                if plugin.path().is_dir() {
-                    plugin_roots.push((plugin.path().join("skills"), AgentSkillSource::CopilotUser));
-                    plugin_roots.push((plugin.path(), AgentSkillSource::CopilotUser));
-                }
+    let mut seen_workspaces: HashSet<PathBuf> = HashSet::new();
+    let mut all_workspaces: Vec<PathBuf> = Vec::new();
+    for ws in workspaces {
+        let canon = dunce::canonicalize(ws).unwrap_or_else(|_| ws.clone());
+        if seen_workspaces.insert(canon) {
+            all_workspaces.push(ws.clone());
+        }
+    }
+    for ws in &all_workspaces {
+        roots.extend(WORKSPACE_ROOTS.iter().map(|(rel, source)| (ws.join(rel), *source)));
+    }
+    // Nested monorepo packages (up to two levels below each workspace root, e.g. `apps/web`).
+    for ws in &all_workspaces {
+        for sub in monorepo_subdirs(ws, 2) {
+            let sub_canon = dunce::canonicalize(&sub).unwrap_or_else(|_| sub.clone());
+            if seen_workspaces.insert(sub_canon) {
+                roots.extend(WORKSPACE_ROOTS.iter().map(|(rel, source)| (sub.join(rel), *source)));
             }
         }
     }
-    roots.extend(plugin_roots);
+    if let Some(home) = home {
+        roots.extend(HOME_ROOTS.iter().map(|(rel, source)| (home.join(rel), *source)));
+        roots.extend(copilot_installed_plugin_roots(&home.join(".copilot")));
+    }
     for (root, source) in roots {
         for skill in skills_of(&root, source) {
             let path = dunce::canonicalize(&skill.path.0).unwrap_or_else(|_| skill.path.0.clone());
-            if !seen_paths.insert(path.clone()) || !seen_names.insert(skill.name.clone()) {
+            if !seen_paths.insert(path.clone()) {
+                if let Some(existing) = out.iter_mut().find(|s| s.path.0 == path)
+                    && existing.source != source
+                    && !existing.also_in.contains(&source)
+                {
+                    existing.also_in.push(source);
+                }
+                continue;
+            }
+            if !seen_names.insert(skill.name.to_ascii_lowercase()) {
                 continue;
             }
             out.push(AgentSkill { path: path.into(), ..skill });
@@ -273,53 +296,204 @@ pub fn discover_skills(workspace: &Path, home: Option<&Path>) -> Vec<AgentSkill>
     out
 }
 
-/// The skills of one root: `<name>/SKILL.md` folders, validated.
-fn skills_of(root: &Path, source: AgentSkillSource) -> Vec<AgentSkill> {
-    let mut out: Vec<AgentSkill> = Vec::new();
-    let Ok(entries) = std::fs::read_dir(root) else { return out };
-    for entry in entries.flatten() {
-        let dir = entry.path();
-        let Some(folder) = dir.file_name().and_then(|n| n.to_str()).map(str::to_owned) else { continue };
-        if !dir.is_dir() || folder.starts_with('.') {
+const SKIP_MONOREPO_DIRS: &[&str] =
+    &["node_modules", "target", "dist", "build", "out", "vendor", "coverage", ".git", ".openidea", ".idea"];
+
+fn monorepo_subdirs(root: &Path, max_depth: usize) -> Vec<PathBuf> {
+    if max_depth == 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for dir in sorted(root) {
+        let Some(name) = file_name(&dir) else { continue };
+        if SKIP_MONOREPO_DIRS.contains(&name.as_str()) {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(dir.join("SKILL.md")) else { continue };
-        let meta = Frontmatter::parse(&text);
-        let name = meta.get("name").filter(|n| !n.is_empty()).map(str::to_owned).unwrap_or_else(|| folder.clone());
-        let mut warnings = Vec::new();
-        if !valid_name(&name) {
-            warnings.push(format!("`name: {name}` is not 1-64 lowercase letters, digits or hyphens"));
+        let Ok(meta) = std::fs::symlink_metadata(&dir) else { continue };
+        if !meta.file_type().is_dir() {
+            continue;
         }
-        if name != folder {
-            warnings.push(format!("`name: {name}` does not match the folder `{folder}`"));
+        if WORKSPACE_ROOTS.iter().any(|(rel, _)| dir.join(rel).is_dir()) {
+            out.push(dir.clone());
         }
-        let description = meta.get("description").unwrap_or_default();
-        let description = strip_ansi(description).trim().to_owned();
-        if description.is_empty() {
-            warnings.push("no `description`: the model never sees when to use it".into());
-        } else if description.chars().count() > MAX_SKILL_DESCRIPTION {
-            warnings.push(format!("`description` is over {MAX_SKILL_DESCRIPTION} characters"));
+        if max_depth > 1 {
+            out.extend(monorepo_subdirs(&dir, max_depth - 1));
         }
-        out.push(AgentSkill {
-            name,
-            description: truncate(&description),
-            path: dir.into(),
-            source,
-            valid: warnings.is_empty(),
-            warnings,
-        });
+    }
+    out
+}
+
+/// Discovers skill roots inside `~/.copilot/installed-plugins`, supporting both Copilot CLI's
+/// 2-level `<marketplace-or-_direct>/<plugin>` layout (and `config.json` `installedPlugins`
+/// enablement) and flat 1-level `<plugin>` folders.
+fn copilot_installed_plugin_roots(copilot_dir: &Path) -> Vec<(PathBuf, AgentSkillSource)> {
+    let mut disabled_paths: HashSet<PathBuf> = HashSet::new();
+    let mut plugin_dirs: Vec<PathBuf> = Vec::new();
+    let mut seen_dirs: HashSet<PathBuf> = HashSet::new();
+    let mut push_plugin = |dir: PathBuf, disabled: &HashSet<PathBuf>| {
+        if !dir.is_dir() {
+            return;
+        }
+        let canon = dunce::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+        if disabled.contains(&canon) || !seen_dirs.insert(canon) {
+            return;
+        }
+        plugin_dirs.push(dir);
+    };
+
+    if let Ok(text) = std::fs::read_to_string(copilot_dir.join("config.json"))
+        && let Ok(root) = serde_json::from_str::<serde_json::Value>(&crate::mcp::strip_jsonc(&text))
+        && let Some(installed) = root.get("installedPlugins").and_then(serde_json::Value::as_array)
+    {
+        for entry in installed {
+            let Some(raw_cache) = entry.get("cache_path").and_then(serde_json::Value::as_str).map(str::trim) else {
+                continue;
+            };
+            if raw_cache.is_empty() {
+                continue;
+            }
+            let dir =
+                if Path::new(raw_cache).is_relative() { copilot_dir.join(raw_cache) } else { PathBuf::from(raw_cache) };
+            if entry.get("enabled").and_then(serde_json::Value::as_bool) == Some(false) {
+                disabled_paths.insert(dunce::canonicalize(&dir).unwrap_or(dir));
+            } else {
+                push_plugin(dir, &disabled_paths);
+            }
+        }
+    }
+
+    let plugins_root = copilot_dir.join("installed-plugins");
+    for entry in sorted(&plugins_root) {
+        if !entry.is_dir() {
+            continue;
+        }
+        if looks_like_plugin_dir(&entry) {
+            push_plugin(entry, &disabled_paths);
+        } else {
+            // 2-level `<marketplace>/<plugin>` or `_direct/<plugin>`.
+            for sub in sorted(&entry) {
+                if sub.is_dir() {
+                    push_plugin(sub, &disabled_paths);
+                }
+            }
+        }
+    }
+
+    let mut roots = Vec::new();
+    for plugin in plugin_dirs {
+        let skills_sub = plugin.join("skills");
+        if skills_sub.is_dir() {
+            roots.push((skills_sub, AgentSkillSource::CopilotUser));
+        } else {
+            roots.push((plugin, AgentSkillSource::CopilotUser));
+        }
+    }
+    roots
+}
+
+fn looks_like_plugin_dir(dir: &Path) -> bool {
+    dir.join("skills").is_dir()
+        || dir.join("plugin.json").is_file()
+        || dir.join(".plugin").is_dir()
+        || dir.join(".claude-plugin").is_dir()
+        || dir.join(".cursor-plugin").is_dir()
+        || dir.join("SKILL.md").is_file()
+}
+
+/// The skills of one root: `<name>/SKILL.md` folders and `<category>/<name>/SKILL.md`
+/// category folders, validated.
+fn skills_of(root: &Path, source: AgentSkillSource) -> Vec<AgentSkill> {
+    let mut out: Vec<AgentSkill> = Vec::new();
+    // Warn when a user drops `SKILL.md` directly inside a `skills/` root instead of `<name>/SKILL.md`.
+    if file_name(root).as_deref() == Some("skills")
+        && let Ok(text) = std::fs::read_to_string(root.join("SKILL.md"))
+    {
+        let mut misplaced = parse_skill_file(root, "skills", &text, source);
+        misplaced.valid = false;
+        misplaced
+            .warnings
+            .insert(0, "SKILL.md is directly inside `skills/`: move it into a `<name>/SKILL.md` subfolder".into());
+        out.push(misplaced);
+    }
+    for dir in sorted(root) {
+        let Some(folder) = file_name(&dir) else { continue };
+        if !dir.is_dir() {
+            continue;
+        }
+        if let Ok(text) = std::fs::read_to_string(dir.join("SKILL.md")) {
+            out.push(parse_skill_file(&dir, &folder, &text, source));
+            continue;
+        }
+        // Category folder (`<root>/<category>/<skill>/SKILL.md`): only entered when `<dir>` itself
+        // has no `SKILL.md`, so a skill's own subdirectories remain resources rather than skills.
+        for sub in sorted(&dir) {
+            let Some(sub_folder) = file_name(&sub) else { continue };
+            if !sub.is_dir() {
+                continue;
+            }
+            if let Ok(text) = std::fs::read_to_string(sub.join("SKILL.md")) {
+                out.push(parse_skill_file(&sub, &sub_folder, &text, source));
+            }
+        }
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
 }
 
+fn parse_skill_file(dir: &Path, folder: &str, text: &str, source: AgentSkillSource) -> AgentSkill {
+    let meta = Frontmatter::parse(text);
+    let name = meta
+        .get("name")
+        .map(|n| strip_ansi(n).trim().to_owned())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| folder.to_owned());
+    let mut warnings = Vec::new();
+    if !valid_name(&name) {
+        warnings.push(format!("`name: {name}` is not 1-64 lowercase letters, digits or hyphens"));
+    }
+    if name != folder {
+        warnings.push(format!("`name: {name}` does not match the folder `{folder}`"));
+    }
+    let description = meta.get("description").unwrap_or_default();
+    let description = strip_ansi(description).trim().to_owned();
+    if description.is_empty() {
+        warnings.push("no `description`: the model never sees when to use it".into());
+    } else if description.chars().count() > MAX_SKILL_DESCRIPTION {
+        warnings.push(format!("`description` is over {MAX_SKILL_DESCRIPTION} characters"));
+    }
+    let hint = meta.get("argument-hint").map(|h| strip_ansi(h).trim().to_owned()).filter(|h| !h.is_empty());
+    let user_invocable = !meta.get("user-invocable").is_some_and(|v| v.eq_ignore_ascii_case("false"));
+    let disable_model_invocation = meta.get("disable-model-invocation").is_some_and(|v| v.eq_ignore_ascii_case("true"));
+    AgentSkill {
+        name,
+        description: truncate(&description),
+        hint,
+        path: dir.to_path_buf().into(),
+        source,
+        also_in: Vec::new(),
+        user_invocable,
+        disable_model_invocation,
+        valid: warnings.is_empty(),
+        warnings,
+    }
+}
+
 /// A skill's mode, as one policy layer of the settings has it.
 type Policies = BTreeMap<String, AgentSkillPolicy>;
 
+fn lookup_mode(map: &BTreeMap<String, AgentSkillMode>, name: &str) -> Option<AgentSkillMode> {
+    map.get(name).copied().or_else(|| map.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| *v))
+}
+
+fn lookup_policy<'a>(map: &'a Policies, name: &str) -> Option<&'a AgentSkillPolicy> {
+    map.get(name).or_else(|| map.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v))
+}
+
 /// Resolves every skill's mode: a session override, then the workspace's and the user's
-/// `[agents.skills.<name>]` policy, then the default `auto` — with an untrusted workspace
-/// able to turn skills off only: its own skills stay off (whatever the session chose), and
-/// its policies hold only when they turn a skill off.
+/// `[agents.skills.<name>]` policy, then the frontmatter default (`slashOnly` when
+/// `disable-model-invocation: true`, else `auto`) — with an untrusted workspace able to
+/// turn skills off only: its own skills stay off (whatever the session chose), and its
+/// policies hold only when they turn a skill off.
 pub fn resolve(
     skills: Vec<AgentSkill>,
     session: Option<&BTreeMap<String, AgentSkillMode>>,
@@ -337,19 +511,21 @@ pub fn resolve(
                 | AgentSkillSource::CodexWorkspace
                 | AgentSkillSource::CursorWorkspace
         );
+        let default_mode =
+            if skill.disable_model_invocation { AgentSkillMode::SlashOnly } else { AgentSkillMode::Auto };
         let (mode, origin) = if workspace_skill && !workspace_trusted {
             // Workspace trust gates the workspace's own skills, whatever else says.
             (AgentSkillMode::Off, AgentSkillOrigin::Trust)
-        } else if let Some(chosen) = session.and_then(|s| s.get(&skill.name)) {
-            (*chosen, AgentSkillOrigin::Session)
+        } else if let Some(chosen) = session.and_then(|s| lookup_mode(s, &skill.name)) {
+            (chosen, AgentSkillOrigin::Session)
         } else if let Some(policy) =
-            workspace.get(&skill.name).filter(|p| workspace_trusted || p.mode == AgentSkillMode::Off)
+            lookup_policy(workspace, &skill.name).filter(|p| workspace_trusted || p.mode == AgentSkillMode::Off)
         {
             (policy.mode, AgentSkillOrigin::Workspace)
-        } else if let Some(policy) = user.get(&skill.name) {
+        } else if let Some(policy) = lookup_policy(user, &skill.name) {
             (policy.mode, AgentSkillOrigin::User)
         } else {
-            (AgentSkillMode::Auto, AgentSkillOrigin::None)
+            (default_mode, AgentSkillOrigin::None)
         };
         out.push(AgentSkillState { skill, mode, origin });
     }
@@ -416,15 +592,23 @@ pub fn stage(
     for state in states {
         let name = state.skill.name.as_str();
         let path = state.skill.path.0.as_path();
+        if file_name(path).as_deref() == Some("skills") && !state.skill.valid {
+            continue;
+        }
         match state.mode {
             AgentSkillMode::Off => {
-                out.codex_off.push((name.to_owned(), state.skill.path.to_string_lossy().into_owned()));
+                out.codex_off.push((name.to_owned(), codex_skill_md_path(path)));
             }
             // Claude Code runs a slash-only skill on `/name`, so it has to see the folder;
-            // Copilot and Codex have no such mode and get it disabled or left out.
+            // Copilot and Codex have no slash-only toggle and disable model auto-loading.
             AgentSkillMode::SlashOnly => {
-                if let Some(tree) = claude_tree.as_ref().filter(|_| !native_claude(&state.skill, &cwd, home)) {
+                if state.skill.user_invocable
+                    && let Some(tree) = claude_tree.as_ref().filter(|_| !native_claude(&state.skill, &cwd, home))
+                {
                     link_skill(&tree.join(name), path)?;
+                }
+                if native_codex(&state.skill, &cwd, home) {
+                    out.codex_off.push((name.to_owned(), codex_skill_md_path(path)));
                 }
             }
             AgentSkillMode::Auto => {
@@ -451,10 +635,16 @@ pub fn stage(
     }
     // Claude Code's `skillOverrides` and Copilot's `disabledSkills` take the names of the
     // off and slash-only skills — the native copies included.
-    let off: Vec<&str> =
-        states.iter().filter(|s| s.mode == AgentSkillMode::Off).map(|s| s.skill.name.as_str()).collect();
-    let slash: Vec<&str> =
-        states.iter().filter(|s| s.mode == AgentSkillMode::SlashOnly).map(|s| s.skill.name.as_str()).collect();
+    let off: Vec<&str> = states
+        .iter()
+        .filter(|s| s.mode == AgentSkillMode::Off || (s.mode == AgentSkillMode::SlashOnly && !s.skill.user_invocable))
+        .map(|s| s.skill.name.as_str())
+        .collect();
+    let slash: Vec<&str> = states
+        .iter()
+        .filter(|s| s.mode == AgentSkillMode::SlashOnly && s.skill.user_invocable)
+        .map(|s| s.skill.name.as_str())
+        .collect();
     if !off.is_empty() || !slash.is_empty() {
         let mut overrides = serde_json::Map::new();
         for (name, mode) in off.iter().map(|n| (*n, "off")).chain(slash.iter().map(|n| (*n, "user-invocable-only"))) {
@@ -469,32 +659,93 @@ pub fn stage(
     Ok(out)
 }
 
-/// Claude Code sees this skill without the farm: its own `.claude/skills` of the working
-/// directory (a worktree lacks the untracked originals) or the home.
+/// Codex `[[skills.config]]` matches `path` against the canonical `SKILL.md` document path.
+fn codex_skill_md_path(skill_dir: &Path) -> String {
+    let md = skill_dir.join("SKILL.md");
+    dunce::canonicalize(&md)
+        .or_else(|_| dunce::canonicalize(skill_dir).map(|dir| dir.join("SKILL.md")))
+        .unwrap_or(md)
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn direct_link_matches(root: &Path, name: &str, target: &Path) -> bool {
+    let candidate = root.join(name);
+    candidate == target || dunce::canonicalize(&candidate).ok().as_deref() == Some(target)
+}
+
+/// Claude Code sees this skill without the farm when `<dir>/.claude/skills/<name>` in `cwd`
+/// (or `~/.claude/skills/<name>`) already resolves to `skill.path` — including when `.claude/skills/<name>`
+/// is a symlink to `.agents/skills/<name>`. Category-nested skills are not direct children, so
+/// they still get staged flat into the farm.
 fn native_claude(skill: &AgentSkill, cwd: &Path, home: Option<&Path>) -> bool {
+    let target = skill.path.0.as_path();
+    let home_canon = home.map(|h| dunce::canonicalize(h).unwrap_or_else(|_| h.to_path_buf()));
+    for ancestor in cwd.ancestors() {
+        if home_canon.as_deref().is_some_and(|h| h == ancestor) {
+            break;
+        }
+        if direct_link_matches(&ancestor.join(".claude/skills"), &skill.name, target) {
+            return true;
+        }
+    }
+    if let Some(h) = home_canon.as_deref()
+        && direct_link_matches(&h.join(".claude/skills"), &skill.name, target)
+    {
+        return true;
+    }
     match skill.source {
-        AgentSkillSource::ClaudeWorkspace => is_under(skill.path.0.as_path(), cwd),
-        AgentSkillSource::ClaudeUser => home.is_some_and(|h| is_under(skill.path.0.as_path(), &h.join(".claude"))),
+        AgentSkillSource::ClaudeWorkspace => target.parent() == Some(cwd.join(".claude/skills").as_path()),
+        AgentSkillSource::ClaudeUser => {
+            home_canon.as_deref().is_some_and(|h| target.parent() == Some(h.join(".claude/skills").as_path()))
+        }
         _ => false,
     }
 }
 
-/// Copilot reads the repository's `.github/skills` and the home's `.copilot` itself.
+/// Copilot natively scans `.github/skills`, `.agents/skills` and `.claude/skills` in `cwd`,
+/// plus `~/.copilot` and `~/.agents/skills` in `home`. `.openidea/skills` is NOT native.
 fn native_copilot(skill: &AgentSkill, cwd: &Path, home: Option<&Path>) -> bool {
-    match skill.source {
-        AgentSkillSource::GithubWorkspace => is_under(skill.path.0.as_path(), cwd),
-        AgentSkillSource::CopilotUser => home.is_some_and(|h| is_under(skill.path.0.as_path(), &h.join(".copilot"))),
-        _ => false,
+    let target = skill.path.0.as_path();
+    for rel in [".github/skills", ".agents/skills", ".claude/skills"] {
+        let root = cwd.join(rel);
+        if is_under(target, &root) || direct_link_matches(&root, &skill.name, target) {
+            return true;
+        }
     }
+    if let Some(h) = home {
+        let h = dunce::canonicalize(h).unwrap_or_else(|_| h.to_path_buf());
+        if is_under(target, &h.join(".copilot"))
+            || is_under(target, &h.join(".agents/skills"))
+            || direct_link_matches(&h.join(".copilot/skills"), &skill.name, target)
+            || direct_link_matches(&h.join(".agents/skills"), &skill.name, target)
+        {
+            return true;
+        }
+    }
+    false
 }
 
-/// Codex reads its own folders itself.
+/// Codex natively scans `.codex/skills` and `.agents/skills` in `cwd` and `home`.
 fn native_codex(skill: &AgentSkill, cwd: &Path, home: Option<&Path>) -> bool {
-    match skill.source {
-        AgentSkillSource::CodexWorkspace => is_under(skill.path.0.as_path(), cwd),
-        AgentSkillSource::CodexUser => home.is_some_and(|h| is_under(skill.path.0.as_path(), &h.join(".codex"))),
-        _ => false,
+    let target = skill.path.0.as_path();
+    for rel in [".codex/skills", ".agents/skills"] {
+        let root = cwd.join(rel);
+        if is_under(target, &root) || direct_link_matches(&root, &skill.name, target) {
+            return true;
+        }
     }
+    if let Some(h) = home {
+        let h = dunce::canonicalize(h).unwrap_or_else(|_| h.to_path_buf());
+        if is_under(target, &h.join(".codex/skills"))
+            || is_under(target, &h.join(".agents/skills"))
+            || direct_link_matches(&h.join(".codex/skills"), &skill.name, target)
+            || direct_link_matches(&h.join(".agents/skills"), &skill.name, target)
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn is_under(path: &Path, root: &Path) -> bool {
@@ -553,21 +804,48 @@ fn sanitized(id: &str) -> String {
     id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect()
 }
 
-/// The `/` menu's skills: the active ones as commands (the agent's own listing wins on a
-/// name clash). `Off` ones drop out everywhere; an ACP agent gets no other enforcement, so
-/// `slashOnly` ones stay listed — there is nothing to hold them back with.
+fn bare_skill_name(name: &str) -> String {
+    name.trim_start_matches('$').to_ascii_lowercase()
+}
+
+/// The `/` menu's skills: active user-invocable skills as commands (the agent's own listing
+/// wins on a name clash, including Codex's `$name` spelling). `Off` and `user-invocable: false`
+/// skills are actively stripped from `offered` too, so previously cached or CLI-advertised
+/// entries cannot leak back into OpenIDEA's `/` completion.
 pub fn menu_commands(offered: Vec<AgentCommand>, states: &[AgentSkillState]) -> Vec<AgentCommand> {
-    let extra = states
+    let blocked: HashSet<String> = states
         .iter()
-        .filter(|s| s.mode != AgentSkillMode::Off)
-        .map(|s| AgentCommand {
-            name: s.skill.name.clone(),
-            description: s.skill.description.clone(),
-            hint: None,
-            source: AgentCommandSource::Skill,
-        })
+        .filter(|s| s.mode == AgentSkillMode::Off || !s.skill.user_invocable)
+        .map(|s| bare_skill_name(&s.skill.name))
         .collect();
-    merge(offered, extra)
+    let mut out: Vec<AgentCommand> =
+        offered.into_iter().filter(|c| !blocked.contains(&bare_skill_name(&c.name))).collect();
+    for state in states {
+        if state.mode == AgentSkillMode::Off
+            || !state.skill.user_invocable
+            || (file_name(&state.skill.path.0).as_deref() == Some("skills") && !state.skill.valid)
+        {
+            continue;
+        }
+        let target = bare_skill_name(&state.skill.name);
+        if let Some(existing) = out.iter_mut().find(|c| bare_skill_name(&c.name) == target) {
+            existing.source = AgentCommandSource::Skill;
+            if existing.hint.is_none() {
+                existing.hint = state.skill.hint.clone();
+            }
+            if existing.description.is_empty() {
+                existing.description = state.skill.description.clone();
+            }
+        } else {
+            out.push(AgentCommand {
+                name: state.skill.name.clone(),
+                description: state.skill.description.clone(),
+                hint: state.skill.hint.clone(),
+                source: AgentCommandSource::Skill,
+            });
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -708,8 +986,12 @@ mod tests {
         AgentSkill {
             name: name.into(),
             description: format!("{name} does things"),
+            hint: None,
             path: root.join(name).into(),
             source,
+            also_in: Vec::new(),
+            user_invocable: true,
+            disable_model_invocation: false,
             valid: true,
             warnings: Vec::new(),
         }
@@ -857,7 +1139,16 @@ mod tests {
             true,
         );
 
-        // Local (non-worktree) session: the project's GitHub skills are Copilot's own.
+        //For a local session, `.github/skills`, `.agents/skills` and `~/.agents/skills` are
+        // already scanned natively by Copilot; `.openidea/skills` and `~/.codex/skills` are staged.
+        let mut states = states;
+        std::fs::create_dir_all(repo.join(".openidea/skills/ideonly")).unwrap();
+        states.push(AgentSkillState {
+            skill: skill("ideonly", AgentSkillSource::Workspace, &repo.join(".openidea/skills")),
+            mode: AgentSkillMode::Auto,
+            origin: AgentSkillOrigin::None,
+        });
+
         let farm = farm_dir(&root.join("store"), "task-1");
         let delivery = stage(&farm, "claude", &states, &repo, Some(&home)).unwrap();
         assert_eq!(delivery.claude_add_dir.as_deref(), Some(farm.as_path()));
@@ -865,7 +1156,7 @@ mod tests {
         let staged = listed(&claude_tree);
         assert_eq!(
             staged,
-            ["codexy", "gh", "lint", "muted", "tdd"],
+            ["codexy", "gh", "ideonly", "lint", "muted", "tdd"],
             "everything but the off one: none is native to Claude here, and slash-only needs the folder"
         );
 
@@ -873,18 +1164,31 @@ mod tests {
         assert_eq!(delivery.copilot_skill_directories, [farm.join("copilot").to_string_lossy().into_owned()]);
         assert_eq!(delivery.copilot_disabled_skills, ["muted", "off"]);
         let copilot_staged = listed(&farm.join("copilot"));
-        assert_eq!(copilot_staged, ["codexy", "lint", "tdd"], "`gh` is native to a local Copilot session");
+        assert_eq!(
+            copilot_staged,
+            ["codexy", "ideonly"],
+            "`gh` (.github), `tdd` (.agents) and `lint` (~/.agents) are native to Copilot; `.openidea` & `~/.codex` are staged"
+        );
         assert_eq!(
             delivery.codex_off,
-            [("off".to_owned(), repo.join(".agents/skills").join("off").to_string_lossy().into_owned())]
+            [
+                (
+                    "muted".to_owned(),
+                    home.join(".agents").join("skills").join("muted").join("SKILL.md").to_string_lossy().into_owned(),
+                ),
+                (
+                    "off".to_owned(),
+                    repo.join(".agents").join("skills").join("off").join("SKILL.md").to_string_lossy().into_owned(),
+                ),
+            ]
         );
 
-        // A worktree task: the repo's skills are untracked, so nothing is native any more.
+        // A worktree task: the repo's skills are untracked, so workspace skills are staged now.
         let worktree = root.join("wt");
         std::fs::create_dir_all(&worktree).unwrap();
         let _ = stage(&farm, "copilot", &states, &worktree, Some(&home)).unwrap();
         let copilot_staged = listed(&farm.join("copilot"));
-        assert!(copilot_staged.contains(&"gh".to_string()));
+        assert!(copilot_staged.contains(&"gh".to_string()) && copilot_staged.contains(&"tdd".to_string()));
 
         // Slash-only reaches Claude as `user-invocable-only`, off as `off`.
         let delivery = stage(&farm, "claude", &states, &repo, Some(&home)).unwrap();
@@ -902,7 +1206,7 @@ mod tests {
             true,
         );
         stage(&farm, "claude", &restated, &repo, Some(&home)).unwrap();
-        assert_eq!(listed(&claude_tree), ["codexy", "gh", "muted", "tdd"]);
+        assert_eq!(listed(&claude_tree), ["codexy", "gh", "ideonly", "muted", "tdd"]);
         assert!(home.join(".agents/skills/lint").is_dir());
         assert!(farm.join("copilot").is_dir(), "restaging Claude's tree leaves Copilot's alone");
 
@@ -918,16 +1222,112 @@ mod tests {
     #[test]
     fn hub_menu_filters_off_and_keeps_the_agents_own() {
         let root = PathBuf::from("/r");
+        let mut hidden = skill("bg-only", AgentSkillSource::Workspace, &root);
+        hidden.user_invocable = false;
+        let mut with_hint = skill("verify", AgentSkillSource::Workspace, &root);
+        with_hint.hint = Some("[flow]".into());
+        with_hint.path = tempfile::tempdir().unwrap().path().to_path_buf().into();
+        write(&with_hint.path.0.join("SKILL.md"), "---\nname: verify\ndescription: v\n---\n");
         let states = resolve(
-            vec![skill("tdd", AgentSkillSource::Workspace, &root), skill("lint", AgentSkillSource::User, &root)],
+            vec![
+                skill("tdd", AgentSkillSource::Workspace, &root),
+                skill("lint", AgentSkillSource::User, &root),
+                hidden,
+                with_hint,
+            ],
             Some(&BTreeMap::from([("lint".to_owned(), AgentSkillMode::Off)])),
             &BTreeMap::new(),
             &BTreeMap::new(),
             true,
         );
-        let menu = menu_commands(vec![cmd("tdd", "from the agent itself")], &states);
-        assert_eq!(names(&menu), ["tdd"]);
-        assert_eq!(menu[0].description, "from the agent itself");
+        // Even when the agent itself (or cached `known_commands` / Codex `$lint`) already offered
+        // `lint` or `bg-only`, `menu_commands` strips them, and merges `$tdd` without duplicating `tdd`.
+        let offered = vec![
+            cmd("$tdd", "from codex itself"),
+            AgentCommand { source: AgentCommandSource::Skill, ..cmd("lint", "offered before turning off") },
+            cmd("$lint", "codex offered before turning off"),
+            AgentCommand { source: AgentCommandSource::Skill, ..cmd("bg-only", "model only") },
+            cmd("compact", "Compact context"),
+        ];
+        let menu = menu_commands(offered, &states);
+        assert_eq!(names(&menu), ["$tdd", "compact", "verify"]);
+        assert_eq!(menu[0].description, "from codex itself");
         assert_eq!(menu[0].source, AgentCommandSource::Skill);
+        assert_eq!(menu[2].hint.as_deref(), Some("[flow]"));
+    }
+
+    #[test]
+    fn hub_discovers_copilot_two_level_plugins_categories_monorepos_and_frontmatter_flags() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let home = root.join("home");
+        let ws_a = root.join("ws-a");
+        let ws_b = root.join("ws-b");
+        // Category subfolder in `.agents/skills/testing/coverage/SKILL.md`.
+        write(
+            &ws_a.join(".agents/skills/testing/coverage/SKILL.md"),
+            "---\nname: coverage\ndescription: Coverage workflow\nargument-hint: \"[pkg]\"\ndisable-model-invocation: true\n---\n",
+        );
+        // Nested monorepo subpackage `apps/web/.agents/skills/web-e2e/SKILL.md`.
+        write(
+            &ws_a.join("apps/web/.agents/skills/web-e2e/SKILL.md"),
+            "---\nname: web-e2e\ndescription: Web e2e\n---\n",
+        );
+        // Second workspace member root `ws-b`.
+        write(&ws_b.join(".agents/skills/deploy/SKILL.md"), "---\nname: deploy\ndescription: Deploy\n---\n");
+        // Misplaced top-level `SKILL.md` directly inside `.claude/skills/SKILL.md`.
+        write(&ws_a.join(".claude/skills/SKILL.md"), "---\nname: misplaced\ndescription: Wrong level\n---\n");
+        // Copilot 2-level marketplace & `_direct` plugins + disabled plugin in `config.json`.
+        write(
+            &home.join(".copilot/installed-plugins/awesome-copilot/db-tools/skills/pg-tune/SKILL.md"),
+            "---\nname: pg-tune\ndescription: Tune Postgres\n---\n",
+        );
+        write(
+            &home.join(".copilot/installed-plugins/_direct/muted-plug/skills/secret-op/SKILL.md"),
+            "---\nname: secret-op\ndescription: Disabled plugin skill\n---\n",
+        );
+        write(
+            &home.join(".copilot/config.json"),
+            "// Managed by Copilot CLI\n{\"installedPlugins\":[{\"name\":\"muted-plug\",\"enabled\":false,\"cache_path\":\"installed-plugins/_direct/muted-plug\"}]}\n",
+        );
+        #[cfg(unix)]
+        {
+            std::fs::create_dir_all(ws_a.join(".claude/skills")).unwrap();
+            std::os::unix::fs::symlink(
+                ws_a.join(".agents/skills/testing/coverage"),
+                ws_a.join(".claude/skills/coverage"),
+            )
+            .unwrap();
+        }
+
+        let found = discover_skills_in(&[ws_a.clone(), ws_b], Some(&home));
+        let by = |n: &str| found.iter().find(|s| s.name == n);
+        let cov = by("coverage").expect("category skill discovered");
+        assert_eq!(cov.hint.as_deref(), Some("[pkg]"));
+        assert!(cov.disable_model_invocation);
+        #[cfg(unix)]
+        assert_eq!(cov.also_in, [AgentSkillSource::ClaudeWorkspace]);
+        assert!(by("web-e2e").is_some(), "nested monorepo subpackage skill discovered");
+        assert!(by("deploy").is_some(), "second workspace member skill discovered");
+        assert!(by("pg-tune").is_some(), "2-level Copilot marketplace plugin skill discovered");
+        assert!(by("secret-op").is_none(), "disabled Copilot plugin skipped");
+        let misplaced = by("misplaced").expect("misplaced top-level SKILL.md surfaced");
+        assert!(!misplaced.valid && misplaced.warnings[0].contains("subfolder"));
+
+        // `disable-model-invocation: true` resolves to `SlashOnly` by default, and because
+        // `.claude/skills/coverage` symlinks to it in `ws_a`, Claude does not stage a duplicate.
+        let states = resolve(found, None, &BTreeMap::new(), &BTreeMap::new(), true);
+        let cov_state = states.iter().find(|s| s.skill.name == "coverage").unwrap();
+        assert_eq!(cov_state.mode, AgentSkillMode::SlashOnly);
+        #[cfg(unix)]
+        {
+            let farm = farm_dir(&root.join("store"), "task-symlink");
+            let _ = stage(&farm, "claude", &states, &ws_a, Some(&home)).unwrap();
+            let claude_staged = listed(&farm.join(".claude/skills"));
+            assert!(
+                !claude_staged.contains(&"coverage".to_string()),
+                "symlinked `.claude/skills/coverage` not duplicated"
+            );
+        }
     }
 }

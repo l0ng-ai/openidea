@@ -58,7 +58,7 @@ use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
 
 /// The API version of the world above, `major.minor` of [`host_api`].
-pub const API_VERSION: &str = "1.14";
+pub const API_VERSION: &str = "1.15";
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 pub(crate) const MAX_TEXT: usize = 1 << 20;
 /// The most text, and the most PNG bytes, `ui.read-clipboard` returns.
@@ -1108,6 +1108,16 @@ fn event_to_wit(e: WorkbenchEvent) -> wit_events::Event {
         WorkbenchEvent::InputModeChanged(mode) => wit_events::Event::Other(wit_types::Extension {
             kind: "input-mode-changed".into(),
             data: serde_json::to_string(&mode).expect("mode serializes"),
+        }),
+        WorkbenchEvent::CaretMoved(caret) => wit_events::Event::Other(wit_types::Extension {
+            kind: "caret-moved".into(),
+            data: serde_json::json!({
+                "path": caret.path,
+                "line": caret.line,
+                "col": caret.col,
+                "settled": caret.settled,
+            })
+            .to_string(),
         }),
         WorkbenchEvent::FileOpened(p) => wit_events::Event::FileOpened(p),
         WorkbenchEvent::FileSaved(p) => wit_events::Event::FileSaved(p),

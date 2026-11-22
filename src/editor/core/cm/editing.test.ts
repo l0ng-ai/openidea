@@ -333,6 +333,53 @@ describe("C++ access specifiers", async () => {
   });
 });
 
+describe("Enter after a case label", async () => {
+  const load = async (name: string) => (await loadSupport(languages.find((l) => l.name === name)!))!;
+  const [c, cpp, php] = await Promise.all([load("C"), load("C++"), load("PHP")]);
+
+  it("indents the branch body one level in C, C++ and PHP", () => {
+    for (const [support, head] of [
+      [c, "int f(int x) {\n    switch (x) {\n        case 1:|\n    }\n}"],
+      [cpp, "int f(int x) {\n    switch (x) {\n        default:|\n    }\n}"],
+      [php, "<?php\nfunction f($x) {\n    switch ($x) {\n        case 'a':|\n    }\n}"],
+    ] as const) {
+      const v = make(head, [support, indentUnit.of("    ")]);
+      insertNewlineAndIndent(v);
+      const lines = show(v).split("\n");
+      expect(lines.find((l) => l.includes("|"))).toBe("            |");
+    }
+  });
+
+  it("leaves other lines alone", () => {
+    const v = make("void f() {\n    std::|\n}", [cpp, indentUnit.of("    ")]);
+    insertNewlineAndIndent(v);
+    expect(show(v).split("\n")[2]).toBe("    |");
+  });
+});
+
+describe("Kotlin continuation indentation", async () => {
+  const kt = (await loadSupport(languages.find((l) => l.name === "Kotlin")!))!;
+  const ext = [kt, indentUnit.of("    ")];
+
+  it("indents a when branch body and an assigned expression one level", () => {
+    const v = make("fun f(x: Int) {\n    when (x) {\n        1 ->|\n    }\n}", ext);
+    insertNewlineAndIndent(v);
+    expect(show(v)).toBe("fun f(x: Int) {\n    when (x) {\n        1 ->\n            |\n    }\n}");
+    const w = make("fun f() {\n    val answer =|\n}", ext);
+    insertNewlineAndIndent(w);
+    expect(show(w)).toBe("fun f() {\n    val answer =\n        |\n}");
+  });
+
+  it("leaves comparisons and finished statements alone", () => {
+    const v = make("fun f() {\n    val ok = a ==|\n}", ext);
+    insertNewlineAndIndent(v);
+    expect(show(v).split("\n")[2]).not.toBe("        |");
+    const w = make("fun f() {\n    val a = 1|\n}", ext);
+    insertNewlineAndIndent(w);
+    expect(show(w)).toBe("fun f() {\n    val a = 1\n    |\n}");
+  });
+});
+
 describe("fallback indentation for GDScript", () => {
   const gd = [
     EditorState.tabSize.of(4),

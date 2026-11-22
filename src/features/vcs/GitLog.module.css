@@ -496,7 +496,17 @@
   flex-direction: column;
   min-height: 0;
 }
+.detailsBar {
+  height: auto;
+  min-height: 32px;
+  flex-wrap: wrap;
+  padding-block: var(--space-0-5);
+}
 .detailsCount {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   padding-left: 4px;
   color: var(--fg-subtle);
   font-size: var(--fs-ui);
@@ -630,32 +640,35 @@
   flex: 1;
   min-width: 0;
 }
+.messageText {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
 .subjectLine {
   color: var(--fg-strong);
-  font-weight: 600;
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.5;
 }
 .fullMessage {
-  margin-top: 6px;
+  margin-top: var(--space-1-5);
   color: var(--fg);
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.5;
 }
 .meta {
-  margin-top: 10px;
+  font-size: var(--fs-small);
   color: var(--fg-subtle);
   line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.messageText + .meta {
+  margin-top: var(--space-2);
+}
+.meta + .meta,
+.commitEntry .messageText + .meta {
+  margin-top: var(--space-0-5);
 }
 .commitEntry + .commitEntry {
   margin-top: 10px;
   padding-top: 10px;
   border-top: 1px solid var(--border);
-}
-.metaCompact {
-  margin-top: 2px;
 }
 .meta .refs {
   margin-left: 0;
@@ -669,6 +682,10 @@
 }
 .hash {
   font-family: var(--font-mono);
+}
+.messageText .linkButton,
+.meta .linkButton {
+  max-width: 100%;
 }
 .linkButton {
   color: var(--link);
