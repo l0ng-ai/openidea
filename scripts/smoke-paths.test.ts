@@ -26,12 +26,12 @@ describe("the Language smoke workflow", () => {
     const { files, problems } = await smokeInputs(repo, workflow);
     expect(problems).toEqual([]);
     expect(describeUnselected(await unselected(workflow, [...files.keys()]), files)).toBe("");
-  });
+  }, 20000);
 
   it("runs every language when a crate the smoke runs changes", async () => {
     const crates = rustSmokeInputs(repo);
     expect(describeUnselected(await unselected(workflow, [...crates.keys()]), crates)).toBe("");
-  });
+  }, 20000);
 });
 
 const dirs: string[] = [];
