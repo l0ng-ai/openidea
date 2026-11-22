@@ -79,12 +79,34 @@ describe("SkillsPicker", () => {
     expect(screen.queryByText("Session")).not.toBeInTheDocument();
   });
 
-  it("leaves a skill the settings keep off to the settings page", async () => {
-    render(<Harness />);
+  it("enables a default-off skill for this session only while keeping untrusted workspace skills locked", async () => {
+    const withUntrusted: AgentSkillState[] = [
+      ...SKILLS,
+      {
+        skill: {
+          name: "repo-script",
+          description: "Untrusted workspace skill",
+          path: "/repo/.agents/skills/repo-script",
+          source: "workspace",
+          valid: true,
+          warnings: [],
+        },
+        mode: "off",
+        origin: "trust",
+      },
+    ];
+    render(<Harness skills={withUntrusted} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Skills" }));
-    expect(screen.queryByRole("switch", { name: "Enable impeccable for this session" })).not.toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: "Enable in Settings" })).toBeInTheDocument();
+    const impeccable = await screen.findByRole("switch", { name: "Enable impeccable for this session" });
+    expect(impeccable).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(impeccable);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Skills" })).toHaveTextContent("Skills4/5"));
+    expect(screen.getAllByText("Session")).toHaveLength(1);
+
+    // Untrusted workspace skill stays locked and cannot be turned on via session override.
+    expect(screen.queryByRole("switch", { name: "Enable repo-script for this session" })).not.toBeInTheDocument();
+    expect(screen.getByText("Untrusted workspace")).toBeInTheDocument();
   });
 
   it("brings a session-off skill back with its toggle", async () => {

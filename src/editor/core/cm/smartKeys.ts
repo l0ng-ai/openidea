@@ -621,3 +621,20 @@ export function templateBrace(language: string): Extension {
     return true;
   });
 }
+
+/**
+ * Rust: a `'` where a lifetime goes (`<'a>`, `&'a`, `T: 'a`, `+ 'static`, `<'a, 'b>`) stays single;
+ * elsewhere it opens a char literal and pairs as usual.
+ */
+export const rustLifetimeQuote = EditorView.inputHandler.of((view, from, to, text) => {
+  if (text !== "'" || from !== to || view.state.readOnly) return false;
+  const line = view.state.doc.lineAt(from);
+  // Earlier lifetimes on the line are no quotes to count around.
+  const before = line.text.slice(0, from - line.from).replace(/'[A-Za-z_]\w*\b(?!')/g, "");
+  const prev = before.trimEnd().slice(-1);
+  const inAngles = countOutsideStrings(before, "<") > countOutsideStrings(before, ">");
+  const lifetime = prev === "<" || prev === "&" || prev === "+" || (inAngles && (prev === "," || prev === ":"));
+  if (!lifetime) return false;
+  view.dispatch({ changes: { from, insert: "'" }, selection: { anchor: from + 1 }, userEvent: "input.type" });
+  return true;
+});
