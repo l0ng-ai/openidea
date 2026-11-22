@@ -1,0 +1,37 @@
+// Gradle's Eclipse model leaves out project dependencies a source set only compiles against
+// (compileOnly, compileOnlyApi), and marks some as test-only. Add each project the main or test
+// compile classpath names, so Java code sees the classes it compiles against.
+allprojects {
+    plugins.withId('java') {
+        apply plugin: 'eclipse'
+        eclipse.classpath.file.whenMerged { classpath ->
+            def projectOf = { dep ->
+                def path
+                try { path = dep.path } catch (MissingPropertyException ignored) { path = dep.dependencyProject.path }
+                rootProject.findProject(path)
+            }
+            def wanted = [:]
+            ['testCompileClasspath', 'compileClasspath'].each { name ->
+                def configuration = configurations.findByName(name)
+                if (configuration == null) return
+                configuration.allDependencies.withType(ProjectDependency).each { dep ->
+                    def target = projectOf(dep)
+                    if (target == null || target == project) return
+                    def eclipseName = target.extensions.findByName('eclipse')?.project?.name ?: target.name
+                    wanted['/' + eclipseName] = name == 'compileClasspath'
+                }
+            }
+            def existing = classpath.entries.findAll { it instanceof org.gradle.plugins.ide.eclipse.model.ProjectDependency }
+            wanted.each { path, main ->
+                def entry = existing.find { it.path == path }
+                if (entry == null) {
+                    entry = new org.gradle.plugins.ide.eclipse.model.ProjectDependency(path)
+                    entry.entryAttributes['without_test_code'] = 'true'
+                    classpath.entries.add(entry)
+                }
+                if (main) entry.entryAttributes.remove('test')
+                else if (!entry.entryAttributes.containsKey('test')) entry.entryAttributes['test'] = 'true'
+            }
+        }
+    }
+}
