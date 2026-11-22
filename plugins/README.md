@@ -145,6 +145,7 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `runDetectors`      | `id`, `name`, `files`, `command`, `args?`, `test?`, `framework?` (API 1.4; §6.2)                                                                                                                                                       | no            |
 | `runConfigurations` | `files`: marker files for the optional `run-configurations` export (API 1.4)                                                                                                                                                           | yes           |
 | `javaAgents`        | `path` (a jar in the package), `args?`, `vmOptions?`, `jdk?` — a Java agent for Java run configurations, behind `java.agent` (API 1.10; `vmOptions`/`jdk` in 1.14; _Java agents_)                                                      | no            |
+| `skills`            | `path` (`skills/<name>/SKILL.md` in the package) — agent skill folder staged into coding-agent sessions (API 1.15)                                                                                                                     | no            |
 | `mcpTools`          | `name`, `description`, `inputSchema` (package JSON Schema path), `readOnly`, `destructive` (API 1.4; see _Plugin MCP tools_)                                                                                                           | yes           |
 | `snippets`          | `language`, `path` (named JSON snippets; API 1.4)                                                                                                                                                                                      | no            |
 | `providers`         | `kinds`, `languages` (editor providers, see _Providers_)                                                                                                                                                                               | yes           |
@@ -437,6 +438,13 @@ matching SDK. Plugins for 1.14 and earlier keep working. New in 1.15:
   position once the caret rests: defer costly work (loading data behind a
   hover) until then. Subscribe at run time or declare `on-event:caret-moved`;
   requires `events`.
+- **Agent skills (`[[contributes.skills]]`).** Declarative `path =
+  "skills/<name>/SKILL.md"` entries expose bundled `SKILL.md` folders (up to
+  2 MiB per skill, no symlinks leaving the package) under the **Plugins** group
+  in Settings › Agents › Skills and the Composer picker, staged into agent
+  sessions while the plugin is enabled; workspace and user skills take
+  precedence on a name clash, and invalid entries report a plugin load warning
+  rather than failing the plugin.
 
 ### API 1.14
 

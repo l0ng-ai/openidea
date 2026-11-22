@@ -1,4 +1,4 @@
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 import clsx from "clsx";
 import styles from "../GitLog.module.css";
 import { resizeColumnPair, useColumnResize, type ResizeTarget } from "./useColumnResize";
@@ -28,7 +28,7 @@ export function ColumnResizeHandle({
       className={clsx(styles.columnResize, disabled && styles.columnResizeDisabled)}
       role="separator"
       aria-orientation="vertical"
-      aria-label={disabled ? tx`${tx(title)} column border` : tx`Resize ${tx(title)} column`}
+      aria-label={disabled ? tx`${txPart(title)} column border` : tx`Resize ${txPart(title)} column`}
       aria-valuemin={40}
       aria-valuemax={800}
       aria-valuenow={target.width}

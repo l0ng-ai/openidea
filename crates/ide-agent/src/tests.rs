@@ -4459,9 +4459,8 @@ async fn per_session_skill_overrides_filter_commands_persist_and_reload_when_idl
         let root = root.to_path_buf();
         move || SkillsPolicy {
             user: BTreeMap::from([("tdd".into(), AgentSkillPolicy { mode: AgentSkillMode::Off })]),
-            workspace: BTreeMap::new(),
-            workspace_trusted: true,
             workspace_roots: vec![root.clone()],
+            ..SkillsPolicy::default()
         }
     }));
 

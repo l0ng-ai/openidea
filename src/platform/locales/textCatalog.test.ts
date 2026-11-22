@@ -7,7 +7,7 @@
  *
  * Text counts as translatable when it is a literal (or a branch of `?:` / `??` /
  * `||` around one) that reaches the translation layer directly:
- *   - the first argument of `tx` / `txTemplate`, or of a function bound from
+ *   - the first argument of `tx` / `txPart` / `txTemplate`, or of a function bound from
  *     `useTx()` / `useTxTemplate()` in the same file;
  *   - the plain-text children of `<T>` and the other `TEXT_CHILDREN` primitives;
  *   - a `TEXT_PROPS` attribute of a component (`<Row hint="…">`), and `data-tooltip`;
@@ -527,7 +527,7 @@ function scanTypeScript(): Scan {
       true,
       file.endsWith("x") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
     );
-    const exact = new Set(["tx"]);
+    const exact = new Set(["tx", "txPart"]);
     const template = new Set(["txTemplate"]);
     for (const m of source.matchAll(/(?:const|let)\s+(\w+)\s*=\s*useTx(Template)?\(\)/g))
       (m[2] ? template : exact).add(m[1]!);

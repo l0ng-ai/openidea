@@ -11,7 +11,7 @@ import { withDocument } from "@/editor/lsp/files";
 import { IpcError } from "@/platform/ipc";
 import { libraryEntryPaths } from "@/platform/virtualDocs";
 import { isIgnoredName } from "@/platform/ignoredNames";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 import { notifications } from "@/workbench/contributions";
 import { ipcPath } from "@/platform/paths";
 import {
@@ -806,7 +806,7 @@ export function explainHiddenPath(path: string, shown: string) {
   notifications().notify({
     level: "info",
     key: "project.hiddenPath",
-    title: tx`${nameOf(path)} is hidden because ${title} is off`,
+    title: tx`${nameOf(path)} is hidden because ${txPart(title)} is off`,
     actions: [
       {
         label: tx(title),

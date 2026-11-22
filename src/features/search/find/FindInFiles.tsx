@@ -12,7 +12,7 @@ import clsx from "clsx";
 import { openEditorPaths, useEditorRegistry } from "@/editor/api";
 import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
-import { t, useTxTemplate, tx } from "@/platform/i18n";
+import { t, useTxTemplate, tx, txPart } from "@/platform/i18n";
 import { formatBinding, hostBinding, shortcutLabel } from "@/platform/keymap";
 import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
@@ -1032,7 +1032,7 @@ function EmptyResults({
       ) : used.length ? (
         <div className={styles.emptyOptions}>
           {used.length === 1 ? (
-            <div>{tx`Search option used: ${tx(used[0]!.label)}`}</div>
+            <div>{tx`Search option used: ${txPart(used[0]!.label)}`}</div>
           ) : (
             <>
               <div>

@@ -36,7 +36,7 @@ import {
 } from "./jsonValue";
 import { JsonValueEditor, JsonValueWindow, type JsonEditorApi } from "./JsonValueEditor";
 import styles from "./Database.module.css";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 
 export type DataPanel = "record" | "value" | "aggregates";
 
@@ -46,7 +46,7 @@ export function exportMenu(data: ExportData, source: string, format?: ExportForm
     { label: "Export Data…", icon: "export", run: () => openDialog({ kind: "export", data, source, format }) },
     { kind: "separator" },
     ...EXPORT_FORMATS.map((f): MenuItem => ({
-      label: tx`Copy as ${f.label}`,
+      label: tx`Copy as ${txPart(f.label)}`,
       icon: "copy",
       run: () => void writeClipboardText(exportData(f.id, data)),
     })),

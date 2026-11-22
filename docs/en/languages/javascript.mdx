@@ -74,7 +74,8 @@ On both pages, **Formatting provider** chooses between **Automatic (language ser
 
 OpenIDEA detects run configurations when the project opens:
 
-- One configuration per `package.json` script (`npm run build`, `pnpm run dev`, …), for the root package, nested packages and workspace members. Scripts named `test`, `jest`, `vitest` or `test:*` are test configurations.
+- One configuration per `package.json` script (`npm run build`, `pnpm run dev`, …), for the root package, nested packages and workspace members. Scripts named `test`, `jest`, `vitest` or `test:*`, and scripts that run `playwright test`, `node --test` or `mocha`, are test configurations.
+- `playwright test` (through `npx`) for a package with a `playwright.config.*` that no script runs.
 - One per task in `deno.json` / `deno.jsonc` (`deno task <name>`).
 
 In `package.json`, the gutter shows run icons on each `scripts` entry to run or debug it.
@@ -85,7 +86,7 @@ In `package.json`, the gutter shows run icons on each `scripts` entry to run or 
 - Any other `.js` file runs with `node` (with `deno run` or `bun run` in a project with `deno.json` or `bun.lock`).
 - A `.ts` file runs with Node.js directly on 22.18+ / 23.6+, with `--experimental-strip-types` on 22.6–22.17 and 23.0–23.5, else through `tsx` or `ts-node`.
 
-Jest and Vitest output is turned into the test tree, with **Rerun Failed Tests**. **Run with Coverage** works for scripts that run `vitest` or `jest` (Vitest needs a coverage provider such as `@vitest/coverage-v8`; the IDE offers to add it) and for `node` / `tsx` / `ts-node` runs through `c8`. See [Testing](/en/guide/testing) and [Coverage](/en/guide/coverage).
+Jest, Vitest, Playwright Test, `node --test` and Mocha output is turned into the test tree, with **Rerun Failed Tests**. Playwright runs report through its `list` reporter unless the configuration names another; a test in the gutter runs by its line (`file:line`), and runs with several projects show each project under its file. `node --test` runs report through the IDE's reporter next to `spec`, added to `NODE_OPTIONS` (a script that chooses its own `--test-reporter` runs without the tree); single tests and reruns are selected by full name (`--test-name-pattern`). Mocha runs keep their reporter and load an IDE hook through `NODE_OPTIONS` that reports each test with its line; single tests and reruns use `--grep`, and tests in `test/` get gutter icons whatever their file name. **Run with Coverage** works for scripts that run `vitest` or `jest` (Vitest needs a coverage provider such as `@vitest/coverage-v8`; the IDE offers to add it) and for `node` / `tsx` / `ts-node` runs through `c8`. See [Testing](/en/guide/testing) and [Coverage](/en/guide/coverage).
 
 ## Debugging
 

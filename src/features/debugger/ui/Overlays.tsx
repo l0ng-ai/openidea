@@ -78,12 +78,13 @@ import { EventBreakpointsSection } from "../js/EventBreakpointsSection";
 import { StreamChainChooser } from "../streams/StreamChainChooser";
 import { StreamAbortDialog } from "../streams/StreamAbortDialog";
 import { closeBreakpointPopover, useOverlays } from "./popoverStore";
+import { TableViewDialog } from "./TableViewDialog";
 import { VariablesView, type VarRoot } from "./VariablesView";
 import { useExpressionCompletion } from "./ExpressionCompletion";
 import { pushHistory, readHistory } from "./expressionHistory";
 import styles from "./Overlays.module.css";
 import { isImeKey } from "@/platform/ime";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 
 export function DebuggerOverlays() {
   return (
@@ -96,7 +97,26 @@ export function DebuggerOverlays() {
       <SmartStepChooser />
       <StreamChainChooser />
       <StreamAbortDialog />
+      <TableView />
     </>
+  );
+}
+
+function TableView() {
+  const view = useOverlays((s) => s.tableView);
+  // A finished session (Stop, or Restart, which starts another id) has nothing left to show.
+  const live = useDebug((s) => view != null && isLive(s.sessions[view.session]));
+  useEffect(() => {
+    if (view && !live) useOverlays.setState({ tableView: null });
+  }, [view, live]);
+  if (!view || !live) return null;
+  return (
+    <TableViewDialog
+      key={`${view.session}:${view.expression}`}
+      expression={view.expression}
+      session={view.session}
+      onClose={() => useOverlays.setState({ tableView: null })}
+    />
   );
 }
 
@@ -586,7 +606,7 @@ function BreakpointsDialog() {
                     <Checkbox
                       checked={r.bp.enabled}
                       onChange={(enabled) => updateExceptionClass(r.bp.id, { enabled })}
-                      aria-label={tx`Enable ${name}`}
+                      aria-label={tx`Enable ${r.bp.className || txPart("No class chosen")}`}
                     />
                     <Icon name="breakpoint-exception" size={14} />
                     <span className={styles.bpName} title={name}>

@@ -4482,7 +4482,6 @@
   "WSL distribution:": "WSL 배포판:",
   "WSL distribution": "WSL 배포판",
   "Project runs on {label}": "프로젝트가 {label}에서 실행됩니다",
-  "Forwarding ports is not supported in a WSL project yet": "WSL 프로젝트에서는 아직 포트 포워딩을 지원하지 않습니다",
   "No SSH configurations": "SSH 구성 없음",
   "Project directory:": "프로젝트 디렉터리:",
   "Remote Development…": "원격 개발…",

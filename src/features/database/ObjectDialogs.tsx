@@ -46,7 +46,7 @@ import {
 } from "./store";
 import { openTableData } from "./treeActions";
 import styles from "./Database.module.css";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 
 /** Read-only SQL with the editor's syntax colours (IDEA's dialog Preview pane). */
 function SqlPreview({ sql, label = "Preview" }: { sql: string; label?: string }) {
@@ -130,7 +130,7 @@ function RenameDialog({ id, object }: { id: string; object: DbObjectRef | null }
     >
       <div className={styles.dialogBody}>
         <label className={styles.formLabelLeft} htmlFor="db-rename">
-          {tx`Rename ${what} '${initial}' to:`}
+          {tx`Rename ${txPart(what)} '${initial}' to:`}
         </label>
         <Input
           id="db-rename"
@@ -166,7 +166,7 @@ function DropDialog({ id, object }: { id: string; object: DbObjectRef }) {
     >
       <div className={styles.dialogBody}>
         <div className={styles.dialogLead}>
-          {tx`Drop ${KIND_LABEL[object.kind]}`} <strong>{reference(driver, object)}</strong>
+          {tx`Drop ${txPart(KIND_LABEL[object.kind])}`} <strong>{reference(driver, object)}</strong>
           {tx`? This cannot be undone.`}
         </div>
         <Checkbox

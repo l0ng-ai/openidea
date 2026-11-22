@@ -1,4 +1,4 @@
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { isMacHost } from "@/platform/keymap";
 import { Icon, IconButton, SearchField, type MenuItem } from "@/ui";
@@ -70,7 +70,7 @@ function FilterButton({ label, value, onOpen, onClear, hidden }: LogFilter & { h
         <IconButton
           type="button"
           className={styles.filterClear}
-          aria-label={tx`Clear ${tx(label)} filter`}
+          aria-label={tx`Clear ${txPart(label)} filter`}
           onClick={onClear}
           icon="close"
           size="small"
