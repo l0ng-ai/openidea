@@ -35,7 +35,7 @@ export function RefLabels({
 }) {
   const labels = refLabels(refs, { compact, tagNames }, remoteNames);
   return (
-    <span className={clsx(styles.refs, left && styles.refsLeft)}>
+    <span className={clsx(styles.refs, compact && styles.refsCompact, left && styles.refsLeft)}>
       {labels.map((l) => (
         <span key={`${l.kind}:${l.title}`} className={clsx(styles.ref, REF_KIND_CLASS[l.kind])} title={l.title}>
           {l.text && <span className={styles.refText}>{l.text}</span>}

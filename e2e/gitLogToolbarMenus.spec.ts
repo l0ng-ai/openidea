@@ -112,6 +112,57 @@ test("Git Log separates commit message typography from compact metadata", async 
   await expect(author).toHaveCSS("font-size", "12px");
 });
 
+test("compact Git Log refs give the subject room on either side", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 630, height: 720 });
+  const refSubject = "Reconcile shipping credits";
+  const longReference = "release-quarterly-settlement-and-backoffice-invoice-reconciliation";
+  await page.evaluate(
+    async ({ refSubject, longReference }) => {
+      const optionsModule = "/src/features/vcs/logOptions.ts";
+      const logModule = "/src/features/vcs/logStore.ts";
+      const { setLogOptions } = await import(/* @vite-ignore */ optionsModule);
+      const { useGitLog } = await import(/* @vite-ignore */ logModule);
+      setLogOptions({ showBranches: false, showDetails: false });
+      const [first, ...rest] = useGitLog.getState().commits;
+      useGitLog.setState({
+        commits: [{ ...first, summary: refSubject, message: refSubject, refs: [longReference] }, ...rest],
+      });
+    },
+    { refSubject, longReference },
+  );
+  const row = page.getByRole("listbox", { name: "Commits" }).getByRole("option").filter({ hasText: refSubject });
+  const subject = row.getByText(refSubject, { exact: true });
+  const ref = row.getByTitle(longReference, { exact: true });
+  const expectLayout = async () => {
+    await expect
+      .poll(() =>
+        subject.evaluate((el) => {
+          const text = document.createRange();
+          text.selectNodeContents(el);
+          return el.getBoundingClientRect().width + 0.02 >= text.getBoundingClientRect().width;
+        }),
+      )
+      .toBe(true);
+    await expect
+      .poll(() =>
+        ref.evaluate((el) => {
+          const refs = el.parentElement!;
+          return refs.clientWidth / refs.parentElement!.clientWidth;
+        }),
+      )
+      .toBeLessThanOrEqual(0.34);
+    await expect(ref).toHaveCSS("font-size", "12px");
+    await expect(subject).toHaveCSS("font-size", "13px");
+  };
+  await expectLayout();
+  await expect.poll(async () => (await subject.boundingBox())!.x < (await ref.boundingBox())!.x).toBe(true);
+
+  await page.getByRole("toolbar", { name: "Log filters" }).getByRole("button", { name: "View Options" }).click();
+  await page.getByRole("menuitemcheckbox", { name: "References on the Left" }).click();
+  await expectLayout();
+  await expect.poll(async () => (await subject.boundingBox())!.x > (await ref.boundingBox())!.x).toBe(true);
+});
+
 test("a second click on a Git Log toolbar button closes its popup", async ({ workbench: page }) => {
   const toolbar = page.getByRole("toolbar", { name: "Log filters" });
   const branchPopup = page.getByRole("dialog", { name: "Filter by Branch" });
