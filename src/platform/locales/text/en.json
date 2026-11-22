@@ -3040,5 +3040,15 @@
   "Mail:": "Mail:",
   "A folder with this name already exists and is not empty": "A folder with this name already exists and is not empty",
   "Show Only Affected Changes": "Show Only Affected Changes",
-  "Layout": "Layout"
+  "Layout": "Layout",
+  "Installing package requirements": "Installing package requirements",
+  "Cannot install package requirements": "Cannot install package requirements",
+  "Install requirement": "Install requirement",
+  "Install all missing requirements": "Install all missing requirements",
+  "Package {name} is not installed": "Package {name} is not installed",
+  "Requirement {requirement} is not satisfied: {installed} is installed": "Requirement {requirement} is not satisfied: {installed} is installed",
+  "Package requirements are not satisfied": "Package requirements are not satisfied",
+  "Install requirements": "Install requirements",
+  "Unsatisfied package requirements": "Unsatisfied package requirements",
+  "Reports requirements in requirements.txt and pyproject.toml that the project's Python interpreter does not have installed, or whose installed version does not match.": "Reports requirements in requirements.txt and pyproject.toml that the project's Python interpreter does not have installed, or whose installed version does not match."
 }
