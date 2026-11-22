@@ -112,27 +112,24 @@ export function TestStatusBar({
   running: boolean;
 }) {
   const counts = useMemo(() => results.counts(), [results, version]); // eslint-disable-line react-hooks/exhaustive-deps
-  const status = running
-    ? "running"
-    : counts.failed
-      ? "failed"
-      : counts.passed
-        ? "passed"
-        : counts.skipped
-          ? "skipped"
-          : null;
+  const outcome = counts.failed ? "failed" : counts.passed ? "passed" : counts.skipped ? "skipped" : null;
   const duration = results.summary.durationMs;
 
   return (
-    <div className={styles.testStatusBar} role="status">
-      <StatusIcon status={status} />
+    <div
+      className={styles.testStatusBar}
+      role="status"
+      data-running={running || undefined}
+      data-outcome={outcome ?? undefined}
+    >
+      <StatusIcon status={running ? "running" : outcome} />
       <span className={styles.testCounts}>
         {counts.failed > 0 && <span className={styles.failed}>{tx`${counts.failed} failing`}</span>}
         {counts.passed > 0 && <span>{tx`${counts.passed} passed`}</span>}
         {counts.skipped > 0 && <span className={styles.skipped}>{tx`${counts.skipped} ignored`}</span>}
-        {counts.total === 0 && <span className={styles.skipped}>{running ? tx("Running…") : tx("No tests")}</span>}
+        {!outcome && <span className={styles.skipped}>{running ? tx("Running…") : tx("No tests")}</span>}
+        {duration !== undefined && <span className={styles.testTotalDuration}>{formatDuration(duration)}</span>}
       </span>
-      {duration !== undefined && <span className={styles.testTotalDuration}>{formatDuration(duration)}</span>}
     </div>
   );
 }
