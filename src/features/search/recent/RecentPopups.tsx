@@ -15,6 +15,7 @@ import { call, commands, type OutlineItem } from "@/platform/ipc";
 import { monoFontFamily } from "@/platform/fonts";
 import { shortcutLabel } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
+import { isVirtualUri, virtualContainer } from "@/platform/virtualDocs";
 import {
   Checkbox,
   Dialog,
@@ -40,7 +41,7 @@ import {
   type ToolWindowContribution,
 } from "@/workbench/contributions";
 import { highlightTokens, languageForPath, type CodeToken } from "@/editor/lsp/markdown";
-import { basename, openInListOrder, openLocation } from "../common/open";
+import { basename, openInListOrder, openLocation, relDir } from "../common/open";
 import { outlinePathAt } from "../structure/outline";
 import { fromNavigationHistory, isDismissed, mergeLocations, type RecentLocation } from "../common/locations";
 import { dismissLocation, useTracking } from "../common/tracking";
@@ -688,33 +689,39 @@ function RecentLocationsDialog() {
           rowHeight={rowHeight}
           aria-label="Recent locations"
           empty={<span>{changedOnly ? tx("No changed locations") : tx("No recent locations")}</span>}
-          renderItem={(l) => (
-            <div className={styles.location}>
-              <div className={styles.locationHeader}>
-                <Icon name={fileIconName(basename(l.rel), l.rel)} size={14} className={styles.icon} />
-                <HighlightedText
-                  className={clsx(styles.name, styles.locationName)}
-                  text={basename(l.rel)}
-                  indices={l.nameIndices}
-                  tone="strong"
+          renderItem={(l) => {
+            const name = basename(l.rel);
+            const breadcrumb = breadcrumbOf(outlines.get(l.path), l);
+            const directory = isVirtualUri(l.path) ? virtualContainer(l.path) : relDir(l.rel);
+            const context = breadcrumb && breadcrumb !== name ? breadcrumb : directory;
+            return (
+              <div className={styles.location}>
+                <div className={styles.locationHeader} title={l.rel}>
+                  <Icon name={fileIconName(name, l.rel)} size={14} className={styles.icon} />
+                  <HighlightedText
+                    className={clsx(styles.name, styles.locationName)}
+                    text={name}
+                    indices={l.nameIndices}
+                    tone="strong"
+                  />
+                  {context && <span className={styles.dir}>{context}</span>}
+                  {l.changed && (
+                    <span className={styles.changed}>
+                      <T>changed</T>
+                    </span>
+                  )}
+                  <span className={styles.time}>{locationTime(l.time, now)}</span>
+                </div>
+                <SnippetCode
+                  path={l.path}
+                  lines={dedent(l.snippet)}
+                  first={l.snippetStart}
+                  caret={l.line}
+                  style={snippetStyle}
                 />
-                <span className={styles.dir}>{breadcrumbOf(outlines.get(l.path), l) || l.rel}</span>
-                {l.changed && (
-                  <span className={styles.changed}>
-                    <T>changed</T>
-                  </span>
-                )}
-                <span className={styles.time}>{locationTime(l.time, now)}</span>
               </div>
-              <SnippetCode
-                path={l.path}
-                lines={dedent(l.snippet)}
-                first={l.snippetStart}
-                caret={l.line}
-                style={snippetStyle}
-              />
-            </div>
-          )}
+            );
+          }}
         />
       </div>
     </Dialog>

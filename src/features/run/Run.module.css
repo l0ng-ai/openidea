@@ -212,7 +212,7 @@
   top: 0;
   left: 0;
   min-width: 100%;
-  padding: 0 12px;
+  padding: 0 var(--space-3);
   line-height: inherit;
   white-space: pre;
   tab-size: 4;
@@ -258,12 +258,12 @@
 .testStatusBar {
   flex: none;
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   min-height: 28px;
   border-bottom: 1px solid var(--border);
 }
 .testToolbar {
+  flex-wrap: wrap;
   gap: var(--space-1);
   padding: var(--space-0-5) var(--space-1);
 }
@@ -275,27 +275,36 @@
   border-inline-end: 1px solid var(--border);
 }
 .testStatusBar {
-  gap: var(--space-0-5) var(--space-2);
+  gap: var(--space-2);
   padding: var(--space-0-5) var(--space-2);
+  border-block-end-width: var(--space-0-5);
   font-size: var(--fs-ui);
   color: var(--fg-secondary);
 }
+.testStatusBar[data-outcome="passed"] {
+  border-block-end-color: var(--success);
+}
+.testStatusBar[data-outcome="skipped"] {
+  border-block-end-color: var(--warning);
+}
+.testStatusBar[data-running] {
+  border-block-end-color: var(--accent);
+}
+.testStatusBar[data-outcome="failed"] {
+  border-block-end-color: var(--danger);
+}
 .testCounts {
-  flex: 1 1 auto;
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-0-5) var(--space-2);
   min-width: 0;
   white-space: nowrap;
 }
-.testStatus,
-.testTotalDuration {
+.testStatus {
   flex: none;
 }
 .testTotalDuration {
-  margin-left: auto;
   color: var(--fg-subtle);
-  font-size: var(--fs-small);
   font-variant-numeric: tabular-nums;
 }
 .testTree {
@@ -665,21 +674,38 @@
   gap: var(--space-2);
 }
 .configFields {
+  flex: 1;
+  min-height: 0;
   display: grid;
   grid-template-columns: fit-content(40%) minmax(0, 1fr);
+  grid-template-rows: [notice] auto [header] auto [options] minmax(0, 1fr);
   column-gap: var(--space-3);
-  row-gap: var(--space-2);
-  align-content: start;
   min-width: 0;
 }
-.configFields > * {
+.configFields > *,
+.formSettings > * {
   grid-column: 1 / -1;
   min-width: 0;
 }
-.configFields:not(.configFieldsTomcat) > .field,
+.configFields > .notice {
+  grid-row: notice;
+}
+.configFields:not(.configFieldsTomcat) > .notice,
+.configFields:not(.configFieldsTomcat) > .formHeader {
+  margin-bottom: var(--space-2);
+}
 .configFields:not(.configFieldsTomcat) > .formHeader,
-.configFields:not(.configFieldsTomcat) > .formHeader > .field {
+.configFields:not(.configFieldsTomcat) > .formHeader > .field,
+.formSettings > .field {
   grid-template-columns: subgrid;
+}
+.formSettings {
+  display: grid;
+  grid-row: options;
+  grid-template-columns: subgrid;
+  row-gap: var(--space-2);
+  align-content: start;
+  overflow: auto;
 }
 .formHeader > .field {
   grid-column: 1 / -1;
@@ -688,8 +714,6 @@
   overflow: hidden;
 }
 .configFieldsTomcat {
-  flex: 1;
-  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
@@ -793,6 +817,7 @@
 }
 .formHeader {
   display: grid;
+  grid-row: header;
   grid-template-columns: minmax(0, 1fr);
   align-items: center;
   gap: var(--space-4);
@@ -1118,15 +1143,19 @@
   color: var(--fg);
 }
 .foldToggle {
-  display: inline-flex;
-  align-items: center;
-  margin-left: 6px;
-  padding: 0 2px;
+  position: sticky;
+  inset-inline-start: 0;
+  z-index: 1;
+  display: inline-grid;
+  place-items: center;
+  width: var(--space-3);
+  margin-inline-start: calc(-1 * var(--space-3));
+  padding: 0;
   border: none;
-  border-radius: 3px;
-  background: none;
+  border-radius: var(--radius-small);
+  background: var(--bg-app);
   color: var(--fg-faint);
-  vertical-align: middle;
+  vertical-align: top;
   cursor: pointer;
 }
 .foldToggle:hover {

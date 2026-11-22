@@ -62,3 +62,59 @@ test("keeps values and their full-value action readable in a narrow debugger", a
     .poll(() => routing.getByText(routingValue, { exact: true }).evaluate((el) => el.scrollWidth <= el.clientWidth + 1))
     .toBe(true);
 });
+
+test("keeps a decimal value legible beside a long runtime type", async ({ workbench: page }) => {
+  const name = "dailySettlementTotal";
+  const type = "ExactSettlementAmountForCrossBorderReconciliation";
+  const value = "12486245.8067";
+  const countName = "pendingInvoices";
+  await page.setViewportSize({ width: 1100, height: 720 });
+  await stubDesktop(page);
+  await page.evaluate(
+    async ({ name, type, value, countName }) => {
+      const debugModule = "/src/features/debugger/state.ts";
+      const layoutModule = "/src/workbench/toolwindows/store.ts";
+      const serviceModule = "/src/workbench/contributions.ts";
+      const { adoptSession } = await import(/* @vite-ignore */ debugModule);
+      const { moveToolWindow, setToolWindowSize } = await import(/* @vite-ignore */ layoutModule);
+      const { toolWindowService } = await import(/* @vite-ignore */ serviceModule);
+      window.__ipc.handlers.debug_scopes = () => [{ name: "Locals", variablesReference: 100, expensive: false }];
+      window.__ipc.handlers.debug_variables = () => [
+        { name, value, typeName: type, variablesReference: 0, evaluateName: name },
+        { name: countName, value: "327", typeName: "int", variablesReference: 0, evaluateName: countName },
+      ];
+      adoptSession(92, {
+        name: "Settlement",
+        adapter: "debugpy",
+        status: "paused",
+        selectedFrame: 11,
+        frames: [{ id: 11, name: "settle", path: null, line: 0, column: 0, presentationHint: null }],
+      });
+      moveToolWindow("debug", "right");
+      setToolWindowSize("right", 280);
+      toolWindowService().show("debug", true);
+    },
+    { name, type, value, countName },
+  );
+  const debug = page.getByRole("region", { name: "Debug", exact: true });
+  await debug.getByRole("tab", { name: "Threads & Variables", exact: true }).click();
+  const variable = debug.getByRole("treeitem").filter({ hasText: name });
+  const amount = variable.getByText(value, { exact: true });
+  const annotation = variable.getByTitle(`{${type}}`, { exact: true });
+  await expect(amount).toBeVisible();
+  await expect.poll(() => amount.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+  await expect(variable.getByTitle("Show", { exact: true })).toBeHidden();
+  await expect(annotation).toBeVisible();
+
+  const shortValueName = debug.getByText(countName, { exact: true });
+  await expect.poll(() => shortValueName.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+
+  await page.setViewportSize({ width: 1440, height: 760 });
+  await page.evaluate(async () => {
+    const layoutModule = "/src/workbench/toolwindows/store.ts";
+    const { moveToolWindow, setToolWindowSize } = await import(/* @vite-ignore */ layoutModule);
+    moveToolWindow("debug", "bottom");
+    setToolWindowSize("bottom", 310);
+  });
+  await expect.poll(() => annotation.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+});

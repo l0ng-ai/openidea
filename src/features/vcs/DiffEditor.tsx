@@ -111,6 +111,23 @@ import styles from "./DiffEditor.module.css";
 /** Commands of the focused diff viewer (diff.* actions, vcs.nextChange / prevChange). */
 export { focusedDiffNavigator, type DiffNavigator };
 
+interface PaneTitle {
+  label: string;
+  detail?: string;
+  revisionPath?: string;
+}
+
+function PaneTitleDetail({ detail, revisionPath }: PaneTitle) {
+  if (!revisionPath) return detail ? <span className={styles.labelFile}>{detail}</span> : null;
+  const filenameStart = revisionPath.lastIndexOf("/") + 1;
+  return (
+    <span className={clsx(styles.labelFile, styles.revisionPath)}>
+      {filenameStart > 0 && <span className={styles.revisionDirectory}>{revisionPath.slice(0, filenameStart)}</span>}
+      <span className={styles.revisionFilename}>{revisionPath.slice(filenameStart)}</span>
+    </span>
+  );
+}
+
 interface Views {
   /** The right / unified editor (chunks live here). */
   b: EditorView;
@@ -1371,7 +1388,7 @@ export function DiffEditor({
   const canStage = editableB && isWorktree(right) && left.type === "rev" && !!useVcs.getState().root;
   const hasSource = !!source;
 
-  const paneTitle = (s: DiffSide): { label: string; detail?: string } => {
+  const paneTitle = (s: DiffSide): PaneTitle => {
     if (s.type === "worktree" || s.type === "text") return { label: sideLabel(s), detail: s.labelDetail };
     if (s.type !== "rev") return { label: sideLabel(s) };
     const file = s.path ?? path;
@@ -1379,13 +1396,13 @@ export function DiffEditor({
     const commit = !s.label && s.rev === "HEAD" && root ? heads[root]?.headCommit : null;
     return {
       label: commit ? commit.slice(0, 8) : sideLabel(s),
-      detail: root && file.startsWith(`${root}/`) ? file.slice(root.length + 1) : file,
+      revisionPath: root && file.startsWith(`${root}/`) ? file.slice(root.length + 1) : file,
     };
   };
   const titleA = paneTitle(left);
   const titleB = paneTitle(right);
-  const captionA = [titleA.label, titleA.detail].filter(Boolean).join(" ");
-  const captionB = [titleB.label, titleB.detail].filter(Boolean).join(" ");
+  const captionA = [titleA.label, titleA.revisionPath ?? titleA.detail].filter(Boolean).join(" ");
+  const captionB = [titleB.label, titleB.revisionPath ?? titleB.detail].filter(Boolean).join(" ");
   const sourceLabels = "labelDetail" in left || "labelDetail" in right;
   const labels = clsx(styles.labels, sourceLabels && styles.sourceLabels);
 
@@ -1591,7 +1608,7 @@ export function DiffEditor({
         <div className={labels}>
           <span className={styles.label} title={captionA}>
             <span className={styles.labelText}>{titleA.label}</span>
-            {titleA.detail && <span className={styles.labelFile}>{titleA.detail}</span>}
+            <PaneTitleDetail {...titleA} />
             {eolDiffers && eolA && <span className={styles.badge}>{badgeA}</span>}
             {editableA && (
               <span className={styles.badge}>
@@ -1601,7 +1618,7 @@ export function DiffEditor({
           </span>
           <span className={styles.label} title={captionB}>
             <span className={styles.labelText}>{titleB.label}</span>
-            {titleB.detail && <span className={styles.labelFile}>{titleB.detail}</span>}
+            <PaneTitleDetail {...titleB} />
             {eolDiffers && eolB && <span className={styles.badge}>{badgeB}</span>}
             {editableB && (
               <span className={styles.badge}>{left.type === "rev" ? tx("working copy") : tx("editable")}</span>
@@ -1612,10 +1629,10 @@ export function DiffEditor({
         <div className={labels}>
           <span className={styles.label} title={sourceLabels ? `${captionA} → ${captionB}` : undefined}>
             <span className={styles.labelText}>{sideLabel(left)}</span>
-            {sourceLabels && titleA.detail && <span className={styles.labelFile}>{titleA.detail}</span>}
+            {sourceLabels && <PaneTitleDetail {...titleA} />}
             {eolDiffers && eolA && <span className={styles.badge}>{badgeA}</span>} →
             <span className={styles.labelText}>{sideLabel(right)}</span>
-            {sourceLabels && titleB.detail && <span className={styles.labelFile}>{titleB.detail}</span>}
+            {sourceLabels && <PaneTitleDetail {...titleB} />}
             {eolDiffers && eolB && <span className={styles.badge}>{badgeB}</span>}
           </span>
         </div>

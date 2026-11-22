@@ -532,20 +532,6 @@
 .renamePreview .previewList {
   overflow: visible;
 }
-.renamePreview .previewName {
-  min-width: 0;
-  max-width: 55%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.renamePreview .previewOp {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .renamePreview .previewWarning {
   overflow-wrap: anywhere;
 }
@@ -571,22 +557,45 @@
   padding: 0 14px;
   font-size: var(--fs-ui);
 }
-.previewName {
-  color: var(--fg-emphasis);
+.previewFile {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
 }
-.previewPath {
+.previewName,
+.previewDirectory,
+.previewOp {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.previewName {
+  flex: none;
+  max-inline-size: 100%;
+  color: var(--fg-emphasis);
+}
+.previewFile:has(.previewDirectory) .previewName {
+  max-inline-size: 70%;
+}
+.previewDirectory {
   color: var(--fg-subtle);
   font-size: var(--fs-small);
+  direction: rtl;
 }
 .previewOp,
 .previewCount {
-  flex: none;
   font-size: var(--fs-small);
   color: var(--fg-muted);
+}
+.previewOp {
+  max-inline-size: 55%;
+}
+.previewCount {
+  flex: none;
+  font-variant-numeric: tabular-nums;
 }
 
 .previewWarning {
