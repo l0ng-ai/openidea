@@ -177,6 +177,9 @@ export const commentLine: Command = (view) => {
     scrollIntoView: true,
     userEvent: allCommented ? "delete.uncomment" : "input.comment",
   });
+  // Recorded as the selection after the edit, Redo puts the caret back here instead of
+  // mapping the caret from before it (the line above).
+  view.dispatch({ selection: view.state.selection });
   afterComment.set(view, view.state);
   return true;
 };
@@ -349,6 +352,26 @@ function uncommentBlock(view: EditorView, ranges: { from: number; to: number }[]
   return true;
 }
 
+/** On blank lines without a selection: an empty block comment with the caret between its delimiters. */
+function emptyBlockComment(view: EditorView): boolean {
+  const { state } = view;
+  const blank = state.selection.ranges.every((r) => r.empty && !state.doc.lineAt(r.head).text.trim());
+  if (!blank) return false;
+  const tokens = state.languageDataAt<{ block?: { open: string; close: string } }>(
+    "commentTokens",
+    state.selection.main.head,
+  )[0]?.block;
+  if (!tokens) return false;
+  view.dispatch(
+    state.changeByRange((r) => ({
+      changes: { from: r.head, insert: `${tokens.open}  ${tokens.close}` },
+      range: EditorSelection.cursor(r.head + tokens.open.length + 1),
+    })),
+    { scrollIntoView: true, userEvent: "input.comment" },
+  );
+  return true;
+}
+
 /** ⌘⇧/: block comments the selection, or takes the block comment back out. */
 export const commentBlock: Command = (view) => {
   const { state } = view;
@@ -359,6 +382,7 @@ export const commentBlock: Command = (view) => {
     (r) => state.doc.lineAt(r.from).number != state.doc.lineAt(r.to).number,
   );
   const bound = multiline ? lineBound(state, state.selection.main.from) : null;
+  if (!bound && emptyBlockComment(view)) return true;
   if (!bound) return toggleBlockComment(view);
   const { open, close } = bound.multiline;
   view.dispatch(
