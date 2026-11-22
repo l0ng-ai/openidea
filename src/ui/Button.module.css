@@ -78,7 +78,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--radius-toolbar-button, 6px);
+  border-radius: var(--radius-toolbar-button, 4px);
   color: var(--fg-muted);
   transition:
     background var(--dur-fast) var(--ease),

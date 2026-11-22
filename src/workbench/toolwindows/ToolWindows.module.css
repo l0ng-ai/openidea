@@ -331,7 +331,7 @@
   align-items: center;
   justify-content: center;
   gap: 3px;
-  border-radius: var(--radius-toolbar-button);
+  border-radius: var(--radius-stripe-button, var(--radius-toolbar-button));
   color: var(--fg-muted);
   transition:
     background var(--dur-fast) var(--ease),
@@ -569,7 +569,7 @@
   margin: 0;
   pointer-events: none;
   background: var(--bg-popup);
-  border-radius: var(--radius-toolbar-button);
+  border-radius: var(--radius-stripe-button, var(--radius-toolbar-button));
   box-shadow: var(--shadow-popup);
   opacity: 0.9;
 }
