@@ -254,6 +254,15 @@ export function registerLogPaneActions(): () => void {
       run: () => updateLogOptions({ groupByDirectory: !logOptions().groupByDirectory }),
     },
     {
+      id: "vcs.log.changes.showOnlyAffected",
+      title: "Show Only Affected Changes",
+      category: "Git Log",
+      when: LOG,
+      hidden: true,
+      toggled: () => logOptions().showOnlyAffected,
+      run: () => updateLogOptions({ showOnlyAffected: !logOptions().showOnlyAffected }),
+    },
+    {
       id: "vcs.log.changes.diffPreview",
       title: "Show Diff Preview",
       category: "Git Log",
