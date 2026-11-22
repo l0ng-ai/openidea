@@ -23,6 +23,7 @@ mod provider;
 pub mod registry;
 pub mod security;
 mod shell;
+pub mod skill_installer;
 pub mod skills;
 mod timeline;
 mod worktree;
@@ -31,6 +32,10 @@ pub use catalogs::AgentCatalogs;
 pub use cli_update::{AgentCliOffer, AgentCliUpdateResult};
 pub use external::ExternalSession;
 pub use model::*;
+pub use skill_installer::{
+    InstallRemoteSkillRequest, RemoteSkillBrowseResult, RemoteSkillCandidate, RemoteSkillFile, RemoteSkillPreview,
+    SkillScanWarning, SkillScanWarningKind,
+};
 
 use conversation::{Conversation, SavedSubagent, Session};
 use ide_core::{IdeError, IdeResult, IpcPath};

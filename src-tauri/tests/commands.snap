@@ -48,7 +48,10 @@ agent_set_env                                trusted            project_host bin
 agent_set_mcp_overrides                      always             project_host bindings sync
 agent_set_skill_overrides                    always             project_host bindings sync
 agent_shell                                  trusted            project_host bindings async
+agent_skills_browse                          always             project_host bindings async
+agent_skills_install                         always             project_host bindings async
 agent_skills_list                            always             project_host bindings async
+agent_skills_preview                         always             project_host bindings async
 agent_skills_set_mode                        always             project_host bindings sync
 agent_stop_background                        always             project_host bindings async
 agent_subscribe                              always             project_host bindings sync
