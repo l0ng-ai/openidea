@@ -38,6 +38,7 @@ describe("IDEA keymap parity", () => {
     ["run.expandAllTests", ["Meta+="], ["Ctrl+="]],
     ["run.collapseAllTests", ["Meta+-"], ["Ctrl+-"]],
     ["navigate.searchText", ["Meta+Alt+Shift+E"], ["Ctrl+Alt+Shift+E"]],
+    ["python.console.executeSelection", ["Alt+Shift+E"], ["Alt+Shift+E"]],
     ["window.next", ["Meta+Alt+`"], ["Ctrl+Alt+]"]],
     ["window.previous", ["Meta+Alt+Shift+`"], ["Ctrl+Alt+["]],
     ["code.commentBlock", ["Meta+Alt+/", "Ctrl+Shift+/"], ["Ctrl+Shift+/"]],

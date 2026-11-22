@@ -9359,5 +9359,13 @@
   "Homepage:": "主页：",
   "Mail:": "邮件：",
   "Show Only Affected Changes": "仅显示受影响的变更",
-  "Layout": "布局"
+  "Layout": "布局",
+  "Python Console": "Python 控制台",
+  "Execute Selection in Python Console": "在 Python 控制台中执行选中内容",
+  "No Python interpreter": "没有 Python 解释器",
+  "Select an interpreter for this project to use the Python Console.": "为此项目选择解释器后即可使用 Python 控制台。",
+  "Restart Console": "重启控制台",
+  "Stop Console": "停止控制台",
+  "Input for the running code": "正在运行的代码的输入",
+  "Python Console input": "Python 控制台输入"
 }
