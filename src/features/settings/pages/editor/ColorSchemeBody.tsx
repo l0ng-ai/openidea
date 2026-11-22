@@ -1539,6 +1539,7 @@ const DIFF_PREVIEW_INPUT = {
     left: { type: "text", text: DIFF_SAMPLE_A, label: "Before" },
     right: { type: "text", text: DIFF_SAMPLE_B, label: "After" },
     embedded: true,
+    fit: true,
     collapse: true,
     mode: "split",
   },
