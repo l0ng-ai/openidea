@@ -17,7 +17,15 @@ cargo build --release -p ide-host --bin openidea-server
 
 ## Run
 
-Start the web server on a configurable host and port (default: `127.0.0.1:8080`):
+The quickest way to launch the web IDE (from a repo checkout or inside a container) is the standalone launcher script:
+
+```bash
+./scripts/start-web.sh
+```
+
+It listens on `0.0.0.0:8080` by default (configurable via `OPENIDEA_HOST` / `OPENIDEA_PORT`), auto-detects the `openidea-server` binary, the built `dist/` folder, and the workspace directory, and stores persistent settings and caches inside `<workspace>/.openidea-server`.
+
+Or invoke `openidea-server --web` directly on any host and port (default: `127.0.0.1:8080`):
 
 ```bash
 ./target/release/openidea-server --web \

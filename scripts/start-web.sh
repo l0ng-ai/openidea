@@ -1,47 +1,108 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Launches OpenIDEA in headless web server mode on a configurable host and port.
-# Environment variables:
+# Standalone launcher for running OpenIDEA in browser web server mode.
+# Designed to work directly from a repository checkout or inside a container /
+# remote workspace environment with zero required arguments.
+#
+# Environment variables (all optional):
 #   OPENIDEA_HOST            Bind address (default: 0.0.0.0)
 #   OPENIDEA_PORT            Listen port (default: 8080)
-#   OPENIDEA_WORKSPACE_DIR   Workspace directory to open on startup (optional)
+#   OPENIDEA_WORKSPACE_DIR   Workspace folder to open on startup (auto-detects
+#                            /mnt/code, /workspace, or current directory)
 #   OPENIDEA_SERVER_HOME     Persistent config/data directory (defaults to
-#                            <workspace>/.openidea-server when a workspace is set,
-#                            else $HOME/.openidea)
-#   OPENIDEA_WEB_DIR         Path to built frontend assets (default: auto-detected)
+#                            <workspace>/.openidea-server if writable, else ~/.openidea)
+#   OPENIDEA_WEB_DIR         Built frontend directory (auto-detects /opt/openidea/web
+#                            or <repo>/dist)
+#   OPENIDEA_SERVER_BIN      Path to openidea-server binary (auto-detected)
 #   OPENIDEA_BASE_PATH       Optional reverse-proxy URL prefix
-#   OPENIDEA_WEB_TOKEN       Optional access token ('auto' generates one)
+#   OPENIDEA_WEB_TOKEN       Optional authentication token ('auto' generates one)
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 HOST="${OPENIDEA_HOST:-0.0.0.0}"
 PORT="${OPENIDEA_PORT:-8080}"
-WORKSPACE_DIR="${OPENIDEA_WORKSPACE_DIR:-}"
 
-if [[ -n "${WORKSPACE_DIR}" && -z "${OPENIDEA_SERVER_HOME:-}" ]]; then
-  export OPENIDEA_SERVER_HOME="${WORKSPACE_DIR}/.openidea-server"
+# 1. Resolve workspace directory.
+WORKSPACE_DIR="${OPENIDEA_WORKSPACE_DIR:-${WORKSPACE_DIR:-}}"
+if [[ -z "${WORKSPACE_DIR}" && $# -gt 0 && "${1}" != -* && -d "${1}" ]]; then
+  WORKSPACE_DIR="${1}"
+  shift
+fi
+if [[ -z "${WORKSPACE_DIR}" ]]; then
+  if [[ -d "/mnt/code" ]]; then
+    WORKSPACE_DIR="/mnt/code"
+  elif [[ -d "/workspace" ]]; then
+    WORKSPACE_DIR="/workspace"
+  else
+    WORKSPACE_DIR="${PWD}"
+  fi
 fi
 
-if [[ -n "${OPENIDEA_SERVER_HOME:-}" ]]; then
-  mkdir -p "${OPENIDEA_SERVER_HOME}/config" "${OPENIDEA_SERVER_HOME}/data"
+# 2. Resolve persistent config/data directory.
+if [[ -z "${OPENIDEA_SERVER_HOME:-}" ]]; then
+  if [[ -n "${WORKSPACE_DIR}" && -w "${WORKSPACE_DIR}" ]]; then
+    export OPENIDEA_SERVER_HOME="${WORKSPACE_DIR}/.openidea-server"
+  else
+    export OPENIDEA_SERVER_HOME="${HOME:-/tmp}/.openidea"
+  fi
+fi
+mkdir -p "${OPENIDEA_SERVER_HOME}/config" "${OPENIDEA_SERVER_HOME}/data"
+
+# 3. Resolve openidea-server binary.
+BIN="${OPENIDEA_SERVER_BIN:-}"
+if [[ -z "${BIN}" ]]; then
+  if command -v openidea-server >/dev/null 2>&1; then
+    BIN="$(command -v openidea-server)"
+  elif [[ -x "${REPO_ROOT}/target/release/openidea-server" ]]; then
+    BIN="${REPO_ROOT}/target/release/openidea-server"
+  elif [[ -x "${REPO_ROOT}/target/debug/openidea-server" ]]; then
+    BIN="${REPO_ROOT}/target/debug/openidea-server"
+  elif [[ -x "/opt/openidea/bin/openidea-server" ]]; then
+    BIN="/opt/openidea/bin/openidea-server"
+  else
+    echo "error: openidea-server binary not found. Build it with:" >&2
+    echo "  cargo build --release -p ide-host --bin openidea-server" >&2
+    exit 1
+  fi
 fi
 
-ARGS=(--web --host "${HOST}" --port "${PORT}")
+# 4. Resolve built frontend assets directory.
+WEB_DIR="${OPENIDEA_WEB_DIR:-}"
+if [[ -z "${WEB_DIR}" ]]; then
+  for candidate in "/opt/openidea/web" "${REPO_ROOT}/dist" "${PWD}/dist"; do
+    if [[ -f "${candidate}/index.html" ]]; then
+      WEB_DIR="${candidate}"
+      break
+    fi
+  done
+fi
+if [[ -z "${WEB_DIR}" || ! -f "${WEB_DIR}/index.html" ]]; then
+  echo "error: built frontend (index.html) not found. Build it with:" >&2
+  echo "  pnpm build" >&2
+  exit 1
+fi
 
-if [[ -n "${OPENIDEA_WEB_DIR:-}" ]]; then
-  ARGS+=(--web-dir "${OPENIDEA_WEB_DIR}")
+ARGS=(
+  --web
+  --host "${HOST}"
+  --port "${PORT}"
+  --web-dir "${WEB_DIR}"
+  --home "${OPENIDEA_SERVER_HOME}"
+)
+
+if [[ -n "${WORKSPACE_DIR}" ]]; then
+  ARGS+=(--project "${WORKSPACE_DIR}")
 fi
 
 if [[ -n "${OPENIDEA_BASE_PATH:-}" ]]; then
   ARGS+=(--base-path "${OPENIDEA_BASE_PATH}")
 fi
 
-if [[ -n "${WORKSPACE_DIR}" ]]; then
-  ARGS+=(--project "${WORKSPACE_DIR}")
-fi
-
 if [[ -n "${OPENIDEA_WEB_TOKEN:-}" ]]; then
   ARGS+=(--token "${OPENIDEA_WEB_TOKEN}")
 fi
 
-BIN="${OPENIDEA_SERVER_BIN:-openidea-server}"
+echo "Starting OpenIDEA Web Server on ${HOST}:${PORT} (workspace: ${WORKSPACE_DIR}, home: ${OPENIDEA_SERVER_HOME})" >&2
 exec "${BIN}" "${ARGS[@]}" "$@"
