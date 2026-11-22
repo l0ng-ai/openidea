@@ -136,6 +136,10 @@ pub trait PluginWorkspace: Send + Sync {
     fn apply_edits(&self, path: &Path, version: u64, edits: &[TextEdit], background: bool) -> Result<u64, HostError>;
     /// Code from the project may run (git hooks and config on fetch).
     fn trusted(&self, root: &Path) -> bool;
+    /// The git executable of the project at `root` (see [`crate::Project::git_executable`]).
+    fn git_executable(&self, _root: &Path) -> Option<PathBuf> {
+        None
+    }
     /// Root of the project open in `window`.
     fn project_of(&self, window: &str) -> Option<PathBuf>;
     /// Windows showing the open project at `root`, the most recently focused first.
@@ -1457,6 +1461,7 @@ pub(super) fn commit_draft(
         };
         // Both callers have checked that the window's project is trusted.
         r.set_execution_allowed(true);
+        r.set_git_executable(workspace.git_executable(&repo.root.0).as_deref());
         let backend = &r as &dyn ide_vcs::Backend;
         let pending = backend
             .pending_changes(&repo.options, budget, &|path| Ok(workspace.vcs_encoding(path)))
@@ -3724,6 +3729,10 @@ impl PluginWorkspace for HostWorkspace {
         HostWorkspace::project_covering(self, root).is_some_and(|p| p.is_trusted())
     }
 
+    fn git_executable(&self, root: &Path) -> Option<PathBuf> {
+        HostWorkspace::project_covering(self, root)?.git_executable()
+    }
+
     fn project_of(&self, window: &str) -> Option<PathBuf> {
         self.0.upgrade()?.project(window).ok().map(|p| p.root.clone())
     }
@@ -4728,8 +4737,12 @@ impl PluginApi {
     /// no upstream. The other reads use [`Self::read_repo`] and never execute.
     fn repo(&self, root: &Path) -> Result<Option<ide_vcs::Repo>, HostError> {
         let repo = ide_vcs::Repo::discover(root).map_err(failed)?;
-        if let Some(repo) = &repo {
-            repo.set_execution_allowed(self.shared.workspace().is_some_and(|w| w.trusted(root)));
+        if let Some(repo) = &repo
+            && let Some(workspace) = self.shared.workspace()
+            && workspace.trusted(root)
+        {
+            repo.set_execution_allowed(true);
+            repo.set_git_executable(workspace.git_executable(root).as_deref());
         }
         Ok(repo)
     }

@@ -10,8 +10,6 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::{Path, PathBuf};
 
-use crate::apply_git_executable;
-
 /// Read-only repository access also works in a standalone log window.
 struct LogAccess {
     project: Option<std::sync::Arc<Project>>,
@@ -663,7 +661,6 @@ pub async fn vcs_add_to_ignore(
                 return Err(ide_core::IdeError::invalid("Ignore selection is outside the project"));
             }
         }
-        apply_git_executable(&project.settings.effective());
         let result = project.with_disk_sync(|| ide_vcs::add_to_ignore(&paths, destination));
         // Exclude may live outside a worktree's watched directory. Refresh filters and UI explicitly.
         project.watcher.reload_ignore_rules();
@@ -1056,7 +1053,6 @@ pub async fn vcs_clone(
     depth: Option<u32>,
     on_output: Channel<String>,
 ) -> IdeResult<()> {
-    apply_git_executable(&host.global_settings.effective());
     let cancel = host.begin_request(request);
     let result = tokio::task::spawn_blocking(move || {
         ide_vcs::clone(&url, &dest, depth, &cancel, &|line| {
@@ -1069,11 +1065,12 @@ pub async fn vcs_clone(
     result
 }
 
-/// `git init` in `dir` (File › New Project… "Create Git repository").
+/// `git init` in `dir` (VCS › Create Git Repository…): with the git of the window's project when
+/// it is trusted, the default one in a window without a project.
 #[command(trust = always)]
-pub async fn vcs_init(host: &Host, dir: PathBuf) -> IdeResult<()> {
-    apply_git_executable(&host.global_settings.effective());
-    blocking(move || ide_vcs::init(&dir)).await
+pub async fn vcs_init(host: &Host, window: &str, dir: PathBuf) -> IdeResult<()> {
+    let git = host.project(window).ok().and_then(|p| p.git_executable());
+    blocking(move || ide_vcs::with_git_executable(git.as_deref(), || ide_vcs::init(&dir))).await
 }
 
 /// Settings › Git › Test: runs `git --version` on `path`, or on the auto-detected
@@ -1349,14 +1346,8 @@ pub async fn vcs_compare_paths(
 ) -> IdeResult<CompareResult> {
     let project = host.project(window)?;
     let cancel = host.begin_request(request);
-    let result = blocking(move || {
-        let settings = project.settings.effective();
-        if project.is_trusted() {
-            apply_git_executable(&settings);
-        }
-        project.repos().compare_paths(&paths, &revision, repositories.as_deref(), &cancel)
-    })
-    .await;
+    let result =
+        blocking(move || project.repos().compare_paths(&paths, &revision, repositories.as_deref(), &cancel)).await;
     host.end_request(request);
     result
 }
