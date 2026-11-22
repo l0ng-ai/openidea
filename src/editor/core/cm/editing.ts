@@ -584,7 +584,7 @@ export const KEYWORD_BLOCK_LANGS = new Set([
 const KEYWORD_HEAD =
   /\b(do(\s*\|[^|]*\|)?|then|where|of)$|^\s*(def|defp|defmodule|class|module|function|local function|if|unless|elsif|elseif|else|while|until|for|case|begin)\b/;
 const BLOCK_HEAD =
-  /^\s*(if|else|for|while|do|switch|try|catch|finally|fn|fun|func|function|class|struct|enum|impl|trait|interface|object|match|when|loop|unsafe|mod|namespace)\b/;
+  /^\s*(if|else|elseif|for|foreach|while|do|switch|try|catch|finally|fn|fun|func|function|class|struct|enum|impl|trait|interface|object|match|when|loop|unsafe|mod|namespace)\b/;
 /** Languages whose `if` / `for` / `while`… take their condition in parentheses. */
 const PAREN_CONDITION_LANGS = new Set([
   "java",
@@ -603,7 +603,7 @@ const PAREN_CONDITION_LANGS = new Set([
   "objective-cpp",
 ]);
 /** A condition keyword with nothing after it yet (`for`, `} else if`). */
-export const BARE_CONDITION = /^\s*(\}\s*)?(else\s+)?(if|for|while|switch|catch|synchronized)$/;
+export const BARE_CONDITION = /^\s*(\}\s*)?(else\s+)?(if|elseif|for|foreach|while|switch|catch|synchronized)$/;
 const MODIFIERS =
   "public|protected|private|internal|static|final|abstract|sealed|non-sealed|open|data|export|default|async|override|partial|readonly|unsafe|const|extern|inline|virtual|synchronized|native|strictfp|transient";
 const ANNOTATIONS = String.raw`(@[\w.]+(\([^)]*\))?\s+)*`;
