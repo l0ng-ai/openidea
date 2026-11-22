@@ -42,6 +42,14 @@
   margin-inline: 0;
   border-radius: 0;
 }
+.tree [data-tree-toggle] {
+  margin-inline-start: var(--space-2);
+  width: var(--space-3);
+}
+.tree [data-tree-toggle] svg {
+  width: var(--space-3);
+  height: var(--space-3);
+}
 .tree [role="treeitem"][aria-selected="true"] {
   background: var(--bg-tree-selected);
 }
