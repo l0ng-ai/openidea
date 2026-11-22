@@ -79,6 +79,20 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.splitLabel {
+  display: flex;
+}
+.labelStart,
+.labelEnd {
+  min-width: 0;
+  overflow: hidden;
+  pointer-events: none;
+  text-overflow: ellipsis;
+}
+.labelEnd {
+  flex: none;
+  max-width: 50%;
+}
 .shortcut {
   min-width: 0;
   max-width: 50%;
