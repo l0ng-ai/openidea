@@ -1226,8 +1226,15 @@ export const commands = {
 	 *  cancelled; returns the exit code.
 	 */
 	pluginServiceLog: (request: RequestId, pluginId: string, view: string, key: string, tab: string, on: string[], onLine: Channel<PluginOutputLine>) => typedError<number | null, IdeError>(__TAURI_INVOKE("plugin_service_log", { request, pluginId, view, key, tab, on, onLine })),
-	/**  The UI reports the focused editor's file (`editor-focused` events). */
-	pluginSetActiveFile: (path: string | null) => __TAURI_INVOKE<void>("plugin_set_active_file", { path }),
+	/**
+	 *  The UI reports the focused editor's file (`editor-focused` events), with its
+	 *  caret so plugins can scope line labels without re-reading the document.
+	 */
+	pluginSetActiveFile: (path: string | null, editor: {
+	path: string,
+	language: string,
+	selections: Range[],
+} | null) => __TAURI_INVOKE<void>("plugin_set_active_file", { path, editor }),
 	/**  Grants or revokes one declared capability. */
 	pluginSetCapability: (id: string, capability: string, granted: boolean) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_set_capability", { id, capability, granted })),
 	pluginSetEnabled: (id: string, enabled: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_set_enabled", { id, enabled })),
@@ -3560,6 +3567,18 @@ export type CapabilityInfo = {
 	optional: boolean,
 	/**  Currently granted. */
 	granted: boolean,
+};
+
+/**
+ *  The caret moved in the focused editor. Positions are 0-based; `col` counts
+ *  UTF-16 code units, as everywhere in the plugin API.
+ */
+export type CaretMoved = {
+	path: string,
+	line: number,
+	col: number,
+	/**  The caret came to rest at this position; plugins may load what a hover needs. */
+	settled?: boolean,
 };
 
 /**
@@ -6067,7 +6086,7 @@ export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "inv
 "unavailable" | "io" | "protocol" | "internal";
 
 /**  Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`). */
-export type EventKind = "document-changed" | "websocket-ready" | "file-closed" | "settings-changed" | "input-mode-changed" | "run-exited" | "terminal-exited" | "content-tab-action" | "extensions-changed" | "file-opened" | "file-saved" | "files-changed" | "editor-focused" | "action-performed" | "vcs-changed" | 
+export type EventKind = "document-changed" | "websocket-ready" | "file-closed" | "settings-changed" | "input-mode-changed" | "run-exited" | "terminal-exited" | "content-tab-action" | "extensions-changed" | "file-opened" | "file-saved" | "files-changed" | "editor-focused" | "caret-moved" | "action-performed" | "vcs-changed" | 
 /**  Problems of the window's files changed (a language server or a report). */
 "problems-changed" | "scheduled";
 
@@ -12942,7 +12961,7 @@ export type WindowTab = {
 /**  A workbench event delivered to plugins. */
 export type WorkbenchEvent = { kind: "documentChanged"; value: DocumentChanged } | { kind: "websocketReady"; value: WebsocketReady } | { kind: "runExited"; value: RunExited } | { kind: "terminalExited"; value: TerminalExited } | { kind: "contentTabAction"; value: ContentTabAction } | { kind: "fileClosed"; value: string } | { kind: "settingsChanged"; value: string[] } | 
 /**  Ids of extension points the receiving plugin declares whose contributions changed. */
-{ kind: "extensionsChanged"; value: string[] } | { kind: "inputModeChanged"; value: InputMode } | { kind: "fileOpened"; value: string } | { kind: "fileSaved"; value: string } | { kind: "filesChanged"; value: FilesChanged } | { kind: "editorFocused"; value: string | null } | { kind: "actionPerformed"; value: ActionPerformed } | { kind: "vcsChanged"; value: string } | 
+{ kind: "extensionsChanged"; value: string[] } | { kind: "inputModeChanged"; value: InputMode } | { kind: "fileOpened"; value: string } | { kind: "fileSaved"; value: string } | { kind: "filesChanged"; value: FilesChanged } | { kind: "editorFocused"; value: string | null } | { kind: "caretMoved"; value: CaretMoved } | { kind: "actionPerformed"; value: ActionPerformed } | { kind: "vcsChanged"; value: string } | 
 /**  Problems of the window's files changed; plugins re-read `problems`. */
 { kind: "problemsChanged" } | { kind: "scheduled" };
 

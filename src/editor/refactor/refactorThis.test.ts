@@ -330,6 +330,13 @@ describe("Refactor menu actions", () => {
     expect(showHint).not.toHaveBeenCalled();
   });
 
+  it("Introduce Variable builds the variable itself when the server offers only Extract constant", async () => {
+    query = answer([action("Extract constant", "refactor.extract.constant")]);
+    const v = editor();
+    await runRefactoring(v, "extractVariable");
+    expect(introduceFallback).toHaveBeenCalledWith(v, "variable", "otherKind");
+  });
+
   it("never fall back to unrelated code actions", async () => {
     await runRefactoring(editor(), "extractField");
     expect(lspCodeActions).not.toHaveBeenCalled();
