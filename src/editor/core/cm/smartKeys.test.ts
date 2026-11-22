@@ -413,6 +413,20 @@ describe("smart angle brackets", () => {
     pair("kotlin", KOTLIN, "fun |", "fun <|>");
     // Lowercase values are comparisons, not types.
     pair("kotlin", KOTLIN, "fun f() {\n  val c = a |\n}", "fun f() {\n  val c = a <|\n}");
+    pair("kotlin", KOTLIN, "fun f() {\n  val c = count|\n}", "fun f() {\n  val c = count<|\n}");
+    // …but a generic factory call written against its `<` takes type arguments.
+    pair("kotlin", KOTLIN, "fun f() {\n  val v = mutableListOf|\n}", "fun f() {\n  val v = mutableListOf<|>\n}");
+    pair("kotlin", KOTLIN, "fun f() {\n  val m = emptyMap|\n}", "fun f() {\n  val m = emptyMap<|>\n}");
+    pair("kotlin", KOTLIN, "fun f() {\n  val ok = listOf |\n}", "fun f() {\n  val ok = listOf <|\n}");
+  });
+
+  it("pairs a string template's braces", () => {
+    const v = make('fun f() {\n  val s = "$|"\n}', [KOTLIN, prefs("kotlin", {})]);
+    type(v, "{");
+    expect(show(v)).toBe('fun f() {\n  val s = "${|}"\n}');
+    const outside = make("fun f() {\n  val s = $|x\n}", [KOTLIN, prefs("kotlin", {})]);
+    type(outside, "{");
+    expect(show(outside)).toBe("fun f() {\n  val s = ${|x\n}");
   });
 
   it("pairs capitalized type positions in C# (stream parser)", () => {
