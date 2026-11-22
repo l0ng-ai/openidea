@@ -898,6 +898,8 @@ pub enum AgentSkillSource {
     Workspace,
     /// The user's `~/.agents/skills` (what `npx skills add` fills).
     User,
+    /// Contributed by an enabled OpenIDEA plugin (`[[contributes.skills]]`).
+    Plugin,
     /// The project's `.claude/skills`.
     ClaudeWorkspace,
     /// `~/.claude/skills`.
@@ -920,7 +922,7 @@ impl AgentSkillSource {
     /// Whether skills of this source are only read, never delivered by OpenIDEA: the CLI
     /// discovers them itself, so "off" holds only where the CLI supports a native disable.
     pub fn discovered(&self) -> bool {
-        !matches!(self, Self::Workspace | Self::User)
+        !matches!(self, Self::Workspace | Self::User | Self::Plugin)
     }
 }
 
@@ -931,9 +933,27 @@ pub struct AgentSkill {
     /// The frontmatter `name`, else the folder's name.
     pub name: String,
     pub description: String,
+    /// Optional `argument-hint` from frontmatter, completed in the `/` menu.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
     /// Canonical folder holding `SKILL.md` (symlinks resolved, so duplicates collapse).
     pub path: IpcPath,
     pub source: AgentSkillSource,
+    /// Other skill roots whose symlinked entry resolved to this same canonical `path`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub also_in: Vec<AgentSkillSource>,
+    /// False when frontmatter sets `user-invocable: false` (omitted from `/` completion).
+    #[serde(default = "default_true")]
+    pub user_invocable: bool,
+    /// True when frontmatter sets `disable-model-invocation: true` (defaults to `slashOnly`).
+    #[serde(default)]
+    pub disable_model_invocation: bool,
+    /// True when frontmatter sets `context: fork` (passed through natively to supporting CLIs).
+    #[serde(default)]
+    pub context_fork: bool,
+    /// Optional `paths` / `globs` patterns from frontmatter (passed through natively to supporting CLIs).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
     /// The `SKILL.md` passes validation (`name` matches its folder, `description` present).
     pub valid: bool,
     /// What validation found (`name` mismatch, missing or over-long description…).

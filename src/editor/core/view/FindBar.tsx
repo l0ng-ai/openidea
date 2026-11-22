@@ -710,8 +710,8 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
             onClick={() => setFilterMenu(true)}
           />
           <IconButton ref={moreRef} icon="more" title="More" size="small" onClick={() => setMoreMenu(true)} />
+          <IconButton icon="close" title="Close" shortcut="⎋" size="small" onClick={close} />
         </div>
-        <IconButton icon="close" title="Close" shortcut="⎋" size="small" className={styles.findClose} onClick={close} />
         {replace && (
           <>
             <div ref={replaceBoxRef} className={styles.replaceField}>

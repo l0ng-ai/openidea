@@ -30,6 +30,8 @@ OpenIDEA 通过 [csharp-ls](https://github.com/razzmatazz/csharp-language-server
 | FsAutoComplete | `dotnet tool install --tool-path` 安装到 IDE 自己的工具目录                                                    |
 | netcoredbg     | 从 `Samsung/netcoredbg` 的 GitHub Release 下载。提供 macOS arm64、Linux x64 与 arm64、Windows x64 的预编译包。 |
 
+安装 csharp-ls 或 FsAutoComplete 之前，IDE 会把 `dotnet --list-sdks` 中最新的 SDK 与该工具在 nuget.org 上最新版本的目标 .NET 版本进行比较。如果 SDK 较旧，会安装能在它上面运行的最新版本，或者提示需要安装哪个 SDK。
+
 `PATH` 上已有的 `csharp-ls`、`fsautocomplete` 或 `netcoredbg`（例如通过 `dotnet tool install --global csharp-ls` 安装的全局工具）会直接使用。
 
 ## .NET 工具窗口

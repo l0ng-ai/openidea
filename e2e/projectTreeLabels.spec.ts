@@ -9,6 +9,7 @@ test("gives the project name room before its path in a narrow tree", async ({ wo
 
   const pane = page.getByRole("region", { name: "Project", exact: true });
   await pane.getByRole("button", { name: "Options", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Appearance", exact: true }).hover();
   await page.getByRole("menuitemcheckbox", { name: "Horizontal Scrolling" }).click();
 
   const tree = pane.getByRole("tree", { name: "Project" });

@@ -12,3 +12,14 @@ command = "graphql-lsp"
 args = ["server", "-m", "stream"]
 root-markers = [".graphqlrc", ".graphqlrc.yml", ".graphqlrc.yaml", ".graphqlrc.json", "graphql.config.js", "graphql.config.ts", "graphql.config.yml", "graphql.config.yaml", "graphql.config.json"]
 install-hint = "npm i -g graphql-language-service-cli"
+
+# Biome: lint diagnostics, quick fixes and fix-all below a Biome configuration or installation,
+# from the project's own biome. Formatting is Reformat Code's (Settings › Biome).
+[[language-servers]]
+name = "biome"
+command = "biome"
+args = ["lsp-proxy"]
+root-markers = ["biome.json", "biome.jsonc", "node_modules/@biomejs/biome"]
+require-root-marker = true
+features = ["code-action", "diagnostics"]
+install-hint = "npm i -D @biomejs/biome"

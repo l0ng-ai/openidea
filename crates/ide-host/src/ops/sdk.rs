@@ -120,6 +120,33 @@ pub async fn sdk_python_interpreter(host: &Host, window: &str, path: PathBuf) ->
         .map_err(join_err)?
 }
 
+/// The interpreter of the workspace member `near` belongs to, else the project's.
+pub(crate) fn effective_python(
+    config_dir: &std::path::Path,
+    project: &crate::Project,
+    near: Option<&std::path::Path>,
+) -> Option<PathBuf> {
+    let project_root = &project.root;
+    let member = ide_workspace::workspace::Workspace::load(project_root).ok().flatten().and_then(|w| {
+        let near = near?;
+        w.projects.into_iter().filter(|root| near.starts_with(root)).max_by_key(|root| root.components().count())
+    });
+    let (root, settings) = match member {
+        Some(root) => {
+            let settings = ide_workspace::SettingsStore::load(config_dir, Some(&root)).effective();
+            (root, settings)
+        }
+        None => (project_root.clone(), project.settings.effective()),
+    };
+    // A member with no Python of its own falls back to the primary project's
+    // (the same chain run configurations use), so every answer names one interpreter.
+    ide_sdk::apply::python_interpreter_near(&root, near, &settings).or_else(|| {
+        (&root != project_root)
+            .then(|| ide_sdk::apply::python_interpreter(project_root, &project.settings.effective()))
+            .flatten()
+    })
+}
+
 /// The interpreter the project uses: the configured one, else its virtualenv.
 #[command(trust = trusted)]
 pub async fn sdk_python_effective(
@@ -129,31 +156,11 @@ pub async fn sdk_python_effective(
 ) -> IdeResult<Option<ide_core::IpcPath>> {
     host.require_trust(window)?;
     let project = host.project(window)?;
-    let (config_dir, project_root) = (host.config_dir.clone(), project.root.clone());
+    let config_dir = host.config_dir.clone();
     // Loading a member's settings needs more stack than a sync command's main thread has left.
-    tokio::task::spawn_blocking(move || {
-        let member = ide_workspace::workspace::Workspace::load(&project_root).ok().flatten().and_then(|w| {
-            let near = near.as_deref()?;
-            w.projects.into_iter().filter(|root| near.starts_with(root)).max_by_key(|root| root.components().count())
-        });
-        let (root, settings) = match member {
-            Some(root) => {
-                let settings = ide_workspace::SettingsStore::load(&config_dir, Some(&root)).effective();
-                (root, settings)
-            }
-            None => (project_root.clone(), project.settings.effective()),
-        };
-        // A member with no Python of its own falls back to the primary project's
-        // (the same chain run configurations use), so every answer names one interpreter.
-        let interpreter = ide_sdk::apply::python_interpreter_near(&root, near.as_deref(), &settings).or_else(|| {
-            (root != project_root)
-                .then(|| ide_sdk::apply::python_interpreter(&project_root, &project.settings.effective()))
-                .flatten()
-        });
-        Ok(interpreter.map(Into::into))
-    })
-    .await
-    .map_err(join_err)?
+    tokio::task::spawn_blocking(move || Ok(effective_python(&config_dir, &project, near.as_deref()).map(Into::into)))
+        .await
+        .map_err(join_err)?
 }
 
 /// The PHP interpreter chosen in Settings › Languages & Frameworks › PHP; `None`: the `php` on `PATH`.

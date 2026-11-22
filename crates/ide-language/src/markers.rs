@@ -58,11 +58,12 @@ pub fn arduino_sketch_root(project: &Path, path: &Path) -> Option<PathBuf> {
 
 /// `dir` contains `marker`: a relative path, a file name pattern with one
 /// `*` (`*.csproj`), or a TOML or JSON file name (no pattern) and a dotted table
-/// it must contain (`pyproject.toml#tool.ruff`, `package.json#eslintConfig`).
+/// or JSON key it must contain (`pyproject.toml#tool.ruff`, `package.json#eslintConfig`,
+/// `package.json#devDependencies.tailwindcss`).
 fn has_marker(dir: &Path, marker: &str) -> bool {
     if let Some((file, table)) = marker.split_once('#') {
         return if file.ends_with(".json") {
-            has_json_object(&dir.join(file), table)
+            has_json_key(&dir.join(file), table)
         } else {
             has_toml_table(&dir.join(file), table)
         };
@@ -88,11 +89,12 @@ fn has_toml_table(file: &Path, table: &str) -> bool {
     table.split('.').try_fold(&value, |v, key| v.get(key)).is_some_and(toml::Value::is_table)
 }
 
-/// `file` parses as JSON and has the dotted object `key` (`eslintConfig`).
-fn has_json_object(file: &Path, key: &str) -> bool {
+/// `file` parses as JSON and has the dotted `key` with a value other than `null`:
+/// an object (`eslintConfig`) or a dependency's version (`dependencies.tailwindcss`).
+fn has_json_key(file: &Path, key: &str) -> bool {
     let Ok(text) = std::fs::read_to_string(file) else { return false };
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else { return false };
-    key.split('.').try_fold(&value, |v, key| v.get(key)).is_some_and(serde_json::Value::is_object)
+    key.split('.').try_fold(&value, |v, key| v.get(key)).is_some_and(|v| !v.is_null())
 }
 
 /// `path` is (or, after its creation or removal, was) a root marker of the
@@ -175,6 +177,20 @@ mod tests {
         assert_eq!(marked_root(Some(root), &file, &markers), Some(root.join("svc")));
         assert!(is_marker_path(&root.join("svc/pyproject.toml"), "pyproject.toml#tool.ruff"));
         assert!(!is_marker_path(&root.join("svc/setup.cfg"), "pyproject.toml#tool.ruff"));
+    }
+
+    #[test]
+    fn json_markers_need_their_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let marker = "package.json#devDependencies.tailwindcss";
+        std::fs::write(dir.join("package.json"), r#"{"devDependencies": {"vite": "^7.0.0"}}"#).unwrap();
+        assert!(!has_marker(dir, marker));
+        std::fs::write(dir.join("package.json"), r#"{"devDependencies": {"tailwindcss": "^4.1.0"}}"#).unwrap();
+        assert!(has_marker(dir, marker) && !has_marker(dir, "package.json#dependencies.tailwindcss"));
+        std::fs::write(dir.join("package.json"), r#"{"eslintConfig": null}"#).unwrap();
+        assert!(!has_marker(dir, "package.json#eslintConfig"));
+        assert!(is_marker_path(&dir.join("package.json"), marker));
     }
 
     #[test]

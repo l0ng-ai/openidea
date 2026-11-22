@@ -3,16 +3,19 @@
  * window or the File Structure popup is mounted). Reloads when the active
  * editor changes and after 500 ms of idle following edits.
  */
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { create } from "zustand";
+import { useShallow } from "zustand/react/shallow";
 import { editorsFor, useEditorRegistry } from "@/editor/api";
 import { onLspRefresh } from "@/editor/lsp/availability";
 import { projectPythonHierarchy, pythonSupertypeItems } from "@/editor/navigation/pythonHierarchy";
 import { call, commands, IpcError, type OutlineItem, type Pos } from "@/platform/ipc";
 import { isVirtualUri } from "@/platform/virtualDocs";
+import type { MenuItem } from "@/ui";
 import { loadJson, saveJson } from "../common/open";
 import { useTracking } from "../common/tracking";
 import { inheritedMembers, typeKey, typesIn, type InheritedDeps, type InheritedMember } from "./inherited";
+import { allKeys, applyViewFilter, keyOutline, onlyWidgets, sortOutline, withInherited } from "./outline";
 
 interface OutlineState {
   path: string | null;
@@ -253,3 +256,76 @@ useStructureOptions.subscribe((s) =>
     showOnlyWidgets: s.showOnlyWidgets,
   }),
 );
+
+export const useCollapsedStructure = create<{ keys: ReadonlySet<string> }>(() => ({ keys: new Set() }));
+
+const outlinePreferences = (s: StructureOptions) => ({
+  alphabetical: s.alphabetical,
+  sortByVisibility: s.sortByVisibility,
+  showFields: s.showFields,
+  showNonPublic: s.showNonPublic,
+  showInherited: s.showInherited,
+  showOnlyWidgets: s.showOnlyWidgets,
+});
+
+function outlineNodes(
+  items: OutlineState["items"],
+  flutter: OutlineState["flutter"],
+  inherited: OutlineState["inherited"],
+  options: ReturnType<typeof outlinePreferences>,
+) {
+  const nodes = sortOutline(
+    applyViewFilter(withInherited(keyOutline(flutter ?? items ?? []), options.showInherited ? inherited : null), {
+      fields: options.showFields,
+      nonPublic: options.showNonPublic,
+    }),
+    options.alphabetical,
+    options.sortByVisibility,
+  );
+  return flutter && options.showOnlyWidgets ? onlyWidgets(nodes) : nodes;
+}
+
+export function useOutlineNodes(widgets = false) {
+  const items = useOutline((s) => s.items);
+  const flutter = useOutline((s) => (widgets ? s.flutter : null));
+  const inherited = useOutline((s) => (s.inheritedSupported ? s.inherited : null));
+  const options = useStructureOptions(useShallow(outlinePreferences));
+  return useMemo(() => outlineNodes(items, flutter, inherited, options), [items, flutter, inherited, options]);
+}
+
+function collapseStructure() {
+  const { items, flutter, inheritedSupported, inherited } = useOutline.getState();
+  const options = {
+    ...outlinePreferences(useStructureOptions.getState()),
+    alphabetical: false,
+    sortByVisibility: false,
+  };
+  const nodes = outlineNodes(items, flutter, inheritedSupported ? inherited : null, options);
+  useCollapsedStructure.setState({ keys: new Set(allKeys(nodes)) });
+}
+
+export function useStructureHeaderMenu(): MenuItem[] {
+  const ready = useOutline((s) => !!s.path && s.items !== null);
+  const fromSource = useStructureOptions((s) => s.autoscrollFromSource);
+  const toSource = useStructureOptions((s) => s.autoscrollToSource);
+  if (!ready) return [];
+  return [
+    {
+      label: "Expand All",
+      icon: "expand-all",
+      run: () => useCollapsedStructure.setState({ keys: new Set() }),
+    },
+    { label: "Collapse All", icon: "collapse-all", run: collapseStructure },
+    { kind: "separator" },
+    {
+      label: "Autoscroll to Source",
+      checked: toSource,
+      run: () => useStructureOptions.setState({ autoscrollToSource: !toSource }),
+    },
+    {
+      label: "Autoscroll from Source",
+      checked: fromSource,
+      run: () => useStructureOptions.setState({ autoscrollFromSource: !fromSource }),
+    },
+  ];
+}

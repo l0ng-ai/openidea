@@ -50,7 +50,7 @@ import { call, commands } from "@/platform/ipc";
 import { ask, confirm, showError } from "@/workbench/messages";
 import { useContributions } from "@/workbench/contributions";
 import { parseIcls, SchemeParseError, importScheme, deleteScheme, exportIcls } from "@/platform/icls";
-import { tx, useTx } from "@/platform/i18n";
+import { tx, txPart, useTx } from "@/platform/i18n";
 import { selectPage } from "../../model/staging";
 
 type Overrides = Record<string, Record<string, TextAttributesOverride>>;
@@ -1296,7 +1296,7 @@ function ColorInput({
       <Input
         mono
         className={styles.swatchInput}
-        aria-label={tx`${label} hex`}
+        aria-label={tx`${txPart(label)} hex`}
         value={draft ?? value}
         invalid={draft !== null && !HEX_COLOR.test(draft)}
         onChange={(e) => {
@@ -1845,7 +1845,7 @@ export function ColorSchemePage({
         </div>
       )}
       {scheme === "theme-default" && (
-        <div className={styles.note}>{tx`Follows the IDE theme: currently ${schemeName}.`}</div>
+        <div className={styles.note}>{tx`Follows the IDE theme: currently ${txPart(schemeName)}.`}</div>
       )}
       {redGreen && (id === "dark" || id === "light") && (
         <div className={styles.note}>

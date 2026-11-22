@@ -184,6 +184,16 @@ describe("languages settings", () => {
     expect(v.prettier).toMatchObject({ runOnSave: true, prefer: false, path: "" });
   });
 
+  it("gives Biome the opt-in settings for the languages it formats", () => {
+    expect(validateLanguages({}).biome).toEqual({
+      ...DEFAULT_LANGUAGES.prettier,
+      languages: ["css", "graphql", "javascript", "javascriptreact", "typescript", "typescriptreact", "json", "jsonc"],
+    });
+    const v = validateLanguages({ biome: { languages: ["json"], prefer: true, runOnSave: true } });
+    expect(v.biome).toMatchObject({ languages: ["json"], prefer: true, runOnSave: true });
+    expect(v.prettier).toMatchObject({ prefer: false, runOnSave: false });
+  });
+
   it("enables Ruff for Python by default and keeps its settings separate", () => {
     expect(validateLanguages({}).ruff).toMatchObject({
       path: "",
@@ -370,6 +380,7 @@ describe("language pages", () => {
       "PHP",
       "Prettier",
       "oxfmt",
+      "Biome",
       "Ruby",
       "Rust",
       "TypeScript",

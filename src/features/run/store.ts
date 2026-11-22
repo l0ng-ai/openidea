@@ -48,6 +48,7 @@ import {
 } from "./testing";
 import { PluginTestOutput } from "./testing/plugin";
 import { GoTestOutput } from "./testing/go";
+import { RecordsOutput } from "./testing/records";
 import { DotnetReports } from "./testing/dotnet";
 import { moveToReportedClasses } from "./testing/jvm";
 import { RubyTestOutput } from "./testing/ruby";
@@ -67,7 +68,7 @@ import { startedPort } from "@/platform/serverPort";
 import { tomcatBrowserUrl } from "./tomcat";
 import { gradleBootLaunch, gradleDelegation, gradleTestLaunch } from "./gradleRun";
 import { openUrl } from "./navigate";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 import { UNITY_CONFIG_KIND } from "./unity";
 
 /** The permanent "Current File" pseudo-configuration of the chooser (runs the active file's context). */
@@ -713,8 +714,8 @@ function newRuntime(config: RunConfig): SessionRuntime {
     if (tests && parser) tests.apply(parser.feed(line));
   };
   const framework = tests && parser ? frameworkFor(config) : null;
-  // PHPUnit `--teamcity` and Gradle's test init script report through service messages, Minitest through
-  // the IDE's own reporter (RSpec has none: its progress dots must show as they come).
+  // PHPUnit `--teamcity` and Gradle's test init script report through service messages, Minitest,
+  // node:test and Mocha through the IDE's own reporters (RSpec has none: its progress dots must show as they come).
   const stdout =
     framework === "go"
       ? new GoTestOutput(feed)
@@ -722,7 +723,9 @@ function newRuntime(config: RunConfig): SessionRuntime {
         ? new TeamcityOutput(feed)
         : framework === "ruby" && config.kind !== "rspec"
           ? new RubyTestOutput(feed)
-          : null;
+          : framework === "node-test" || framework === "mocha"
+            ? new RecordsOutput(feed)
+            : null;
   const runtime: SessionRuntime = {
     stdout,
     tests,
@@ -1620,7 +1623,7 @@ export async function sendStdin(sessionId: string, text: string): Promise<void> 
   } catch (e) {
     enqueue(sessionId, {
       kind: "system",
-      text: tx`Cannot write to stdin: ${e instanceof Error ? tx(e.message) : String(e)}\n`,
+      text: tx`Cannot write to stdin: ${e instanceof Error ? txPart(e.message) : String(e)}\n`,
     });
   }
 }
@@ -1632,7 +1635,7 @@ export function writeTerminal(sessionId: string, data: string) {
   void call(commands.runStdin(session.runId, data)).catch((e) => {
     enqueue(sessionId, {
       kind: "system",
-      text: tx`Cannot write to stdin: ${e instanceof Error ? tx(e.message) : String(e)}\n`,
+      text: tx`Cannot write to stdin: ${e instanceof Error ? txPart(e.message) : String(e)}\n`,
     });
   });
 }

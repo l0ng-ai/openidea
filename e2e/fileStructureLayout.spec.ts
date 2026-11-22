@@ -1,5 +1,68 @@
 import { expect, openFromTree, stubDesktop, test } from "./fixtures";
 
+test("the docked Structure tree starts under the header and keeps its commands available", async ({
+  workbench: page,
+}) => {
+  await openFromTree(page, "build.gradle.kts");
+  await stubDesktop(page);
+  await page.evaluate(async () => {
+    const range = { start: { line: 0, col: 0 }, end: { line: 1, col: 1 } };
+    const field = {
+      name: "orderCount",
+      kind: "field",
+      visibility: "private",
+      range,
+      selection_range: range,
+      children: [],
+    };
+    window.__ipc.handlers.doc_outline = () => [
+      { name: "OrderController", kind: "class", range, selection_range: range, children: [field] },
+    ];
+    window.__ipc.handlers.lsp_type_hierarchy = () => [];
+    const path = "/src/workbench/toolwindows/store.ts";
+    const { moveToolWindow, setToolWindowSize, showToolWindow } = await import(/* @vite-ignore */ path);
+    moveToolWindow("structure", "right");
+    setToolWindowSize("right", 240);
+    showToolWindow("structure", true);
+  });
+  const panel = page.getByRole("region", { name: "Structure", exact: true });
+  const header = panel.locator("header").first();
+  const tree = panel.getByRole("tree", { name: "Structure" });
+  const field = tree.getByRole("treeitem", { name: "orderCount" });
+  await expect(field).toBeVisible();
+  await expect
+    .poll(async () => {
+      const h = (await header.boundingBox())!;
+      const t = (await tree.boundingBox())!;
+      return t.y - h.y - h.height;
+    })
+    .toBeLessThan(2);
+
+  const viewOptions = header.getByRole("button", { name: "View Options", exact: true });
+  await viewOptions.click();
+  const viewMenu = page.getByRole("menu", { name: "View Options", exact: true });
+  await expect(viewMenu.getByRole("menuitemcheckbox", { name: "Sort Alphabetically" })).toBeVisible();
+  await expect(viewMenu.getByRole("menuitemcheckbox", { name: "Show Inherited" })).toBeVisible();
+  await viewMenu.getByRole("menuitemcheckbox", { name: "Show Fields", checked: true }).click();
+  await expect(field).toBeHidden();
+  await viewOptions.click();
+  await viewMenu.getByRole("menuitemcheckbox", { name: "Show Fields", checked: false }).click();
+  await expect(field).toBeVisible();
+
+  const more = header.getByRole("button", { name: "Options", exact: true });
+  const menu = page.getByRole("menu", { name: "Structure options" });
+  await more.click();
+  await menu.getByRole("menuitem", { name: "Collapse All", exact: true }).click();
+  await expect(field).toBeHidden();
+  await more.click();
+  await menu.getByRole("menuitem", { name: "Expand All", exact: true }).click();
+  await expect(field).toBeVisible();
+  await more.click();
+  await menu.getByRole("menuitemcheckbox", { name: "Autoscroll from Source", checked: false }).click();
+  await more.click();
+  await expect(menu.getByRole("menuitemcheckbox", { name: "Autoscroll from Source", checked: true })).toBeVisible();
+});
+
 test("File Structure keeps symbol filters readable at desktop and minimum window widths", async ({
   workbench: page,
 }) => {
