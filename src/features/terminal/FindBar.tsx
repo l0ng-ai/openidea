@@ -166,53 +166,64 @@ export function TerminalFindBar({ sessionKey }: { sessionKey: string | null }) {
         placeholder="Find in terminal"
         aria-label="Find in terminal"
         invalid={none}
-        toggles={[
-          {
-            id: "case",
-            icon: "case",
-            title: "Match Case",
-            shortcut: formatBinding("Alt+C"),
-            pressed: options.caseSensitive,
-            onToggle: () => toggle("caseSensitive"),
-          },
-          {
-            id: "word",
-            icon: "word",
-            title: "Words",
-            shortcut: formatBinding("Alt+W"),
-            pressed: options.wholeWord,
-            onToggle: () => toggle("wholeWord"),
-          },
-          {
-            id: "regex",
-            icon: "regex",
-            title: "Regex",
-            shortcut: formatBinding("Alt+X"),
-            pressed: options.regex,
-            onToggle: () => toggle("regex"),
-          },
-        ]}
       />
-      <span className={clsx(styles.findCount, none && styles.findCountNone)} aria-live="polite">
-        {counter}
-      </span>
-      <IconButton
-        icon="arrow-up"
-        title="Previous Occurrence"
-        shortcut={formatBinding("Shift+Enter")}
-        size="small"
-        disabled={!query || !result?.count}
-        onClick={() => find("previous")}
-      />
-      <IconButton
-        icon="arrow-down"
-        title="Next Occurrence"
-        shortcut="↵"
-        size="small"
-        disabled={!query || !result?.count}
-        onClick={() => find("next")}
-      />
-      <IconButton icon="close" title="Close" shortcut="⎋" size="small" onClick={closeTerminalFind} />
+      <div className={styles.findControls}>
+        <div className={styles.findOptions}>
+          <IconButton
+            icon="case"
+            title="Match Case"
+            shortcut={formatBinding("Alt+C")}
+            pressed={options.caseSensitive}
+            size="small"
+            onClick={() => toggle("caseSensitive")}
+          />
+          <IconButton
+            icon="word"
+            title="Words"
+            shortcut={formatBinding("Alt+W")}
+            pressed={options.wholeWord}
+            size="small"
+            onClick={() => toggle("wholeWord")}
+          />
+          <IconButton
+            icon="regex"
+            title="Regex"
+            shortcut={formatBinding("Alt+X")}
+            pressed={options.regex}
+            size="small"
+            onClick={() => toggle("regex")}
+          />
+        </div>
+        <div className={styles.findActions}>
+          <span className={clsx(styles.findCount, none && styles.findCountNone)} aria-live="polite">
+            {counter}
+          </span>
+          <IconButton
+            icon="arrow-up"
+            title="Previous Occurrence"
+            shortcut={formatBinding("Shift+Enter")}
+            size="small"
+            disabled={!query || !result?.count}
+            onClick={() => find("previous")}
+          />
+          <IconButton
+            icon="arrow-down"
+            title="Next Occurrence"
+            shortcut="↵"
+            size="small"
+            disabled={!query || !result?.count}
+            onClick={() => find("next")}
+          />
+        </div>
+        <IconButton
+          className={styles.findClose}
+          icon="close"
+          title="Close"
+          shortcut="⎋"
+          size="small"
+          onClick={closeTerminalFind}
+        />
+      </div>
     </div>
   );
 }
