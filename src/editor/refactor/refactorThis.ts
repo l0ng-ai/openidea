@@ -62,8 +62,20 @@ async function askServer(view: EditorView, signal?: AbortSignal, only?: string[]
   }
 }
 
-/** typescript-language-server returns refactorings only when `only` names `refactor` itself. */
-const WHOLE_REFACTOR_KIND = new Set(["javascript", "javascriptreact", "typescript", "typescriptreact"]);
+/**
+ * Servers that return refactorings only when `only` names `refactor` itself: typescript-language-server,
+ * and clangd, whose tweaks are all of kind `refactor`.
+ */
+const WHOLE_REFACTOR_KIND = new Set([
+  "javascript",
+  "javascriptreact",
+  "typescript",
+  "typescriptreact",
+  "c",
+  "cpp",
+  "objective-c",
+  "objective-cpp",
+]);
 
 /** The code action kind to ask `language`'s server for, to get the refactorings of `kind`. */
 export function requestKind(kind: string, language: string): string {
@@ -197,7 +209,17 @@ export async function runRefactoring(view: EditorView, id: RefactoringId): Promi
   }
   const introduce = INTRODUCE[id];
   if (introduce) {
-    const reason = answer.status === "ok" ? "empty" : answer.status === "notReady" ? "notReady" : "error";
+    // A server offering another extraction there (gopls has only Extract constant for `1 + 2`)
+    // takes the selection for an expression: build the variable from the syntax.
+    const otherExtraction = [...groupActions(all).mapped.keys()].some((k) => INTRODUCE[k] && k !== id);
+    const reason =
+      answer.status === "ok"
+        ? otherExtraction
+          ? "otherKind"
+          : "empty"
+        : answer.status === "notReady"
+          ? "notReady"
+          : "error";
     if (await introduceFallback(view, introduce, reason)) return;
   }
   showHint(view, cannotPerform(await unavailableReason(view, r, answer, all)));
