@@ -1,0 +1,115 @@
+.dialog {
+  height: clamp(320px, 60vh, 760px);
+}
+
+/* The table scrolls under a fixed bar, not the whole dialog body. */
+.content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding-bottom: var(--space-2);
+}
+
+.expression {
+  flex: 1 1 200px;
+  min-width: 0;
+  height: var(--h-list-row);
+  padding: 0 6px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-ui);
+  color: var(--fg);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+}
+
+.expression:focus {
+  outline: none;
+  border-color: var(--focus-ring);
+}
+
+.summary,
+.pager {
+  color: var(--fg-secondary);
+  white-space: nowrap;
+}
+
+.pager {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  box-shadow: inset 0 0 0 1px var(--border);
+  border-radius: var(--radius-small);
+}
+
+.table {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-ui);
+  color: var(--fg);
+}
+
+.table th,
+.table td {
+  height: var(--h-list-row);
+  padding: 0 8px;
+  white-space: pre;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  text-align: left;
+  font-weight: normal;
+  color: var(--fg-secondary);
+  background: var(--bg-island);
+}
+
+.table .index {
+  position: sticky;
+  left: 0;
+  text-align: right;
+  font-weight: normal;
+  color: var(--fg-secondary);
+  background: var(--bg-island);
+}
+
+.table thead .index {
+  z-index: 2;
+}
+
+.table tbody tr:hover td {
+  background: var(--bg-hover);
+}
+
+.numeric {
+  text-align: right;
+}
+
+.dtype {
+  margin-left: var(--space-1);
+  color: var(--fg-subtle);
+}
+
+.message {
+  padding: var(--space-3) 0;
+  color: var(--fg-secondary);
+}

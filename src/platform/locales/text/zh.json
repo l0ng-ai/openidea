@@ -9358,5 +9358,17 @@
   "Homepage:": "主页：",
   "Mail:": "邮件：",
   "Show Only Affected Changes": "仅显示受影响的变更",
-  "Layout": "布局"
+  "Layout": "布局",
+  "Values are available while the program is paused": "程序暂停时才能查看值",
+  "Not a pandas DataFrame or Series, or a numpy array": "不是 pandas DataFrame、Series 或 numpy 数组",
+  "A {n}-dimensional array can't be shown as a table: view a 2-D slice, e.g. a[0]": "{n} 维数组无法显示为表格：请查看二维切片，例如 a[0]",
+  "Table view of {label}": "{label} 的表格视图",
+  "Shape ({shape})": "形状 ({shape})",
+  "Rows {from}–{to} of {total}": "第 {from}–{to} 行，共 {total} 行",
+  "Columns {from}–{to} of {total}": "第 {from}–{to} 列，共 {total} 列",
+  "View as Table": "以表格查看",
+  "Previous Rows": "上一组行",
+  "Next Rows": "下一组行",
+  "Previous Columns": "上一组列",
+  "Next Columns": "下一组列"
 }
