@@ -1,7 +1,9 @@
 import { tx } from "@/platform/i18n";
+import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import {
+  Button,
   EmptyState,
   IconButton,
   SplitGroup,
@@ -17,7 +19,7 @@ import clsx from "clsx";
 import { useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { LocalChangesView, StashContent, tabItems, useStashTabCounts } from "./CommitView";
 import styles from "./GitLog.module.css";
-import { WorktreesPanel } from "./gitMenuDialogs";
+import { WorktreesPanel } from "./WorktreesPanel";
 import { gitTabs, shownTab } from "./gitTabs";
 import { BranchesPanel } from "./log/BranchesPanel";
 import { CommitDetails } from "./log/CommitDetails";
@@ -100,7 +102,7 @@ export function GitToolWindow() {
       {shown === "changes" ? (
         <LocalChangesView />
       ) : shown === "shelf" || shown === "stashes" ? (
-        <StashContent tab={shown} />
+        <StashContent tab={shown} toolWindow="git" />
       ) : shown === "console" ? (
         <ConsoleView />
       ) : shown === "worktrees" ? (
@@ -128,7 +130,10 @@ export function LogView() {
   const root = useVcs((s) => s.root);
   const repo = useLogRepositories();
   const readOnly = useReadOnlyLog();
-  const showBranches = useLogOptions((s) => s.showBranches);
+  const shallowRepo = useVcs((s) => (repo.length === 1 && s.heads[repo[0]!]?.shallow ? repo[0] : undefined));
+  const remoteBusy = useVcs((s) => !!s.remoteBusy);
+  const comparison = useGitLog((s) => !!s.logTabs.find((t) => t.id === (scope ?? s.shownLog))?.comparison);
+  const showBranches = useLogOptions((s) => s.showBranches) && !comparison;
   const showDetails = useLogOptions((s) => s.showDetails);
   const historyPath = useGitLog((s) => {
     const tab = s.logTabs.find((t) => t.id === (scope ?? s.shownLog));
@@ -262,7 +267,7 @@ export function LogView() {
       key={showBranches ? "branches" : "no-branches"}
       orientation="horizontal"
       id={showBranches ? "git-log" : "git-log-no-branches"}
-      storageKey={`openidea.vcs.logSplit.${showBranches ? "branches" : "noBranches"}.${showDetails ? "details" : "noDetails"}`}
+      storageKey={`openidea.vcs.logSplit.${comparison ? "compare" : showBranches ? "branches" : "noBranches"}.${showDetails ? "details" : "noDetails"}`}
       className={styles.split}
     >
       {showBranches && (
@@ -276,6 +281,18 @@ export function LogView() {
       <SplitPanel id="commits" style={PANE_STYLE} defaultSize="54%" minSize="25%">
         <div className={styles.log}>
           <FilterBar />
+          {!readOnly && shallowRepo && (
+            <div className={styles.shallowHistory}>
+              <T>This repository is a shallow clone.</T>
+              <Button
+                variant="ghost"
+                disabled={remoteBusy}
+                onClick={() => void executeAction("vcs.unshallow", { repo: shallowRepo })}
+              >
+                Fetch Full History
+              </Button>
+            </div>
+          )}
           <CommitList />
         </div>
       </SplitPanel>

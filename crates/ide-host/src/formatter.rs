@@ -3,11 +3,11 @@
 use crate::Host;
 use ide_core::event::NotifyLevel;
 use ide_core::settings::{BIOME_LANGUAGES, ExternalFormatter, LanguagesSettings, Settings};
-use ide_core::{ChangeSet, DocId, IdeError, IdeEvent, IdeResult, LanguageId, Pos, Range, TextEdit};
+use ide_core::{ChangeSet, DocId, IdeError, IdeEvent, IdeResult, IpcPath, LanguageId, Pos, Range, TextEdit};
 use ide_language::{LanguageConfig, PhpAlignment, Syntax};
 use ide_lsp::types::FormatOptions;
 use ide_tools::{Tools, formatter};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const OXFMT_CONFIGS: [&str; 4] = [".oxfmtrc.json", ".oxfmtrc.jsonc", "oxfmt.config.ts", "oxfmt.config.mts"];
 /// A Biome configuration, or Biome installed as a project dependency (it then uses its defaults).
@@ -173,10 +173,58 @@ pub async fn format(
 ) -> IdeResult<Vec<TextEdit>> {
     let project = host.project(window)?;
     let snap = project.documents.snapshot(doc)?;
+    let source = FormatSource {
+        path: snap.path,
+        language: snap.language,
+        text: snap.text,
+        doc: Some(doc),
+        version: snap.version,
+        read_only: snap.read_only,
+    };
+    format_source(host, window, &project, source, range, options).await
+}
+
+/// Format a separate snapshot using the file's language, settings and formatter.
+pub async fn format_text(
+    host: &Host,
+    window: &str,
+    path: PathBuf,
+    text: String,
+    options: FormatOptions,
+) -> IdeResult<Vec<TextEdit>> {
+    let project = host.project(window)?;
+    if !path.is_absolute() || path.file_name().is_none() {
+        return Err(IdeError::invalid("formatting requires a file path"));
+    }
+    if text.len() as u64 > ide_vfs::LARGE_FILE_THRESHOLD {
+        return Ok(Vec::new());
+    }
+    let language = project.documents.language_of(&path, text.lines().next()).language;
+    let source = FormatSource { path: path.into(), language, text, doc: None, version: 0, read_only: false };
+    format_source(host, window, &project, source, None, options).await
+}
+
+struct FormatSource {
+    path: IpcPath,
+    language: LanguageId,
+    text: String,
+    doc: Option<DocId>,
+    version: u32,
+    read_only: bool,
+}
+
+async fn format_source(
+    host: &Host,
+    window: &str,
+    project: &crate::Project,
+    snap: FormatSource,
+    range: Option<Range>,
+    options: FormatOptions,
+) -> IdeResult<Vec<TextEdit>> {
     let settings = project.settings.effective();
     let alignment = php_alignment(&settings, &snap.language);
     let original = alignment.any().then(|| (snap.language.clone(), snap.text.clone()));
-    let Some(edits) = provider_edits(host, window, &project, snap, settings, range, options).await? else {
+    let Some(edits) = provider_edits(host, window, project, snap, settings, range, options).await? else {
         return Ok(Vec::new());
     };
     let Some((language, text)) = original else {
@@ -257,12 +305,12 @@ async fn provider_edits(
     host: &Host,
     window: &str,
     project: &crate::Project,
-    snap: ide_workspace::documents::DocumentInfo,
+    snap: FormatSource,
     settings: Settings,
     range: Option<Range>,
     options: FormatOptions,
 ) -> IdeResult<Option<Vec<TextEdit>>> {
-    let doc = snap.id;
+    let doc = snap.doc;
     let language = project.languages.get(&snap.language);
     if options.tool.is_none()
         && let Some(id) = settings.languages.plugin_formatters.get(snap.language.as_str()).filter(|s| !s.is_empty())
@@ -329,7 +377,10 @@ async fn provider_edits(
     if let Some(tool) = selected
         && options.tool.is_none()
         && !settings.languages.formatter(tool).prefer
-        && project.lsp.can_format(doc).await?
+        && match doc {
+            Some(doc) => project.lsp.can_format(doc).await?,
+            None => project.lsp.can_format_text(&snap.path, &snap.language).await,
+        }
     {
         selected = None;
     }
@@ -337,7 +388,10 @@ async fn provider_edits(
         if options.on_save && !settings.editor.format_on_save {
             return Ok(None);
         }
-        let edits = project.lsp.format(doc, range, options).await?;
+        let edits = match doc {
+            Some(doc) => project.lsp.format(doc, range, options).await?,
+            None => project.lsp.format_text(&snap.path, &snap.language, &snap.text, options).await?,
+        };
         let text = snap.text;
         return tokio::task::spawn_blocking(move || Some(minimal_edits(&text, edits)))
             .await

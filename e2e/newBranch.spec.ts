@@ -7,10 +7,16 @@ import { expect, ipcCalls, stubDesktop, test } from "./fixtures";
 
 const ROOT = "/dev/acme-api";
 
-async function openNewBranchDialog(page: Page, from?: string, withPrefix = false) {
+async function openNewBranchDialog(
+  page: Page,
+  from?: string,
+  mergeBase = "1111111",
+  blocked = false,
+  withPrefix = false,
+) {
   await stubDesktop(page);
   await page.evaluate(
-    async ({ root, from, withPrefix }) => {
+    async ({ root, from, mergeBase, blocked, withPrefix }) => {
       const h = window.__ipc.handlers;
       h.vcs_roots = () => [{ root, operation: null, head: "main", headCommit: "1111111" }];
       h.vcs_branch_info = () => ({
@@ -35,7 +41,11 @@ async function openNewBranchDialog(page: Page, from?: string, withPrefix = false
         },
         ...(withPrefix ? [{ name: "feature/weekly-totals", current: false, remote: false }] : []),
       ];
-      h.vcs_create_branch = () => null;
+      h.vcs_create_branch = ({ options }) =>
+        blocked && (options as { mode?: string } | null)?.mode === "normal"
+          ? { checkout: { kind: "localChanges", files: ["dirty.txt"] }, created: null }
+          : { checkout: { kind: "done" }, created: { tip: "2222222", previousTip: null } };
+      h.vcs_merge_base = () => mergeBase;
       const vcsModule = "/src/features/vcs/store.ts";
       const { useVcs, refreshNow, loadBranches } = await import(/* @vite-ignore */ vcsModule);
       useVcs.setState({ available: true, root, repo: root, branchesLoaded: false, stashesLoaded: false });
@@ -46,7 +56,7 @@ async function openNewBranchDialog(page: Page, from?: string, withPrefix = false
       if (from) void executeAction("vcs.log.newBranch", { id: from, summary: "Selected commit", repo: root });
       else void executeAction("vcs.newBranch");
     },
-    { root: ROOT, from, withPrefix },
+    { root: ROOT, from, mergeBase, blocked, withPrefix },
   );
   const dialog = page.getByRole("dialog", { name: from ? `Create New Branch from ${from}` : "Create New Branch" });
   const input = dialog.getByRole(withPrefix ? "combobox" : "textbox", { name: "New branch name:" });
@@ -86,7 +96,9 @@ test("overwrites a local branch only after explicitly opting in", async ({ workb
   await create.click();
   await expect
     .poll(() => ipcCalls(page, "vcs_create_branch"))
-    .toEqual([{ repo: ROOT, name: "main", start: from, checkout: true, overwrite: true }]);
+    .toMatchObject([
+      { repo: ROOT, name: "main", start: from, checkout: true, overwrite: true, expectedTip: "1111111" },
+    ]);
 });
 
 test("a space typed in the middle keeps the caret after it", async ({ workbench: page }) => {
@@ -98,6 +110,46 @@ test("a space typed in the middle keeps the caret after it", async ({ workbench:
   await page.keyboard.type("x");
   await expect(input).toHaveValue("a-xb");
 });
+
+test("cancelling the drop-local-commits prompt keeps the branch intact", async ({ workbench: page }) => {
+  const { dialog, input } = await openNewBranchDialog(page, "2".repeat(40), "3333333");
+  await input.fill("main");
+  await dialog.getByRole("checkbox", { name: "Overwrite existing branch" }).check();
+  await dialog.getByRole("button", { name: "Create", exact: true }).click();
+  const warning = page.getByRole("dialog", { name: "Overwrite Branch main" });
+  await expect(warning.getByRole("button", { name: "Drop Local Commits" })).toBeVisible();
+  await warning.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(warning).toBeHidden();
+  expect(await ipcCalls(page, "vcs_create_branch")).toEqual([]);
+});
+
+for (const [button, mode] of [
+  ["Smart Checkout", "smart"],
+  ["Force Checkout", "force"],
+  ["Don't Checkout", null],
+] as const) {
+  test(`checkout during branch creation offers ${button}`, async ({ workbench: page }) => {
+    const from = "2".repeat(40);
+    const { dialog, input } = await openNewBranchDialog(page, from, "1111111", true);
+    await input.fill("topic");
+    await dialog.getByRole("button", { name: "Create", exact: true }).click();
+    const review = page.getByRole("dialog", { name: "Git Checkout Problem" });
+    await expect(review.getByRole("treeitem", { name: "dirty.txt" })).toBeVisible();
+    await review.getByRole("button", { name: button, exact: true }).click();
+    await expect(review).toBeHidden();
+    await expect
+      .poll(() => ipcCalls(page, "vcs_create_branch"))
+      .toMatchObject(
+        (mode ? ["normal", "normal", mode] : ["normal"]).map((mode) => ({
+          repo: ROOT,
+          name: "topic",
+          start: from,
+          checkout: true,
+          options: { mode },
+        })),
+      );
+  });
+}
 
 test("pasted text has its spaces replaced", async ({ workbench: page }) => {
   const { dialog, input } = await openNewBranchDialog(page);
@@ -112,7 +164,7 @@ test("pasted text has its spaces replaced", async ({ workbench: page }) => {
 
 test("the branch name and options line up, and prefix completion follows the field", async ({ workbench: page }) => {
   await page.setViewportSize({ width: 1100, height: 700 });
-  const { dialog, input } = await openNewBranchDialog(page, undefined, true);
+  const { dialog, input } = await openNewBranchDialog(page, undefined, "1111111", false, true);
   const label = dialog.getByText("New branch name:", { exact: true });
   const checkout = dialog.getByRole("checkbox", { name: "Checkout branch" });
   const overwrite = dialog.getByRole("checkbox", { name: "Overwrite existing branch" });
@@ -151,5 +203,16 @@ test("the branch name and options line up, and prefix completion follows the fie
   await create.click();
   await expect
     .poll(() => ipcCalls(page, "vcs_create_branch"))
-    .toEqual([{ repo: ROOT, name: "feature/review-totals", start: null, checkout: false, overwrite: false }]);
+    .toEqual([
+      {
+        repo: ROOT,
+        name: "feature/review-totals",
+        start: null,
+        checkout: false,
+        overwrite: false,
+        expectedTip: null,
+        options: null,
+        shelfBatch: null,
+      },
+    ]);
 });

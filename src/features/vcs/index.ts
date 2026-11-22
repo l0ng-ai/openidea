@@ -4,6 +4,7 @@
  * merge and Local History editors, remote operations.
  */
 import { onWorkflowSettingsChange, workflowSettings } from "@/platform/workflowSettings";
+import { useTodoSettings } from "@/platform/todo";
 import { editorsFor, registerEditorContribution } from "@/editor/api";
 import {
   notifications,
@@ -21,13 +22,19 @@ import { commitWindowFocused, registerVcsActions } from "./actions";
 import { installChangelists } from "./changelists";
 import { registerHistoryActions, trackOperationContext } from "./historyActions";
 import { registerLogPaneActions } from "./logPaneActions";
+import {
+  BRANCH_COMPARISON_KIND,
+  branchComparisonTitle,
+  comparisonPaneIds,
+  type BranchComparisonData,
+} from "./CompareBranches";
 import { controlLabel, controlOperation, inProgress, installOperationNoticeExpiry } from "./operations";
 import { annotationsShown, blameSlot } from "./blame";
 import { activateRevisionAnnotations } from "./annotateRevisionProvider";
 import { inlineBlame } from "./inlineBlame";
 import { BranchWidget, BranchesPopupHost, useBranchesPopup } from "./BranchWidget";
 import { SyncCommitsPopupHost } from "./SyncCommitsPopup";
-import { showConflictsDialog, takeContinueWhenResolved } from "./conflictsUi";
+import { clearUnstashConflictNotices, showConflictsDialog } from "./conflictsUi";
 import { registerCompareActions } from "./compare";
 import { activateDiffViewer } from "./diffViewer";
 import { installDiffEditorHost } from "./DiffWindow";
@@ -41,21 +48,34 @@ import { registerLocalHistoryActions } from "./localHistoryActions";
 import { MERGE_KIND, type MergeData } from "./mergeKind";
 import { registerMergeActions } from "./mergeActions";
 import { baseName, stripSlash } from "./model";
-import { installCommitChecks, installDiagnosticsTracking } from "./commitChecks";
-import { installPreparedMessage, useCommit } from "./commitStore";
+import { installCommitChecks } from "./commitChecks";
+import { installDiagnosticsTracking } from "./commitAnalysis";
+import { installPostCommitChecks } from "./postCommitChecks";
+import { installCommitMessages, useCommit } from "./commitStore";
 import { installDraftRevision, provideCommit } from "./commitSelection";
 import { activate as activateConflictBanner } from "./conflictBanner";
+import { registerWorktreeIncludeEditor } from "./worktreeInclude";
 import { activate as activateConflictMarkers } from "./conflictMarkers";
 import { MergeRebaseWidget } from "./MergeRebaseWidget";
 import { installFileConfirmations } from "./confirmations";
 import { installIncomingCheck } from "./incoming";
 import { closeLogTab, installGitLog, selectGitTab, useGitLog } from "./logStore";
-import { existsOnDisk, installVcsStore, onConflictsAppeared, onConflictsCleared, useVcs } from "./store";
+import {
+  currentRepoRoot,
+  existsOnDisk,
+  installVcsStore,
+  onConflictsChanged,
+  onConflictsCleared,
+  repoOf,
+  selectRepo,
+  useVcs,
+} from "./store";
 import { installRootSync } from "./rootSync";
 import { tx } from "@/platform/i18n";
 import { openOnRemoteActions, registerOpenOnRemote } from "./openOnRemote";
 import { copyRepositoryPathActions, registerCopyRepositoryPath } from "./copyRepositoryPath";
 import { activateSettingsPages } from "./settingsPages";
+import { registerStagedEditor } from "./StagedEditor";
 
 /** The Resolve/Continue/Abort buttons exist in the title bar only while there is something to resolve. */
 function trackMergeRebaseItem(): () => void {
@@ -157,7 +177,9 @@ function conflictsBody(names: string[]): string {
 }
 
 export function activate(): () => void {
-  onConflictsAppeared((files) =>
+  let resolvedNoticeRepo: string | null = null;
+  onConflictsChanged((files) => {
+    resolvedNoticeRepo = null;
     notifications().notify({
       group: "vcs",
       level: "warning",
@@ -166,19 +188,18 @@ export function activate(): () => void {
       body: conflictsBody(files.map((f) => baseName(f.path))),
       sticky: true,
       actions: [{ label: "Resolve…", run: showConflictsDialog }],
-    }),
-  );
+    });
+  });
 
-  onConflictsCleared(() => {
+  onConflictsCleared((files) => {
     notifications().expire?.("vcs.conflicts");
-    const op = inProgress();
-    // Resolved from the Conflicts dialog: the stopped rebase / cherry-pick goes on by itself.
-    if (op && takeContinueWhenResolved() === op) {
-      void controlOperation("continue", op);
-      return;
-    }
-    // Otherwise, as IDEA does once the last conflict is resolved: offer to continue it.
-    if (op)
+    const { operations, resolvedConflicts } = useVcs.getState();
+    const roots = files.map((file) => repoOf(file.path)).filter((root) => root && inProgress(operations[root] ?? null));
+    const selected = currentRepoRoot();
+    const repo = selected && roots.includes(selected) ? selected : (roots[0] ?? null);
+    const op = repo && inProgress(operations[repo] ?? null);
+    resolvedNoticeRepo = op ? repo : null;
+    if (op && repo)
       notifications().notify({
         group: "vcs",
         level: "info",
@@ -186,10 +207,11 @@ export function activate(): () => void {
         title: "All conflicts resolved",
         sticky: true,
         actions: [
+          ...(resolvedConflicts.size ? [{ label: "Review Resolved Conflicts…", run: showConflictsDialog }] : []),
           op === "merge"
-            ? { label: "Commit…", run: () => void executeAction("vcs.commit") }
-            : { label: controlLabel(op, "continue"), run: () => void controlOperation("continue", op) },
-          { label: controlLabel(op, "abort"), run: () => void controlOperation("abort", op) },
+            ? { label: "Commit…", run: () => void selectRepo(repo).then(() => executeAction("vcs.commit")) }
+            : { label: controlLabel(op, "continue"), run: () => void controlOperation("continue", op, repo) },
+          { label: controlLabel(op, "abort"), run: () => void controlOperation("abort", op, repo) },
         ],
       });
   });
@@ -197,12 +219,17 @@ export function activate(): () => void {
   useCommit.setState({ signOff: workflowSettings().vcs.git.signOff });
   const disposers = [
     installVcsStore(),
-    installOperationNoticeExpiry(),
+    clearUnstashConflictNotices,
+    installOperationNoticeExpiry(() => resolvedNoticeRepo),
     installRootSync(),
     installGitLog(),
     installDiagnosticsTracking(),
     installCommitChecks(),
-    installPreparedMessage(),
+    useTodoSettings.subscribe(() => {
+      if (workflowSettings().vcs.commit.checkTodo) useCommit.setState({ checkResult: null });
+    }),
+    installPostCommitChecks(),
+    installCommitMessages(),
     installDraftRevision(),
     provideCommit(),
     // Deployment shortcuts (and similar) use this while Commit / Local Changes is focused.
@@ -248,6 +275,7 @@ export function activate(): () => void {
     registerOverlay({ id: "vcs.branches", component: BranchesPopupHost }),
     registerOverlay({ id: "vcs.syncCommits", component: SyncCommitsPopupHost }),
     activateConflictBanner(),
+    registerWorktreeIncludeEditor(),
     activateConflictMarkers(),
     trackCommitWindow(),
     registerToolWindow({
@@ -280,6 +308,14 @@ export function activate(): () => void {
       onClose: (input) => closeLogTab((input.data as { id: string }).id),
     }),
     registerEditorKind({
+      kind: BRANCH_COMPARISON_KIND,
+      component: lazyComponent(() => import("./BranchComparisonEditor").then((m) => m.BranchComparisonEditor)),
+      title: (input) => branchComparisonTitle(input.data as BranchComparisonData),
+      icon: () => "diff",
+      restorable: true,
+      onClose: (input) => comparisonPaneIds(input.key).forEach(closeLogTab),
+    }),
+    registerEditorKind({
       kind: "git-merge-diff",
       standalone: true,
       component: lazyComponent(() => import("./GitMergeDiff").then((m) => m.GitMergeDiff)),
@@ -288,6 +324,7 @@ export function activate(): () => void {
       restorable: true,
     }),
     activateDiffViewer(),
+    registerStagedEditor(),
     activateRevisionAnnotations(),
     registerEditorKind({
       kind: MERGE_KIND,
@@ -339,7 +376,7 @@ export function activate(): () => void {
     }),
   ];
   return () => {
-    onConflictsAppeared(() => undefined);
+    onConflictsChanged(() => undefined);
     disposers.reverse().forEach((d) => d());
   };
 }

@@ -327,6 +327,12 @@ export const intellijWindows: Record<string, string[]> = {
   "vcs.changelist.edit": ["F2", "Shift+F6"],
   "vcs.log.copyRevision": ["Ctrl+Alt+Shift+C"],
   "vcs.log.goToRef": ["Ctrl+F"],
+  "vcs.log.editMessage": ["F2", "Shift+F6"],
+  "vcs.log.newBranch": ["Ctrl+Alt+N"],
+  "vcs.log.goToChild": ["Left"],
+  "vcs.log.goToParent": ["Right"],
+  "vcs.log.toggleBookmark": ["F11"],
+  "vcs.log.toggleBookmarkWithMnemonic": ["Ctrl+F11"],
   // View › Appearance › Zoom IDE
   "view.zoomIn": ["Alt+Shift+="],
   "view.zoomOut": ["Alt+Shift+-"],

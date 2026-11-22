@@ -1,5 +1,6 @@
 import type { EditorView } from "@codemirror/view";
 import type { Page } from "@playwright/test";
+import type { MemoryBackend } from "../src/editor/core/backend";
 import { expect, stubDesktop, test } from "./fixtures";
 
 async function openChain(page: Page) {
@@ -18,6 +19,70 @@ async function openChain(page: Page) {
   await expect(toolbar).toContainText("1 difference");
   return toolbar;
 }
+
+test("includes and excludes original and working lines in a unified diff selection", async ({ workbench: page }) => {
+  await stubDesktop(page);
+  await page.evaluate(async () => {
+    const path = "/dev/acme-api/lines.txt";
+    const before = "start\nold one\nold two\nold three\nend\n";
+    const after = "start\nnew one\nnew two\nnew three\nend\n";
+    const handlers = window.__ipc.handlers;
+    handlers.vcs_file_at = () => before;
+    handlers.vcs_diff_hunks = () => [
+      { kind: "modified", start: 1, lines: 3, oldStart: 1, oldLines: 3, oldText: "old one\nold two\nold three\n" },
+    ];
+    handlers.fs_probe = () => ({ size: after.length, binary: false, tooLarge: false });
+    const backendPath = "/src/editor/core/backend.ts";
+    const { docBackend } = await import(/* @vite-ignore */ backendPath);
+    (docBackend() as MemoryBackend).files.set(path, after);
+    const storePath = "/src/features/vcs/store.ts";
+    const { useVcs } = await import(/* @vite-ignore */ storePath);
+    const status = { path, relPath: "lines.txt", unstaged: "modified", staged: null, renamedFrom: null };
+    useVcs.setState({ status: [status], byPath: new Map([[path, status]]) });
+    const inputPath = "/src/features/vcs/diffInput.ts";
+    const { openDiff } = await import(/* @vite-ignore */ inputPath);
+    await openDiff({ path, left: { type: "rev", rev: "HEAD" }, right: { type: "worktree" }, mode: "unified" });
+  });
+
+  const marker = page.locator(".cm-include-hunk");
+  await expect(marker).toBeChecked();
+  const old = page.locator(".cm-deletedLine").filter({ hasText: "old two" });
+  await old.click({ button: "right", position: { x: 14, y: 8 } });
+  const menu = page.getByRole("menu", { name: "Context menu" });
+  await menu.getByRole("menuitem", { name: "Exclude Selected Lines from Commit" }).click();
+  await expect(marker).toHaveJSProperty("indeterminate", true);
+
+  const start = (await old.boundingBox())!;
+  const end = (await page.locator(".cm-line").filter({ hasText: "new one" }).boundingBox())!;
+  await page.mouse.move(start.x + 1, start.y + start.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(end.x + 48, end.y + end.height / 2, { steps: 12 });
+  await page.mouse.up();
+  await expect(page.locator(".cm-unified-commit-selected")).toHaveText(["old two", "old three", "new one"]);
+  const selectionColors = await page
+    .locator(".cm-unified-commit-selected")
+    .evaluateAll((rows) => rows.map((row) => getComputedStyle(row).backgroundColor));
+  expect(new Set(selectionColors).size).toBe(1);
+  await old.click({ button: "right", position: { x: 16, y: 8 } });
+  await menu.getByRole("menuitem", { name: "Exclude Selected Lines from Commit" }).click();
+
+  const excluded = await page.evaluate(async () => {
+    const storePath = "/src/features/vcs/commitStore.ts";
+    const { useCommit } = await import(/* @vite-ignore */ storePath);
+    const byHunk = useCommit.getState().excludedHunkLines.get("/dev/acme-api/lines.txt");
+    return [...(byHunk?.values() ?? [])].map((lines) => ({ old: [...lines.old], current: [...lines.current] }));
+  });
+  expect(excluded).toEqual([{ old: [1, 2], current: [0] }]);
+  await page.mouse.move(end.x + 48, end.y + end.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(start.x + 1, start.y + start.height / 2, { steps: 12 });
+  await page.mouse.up();
+  await expect(page.locator(".cm-unified-commit-selected")).toHaveText(["old two", "old three", "new one"]);
+  await old.click({ button: "right", position: { x: 16, y: 8 } });
+  await menu.getByRole("menuitem", { name: "Include Selected Lines in Commit" }).click();
+  await expect(marker).toBeChecked();
+  await expect(marker).toHaveJSProperty("indeterminate", false);
+});
 
 test("a narrow diff keeps navigation, settings and the difference count visible", async ({ workbench: page }) => {
   const toolbar = await openChain(page);

@@ -151,7 +151,11 @@ async fn change_commit_branch_stash_and_merge_a_conflict() {
     assert!(ops::vcs::vcs_line_hunks(&f.host, WINDOW, lib_path.clone()).await.unwrap().is_empty());
 
     // A branch changes the line its way.
-    ops::vcs::vcs_create_branch(&f.host, WINDOW, None, "feature".into(), None, true, None).await.unwrap();
+    let created =
+        ops::vcs::vcs_create_branch(&f.host, WINDOW, None, "feature".into(), None, true, None, None, None, None)
+            .await
+            .unwrap();
+    assert!(created.created.is_some());
     let theirs = "pub fn format_price(cents: u64) -> String { // feature";
     f.edit_line(lib, theirs).await;
     f.save(lib).await;
@@ -160,7 +164,7 @@ async fn change_commit_branch_stash_and_merge_a_conflict() {
     assert!(branches.iter().any(|b| b.name == "feature" && b.current), "{branches:?}");
 
     // Back on main, the open file shows main's text.
-    ops::vcs::vcs_checkout(&f.host, WINDOW, None, "main".into(), false, None).await.unwrap();
+    ops::vcs::vcs_checkout(&f.host, WINDOW, None, "main".into(), false, None, None).await.unwrap();
     assert!(f.text(lib).await.contains(base));
 
     // Stash: work in progress put aside and brought back.
@@ -173,7 +177,7 @@ async fn change_commit_branch_stash_and_merge_a_conflict() {
     assert!(!f.text(main_rs).await.contains("work in progress"));
     let stashes = ops::vcs::vcs_stashes(&f.host, WINDOW, None).await.unwrap();
     assert!(matches!(&stashes[..], [s] if s.message.contains("wip")), "{stashes:?}");
-    ops::vcs::vcs_stash_apply(&f.host, WINDOW, None, 0, true, false, None).await.unwrap();
+    ops::vcs::vcs_stash_apply(&f.host, WINDOW, None, stashes[0].clone(), true, false, None).await.unwrap();
     assert_eq!(f.text(main_rs).await, wip);
     assert!(ops::vcs::vcs_stashes(&f.host, WINDOW, None).await.unwrap().is_empty());
     ops::vcs::vcs_discard(&f.host, WINDOW, vec![f.root.join("src/main.rs")]).await.unwrap();
@@ -184,7 +188,8 @@ async fn change_commit_branch_stash_and_merge_a_conflict() {
     f.edit_line(lib, ours).await;
     f.save(lib).await;
     f.commit(&["src/lib.rs"], "Main's change").await;
-    let merged = ops::vcs::vcs_merge(&f.host, WINDOW, None, "feature".into()).await;
+    let merged = ops::vcs::vcs_merge(&f.host, WINDOW, None, "feature".into(), None, false).await;
+    assert!(matches!(merged, Ok(ide_vcs::MergeOutcome::Conflicts)), "{merged:?}");
     let status = f.status().await;
     let conflicted = changed(&status, "src/lib.rs").map(|s| (s.staged, s.unstaged));
     assert!(
@@ -214,7 +219,7 @@ async fn checkout_reports_a_branch_held_by_another_worktree() {
     let linked = f._tmp.path().join("linked");
     git(&f.root, &["worktree", "add", "-q", "-b", "topic", linked.to_str().unwrap()]);
 
-    let outcome = ops::vcs::vcs_checkout(&f.host, WINDOW, None, "topic".into(), false, None).await.unwrap();
+    let outcome = ops::vcs::vcs_checkout(&f.host, WINDOW, None, "topic".into(), false, None, None).await.unwrap();
     assert_eq!(
         outcome,
         ide_vcs::CheckoutOutcome::CheckedOutInWorktree {

@@ -3,7 +3,9 @@ import {
   groupWorktrees,
   isCurrentWorktree,
   worktreeContainsProject,
+  worktreeLocation,
   worktreeMoveTarget,
+  worktreePath,
   type RepoWorktrees,
 } from "./worktrees";
 
@@ -111,4 +113,14 @@ describe("worktreeMoveTarget", () => {
     expect(worktreeMoveTarget("C:/work/app-fix", "D:\\wt")).toBe("D:\\wt\\app-fix");
     expect(worktreeMoveTarget("C:/work/app-fix", "D:\\wt\\app-fix")).toBe("D:\\wt\\app-fix");
   });
+});
+
+it.each([
+  ["/src/app/", "/src", "/src/app-feature"],
+  ["/app", "/", "/app-feature"],
+  ["C:/app", "C:/", "C:/app-feature"],
+  ["C:\\src\\app", "C:\\src", "C:\\src\\app-feature"],
+])("suggests a worktree next to %s", (root, parent, target) => {
+  expect(worktreeLocation(root)).toBe(parent);
+  expect(worktreePath(parent, "app-feature")).toBe(target);
 });

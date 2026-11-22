@@ -1117,14 +1117,16 @@ pub async fn remote_invoke(
         .get(&label)
         .ok_or_else(|| IdeError::unavailable("this window is not connected to a remote host"))?;
     let batch_execution = cmd == "db_execute_stream";
-    let mut batch_channel = None;
+    let mut finite_channel = None;
     if let Value::Object(map) = &mut args {
         for (name, v) in map {
             if let Some(id) = v.get("$channel").and_then(Value::as_u64) {
                 let own = c.next_channel.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 c.channels.lock().insert(own, (on_channel.clone(), id));
-                if batch_execution && name == "onProgress" {
-                    batch_channel = Some(own);
+                if (batch_execution && name == "onProgress")
+                    || (cmd == "vcs_watch_commit_messages" && name == "onMessages")
+                {
+                    finite_channel = Some(own);
                 }
                 *v = serde_json::json!({ "$channel": own });
             }
@@ -1150,8 +1152,8 @@ pub async fn remote_invoke(
     let web_url = cmd == "web_url";
     let call = Invoke { window: label, cmd, args };
     let reply = invoke_reply(&c.peer, call, std::time::Duration::from_secs(30)).await;
-    // The batch's notifications precede its reply. Other commands can keep streaming later.
-    if let Some(id) = batch_channel {
+    // These commands finish streaming before their reply. Other commands may retain their channels.
+    if let Some(id) = finite_channel {
         c.channels.lock().remove(&id);
     }
     let mut result = reply.map_err(|e| {

@@ -4206,6 +4206,156 @@ async fn java_dependency_implementations_point_at_the_method() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn formatting_a_snapshot_never_changes_an_open_document() {
+    let caps = json!({
+        "positionEncoding": "utf-8",
+        "textDocumentSync": { "openClose": true, "change": 2 },
+        "documentFormattingProvider": true,
+    });
+    let h = harness(&[("mock", caps)]);
+    let (_, path) = h.open("a.mk", "different working text\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    s.respond(
+        "textDocument/formatting",
+        json!([{ "range": { "start": { "line": 0, "character": 4 }, "end": { "line": 0, "character": 5 } }, "newText": "X" }]),
+    );
+    let options = FormatOptions { tab_size: 2, insert_spaces: true, on_save: false, tool: None };
+    let edits = h.mgr.format_text(&path, &LanguageId("mock".into()), "🙂b\n", options).await.unwrap();
+    assert_eq!(edits, vec![ide_core::TextEdit { range: rng(0, 2, 0, 3), new_text: "X".into() }]);
+
+    let uri = uri_of(&path);
+    let requests = s.requested("textDocument/formatting");
+    let shadow = requests[0]["textDocument"]["uri"].as_str().unwrap();
+    assert_ne!(shadow, uri);
+    let opens = s.notified("textDocument/didOpen");
+    let snapshot = opens.iter().find(|n| n["textDocument"]["uri"] == shadow).unwrap();
+    assert_eq!(snapshot["textDocument"]["text"], "🙂b\n");
+    assert!(s.notified("textDocument/didChange").is_empty());
+    eventually(|| uris(&s.notified("textDocument/didClose")) == vec![shadow.to_owned()]).await;
+    assert!(s.docs.lock().contains_key(&uri));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn snapshot_diagnostics_collect_pull_and_push_without_publishing_problems() {
+    let mut pull_caps = incremental_caps();
+    pull_caps["diagnosticProvider"] = json!({ "interFileDependencies": false, "workspaceDiagnostics": false });
+    let mut push_caps = incremental_caps();
+    push_caps["positionEncoding"] = json!("utf-8");
+    let h = harness(&[("mock", pull_caps), ("push", push_caps)]);
+    let pull = h.launcher.state("mock");
+    *pull.responder.lock() = Some(pull_responder());
+    let (_, path) = h.open("a.mk", "clean editor\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    h.wait_status("push", ServerStatus::Ready).await;
+    let push = h.launcher.state("push");
+    let live = uri_of(&path);
+    let shadow = || {
+        push.notified("textDocument/didOpen")
+            .into_iter()
+            .find(|n| n["textDocument"]["text"] == "🙂bad\n")
+            .and_then(|n| n["textDocument"]["uri"].as_str().map(str::to_owned))
+    };
+    let send = async {
+        eventually(|| shadow().is_some()).await;
+        let uri = shadow().unwrap();
+        for (version, message) in [(1, "wrong version"), (0, "snapshot only")] {
+            push.peer()
+                .notify(
+                    "textDocument/publishDiagnostics",
+                    json!({
+                        "uri": uri, "version": version, "diagnostics": [{
+                            "range": {"start": {"line":0,"character":4}, "end": {"line":0,"character":7}},
+                            "severity": 2, "message": message
+                        }]
+                    }),
+                )
+                .unwrap();
+        }
+        uri
+    };
+    let language = LanguageId("mock".into());
+    let cancel = Default::default();
+    let (result, shadow) = tokio::join!(h.mgr.snapshot_diagnostics(&path, &language, "🙂bad\n", &cancel), send);
+    assert_ne!(shadow, live);
+    let mut items = result.unwrap();
+    items.sort_by(|a, b| a.message.cmp(&b.message));
+    assert_eq!(items.iter().map(|d| d.message.as_str()).collect::<Vec<_>>(), ["bad", "snapshot only"]);
+    assert_eq!(items[1].range, rng(0, 2, 0, 5));
+    eventually(|| uris(&push.notified("textDocument/didClose")) == vec![shadow.clone()]).await;
+    assert!(uris(&push.notified("textDocument/didChange")).is_empty());
+    assert!(push.docs.lock().contains_key(&live));
+    assert!(!h.events.lock().iter().any(|event| matches!(
+        event,
+        IdeEvent::Diagnostics { items, .. } if !items.is_empty()
+    )));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_actions_use_snapshot_text_and_accept_only_its_passive_edits() {
+    let caps = json!({
+        "positionEncoding": "utf-8",
+        "textDocumentSync": { "openClose": true, "change": 2 },
+        "codeActionProvider": { "resolveProvider": true },
+    });
+    let h = harness(&[("mock", caps)]);
+    let (_, path) = h.open("a.mk", "the live editor\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let uri = uri_of(&path);
+    let original = uri.clone();
+    *s.responder.lock() = Some(Arc::new(move |_, method, params| {
+        let edit = json!({ "range": {
+            "start": { "line": 0, "character": 4 }, "end": { "line": 0, "character": 5 }
+        }, "newText": "X" });
+        match method {
+            "textDocument/codeAction" => {
+                let shadow = params["textDocument"]["uri"].as_str().unwrap();
+                assert_ne!(shadow, original);
+                assert_eq!(params["range"]["end"], json!({ "line": 0, "character": 5 }));
+                assert_eq!(params["context"]["diagnostics"], json!([]));
+                let kind = params["context"]["only"][0].as_str().unwrap();
+                if kind == "source.fixAll" {
+                    return Some(json!([{ "title": "Cleanup", "kind": kind, "edit": { "documentChanges": [{
+                        "textDocument": { "uri": shadow, "version": 0 }, "edits": [edit]
+                    }] }}]));
+                }
+                assert_eq!(kind, "source.organizeImports");
+                Some(json!([
+                    { "title": "Cross-file edit", "kind": kind, "isPreferred": true,
+                      "edit": { "changes": { shadow: [edit.clone()], original.clone(): [edit.clone()] } } },
+                    { "title": "Command", "kind": kind, "isPreferred": true,
+                      "command": { "title": "Command", "command": "mock.organize" },
+                      "edit": { "changes": { shadow: [edit] } } },
+                    { "title": "Organize", "kind": kind, "data": { "snapshot": shadow } }
+                ]))
+            }
+            "codeAction/resolve" => {
+                let shadow = params["data"]["snapshot"].as_str().unwrap();
+                Some(json!({ "title": "Organize", "edit": { "changes": { shadow: [edit] } } }))
+            }
+            _ => None,
+        }
+    }));
+    for kind in ["source.organizeImports", "source.fixAll"] {
+        let edits = h
+            .mgr
+            .source_action_text(&path, &LanguageId("mock".into()), "🙂b", kind, &Default::default())
+            .await
+            .unwrap();
+        assert_eq!(edits, vec![ide_core::TextEdit { range: rng(0, 2, 0, 3), new_text: "X".into() }]);
+    }
+    assert!(s.requested("workspace/executeCommand").is_empty());
+    assert!(s.notified("textDocument/didChange").is_empty());
+    eventually(|| s.notified("textDocument/didClose").len() == 2).await;
+    let snapshots: Vec<_> =
+        s.notified("textDocument/didOpen").into_iter().filter(|notice| notice["textDocument"]["uri"] != uri).collect();
+    assert_eq!(snapshots.len(), 2);
+    assert!(snapshots.iter().all(|notice| notice["textDocument"]["text"] == "🙂b"));
+    assert!(s.docs.lock().contains_key(&uri));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn navigation_rename_format_and_decorations() {
     let h = harness(&[("mock", incremental_caps())]);
     let (doc, path) = h.open("a.mk", "fn foo() {}\nfoo();\n");

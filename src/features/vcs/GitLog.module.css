@@ -259,6 +259,11 @@
   /* Anchor for the full-height column resize strip (IDEA's invisible divider). */
   position: relative;
 }
+.signatureIndicator {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+}
 .columnHeading {
   position: relative;
   cursor: grab;
@@ -397,9 +402,6 @@
   font-weight: 600;
   color: var(--fg);
 }
-.mergeSubject {
-  color: var(--fg-subtle);
-}
 .muted {
   color: var(--fg-subtle);
 }
@@ -420,6 +422,9 @@
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.mergeSubject {
+  color: var(--fg-subtle);
 }
 .headSubject {
   font-weight: 600;
@@ -871,4 +876,13 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--fg-secondary);
+}
+.shallowHistory {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  padding-inline: var(--space-2);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-muted);
 }

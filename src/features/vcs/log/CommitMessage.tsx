@@ -1,6 +1,7 @@
-import type { Commit } from "@/bindings";
+import type { Commit, LogDetails } from "@/bindings";
 import { writeClipboardText } from "@/platform/clipboard";
 import { tx } from "@/platform/i18n";
+import { Icon } from "@/ui";
 import clsx from "clsx";
 import { CommitMessageContent } from "../CommitMessageContent";
 import styles from "../GitLog.module.css";
@@ -110,10 +111,7 @@ export function CommitMessage({ commit, compact = false }: { commit: Commit; com
                 ))
               : tx("None")}
           </div>
-          <div
-            className={styles.meta}
-            title={[details.signer, details.key, details.fingerprint].filter(Boolean).join("\n")}
-          >
+          <div className={styles.meta} title={signatureDescription(details)}>
             {tx("Signature")}: {signatureLabel(details.signature)}
             {details.signer ? ` · ${details.signer}` : ""}
           </div>
@@ -145,11 +143,24 @@ function signatureLabel(code: string) {
   );
 }
 
+function signatureDescription({ signature, signer, fingerprint, key }: LogDetails) {
+  return [
+    signatureLabel(signature),
+    signer && tx`Signed by ${signer}`,
+    fingerprint ? tx`Key fingerprint ${fingerprint}` : key && tx`Signing key ${key}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 export function CommitSignature({ commit }: { commit: Commit }) {
   const { details, error } = useCommitDetails(commit);
+  if (details?.signature === "N" || (!details && !error)) return null;
+  const code = details?.signature ?? "E";
+  const label = signatureLabel(code);
   return (
-    <span title={details ? [details.signer, details.key, details.fingerprint].filter(Boolean).join("\n") : undefined}>
-      {details ? signatureLabel(details.signature) : error ? tx("Could not verify") : tx("Loading…")}
+    <span className={styles.signatureIndicator} title={details ? signatureDescription(details) : label}>
+      <Icon name={code === "G" ? "success" : code === "B" ? "error" : "warning"} size={14} label={label} />
     </span>
   );
 }

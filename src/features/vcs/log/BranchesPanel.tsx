@@ -5,7 +5,7 @@ import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { hasPrimaryModifier } from "@/platform/keymap";
 import { IconButton, SearchField, T, Tree, copyText, showContextMenu, type MenuItem } from "@/ui";
-import { useCallback, useContext, useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useContext, useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
   branchFolderKeys,
   branchGroupKeys,
@@ -16,9 +16,11 @@ import {
   isFavoriteBranch,
   type BranchTreeNode,
 } from "../branches";
-import { branchMenu, inRepo, mergedBranchMenu, tagMenu } from "../branchMenu";
+import { branchMenu, inRepo, mergedBranchMenu, showTagContextMenu } from "../branchMenu";
 import { canDeleteBranch, loadFavoriteBranches, useFavoriteBranches } from "../branchOps";
 import { BranchSync } from "../BranchSync";
+import { summarizeBranchSync, type BranchSyncSummary } from "../branchSyncState";
+import { FetchButton } from "../FetchButton";
 import styles from "../GitLog.module.css";
 import { LogIdContext } from "../logContext";
 import { canUpdateBranch, useBranchesPane, type BranchTarget } from "../logPaneActions";
@@ -26,6 +28,7 @@ import { reloadLog, scopedLogRepositories, setLogBranches, setLogFilters, useGit
 import { branchesByRepo } from "../multiRoot";
 import { branchRepositoryRoots, commonBranches } from "../repoBranches";
 import { currentRepo, loadBranches, repoName, useVcs } from "../store";
+import { useBranchWorktrees } from "../worktrees";
 import { useLogRepositories, useReadOnlyLog } from "./logHooks";
 
 // --- branches ---------------------------------------------------------------
@@ -34,29 +37,34 @@ import { useLogRepositories, useReadOnlyLog } from "./logHooks";
  * `total`: the repositories shown; a ref missing from some of them names those that have it,
  * last, so a narrow pane cuts that list off before the branch name or its markers.
  */
-function branchDetail(n: BranchTreeNode, total: number): ReactNode {
-  const b = n.branch;
+function branchDetail(n: BranchTreeNode, total: number, sync: BranchSyncSummary | undefined): ReactNode {
   const repos =
     n.repos && n.repos.length < total ? (
       <span className={styles.branchRepos}>({n.repos.map(repoName).join(", ")})</span>
     ) : null;
-  const sync =
-    b && (b.current || b.behind > 0 || b.ahead > 0) ? (
+  const markers =
+    n.branch?.current || (sync && (sync.ahead > 0 || sync.behind > 0 || sync.unfetched)) ? (
       <span className={styles.branchDetail}>
-        {b.current && <span>{tx("current")}</span>}
-        <BranchSync behind={b.behind} ahead={b.ahead} />
+        {n.branch?.current && <span>{tx("current")}</span>}
+        {sync && <BranchSync {...sync} />}
       </span>
     ) : null;
-  if (!repos && !sync) return undefined;
+  if (!repos && !markers) return undefined;
   return (
     <>
-      {sync}
+      {markers}
       {repos}
     </>
   );
 }
 
 const GROUP_KEY = "openidea.vcs.branchesPane.groupByRepository";
+
+/** A merged ref acts in each repository that has it, with that repository's own branch. */
+function expand(n: BranchTreeNode, scopedRepo?: string): BranchTarget[] {
+  if (!n.repos) return [{ ref: n.ref!, branch: n.branch, repo: n.repo ?? scopedRepo }];
+  return n.repos.map((repo) => ({ ref: n.ref!, repo, branch: n.branchesByRoot?.get(repo) }));
+}
 
 function loadGrouped(): boolean {
   try {
@@ -79,6 +87,7 @@ export function BranchesPanel() {
   const active = !scope || scope === shown;
   const logGeneration = useGitLog((s) => s.generation);
   const selectedBranches = useVcs((s) => s.branches);
+  const observations = useVcs((s) => s.unfetched);
   const logRepositories = useLogRepositories();
   const branchRoots = useVcs((s) => s.branchRoots);
   const availableRepositories = useMemo(
@@ -100,6 +109,7 @@ export function BranchesPanel() {
     [availableRepositories, repositories],
   );
   const readOnly = useReadOnlyLog();
+  const worktreeFor = useBranchWorktrees(active && !readOnly);
   const version = useVcs((s) => s.version);
   const [allBranches, setAllBranches] = useState<Record<string, Branch[]>>({});
   const [allTags, setAllTags] = useState<Record<string, string[]>>({});
@@ -126,6 +136,7 @@ export function BranchesPanel() {
   );
   const root = useVcs((s) => s.root);
   const branchesLoaded = useVcs((s) => s.branchesLoaded);
+  const remoteBusy = useVcs((s) => s.remoteBusy);
   const current = useVcs((s) => s.branch?.head ?? null);
   const favorites = useFavoriteBranches((s) => s.names);
   const filterBranches = filters.branches;
@@ -182,18 +193,6 @@ export function BranchesPanel() {
     currentRepository,
     scopedRepo,
   ]);
-  /** A merged ref acts in each repository that has it, with that repository's own branch. */
-  const expand = useCallback(
-    (n: BranchTreeNode): BranchTarget[] =>
-      n.repos
-        ? n.repos.map((repo) => ({
-            ref: n.ref!,
-            repo,
-            branch: n.branch && allBranches[repo]?.find((x) => x.name === n.ref && x.remote === n.branch!.remote),
-          }))
-        : [{ ref: n.ref!, branch: n.branch, repo: n.repo ?? scopedRepo }],
-    [allBranches, scopedRepo],
-  );
   const roots = useMemo(() => filterBranchTree(allRoots, query), [allRoots, query]);
   // While searching every match is shown expanded.
   const searchExpanded = useMemo(() => (query.trim() ? new Set(branchGroupKeys(roots)) : undefined), [roots, query]);
@@ -223,13 +222,13 @@ export function BranchesPanel() {
     const out: { key: string; ref: string; branch?: Branch; repo?: string }[] = [];
     const walk = (nodes: readonly BranchTreeNode[]) => {
       for (const n of nodes) {
-        if (n.ref) for (const t of expand(n)) out.push({ key: n.key, ...t });
+        if (n.ref) for (const t of expand(n, scopedRepo)) out.push({ key: n.key, ...t });
         walk(n.children ?? []);
       }
     };
     walk(allRoots);
     return out;
-  }, [allRoots, expand]);
+  }, [allRoots, scopedRepo]);
   const targets = useMemo(
     (): BranchTarget[] =>
       refs.filter((r) => selected.has(r.key)).map(({ ref, branch, repo }) => ({ ref, branch, repo })),
@@ -258,14 +257,20 @@ export function BranchesPanel() {
         <IconButton icon="chevron-left" title="Hide Branches" size="small" action="vcs.log.showBranches" />
         {!readOnly && (
           <>
-            <IconButton icon="plus" title="New Branch…" size="small" action="vcs.log.branches.new" actionArg={target} />
+            <IconButton
+              icon="plus"
+              title="New Branch…"
+              size="small"
+              action="vcs.log.branches.new"
+              actionArg={targets}
+            />
             <IconButton
               icon="git-pull"
               size="small"
               title="Update Selected"
               action="vcs.log.branches.update"
               actionArg={targets}
-              disabled={!targets.some((t) => canUpdateBranch(t))}
+              disabled={!!remoteBusy || !targets.some((t) => canUpdateBranch(t))}
             />
             <IconButton
               icon="trash"
@@ -292,7 +297,7 @@ export function BranchesPanel() {
               pressed={favorite}
               disabled={!target?.branch}
             />
-            <IconButton icon="git-fetch" title="Fetch" size="small" action="vcs.fetch" />
+            <FetchButton />
           </>
         )}
         {availableRepositories.length > 1 && (
@@ -349,7 +354,16 @@ export function BranchesPanel() {
                       : "branch"
                     : "folder"
           }
-          getDetail={(n) => branchDetail(n, availableRepositories.length)}
+          getDetail={(n) => {
+            const sync =
+              n.branch && !n.branch.remote
+                ? summarizeBranchSync(
+                    n.branchesByRoot ?? [[n.repo ?? repositories[0] ?? currentRepository, n.branch]],
+                    readOnly ? undefined : observations,
+                  )
+                : undefined;
+            return branchDetail(n, availableRepositories.length, sync);
+          }}
           selected={selected}
           onSelectionChange={(sel) => setSelected(sel)}
           onActivate={(n) => {
@@ -378,34 +392,65 @@ export function BranchesPanel() {
               ]);
               return;
             }
+            const repo = n?.repo ?? (n?.repos?.length === 1 ? n.repos[0] : scopedRepo);
+            if (n?.kind === "tag" && n.ref) {
+              e.preventDefault();
+              showTagContextMenu(e, n.ref, repo ?? currentRepository);
+              return;
+            }
             // The menu acts on the whole selection when the right-clicked branch is part of it.
-            const picked: BranchTarget[] = n && selected.has(n.key) ? targets : n?.ref ? expand(n) : [];
+            const picked: BranchTarget[] =
+              n && selected.has(n.key)
+                ? targets.map((target) => ({ ...target, repo: target.repo ?? repo }))
+                : n?.ref
+                  ? expand(n, scopedRepo).map((target) => ({ ...target, repo: target.repo ?? repo }))
+                  : [];
             // A merged branch in several repositories acts in all of them, like a common branch.
             if (n?.branch && n.repos && n.repos.length > 1) {
               const lists = n.repos.map((r) => allBranches[r] ?? []);
               const group = commonBranches(lists, favorites)[n.branch.remote ? "remote" : "local"];
               const common = group.find((c) => c.name === n.ref);
               if (!common) return;
+              const checkedOutInWorktree = !common.remote && n.repos.some((root) => worktreeFor(root, common.name));
               e.preventDefault();
-              showContextMenu(e, mergedBranchMenu(n.branch, common, n.repos, sharedHead(n.repos), picked));
+              showContextMenu(
+                e,
+                mergedBranchMenu(
+                  n.branch,
+                  common,
+                  n.repos,
+                  sharedHead(n.repos),
+                  picked,
+                  undefined,
+                  checkedOutInWorktree,
+                ),
+              );
               return;
             }
-            const repo = n?.repo ?? (n?.repos?.length === 1 ? n.repos[0] : scopedRepo);
             const menu = n?.branch
-              ? branchMenu(n.branch, repo ? (useVcs.getState().heads[repo]?.head ?? null) : current, () => {}, picked)
-              : n?.kind === "tag"
-                ? tagMenu(n.ref!)
-                : n?.kind === "remote" || (n?.kind === "group" && n.key.endsWith("g:remote"))
-                  ? REMOTES_MENU
-                  : [];
-            // Update Selected and Delete scope each selected target themselves and must preserve the original focus.
-            const items = repo
-              ? menu.flatMap((item) =>
-                  n?.branch && "label" in item && (item.label === "Delete" || item.label === "Update Selected")
-                    ? [item]
-                    : inRepo(repo, [item]),
+              ? branchMenu(
+                  n.branch,
+                  repo && repo !== currentRepository ? (useVcs.getState().heads[repo]?.head ?? null) : current,
+                  () => {},
+                  {
+                    selected: picked,
+                    headCommit: repo ? (useVcs.getState().heads[repo]?.headCommit ?? null) : undefined,
+                    existingWorktree: worktreeFor(repo ?? currentRepository, n.branch.name),
+                    branches: (repo ? allBranches[repo] : undefined) ?? branches,
+                  },
                 )
-              : menu;
+              : n?.kind === "remote" || (n?.kind === "group" && n.key.endsWith("g:remote"))
+                ? REMOTES_MENU
+                : [];
+            // Update Selected and Delete scope each selected target themselves and must preserve the original focus.
+            const items =
+              repo && repo !== currentRepository
+                ? menu.flatMap((item) =>
+                    n?.branch && "label" in item && (item.label === "Delete" || item.label === "Update Selected")
+                      ? [item]
+                      : inRepo(repo, [item]),
+                  )
+                : menu;
             if (!items.length) return;
             e.preventDefault();
             showContextMenu(e, items);

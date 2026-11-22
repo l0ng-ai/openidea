@@ -26,18 +26,25 @@ vi.mock("@/platform/ipc", async (original) => {
     },
   };
 });
-vi.mock("@/platform/dialog", () => ({ open }));
+vi.mock("@/platform/choosePath", async (original) => ({
+  ...(await original<typeof import("@/platform/choosePath")>()),
+  choosePath: open,
+}));
 vi.mock("../dialogs", async (original) => ({
   ...(await original<typeof import("../dialogs")>()),
   confirmDialog: confirm,
 }));
 
-import { showNewWorktree, WorktreesPanel } from "../gitMenuDialogs";
+import { WorktreesPanel } from "../WorktreesPanel";
+import { showNewWorktree } from "../NewWorktreeDialog";
 import { VcsDialogHost } from "../dialogs";
 import { useVcs } from "../store";
 import { useProject } from "@/platform/project";
 import { useRemote } from "@/platform/remote";
 import { registerAction } from "@/platform/actions";
+import { commands } from "@/platform/ipc";
+import { registerWorktreeReviewProvider, type WorktreeReview } from "@/workbench/contributions";
+import { OPEN_WORKTREE_REVIEW } from "../worktreeReviews";
 
 const worktrees = [
   { path: "/work/app", branch: "main", head: "12345678", main: true, locked: false, prunable: false },
@@ -54,7 +61,7 @@ const rowAt = async (path: string) =>
 beforeEach(() => {
   useProject.setState({ project: { root: "/work/app-feature" } as never });
   list.mockReset().mockResolvedValue(ok(worktrees));
-  add.mockReset().mockResolvedValue(ok(null));
+  add.mockReset().mockResolvedValue(ok({ copyWarning: null, setupWarning: null }));
   branches.mockReset().mockResolvedValue(ok([]));
   move.mockReset();
   remove.mockReset();
@@ -66,22 +73,26 @@ beforeEach(() => {
 it("creates and opens a worktree from the selected branch, requiring a new branch when it is already checked out", async () => {
   const run = vi.fn();
   const dispose = registerAction({ id: "file.openProjectPath", title: "Open Project Path", run });
+  branches.mockResolvedValue(ok([{ name: "feature", current: false, remote: false }]));
+  const tags = vi.spyOn(commands, "vcsTags").mockResolvedValue(ok([]));
+  const include = vi
+    .spyOn(commands, "vcsWorktreeInclude")
+    .mockResolvedValue(ok({ path: "/work/app/.worktreeinclude", exists: false }));
   try {
     render(<VcsDialogHost />);
     act(() =>
       showNewWorktree({
         repo: "/work/app",
-        branch: { name: "feature", current: false, remote: false },
-        open: true,
+        source: "refs/heads/feature",
       }),
     );
     expect(await screen.findByRole("dialog", { name: "New Worktree" })).toBeInTheDocument();
     const newBranch = screen.getByRole("checkbox", { name: "Create a new branch" });
-    await waitFor(() => expect(newBranch).toBeDisabled());
-    expect(newBranch).toBeChecked();
-    expect(screen.getByRole("textbox", { name: "New branch name" })).toHaveAttribute("placeholder", "feature-wt");
-    expect(screen.getByRole("textbox", { name: "Folder" })).toHaveValue("/work/app-feature-wt");
-    fireEvent.click(screen.getByRole("button", { name: "Create and Open Worktree" }));
+    await waitFor(() => expect(newBranch).toBeChecked());
+    expect(screen.getByRole("textbox", { name: "New branch name" })).toHaveValue("feature-wt");
+    expect(screen.getByRole("textbox", { name: "Name:" })).toHaveValue("app-feature-wt");
+    expect(screen.getByRole("textbox", { name: "Location:" })).toHaveValue("/work");
+    fireEvent.click(screen.getByRole("button", { name: "Create and Open" }));
     await waitFor(() =>
       expect(run).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({
@@ -94,8 +105,12 @@ it("creates and opens a worktree from the selected branch, requiring a new branc
       "/work/app-feature-wt",
       "refs/heads/feature",
       "feature-wt",
+      false,
+      null,
     );
   } finally {
+    tags.mockRestore();
+    include.mockRestore();
     dispose();
   }
 });
@@ -112,6 +127,37 @@ it("marks both opened roots current while grouping their repository once", async
   expect((await rowAt("/work/app-feature")).getByRole("img", { name: "current" })).toBeInTheDocument();
   expect((await rowAt("/work/app")).getByRole("img", { name: "current" })).toBeInTheDocument();
   expect(screen.getAllByRole("treeitem")).toHaveLength(3);
+});
+
+it("opens the selected branch's review and clears it after a refresh with no match", async () => {
+  const review = { title: "Review the feature", open: vi.fn(async () => undefined) };
+  const reviews = vi.fn().mockResolvedValue(new Map<string, WorktreeReview>([["feature", review]]));
+  const stopLookup = registerWorktreeReviewProvider(reviews);
+  const stopAction = registerAction({
+    id: OPEN_WORKTREE_REVIEW,
+    title: "Open Review",
+    run: ({ arg }) => (arg as WorktreeReview).open(),
+  });
+  try {
+    render(<WorktreesPanel />);
+    expect(await screen.findByText(review.title)).toBeVisible();
+    fireEvent.contextMenu(screen.getByText("feature"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Open Review" }));
+    expect(review.open).toHaveBeenCalledTimes(1);
+    fireEvent.contextMenu(screen.getByText("main"));
+    expect(screen.queryByRole("menuitem", { name: "Open Review" })).toBeNull();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+
+    reviews.mockResolvedValue(new Map());
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(reviews).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText(review.title)).toBeNull();
+    fireEvent.contextMenu(screen.getByText("feature"));
+    expect(screen.queryByRole("menuitem", { name: "Open Review" })).toBeNull();
+  } finally {
+    stopAction();
+    stopLookup();
+  }
 });
 
 it.each(["/work/app-feature", "/work/app-feature/src"])(
@@ -141,6 +187,29 @@ it("keeps the main worktree protected", async () => {
   render(<WorktreesPanel />);
   fireEvent.mouseDown(await screen.findByText("main"));
   expect(screen.getByRole("button", { name: "Remove Worktree" })).toBeDisabled();
+});
+
+it("removes the selected linked worktrees in their repository after one confirmation", async () => {
+  const second = { ...worktrees[1]!, branch: "second", path: "/work/app-second" };
+  useProject.setState({ project: { root: "/work/app" } as never });
+  useVcs.setState({ root: "/work/app", roots: ["/work/app"] });
+  list.mockResolvedValueOnce(ok([...worktrees, second])).mockResolvedValue(ok([worktrees[0]]));
+  remove.mockResolvedValue(ok(null));
+  render(<WorktreesPanel />);
+
+  fireEvent.mouseDown(await screen.findByText("feature"));
+  fireEvent.mouseDown(screen.getByText("second"), { shiftKey: true });
+  expect(screen.getByRole("button", { name: "Move Worktree…" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Remove Worktrees" }));
+
+  await waitFor(() => expect(screen.queryByText("second")).toBeNull());
+  expect(confirm).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({ title: "Remove Worktrees", message: expect.stringContaining(second.path) }),
+  );
+  expect(remove.mock.calls).toEqual([
+    ["/work/app", "/work/app-feature", false],
+    ["/work/app", "/work/app-second", false],
+  ]);
 });
 
 it("keeps a failed move's error and original selection through refresh, then clears the error on success", async () => {
@@ -220,7 +289,11 @@ it.each(["toolbar", "double click"])("preserves the local project open via %s", 
     fireEvent.mouseDown(row);
     if (entry === "toolbar") fireEvent.click(screen.getByRole("button", { name: "Open in New Window" }));
     else fireEvent.doubleClick(row);
-    await waitFor(() => expect(run).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ arg: "/work/app" })));
+    await waitFor(() =>
+      expect(run).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ arg: { path: "/work/app", newWindow: true } }),
+      ),
+    );
     expect(windowOpenRemote).not.toHaveBeenCalled();
   } finally {
     dispose();

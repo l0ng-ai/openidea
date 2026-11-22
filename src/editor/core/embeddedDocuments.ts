@@ -20,7 +20,7 @@ export function activateEmbeddedDocuments() {
     notify: (message) => notifications().notify(message),
   });
   manager.start();
-  _provideDocumentAttacher((path) => attachDocument(manager, path));
+  _provideDocumentAttacher((path, options) => attachDocument(manager, path, options));
   _provideCodePreview((path) => previewExtensions(path, useProject.getState().settings?.editor, ipcBackend));
   const offColor = installColorScheme();
   const offSettings = useProject.subscribe((s, prev) => {

@@ -1607,6 +1607,62 @@ pub async fn lsp_format(
 }
 
 #[command(trust = trusted)]
+pub async fn lsp_format_text(
+    host: &Host,
+    window: &str,
+    path: std::path::PathBuf,
+    text: String,
+    options: FormatOptions,
+) -> IdeResult<Vec<TextEdit>> {
+    crate::formatter::format_text(host, window, path, text, options).await
+}
+
+#[command(trust = trusted)]
+pub async fn lsp_source_action_text(
+    host: &Host,
+    window: &str,
+    path: std::path::PathBuf,
+    text: String,
+    kind: String,
+    request: RequestId,
+) -> IdeResult<Vec<TextEdit>> {
+    let project = host.project(window)?;
+    if !path.is_absolute() || path.file_name().is_none() {
+        return Err(IdeError::invalid("a text snapshot requires a file path"));
+    }
+    if text.len() as u64 > ide_vfs::LARGE_FILE_THRESHOLD {
+        return Ok(Vec::new());
+    }
+    let language = project.documents.language_of(&path, text.lines().next()).language;
+    let cancel = host.begin_project_read_request(window, request);
+    let result = project.lsp.source_action_text(&path, &language, &text, &kind, &cancel).await;
+    host.end_request(request);
+    result
+}
+
+#[command(trust = trusted)]
+pub async fn lsp_snapshot_diagnostics(
+    host: &Host,
+    window: &str,
+    path: std::path::PathBuf,
+    text: String,
+    request: RequestId,
+) -> IdeResult<Vec<ide_core::Diagnostic>> {
+    let project = host.project(window)?;
+    if !path.is_absolute() || path.file_name().is_none() {
+        return Err(IdeError::invalid("a text snapshot requires a file path"));
+    }
+    if text.len() as u64 > ide_vfs::LARGE_FILE_THRESHOLD {
+        return Ok(Vec::new());
+    }
+    let language = project.documents.language_of(&path, text.lines().next()).language;
+    let cancel = host.begin_project_read_request(window, request);
+    let result = project.lsp.snapshot_diagnostics(&path, &language, &text, &cancel).await;
+    host.end_request(request);
+    result
+}
+
+#[command(trust = trusted)]
 pub async fn lsp_inlay_hints(host: &Host, window: &str, doc: DocId, range: Range) -> IdeResult<Vec<InlayHint>> {
     let lsp = host.project(window)?.lsp.clone();
     let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::InlayHints) else {
@@ -2808,6 +2864,9 @@ ide_command::domain!(
     lsp_extract_interface,
     lsp_extract_interface_info,
     lsp_format,
+    lsp_format_text,
+    lsp_snapshot_diagnostics,
+    lsp_source_action_text,
     lsp_goto,
     lsp_goto_implementation,
     lsp_hierarchy_members,

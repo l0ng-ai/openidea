@@ -1242,6 +1242,7 @@ mod tests {
             (".env", "dotenv"),
             (".env.local", "dotenv"),
             (".gitignore", "ignore"),
+            (".worktreeinclude", "ignore"),
             (".gitattributes", "gitattributes"),
             ("server.log", "log"),
             ("player.gd", "gdscript"),

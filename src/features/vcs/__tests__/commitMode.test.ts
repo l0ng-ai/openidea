@@ -1,7 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Channel } from "@tauri-apps/api/core";
+import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
+import type { CommitMessages, FileStatus, Settings } from "@/bindings";
 
 const vcsLog = vi.fn();
-const fsReadText = vi.fn();
+const watchCommitMessages =
+  vi.fn<(repo: string, request: number, channel: Channel<CommitMessages>) => Promise<never>>();
 const showCommitDialog = vi.hoisted(() => vi.fn());
 vi.mock("../CommitDialog", () => ({ showCommitDialog }));
 const vcsConfigGet = vi.fn(async (_repo: unknown, _key: string) => ({ status: "ok", data: null as string | null }));
@@ -14,22 +18,24 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       ...real.commands,
       vcsLog: (repo: unknown, query: unknown) => vcsLog(repo, query),
       vcsConfigGet: (repo: unknown, key: string) => vcsConfigGet(repo, key),
-      fsReadText: (path: string) => fsReadText(path),
+      vcsWatchCommitMessages: (repo: string, request: number, channel: Channel<CommitMessages>) =>
+        watchCommitMessages(repo, request, channel),
     },
   };
 });
 
-import type { FileStatus, Settings } from "@/bindings";
 import { useProject } from "@/platform/project";
 import { commitChangelist, commitFiles } from "../changelistsUi";
-import { initialChangelists, useChangelists } from "../changelists";
+import { checksForList, initialChangelists, useChangelists } from "../changelists";
 import { gitTabs, shownTab, stashTabOf, stashTabs } from "../gitTabs";
 import { commitFromContext, pushDialogNeeded } from "../commitUi";
 import {
-  installPreparedMessage,
+  installCommitMessages,
   keepMessageAfterCommit,
   messageAfterCommit,
-  templatePath,
+  flushDraft,
+  savedDraft,
+  setAmend,
   useCommit,
 } from "../commitStore";
 import { closeLogTab, emptyFilters, openLogTab, selectGitTab, setLogFilters, useGitLog } from "../logStore";
@@ -84,66 +90,190 @@ describe("Commit and Push… push dialog", () => {
 });
 
 describe("commit message after a commit", () => {
-  beforeEach(() => fsReadText.mockReset());
-
   it("keeps the committed message unless Clear initial commit message is on", () => {
     expect(messageAfterCommit("  fix: thing \n", false)).toBe("fix: thing");
     expect(messageAfterCommit("fix: thing", true)).toBe("");
   });
-
-  it("lets a prepared merge message replace a kept one, but not a typed one", async () => {
-    useVcs.setState({ root: "/p", branch: null });
-    const dispose = installPreparedMessage();
-    keepMessageAfterCommit("fix: thing", false);
-    fsReadText.mockResolvedValue({ status: "ok", data: "Merge branch 'x'\n# Conflicts:\n" });
-    useVcs.setState({ branch: { operation: "merge" } as never });
-    await vi.waitFor(() => expect(useCommit.getState().message).toBe("Merge branch 'x'"));
-    useVcs.setState({ branch: null });
-
-    useCommit.setState({ message: "typed" });
-    useVcs.setState({ branch: { operation: "merge" } as never });
-    await Promise.resolve();
-    expect(useCommit.getState().message).toBe("typed");
-    dispose();
-  });
 });
 
-describe("commit template", () => {
+describe("Git commit message suggestions", () => {
+  let dispose: () => void;
+  let cancelled: number[];
+
   beforeEach(() => {
-    fsReadText.mockReset();
-    vcsConfigGet.mockImplementation(async (_repo, key) => ({
-      status: "ok",
-      data: key === "commit.template" ? ".gitmessage" : null,
-    }));
-    // The previous test's typed message is a saved draft of /p (#4423).
+    vcsLog.mockResolvedValue({ status: "ok", data: [{ id: "head", message: "Last commit" }] });
+    watchCommitMessages.mockReset().mockImplementation(() => new Promise(() => {}));
+    cancelled = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "cancel_request") cancelled.push((args as { id: number }).id);
+    });
     localStorage.clear();
-    useCommit.setState({ message: "" });
+    useVcs.setState({ root: "/p", repo: "/p", roots: ["/p"], branch: null, status: [], statusLoaded: true });
+    useChangelists.setState({ loaded: false, root: null, state: initialChangelists() });
+    useCommit.setState({ message: "", amend: false, checks: new Map() });
+    dispose = installCommitMessages();
   });
-
-  it("resolves the configured path as git does", () => {
-    expect(templatePath("~/.gitmessage", "/p", "/home/me/")).toBe("/home/me/.gitmessage");
-    expect(templatePath("/etc/msg", "/p", "")).toBe("/etc/msg");
-    expect(templatePath("C:\\msg.txt", "/p", "")).toBe("C:\\msg.txt");
-    expect(templatePath(".gitmessage", "/p", "")).toBe("/p/.gitmessage");
-  });
-
-  it("fills the empty message field, and again after a commit clears it", async () => {
-    fsReadText.mockResolvedValue({ status: "ok", data: "feat: \n\n# Why:\nRefs: \n" });
-    useVcs.setState({ root: "/p", branch: null });
-    const dispose = installPreparedMessage();
-    await vi.waitFor(() => expect(useCommit.getState().message).toBe("feat: \n\nRefs:"));
-    expect(fsReadText).toHaveBeenCalledWith("/p/.gitmessage");
-
-    keepMessageAfterCommit("feat: x", true);
-    await vi.waitFor(() => expect(useCommit.getState().message).toBe("feat: \n\nRefs:"));
-    // A kept message stays; a typed one is never replaced.
-    keepMessageAfterCommit("feat: x", false);
-    useCommit.setState({ message: "typed" });
-    useVcs.setState({ root: "/q" });
-    useCommit.setState({ message: "typed" });
-    await Promise.resolve();
-    expect(useCommit.getState().message).toBe("typed");
+  afterEach(() => {
     dispose();
+    useProject.setState({ settings: null });
+    clearMocks();
+  });
+
+  const messageChannel = () => watchCommitMessages.mock.calls.at(-1)![2];
+  const send = (template: string | null, prepared: string | null = null) =>
+    messageChannel().onmessage({ template, prepared });
+  const message = () => useCommit.getState().message;
+
+  it("refreshes or clears its own text and keeps the typed draft", () => {
+    send("First template");
+    expect(message()).toBe("First template");
+    send("Edited template");
+    expect(message()).toBe("Edited template");
+    send(null);
+    expect(message()).toBe("");
+
+    send("Another template");
+    useCommit.setState({ message: "My draft" });
+    send("New template");
+    expect(message()).toBe("My draft");
+    flushDraft();
+    expect(savedDraft("/p")).toBe("My draft");
+
+    keepMessageAfterCommit("My draft", false);
+    send("Latest template");
+    expect(message()).toBe("My draft");
+    keepMessageAfterCommit("My draft", true);
+    expect(message()).toBe("Latest template");
+    expect(savedDraft("/p")).toBe("");
+  });
+
+  it("defers updates while amending and refreshes the restored template", async () => {
+    send("First template");
+    await setAmend(true);
+    expect(message()).toBe("Last commit");
+    send("Updated template");
+    expect(message()).toBe("Last commit");
+    flushDraft();
+    expect(savedDraft("/p")).toBe("");
+    await setAmend(false);
+    expect(message()).toBe("Updated template");
+  });
+
+  it("scopes the watch to the selected repository and ignores stopped streams", () => {
+    const [, first, oldChannel] = watchCommitMessages.mock.calls[0]!;
+    oldChannel.onmessage({ template: "First template", prepared: "Old merge" });
+    useVcs.setState({ repo: "/p/nested", roots: ["/p", "/p/nested"] });
+    expect(cancelled).toContain(first);
+    expect(watchCommitMessages.mock.calls.at(-1)?.[0]).toBe("/p/nested");
+    send("Nested template");
+    oldChannel.onmessage({ template: "Stale template", prepared: "Stale merge" });
+    expect(message()).toBe("Nested template");
+  });
+
+  it("updates Git's prepared message in place and restores the current template when it disappears", () => {
+    send("First template");
+    send("First template", "Merge branch 'x'");
+    expect(message()).toBe("Merge branch 'x'");
+    send("Updated template", "Updated merge message");
+    expect(message()).toBe("Updated merge message");
+    flushDraft();
+    expect(savedDraft("/p")).toBe("");
+    send("Updated template");
+    expect(message()).toBe("Updated template");
+  });
+
+  it("restores a previous commit message and preserves a draft edited during the operation", () => {
+    keepMessageAfterCommit("Last commit", false);
+    send("Template", "Merge branch 'x'");
+    expect(message()).toBe("Merge branch 'x'");
+    send("Template");
+    expect(message()).toBe("Last commit");
+
+    send("Template", "Cherry-picked message");
+    useCommit.setState({ message: "My own message" });
+    send("Template", "Changed prepared message");
+    expect(message()).toBe("My own message");
+    send("Template");
+    expect(message()).toBe("My own message");
+    flushDraft();
+    expect(savedDraft("/p")).toBe("My own message");
+  });
+
+  it("clears the completed operation's message while its removal is still being observed", () => {
+    send("Template", "Revert a commit");
+    keepMessageAfterCommit("Revert a commit", true);
+    expect(message()).toBe("Template");
+    expect(savedDraft("/p")).toBe("");
+  });
+
+  it.each(["cherry-pick", "revert"] as const)("keeps a stopped %s in its own list", (kind) => {
+    const local: FileStatus = {
+      path: "/p/local.txt",
+      relPath: "local.txt",
+      staged: null,
+      unstaged: "modified",
+      renamedFrom: null,
+    };
+    const staged: FileStatus = {
+      ...local,
+      path: "/p/applied.txt",
+      relPath: "applied.txt",
+      staged: "added",
+      unstaged: null,
+    };
+    const conflict: FileStatus = {
+      ...staged,
+      path: "/p/conflict.txt",
+      relPath: "conflict.txt",
+      staged: "conflicted",
+    };
+    const pending = {
+      source: {
+        kind,
+        repo: "/p",
+        commit: "source",
+        base: "base",
+        author: kind === "cherry-pick" ? "Incoming Author <incoming@example.invalid>" : null,
+        authorDate: kind === "cherry-pick" ? "2022-06-04T13:20:21+05:30" : null,
+      },
+      paths: [staged.path, conflict.path],
+    };
+    const status = [local, staged, conflict];
+    const state = initialChangelists();
+    state.lists.push({ id: "feature", name: "Incoming fix", comment: "Local feature" });
+    state.files = { [local.relPath]: "default" };
+    useChangelists.setState({ loaded: true, root: "/p", state });
+    useCommit.setState({ message: "My local draft" });
+    useVcs.setState({ status: [local] });
+    const sendApply = () =>
+      messageChannel().onmessage({
+        template: "Commit template",
+        prepared: "Incoming fix\n\nDetails",
+        pendingApply: pending,
+      });
+    sendApply();
+    useVcs.setState({ status });
+    expect(useChangelists.getState().state).toBe(state);
+    expect(message()).toBe("My local draft");
+
+    useProject.setState({ settings: { vcs: { createChangelistsAutomatically: true } } as Settings });
+    const lists = useChangelists.getState().state;
+    const picked = lists.lists.find((list) => list.appliedCommit)!;
+    expect(picked.name).toBe("Incoming fix-1");
+    expect(lists.active).toBe("default");
+    expect(lists.files).toEqual({ "local.txt": "default", "applied.txt": picked.id, "conflict.txt": picked.id });
+    expect(message()).toBe("My local draft");
+    sendApply();
+    expect(useChangelists.getState().state).toBe(lists);
+    useCommit.setState({ checks: checksForList(status, "/p", lists, picked.id) });
+    expect(message()).toBe("Incoming fix\n\nDetails");
+    expect(useCommit.getState()).toMatchObject({
+      author: pending.source.author ?? "",
+      authorDate: pending.source.authorDate,
+    });
+    useCommit.setState({ checks: checksForList(status, "/p", lists, "default") });
+    expect(message()).toBe("My local draft");
+    expect(useCommit.getState()).toMatchObject({ author: "", authorDate: null });
   });
 });
 

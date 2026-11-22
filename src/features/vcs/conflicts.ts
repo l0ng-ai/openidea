@@ -142,6 +142,15 @@ export function mergeTitles(sides: MergeSides | null | undefined): { yours: stri
         yours: branch ? `Changes from ${branch}` : "Your version",
         theirs: other ? `Changes from ${other}` : commit ? `Changes from ${commit}` : "Changes from diverging branches",
       };
+    case "stash-apply":
+      return { yours: "Local Changes", theirs: "Changes from Stash" };
+    case "apply-patch":
+      return { yours: "Local Version", theirs: "Patched Version" };
+    case "unshelve":
+      return {
+        yours: "Uncommitted changes from the shelf",
+        theirs: branch ? `Changes from ${branch}` : "Changes from remote",
+      };
     case "unstash":
       return {
         yours: "Your uncommitted changes",

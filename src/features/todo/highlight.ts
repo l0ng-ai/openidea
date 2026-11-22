@@ -7,8 +7,8 @@ import { syntaxTree } from "@codemirror/language";
 import { RangeSetBuilder, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import type { EditorDocContext } from "@/editor/api";
-import { activePatterns, scanText, todoRegexSource, type TodoSettings } from "./model";
-import { setLiveTodos, useTodoSettings } from "./store";
+import { activePatterns, scanText, todoRegexSource, useTodoSettings, type TodoSettings } from "@/platform/todo";
+import { setLiveTodos } from "./store";
 
 const LIVE_SCAN_LIMIT = 2_000_000;
 
@@ -19,7 +19,7 @@ function compile(s: TodoSettings): { re: RegExp; colors: Map<string, string> } |
   for (const p of activePatterns(s))
     colors.set(s.caseSensitive ? p.keyword.trim() : p.keyword.trim().toLowerCase(), p.color);
   // Keyword only; the decoration runs to the end of the comment line.
-  return { re: new RegExp(source.replace(/\.\*$/, ""), s.caseSensitive ? "gu" : "giu"), colors };
+  return { re: new RegExp(source, s.caseSensitive ? "gu" : "giu"), colors };
 }
 
 const markCache = new Map<string, { line: Decoration; keyword: Decoration }>();

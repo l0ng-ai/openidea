@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 type Changes = Vec<(OsString, Option<OsString>)>;
 
@@ -355,20 +355,34 @@ fn run_post_start(cmd: &LifecycleCommand, root: &Path, sink: &SharedSink, cancel
 /// Runs `argv` in `root` with the children's environment, its stdout and stderr line by line
 /// to `on_line`; `Err` says how it failed.
 fn run_one(argv: &[String], root: &Path, cancel: &CancellationToken, on_line: &dyn Fn(String)) -> Result<(), String> {
+    let (program, args) = argv.split_first().ok_or("empty command")?;
+    let mut command = Command::new(program);
+    command.args(args);
+    run_command(command, root, cancel, None, on_line)
+}
+
+pub(crate) fn run_command(
+    mut command: Command,
+    root: &Path,
+    cancel: &CancellationToken,
+    timeout: Option<Duration>,
+    mut on_line: impl FnMut(String),
+) -> Result<(), String> {
     if cancel.is_cancelled() {
         return Err("cancelled".into());
     }
-    let (program, args) = argv.split_first().ok_or("empty command")?;
-    let mut child = ide_core::process::prepare(&mut Command::new(program))
-        .args(args)
+    let program = command.get_program().to_string_lossy().into_owned();
+    command
         .current_dir(root)
         .envs(ide_core::process::shell_env())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = ide_core::process::prepare(ide_core::process::own_group(&mut command))
         .spawn()
         .map_err(|e| format!("cannot start {program}: {e}"))?;
-    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let started = Instant::now();
+    let (tx, rx) = std::sync::mpsc::sync_channel::<String>(64);
     let pipes: [Option<Box<dyn Read + Send>>; 2] = [
         child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>),
         child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>),
@@ -386,29 +400,31 @@ fn run_one(argv: &[String], root: &Path, cancel: &CancellationToken, on_line: &d
     }
     drop(tx);
     let status = loop {
+        if cancel.is_cancelled() {
+            ide_core::process::kill_tree(&mut child);
+            return Err("cancelled".into());
+        }
+        if timeout.is_some_and(|duration| started.elapsed() >= duration) {
+            ide_core::process::kill_tree(&mut child);
+            return Err("timed out".into());
+        }
         match rx.recv_timeout(Duration::from_millis(50)) {
             Ok(line) => on_line(line),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break child.wait(),
-        }
-        if cancel.is_cancelled() {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err("cancelled".into());
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => std::thread::sleep(Duration::from_millis(50)),
         }
         // A process it started in the background may keep the pipes open: the command is done.
-        if let Ok(Some(status)) = child.try_wait() {
-            let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            let deadline = Instant::now() + Duration::from_secs(1);
             while let Ok(line) = rx.recv_timeout(Duration::from_millis(100)) {
                 on_line(line);
-                if std::time::Instant::now() > deadline {
+                if Instant::now() > deadline {
                     break;
                 }
             }
-            break Ok(status);
+            break status;
         }
-    }
-    .map_err(|e| e.to_string())?;
+    };
     match status.code() {
         Some(0) => Ok(()),
         Some(code) => Err(format!("exited with code {code}")),

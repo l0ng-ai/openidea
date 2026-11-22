@@ -2,7 +2,7 @@
  * Commits behind the branch widget's incoming / outgoing markers: which sections a branch
  * has, the git range each one lists, and how a log row reads (short hash, shortened subject).
  */
-import type { Commit } from "@/bindings";
+import type { Commit, OutgoingCommits } from "@/bindings";
 
 export type SyncDirection = "incoming" | "outgoing";
 
@@ -13,6 +13,16 @@ export interface SyncBranch {
   upstream: string | null;
   ahead: number;
   behind: number;
+  outgoing?: OutgoingCommits | null;
+}
+
+/** Older hosts report only the count against the upstream. Null from a current host means unknown. */
+export function outgoingCount({ ahead, outgoing }: Pick<SyncBranch, "ahead" | "outgoing">): number {
+  return outgoing === undefined ? ahead : (outgoing?.count ?? 0);
+}
+
+export function outgoingDestination(outgoing: OutgoingCommits | null | undefined): string | null {
+  return outgoing ? `${outgoing.remote}/${outgoing.branch}` : null;
 }
 
 export interface SyncSection {
@@ -40,16 +50,22 @@ export function syncRange(direction: SyncDirection, branch: string, upstream: st
 
 /**
  * The sections to show: both sides of the branch, only `direction` when a marker asks for one.
- * No upstream (or a detached HEAD) has no range to list, so there is no section at all.
+ * Incoming commits compare with the upstream. Outgoing commits compare with the Push destination.
  */
 export function syncSections(branch: SyncBranch, direction?: SyncDirection | null): SyncSection[] {
   const { branch: name, upstream } = branch;
-  if (!name || !upstream) return [];
+  if (!name) return [];
   const sections: SyncSection[] = [];
-  if (direction !== "outgoing" && branch.behind > 0)
+  if (direction !== "outgoing" && upstream && branch.behind > 0)
     sections.push({ direction: "incoming", count: branch.behind, range: syncRange("incoming", name, upstream) });
-  if (direction !== "incoming" && branch.ahead > 0)
-    sections.push({ direction: "outgoing", count: branch.ahead, range: syncRange("outgoing", name, upstream) });
+  const count = outgoingCount(branch);
+  const base = branch.outgoing === undefined ? upstream : branch.outgoing?.reference;
+  if (direction !== "incoming" && base && count > 0)
+    sections.push({
+      direction: "outgoing",
+      count,
+      range: syncRange("outgoing", branch.outgoing ? `refs/heads/${name}` : name, base),
+    });
   return sections;
 }
 

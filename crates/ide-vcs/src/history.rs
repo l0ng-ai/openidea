@@ -1,12 +1,212 @@
 //! Commit history (topological walk) and per-commit changed files via gitoxide.
 
 use crate::repo::{gx, link_target, resolve, to_string};
-use crate::{ChangeKind, ChangedFile, Commit, LogOrder, LogQuery, Repo, RevisionChange};
+use crate::{ChangeKind, ChangedFile, Commit, LogDetails, LogOrder, LogQuery, Repo, RevisionChange};
 use gix::ObjectId;
 use gix::bstr::ByteSlice;
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use redb::ReadableDatabase;
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
+use std::time::{Duration, Instant};
+
+pub(crate) struct LogSignature {
+    pub code: String,
+    pub signer: String,
+    pub key: String,
+    pub fingerprint: String,
+}
+
+impl LogSignature {
+    pub(crate) fn apply(&self, details: &mut LogDetails) {
+        details.signature.clone_from(&self.code);
+        details.signer.clone_from(&self.signer);
+        details.key.clone_from(&self.key);
+        details.fingerprint.clone_from(&self.fingerprint);
+    }
+}
+
+const SIGNATURE_TTL: Duration = Duration::from_secs(60);
+const MAX_SIGNATURES: usize = 1_000;
+
+#[derive(Default)]
+pub(crate) struct LogSignatureCache {
+    pub generation: u64,
+    entries: HashMap<ObjectId, (Instant, LogSignature)>,
+}
+
+impl LogSignatureCache {
+    pub(crate) fn clear(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.entries.clear();
+    }
+
+    pub(crate) fn get(&self, id: &ObjectId, now: Instant) -> Option<&LogSignature> {
+        self.entries
+            .get(id)
+            .filter(|(checked_at, _)| now.saturating_duration_since(*checked_at) < SIGNATURE_TTL)
+            .map(|(_, signature)| signature)
+    }
+
+    pub(crate) fn store(&mut self, generation: u64, checked_at: Instant, signatures: HashMap<ObjectId, LogSignature>) {
+        if generation != self.generation || signatures.is_empty() {
+            return;
+        }
+        self.entries.retain(|_, (time, _)| checked_at.saturating_duration_since(*time) < SIGNATURE_TTL);
+        for (id, signature) in signatures {
+            if self.entries.get(&id).is_none_or(|(time, _)| *time <= checked_at) {
+                self.entries.insert(id, (checked_at, signature));
+            }
+        }
+        let excess = self.entries.len().saturating_sub(MAX_SIGNATURES);
+        if excess > 0 {
+            let mut ages: Vec<_> = self.entries.iter().map(|(id, (time, _))| (*time, *id)).collect();
+            ages.sort_unstable();
+            for (_, id) in ages.into_iter().take(excess) {
+                self.entries.remove(&id);
+            }
+        }
+    }
+}
+
+pub(crate) fn log_signatures(
+    root: &Path,
+    commits: &HashSet<ObjectId>,
+    cancel: &CancellationToken,
+) -> IdeResult<HashMap<ObjectId, LogSignature>> {
+    if commits.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut stdin = String::new();
+    for id in commits {
+        use std::fmt::Write;
+        let _ = writeln!(stdin, "{id}");
+    }
+    let output = crate::cli::run_cancellable_stdin(
+        root,
+        &[
+            "log",
+            "--no-walk=unsorted",
+            "--no-show-signature",
+            "--no-notes",
+            "--no-decorate",
+            "-z",
+            "--format=%H%x00%G?%x00%GS%x00%GK%x00%GF",
+            "--stdin",
+            "--",
+        ],
+        stdin.as_bytes(),
+        cancel,
+    )?;
+    let text = output.stdout_str();
+    let fields: Vec<_> = text.split_terminator('\0').collect();
+    Ok(fields
+        .as_chunks::<5>()
+        .0
+        .iter()
+        .filter_map(|row| {
+            let id = ObjectId::from_hex(row[0].as_bytes()).ok()?;
+            let code = match row[1] {
+                "G" | "U" | "B" | "E" | "X" | "Y" | "R" => row[1],
+                // The caller only requests commits with a signature header.
+                _ => "E",
+            };
+            Some((
+                id,
+                LogSignature {
+                    code: code.into(),
+                    signer: row[2].into(),
+                    key: row[3].into(),
+                    fingerprint: row[4].into(),
+                },
+            ))
+        })
+        .collect())
+}
+
+/// Source-side commits that have no equivalent on the target branch.
+pub(crate) fn not_cherry_picked(
+    r: &Repo,
+    source: &str,
+    target: &str,
+    cancel: &CancellationToken,
+) -> IdeResult<Option<Vec<String>>> {
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
+    let repo = r.gix()?;
+    let Some(source) = comparison_tip(&repo, source)? else { return Ok(None) };
+    let Some(target) = comparison_tip(&repo, target)? else { return Ok(None) };
+    if source == target {
+        return Ok(Some(Vec::new()));
+    }
+    let out = crate::cli::run_cancellable(r.root(), &["cherry", "--no-abbrev", &target, &source], cancel)?;
+    let mut unmatched =
+        out.stdout_str().lines().filter_map(|line| line.strip_prefix("+ ").map(str::to_owned)).collect::<HashSet<_>>();
+    if unmatched.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+
+    // A pick resolved with conflicts can have a different patch-id. Match the recorded
+    // origin or the original author, author time and message on the other side.
+    let range = format!("{target}...{source}");
+    let history = crate::cli::run_cancellable(
+        r.root(),
+        &[
+            "log",
+            "--left-right",
+            "--no-merges",
+            "--no-notes",
+            "--no-show-signature",
+            "-z",
+            "--format=%m%H%x00%an%x00%ae%x00%at%x00%B",
+            &range,
+            "--",
+        ],
+        cancel,
+    )?;
+    let fields: Vec<_> = history.stdout.split(|byte| *byte == 0).collect();
+    let records = fields.as_chunks::<5>().0.iter();
+    let mut target_metadata = HashSet::new();
+    for row in records.clone().filter(|row| row[0].starts_with(b"<")) {
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        target_metadata.insert(&row[1..]);
+        if let Some(origin) = String::from_utf8_lossy(row[4])
+            .trim_end()
+            .lines()
+            .last()
+            .and_then(|line| line.strip_prefix("(cherry picked from commit "))
+            .and_then(|line| line.strip_suffix(')'))
+        {
+            unmatched.remove(origin);
+        }
+    }
+    for row in records.filter(|row| row[0].starts_with(b">")) {
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        if target_metadata.contains(&row[1..]) {
+            unmatched.remove(String::from_utf8_lossy(&row[0][1..]).as_ref());
+        }
+    }
+    let mut commits: Vec<_> = unmatched.into_iter().collect();
+    commits.sort_unstable();
+    Ok(Some(commits))
+}
+
+fn comparison_tip(repo: &gix::Repository, rev: &str) -> IdeResult<Option<String>> {
+    if rev != "HEAD" && !rev.starts_with("refs/") {
+        for namespace in ["heads", "remotes"] {
+            let name = format!("refs/{namespace}/{rev}");
+            if let Some(mut reference) = repo.try_find_reference(name.as_str()).map_err(gx)? {
+                return reference.peel_to_id().map(|id| Some(id.to_string())).map_err(gx);
+            }
+        }
+    }
+    Ok(resolve(repo, rev).ok().map(|id| id.to_string()))
+}
 
 /// Log "Text or hash" filter: the message (substring or regex), or a hash prefix.
 enum TextFilter {
@@ -1321,10 +1521,48 @@ struct Merged {
 /// after the last one, following renames. Files added and then deleted drop out.
 pub(crate) fn commits_changes(r: &Repo, commits: &[String]) -> IdeResult<Vec<RevisionChange>> {
     let repo = r.gix()?;
+    merge_commit_changes(&repo, commits, &CancellationToken::new())
+}
+
+pub(crate) fn commit_selection_changes(
+    r: &Repo,
+    commits: &[String],
+    cancel: &CancellationToken,
+) -> IdeResult<Vec<RevisionChange>> {
+    let repo = r.gix()?;
+    if commits.len() <= 1 {
+        return merge_commit_changes(&repo, commits, cancel);
+    }
+    let mut ids = Vec::with_capacity(commits.len());
+    let mut seen = HashSet::new();
+    for rev in commits {
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        let id = resolve(&repo, rev)?;
+        let id = repo.find_object(id).map_err(gx)?.peel_to_commit().map_err(gx)?.id;
+        if seen.insert(id) {
+            ids.push(id);
+        }
+    }
+    let shallow = repo.shallow_commits().map_err(gx)?.map(|ids| ids.iter().copied().collect()).unwrap_or_default();
+    let ordered = sort_subset(&repo, ids, LogOrder::Topo, false, &shallow, cancel, &HashMap::new())?;
+    let commits: Vec<_> = ordered.into_iter().rev().map(|id| id.to_string()).collect();
+    merge_commit_changes(&repo, &commits, cancel)
+}
+
+fn merge_commit_changes(
+    repo: &gix::Repository,
+    commits: &[String],
+    cancel: &CancellationToken,
+) -> IdeResult<Vec<RevisionChange>> {
     let mut merged: Vec<Merged> = Vec::new();
     let mut seen = HashSet::new();
     for rev in commits {
-        let c = first_parent_changes(&repo, rev)?;
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        let c = first_parent_changes(repo, rev)?;
         if !seen.insert(c.id) {
             continue;
         }
@@ -1379,7 +1617,39 @@ pub(crate) fn commits_changes(r: &Repo, commits: &[String]) -> IdeResult<Vec<Rev
 
 #[cfg(test)]
 mod tests {
-    use super::revision_args;
+    use super::{LogSignature, LogSignatureCache, SIGNATURE_TTL, revision_args};
+    use gix::ObjectId;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn signature_cache_expires_and_ignores_results_from_before_refresh() {
+        let mut cache = LogSignatureCache::default();
+        let id = ObjectId::from_hex(b"0000000000000000000000000000000000000001").unwrap();
+        let now = Instant::now();
+        let entry = |code: &str| {
+            [(
+                id,
+                LogSignature {
+                    code: code.into(),
+                    signer: String::new(),
+                    key: String::new(),
+                    fingerprint: String::new(),
+                },
+            )]
+            .into()
+        };
+        let before_refresh = cache.generation;
+        cache.store(before_refresh, now, entry("E"));
+        assert_eq!(cache.get(&id, now + SIGNATURE_TTL - Duration::from_millis(1)).unwrap().code, "E");
+        assert!(cache.get(&id, now + SIGNATURE_TTL).is_none());
+
+        cache.clear();
+        let refreshed = now + Duration::from_secs(1);
+        cache.store(cache.generation, refreshed, entry("G"));
+        cache.store(before_refresh, refreshed, entry("E"));
+        cache.store(cache.generation, now, entry("E"));
+        assert_eq!(cache.get(&id, refreshed).unwrap().code, "G");
+    }
 
     #[test]
     fn small_revision_walks_keep_their_arguments() {

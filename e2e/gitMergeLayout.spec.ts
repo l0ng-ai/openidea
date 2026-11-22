@@ -39,14 +39,22 @@ test("the Git Merge form shows the command and selected options", async ({ workb
   const merge = dialog.getByRole("button", { name: "Merge", exact: true });
   const modifyOptions = dialog.getByRole("button", { name: "Modify options" });
   await expect(command).toBeVisible();
-  const repoBox = (await repo.boundingBox())!;
-  const commandBox = (await command.boundingBox())!;
-  const branchBox = (await branch.boundingBox())!;
+  const { repoBox, commandBox, branchBox } = await dialog.evaluate((el) => {
+    const box = (selector: string) => {
+      const { x, y, width, height } = el.querySelector(selector)!.getBoundingClientRect();
+      return { x, y, width, height };
+    };
+    return {
+      repoBox: box('button[aria-label="Repository"]'),
+      commandBox: box("code"),
+      branchBox: box('button[aria-label="Branch to merge"]'),
+    };
+  });
   expect(repoBox.x + repoBox.width).toBeLessThan(commandBox.x);
   expect(commandBox.x + commandBox.width).toBeLessThan(branchBox.x);
-  expect(Math.abs(repoBox.y - branchBox.y)).toBeLessThan(1);
+  expect(Math.abs(repoBox.y + repoBox.height / 2 - (branchBox.y + branchBox.height / 2))).toBeLessThan(1);
   await expect(repo).toBeFocused();
-  await expect(merge).toBeDisabled();
+  await expect(branch).toHaveText("feature/api");
 
   await repo.click();
   await page.getByRole("option", { name: "service", exact: true }).click();
@@ -78,12 +86,14 @@ test("the Git Merge form shows the command and selected options", async ({ workb
     .toEqual([
       {
         repo: "/dev/acme-api/service",
-        branches: ["feature/service"],
+        branches: ["refs/heads/feature/service"],
         options: {
           noFf: true,
           ffOnly: false,
           squash: false,
           noCommit: false,
+          noVerify: false,
+          allowUnrelatedHistories: false,
           message: "Merge service changes\n\nReviewed the service update.",
         },
       },

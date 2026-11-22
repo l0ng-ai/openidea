@@ -7,10 +7,12 @@ import type { BlameLine } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
-import { showContextMenu } from "@/ui";
+import { onWorkflowSettingsChange, workflowSettings } from "@/platform/workflowSettings";
+import { showContextMenu, type MenuItem } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { closeBlamePopup, scheduleCloseBlamePopup, scheduleOpenBlamePopup } from "./BlamePopup";
 import { formatDate } from "./model";
+import { saveVcsSetting } from "./settingsUi";
 import { useVcs } from "./store";
 
 const ZERO = /^0+$/;
@@ -167,18 +169,41 @@ const annotateColumns = ViewPlugin.define(
 
 const COLUMN_LABELS: Record<AnnotateColumn, string> = { date: "Date", author: "Author", revision: "Revision" };
 
-function optionsMenu() {
+function optionsMenu(): MenuItem {
   const c = useAnnotateColumns.getState();
   const shown = COLUMNS.filter((k) => c[k]).length;
+  const { ignoreWhitespace, movement } = workflowSettings().vcs.git.annotate;
   return {
     label: "Options",
-    submenu: COLUMNS.map((k) => ({
-      label: COLUMN_LABELS[k],
-      checked: c[k],
-      // At least one column stays, as in IDEA.
-      disabled: c[k] && shown === 1,
-      run: () => setAnnotateColumn(k, !c[k]),
-    })),
+    submenu: [
+      ...COLUMNS.map((k) => ({
+        label: COLUMN_LABELS[k],
+        checked: c[k],
+        disabled: c[k] && shown === 1,
+        run: () => setAnnotateColumn(k, !c[k]),
+      })),
+      { kind: "separator" },
+      {
+        label: "Ignore Whitespaces",
+        checked: ignoreWhitespace,
+        run: () => saveVcsSetting("vcs.git.annotate.ignoreWhitespace", !ignoreWhitespace, "global"),
+      },
+      {
+        label: "Detect Movements Within File",
+        checked: movement !== "none",
+        run: () => saveVcsSetting("vcs.git.annotate.movement", movement === "none" ? "withinFile" : "none", "global"),
+      },
+      {
+        label: "Detect Movements Across Files",
+        checked: movement === "acrossFiles",
+        run: () =>
+          saveVcsSetting(
+            "vcs.git.annotate.movement",
+            movement === "acrossFiles" ? "withinFile" : "acrossFiles",
+            "global",
+          ),
+      },
+    ],
   };
 }
 
@@ -243,39 +268,60 @@ const measureBlameColumns = {
   },
 };
 
-/** Re-blames `path` and repaints the gutter while annotations are still shown. */
-async function refreshAnnotations(view: EditorView, path: string) {
-  const lines = await call(commands.vcsBlame(path, null, null)).catch(() => null);
-  if (!lines || !view.state.field(blameField, false)) return;
-  view.dispatch({ effects: setBlame.of(lines) });
+interface BlameSource {
+  path: string;
+  text?: string;
+  revision?: string;
 }
 
-/** Re-blames after edits and whenever HEAD moves (commit, Undo Commit, update, checkout). */
 class BlameRefresher implements PluginValue {
   private timer: ReturnType<typeof setTimeout> | undefined;
-  private destroyed = false;
-  private readonly offHead: () => void;
+  private generation = 0;
+  private readonly off: (() => void)[];
+  private readonly live: boolean;
+
   constructor(
     private readonly view: EditorView,
-    private readonly path: string,
+    private readonly source: BlameSource,
   ) {
-    this.offHead = useVcs.subscribe((s, p) => {
-      if (s.branch?.headCommit !== p.branch?.headCommit) this.schedule(100);
-    });
+    this.live = source.text === undefined && source.revision === undefined;
+    this.off = [
+      onWorkflowSettingsChange(
+        (s) => s.vcs.git.annotate,
+        () => this.schedule(0),
+      ),
+    ];
+    if (this.live) {
+      this.off.push(
+        useVcs.subscribe((s, p) => {
+          if (s.branch?.headCommit !== p.branch?.headCommit) this.schedule(100);
+        }),
+      );
+    }
   }
+
   update(u: ViewUpdate) {
-    if (u.docChanged) this.schedule(800);
+    if (this.live && u.docChanged) this.schedule(800);
   }
-  private schedule(delay: number) {
+
+  schedule(delay: number) {
     clearTimeout(this.timer);
-    this.timer = setTimeout(() => {
-      if (!this.destroyed) void refreshAnnotations(this.view, this.path);
-    }, delay);
+    const generation = ++this.generation;
+    this.timer = setTimeout(() => void this.refresh(generation), delay);
   }
+
+  private async refresh(generation: number) {
+    const { path, text, revision } = this.source;
+    const lines = await call(commands.vcsBlame(path, text ?? null, revision ?? null)).catch(() => null);
+    if (!lines || generation !== this.generation || !annotationsShown(this.view)) return;
+    closeBlamePopup(this.view);
+    this.view.dispatch({ effects: setBlame.of(lines) });
+  }
+
   destroy() {
-    this.destroyed = true;
-    this.offHead();
+    ++this.generation;
     clearTimeout(this.timer);
+    for (const off of this.off) off();
   }
 }
 
@@ -362,7 +408,9 @@ class BlameInteraction implements PluginValue {
   }
 }
 
-function blameExtension(lines: BlameLine[], path: string, live: boolean): Extension {
+function blameExtension(lines: BlameLine[], source: BlameSource): Extension {
+  const { path } = source;
+  const refresher = ViewPlugin.define((view) => new BlameRefresher(view, source));
   return [
     blameField.init((state) => build(lines, state.doc)),
     Prec.high(
@@ -392,15 +440,16 @@ function blameExtension(lines: BlameLine[], path: string, live: boolean): Extens
           contextmenu(view, block, event) {
             closeBlamePopup(view);
             const l = lineAt(view, block.from);
+            const origin = l?.originPath ?? path;
             event.preventDefault();
             showContextMenu(event as MouseEvent, [
-              { label: "Close Annotations", run: () => setAnnotations(view, null, path, false) },
+              { label: "Close Annotations", run: () => setAnnotations(view, null, source) },
               ...(l && !isUncommitted(l)
                 ? [
                     {
                       label: "Show Diff",
                       icon: "diff",
-                      run: () => void import("./annotateRevision").then((m) => m.showRevisionDiff(path, l.commit)),
+                      run: () => void import("./annotateRevision").then((m) => m.showRevisionDiff(origin, l.commit)),
                     },
                     {
                       label: "Copy Revision Number",
@@ -418,7 +467,7 @@ function blameExtension(lines: BlameLine[], path: string, live: boolean): Extens
                       icon: "history",
                       // Loads the history and diff viewer code only when it is used.
                       run: () =>
-                        void import("./annotateRevision").then((m) => m.annotatePreviousRevision(path, l.commit)),
+                        void import("./annotateRevision").then((m) => m.annotatePreviousRevision(origin, l.commit)),
                     },
                     {
                       label: "Show Commit in Git Log",
@@ -428,7 +477,7 @@ function blameExtension(lines: BlameLine[], path: string, live: boolean): Extens
                     {
                       label: "Ignore This Commit",
                       icon: "hide",
-                      run: () => void ignoreCommit(view, path, l.commit, live),
+                      run: () => void ignoreCommit(path, l.commit, () => view.plugin(refresher)?.schedule(0)),
                     },
                   ]
                 : []),
@@ -441,8 +490,7 @@ function blameExtension(lines: BlameLine[], path: string, live: boolean): Extens
     ),
     ViewPlugin.define((view) => new BlameInteraction(view)),
     annotateColumns,
-    // Static content (a merge pane's side) is not re-blamed on edits / HEAD moves.
-    ...(live ? [ViewPlugin.define((view) => new BlameRefresher(view, path))] : []),
+    refresher,
     blameTheme,
   ];
 }
@@ -451,19 +499,19 @@ export function annotationsShown(view: EditorView): boolean {
   return !!view.state.field(blameField, false);
 }
 
-function setAnnotations(view: EditorView, lines: BlameLine[] | null, path: string, live: boolean) {
+function setAnnotations(view: EditorView, lines: BlameLine[] | null, source: BlameSource) {
   if (!lines) closeBlamePopup(view);
-  view.dispatch({ effects: blameCompartment.reconfigure(lines ? blameExtension(lines, path, live) : []) });
+  view.dispatch({ effects: blameCompartment.reconfigure(lines ? blameExtension(lines, source) : []) });
 }
 
 /**
  * Appends `commit` to the repository's ignore list so annotate skips it, then re-blames
- * the gutter (a live one shows the commit before it on those lines).
+ * the gutter.
  */
-async function ignoreCommit(view: EditorView, path: string, commit: string, live: boolean) {
+async function ignoreCommit(path: string, commit: string, refresh: () => void) {
   try {
     await call(commands.vcsIgnoreBlameRevision(path, commit));
-    if (live) await refreshAnnotations(view, path);
+    refresh();
   } catch (e) {
     notifications().notify({
       group: "vcs",
@@ -478,7 +526,7 @@ async function ignoreCommit(view: EditorView, path: string, commit: string, live
  * disk, `revision` the history it is blamed on (default HEAD). */
 export async function toggleAnnotations(view: EditorView, path: string, text?: string, revision?: string) {
   if (annotationsShown(view)) {
-    setAnnotations(view, null, path, false);
+    setAnnotations(view, null, { path });
     return;
   }
   try {
@@ -493,7 +541,7 @@ export async function toggleAnnotations(view: EditorView, path: string, text?: s
       });
       return;
     }
-    setAnnotations(view, lines, path, text === undefined);
+    setAnnotations(view, lines, { path, text, revision });
   } catch (e) {
     notifications().notify({
       group: "vcs",

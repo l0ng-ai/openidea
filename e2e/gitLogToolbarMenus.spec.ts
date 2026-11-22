@@ -337,6 +337,35 @@ test("Git Log puts affected changes on the changed-files toolbar and groups prev
   await expect(notes).toBeVisible();
 });
 
+test("Not Cherry-Picked Commits dims other rows while keeping unpicked commits readable", async ({
+  workbench: page,
+}) => {
+  await page.evaluate(async () => {
+    window.__ipc.handlers.vcs_not_cherry_picked = () => ["0".repeat(40)];
+    const logModule = "/src/features/vcs/logStore.ts";
+    const { setLogBranches } = await import(/* @vite-ignore */ logModule);
+    setLogBranches(["release"]);
+  });
+  const rows = page.getByRole("listbox", { name: "Commits" });
+  const waiting = rows.getByText("Commit 0", { exact: true });
+  const picked = rows.getByText("Commit 1", { exact: true });
+  const color = await waiting.evaluate((el) => getComputedStyle(el).color);
+  await expect(picked).toHaveCSS("color", color);
+
+  const view = page.getByRole("button", { name: "View Options", exact: true });
+  const highlight = page.getByRole("menuitemcheckbox", { name: "Not Cherry-Picked Commits" });
+  await view.click();
+  await expect(highlight).toHaveAttribute("aria-checked", "false");
+  await highlight.click();
+  await expect(picked).not.toHaveCSS("color", color);
+  await expect(waiting).toHaveCSS("color", color);
+
+  await view.click();
+  await expect(highlight).toHaveAttribute("aria-checked", "true");
+  await highlight.click();
+  await expect(picked).toHaveCSS("color", color);
+});
+
 test("the Paths filter replaces the repository filter and can be cleared from overflow", async ({
   workbench: page,
 }) => {

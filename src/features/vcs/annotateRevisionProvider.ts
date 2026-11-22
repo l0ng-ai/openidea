@@ -15,7 +15,7 @@ class LeftPaneAnnotations implements DiffViewerContribution {
     const pane = host.panes().find((p) => p.side === "left");
     if (!pane || left.type !== "rev" || annotated.has(this.data)) return;
     annotated.add(this.data);
-    void toggleAnnotations(pane.view, this.data.path, host.doc("left").toString(), left.rev);
+    void toggleAnnotations(pane.view, left.path ?? this.data.path, host.doc("left").toString(), left.rev);
   }
 }
 

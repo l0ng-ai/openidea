@@ -4,12 +4,12 @@
  * active one); the state is persisted per project in `.openidea/changelists.json`.
  */
 import { create } from "zustand";
-import type { Changelist, ChangelistState, FileStatus } from "@/bindings";
+import type { Changelist, ChangelistState, CommitApplySource, FileStatus, PendingCommitApply } from "@/bindings";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { setLocalChanges, type LocalChangelist } from "@/workbench/contributions";
 import type { CheckState } from "./changes";
-import { groupOf } from "./changes";
+import { checkOf, groupOf } from "./changes";
 import { effectiveKind, relTo, stripSlash } from "./model";
 import { localChangesMayBeAside, useVcs } from "./store";
 
@@ -106,6 +106,37 @@ export function moveFiles(state: ChangelistState, rels: readonly string[], id: s
   return { ...state, files };
 }
 
+export function appliedCommitList(state: ChangelistState, source: CommitApplySource): Changelist | undefined {
+  return state.lists.find(
+    (list) =>
+      list.appliedCommit?.repo === source.repo &&
+      list.appliedCommit.kind === source.kind &&
+      list.appliedCommit.commit === source.commit &&
+      list.appliedCommit.base === source.base,
+  );
+}
+
+/** Only the paths in Git's stopped index are assigned to the generated list. */
+export function addAppliedCommitList(
+  state: ChangelistState,
+  root: string,
+  status: readonly FileStatus[],
+  pending: PendingCommitApply,
+  message: string,
+): ChangelistState {
+  if (appliedCommitList(state, pending.source)) return state;
+  const paths = pending.paths.map((path) => relTo(root, path));
+  const live = new Set(changedRels(status, root));
+  if (!paths.some((path) => live.has(path))) return state;
+  const subject = message.split("\n", 1)[0]!.trim().replace(/ {2,}/g, " ");
+  if (!subject) return state;
+  let name = subject;
+  for (let n = 1; validateListName(state, name); n++) name = `${subject}-${n}`;
+  const id = newId(state);
+  const list: Changelist = { id, name, comment: message, appliedCommit: pending.source };
+  return moveFiles({ ...state, lists: [...state.lists, list] }, paths, id);
+}
+
 /**
  * Like IDEA, only the active list's changes are included in a commit by default:
  * files of other lists without an explicit checkbox state start excluded.
@@ -140,17 +171,58 @@ export function checksForList(
   return out;
 }
 
+/** The first included tracked change supplies the message context. */
+export function changelistForCommit(
+  status: readonly FileStatus[],
+  root: string,
+  state: ChangelistState,
+  overrides: ReadonlyMap<string, CheckState>,
+  includeByDefault: boolean,
+): string {
+  if (state.lists.length < 2) return state.active;
+  const checks = withListDefaults(status, root, state, overrides);
+  const first = status.find((file) => {
+    if (groupOf(file) !== "changes") return false;
+    const check = checkOf(file, checks, includeByDefault);
+    return check !== "none" && (check !== "staged" || file.staged !== null);
+  });
+  return first ? listOf(state, relTo(root, stripSlash(first.path))) : state.active;
+}
+
 // ---------------------------------------------------------------------------
 // Store (loaded per project, saved on change)
 
 interface ChangelistStore {
   state: ChangelistState;
   loaded: boolean;
+  root: string | null;
 }
 
-export const useChangelists = create<ChangelistStore>(() => ({ state: initialChangelists(), loaded: false }));
+export const useChangelists = create<ChangelistStore>(() => ({
+  state: initialChangelists(),
+  loaded: false,
+  root: null,
+}));
 
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
+let saving = Promise.resolve();
+
+/** Waits for the on-disk assignments used by automatic Shelf saves. */
+export function flushChangelists(): Promise<void> {
+  if (saveTimer === undefined) return saving;
+  clearTimeout(saveTimer);
+  saveTimer = undefined;
+  const { loaded, state } = useChangelists.getState();
+  const root = useProject.getState().project?.root;
+  if (loaded && root && isTauri()) {
+    saving = saving
+      .then(async () => {
+        if (root === useProject.getState().project?.root) await call(commands.vcsChangelistsSave(state));
+      })
+      .catch(() => undefined);
+  }
+  return saving;
+}
 
 export function updateChangelists(fn: (s: ChangelistState) => ChangelistState) {
   const cur = useChangelists.getState().state;
@@ -158,15 +230,17 @@ export function updateChangelists(fn: (s: ChangelistState) => ChangelistState) {
   if (next === cur) return;
   useChangelists.setState({ state: next });
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    if (useChangelists.getState().loaded && isTauri())
-      void call(commands.vcsChangelistsSave(useChangelists.getState().state)).catch(() => undefined);
-  }, 250);
+  saveTimer = setTimeout(() => void flushChangelists(), 250);
 }
 
 /** Project-relative paths of the changed files that belong to change lists. */
 export function changedRels(status: readonly FileStatus[], root: string): string[] {
-  return status.filter((f) => groupOf(f) === "changes").map((f) => relTo(root, stripSlash(f.path)));
+  return status
+    .filter((f) => {
+      const group = groupOf(f);
+      return group === "changes" || group === "conflicts";
+    })
+    .map((f) => relTo(root, stripSlash(f.path)));
 }
 
 /** The lists with their files, for the `useLocalChanges` service (conflicted files stay in their list). */
@@ -198,27 +272,41 @@ export function relOf(path: string): string {
 
 export function installChangelists(): () => void {
   let loadedFor: string | null = null;
+  let loadRequest = 0;
   const sync = () => {
-    const { status, root, available, statusLoaded } = useVcs.getState();
+    const { status, root, available, statusLoaded, operations, heads } = useVcs.getState();
     if (!available || !root || !statusLoaded || !useChangelists.getState().loaded) return;
-    const next = syncAssignments(useChangelists.getState().state, changedRels(status, root), localChangesMayBeAside());
-    if (next) updateChangelists(() => next);
+    const { state } = useChangelists.getState();
+    const keepGone = localChangesMayBeAside();
+    const next = syncAssignments(state, changedRels(status, root), keepGone) ?? state;
+    const used = new Set(Object.values(next.files ?? {}));
+    const lists = next.lists.filter(
+      (list) =>
+        !list.appliedCommit ||
+        list.id === next.active ||
+        used.has(list.id) ||
+        !heads[list.appliedCommit.repo] ||
+        operations[list.appliedCommit.repo] === (list.appliedCommit.kind ?? "cherry-pick"),
+    );
+    updateChangelists(() => (lists.length === next.lists.length ? next : { ...next, lists }));
   };
   const load = () => {
     const root = useProject.getState().project?.root ?? null;
     if (root === loadedFor) return;
     loadedFor = root;
+    const request = ++loadRequest;
     clearTimeout(saveTimer);
-    useChangelists.setState({ state: initialChangelists(), loaded: false });
+    saveTimer = undefined;
+    useChangelists.setState({ state: initialChangelists(), loaded: false, root });
     if (!root || !isTauri()) return;
     void call(commands.vcsChangelistsLoad())
       .then((state) => {
-        if (loadedFor !== root) return;
+        if (loadRequest !== request) return;
         useChangelists.setState({ state, loaded: true });
         sync();
       })
       .catch(() => {
-        if (loadedFor === root) useChangelists.setState({ loaded: true });
+        if (loadRequest === request) useChangelists.setState({ loaded: true });
       });
   };
   load();
@@ -246,11 +334,13 @@ export function installChangelists(): () => void {
     if (s.state !== p.state) publish();
   });
   return () => {
+    loadRequest++;
     offProject();
     offVcs();
     offPublishVcs();
     offPublishLists();
     clearPublished?.();
     clearTimeout(saveTimer);
+    saveTimer = undefined;
   };
 }

@@ -9,10 +9,11 @@
 
 use crate::convert;
 use crate::server::Server;
-use crate::{LspManager, Target};
+use crate::text::DocText;
+use crate::{LspManager, Outcome, Target, scope};
 use futures::StreamExt;
 use ide_core::error::ErrorKind;
-use ide_core::{CancellationToken, Diagnostic, DocId, IdeError, IdeResult};
+use ide_core::{CancellationToken, Diagnostic, DocId, IdeError, IdeResult, LanguageId};
 use lsp_types as lsp;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -225,6 +226,48 @@ impl LspManager {
         }
     }
 
+    /// Checks a snapshot without publishing to Problems or changing the live document.
+    pub async fn snapshot_diagnostics(
+        &self,
+        path: &Path,
+        language: &LanguageId,
+        text: &str,
+        cancel: &CancellationToken,
+    ) -> IdeResult<Vec<Diagnostic>> {
+        let targets = tokio::select! {
+            r = self.snapshot_targets(path, language, "snapshot diagnostics", |c| c.restriction.diagnostics()) => r?,
+            () = cancel.cancelled() => return Err(IdeError::cancelled()),
+        };
+        let snapshot = scope::snapshot_path(path, "diagnostics")?;
+        let doc = Arc::new(DocText::new(text));
+        let mut result = Outcome::<Vec<_>>::new();
+        let opts = InspectOptions { timeout: Duration::from_secs(2), ..Default::default() };
+        let reports = targets.iter().map(|t| async {
+            let mut opened = scope::TransientFiles::empty(self, t);
+            let raw = if t.caps().has("diagnosticProvider") {
+                opened.hold(&snapshot, language, text);
+                self.pull_diagnostics(t, &opened.files[0].1, cancel, opts.timeout).await
+            } else {
+                let receiver = opened.hold_for_diagnostics(&snapshot, language, text);
+                wait_for_snapshot_publish(receiver, opts, cancel).await
+            };
+            raw.map(|items| {
+                let conv = convert::Conv::new(t.enc(), |_| Some(doc.clone()));
+                items.into_iter().map(|d| convert::diagnostic(&conv, path, d, &t.server.name)).collect::<Vec<_>>()
+            })
+        });
+        for report in futures::future::join_all(reports).await {
+            match report {
+                Ok(items) => result.value.get_or_insert_with(Vec::new).extend(items),
+                Err(error) => result.fail(error),
+            }
+        }
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        result.finish(Vec::new())
+    }
+
     /// Fresh diagnostics of the open document `doc`, whose text the caller just synced
     /// (`changed`: at that instant, so diagnostics published before it are stale). Tells the
     /// servers the document was saved, since checks that run on save (rust-analyzer's
@@ -331,6 +374,22 @@ impl LspManager {
         serde_json::from_value(items).map_err(|e| {
             IdeError::new(ErrorKind::Protocol, format!("{}: bad textDocument/diagnostic report: {e}", t.server.name))
         })
+    }
+}
+
+async fn wait_for_snapshot_publish(
+    mut receiver: tokio::sync::watch::Receiver<Vec<lsp::Diagnostic>>,
+    opts: InspectOptions,
+    cancel: &CancellationToken,
+) -> IdeResult<Vec<lsp::Diagnostic>> {
+    let listen = async {
+        if receiver.changed().await.is_ok() {
+            while matches!(tokio::time::timeout(opts.settle, receiver.changed()).await, Ok(Ok(()))) {}
+        }
+    };
+    tokio::select! {
+        _ = tokio::time::timeout(opts.timeout, listen) => Ok(receiver.borrow().clone()),
+        () = cancel.cancelled() => Err(IdeError::cancelled()),
     }
 }
 

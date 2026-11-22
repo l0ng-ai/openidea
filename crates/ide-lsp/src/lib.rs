@@ -35,6 +35,7 @@ mod plugin_requests;
 mod pull;
 mod scope;
 mod server;
+mod source_actions;
 mod tcp;
 mod text;
 mod ts_file_moves;
@@ -3187,6 +3188,67 @@ impl LspManager {
     pub async fn can_format(&self, doc: DocId) -> IdeResult<bool> {
         let snap = self.snapshot(doc)?;
         Ok(!self.ready_targets(&snap.servers, |c| c.has("documentFormattingProvider")).await.is_empty())
+    }
+
+    async fn snapshot_targets(
+        &self,
+        path: &Path,
+        language: &LanguageId,
+        feature: &str,
+        supports: impl Fn(&ServerCaps) -> bool,
+    ) -> IdeResult<Vec<Target>> {
+        let supports = |caps: &ServerCaps| caps.open_close && supports(caps);
+        let servers = self.servers_for(language, path);
+        for server in &servers {
+            self.ensure_started(server);
+        }
+        let mut targets = self.ready_targets(&servers, supports).await;
+        if targets.is_empty() {
+            // A primary server can become unavailable while it initializes.
+            let candidates = self.servers_for(language, path);
+            if candidates.iter().any(|server| !servers.iter().any(|old| old.id == server.id)) {
+                for server in &candidates {
+                    self.ensure_started(server);
+                }
+                targets = self.ready_targets(&candidates, supports).await;
+            }
+        }
+        if targets.is_empty() {
+            return Err(unsupported(&servers, feature));
+        }
+        Ok(targets)
+    }
+
+    async fn text_format_targets(&self, path: &Path, language: &LanguageId) -> IdeResult<Vec<Target>> {
+        self.snapshot_targets(path, language, "snapshot formatting", |c| c.has("documentFormattingProvider")).await
+    }
+
+    pub async fn can_format_text(&self, path: &Path, language: &LanguageId) -> bool {
+        self.text_format_targets(path, language).await.is_ok()
+    }
+
+    /// Use a transient URI so requests in the editor still see the working buffer.
+    pub async fn format_text(
+        &self,
+        path: &Path,
+        language: &LanguageId,
+        text: &str,
+        options: FormatOptions,
+    ) -> IdeResult<Vec<TextEdit>> {
+        let path_to_snapshot = scope::snapshot_path(path, "format")?;
+        let targets = self.text_format_targets(path, language).await?;
+        let target = &targets[0];
+        let mut opened = scope::TransientFiles::empty(self, target);
+        opened.hold(&path_to_snapshot, language, text);
+        let params = json!({
+            "textDocument": { "uri": opened.files[0].1 },
+            "options": { "tabSize": options.tab_size, "insertSpaces": options.insert_spaces },
+        });
+        let edits: Option<Vec<lsp::TextEdit>> =
+            self.call(target, "textDocument/formatting", params, None, DEFAULT_TIMEOUT).await?;
+        let text = Arc::new(DocText::new(text));
+        let converter = Conv::new(target.enc(), |_| Some(text.clone()));
+        Ok(converter.text_edits(&path_to_snapshot, edits.unwrap_or_default()))
     }
 
     pub async fn format(&self, doc: DocId, range: Option<Range>, options: FormatOptions) -> IdeResult<Vec<TextEdit>> {

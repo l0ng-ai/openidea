@@ -49,8 +49,9 @@ test("Pull fits the remote branch picker and keeps flags accessible in a narrow 
   });
 
   const dialog = page.getByRole("dialog", { name: "Pull to main" });
-  const branch = dialog.getByRole("button", { name: "Remote branch" });
+  const branch = dialog.getByRole("button", { name: "Remote branch", exact: true });
   await expect(branch).toHaveText("main");
+  await expect(dialog.getByRole("button", { name: "Fetch remote branches" })).toBeVisible();
   const body = dialog.locator("[data-dialog-body]");
   await expect.poll(() => branch.evaluate((el) => el.getBoundingClientRect().width)).toBeGreaterThanOrEqual(250);
   expect(await body.evaluate((el) => el.scrollWidth - el.clientWidth)).toBe(0);
@@ -65,7 +66,8 @@ test("Pull fits the remote branch picker and keeps flags accessible in a narrow 
   await expect(dialog.locator("code", { hasText: "--ff-only" })).toBeVisible();
   await modify.press("Enter");
   await expect(page.getByRole("menuitemcheckbox", { name: "--ff-only" })).toBeChecked();
-  await expect(page.getByRole("menuitemcheckbox", { name: "--no-commit" })).toBeDisabled();
+  await expect(page.getByRole("menuitemcheckbox", { name: "--no-commit" })).toBeEnabled();
+  await expect(page.getByRole("menuitemcheckbox", { name: "--rebase" })).toBeDisabled();
   await page.keyboard.press("Escape");
   await expect(modify).toBeFocused();
   await dialog.getByRole("button", { name: "Pull", exact: true }).click();
@@ -78,7 +80,7 @@ test("Pull fits the remote branch picker and keeps flags accessible in a narrow 
           op: "pullFrom",
           remote: "origin",
           branches: ["release/month-end-international-settlement-reconciliation"],
-          rebase: false,
+          rebase: null,
           options: { ffOnly: true },
         },
       },

@@ -46,6 +46,7 @@ async function openPushDialog(page: Page, { outgoing = false, multi = false } = 
       h.vcs_commit_files = () => [{ path: "checkout.ts", oldPath: null, kind: "modified" }];
       h.vcs_has_hook = () => false;
       h.vcs_remotes = () => [{ name: "origin", url: "git@example.com:acme/api.git" }];
+      h.vcs_push_target_choices = () => ({ branch: head, destination: null, destinations: [] });
       const branch = (name: string, remote: boolean, upstream: string | null = null) => ({
         name,
         remote,
@@ -76,7 +77,7 @@ async function openPushDialog(page: Page, { outgoing = false, multi = false } = 
   );
   const dialog = page.getByRole("dialog", { name: /Push/ });
   const input = multi
-    ? dialog.getByRole("textbox", { name: "Target branch of acme-api" })
+    ? dialog.getByRole("combobox", { name: "Target branch of acme-api" })
     : dialog.getByRole("combobox", { name: "Target branch" });
   await expect(input).toBeVisible();
   return { dialog, input };
@@ -210,7 +211,7 @@ test("Push keeps commit subjects and changed files readable in a narrow window",
 test("Push keeps per-repository targets editable with long source branches", async ({ workbench: page }) => {
   await page.setViewportSize({ width: 475, height: 620 });
   const { dialog, input } = await openPushDialog(page, { outgoing: true, multi: true });
-  const other = dialog.getByRole("textbox", { name: "Target branch of billing-and-refunds" });
+  const other = dialog.getByRole("combobox", { name: "Target branch of billing-and-refunds" });
   for (const field of [input, other]) {
     await expect
       .poll(() =>
@@ -226,4 +227,19 @@ test("Push keeps per-repository targets editable with long source branches", asy
   await expect(input).toHaveValue("release/checkout");
   await expect(other).toHaveValue(/^feature\//);
   await expect(dialog.getByRole("checkbox", { name: "acme-api" })).toBeChecked();
+  await expect(dialog.getByRole("checkbox", { name: "Push tags:" })).toBeInViewport();
+});
+
+test("selecting a completion in a repository row keeps the Push dialog open", async ({ workbench: page }) => {
+  const { dialog, input } = await openPushDialog(page, { multi: true });
+  const other = dialog.getByRole("combobox", { name: "Target branch of billing-and-refunds" });
+  const otherTarget = await other.inputValue();
+  await input.fill("error");
+  await expect(page.getByRole("option", { name: "fix/error-auth" })).toBeVisible();
+  await input.press("ArrowDown");
+  await input.press("Enter");
+  await expect(input).toHaveValue("fix/error-auth");
+  await expect(other).toHaveValue(otherTarget);
+  await expect(dialog).toBeVisible();
+  await expect(page.getByRole("listbox", { name: "Remote branches" })).toHaveCount(0);
 });

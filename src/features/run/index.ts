@@ -14,6 +14,7 @@ import {
   menuGroupItems,
   useDebugRunSessions,
   notifications,
+  provideRunConfigurationChecks,
   provideRunConfigurationLookup,
   provideRunOutput,
   registerMenuGroup,
@@ -60,6 +61,7 @@ import {
 import { liveServiceSession, serviceSessions } from "./serviceSessions";
 import { ServiceImportHost } from "./serviceImport";
 import { cmakeBuildId } from "./cmake";
+import { configurationChecks } from "./configurationChecks";
 import { runBeforeLaunch } from "./beforeLaunch";
 import { compoundChildren } from "./configs";
 import { containerDebuggable, remoteDebugBlocked } from "./remote";
@@ -922,6 +924,8 @@ export function activate(): () => void {
 
   setBeforeLaunchRunner(runBeforeLaunch);
   disposers.push(() => setBeforeLaunchRunner(null));
+  provideRunConfigurationChecks(configurationChecks);
+  disposers.push(() => provideRunConfigurationChecks(undefined));
   provideRunOutput({ subscribe: subscribeOutput });
   disposers.push(() => provideRunOutput(undefined));
   provideRunConfigurationLookup((kind, directory) => {

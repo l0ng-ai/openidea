@@ -1,7 +1,26 @@
-/** Branches popup model: grouping, ordering and filtering (pure). */
+/** Branch protection and the Branches popup model. */
 import type { Branch } from "@/bindings";
 import { tx } from "@/platform/i18n";
+import { workflowSettings } from "@/platform/workflowSettings";
 import { wordMatch } from "@/ui/match";
+
+export function isProtectedBranch(branch: string, patterns = workflowSettings().vcs.git.protectedBranches): boolean {
+  return patterns
+    .split(/[;,\s]+/)
+    .filter(Boolean)
+    .some((p) =>
+      new RegExp(
+        `^${p
+          .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+          .replace(/\*/g, ".*")
+          .replace(/\?/g, ".")}$`,
+      ).test(branch),
+    );
+}
+
+export function isProtectedRemoteBranch(branch: Pick<Branch, "name" | "remote">): boolean {
+  return branch.remote && isProtectedBranch(branch.name.slice(branch.name.indexOf("/") + 1));
+}
 
 export interface PopupAction {
   id: string;
@@ -391,6 +410,7 @@ export interface BranchTreeNode {
   favorite?: boolean;
   /** Merged tree: the repositories that have this branch or tag. */
   repos?: string[];
+  branchesByRoot?: ReadonlyMap<string, Branch>;
   children?: BranchTreeNode[];
 }
 
@@ -532,37 +552,32 @@ export function buildMergedBranchTree(
   favorites: readonly string[] | null,
   current: string | null,
 ): BranchTreeNode[] {
-  const merged = new Map<string, { branch: Branch; roots: string[]; current: boolean }>();
+  const merged = new Map<string, { branch: Branch; byRoot: Map<string, Branch>; current: boolean }>();
   const tagRoots = new Map<string, string[]>();
   for (const r of repositories) {
     for (const b of r.branches) {
       const key = `${b.remote}:${b.name}`;
       const entry = merged.get(key);
-      if (!entry) merged.set(key, { branch: b, roots: [r.root], current: b.current });
+      if (!entry) merged.set(key, { branch: b, byRoot: new Map([[r.root, b]]), current: b.current });
       else {
-        entry.roots.push(r.root);
+        entry.byRoot.set(r.root, b);
         entry.current ||= b.current;
         if (r.root === current) entry.branch = b;
       }
     }
     for (const t of r.tags) tagRoots.set(t, [...(tagRoots.get(t) ?? []), r.root]);
   }
-  const branchRoots = new Map<string, string[]>();
-  const branches = [...merged.entries()].map(([key, m]) => {
-    branchRoots.set(key, m.roots);
-    return { ...m.branch, current: m.current };
-  });
+  const branches = [...merged.values()].map((m) => ({ ...m.branch, current: m.current }));
   const withRepos = (nodes: BranchTreeNode[]): BranchTreeNode[] =>
-    nodes.map((n) => ({
-      ...n,
-      repos:
-        n.kind === "branch"
-          ? branchRoots.get(`${n.branch!.remote}:${n.ref}`)
-          : n.kind === "tag"
-            ? tagRoots.get(n.ref!)
-            : undefined,
-      children: n.children && withRepos(n.children),
-    }));
+    nodes.map((n) => {
+      const byRoot = n.branch && merged.get(`${n.branch.remote}:${n.branch.name}`)?.byRoot;
+      return {
+        ...n,
+        repos: byRoot ? [...byRoot.keys()] : n.kind === "tag" ? tagRoots.get(n.ref!) : undefined,
+        branchesByRoot: byRoot,
+        children: n.children && withRepos(n.children),
+      };
+    });
   return withRepos(buildBranchTree(branches, favorites, [...tagRoots.keys()]));
 }
 

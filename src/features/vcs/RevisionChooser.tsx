@@ -16,6 +16,7 @@ export interface RevisionChoice {
 }
 
 interface Item extends RevisionChoice {
+  label?: string;
   detail: string;
   matches: number[] | null;
   section?: boolean;
@@ -29,15 +30,48 @@ export interface RepositoryRevisions {
 
 export interface ChooseRevisionOptions {
   tags?: boolean;
+  branchesOnly?: boolean;
   placeholder?: string;
   repositories?: string[];
+  commonOnly?: boolean;
+}
+
+function repositoryRefs(repo: RepositoryRevisions, branchesOnly: boolean, qualified: boolean): Item[] {
+  const repositories = qualified ? null : repo.root ? [repo.root] : null;
+  const item = (name: string, type: "heads" | "remotes" | "tags", detail: string): Item => ({
+    rev: qualified ? `refs/${type}/${name}` : name,
+    label: name,
+    detail,
+    repositories,
+    matches: null,
+  });
+  return [
+    ...sortLocal(repo.branches).map((b) => item(b.name, "heads", tx(b.current ? "current branch" : "local"))),
+    ...sortRemote(repo.branches).map((b) => item(b.name, "remotes", tx("remote"))),
+    ...(branchesOnly ? [] : repo.tags.map((name) => item(name, "tags", tx("tag")))),
+  ];
 }
 
 /** Shared branches first, followed by each repository's revisions. */
-export function revisionItems(repos: RepositoryRevisions[], query: string): Item[] {
-  const all: Item[] = [{ rev: "HEAD", detail: tx("Last commit"), repositories: null, matches: null }];
+export function revisionItems(
+  repos: RepositoryRevisions[],
+  query: string,
+  branchesOnly = false,
+  commonOnly = false,
+): Item[] {
+  const all: Item[] = branchesOnly
+    ? []
+    : [{ rev: "HEAD", detail: tx("Last commit"), repositories: null, matches: null }];
   const multi = repos.length > 1;
-  if (multi) {
+  if (commonOnly) {
+    const [first, ...rest] = repos;
+    if (first) {
+      const otherRefs = rest.map((repo) => new Set(repositoryRefs(repo, branchesOnly, true).map((ref) => ref.rev)));
+      all.push(
+        ...repositoryRefs(first, branchesOnly, true).filter((ref) => otherRefs.every((set) => set.has(ref.rev))),
+      );
+    }
+  } else if (multi) {
     const shared = new Map<string, string[]>();
     for (const repo of repos) {
       for (const name of new Set(repo.branches.map((b) => b.name))) {
@@ -51,7 +85,7 @@ export function revisionItems(repos: RepositoryRevisions[], query: string): Item
         all.push({ rev, detail: tx`in ${repositories.length} repositories`, repositories, matches: null });
     }
   }
-  for (const repo of repos) {
+  for (const repo of commonOnly ? [] : repos) {
     if (multi)
       all.push({
         rev: repoName(repo.root ?? ""),
@@ -60,29 +94,19 @@ export function revisionItems(repos: RepositoryRevisions[], query: string): Item
         matches: null,
         section: true,
       });
-    const repositories = repo.root ? [repo.root] : null;
-    all.push(
-      ...sortLocal(repo.branches).map((b) => ({
-        rev: b.name,
-        detail: tx(b.current ? "current branch" : "local"),
-        repositories,
-        matches: null,
-      })),
-      ...sortRemote(repo.branches).map((b) => ({ rev: b.name, detail: tx("remote"), repositories, matches: null })),
-      ...repo.tags.map((rev) => ({ rev, detail: tx("tag"), repositories, matches: null })),
-    );
+    all.push(...repositoryRefs(repo, branchesOnly, false));
   }
   const q = query.trim();
   if (!q) return all;
   const filtered = all
     .flatMap((i) => {
       if (i.section) return [i];
-      const matches = fuzzyMatch(i.rev, q);
+      const matches = fuzzyMatch(i.label ?? i.rev, q);
       return matches ? [{ ...i, matches }] : [];
     })
     .filter((i, idx, list) => !i.section || (!!list[idx + 1] && !list[idx + 1]!.section));
   // Always allow applying a typed revision across the full selection, even when one repo offers it.
-  if (!filtered.some((i) => !i.section && i.rev === q && i.repositories === null))
+  if (!branchesOnly && !filtered.some((i) => !i.section && (i.label ?? i.rev) === q && i.repositories === null))
     filtered.push({ rev: q, detail: tx("revision"), repositories: null, matches: null });
   return filtered;
 }
@@ -146,7 +170,10 @@ function Chooser({
       alive = false;
     };
   }, [options.tags, roots]);
-  const items = useMemo(() => revisionItems(repos, query), [repos, query]);
+  const items = useMemo(
+    () => revisionItems(repos, query, options.branchesOnly, options.commonOnly),
+    [repos, query, options.branchesOnly, options.commonOnly],
+  );
   const idx = Math.min(active, items.length - 1);
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Enter") {
@@ -203,7 +230,7 @@ function Chooser({
               />
               <HighlightedText
                 className={`${styles.fileName} ${styles.mono}`}
-                text={i.rev}
+                text={i.label ?? i.rev}
                 indices={i.matches}
                 tone="accent"
               />

@@ -337,6 +337,12 @@ export const vscodeMacos: Record<string, string[]> = {
   "vcs.changelist.edit": [],
   "vcs.log.copyRevision": [],
   "vcs.log.goToRef": [],
+  "vcs.log.editMessage": [],
+  "vcs.log.newBranch": [],
+  "vcs.log.goToChild": [],
+  "vcs.log.goToParent": [],
+  "vcs.log.toggleBookmark": [],
+  "vcs.log.toggleBookmarkWithMnemonic": [],
   // View › Appearance (VS Code: workbench.action.zoomIn / zoomOut / zoomReset)
   "view.zoomIn": ["Meta+="],
   "view.zoomOut": ["Meta+-"],

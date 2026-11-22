@@ -100,6 +100,8 @@ export interface RunSession {
   httpPort?: number;
   /** Pinned tab: once finished, a later run opens a new tab instead of taking its place. */
   pinned?: boolean;
+  /** Commit checks own these tabs so their output stays available for review. */
+  backgroundCheck?: boolean;
 }
 
 interface SessionRuntime {
@@ -754,7 +756,12 @@ function newRuntime(config: RunConfig): SessionRuntime {
 }
 
 /** Runs a configuration's before launch tasks; false aborts the launch. Installed by the feature. */
-export type BeforeLaunchRunner = (config: RunConfig, chain: readonly string[], show?: boolean) => Promise<boolean>;
+export type BeforeLaunchRunner = (
+  config: RunConfig,
+  chain: readonly string[],
+  show?: boolean,
+  signal?: AbortSignal,
+) => Promise<boolean>;
 let beforeLaunch: BeforeLaunchRunner | null = null;
 
 export function setBeforeLaunchRunner(runner: BeforeLaunchRunner | null) {
@@ -766,9 +773,12 @@ export async function prepareLaunch(
   config: RunConfig,
   chain: readonly string[] = [],
   show?: boolean,
+  signal?: AbortSignal,
 ): Promise<boolean> {
+  signal?.throwIfAborted();
   if (!config.beforeLaunch?.length || !beforeLaunch) return true;
-  return beforeLaunch(config, [...chain, config.id], show);
+  const next = [...chain, config.id];
+  return signal ? beforeLaunch(config, next, show, signal) : beforeLaunch(config, next, show);
 }
 
 /** Starts every configuration of a compound (after the compound's own before launch tasks). */
@@ -798,7 +808,7 @@ export function sessionsOf(config: RunConfig, sessions = useRun.getState().sessi
  * Agents' commands keep to their own tabs.
  */
 function reusableTab(sessions: readonly RunSession[], active: string | null, config: RunConfig) {
-  const free = sessions.filter((s) => !isLive(s) && !s.pinned && !claimedTabs.has(s.id));
+  const free = sessions.filter((s) => !isLive(s) && !s.pinned && !s.backgroundCheck && !claimedTabs.has(s.id));
   const same = free.find((s) => s.config.id === config.id);
   if (same || agentName(config) !== null) return same;
   const others = free.filter((s) => agentName(s.config) === null);
@@ -827,6 +837,7 @@ interface StartRunOptions {
   chain?: readonly string[];
   /** Runs before the stop signal when the user stops this run (run executors). */
   beforeStop?: (runId: RunId) => Promise<void>;
+  check?: { signal: AbortSignal; own: (sessionId: string) => void };
 }
 
 /** Starts `config`, reusing the tab of a finished (or the given) session (see `reusableTab`). */
@@ -851,13 +862,16 @@ async function startRunIn(
   baseConfig: RunConfig | undefined,
   options: StartRunOptions,
 ): Promise<RunSession | null> {
+  const check = options.check;
+  check?.signal.throwIfAborted();
   config = withRunTarget(config);
   try {
     config = await withExpandedCwd(config);
   } catch (e) {
-    notifyCwdError(config, e);
+    if (!check) notifyCwdError(config, e);
     return null;
   }
+  check?.signal.throwIfAborted();
   if (!options.launch && isCMakeBuild(config)) {
     await buildCMake(config.id, options.show !== false);
     return null;
@@ -878,7 +892,13 @@ async function startRunIn(
     });
     return null;
   }
-  if (!options.launch && !options.prepared && !(await prepareLaunch(config, options.chain, options.show))) return null;
+  if (
+    !options.launch &&
+    !options.prepared &&
+    !(await prepareLaunch(config, options.chain, options.show, check?.signal))
+  )
+    return null;
+  check?.signal.throwIfAborted();
   const state = useRun.getState();
   const busy = (s: RunSession) => isLive(s);
   let session = reuse ? state.sessions.find((s) => s.id === reuse) : undefined;
@@ -889,10 +909,11 @@ async function startRunIn(
     : state.sessions.filter((s) => s.config.id === config.id && busy(s) && s.id !== session?.id);
   const debugging = config.allowParallel ? [] : liveDebugSessions(config.id);
   if (others.length || debugging.length) {
+    if (check) return null;
     const instances = others.length + debugging.length + (session && busy(session) ? 1 : 0);
     if (workflowSettings().run.confirmRerun && !(await confirmRerun(config.name, instances))) return null;
     await Promise.all([...others.map((s) => stopSession(s.id)), ...debugging.map((d) => d.stop())]);
-    session ??= others[0];
+    session ??= others.find((item) => !item.backgroundCheck);
   }
   const stopping = others.map((s) => s.id);
   if (session && busy(session)) {
@@ -903,7 +924,7 @@ async function startRunIn(
   // IDEA there is no time limit: a first Stop waits for the shutdown, a second one kills it.
   await waitForExit(stopping, null);
   const now = useRun.getState();
-  const picked = session ? undefined : reusableTab(now.sessions, now.activeSession, config);
+  const picked = session || check ? undefined : reusableTab(now.sessions, now.activeSession, config);
   session ??= picked;
 
   if (picked) claimedTabs.add(picked.id);
@@ -915,6 +936,14 @@ async function startRunIn(
     if (picked) claimedTabs.delete(picked.id);
   }
 
+  check?.signal.throwIfAborted();
+  if (
+    check &&
+    !config.allowParallel &&
+    (useRun.getState().sessions.some((s) => s.config.id === config.id && isLive(s)) ||
+      liveDebugSessions(config.id).length)
+  )
+    return null;
   const startedAt = Date.now();
   if (session) {
     const prev = runtimes.get(session.id);
@@ -934,6 +963,7 @@ async function startRunIn(
       stdinClosed: false,
       stopped: false,
       httpPort: undefined,
+      backgroundCheck: undefined,
     };
     const updated = session;
     useRun.setState((s) => ({
@@ -951,22 +981,28 @@ async function startRunIn(
       endedAt: null,
       stdinClosed: false,
       baseConfig,
-      pinned: workflowSettings().run.pinTabs || undefined,
+      pinned: check ? undefined : workflowSettings().run.pinTabs || undefined,
+      backgroundCheck: !!check || undefined,
     };
     runtimes.set(session.id, newRuntime(config));
     const created = session;
-    useRun.setState((s) => ({ sessions: [...s.sessions, created], activeSession: created.id }));
+    useRun.setState((s) => ({
+      sessions: [...s.sessions, created],
+      activeSession: check ? s.activeSession : created.id,
+    }));
   }
   bump(session.id);
   const sessionId = session.id;
   const rt = runtimes.get(sessionId)!;
   const generation = rt.generation;
+  check?.own(sessionId);
+  check?.signal.throwIfAborted();
   if (options.onLine) rt.lineListeners.push(options.onLine);
   let browserOpened = false;
   rt.lineListeners.push((line) => {
     if (config.kind === "tomcat" && /Server startup in/.test(line)) {
       patchSession(sessionId, { httpPort: Number(config.params?.httpPort || "8080") });
-      if (!browserOpened && config.params?.openBrowser === "true") {
+      if (!check && !browserOpened && config.params?.openBrowser === "true") {
         browserOpened = true;
         void openUrl(tomcatBrowserUrl(config));
       }
@@ -996,7 +1032,10 @@ async function startRunIn(
   channel.onmessage = (chunk) => {
     if (runtimes.get(sessionId)?.generation !== generation) return;
     enqueue(sessionId, chunk);
-    if ((chunk.kind === "stdout" && config.showOnStdout) || (chunk.kind === "stderr" && config.showOnStderr))
+    if (
+      !check &&
+      ((chunk.kind === "stdout" && config.showOnStdout) || (chunk.kind === "stderr" && config.showOnStderr))
+    )
       revealSession(sessionId);
   };
   try {
@@ -1022,7 +1061,7 @@ async function startRunIn(
     const prepare = typeFor(launch.kind)?.prepareLaunch;
     if (prepare) {
       launch = await prepare(launch);
-      if (launch.kind === "tomcat") useRun.setState({ activeSession: sessionId });
+      if (!check && launch.kind === "tomcat") useRun.setState({ activeSession: sessionId });
       if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
     }
     // Debug launches read the agent's output lines: never through a terminal.
@@ -1074,17 +1113,22 @@ async function startRunIn(
       finishSession(sessionId, exited);
     }
   } catch (e) {
-    if (getSession(sessionId)?.stopped || isCancelled(e)) return getSession(sessionId) ?? null;
+    if (getSession(sessionId)?.stopped) return getSession(sessionId) ?? null;
+    if (isCancelled(e)) {
+      if (check && runtimes.get(sessionId) === rt) patchSession(sessionId, { status: "failed", endedAt: Date.now() });
+      return getSession(sessionId) ?? null;
+    }
     const message = e instanceof Error ? e.message : String(e);
     enqueue(sessionId, { kind: "stderr", text: tx`Error running '${config.name}': ${message}\n` });
     flush(sessionId);
     patchSession(sessionId, { status: "failed", endedAt: Date.now() });
-    notifications().notify({
-      group: "run",
-      level: "error",
-      title: `Error running '${remoteLabel(config)}'`,
-      ...buildToolRecovery(message),
-    });
+    if (!check)
+      notifications().notify({
+        group: "run",
+        level: "error",
+        title: `Error running '${remoteLabel(config)}'`,
+        ...buildToolRecovery(message),
+      });
   }
   return getSession(sessionId) ?? null;
 }
@@ -1212,7 +1256,7 @@ function finishSession(sessionId: string, code: number | null) {
       }
       patchSession(sessionId, { status: "finished", exitCode: code, endedAt: Date.now() });
       bump(sessionId);
-      notifyExit(sessionId, code);
+      if (!session.backgroundCheck) notifyExit(sessionId, code);
       try {
         rt.onExit?.(code, !!getSession(sessionId)?.stopped);
       } catch (e) {

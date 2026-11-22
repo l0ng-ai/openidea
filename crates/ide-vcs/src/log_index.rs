@@ -446,7 +446,7 @@ pub(crate) fn matches_user(query: &str, name: &str, email: &str) -> bool {
 
 /// git's subject (`%s`, `git log --oneline`): the message's first paragraph on one line.
 /// A whitespace-only line ends the paragraph, as in git; `\r\n` endings count as newlines.
-fn subject(message: &gix::bstr::BStr) -> String {
+pub(crate) fn subject(message: &gix::bstr::BStr) -> String {
     let lines = message.lines().map(|l| l.trim_end()).skip_while(|l| l.is_empty());
     let paragraph: Vec<String> = lines.take_while(|l| !l.is_empty()).map(|l| to_string(l.as_bstr())).collect();
     // git skips leading whitespace (blank lines and the first line's indent) before the subject.

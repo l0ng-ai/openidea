@@ -92,6 +92,7 @@ pub struct Host {
     /// The window that owns each open heap snapshot; its project's close closes them.
     pub(crate) heap_windows: Mutex<HashMap<ide_heap::HeapSnapshotId, String>>,
     pub(crate) heap_requests: ops::heap::HeapRequests,
+    pub(crate) rebase_editors: Arc<ops::vcs::RebaseEditors>,
     /// SSH connections of Settings › SSH Configurations.
     pub ssh: Arc<ide_ssh::SshManager>,
     /// SFTP deployment, remote file editing and runs on run targets.
@@ -190,6 +191,7 @@ impl Host {
             heap: Arc::new(ide_heap::HeapRegistry::new(ide_heap::snapshots_root(&local_data_dir))),
             heap_windows: Mutex::default(),
             heap_requests: Default::default(),
+            rebase_editors: Default::default(),
             languages,
             syntax,
             config_dir,

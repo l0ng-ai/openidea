@@ -57,6 +57,21 @@ afterEach(() => {
 });
 
 describe("directory comparison", () => {
+  it("offers only common refs for checkout and distinguishes a branch from a tag with the same name", () => {
+    const repos = [
+      { root: "/client", branches: [branch("main"), branch("local-only")], tags: ["main", "release"] },
+      { root: "/server", branches: [branch("main")], tags: ["main", "release", "server-only"] },
+    ];
+    expect(revisionItems(repos, "", false, true).map((i) => i.rev)).toEqual([
+      "HEAD",
+      "refs/heads/main",
+      "refs/tags/main",
+      "refs/tags/release",
+    ]);
+    expect(revisionItems(repos, "main", false, true).map((i) => i.rev)).toEqual(["refs/heads/main", "refs/tags/main"]);
+    expect(revisionItems(repos, "HEAD~2", false, true).map((i) => i.rev)).toEqual(["HEAD~2"]);
+  });
+
   it("offers shared branches plus each repository's local, remote and tag revisions", () => {
     const repos = [
       {
