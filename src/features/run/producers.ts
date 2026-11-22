@@ -1216,7 +1216,7 @@ export function produceContextChoices(input: ContextInput, env: ToolEnv): Produc
   const rel = relTo(input.path, input.root);
   const cmake = cmakeTargets(input);
   if (cmake.length > 1) return cmake.map((config) => ({ name: config.name, scope: produced.scope, config }));
-  const bases = testBasesFor(rel, [...input.configs]);
+  const bases = testBasesFor(rel, [...input.configs], input.content);
   if (bases.length < 2) return [produced];
   let element: RunTarget | null = null;
   if (produced.scope === "element") {
