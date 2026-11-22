@@ -12,6 +12,7 @@ import {
   LanguageSupport,
   StreamLanguage,
   delimitedIndent,
+  type Language,
   indentNodeProp,
   indentService,
   language as languageFacet,
@@ -169,9 +170,28 @@ const OWN_MODES = [
       },
     }),
   ),
+  // CSS, GraphQL, SQL and HTML in tagged template literals (`styled.div`, `gql`, `sql`, `html`).
+  ...(
+    [
+      ["JavaScript", {}],
+      ["TypeScript", { typescript: true }],
+      ["JSX", { jsx: true }],
+      ["TSX", { jsx: true, typescript: true }],
+    ] as const
+  ).map(([name, config]) =>
+    LanguageDescription.of({
+      name,
+      load: () => import("./templateLanguages").then((m) => m.javascriptWithTemplates(config, templateLanguage)),
+    }),
+  ),
+  // Only for template literals: `.graphql` files keep the backend's tree-sitter highlighting.
+  LanguageDescription.of({
+    name: "GraphQL",
+    load: async () => new LanguageSupport(StreamLanguage.define((await import("./graphql")).graphqlParser)),
+  }),
   LanguageDescription.of({
     name: "Angular TypeScript",
-    load: () => import("./angular/inline").then((m) => m.angularTypescript()),
+    load: () => import("./angular/inline").then((m) => m.angularTypescript(templateLanguage)),
   }),
   LanguageDescription.of({ name: "Angular Template", load: () => import("./angular").then((m) => m.angular()) }),
   LanguageDescription.of({ name: "Thymeleaf", load: () => import("./thymeleaf").then((m) => m.thymeleafSupport()) }),
@@ -368,7 +388,17 @@ export function fencedCodeMode(info: string): FencedCodeMode | null {
     const uiMode = infos?.has(name) ? infos.get(name)!.uiMode : uiModeForPath(`.${name}`);
     desc = uiMode ? findLanguageDescription(uiMode, "") : null;
   }
-  if (!desc) return null;
+  return desc ? patchedMode(desc) : null;
+}
+
+/** The mode named `name` (`CSS`, `GraphQL`) for a template literal, with the tag patches of a file in it. */
+function templateLanguage(name: string): Language | LanguageDescription | null {
+  const desc = findLanguageDescription(name, "");
+  return desc ? patchedMode(desc).language : null;
+}
+
+/** `desc` with the same tag patches as a file of that language, loaded on first use. */
+function patchedMode(desc: LanguageDescription): FencedCodeMode {
   const ready = patched.get(desc);
   if (ready) return { name: desc.name, language: ready.language };
   // Markdown parses the block once the proxy has loaded the patched support.
