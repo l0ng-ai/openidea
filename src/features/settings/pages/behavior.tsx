@@ -212,7 +212,13 @@ function AccentRow() {
   return (
     <Indented>
       <Row label="Accent color">
-        <ColorSwatches value={accent} presets={ACCENT_PRESETS} onChange={setAccent} aria-label="Accent color" />
+        <ColorSwatches
+          value={accent}
+          presets={ACCENT_PRESETS}
+          onChange={setAccent}
+          aria-label="Accent color"
+          useColorPicker
+        />
       </Row>
     </Indented>
   );

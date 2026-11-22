@@ -156,6 +156,11 @@ function selectedPaths(arg: unknown): string[] {
   return project.length ? project : contextPaths(arg);
 }
 
+/** Paths a file action targets: the Project view's selection while it has focus, else the open file. */
+function focusedPaths(arg: unknown, ctx: { projectViewFocus?: unknown }): string[] {
+  return ctx.projectViewFocus ? selectedPaths(arg) : contextPaths(arg);
+}
+
 /**
  * The repository a repository-wide dialog (Pull, Merge, Rebase) starts on: the one holding the
  * action's file, else the Project view's selection while it has focus, else the active editor's
@@ -661,8 +666,8 @@ export function registerVcsActions(): () => void {
       category: "Git",
       icon: "history",
       when: VCS,
-      run: ({ arg }) => {
-        const path = contextPaths(arg)[0];
+      run: ({ arg, ctx }) => {
+        const path = focusedPaths(arg, ctx)[0];
         if (!path) return;
         openLogTab("history", path);
         showGitWindow();
@@ -717,7 +722,7 @@ export function registerVcsActions(): () => void {
       category: "Git",
       when: VCS,
       keywords: ["ignore", "unversioned", "exclude"],
-      run: ({ arg }) => addToIgnore(contextPaths(arg), destination),
+      run: ({ arg, ctx }) => addToIgnore(focusedPaths(arg, ctx), destination),
     })),
     {
       id: "vcs.addToVcs",
@@ -726,9 +731,7 @@ export function registerVcsActions(): () => void {
       icon: "plus",
       when: VCS,
       keywords: ["git add", "stage"],
-      run: ({ arg }) => {
-        return addToVcs(contextPaths(arg));
-      },
+      run: ({ arg, ctx }) => addToVcs(focusedPaths(arg, ctx)),
     },
     {
       id: "vcs.stash",

@@ -94,9 +94,15 @@
   flex: none;
   color: var(--fg-muted);
 }
-.fileName {
+.fileName,
+.directory {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.directory {
+  flex: 0 2 auto;
+  color: var(--fg-subtle);
 }
 .line {
   overflow: hidden;

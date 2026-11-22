@@ -143,7 +143,10 @@ export function foldRows(
       const fold: Fold = { start: i, count: j - i, id: lines[i]!.id, expanded: expanded.has(lines[i]!.id) };
       const prev = rows[rows.length - 1];
       if (prev?.kind === "line") prev.fold = fold;
-      else if (!fold.expanded) rows.push({ kind: "fold", fold });
+      else if (fold.expanded) {
+        rows.push({ kind: "line", index: i, fold });
+        i++;
+      } else rows.push({ kind: "fold", fold });
       if (fold.expanded) for (; i < j; i++) rows.push({ kind: "line", index: i });
       i = j;
       continue;
@@ -230,7 +233,7 @@ export function ConsoleView({
   // Pending input continues the open line (a prompt), or starts a row of its own.
   const lastRow = folded[folded.length - 1];
   const inputInline =
-    !!input && !!model.openLine && lastRow?.kind === "line" && !lastRow.fold && lines[lastRow.index] === model.openLine;
+    !!input && !!model.openLine && lastRow?.kind === "line" && lines[lastRow.index] === model.openLine;
   const inputRow = !!input && !inputInline;
   const [widest] = useState(() => new WidestColumns());
   // eslint-disable-next-line react-hooks/exhaustive-deps -- `version` marks in-place appends to `lines`
@@ -255,7 +258,7 @@ export function ConsoleView({
     getItemKey: (i) => {
       const r = rows[i];
       if (!r) return "input";
-      return r.kind === "fold" ? `f${r.fold.id}` : (lines[r.index]?.id ?? i);
+      return r.kind === "fold" ? r.fold.id : (lines[r.index]?.id ?? i);
     },
   });
 
@@ -486,7 +489,7 @@ export function ConsoleView({
       return;
     }
     if (copySelectionOnKeyDown(e, selectedOutput)) return;
-    if (!input) return;
+    if (!input || e.target instanceof HTMLButtonElement) return;
     if (e.key === "d" && e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
       input.onEof();
@@ -523,19 +526,24 @@ export function ConsoleView({
   const foldButton = (fold: Fold, attached: boolean) =>
     fold.expanded ? (
       <button
+        key={fold.id}
         type="button"
         className={styles.foldToggle}
+        style={{ height: rowHeight }}
         title={tx("Collapse folded lines")}
         aria-label={tx("Collapse folded lines")}
+        aria-expanded={true}
         onClick={() => toggleFold(fold.id)}
       >
-        <Icon name="chevron-up" size={10} />
+        <Icon name="chevron-down" size={10} />
       </button>
     ) : (
       <button
+        key={fold.id}
         type="button"
         className={styles.fold}
         title={tx("Expand folded lines")}
+        aria-expanded={false}
         onClick={() => toggleFold(fold.id)}
       >
         {`${attached ? " " : ""}${fold.count === 1 ? tx`<${fold.count} internal line>` : tx`<${fold.count} internal lines>`}`}
@@ -651,6 +659,7 @@ export function ConsoleView({
                 className={clsx(styles.line, styles[line.kind])}
                 style={{ ...rowStyle(item.start), color, background: ruled?.line?.bg }}
               >
+                {row.fold?.expanded && foldButton(row.fold, false)}
                 <Line
                   line={line}
                   marks={marksByLine.get(row.index)}
@@ -658,7 +667,7 @@ export function ConsoleView({
                   length={line.text.length}
                   cwd={cwd}
                 />
-                {row.fold && foldButton(row.fold, true)}
+                {row.fold && !row.fold.expanded && foldButton(row.fold, true)}
                 {inputInline && item.index === rows.length - 1 && pendingInput}
                 {"\n"}
               </div>

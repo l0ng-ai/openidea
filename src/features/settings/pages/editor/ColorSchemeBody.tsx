@@ -5,7 +5,16 @@ import { SCHEME_SUBPAGES, languagePageId } from "./colorSchemeMeta";
  * italic / effects editor, and a live preview. Edits are staged in
  * `editor.colorOverrides[scheme][attribute]`; `editor/core` injects them.
  */
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  Suspense,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
 import {
   Button,
   Checkbox,
@@ -39,6 +48,7 @@ import styles from "./Editor.module.css";
 import { executeAction, registerActions } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { ask, confirm, showError } from "@/workbench/messages";
+import { useContributions } from "@/workbench/contributions";
 import { parseIcls, SchemeParseError, importScheme, deleteScheme, exportIcls } from "@/platform/icls";
 import { tx, txPart, useTx } from "@/platform/i18n";
 import { selectPage } from "../../model/staging";
@@ -1496,15 +1506,69 @@ function GitPreview({
   );
 }
 
-/** One diff row in the Changed lines preview: a label, a coloured strip and its overview stripe. */
-const DIFF_PREVIEW_ROWS: Array<{ attr: string; code: string; bgVar: string; stripeVar: string }> = [
-  { attr: "diffChanged", code: "def MyClass():", bgVar: "--diff-modified", stripeVar: "--diff-modified-stripe" },
-  { attr: "diffInserted", code: "value = 123", bgVar: "--diff-inserted", stripeVar: "--diff-inserted-stripe" },
-  { attr: "diffDeleted", code: "pass  # old", bgVar: "--diff-deleted", stripeVar: "--diff-deleted-stripe" },
-];
+/**
+ * A static three-pane merge view (left parent / result / right parent) rendered through the
+ * `mergeSchemePreview` editor kind — the same real CodeMirror diff decorations a merge view
+ * uses, so the colours here are exactly the colours users get. Clicking a coloured line
+ * selects its scheme attribute; the long unchanged stretch shows the folded wave separator.
+ * Heads stay the same length so one fold range fits all panes, and every difference is
+ * visible without scrolling: the heads carry the modification and the deletion, the result
+ * gains `return value` right after the fold (an insertion isolated by shared lines, since
+ * an adjacent delete+insert or a document-edge difference collapses into a modification).
+ */
+const DIFF_HEAD_A = ["bar(123)", "def foo(self):", "    # Left changes", "    pass"];
+const DIFF_HEAD_RESULT = ["class MyClass", "value = 123", "def foo(self):", "    pass"];
+const DIFF_HEAD_B = ["class MyClass", "value = 123", "def foo(self):", "    pass"];
+const DIFF_UNCHANGED = Array.from({ length: 16 }, (_, i) => `        # unchanged context ${i + 1}`);
+const DIFF_PARENT_A = [
+  ...DIFF_HEAD_A,
+  ...DIFF_UNCHANGED,
+  "    print('mid')",
+  "    print('end')",
+  "def bar(self, a, b):",
+  "    print a",
+  "    print b",
+].join("\n");
+const DIFF_RESULT = [
+  ...DIFF_HEAD_RESULT,
+  ...DIFF_UNCHANGED,
+  "    print('mid')",
+  "    return value",
+  "    print('end')",
+  "def bar(self, a, b):",
+  "    print a",
+  "    print b",
+].join("\n");
+const DIFF_PARENT_B = [
+  ...DIFF_HEAD_B,
+  ...DIFF_UNCHANGED,
+  "    print('mid')",
+  "    print('end')",
+  "def bar(self, a, b):",
+  "    print a",
+  "    print b",
+].join("\n");
+function diffMergeInput(): import("@/workbench/contributions").EditorInput {
+  return {
+    kind: "mergeSchemePreview",
+    key: "color-scheme-diff-preview",
+    data: {
+      path: "untitled:diff-merge-preview.py",
+      left: DIFF_PARENT_A,
+      result: DIFF_RESULT,
+      right: DIFF_PARENT_B,
+      labels: [tx("Left"), tx("Result"), tx("Right")],
+      attrs: {
+        inserted: "diffInserted",
+        deleted: "diffDeleted",
+        modified: "diffChanged",
+        wave: "diffSeparatorWave",
+      },
+      fold: { from: 5, to: 20, label: tx("16 unchanged lines") },
+    },
+  };
+}
 
-/** The Diff & Merge page shows the real diff surfaces: change-type strips on a side-by-side
- *  diff and the wavy separator on a folded-unchanged fragment. Each colour selects its attribute. */
 function DiffMergePreview({
   vars,
   ids,
@@ -1514,67 +1578,17 @@ function DiffMergePreview({
   ids: Set<string>;
   reveal: (attrId: string) => void;
 }) {
-  const click = (attrId: string) => revealPreviewAttr(attrId, ids, reveal);
-  const stripeCell = (attrId: string, colorVar: string, key: string) => (
-    <span
-      key={key}
-      className={`${styles.diffStripe} ${styles.clickable}`}
-      style={{ background: `var(${colorVar})` }}
-      title={tx("Error stripe mark")}
-      onClick={() => click(attrId)}
-    />
-  );
+  const previewViewer = useContributions((s) => s.editorKinds.get("mergeSchemePreview"));
+  const input = useMemo(() => diffMergeInput(), []);
+  const onClick = (e: MouseEvent<HTMLDivElement>) => {
+    const attr = (e.target as HTMLElement).closest<HTMLElement>("[data-diattr]")?.dataset.diattr;
+    if (attr) revealPreviewAttr(attr, ids, reveal);
+  };
   return (
-    <div className={styles.diffPreview} style={vars} aria-label={tx("Color scheme preview")}>
-      <div className={styles.gitSection}>
-        <div className={styles.gitSectionTitle}>{tx("Changed lines")}</div>
-        <div className={styles.diffPane}>
-          {DIFF_PREVIEW_ROWS.map((row, i) => (
-            <div key={row.attr} className={styles.diffLine}>
-              <span className={styles.previewGutter}>{i + 1}</span>
-              <span
-                className={`${styles.diffLineBody} ${styles.clickable}`}
-                style={{ background: `color-mix(in srgb, var(${row.bgVar}) 70%, transparent)` }}
-                onClick={() => click(row.attr)}
-              >
-                {row.code}
-              </span>
-              {stripeCell(row.attr, row.stripeVar, "stripe")}
-            </div>
-          ))}
-          <div className={styles.diffLine} onClick={() => click("diffConflict")}>
-            <span className={styles.previewGutter}>4</span>
-            <span
-              className={`${styles.diffLineBody} ${styles.clickable}`}
-              style={{ background: `color-mix(in srgb, var(--bg-editor) 100%, transparent)` }}
-            >
-              <span
-                className={styles.diffConflictMark}
-                style={{ background: `var(--diff-conflict-stripe)` }}
-                onClick={() => click("diffConflict")}
-              >
-                &lt;&lt;&lt;&lt;&nbsp; HEAD
-              </span>
-            </span>
-            {stripeCell("diffConflict", "--diff-conflict-stripe", "conflict-stripe")}
-          </div>
-        </div>
-      </div>
-      <div className={styles.gitSection}>
-        <div className={styles.gitSectionTitle}>{tx("Folded unchanged fragments")}</div>
-        <div className={styles.diffFold}>
-          <div className={styles.diffFoldCode}>def foo(self):</div>
-          <div
-            className={`${styles.diffFoldWave} ${styles.clickable}`}
-            style={{ background: `var(--diff-separator-wave)`, borderBottomColor: `var(--diff-separator-wave)` }}
-            title={tx("Folded unchanged fragments › Wave")}
-            onClick={() => click("diffSeparatorWave")}
-          >
-            <span className={styles.diffFoldChevron}>{tx("6 unchanged lines")}</span>
-          </div>
-          <div className={styles.diffFoldCode}>def bar(self, a, b):</div>
-        </div>
-      </div>
+    <div className={styles.diffPreview} style={vars} aria-label={tx("Color scheme preview")} onClick={onClick}>
+      <Suspense fallback={<div className={styles.diffLoading}>{tx("Loading preview…")}</div>}>
+        {previewViewer && <previewViewer.component input={input} />}
+      </Suspense>
     </div>
   );
 }

@@ -118,6 +118,22 @@
 .sourceLabels .labelFile {
   font-size: var(--fs-small);
 }
+.labelFile.revisionPath {
+  display: inline-flex;
+  color: var(--fg-muted);
+  font-size: var(--fs-ui);
+}
+.revisionDirectory,
+.revisionFilename {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.revisionFilename {
+  /* Let the directory shrink first, then elide the filename if it still exceeds the path's width. */
+  flex: none;
+  max-width: 100%;
+}
 .badge {
   padding: 0 5px;
   border-radius: var(--radius-small);

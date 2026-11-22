@@ -96,6 +96,7 @@ const UNTRANSLATED = new Set<string>([
   "Flutter",
   "Prettier",
   "oxfmt",
+  "Biome",
   "Ruff",
   "IntelliJ IDEA",
   "GitHub",

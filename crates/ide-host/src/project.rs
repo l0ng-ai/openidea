@@ -286,6 +286,10 @@ impl Host {
                         lombok.jar(),
                     );
                     ide_sdk::apply::configure_gradle_runtime(cfg, root, server_root, &effective);
+                    let gradle_dirs: Vec<_> = std::iter::once(data_dir.join("gradle"))
+                        .chain(dirs::cache_dir().map(|dir| dir.join("openidea").join("gradle")))
+                        .collect();
+                    ide_sdk::apply::configure_gradle_classpath(cfg, &gradle_dirs);
                     ide_sdk::apply::configure_maven_sources(cfg, &effective);
                     ide_sdk::jdtls::launch_directly(cfg);
                 }

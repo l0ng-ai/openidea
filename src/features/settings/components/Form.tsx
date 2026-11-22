@@ -7,6 +7,8 @@ import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from "rea
 import clsx from "clsx";
 import { Checkbox, IconButton, Input, Select as UiSelect, type SelectOption, T } from "@/ui";
 import { tx, useTx } from "@/platform/i18n";
+import { ColorPicker, rememberColor } from "@/ui/ColorPicker";
+import { fromOpaqueHex, toHex6 } from "@/ui/colorPickerValues";
 import { choosePath } from "@/platform/choosePath";
 import { isTauri } from "@/platform/ipc";
 import { highlightIndices } from "../model/pages";
@@ -250,13 +252,23 @@ export interface ColorSwatchesProps {
   onChange: (value: string) => void;
   /** Offer a custom colour picker + hex field. */
   allowCustom?: boolean;
+  useColorPicker?: boolean;
   "aria-label"?: string;
 }
 
-export function ColorSwatches({ value, presets, onChange, allowCustom = true, ...aria }: ColorSwatchesProps) {
+export function ColorSwatches({
+  value,
+  presets,
+  onChange,
+  allowCustom = true,
+  useColorPicker = false,
+  ...aria
+}: ColorSwatchesProps) {
   const current = value.toLowerCase();
   const isPreset = presets.some((p) => p.value.toLowerCase() === current);
   const [hex, setHex] = useState<string | null>(null);
+  const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
+  const initial = useColorPicker ? fromOpaqueHex(value) : null;
   const hexText = hex ?? (isPreset ? "" : value);
   const hexInvalid = hex !== null && hex !== "" && !HEX_COLOR.test(hex);
   return (
@@ -278,7 +290,41 @@ export function ColorSwatches({ value, presets, onChange, allowCustom = true, ..
           </button>
         );
       })}
-      {allowCustom && (
+      {allowCustom && initial && (
+        <>
+          <button
+            type="button"
+            className={clsx(styles.swatch, styles.custom, !isPreset && styles.swatchOn)}
+            aria-label={isPreset ? tx("Custom colour") : `${tx("Custom colour")} ${value}`}
+            aria-pressed={!isPreset}
+            aria-haspopup="dialog"
+            aria-expanded={!!anchor}
+            title={tx("Custom colour")}
+            onClick={(event) => {
+              event.currentTarget.focus();
+              setAnchor(anchor ? null : event.currentTarget);
+            }}
+          >
+            <span className={styles.swatchColor} style={!isPreset ? { background: value } : undefined} />
+          </button>
+          {anchor && (
+            <ColorPicker
+              anchor={anchor}
+              initial={initial}
+              opaque
+              onFinish={(commit, color) => {
+                setAnchor(null);
+                const next = toHex6(color);
+                if (commit && next !== toHex6(initial)) {
+                  rememberColor(color);
+                  onChange(next);
+                }
+              }}
+            />
+          )}
+        </>
+      )}
+      {allowCustom && !useColorPicker && (
         <>
           <label
             className={clsx(styles.swatch, styles.custom, !isPreset && styles.swatchOn)}
