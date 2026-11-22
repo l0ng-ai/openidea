@@ -779,20 +779,20 @@ export class TerminalSession {
   }
 
   private doFit() {
-    if (this.disposed || !this.host.isConnected) return;
+    if (this.disposed || !this.host.isConnected) return false;
     // The grid row is still 0 on the first layout pass (the track is set by a
     // parent layout effect after this one). Keep asking until it has a box;
     // ResizeObserver also resets the budget when the size actually changes.
     if (this.host.offsetWidth === 0 || this.host.offsetHeight === 0) {
       if (this.fitAttempts++ < 20) this.scheduleFit();
-      return;
+      return false;
     }
     this.openIfReady();
-    if (!this.opened) return;
+    if (!this.opened) return false;
     const dims = this.fit.proposeDimensions();
     if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows)) {
       if (this.fitAttempts++ < 20) this.scheduleFit();
-      return;
+      return false;
     }
     this.fitAttempts = 0;
     if (dims.cols !== this.term.cols || dims.rows !== this.term.rows) this.term.resize(dims.cols, dims.rows);

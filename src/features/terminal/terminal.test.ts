@@ -519,6 +519,7 @@ describe("fit scheduling", () => {
     const fit = vi.fn();
     const f = fitScheduler(fit);
     f.schedule();
+    f.schedule();
     vi.advanceTimersToNextFrame();
     expect(fit).toHaveBeenCalledTimes(1);
     for (let i = 0; i < 30; i++) {
@@ -533,6 +534,19 @@ describe("fit scheduling", () => {
     f.cancel();
     vi.advanceTimersByTime(FIT_SETTLE_MS * 2);
     expect(fit).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a new terminal on the frame schedule until it can measure its grid", () => {
+    vi.useFakeTimers();
+    const fit = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+    const scheduler = fitScheduler(fit);
+    scheduler.schedule();
+    vi.advanceTimersToNextFrame();
+    scheduler.schedule();
+    scheduler.schedule();
+    vi.advanceTimersToNextFrame();
+    expect(fit).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("fits a lone second request after it settles without needing another request", () => {
