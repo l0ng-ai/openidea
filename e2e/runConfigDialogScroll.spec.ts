@@ -66,6 +66,8 @@ async function checkScrolling(page: Page, dialog: Locator) {
   const nameField = dialog.getByRole("textbox", { name: "Name", exact: true });
   await list.evaluate((el) => (el.scrollTop = 0));
   await form.evaluate((el) => (el.scrollTop = 0));
+  // Measure once the dialog's opening animation has settled.
+  await dialog.evaluate((el) => Promise.all(el.getAnimations().map((animation) => animation.finished)));
   const nameTop = (await nameField.boundingBox())!.y;
   await list.hover();
   await page.mouse.wheel(0, 200);
