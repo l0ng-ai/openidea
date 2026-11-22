@@ -212,7 +212,7 @@
   top: 0;
   left: 0;
   min-width: 100%;
-  padding: 0 12px;
+  padding: 0 var(--space-3);
   line-height: inherit;
   white-space: pre;
   tab-size: 4;
@@ -1118,15 +1118,19 @@
   color: var(--fg);
 }
 .foldToggle {
-  display: inline-flex;
-  align-items: center;
-  margin-left: 6px;
-  padding: 0 2px;
+  position: sticky;
+  inset-inline-start: 0;
+  z-index: 1;
+  display: inline-grid;
+  place-items: center;
+  width: var(--space-3);
+  margin-inline-start: calc(-1 * var(--space-3));
+  padding: 0;
   border: none;
-  border-radius: 3px;
-  background: none;
+  border-radius: var(--radius-small);
+  background: var(--bg-app);
   color: var(--fg-faint);
-  vertical-align: middle;
+  vertical-align: top;
   cursor: pointer;
 }
 .foldToggle:hover {
