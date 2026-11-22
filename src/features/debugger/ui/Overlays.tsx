@@ -192,12 +192,14 @@ function BreakpointFields({
   focus,
   onEnter,
   commitRef,
+  showRemoveOnceHit = false,
 }: {
   path: string;
   bp: BreakpointEntry;
   focus?: "condition" | "log";
   onEnter?: () => void;
   commitRef?: MutableRefObject<(() => void) | null>;
+  showRemoveOnceHit?: boolean;
 }) {
   const [condition, setCondition] = useState(bp.condition ?? "");
   const [hitCondition, setHitCondition] = useState(bp.hitCondition ?? "");
@@ -288,32 +290,44 @@ function BreakpointFields({
           aria-label="Hit count condition"
         />
       </label>
-      <Checkbox
-        checked={!!bp.logHit}
-        onChange={(on) => updateBreakpoint(path, bp.id, { logHit: on || undefined })}
-        label={'"Breakpoint hit" message'}
-      />
-      <Checkbox
-        checked={logEval}
-        onChange={(on) => {
-          setLogEval(on);
-          draft.current = { ...draft.current, logEval: on };
-          commitText();
-        }}
-        label="Evaluate and log"
-      />
-      {logEval && (
-        <Input
-          mono
-          value={logMessage}
-          onChange={(e) => setLogMessage(e.target.value)}
-          onBlur={commitText}
-          onKeyDown={onKey}
-          placeholder="Value: {expression}"
-          data-autofocus={focus === "log" ? "" : undefined}
-          aria-label="Evaluate and log"
+      <fieldset className={styles.bpActions}>
+        <legend>
+          <T>Actions</T>
+        </legend>
+        <Checkbox
+          checked={!!bp.logHit}
+          onChange={(on) => updateBreakpoint(path, bp.id, { logHit: on || undefined })}
+          label={'"Breakpoint hit" message'}
         />
-      )}
+        <Checkbox
+          checked={logEval}
+          onChange={(on) => {
+            setLogEval(on);
+            draft.current = { ...draft.current, logEval: on };
+            commitText();
+          }}
+          label="Evaluate and log"
+        />
+        {logEval && (
+          <Input
+            mono
+            value={logMessage}
+            onChange={(e) => setLogMessage(e.target.value)}
+            onBlur={commitText}
+            onKeyDown={onKey}
+            placeholder="Value: {expression}"
+            data-autofocus={focus === "log" ? "" : undefined}
+            aria-label="Evaluate and log"
+          />
+        )}
+        {showRemoveOnceHit && (
+          <Checkbox
+            checked={!!bp.temporary}
+            onChange={(temporary) => updateBreakpoint(path, bp.id, { temporary })}
+            label="Remove once hit"
+          />
+        )}
+      </fieldset>
     </>
   );
 }
@@ -751,12 +765,7 @@ function BreakpointDetail({
         </Button>
       </div>
       {st && <div className={styles.statusLine}>{st.verified ? tx("Verified") : (st.message ?? "Not verified")}</div>}
-      <BreakpointFields path={path} bp={bp} commitRef={commitRef} />
-      <Checkbox
-        checked={!!bp.temporary}
-        onChange={(temporary) => updateBreakpoint(path, bp.id, { temporary })}
-        label="Remove once hit"
-      />
+      <BreakpointFields path={path} bp={bp} commitRef={commitRef} showRemoveOnceHit />
     </div>
   );
 }
