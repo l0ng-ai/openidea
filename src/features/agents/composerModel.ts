@@ -11,7 +11,7 @@ import type {
   AgentTokens,
   AgentUsage,
 } from "@/bindings";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 
 export interface FileRef {
   /** Absolute path (in the task's directory). */
@@ -562,7 +562,7 @@ const LIMIT_WINDOWS: Record<string, { short: string; name: string }> = {
 export function limitLabel(l: AgentLimit, now: number): { short: string; percent: number; detail: string } {
   const known = LIMIT_WINDOWS[l.window];
   const percent = Math.min(100, Math.round(l.usedPercent ?? 0));
-  const name = known ? tx(known.name) : l.window;
+  const name = known ? txPart(known.name) : l.window;
   const used = tx`${name}: ${percent}% used`;
   if (l.resetsMs == null)
     return {
