@@ -276,6 +276,44 @@ describe("typing over a closing bracket", () => {
   });
 });
 
+describe("Rust lifetimes", () => {
+  const typed = (text: string, chars: string) => {
+    const v = make(text, [
+      closeBrackets(),
+      prefsExtension({
+        prefs: validateEditorExtras({}),
+        path: "",
+        softWrap: false,
+        showWhitespace: false,
+        hardWrapAt: 120,
+        readOnly: false,
+        language: "rust",
+      }),
+    ]);
+    for (const ch of chars) {
+      const r = v.state.selection.main;
+      const insert = () => v.state.update(v.state.replaceSelection(ch), { userEvent: "input.type" });
+      if (!v.state.facet(EditorView.inputHandler).some((h) => h(v, r.from, r.to, ch, insert))) {
+        const tr = insertBracket(v.state, ch);
+        v.dispatch(tr ?? insert());
+      }
+    }
+    return show(v);
+  };
+
+  it("keeps a lifetime's apostrophe single", () => {
+    expect(typed("fn borrow<|>() {}", "'a")).toBe("fn borrow<'a|>() {}");
+    expect(typed("fn f(x: &|str) {}", "'a ")).toBe("fn f(x: &'a |str) {}");
+    expect(typed("struct S<'a, |> {}", "'b")).toBe("struct S<'a, 'b|> {}");
+    expect(typed("fn f<T: |>() {}", "'static")).toBe("fn f<T: 'static|>() {}");
+  });
+
+  it("still pairs a char literal", () => {
+    expect(typed("let c = |;", "'")).toBe("let c = '|';");
+    expect(typed("f('a', |)", "'")).toBe("f('a', '|')");
+  });
+});
+
 describe("smart angle brackets", () => {
   /** The real wiring: prefsExtension attaches the `<` handler for the document's language. */
   const prefs = (language: string | undefined, smartKeys: Record<string, unknown> = {}) =>
