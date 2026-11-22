@@ -27,7 +27,7 @@ describe("dogfood build and install", () => {
     expect(() => parseDogfoodArgs(["build", "--no-build"])).toThrow(/Unexpected option/);
   });
 
-  it("keeps the vanilla app identifier so settings, MCP, Skills and agent sessions are shared", () => {
+  it("keeps the vanilla app identifier so settings, MCP, Skills and agent sessions are shared, without updates", () => {
     const baseConfig = JSON.parse(readFileSync(join(root, "src-tauri", "tauri.conf.json"), "utf8")) as {
       identifier: string;
     };
@@ -39,6 +39,9 @@ describe("dogfood build and install", () => {
       bundle: {
         createUpdaterArtifacts: false,
         icon: ["../target/dogfood-icons/dogfood.icns"],
+      },
+      plugins: {
+        updater: { endpoints: [] },
       },
     });
   });
@@ -61,12 +64,14 @@ describe("dogfood build and install", () => {
       "app",
     ]);
     expect(dogfoodCliArgs("openidea_dogfood", ["icon.ico"], "win32").slice(0, 2)).toEqual(["build", "--no-bundle"]);
-    expect(dogfoodPaths("/repo", "openidea_dogfood", "darwin", {})).toEqual({
+    expect(dogfoodPaths(join("/repo", "target"), "openidea_dogfood", "darwin", {})).toEqual({
       bundlePath: join("/repo", "target", "release", "bundle", "macos", "openidea_dogfood.app"),
       installPath: join("/Applications", "openidea_dogfood.app"),
     });
     expect(
-      dogfoodPaths("/repo", "openidea_dogfood", "darwin", { DOGFOOD_INSTALL_DIR: "/Users/me/Applications" }),
+      dogfoodPaths(join("/repo", "target"), "openidea_dogfood", "darwin", {
+        DOGFOOD_INSTALL_DIR: "/Users/me/Applications",
+      }),
     ).toEqual({
       bundlePath: join("/repo", "target", "release", "bundle", "macos", "openidea_dogfood.app"),
       installPath: join("/Users/me/Applications", "openidea_dogfood.app"),
@@ -119,7 +124,7 @@ describe("dogfood build and install", () => {
       writeFileSync(join(fakeBundle, "Contents", "MacOS", "openidea"), "#!/bin/sh\n");
       const destDir = join(tempDir, "Applications");
       process.env.DOGFOOD_INSTALL_DIR = destDir;
-      installDogfood(fakeRoot, "openidea_dogfood", "darwin");
+      installDogfood(fakeRoot, "openidea_dogfood", "darwin", join(fakeRoot, "target"));
       expect(existsSync(join(destDir, "openidea_dogfood.app", "Contents", "MacOS", "openidea"))).toBe(true);
     } finally {
       if (prevInstallDir === undefined) delete process.env.DOGFOOD_INSTALL_DIR;

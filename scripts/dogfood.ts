@@ -55,6 +55,9 @@ export function parseDogfoodArgs(args: readonly string[]): DogfoodCommand {
  * Keeps `identifier` untouched (`ai.l0ng.openidea` from `src-tauri/tauri.conf.json`) so the
  * dogfood app shares configuration, settings, WebView storage, MCP servers, Skills, agent
  * sessions, credentials, plugins and caches with the vanilla release app.
+ *
+ * Clears the updater endpoints: the next release would otherwise replace the dogfood bundle
+ * with the official app.
  */
 export function dogfoodTauriConfig(appName: string, iconPaths: readonly string[]) {
   return {
@@ -62,6 +65,9 @@ export function dogfoodTauriConfig(appName: string, iconPaths: readonly string[]
     bundle: {
       createUpdaterArtifacts: false,
       icon: [...iconPaths],
+    },
+    plugins: {
+      updater: { endpoints: [] },
     },
   };
 }
@@ -86,8 +92,26 @@ export function dogfoodCliArgs(
   return ["build", "--no-bundle", "--config", config];
 }
 
+/** Cargo's target directory, which a `CARGO_TARGET_DIR` or `build.target-dir` setting can move. */
+export function cargoTargetDir(root: string): string {
+  const result = spawnSync("cargo", ["metadata", "--format-version", "1", "--no-deps"], {
+    cwd: root,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (result.status === 0) {
+    try {
+      const dir = (JSON.parse(result.stdout) as { target_directory?: unknown }).target_directory;
+      if (typeof dir === "string" && dir) return dir;
+    } catch {
+      // Fall back to the default below.
+    }
+  }
+  return join(root, "target");
+}
+
 export function dogfoodPaths(
-  root: string,
+  targetDir: string,
   appName: string,
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
@@ -96,19 +120,19 @@ export function dogfoodPaths(
   const customInstallDir = env.DOGFOOD_INSTALL_DIR?.trim();
   if (platform === "darwin") {
     return {
-      bundlePath: join(root, "target", "release", "bundle", "macos", `${appName}.app`),
+      bundlePath: join(targetDir, "release", "bundle", "macos", `${appName}.app`),
       installPath: customInstallPath || join(customInstallDir || "/Applications", `${appName}.app`),
     };
   }
   if (platform === "win32") {
     const localAppData = env.LOCALAPPDATA?.trim() || join(homedir(), "AppData", "Local");
     return {
-      bundlePath: join(root, "target", "release", "openidea.exe"),
+      bundlePath: join(targetDir, "release", "openidea.exe"),
       installPath: customInstallPath || join(customInstallDir || localAppData, appName),
     };
   }
   return {
-    bundlePath: join(root, "target", "release", "openidea"),
+    bundlePath: join(targetDir, "release", "openidea"),
     installPath: customInstallPath || join(customInstallDir || join(homedir(), ".local", "bin"), appName),
   };
 }
@@ -191,8 +215,30 @@ export function buildDogfood(root: string, appName: string) {
   });
 }
 
-export function installDogfood(root: string, appName: string, platform: NodeJS.Platform = process.platform) {
-  const { bundlePath, installPath } = dogfoodPaths(root, appName, platform);
+const SHARED_DATA_NOTES = [
+  "The dogfood app shares its single instance with OpenIDEA: quit one before opening the other.",
+  "It writes OpenIDEA's settings and data; a setting only newer builds know can make an older OpenIDEA ignore your settings file.",
+  "It never updates itself: run 'pnpm dogfood:install' again to pick up new changes.",
+];
+
+export function installDogfood(
+  root: string,
+  appName: string,
+  platform: NodeJS.Platform = process.platform,
+  targetDir: string = cargoTargetDir(root),
+) {
+  const { bundlePath, installPath } = dogfoodPaths(targetDir, appName, platform);
+  installBundle(root, appName, platform, bundlePath, installPath);
+  for (const note of SHARED_DATA_NOTES) console.log(note);
+}
+
+function installBundle(
+  root: string,
+  appName: string,
+  platform: NodeJS.Platform,
+  bundlePath: string,
+  installPath: string,
+) {
   if (!existsSync(bundlePath)) {
     throw new Error(`Dogfood build output not found at ${bundlePath}; run 'mise run dogfood:build' first`);
   }
