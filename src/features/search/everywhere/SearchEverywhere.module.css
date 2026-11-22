@@ -227,8 +227,14 @@
 }
 .shortcut {
   flex: none;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--fg-subtle);
   font-family: var(--font-keys);
+  font-size: var(--fs-small);
+  font-weight: 600;
 }
 .right {
   flex: none;
@@ -248,6 +254,9 @@
   display: flex;
   align-items: center;
   gap: var(--space-1-5);
+}
+.actionRow > .right {
+  max-width: 30%;
 }
 .disabled .name,
 .disabled .location,
