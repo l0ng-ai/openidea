@@ -9368,7 +9368,7 @@
   "Skill preview": "技能预览",
   "Files ({count})": "文件 ({count})",
   "Symlink": "符号链接",
-  "Runs in a subagent where supported (context: fork)": "在支持的代理中于子代理内运行 (context: fork)",
+  "Runs in a subagent where supported (context: fork)": "在支持的 CLI 中以子代理运行（context: fork）",
   "context: fork": "context: fork",
   "paths ({count})": "paths ({count})",
   "paths": "paths",
