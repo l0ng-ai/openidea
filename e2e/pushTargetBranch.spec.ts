@@ -176,7 +176,29 @@ test("Push keeps commit subjects and changed files readable in a narrow window",
   await expect(input).toHaveValue("main");
   await expect(dialog.getByRole("button", { name: "Push", exact: true })).toBeInViewport();
   const details = dialog.getByRole("region", { name: "Commit details" });
-  await expect(details).toContainText("Keep the new totals consistent with receipts.");
+  await page.evaluate(async () => {
+    const project = "/src/platform/project.ts";
+    const { useProject } = await import(/* @vite-ignore */ project);
+    const { settings } = useProject.getState();
+    useProject.setState({
+      settings: {
+        ...settings,
+        editor: { ...settings?.editor, fontFamily: "Consolas", fontSize: 18, fontWeight: 400, boldFontWeight: 700 },
+      },
+    });
+  });
+  const messageSubject = details.getByText(OUTGOING, { exact: true });
+  const messageBody = details.getByText("Keep the new totals consistent with receipts.", { exact: true });
+  await expect(messageSubject).toHaveCSS("font-weight", "700");
+  await expect(messageBody).toHaveCSS("font-weight", "400");
+  await expect(messageSubject).toHaveCSS("font-size", "18px");
+  await expect(messageBody).toHaveCSS("font-size", "18px");
+  await expect(messageBody).toHaveCSS("font-family", /Consolas/);
+  const metadata = details.getByText(/Sam Rivera <sam@example\.com>/);
+  await expect(metadata).toHaveCSS("font-size", "12px");
+  await metadata.scrollIntoViewIfNeeded();
+  await expect(metadata).toBeInViewport();
+  expect(await details.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
   await expect
     .poll(async () => {
       const [tree, message] = await Promise.all([files.boundingBox(), details.boundingBox()]);
