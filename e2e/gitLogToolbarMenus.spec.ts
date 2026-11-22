@@ -206,6 +206,8 @@ test("long Git Log filter values shorten inside their buttons", async ({ workben
   }
 
   await page.setViewportSize({ width: 400, height: 560 });
+  // The overflow is measured after the resize: open the menu once the filter has moved into it.
+  await expect(branch).toBeHidden();
   await toolbar.getByRole("button", { name: "More Filters" }).click();
   await expect(page.getByRole("menuitem", { name: `Branch: ${branchName}`, exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
