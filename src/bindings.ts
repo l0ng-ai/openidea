@@ -154,12 +154,12 @@ export const commands = {
 	 *  Every skill discovered in the project and the user's folders, with the mode a session
 	 *  of this project runs it with (without any session's own overrides).
 	 */
-	agentSkillsList: () => typedError<AgentSkillState[], IdeError>(__TAURI_INVOKE("agent_skills_list")),
+	agentSkillsList: () => typedError<AgentSkillState_Serialize[], IdeError>(__TAURI_INVOKE("agent_skills_list")),
 	/**
 	 *  Sets how `name` may run in `scope`, in the settings file of that scope, and returns the
 	 *  updated list. `SKILL.md` files are never touched; the default `auto` removes the entry.
 	 */
-	agentSkillsSetMode: (name: string, scope: McpScope, mode: AgentSkillMode) => typedError<AgentSkillState[], IdeError>(__TAURI_INVOKE("agent_skills_set_mode", { name, scope, mode })),
+	agentSkillsSetMode: (name: string, scope: McpScope, mode: AgentSkillMode) => typedError<AgentSkillState_Serialize[], IdeError>(__TAURI_INVOKE("agent_skills_set_mode", { name, scope, mode })),
 	/**  Stops one of the task's background tasks. */
 	agentStopBackground: (task: string, background: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_stop_background", { task, background })),
 	/**
@@ -2785,18 +2785,7 @@ export type AgentSettings_Serialize = {
 };
 
 /**  One discovered skill: a folder with a `SKILL.md`. */
-export type AgentSkill = {
-	/**  The frontmatter `name`, else the folder's name. */
-	name: string,
-	description: string,
-	/**  Canonical folder holding `SKILL.md` (symlinks resolved, so duplicates collapse). */
-	path: IpcPath,
-	source: AgentSkillSource,
-	/**  The `SKILL.md` passes validation (`name` matches its folder, `description` present). */
-	valid: boolean,
-	/**  What validation found (`name` mismatch, missing or over-long description…). */
-	warnings: string[],
-};
+export type AgentSkill = AgentSkill_Serialize | AgentSkill_Deserialize;
 
 /**  How an agent skill may run (`[agents.skills.<name>] mode = …`). */
 export type AgentSkillMode = 
@@ -2852,14 +2841,78 @@ export type AgentSkillSource =
  *  A skill as Settings › Agents › Skills shows it: discovery plus the effective mode and
  *  which layer decided it.
  */
-export type AgentSkillState = {
-	skill: AgentSkill,
+export type AgentSkillState = AgentSkillState_Serialize | AgentSkillState_Deserialize;
+
+/**
+ *  A skill as Settings › Agents › Skills shows it: discovery plus the effective mode and
+ *  which layer decided it.
+ */
+export type AgentSkillState_Deserialize = {
+	skill: AgentSkill_Deserialize,
 	mode: AgentSkillMode,
 	/**
 	 *  What set `mode`: a session override, the workspace, the user's settings, workspace
 	 *  trust, or nothing (the default `auto`).
 	 */
 	origin: AgentSkillOrigin,
+};
+
+/**
+ *  A skill as Settings › Agents › Skills shows it: discovery plus the effective mode and
+ *  which layer decided it.
+ */
+export type AgentSkillState_Serialize = {
+	skill: AgentSkill_Serialize,
+	mode: AgentSkillMode,
+	/**
+	 *  What set `mode`: a session override, the workspace, the user's settings, workspace
+	 *  trust, or nothing (the default `auto`).
+	 */
+	origin: AgentSkillOrigin,
+};
+
+/**  One discovered skill: a folder with a `SKILL.md`. */
+export type AgentSkill_Deserialize = {
+	/**  The frontmatter `name`, else the folder's name. */
+	name: string,
+	description: string,
+	/**  Optional `argument-hint` from frontmatter, completed in the `/` menu. */
+	hint?: string | null,
+	/**  Canonical folder holding `SKILL.md` (symlinks resolved, so duplicates collapse). */
+	path: IpcPath,
+	source: AgentSkillSource,
+	/**  Other skill roots whose symlinked entry resolved to this same canonical `path`. */
+	alsoIn?: AgentSkillSource[],
+	/**  False when frontmatter sets `user-invocable: false` (omitted from `/` completion). */
+	userInvocable?: boolean,
+	/**  True when frontmatter sets `disable-model-invocation: true` (defaults to `slashOnly`). */
+	disableModelInvocation?: boolean,
+	/**  The `SKILL.md` passes validation (`name` matches its folder, `description` present). */
+	valid: boolean,
+	/**  What validation found (`name` mismatch, missing or over-long description…). */
+	warnings: string[],
+};
+
+/**  One discovered skill: a folder with a `SKILL.md`. */
+export type AgentSkill_Serialize = {
+	/**  The frontmatter `name`, else the folder's name. */
+	name: string,
+	description: string,
+	/**  Optional `argument-hint` from frontmatter, completed in the `/` menu. */
+	hint?: string | null,
+	/**  Canonical folder holding `SKILL.md` (symlinks resolved, so duplicates collapse). */
+	path: IpcPath,
+	source: AgentSkillSource,
+	/**  Other skill roots whose symlinked entry resolved to this same canonical `path`. */
+	alsoIn?: AgentSkillSource[],
+	/**  False when frontmatter sets `user-invocable: false` (omitted from `/` completion). */
+	userInvocable: boolean,
+	/**  True when frontmatter sets `disable-model-invocation: true` (defaults to `slashOnly`). */
+	disableModelInvocation: boolean,
+	/**  The `SKILL.md` passes validation (`name` matches its folder, `description` present). */
+	valid: boolean,
+	/**  What validation found (`name` mismatch, missing or over-long description…). */
+	warnings: string[],
 };
 
 /**  Where an agent comes from. */
