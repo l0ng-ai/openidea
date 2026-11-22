@@ -88,6 +88,40 @@ test("⌘F2 stops a running process", async ({ workbench: page }) => {
   await expect(run.getByRole("tab", { name: "dev" })).toHaveAttribute("data-tooltip", /exit code 143$/);
 });
 
+test("a long Run tab fits its side panel with room for the pin and close buttons", async ({ workbench: page }) => {
+  const name = "orders:reconcile:weekly-report-from-production-catalog";
+  await stubRun(page, [{ kind: "stdout", text: "Order report ready.\n" }], 0, { name });
+  await page.evaluate(async () => {
+    const path = "/src/workbench/toolwindows/store.ts";
+    const { moveToolWindow, setToolWindowSize } = await import(/* @vite-ignore */ path);
+    moveToolWindow("run", "right");
+    setToolWindowSize("right", 240);
+  });
+  await page.keyboard.press("Control+r");
+  const run = page.getByRole("region", { name: "Run", exact: true });
+  const strip = run.getByRole("tablist", { name: "Run sessions" });
+  const selected = strip.getByRole("tab", { name, selected: true });
+  await expect(selected).toBeVisible();
+  await expect
+    .poll(() =>
+      selected.evaluate((tab) => {
+        const slot = tab.parentElement!;
+        const bounds = slot.getBoundingClientRect();
+        const clip = slot.parentElement!.getBoundingClientRect();
+        return bounds.left >= clip.left - 1 && bounds.right <= clip.right + 1;
+      }),
+    )
+    .toBe(true);
+  await expect(run.getByRole("button", { name: "Show Hidden Tabs" })).toBeHidden();
+  await expect(selected).toHaveAttribute("data-tooltip", new RegExp(`^${name}.*exit code 0$`));
+
+  await selected.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Pin Tab", exact: true }).click();
+  await strip.getByRole("button", { name: "Unpin Tab", exact: true }).click();
+  await strip.getByRole("button", { name: "Close Tab", exact: true }).click();
+  await expect(run).toBeHidden();
+});
+
 test("a short Run pane has room for the full toolbar above the output", async ({ workbench: page }) => {
   await page.setViewportSize({ width: 400, height: 500 });
   const output = "Watching for changes…";
