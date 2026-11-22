@@ -7385,6 +7385,7 @@ fn contributes_skills_needs_api_1_15_and_warns_without_failing_plugin_on_bad_ent
     std::fs::write(pkg.join("skills/oversize/SKILL.md"), "---\nname: oversize\ndescription: too big\n---\n").unwrap();
     std::fs::write(pkg.join("skills/oversize/blob.bin"), vec![b'x'; (2 << 20) + 16]).unwrap();
 
+    #[allow(unused_mut)]
     let mut manifest = String::from(
         "id = \"acme.mixed-skills\"\n\
          name = \"Mixed Skills\"\n\
