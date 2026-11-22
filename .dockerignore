@@ -1,0 +1,11 @@
+.git
+target
+node_modules
+dist
+e2e
+evals
+fixtures
+perf
+docs
+smoke
+*.log
