@@ -19,6 +19,9 @@
   min-height: 0;
   height: 100%;
 }
+.resultsStacked {
+  flex-direction: column;
+}
 .toolbar {
   flex: none;
   display: flex;
@@ -27,6 +30,13 @@
   padding: var(--space-1);
   border-inline-end: 1px solid var(--border);
   overflow-y: auto;
+}
+.resultsStacked .toolbar {
+  flex-direction: row;
+  flex-wrap: wrap;
+  border-inline-end: 0;
+  border-block-end: 1px solid var(--border);
+  overflow: visible;
 }
 .tree {
   flex: 1;
