@@ -13,7 +13,7 @@ import {
 } from "./statusBarWidgets";
 import { cancelTask, canCancel, useTasks, type BackgroundTask } from "./tasks";
 import styles from "./StatusBar.module.css";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 
 /**
  * Orders status items: on both sides a higher priority sits closer to the
@@ -240,7 +240,9 @@ export function StatusInfo() {
 function TaskCancel({ task: t }: { task: BackgroundTask }) {
   if (t.done) return null;
   if (canCancel(t))
-    return <IconButton icon="stop" size="small" title={tx`Cancel ${t.title}`} onClick={() => cancelTask(t.id)} />;
+    return (
+      <IconButton icon="stop" size="small" title={tx`Cancel ${txPart(t.title)}`} onClick={() => cancelTask(t.id)} />
+    );
   const reason = t.cancelling ? tx("Cancelling…") : t.uncancellable;
   if (!reason) return null;
   // A disabled button gets no pointer events; the wrapper shows why.
@@ -309,7 +311,7 @@ export function TaskStatus() {
       <BarButton
         data-background-tasks
         aria-expanded={open}
-        aria-label={tx`Background tasks: ${current.title}`}
+        aria-label={tx`Background tasks: ${txPart(current.title)}`}
         tooltip={current.message ?? current.title}
         onClick={() => useTaskPopup.setState({ open: !open })}
         className={styles.task}

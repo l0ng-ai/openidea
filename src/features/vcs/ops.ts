@@ -6,7 +6,7 @@ import { Channel } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import type { BranchUpdate, GitOperation, RemoteOp } from "@/bindings";
 import { executeAction } from "@/platform/actions";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 import { AnsiStream, stripAnsi, type Span } from "@/ui/ansi";
 import { call, commands, isCancelled, nextRequestId } from "@/platform/ipc";
 import { attachDocument, editorsFor } from "@/editor/api";
@@ -117,7 +117,7 @@ export async function runOp<T>(title: string, fn: () => Promise<T>, opts: OpOpti
     if (!opts.quiet && !handled)
       notify({
         level: "error",
-        title: tx`${title} failed`,
+        title: tx`${txPart(title)} failed`,
         body: message,
         actions: opts.errorActions?.(message),
       });

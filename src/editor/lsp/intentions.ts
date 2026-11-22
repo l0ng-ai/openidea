@@ -41,7 +41,7 @@ import { inspectionsAt, type EditorDiagnostic } from "./diagnostics";
 import { SPELLING_INSPECTION } from "@/platform/inspections";
 import { editInspectionSettings, intentionControls } from "@/platform/inspectionControls";
 import { runInteractiveCodeAction } from "./interactiveCommand";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 
 const codeActionBackoff = featureBackoff();
 
@@ -496,7 +496,7 @@ export function withInspectionControls(view: EditorView, items: ListPopupItem[])
     ...items,
     ...inspections.map((inspection) => ({
       id: `inspection:${inspection.id}`,
-      label: tx`Inspection '${inspection.name}' options`,
+      label: tx`Inspection '${txPart(inspection.name)}' options`,
       icon: "settings",
       run: () => editInspectionSettings(inspection.id),
       submenu: intentionControls(inspection),

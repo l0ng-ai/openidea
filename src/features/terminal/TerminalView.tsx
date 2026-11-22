@@ -427,15 +427,9 @@ function GroupTabs({ group }: { group: string }) {
   };
 
   const renameTarget = renaming && tabs.find((t) => t.id === renaming.id);
-  const moreItems: MenuItem[] = [
-    { kind: "action", action: "terminal.new" },
-    { kind: "separator" },
-    { kind: "header", label: "New Predefined Session" },
+  const sessionItems: MenuItem[] = [
     ...shellItems(shells),
     { kind: "action", action: "ssh.startSession", label: "SSH Session…" },
-    { kind: "separator" },
-    { kind: "action", action: "terminal.splitRight" },
-    { kind: "action", action: "terminal.splitDown" },
     { kind: "separator" },
     { kind: "action", action: "file.settings", arg: "tools.terminal", label: "Settings", icon: "settings" },
   ];
@@ -488,7 +482,7 @@ function GroupTabs({ group }: { group: string }) {
               ref={menuRef}
               icon="toolbar-expand"
               size="small"
-              title="More Terminal Options"
+              title="New Predefined Session"
               aria-haspopup="menu"
               aria-expanded={menuOpen}
               onClick={() => {
@@ -499,7 +493,13 @@ function GroupTabs({ group }: { group: string }) {
                 setMenuOpen((v) => !v);
               }}
             />
-            <Menu open={menuOpen} anchor={menuRef} items={moreItems} onClose={() => setMenuOpen(false)} />
+            <Menu
+              open={menuOpen}
+              anchor={menuRef}
+              items={sessionItems}
+              aria-label={tx("New Predefined Session")}
+              onClose={() => setMenuOpen(false)}
+            />
           </div>
         }
       />

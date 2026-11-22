@@ -235,6 +235,8 @@ export const SYNTAX_ERRORS_PRODUCER = "syntax";
 
 export const DEPENDENCY_PRODUCER = "dependency-versions";
 export const DEPENDENCY_INSPECTION = "builtin:dependency-versions";
+export const PYTHON_REQUIREMENTS_PRODUCER = "python-requirements";
+export const PYTHON_REQUIREMENTS_INSPECTION = "builtin:python-requirements";
 
 /** Conflict markers left in a file by a merge, rebase, cherry-pick or stash that stopped on conflicts. */
 export const CONFLICT_MARKERS_PRODUCER = "merge-conflict-markers";
@@ -279,6 +281,15 @@ export const BUILTIN_INSPECTIONS: readonly BuiltinInspection[] = [
     group: "Cargo",
     description: "Reports newer crate versions that Cargo.toml requirements do not already allow.",
     defaultLevel: "weakWarning",
+  },
+  {
+    id: PYTHON_REQUIREMENTS_INSPECTION,
+    producer: PYTHON_REQUIREMENTS_PRODUCER,
+    name: "Unsatisfied package requirements",
+    group: "Python",
+    description:
+      "Reports requirements in requirements.txt and pyproject.toml that the project's Python interpreter does not have installed, or whose installed version does not match.",
+    defaultLevel: "warning",
   },
   {
     id: "builtin:syntax",

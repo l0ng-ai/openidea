@@ -104,6 +104,7 @@ const POINT_TITLES: Record<string, string> = {
   languages: "Languages",
   providers: "Editor Providers",
   javaAgents: "Java Agents",
+  skills: "Agent Skills",
   locales: "Translations",
 };
 

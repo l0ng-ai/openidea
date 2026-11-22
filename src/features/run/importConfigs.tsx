@@ -5,7 +5,7 @@
  * how many came in and why the others were left out.
  */
 import type { ReactNode } from "react";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 import { call, commands, type RunConfig, type RunImport, type RunImportSource, type SkipReason } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
 import { loadConfigs, useRun } from "./store";
@@ -89,7 +89,7 @@ export function importSummary(result: RunImport): {
         ? tx`Imported ${n} run configuration from ${file}`
         : tx`Imported ${n} run configurations from ${file}`;
   const notes = [
-    ...result.skipped.map((s) => tx`Skipped '${s.name || tx("Unnamed")}': ${skipReasonText(s.reason)}`),
+    ...result.skipped.map((s) => tx`Skipped '${s.name || txPart("Unnamed")}': ${skipReasonText(s.reason)}`),
     ...result.imported
       .filter((c) => c.ignored.length)
       .map((c) => tx`Left out of '${c.config.name}': ${c.ignored.join(", ")}`),

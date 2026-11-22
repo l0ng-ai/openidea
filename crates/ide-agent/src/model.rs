@@ -898,6 +898,8 @@ pub enum AgentSkillSource {
     Workspace,
     /// The user's `~/.agents/skills` (what `npx skills add` fills).
     User,
+    /// Contributed by an enabled OpenIDEA plugin (`[[contributes.skills]]`).
+    Plugin,
     /// The project's `.claude/skills`.
     ClaudeWorkspace,
     /// `~/.claude/skills`.
@@ -920,7 +922,7 @@ impl AgentSkillSource {
     /// Whether skills of this source are only read, never delivered by OpenIDEA: the CLI
     /// discovers them itself, so "off" holds only where the CLI supports a native disable.
     pub fn discovered(&self) -> bool {
-        !matches!(self, Self::Workspace | Self::User)
+        !matches!(self, Self::Workspace | Self::User | Self::Plugin)
     }
 }
 
