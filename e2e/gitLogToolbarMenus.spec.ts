@@ -320,3 +320,88 @@ test("the Paths filter replaces the repository filter and can be cleared from ov
   await picker.getByRole("button", { name: "OK" }).click();
   await expect(firstCommit.getByText("Commit 1", { exact: true })).toBeVisible();
 });
+
+test("the Git Log path tree resizes and keeps selected paths reachable in a short window", async ({
+  workbench: page,
+}) => {
+  await page.setViewportSize({ width: 1000, height: 720 });
+  const longName = "reconcile-invoices-and-export-the-complete-quarterly-settlement-audit.ts";
+  await page.evaluate(async (longName) => {
+    const logPath = "/src/features/vcs/logStore.ts";
+    const optionsPath = "/src/features/vcs/logOptions.ts";
+    const { setLogFilters } = await import(/* @vite-ignore */ logPath);
+    const { setLogOptions } = await import(/* @vite-ignore */ optionsPath);
+    const root = "/dev/acme-api";
+    const selected = Array.from({ length: 9 }, (_, i) => `entry-${i + 1}.ts`);
+    const entry = (name: string, kind: "dir" | "file") => ({
+      name,
+      path: `${root}/${name}`,
+      kind,
+      size: 0,
+      mtimeMs: 0,
+    });
+    window.__ipc.handlers.fs_read_dir = ({ path }) =>
+      path === root
+        ? [entry("src", "dir"), entry(longName, "file"), ...selected.map((name) => entry(name, "file"))]
+        : [];
+    setLogOptions({ showBranches: false, showDetails: false });
+    setLogFilters({ paths: selected.map((name) => `${root}/${name}`) });
+  }, longName);
+
+  const toolbar = page.getByRole("toolbar", { name: "Log filters" });
+  const openTree = async () => {
+    await toolbar.getByRole("button", { name: "More Filters" }).click();
+    await page.getByRole("menuitem", { name: /^Paths:/ }).click();
+    await page.getByRole("menuitem", { name: "Select in Tree…" }).click();
+  };
+  await openTree();
+  const dialog = page.getByRole("dialog", { name: "Filter by Paths" });
+  const tree = dialog.getByRole("tree", { name: "Files and folders" });
+  const resize = dialog.locator('[class*="_resizeGrip_"]');
+  await expect(tree).toBeVisible();
+  await expect(resize).toBeVisible();
+  await tree.getByRole("treeitem", { name: "acme-api", exact: true }).locator("[data-tree-toggle]").click();
+  const folder = tree.getByRole("checkbox", { name: "src", exact: true });
+  const file = tree.getByRole("checkbox", { name: longName, exact: true });
+  await expect(folder.locator("xpath=ancestor::label").locator("svg")).toHaveCount(1);
+  const title = file.locator("xpath=ancestor::label").getByTitle(longName);
+  await expect(title).toHaveCSS("font-size", "13px");
+  await expect(title).toHaveCSS("text-overflow", "ellipsis");
+
+  const originalTreeHeight = (await tree.boundingBox())!.height;
+  const grip = (await resize.boundingBox())!;
+  const x = grip.x + grip.width / 2;
+  const y = grip.y + grip.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + 30, y + 65, { steps: 5 });
+  await page.mouse.up();
+  await expect.poll(async () => (await tree.boundingBox())!.height).toBeGreaterThan(originalTreeHeight + 40);
+
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await page.setViewportSize({ width: 420, height: 325 });
+  await openTree();
+  await tree.getByRole("treeitem", { name: "acme-api", exact: true }).locator("[data-tree-toggle]").click();
+  const selected = dialog.getByRole("group", { name: "Selected paths" });
+  await expect(selected).toBeVisible();
+  await expect.poll(() => selected.evaluate((node) => node.scrollHeight - node.clientHeight)).toBeGreaterThan(1);
+  await expect
+    .poll(() => dialog.locator("[data-dialog-body]").evaluate((node) => node.scrollHeight - node.clientHeight))
+    .toBeLessThanOrEqual(1);
+  await expect.poll(() => title.evaluate((node) => node.scrollWidth - node.clientWidth)).toBeGreaterThan(1);
+  const removed = selected.getByRole("checkbox", { name: "acme-api/entry-9.ts", exact: true });
+  await removed.click();
+  await expect(removed).toHaveCount(0);
+  await file.check();
+  await expect(selected.getByRole("checkbox", { name: `acme-api/${longName}`, exact: true })).toBeChecked();
+  await expect(dialog.getByRole("button", { name: "OK" })).toBeInViewport({ ratio: 1 });
+  await dialog.getByRole("button", { name: "OK" }).click();
+  await expect(dialog).toBeHidden();
+  const applied = await page.evaluate(async () => {
+    const path = "/src/features/vcs/logStore.ts";
+    const { useGitLog } = await import(/* @vite-ignore */ path);
+    return useGitLog.getState().filters.paths;
+  });
+  expect(applied).toContain(`/dev/acme-api/${longName}`);
+  expect(applied).not.toContain("/dev/acme-api/entry-9.ts");
+});
