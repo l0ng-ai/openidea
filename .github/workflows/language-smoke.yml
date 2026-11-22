@@ -106,7 +106,7 @@ jobs:
             case "$f" in
               crates/ide-host/tests/language_smoke.rs | crates/ide-host/tests/project_smoke.rs) langs="$all"; break ;;
               crates/*/tests/* | crates/*/benches/*) ;;
-              fixtures/ts-app/* | fixtures/playwright-app/*) langs+=" typescript" ;;
+              fixtures/ts-app/*) langs+=" typescript" ;;
               fixtures/python-app/*) langs+=" python" ;;
               fixtures/rust-app/*) langs+=" rust" ;;
               fixtures/go-app/*) langs+=" go" ;;
