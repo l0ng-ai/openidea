@@ -1511,16 +1511,43 @@ function GitPreview({
  * `mergeSchemePreview` editor kind — the same real CodeMirror diff decorations a merge view
  * uses, so the colours here are exactly the colours users get. Clicking a coloured line
  * selects its scheme attribute; the long unchanged stretch shows the folded wave separator.
- * Differences sit outside the folded stretch so modified / inserted / deleted all show.
+ * Heads stay the same length so one fold range fits all panes, and every difference is
+ * visible without scrolling: the heads carry the modification and the deletion, the result
+ * gains `return value` right after the fold (an insertion isolated by shared lines, since
+ * an adjacent delete+insert or a document-edge difference collapses into a modification).
  */
 const DIFF_HEAD_A = ["bar(123)", "def foo(self):", "    # Left changes", "    pass"];
 const DIFF_HEAD_RESULT = ["class MyClass", "value = 123", "def foo(self):", "    pass"];
 const DIFF_HEAD_B = ["class MyClass", "value = 123", "def foo(self):", "    pass"];
 const DIFF_UNCHANGED = Array.from({ length: 16 }, (_, i) => `        # unchanged context ${i + 1}`);
-const DIFF_TAIL = ["def bar(self, a, b):", "    print a", "    print b"];
-const DIFF_PARENT_A = [...DIFF_HEAD_A, ...DIFF_UNCHANGED, ...DIFF_TAIL, "    removed_from_left()"].join("\n");
-const DIFF_RESULT = [...DIFF_HEAD_RESULT, ...DIFF_UNCHANGED, ...DIFF_TAIL].join("\n");
-const DIFF_PARENT_B = [...DIFF_HEAD_B, ...DIFF_UNCHANGED, ...DIFF_TAIL, "    added_on_right()"].join("\n");
+const DIFF_PARENT_A = [
+  ...DIFF_HEAD_A,
+  ...DIFF_UNCHANGED,
+  "    print('mid')",
+  "    print('end')",
+  "def bar(self, a, b):",
+  "    print a",
+  "    print b",
+].join("\n");
+const DIFF_RESULT = [
+  ...DIFF_HEAD_RESULT,
+  ...DIFF_UNCHANGED,
+  "    print('mid')",
+  "    return value",
+  "    print('end')",
+  "def bar(self, a, b):",
+  "    print a",
+  "    print b",
+].join("\n");
+const DIFF_PARENT_B = [
+  ...DIFF_HEAD_B,
+  ...DIFF_UNCHANGED,
+  "    print('mid')",
+  "    print('end')",
+  "def bar(self, a, b):",
+  "    print a",
+  "    print b",
+].join("\n");
 function diffMergeInput(): import("@/workbench/contributions").EditorInput {
   return {
     kind: "mergeSchemePreview",
@@ -1535,7 +1562,6 @@ function diffMergeInput(): import("@/workbench/contributions").EditorInput {
         inserted: "diffInserted",
         deleted: "diffDeleted",
         modified: "diffChanged",
-        conflict: "diffConflict",
         wave: "diffSeparatorWave",
       },
       fold: { from: 5, to: 20, label: tx("16 unchanged lines") },

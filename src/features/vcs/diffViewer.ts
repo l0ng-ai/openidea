@@ -3,7 +3,6 @@ import { lazyComponent } from "@/ui";
 import { registerEditorKind } from "@/workbench/contributions";
 import { COMBINED_DIFF_KIND, type CombinedDiffData } from "./allInOneDiff";
 import { DIFF_KIND, diffInputAtCaret, diffTitle, type DiffData } from "./diffInput";
-import { MERGE_SCHEME_PREVIEW_KIND } from "./MergeSchemePreview";
 
 /** The diff viewer (editor kind `diff`), also for windows that show diffs without Git (deployment). */
 export function activateDiffViewer(): () => void {
@@ -22,16 +21,8 @@ export function activateDiffViewer(): () => void {
     title: (input) => (input.data as CombinedDiffData).title ?? tx("Combined Changes Diff"),
     icon: () => "diff",
   });
-  // A static three-pane merge view for the Color Scheme › Diff & Merge preview. It consumes the
-  // same editor kind mechanism as the real viewers, without importing the settings feature.
-  const schemePreview = registerEditorKind({
-    kind: MERGE_SCHEME_PREVIEW_KIND,
-    component: lazyComponent(() => import("./MergeSchemePreview").then((m) => m.MergeSchemePreview)),
-    title: () => tx("Diff & Merge"),
-  });
   return () => {
     single();
     combined();
-    schemePreview();
   };
 }

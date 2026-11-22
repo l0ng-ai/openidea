@@ -15,22 +15,10 @@ import type { EditorInput } from "@/workbench/contributions";
 import { firstLineOf, languageFor, viewerBase } from "./cm";
 import styles from "./GitLog.module.css";
 import { syncMergeScroll } from "./mergeScroll";
+import { MERGE_SCHEME_PREVIEW_KIND, type MergeSchemePreviewData } from "./mergeSchemePreviewKind";
 
-export const MERGE_SCHEME_PREVIEW_KIND = "mergeSchemePreview";
-
-export interface MergeSchemePreviewData {
-  /** Virtual URI; keeps language detection and avoids any file/git access. */
-  path: string;
-  /** Text of the left parent, merge result and right parent. */
-  left: string;
-  result: string;
-  right: string;
-  labels: [string, string, string];
-  /** Attribute id for each change type, used as `data-diattr` on the coloured lines. */
-  attrs: { inserted: string; deleted: string; modified: string; conflict: string; wave: string };
-  /** 1-based, inclusive line range folded into a wavy separator in each pane. */
-  fold: { from: number; to: number; label: string };
-}
+export { MERGE_SCHEME_PREVIEW_KIND };
+export type { MergeSchemePreviewData };
 
 /** The folded-unchanged separator, IDEA's DiffLineSeparatorRenderer wave. */
 class FoldWaveWidget extends WidgetType {
