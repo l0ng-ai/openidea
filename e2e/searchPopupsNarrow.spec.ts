@@ -3,7 +3,7 @@
  * header on screen: titles stay on one line and every header control lies inside the popup.
  */
 import type { Page } from "@playwright/test";
-import { expect, stubDesktop, test } from "./fixtures";
+import { expect, openFromTree, stubDesktop, test } from "./fixtures";
 
 const LONG_RESULT_PATH = "config/RegionalOrderReconciliationEndpointsForSandboxEnvironments.txt";
 
@@ -116,6 +116,49 @@ test.describe("search popups at the minimum window width", () => {
     expect(width).toBeGreaterThan(200);
     await expectControlsFit(page);
     await dialog.getByRole("button", { name: /Browse/ }).click({ trial: true });
+  });
+
+  test("Replace in Files keeps its footer actions together as the window narrows", async ({ workbench: page }) => {
+    await page.setViewportSize({ width: 1120, height: 750 });
+    await openFromTree(page, "settings.gradle.kts");
+    await stubFindMatches(page);
+    await run(page, "find.replaceInPath");
+    const dialog = page.getByRole("dialog", { name: "Replace in Files" });
+    const search = dialog.getByRole("textbox", { name: "Text to find" });
+    await search.fill("http://localhost:8080");
+    await expect(dialog.locator("header [aria-live]")).toContainText("13 matches in 12 files");
+    await search.press("Shift+ArrowDown");
+    await search.press("Shift+ArrowDown");
+
+    const footer = dialog.locator("footer");
+    const open = footer.getByRole("button", { name: "Open in Find Window", exact: true });
+    const shortcut = footer.getByText(/^(Ctrl\+Enter|⌘↵)$/);
+    const replaceAll = footer.getByRole("button", { name: "Replace All", exact: true });
+    const replaceSelected = footer.getByRole("button", { name: "Replace 3 Occurrences", exact: true });
+    await expect(replaceSelected).toBeEnabled();
+    for (const [width, height] of [
+      [400, 500],
+      [1120, 750],
+    ] as const) {
+      await page.setViewportSize({ width, height });
+      const [key, find, all, selected] = await Promise.all([
+        shortcut.boundingBox(),
+        open.boundingBox(),
+        replaceAll.boundingBox(),
+        replaceSelected.boundingBox(),
+      ]);
+      if (!key || !find || !all || !selected) throw new Error("Expected all footer actions to be visible");
+      expect(Math.abs(key.y + key.height / 2 - find.y - find.height / 2)).toBeLessThanOrEqual(1);
+      expect(Math.abs(all.y - selected.y)).toBeLessThanOrEqual(1);
+      await expectControlsFit(page);
+      await expect(footer).toBeInViewport({ ratio: 1 });
+      await expect(shortcut).toHaveCSS("font-size", "12px");
+      await open.click({ trial: true });
+      await replaceSelected.click({ trial: true });
+    }
+    await search.press("Meta+Enter");
+    await expect(dialog).toBeHidden();
+    await expect(page.getByRole("region", { name: "Find", exact: true })).toContainText("http://localhost:8080");
   });
 
   for (const id of [

@@ -234,20 +234,40 @@
   gap: var(--space-2);
   min-height: 46px;
   padding: 8px 20px;
+  border-top: 1px solid var(--border-popup);
+  background: var(--bg-frame, var(--bg-app));
 }
-.footer > button,
-.footer > label {
+.footerOptions,
+.footerGroup {
+  display: flex;
   flex: none;
-  white-space: nowrap;
+  max-width: 100%;
+  align-items: center;
+  gap: var(--space-2);
+}
+.footerOptions {
+  flex-wrap: wrap;
+  margin-inline-end: auto;
+}
+.footerGroup > button {
+  flex-shrink: 1;
+  min-width: 0;
+  height: auto;
+  min-height: var(--h-button);
+  padding-block: var(--space-1);
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .hint {
-  flex: 1 1 0;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--fg-faint);
   font-size: var(--fs-small);
+}
+.footer > .hint {
+  flex: 1 1 0;
 }
 .rowDone {
   opacity: 0.55;
@@ -286,6 +306,8 @@
 .okHint {
   flex: none;
   color: var(--fg-faint);
+  font-family: var(--font-keys);
+  font-size: var(--fs-small);
   white-space: nowrap;
 }
 
