@@ -1,28 +1,9 @@
 /* IDEA Settings: one flat dialog surface, sidebar split by a hairline, window-style title bar. */
-.settingsTitle {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  max-inline-size: 100%;
-  vertical-align: middle;
-  pointer-events: none;
-}
-.settingsTitle img {
-  flex: none;
-  inline-size: var(--space-4);
-  block-size: var(--space-4);
-}
-.settingsTitle > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 .dialog {
   height: min(720px, calc(100vh - 48px));
   background: var(--bg-dialog, var(--bg-elev));
 }
 .layout {
-  --settings-weight-regular: 400;
-  --settings-weight-medium: 500;
   height: 100%;
   display: flex;
   min-height: 0;
@@ -45,16 +26,15 @@
   padding-bottom: 6px;
 }
 .node {
-  font-weight: var(--settings-weight-regular);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .topLevel {
-  font-weight: var(--settings-weight-medium);
+  font-weight: 600;
   color: var(--fg-strong);
 }
-/* Keep the selected row full-width even when the tree loses focus. */
+/* Selection stays blue and full-width even when the tree is not focused (IDEA settings tree). */
 .tree [role="tree"] {
   padding-inline: 0;
 }
@@ -64,9 +44,6 @@
 }
 .tree [role="treeitem"][aria-selected="true"] {
   background: var(--bg-tree-selected);
-}
-:global(:root[data-custom-accent]) .tree [role="treeitem"][aria-selected="true"] {
-  background: color-mix(in srgb, var(--accent) 24%, var(--bg-dialog, var(--bg-elev)));
 }
 .dirty {
   color: var(--accent);
@@ -122,7 +99,7 @@
   overflow: hidden;
   white-space: nowrap;
   color: var(--fg-strong);
-  font-weight: var(--settings-weight-regular);
+  font-weight: 600;
 }
 .crumb:last-child {
   min-width: 0;

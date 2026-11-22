@@ -291,12 +291,13 @@
 .editor:not(.vertical, .squeeze) .tabButton {
   min-inline-size: 0;
 }
-/* Reserve the same space for the close button on either side of the label. */
+/* Every closable tab keeps a close slot at one edge (IDEA), cut to what the close glyph needs: 18px, a 2px
+   inset and the 16px button. The label side keeps the 8px inset, so the side doesn't change a tab's width. */
 .editor:not(.vertical) .closeSlot {
   position: absolute;
   top: 0;
   bottom: 0;
-  right: 4px;
+  right: 2px;
   width: auto;
   margin: 0;
 }
@@ -307,14 +308,14 @@
   left: 5px;
 }
 .editor:not(.vertical, .closeLeft) .closable .tabButton {
-  padding-right: 22px;
+  padding-right: 18px;
 }
 .editor.closeLeft:not(.vertical) .closeSlot {
   right: auto;
-  left: 4px;
+  left: 2px;
 }
 .editor.closeLeft:not(.vertical) .closable .tabButton {
-  padding-left: 22px;
+  padding-left: 18px;
 }
 
 /* drag & drop: the dragged tab is an empty slot the other tabs make room for (IDEA) */

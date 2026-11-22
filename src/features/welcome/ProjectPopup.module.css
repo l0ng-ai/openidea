@@ -76,6 +76,10 @@
   white-space: nowrap;
   --icon-color: var(--fg-muted);
 }
+.badge {
+  align-self: flex-start;
+  margin-top: 1px;
+}
 .text {
   flex: 1;
   min-width: 0;

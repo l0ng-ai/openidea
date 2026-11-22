@@ -1,5 +1,5 @@
 import { ContributedToolbar } from "./ContributedToolbar";
-import { useMemo, useRef, useState, type ReactNode } from "react";
+import { useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { useActions } from "@/platform/actions";
 import { shortcutLabel, useKeymap } from "@/platform/keymap";
@@ -283,7 +283,7 @@ function ToolbarEntry({ id, items }: { id: string; items: ReadonlyMap<string, Ti
 }
 
 /** IDEA's compact header: the window title in the middle of a 30px bar. */
-function CompactTitle({ title }: { title?: ReactNode }) {
+function CompactTitle({ title }: { title?: string }) {
   const documentTitle = useDocumentTitle();
   return (
     <span className={styles.compactTitle} {...windowDragRegion}>
@@ -313,7 +313,7 @@ export function TitleBar({
   compact?: boolean;
   dialog?: boolean;
   lightEdit?: boolean;
-  title?: ReactNode;
+  title?: string;
 }) {
   const overlay = usePlatform((s) => s.overlayTitleBar);
   const frameless = usePlatform((s) => s.framelessTitleBar);

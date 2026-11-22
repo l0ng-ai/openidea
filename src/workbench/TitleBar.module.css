@@ -97,14 +97,19 @@
   color: var(--fg-muted);
 }
 .avatar {
-  composes: initials from "./ProjectBadge.module.css";
+  flex: none;
   width: 20px;
   height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border-radius: var(--radius-small);
   background: linear-gradient(135deg, var(--project-color), var(--project-color-end));
   color: var(--fg-button-primary);
   --icon-color: currentColor;
   font-size: var(--fs-tiny);
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 /* IDEA compact: the avatar follows MainToolbar.Button.iconSize (20 → 16). */
 :global(:root[data-compact]) .avatar {
