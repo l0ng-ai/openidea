@@ -539,7 +539,7 @@ export function rollbackHunks({ view, path, hunks }: GutterChangeTarget): boolea
   return true;
 }
 
-/** IDEA's Rollback Lines: restores the hunks touched by the selection; false when there are none. */
+/** Rollback Lines: restores the hunks touched by the selection; false when there are none. */
 export function rollbackSelectedLines(view: EditorView, path: string): boolean {
   return rollbackHunks({ view, path, hunks: hunksInSelection(view.state) });
 }

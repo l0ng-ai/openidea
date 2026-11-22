@@ -1231,6 +1231,7 @@ fn affected_repo_files(
 }
 
 /// New Branch: creates `name` at `start` (HEAD when absent), optionally checking it out.
+#[allow(clippy::too_many_arguments)]
 #[command(trust = trusted)]
 pub async fn vcs_create_branch(
     host: &Host,
@@ -2273,6 +2274,7 @@ pub async fn vcs_rebase_with(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 #[command(trust = trusted)]
 pub async fn vcs_rebase_with_editor(
     host: &Host,
@@ -2817,7 +2819,13 @@ pub async fn vcs_patch_file_diff(
             return project.with_repo_at(Some(&group.group.root), |r| group.file_diff(r, &encoding));
         }
         if let Some(base) = base {
-            let plan = ProjectPatch::at_base(&project.repos(), &project.root, &base, &patch, Some(&[path.clone()]))?;
+            let plan = ProjectPatch::at_base(
+                &project.repos(),
+                &project.root,
+                &base,
+                &patch,
+                Some(std::slice::from_ref(&path)),
+            )?;
             let group =
                 plan.groups.first().ok_or_else(|| ide_core::IdeError::invalid("The patch file has no repository"))?;
             return project.with_repo_at(Some(&group.root), |r| group.file_diff(r, &path, &encoding));

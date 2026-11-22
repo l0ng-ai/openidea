@@ -147,29 +147,31 @@ it("stashes nothing when cancelled after picking another repository", async () =
   expect(mocks.pushes).toEqual([]);
 });
 
-it("silently stashes every changed root, skips untracked-only roots, and continues after an error", async () => {
-  useVcs.setState({ roots: ["/p/a", "/p/a/nested", "/p/b"], status: [] });
-  mocks.failRepo = "/p/a";
+it("silently stashes every changed root, skips untracked-only and conflicted roots, and continues after an error", async () => {
+  useVcs.setState({ roots: ["/p/a", "/p/a/nested", "/p/b", "/p/c"], status: [] });
+  mocks.failRepo = "/p/a/nested";
   mocks.status.mockReturnValue([
     { path: "/p/a/conflict", staged: "conflicted", unstaged: "conflicted" },
+    { path: "/p/a/edited", staged: null, unstaged: "modified" },
     { path: "/p/a/nested/staged", staged: "modified", unstaged: null },
     { path: "/p/b/new", staged: null, unstaged: "untracked" },
+    { path: "/p/c/edited", staged: null, unstaged: "modified" },
   ]);
   await stashSilently();
 
   expect(mocks.pushes).toEqual([
-    { repo: "/p/a", message: null, paths: null },
     { repo: "/p/a/nested", message: null, paths: null },
+    { repo: "/p/c", message: null, paths: null },
   ]);
   expect(mocks.defaults.mock.calls).toEqual([
-    ["/p/a", false, false],
     ["/p/a/nested", false, false],
+    ["/p/c", false, false],
   ]);
   expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({ level: "error", body: "Merge conflict" }));
   expect(mocks.notify).toHaveBeenCalledWith(
     expect.objectContaining({
       title: "Changes stashed",
-      body: "a/nested",
+      body: "c",
       actions: [expect.objectContaining({ label: "Show Stashes" })],
     }),
   );

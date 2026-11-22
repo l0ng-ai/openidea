@@ -94,7 +94,7 @@ export function buildTodoQuery(s: TodoSettings, scope: SearchScope = { kind: "pr
 // The whitespace rule drops `//` in URLs, `#` in strings, `f(*)` and `a * b`. Left over without knowing
 // the language: `"x # y"` in a string and a prefix `--y`.
 // `*` `;` `%` `"""` `'''` are code characters too, so they count only at the line start (LINE_START_MARKER).
-// IDEA's default pattern matches a TODO anywhere inside a comment, so the keyword need not lead it.
+// The default pattern matches a TODO anywhere inside a comment, so the keyword need not lead it.
 const INLINE_MARKER = /(?:^|\s)(?:\/\/|\/\*|<!--|#|--|\{-|\(\*)/;
 const LINE_START_MARKER = /^\s*(?:\*|;|%|"""|''')/;
 // A long line the backend truncated (ide-search line.rs, `textOffset > 0`) doesn't start at the real line

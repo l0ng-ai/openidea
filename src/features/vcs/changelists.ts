@@ -171,7 +171,7 @@ export function checksForList(
   return out;
 }
 
-/** The first included tracked change supplies the message context, as in IntelliJ. */
+/** The first included tracked change supplies the message context. */
 export function changelistForCommit(
   status: readonly FileStatus[],
   root: string,

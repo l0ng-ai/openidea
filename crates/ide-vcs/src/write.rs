@@ -723,8 +723,12 @@ pub(crate) fn commit_crlf_paths(
     encoding: &dyn Fn(&Path) -> IdeResult<TextEncoding>,
     cancel: &CancellationToken,
 ) -> IdeResult<Vec<IpcPath>> {
+    // Git converts CRLF on commit for `input` and for every spelling of a true boolean.
     if paths.is_empty()
-        || matches!(r.config_get("core.autocrlf")?.map(|s| s.to_ascii_lowercase()).as_deref(), Some("true" | "input"))
+        || matches!(
+            r.config_get("core.autocrlf")?.map(|s| s.trim().to_ascii_lowercase()).as_deref(),
+            Some("true" | "yes" | "on" | "1" | "input")
+        )
     {
         return Ok(Vec::new());
     }
@@ -2408,6 +2412,12 @@ fn fast_forward(
         return Err(IdeError::invalid(format!("Branch '{branch}' is checked out in more than one worktree")));
     }
     let mut linked = None;
+    if let Some(worktree) = holder.as_ref().filter(|worktree| worktree.prunable) {
+        return Err(IdeError::invalid(format!(
+            "Branch '{branch}' is checked out in a missing worktree at '{}'. Prune the worktree first.",
+            worktree.path.0.display()
+        )));
+    }
     let updated = if let Some(worktree) = holder {
         let path = &worktree.path.0;
         let canonical = dunce::canonicalize(path)?;

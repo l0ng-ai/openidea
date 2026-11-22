@@ -2763,8 +2763,10 @@ fn commit_crlf_checks_only_selected_content_without_a_git_policy() {
     assert_eq!(check(options(&hunks[0])), ["new file.txt", "retained.txt", "staged.txt"]);
     assert_eq!(check(options(&hunks[1])), ["new file.txt", "retained.txt", "staged.txt"]);
     assert_eq!(fx.git(&["diff", "--cached"]), before);
-    fx.git(&["config", "core.autocrlf", "input"]);
-    assert!(check(options(&hunks[1])).is_empty());
+    for value in ["input", "yes", "1"] {
+        fx.git(&["config", "core.autocrlf", value]);
+        assert!(check(options(&hunks[1])).is_empty(), "core.autocrlf={value}");
+    }
 }
 
 #[test]

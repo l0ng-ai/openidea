@@ -404,7 +404,7 @@ let amendRequest = 0;
  */
 export async function setAmend(on: boolean, target: EarlierAmend | null = null) {
   const { root: project, roots } = useVcs.getState();
-  // Like IDEA's non-modal commit workflow, the original commit is unambiguous in a single root.
+  // The original commit is unambiguous only in a single root.
   const previewRoot = roots.length === 1 ? roots[0]! : null;
   if (on && target && previewRoot !== target.root) return;
   const request = ++amendRequest;

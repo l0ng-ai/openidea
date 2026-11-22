@@ -375,6 +375,12 @@ fn accept_conflict_side_preserves_binary_blob_mode_and_deletion() {
     fx.git(&["switch", "other"]);
     let incoming = b"theirs\0\x82\xff\r\n";
     std::fs::write(&binary, incoming).unwrap();
+    // Keep the checkout's mode in step with the index so `core.fileMode` sees no local change.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     fx.git(&["rm", "gone.txt"]);
     fx.git(&["--literal-pathspecs", "add", "--chmod=+x", "--", "asset [1].bin"]);
     fx.git(&["commit", "-m", "theirs"]);

@@ -10,7 +10,7 @@ export async function readConfiguredGitIdentity(root: string | null) {
   return { name, email };
 }
 
-/** IDEA identifies the person by name, falling back to the email's local part. */
+/** Identifies the person by name, falling back to the email's local part. */
 export function gitPersonKey(name: string | null | undefined, email?: string | null): string {
   const at = email?.indexOf("@") ?? -1;
   const person = name || (at > 0 ? email?.slice(0, at) : email) || "";

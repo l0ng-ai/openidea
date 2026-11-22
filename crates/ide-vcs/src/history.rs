@@ -101,7 +101,9 @@ pub(crate) fn log_signatures(
     let text = output.stdout_str();
     let fields: Vec<_> = text.split_terminator('\0').collect();
     Ok(fields
-        .chunks_exact(5)
+        .as_chunks::<5>()
+        .0
+        .iter()
         .filter_map(|row| {
             let id = ObjectId::from_hex(row[0].as_bytes()).ok()?;
             let code = match row[1] {
@@ -164,7 +166,7 @@ pub(crate) fn not_cherry_picked(
         cancel,
     )?;
     let fields: Vec<_> = history.stdout.split(|byte| *byte == 0).collect();
-    let records = fields.chunks_exact(5);
+    let records = fields.as_chunks::<5>().0.iter();
     let mut target_metadata = HashSet::new();
     for row in records.clone().filter(|row| row[0].starts_with(b"<")) {
         if cancel.is_cancelled() {

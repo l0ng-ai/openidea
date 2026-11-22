@@ -67,12 +67,16 @@ export function bulkStagePaths(status: readonly FileStatus[], includeUntracked: 
 
 export function stashableRoots(status: readonly FileStatus[], roots: readonly string[]): string[] {
   const changed = new Set<string>();
+  // `git stash` refuses a repository with unmerged paths.
+  const conflicted = new Set<string>();
   for (const file of status) {
-    if (![file.staged, file.unstaged].some((kind) => kind && kind !== "untracked" && kind !== "ignored")) continue;
+    const kinds = [file.staged, file.unstaged];
     const root = rootOf(file.path, roots);
-    if (root) changed.add(root);
+    if (!root) continue;
+    if (kinds.includes("conflicted")) conflicted.add(root);
+    else if (kinds.some((kind) => kind && kind !== "untracked" && kind !== "ignored")) changed.add(root);
   }
-  return roots.filter((root) => changed.has(root));
+  return roots.filter((root) => changed.has(root) && !conflicted.has(root));
 }
 
 const staged = (f: FileStatus) => !!f.staged && f.staged !== "conflicted";

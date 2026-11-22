@@ -49,25 +49,28 @@ fn save_locked(r: &Repo, message: &str) -> IdeResult<Option<Saved>> {
     let (Some(options), Saved::Stash(stash)) = (options, &saved) else { return Ok(Some(saved)) };
     let shelves = match crate::shelf::capture_stash(r, options, message, stash) {
         Ok(shelves) => Saved::Shelves(shelves),
-        Err(error) => {
-            restore_entry(r, saved, false)?;
-            return Err(error);
-        }
+        Err(error) => return Err(rolled_back(error, restore_entry(r, saved, false))),
     };
     if let Err(error) = write_marker(r, &shelves) {
         if let Saved::Shelves(entries) = &shelves {
             entries.discard();
         }
-        restore_entry(r, saved, false)?;
-        return Err(error);
+        return Err(rolled_back(error, restore_entry(r, saved, false)));
     }
     if let Err(error) = selected_stash_index(r, stash)
         .and_then(|index| index.map_or(Ok(()), |index| crate::write::stash_drop(r, index)))
     {
-        restore_entry(r, shelves, false)?;
-        return Err(error);
+        return Err(rolled_back(error, restore_entry(r, shelves, false)));
     }
     Ok(Some(shelves))
+}
+
+/// The error that stopped saving, with the rollback's error when that failed too.
+fn rolled_back<T>(error: IdeError, rollback: IdeResult<T>) -> IdeError {
+    match rollback {
+        Ok(_) => error,
+        Err(rollback) => IdeError::invalid(format!("{}\n{}", error.message, rollback.message)),
+    }
 }
 
 fn write_marker(r: &Repo, saved: &Saved) -> IdeResult<()> {
@@ -85,7 +88,13 @@ pub(crate) fn checkout(
     switch: impl FnOnce() -> IdeResult<()>,
 ) -> IdeResult<IdeResult<Vec<String>>> {
     let _stash_lock = crate::write::lock_stashes(r)?;
-    let saved = save_locked(r, message)?.ok_or_else(|| IdeError::invalid("could not save the local changes"))?;
+    let saved = save_locked(r, message)?.ok_or_else(|| {
+        IdeError::invalid(if r.git_dir.join(MARKER).exists() {
+            "Local changes from an unfinished Git operation are still put aside. Finish or abort it first."
+        } else {
+            "could not save the local changes"
+        })
+    })?;
     let switched = switch();
     if switched.is_ok()
         && matches!(&saved, Saved::Shelves(shelves) if shelves.batch.as_deref().is_some_and(crate::shelf::is_active_batch))
