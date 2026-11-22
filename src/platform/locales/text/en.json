@@ -1,4 +1,6 @@
 {
+  "Fix Stylelint Problems": "Fix Stylelint Problems",
+  "No Stylelint problems to fix": "No Stylelint problems to fix",
   "Reformat with Biome": "Reformat with Biome",
   "Biome path": "Biome path",
   "Biome formats an enabled language instead of Prettier and oxfmt below a Biome configuration file (biome.json, biome.jsonc) or installation, or when it is the selected provider.": "Biome formats an enabled language instead of Prettier and oxfmt below a Biome configuration file (biome.json, biome.jsonc) or installation, or when it is the selected provider.",
