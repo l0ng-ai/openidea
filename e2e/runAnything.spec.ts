@@ -39,9 +39,15 @@ test("Run Anything keeps its command field and shortcuts visible as its results 
 
   const popup = page.getByRole("dialog", { name: "Run Anything", exact: true });
   const field = popup.getByLabel("Command line", { exact: true });
+  const fieldSurface = field.locator("..");
+  const commandRow = fieldSurface.locator("..");
   const results = popup.getByRole("listbox", { name: "Run Anything entries" });
   const hint = popup.getByText(/Enter to run, Tab to complete|Tab to complete, Enter to run/);
   await expect(field).toBeFocused();
+  await expect(fieldSurface).toHaveCSS("box-shadow", "none");
+  await expect(commandRow).toHaveCSS("border-bottom-width", "1px");
+  await expect(commandRow).toHaveCSS("border-left-width", "0px");
+  const focusedDivider = await commandRow.evaluate((el) => getComputedStyle(el).borderBottomColor);
   await page.setViewportSize({ width: 560, height: 340 });
   await expect
     .poll(async () => {
@@ -69,6 +75,7 @@ test("Run Anything keeps its command field and shortcuts visible as its results 
   await field.press("Shift+Tab");
   const history = popup.getByRole("button", { name: "Clear History" });
   await expect(history).toBeFocused();
+  await expect(commandRow).not.toHaveCSS("border-bottom-color", focusedDivider);
   await history.press("Enter");
   await expect(history).toBeHidden();
   await expect(field).toBeFocused();
