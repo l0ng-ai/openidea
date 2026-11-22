@@ -104,7 +104,12 @@ export function DebuggerOverlays() {
 
 function TableView() {
   const view = useOverlays((s) => s.tableView);
-  if (!view) return null;
+  // A finished session (Stop, or Restart, which starts another id) has nothing left to show.
+  const live = useDebug((s) => view != null && isLive(s.sessions[view.session]));
+  useEffect(() => {
+    if (view && !live) useOverlays.setState({ tableView: null });
+  }, [view, live]);
+  if (!view || !live) return null;
   return (
     <TableViewDialog
       key={`${view.session}:${view.expression}`}

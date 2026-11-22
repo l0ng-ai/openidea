@@ -9,7 +9,7 @@ vi.mock("@/platform/ipc", async (original) => {
 
 import type { DebugSessionId, Variable } from "@/platform/ipc";
 import { adoptSession, useDebug } from "../state";
-import { isTableType, parseTableResult, tableExpression } from "../tableView";
+import { clampWindow, isTableType, parseTableResult, tableExpression } from "../tableView";
 import { TableViewDialog } from "../ui/TableViewDialog";
 import { VariablesView } from "../ui/VariablesView";
 import { useOverlays } from "../ui/popoverStore";
@@ -24,6 +24,7 @@ const reply = (o: unknown) =>
   });
 
 const PAGE = {
+  kind: "frame" as const,
   shape: [250, 2],
   rows: 250,
   columns: 2,
@@ -43,6 +44,17 @@ function session(adapter = "debugpy") {
     sessions: { 7: { ...s.sessions[7]!, status: "paused", selectedFrame: 10 } },
     active: 7,
   }));
+}
+
+/** A `stopped` event as `state.ts` records it: the frame is unknown until the stack trace arrives. */
+function stop(frame: number | null) {
+  act(() =>
+    useDebug.setState((s) => ({
+      sessions: {
+        7: { ...s.sessions[7]!, stops: s.sessions[7]!.stops + (frame == null ? 1 : 0), selectedFrame: frame },
+      },
+    })),
+  );
 }
 
 beforeEach(() => session());
@@ -66,6 +78,14 @@ describe("table view model", () => {
     expect(parseTableResult("NameError: name 'df' is not defined")).toEqual({
       error: "NameError: name 'df' is not defined",
     });
+  });
+
+  it("moves a window the object no longer reaches back to its last page", () => {
+    const w = { row: 100, column: 30 };
+    expect(clampWindow(w, { rows: 250, columns: 45 })).toBe(w);
+    expect(clampWindow({ row: 200, column: 30 }, { rows: 50, columns: 45 })).toEqual({ row: 0, column: 30 });
+    expect(clampWindow({ row: 200, column: 30 }, { rows: 150, columns: 12 })).toEqual({ row: 100, column: 0 });
+    expect(clampWindow({ row: 100, column: 0 }, { rows: 0, columns: 0 })).toEqual({ row: 0, column: 0 });
   });
 
   it("passes the expression outside the helper's lambda, with the page window", () => {
@@ -109,20 +129,78 @@ describe("View as Table", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("A 3-dimensional array can't be shown as a table");
   });
 
-  it("shows the exception line of an expression that fails in the frame", async () => {
+  it("shows the exception of an expression that fails in the frame", async () => {
+    // With the `clipboard` context debugpy answers with the exception's repr as the value.
     ipc.debugEvaluateIn.mockImplementation(() =>
       Promise.resolve({
-        status: "error" as const,
-        error: {
-          kind: "invalidInput" as const,
-          message:
-            "evaluate failed: Traceback (most recent call last):\n  File \"<string>\", line 1\nNameError: name 'df' is not defined\n",
-          detail: null,
+        status: "ok" as const,
+        data: {
+          name: "",
+          value: `NameError("name 'df' is not defined")`,
+          typeName: "NameError",
+          variablesReference: 3,
+          evaluateName: null,
         },
       }),
     );
     render(<TableViewDialog expression="df" session={7 as DebugSessionId} onClose={() => {}} />);
-    expect(await screen.findByRole("alert")).toHaveTextContent(/^NameError: name 'df' is not defined$/);
+    expect(await screen.findByRole("alert")).toHaveTextContent(`NameError("name 'df' is not defined")`);
+  });
+
+  it("goes back to the last page when a step leaves the object shorter than the page shown", async () => {
+    let rows = 250;
+    ipc.debugEvaluateIn.mockImplementation(() => reply({ ...PAGE, rows, shape: [rows, 2] }));
+    render(<TableViewDialog expression="df" session={7 as DebugSessionId} onClose={() => {}} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Next Rows" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Next Rows" }));
+    expect(await screen.findByText("Rows 201–250 of 250")).toBeInTheDocument();
+
+    rows = 50;
+    stop(null);
+    stop(10);
+    await waitFor(() =>
+      expect(ipc.debugEvaluateIn).toHaveBeenLastCalledWith(
+        7,
+        10,
+        tableExpression("df", { row: 0, column: 0 }),
+        "clipboard",
+      ),
+    );
+    expect(await screen.findByText("Shape (50, 2)")).toBeInTheDocument();
+    expect(screen.getAllByRole("row")).toHaveLength(3);
+  });
+
+  it("waits for the stopped frame, and doesn't show the previous stop's page meanwhile", async () => {
+    ipc.debugEvaluateIn.mockImplementation(() => reply(PAGE));
+    render(<TableViewDialog expression="df" session={7 as DebugSessionId} onClose={() => {}} />);
+    await screen.findByRole("table");
+    ipc.debugEvaluateIn.mockClear();
+    let answer: (v: unknown) => void = () => {};
+    ipc.debugEvaluateIn.mockImplementation(() => new Promise((r) => (answer = r)));
+
+    stop(null);
+    expect(ipc.debugEvaluateIn).not.toHaveBeenCalled();
+    expect(screen.queryByRole("table")).toBeNull();
+    stop(12);
+    expect(ipc.debugEvaluateIn).toHaveBeenCalledExactlyOnceWith(
+      7,
+      12,
+      tableExpression("df", { row: 0, column: 0 }),
+      "clipboard",
+    );
+    expect(screen.queryByRole("table")).toBeNull();
+    await act(async () => answer(await reply(PAGE)));
+    expect(screen.getByRole("table")).toBeInTheDocument();
+  });
+
+  it("puts a DataFrame's dtypes on its columns even when the page has one column", async () => {
+    ipc.debugEvaluateIn.mockImplementation(() =>
+      reply({ ...PAGE, shape: [250, 31], columns: 31, dtypes: ["float64"], headers: ["z"], cells: [["1.0"], ["2.0"]] }),
+    );
+    render(<TableViewDialog expression="df" session={7 as DebugSessionId} onClose={() => {}} />);
+    const table = await screen.findByRole("table");
+    expect(within(table).getAllByRole("columnheader")[1]).toHaveTextContent("zfloat64");
+    expect(screen.getByText("Shape (250, 31)")).toBeInTheDocument();
   });
 
   const frame: Variable = {

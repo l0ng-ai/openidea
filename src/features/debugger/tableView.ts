@@ -26,11 +26,12 @@ export interface TableWindow {
 }
 
 export interface TablePage {
+  kind: "frame" | "series" | "array";
   /** The object's own shape, e.g. `[1000, 5]`. */
   shape: number[];
   rows: number;
   columns: number;
-  /** One dtype per shown column (DataFrame), else the object's single dtype. */
+  /** One dtype per shown column for a DataFrame, else the object's single dtype. */
   dtypes: string[];
   headers: string[];
   index: string[];
@@ -47,30 +48,42 @@ def f(o, r0, nr, c0, nc):
     s = lambda v: str(v)[:200]
     try:
         if hasattr(o, 'iloc') and hasattr(o, 'columns'):
-            d = o.iloc[r0:r0 + nr, c0:c0 + nc]
+            k, d = 'frame', o.iloc[r0:r0 + nr, c0:c0 + nc]
             R, C = o.shape
             dt, h = [str(x) for x in d.dtypes], [s(c) for c in d.columns]
             idx, cells = [s(i) for i in d.index], [[s(v) for v in r] for r in d.itertuples(index=False, name=None)]
         elif hasattr(o, 'iloc'):
-            d = o.iloc[r0:r0 + nr]
+            k, d = 'series', o.iloc[r0:r0 + nr]
             R, C = len(o), 1
             dt, h = [str(o.dtype)], ['' if o.name is None else s(o.name)]
             idx, cells = [s(i) for i in d.index], [[s(v)] for v in d]
         elif hasattr(o, 'ndim') and hasattr(o, 'dtype'):
             if o.ndim > 2:
                 return json.dumps({'error': 'ndim', 'ndim': o.ndim})
-            a = o.reshape(1, 1) if o.ndim == 0 else o
+            k, a = 'array', (o.reshape(1, 1) if o.ndim == 0 else o)
             R, C = a.shape[0], (a.shape[1] if a.ndim == 2 else 1)
             d = a[r0:r0 + nr, c0:c0 + nc] if a.ndim == 2 else a[r0:r0 + nr].reshape(-1, 1)
             dt, h = [str(o.dtype)], [str(c0 + j) for j in range(d.shape[1])] if a.ndim == 2 else ['0']
             idx, cells = [str(r0 + i) for i in range(d.shape[0])], [[s(v) for v in r] for r in d]
         else:
             return json.dumps({'error': 'type'})
-        return json.dumps({'shape': list(o.shape), 'rows': R, 'columns': C, 'dtypes': dt,
+        return json.dumps({'kind': k, 'shape': list(o.shape), 'rows': R, 'columns': C, 'dtypes': dt,
                            'headers': h, 'index': idx, 'cells': cells})
     except Exception as e:
         return json.dumps({'error': '%s: %s' % (type(e).__name__, e)})
 `;
+
+/**
+ * The window moved back onto the object when a step or another frame left it with fewer rows
+ * or columns than the window starts at (the last page then); `w` itself when it still fits.
+ */
+export function clampWindow(w: TableWindow, page: Pick<TablePage, "rows" | "columns">): TableWindow {
+  const fit = (at: number, total: number, size: number) =>
+    at < total ? at : Math.max(0, Math.floor((total - 1) / size) * size);
+  const row = fit(w.row, page.rows, ROW_PAGE);
+  const column = fit(w.column, page.columns, COLUMN_PAGE);
+  return row === w.row && column === w.column ? w : { row, column };
+}
 
 /**
  * One expression (evaluate takes no statements): defines the helper in a fresh namespace

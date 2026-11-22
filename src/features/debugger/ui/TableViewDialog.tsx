@@ -1,5 +1,5 @@
 /** View as Table: a DataFrame / Series / ndarray of the paused frame, one page of rows and columns at a time. */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import type { DebugSessionId } from "@/platform/ipc";
 import { Dialog, IconButton } from "@/ui";
@@ -8,6 +8,7 @@ import { evaluate, useDebug } from "../state";
 import {
   COLUMN_PAGE,
   ROW_PAGE,
+  clampWindow,
   isNumericDtype,
   parseTableResult,
   tableExpression,
@@ -33,15 +34,29 @@ export function TableViewDialog({
   const frame = useDebug((st) => st.sessions[session]?.selectedFrame);
   const paused = useDebug((st) => st.sessions[session]?.status === "paused");
 
+  // What the shown page was read for; another expression, stop or frame makes it stale.
+  const readFor = useRef("");
+
   useEffect(() => {
+    const key = `${expression}\n${stops}\n${frame}`;
+    if (readFor.current !== key) {
+      readFor.current = key;
+      setResult(null);
+    }
     const s = useDebug.getState().sessions[session];
-    if (!s || s.status !== "paused") return;
+    // Right after a stop the frame is unknown until the stack trace arrives; without a frame,
+    // debugpy would run the expression in a namespace of its own.
+    if (!s || s.status !== "paused" || s.selectedFrame == null) return;
     let live = true;
     evaluate(tableExpression(expression, win), "clipboard", s).then(
-      (v) => live && setResult(parseTableResult(v.value)),
-      // A traceback ends with the exception line, the part worth showing ("NameError: name 'df' is not defined").
-      (e: unknown) =>
-        live && setResult({ error: (e instanceof Error ? e.message : String(e)).trim().split("\n").pop()! }),
+      (v) => {
+        if (!live) return;
+        const r = parseTableResult(v.value);
+        const fits = "page" in r ? clampWindow(win, r.page) : win;
+        if (fits !== win) setWin(fits);
+        else setResult(r);
+      },
+      (e: unknown) => live && setResult({ error: e instanceof Error ? e.message : String(e) }),
     );
     return () => {
       live = false;
@@ -126,7 +141,7 @@ export function TableViewDialog({
           {page && (
             <span className={styles.summary}>
               {formatMessage(tx("Shape ({shape})"), { shape: page.shape.join(", ") })}
-              {page.dtypes.length === 1 ? ` · ${page.dtypes[0]}` : ""}
+              {page.kind !== "frame" ? ` · ${page.dtypes[0]}` : ""}
             </span>
           )}
           {page &&
@@ -153,9 +168,9 @@ export function TableViewDialog({
                 <tr>
                   <th className={styles.index} />
                   {page.headers.map((h, i) => (
-                    <th key={i} title={page.dtypes.length > 1 ? page.dtypes[i] : undefined}>
+                    <th key={i}>
                       {h}
-                      {page.dtypes.length > 1 && <span className={styles.dtype}>{page.dtypes[i]}</span>}
+                      {page.kind === "frame" && <span className={styles.dtype}>{page.dtypes[i]}</span>}
                     </th>
                   ))}
                 </tr>
@@ -167,7 +182,12 @@ export function TableViewDialog({
                       {page.index[r]}
                     </th>
                     {row.map((cell, c) => (
-                      <td key={c} className={clsx(isNumericDtype(page.dtypes[c] ?? page.dtypes[0]) && styles.numeric)}>
+                      <td
+                        key={c}
+                        className={clsx(
+                          isNumericDtype(page.kind === "frame" ? page.dtypes[c] : page.dtypes[0]) && styles.numeric,
+                        )}
+                      >
                         {cell}
                       </td>
                     ))}
