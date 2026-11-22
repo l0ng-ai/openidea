@@ -54,7 +54,7 @@
   font-weight: var(--settings-weight-medium);
   color: var(--fg-strong);
 }
-/* Selection stays blue and full-width even when the tree is not focused (IDEA settings tree). */
+/* Keep the selected row full-width even when the tree loses focus. */
 .tree [role="tree"] {
   padding-inline: 0;
 }
@@ -64,6 +64,9 @@
 }
 .tree [role="treeitem"][aria-selected="true"] {
   background: var(--bg-tree-selected);
+}
+:global(:root[data-custom-accent]) .tree [role="treeitem"][aria-selected="true"] {
+  background: color-mix(in srgb, var(--accent) 24%, var(--bg-dialog, var(--bg-elev)));
 }
 .dirty {
   color: var(--accent);

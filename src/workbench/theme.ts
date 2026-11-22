@@ -101,6 +101,7 @@ export function useApplyTheme() {
     applyThemeAttributes(id, root);
     // Each theme ships its own accent; only a deliberate choice overrides it.
     const custom = !!accent && ACCENT_RE.test(accent) && !THEME_ACCENTS.has(accent.toLowerCase());
+    root.toggleAttribute("data-custom-accent", custom);
     if (custom) root.style.setProperty("--accent", accent);
     else root.style.removeProperty("--accent");
     syncWindowBackground();
