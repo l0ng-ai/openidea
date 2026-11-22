@@ -78,6 +78,45 @@ function javaDeclaration(text: string): string {
   }
 }
 
+const C_SPECIFIERS =
+  /^(static|inline|extern|virtual|explicit|constexpr|consteval|friend|const|volatile|unsigned|signed|long|short|struct|enum|union|\[\[[^\]]*\]\])\s+/;
+
+/**
+ * Doxygen tags for the C / C++ function declared at the start of `text`: `@param` per named
+ * parameter (default values and arrays dropped, `void` and `...` skipped) and `@return` unless it
+ * returns `void` or is a constructor / destructor. A type, a call or a statement gets none.
+ */
+export function cDocTags(text: string): string[] {
+  let s = text.trimStart();
+  if (/^template\s*</.test(s)) {
+    const end = closing(s, s.indexOf("<"));
+    if (end < 0) return [];
+    s = s.slice(end).trimStart();
+  }
+  for (let m = C_SPECIFIERS.exec(s); m; m = C_SPECIFIERS.exec(s)) s = s.slice(m[0].length);
+  const open = s.indexOf("(");
+  if (open < 0) return [];
+  const head = s.slice(0, open).trim();
+  // `Type name`, `Type *name`, `Type Class::name`, or a lone `Name` / `~Name` for constructors.
+  const m = /^(?:([\w:<>,\s*&]+?)\s*([*&]+\s*|\s+))?((?:[\w:]*(?:<[^()]*>)?::)?~?\w+)$/.exec(head);
+  const statement = /^(return|if|while|for|switch|sizeof|case|else|do|new|delete|throw|goto)$/;
+  if (!m || statement.test(m[3]!) || statement.test((m[1] ?? "").trim().split(/\s+/)[0]!)) return [];
+  const end = closing(s, open);
+  if (end < 0 || !/^\s*(const\s*)?(noexcept\s*)?(override\s*)?(->\s*[^{;]+)?(:[^{;]*)?\s*(\{|;|$)/.test(s.slice(end)))
+    return [];
+  const params = splitTopLevel(s.slice(open + 1, end - 1), true).flatMap((p) => {
+    const t = p.replace(/=.*$/s, "").trim();
+    if (!t || t === "void" || t === "...") return [];
+    // A parameter without a name (`int`) has nothing to document.
+    const name = /(\w+)\s*(\[[^\]]*\]\s*)*$/.exec(t)?.[1];
+    return name && /[\s*&]/.test(t) ? [name] : [];
+  });
+  const tags = params.map((n) => `@param ${n}`);
+  const returnType = (m[1] ?? "").trim();
+  if (returnType && !(returnType === "void" && !(m[2] ?? "").includes("*"))) tags.push("@return");
+  return tags;
+}
+
 /** Type parameter names of `<T extends A, U>`. */
 function typeParams(list: string): string[] {
   return splitTopLevel(list.slice(1, -1), true).flatMap((p) => /^\s*(\w+)/.exec(p)?.[1] ?? []);
@@ -254,6 +293,16 @@ export const enterInDocstring: Command = (view) => {
   return true;
 };
 
+/**
+ * Whether the comments at `pos` include `/* *\/` ones. Embedded languages list several comment
+ * styles there (PHP after HTML's `<!-- -->`), so every entry counts, not only the first.
+ */
+function hasCBlockComments(state: EditorState, pos: number): boolean {
+  return state
+    .languageDataAt<{ block?: { open: string; close: string } }>("commentTokens", pos)
+    .some((t) => t.block?.open === "/*" && t.block.close === "*/");
+}
+
 /** The Enter command for documents of `language` (stub tags in PHP). */
 export function enterInDocComment(language: string | undefined): Command {
   return (view) => {
@@ -261,8 +310,9 @@ export function enterInDocComment(language: string | undefined): Command {
     if (state.readOnly || state.selection.ranges.length !== 1) return false;
     const r = state.selection.main;
     if (!r.empty) return false;
-    const block = state.languageDataAt<{ block?: { open: string; close: string } }>("commentTokens", r.head)[0]?.block;
-    if (block?.open !== "/*" || block.close !== "*/") return false;
+    // Lezer PHP leaves `<?php` + an unclosed `/**` to the HTML around it, whose comments are
+    // `<!-- -->`; PHP code always takes `/* */`.
+    if (language !== "php" && !hasCBlockComments(state, r.head)) return false;
     const line = state.doc.lineAt(r.head);
     const before = line.text.slice(0, r.head - line.from);
     if (before.trim() !== "/**" || line.text.slice(r.head - line.from).trim()) return false;
@@ -280,7 +330,9 @@ export function enterInDocComment(language: string | undefined): Command {
           ? javaDocTags(code)
           : /^(java|type)script(react)?$/.test(language ?? "")
             ? jsDocTags(code)
-            : [];
+            : /^(c|cpp|objective-c|objective-cpp)$/.test(language ?? "")
+              ? cDocTags(code)
+              : [];
     const summary = `${br}${indent} * `;
     const insert = summary + tags.map((t) => `${br}${indent} * ${t}`).join("") + `${br}${indent} */`;
     view.dispatch(

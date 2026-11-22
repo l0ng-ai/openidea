@@ -58,8 +58,8 @@ test("a narrow terminal panel keeps the selected tab's close button in view", as
   await expect(selected).toHaveAttribute("data-tooltip", new RegExp(longName));
   await expect(terminal.getByRole("button", { name: "Show Hidden Tabs" })).toBeHidden();
   await expect(terminal.getByRole("button", { name: "New Tab", exact: true })).toBeVisible();
-  await terminal.getByRole("button", { name: "More Terminal Options" }).click();
-  await expect(page.getByRole("menuitem", { name: /^New Terminal Tab/ })).toBeVisible();
+  await terminal.getByRole("button", { name: "New Predefined Session" }).click();
+  await expect(page.getByRole("menuitem", { name: "zsh", exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
   await strip.getByRole("button", { name: "Close Tab", exact: true }).click();
   await expect(terminal).toBeHidden();
@@ -82,9 +82,32 @@ test("terminal split tabs fit when sessions overflow and switch through the menu
   await page.getByRole("menuitem", { name: "Local (2)", exact: true }).click();
   await expect(strip.getByRole("tab", { name: "Local (2)", selected: true })).toBeVisible();
   await expectSelectedTabToFit(strip);
-  await expect(header.getByRole("button", { name: "More Terminal Options" })).toBeVisible();
+  await expect(header.getByRole("button", { name: "New Predefined Session" })).toBeVisible();
   await hidden.click();
   await page.getByRole("menuitem", { name: longName, exact: true }).click();
   await expect(strip.getByRole("tab", { name: longName, selected: true })).toBeVisible();
   await expectSelectedTabToFit(strip);
+});
+
+test("the terminal session chooser lists shells first and window options own the split commands", async ({
+  workbench: page,
+}) => {
+  const terminal = await openTerminal(page, 520);
+  const chooser = terminal.getByRole("button", { name: "New Predefined Session", exact: true });
+  await expect(chooser).toBeVisible();
+  await chooser.press("Space");
+  const sessions = page.getByRole("menu", { name: "New Predefined Session", exact: true });
+  await expect(sessions.getByRole("menuitem")).toHaveText(["zsh", "SSH Session…", /^Settings/]);
+  await page.keyboard.press("Home");
+  await expect(sessions.getByRole("menuitem", { name: "zsh", exact: true })).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(sessions).toBeHidden();
+  await expect(terminal.getByRole("tab", { name: "zsh", selected: true })).toBeVisible();
+
+  await terminal.getByRole("button", { name: "Options", exact: true }).click();
+  const options = page.getByRole("menu", { name: "Terminal options", exact: true });
+  await expect(options.getByRole("menuitem", { name: /^Split Down/ })).toBeVisible();
+  await expect(options.getByRole("menuitem", { name: /^Settings/ })).toBeVisible();
+  await options.getByRole("menuitem", { name: /^Split Right/ }).click();
+  await expect(terminal.getByRole("tablist", { name: "Terminal sessions" })).toHaveCount(2);
 });

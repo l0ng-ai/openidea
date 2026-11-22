@@ -14,7 +14,7 @@ import { LIMITS } from "../../model/schema";
 import type { PageSpec } from "../spec";
 import { EditorSections, type EditorSection, sectionLabels } from "./kit";
 import styles from "./Editor.module.css";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 
 function FontRow() {
   const [family, setFamily] = useSetting<string>("editor.fontFamily");
@@ -123,7 +123,7 @@ function WeightRow({
           max={900}
           step={50}
           integer
-          aria-label={tx`${label} custom value`}
+          aria-label={tx`${txPart(label)} custom value`}
         />
       )}
     </Row>

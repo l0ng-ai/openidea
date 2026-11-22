@@ -62,7 +62,7 @@ When the language server cannot help, Introduce Variable and Introduce Constant 
 
 ## Move, copy and rename files
 
-In the Project view, **Rename…** (`⇧F6` / `Shift+F6`), **Move…** (`F6`, drag and drop, or cut and paste) and **Copy…** (`F5`, copy and paste, or `⌥`-drag / `Alt`-drag) open a dialog. With **Search for references** on, references to the file are updated through the language servers that support it (for example imports in TypeScript); **Search in comments and strings** also looks there. The changes are shown in a preview first.
+In the Project view, **Rename…** (`⇧F6` / `Shift+F6`), **Move…** (`F6`, drag and drop, or cut and paste) and **Copy…** (`F5`, copy and paste, or `⌥`-drag / `Alt`-drag) open a dialog. With **Search for references** on, references to the file are updated through the language servers that support it (for example imports in TypeScript); Python imports are updated by the IDE itself; **Search in comments and strings** also looks there. The changes are shown in a preview first.
 
 In the editor, **Move…** on a symbol runs the server's move refactoring, where the language has one. In Java it asks where to: a top-level class goes to another package (its package declaration, imports and every reference follow), a static member or nested class to another class, an instance method to the class of one of its fields or parameters; warnings are confirmed in **Problems Detected** first.
 

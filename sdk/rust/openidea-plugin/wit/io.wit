@@ -1,4 +1,4 @@
-package openidea:plugin@1.14.0;
+package openidea:plugin@1.15.0;
 
 /// Problems in files, shown in the editor and the Problems view.
 interface diagnostics {
@@ -138,6 +138,14 @@ interface process {
         stderr: string,
     }
 
+    /// Options for running a program with configurable capture or streaming (API 1.15).
+    record process-options {
+        /// Maximum bytes captured per stream before returning an error (up to 128 MiB; default 16 MiB).
+        max-output-bytes: option<u32>,
+        /// In-flight buffer size per stream for streaming backpressure (default 256 KiB, max 4 MiB).
+        buffer-bytes: option<u32>,
+    }
+
     /// What to run (API 1.3). `env` only adds variables: an existing name in
     /// the prepared child environment (including the login-shell PATH) is an
     /// error naming that key; nothing is replaced or removed. Names compare
@@ -194,6 +202,17 @@ interface process {
     /// handle to it without waiting (API 1.3). Closing the invoking window
     /// also ends its processes.
     start: func(cmd: command, cwd: option<borrow<project>>) -> result<child, error>;
+
+    /// Runs `cmd` with configurable capture limits (API 1.15).
+    /// Both stdout and stderr are captured losslessly up to `options.max-output-bytes`.
+    /// Exceeding the limit on either stream returns an explicit error naming that stream.
+    run-captured: func(cmd: command, cwd: option<borrow<project>>, stdin: option<string>, options: option<process-options>) -> result<output, error>;
+
+    /// Starts `cmd` with backpressure-driven lossless streaming (API 1.15).
+    /// If the unread buffer reaches `buffer-bytes`, the reader pauses and the child blocks
+    /// on its pipe, preventing head truncation. If total output exceeds `max-output-bytes`,
+    /// polling returns an explicit error.
+    start-stream: func(cmd: command, cwd: option<borrow<project>>, options: option<process-options>) -> result<child, error>;
 }
 
 /// Local sockets on the project machine, including the server for remote projects.

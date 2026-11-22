@@ -986,7 +986,7 @@ async fn commands_are_remembered_per_project_and_merged_with_skills_on_disk() {
     wait_for(&mgr_a, &task.id, AgentStatus::NeedsInput).await;
     assert_eq!(names(mgr_a.commands("claude", None).await.unwrap()), ["review", "triage"]);
     assert_eq!(names(mgr_a.commands("claude", Some(&task.id)).await.unwrap()), ["review", "triage"]);
-    // Other agents get only what they offered, plus verified native builtins.
+    // Other agents also receive the project's active skills from the skills hub, plus verified native builtins.
     assert_eq!(
         names(mgr_a.commands("codex", None).await.unwrap()),
         [
@@ -1001,6 +1001,7 @@ async fn commands_are_remembered_per_project_and_merged_with_skills_on_disk() {
             "goal",
             "rename",
             "logout",
+            "triage",
         ]
     );
     mgr_a.cancel(&task.id, None).unwrap();
@@ -4441,6 +4442,82 @@ async fn per_session_mcp_overrides_filter_session_and_reload_when_idle() {
     assert!(!reloaded.1.contains(&"github".to_string()));
     assert!(reloaded.1.contains(&"slack".to_string()));
     mgr.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn per_session_skill_overrides_filter_commands_persist_and_reload_when_idle() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join(".agents/skills/tdd")).unwrap();
+    std::fs::write(root.join(".agents/skills/tdd/SKILL.md"), "---\nname: tdd\ndescription: TDD\n---\n").unwrap();
+    std::fs::create_dir_all(root.join(".claude/skills/noisy")).unwrap();
+    std::fs::write(root.join(".claude/skills/noisy/SKILL.md"), "---\nname: noisy\ndescription: Noisy\n---\n").unwrap();
+
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(root, agent.clone());
+    mgr.set_skills_policy_hook(Box::new({
+        let root = root.to_path_buf();
+        move || SkillsPolicy {
+            user: BTreeMap::from([("tdd".into(), AgentSkillPolicy { mode: AgentSkillMode::Off })]),
+            workspace_roots: vec![root.clone()],
+            ..SkillsPolicy::default()
+        }
+    }));
+
+    // Start task with `tdd` (default off) enabled for this session and `noisy` turned off.
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("again"),
+            provider: "claude".into(),
+            config: Vec::new(),
+            isolation: Isolation::Local,
+            base: None,
+            mcp_overrides: BTreeMap::new(),
+            idle: false,
+            skill_overrides: BTreeMap::from([
+                ("tdd".into(), AgentSkillMode::Auto),
+                ("noisy".into(), AgentSkillMode::Off),
+            ]),
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+
+    let cmd_names: Vec<String> =
+        mgr.commands("claude", Some(&task.id)).await.unwrap().into_iter().map(|c| c.name).collect();
+    assert!(cmd_names.contains(&"tdd".to_string()), "{cmd_names:?}");
+    assert!(
+        !cmd_names.contains(&"noisy".to_string()),
+        "`noisy` offered on disk must be stripped when off: {cmd_names:?}"
+    );
+
+    // Flip overrides while idle -> recycles resumable session so next turn calls `session/load`.
+    let updated = mgr
+        .set_skill_overrides(
+            &task.id,
+            BTreeMap::from([("tdd".into(), AgentSkillMode::Off), ("noisy".into(), AgentSkillMode::Auto)]),
+        )
+        .unwrap();
+    assert_eq!(updated.skill_overrides.get("tdd"), Some(&AgentSkillMode::Off));
+    assert_eq!(updated.skill_overrides.get("noisy"), Some(&AgentSkillMode::Auto));
+
+    let cmd_names_after: Vec<String> =
+        mgr.commands("claude", Some(&task.id)).await.unwrap().into_iter().map(|c| c.name).collect();
+    assert!(!cmd_names_after.contains(&"tdd".to_string()), "{cmd_names_after:?}");
+    assert!(cmd_names_after.contains(&"noisy".to_string()), "{cmd_names_after:?}");
+
+    mgr.prompt(&task.id, text("again"), false).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    assert_eq!(agent.mcp_calls.lock().last().map(|c| c.0.as_str()), Some("session/load"));
+    mgr.shutdown();
+
+    // Persisted task file preserves `skill_overrides` across restart.
+    let restored_mgr = manager(root, Arc::new(FakeAgent::default()));
+    let restored = restored_mgr.subscribe(Arc::new(|_| {})).into_iter().find(|t| t.id == task.id).unwrap();
+    assert_eq!(restored.skill_overrides.get("tdd"), Some(&AgentSkillMode::Off));
+    assert_eq!(restored.skill_overrides.get("noisy"), Some(&AgentSkillMode::Auto));
+    restored_mgr.shutdown();
 }
 
 #[tokio::test(flavor = "multi_thread")]

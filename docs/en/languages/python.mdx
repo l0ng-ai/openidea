@@ -21,6 +21,8 @@ basedpyright starts in its `standard` type-checking mode instead of its own stri
 
 Ruff starts only for files below a Ruff configuration: a `ruff.toml`, a `.ruff.toml`, or a `pyproject.toml` that contains a `[tool.ruff]` table. basedpyright has no formatter, so formatting comes from Ruff.
 
+Moving or renaming a module or package in the Project view with **Search for references** on updates the `import` and `from … import` statements that refer to it, relative imports included, in the same preview as the move. basedpyright has no file-move support, so the IDE finds these imports itself from the syntax tree. When a rename changes the name an import binds, the import keeps it as an alias: `from pkg import models` becomes `from pkg import domain as models`.
+
 To pick the type checker yourself, open **Settings › Languages & Frameworks › Language Servers**, select any of the four servers and change **Language server for Python**. **Automatic** uses the first installed one in the order above; you can also choose one server or **None**.
 
 ## Setup

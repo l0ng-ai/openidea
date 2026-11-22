@@ -21,7 +21,7 @@ import {
   type DbTxMode,
 } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
-import { tx, useTx, useTxTemplate } from "@/platform/i18n";
+import { tx, txPart, useTx, useTxTemplate } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { sshLabel as configLabel } from "@/platform/remoteSettings";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
@@ -333,7 +333,7 @@ function SecondsOption({
         <Input
           className={styles.secondsInput}
           inputMode="numeric"
-          aria-label={tx`${label} (seconds)`}
+          aria-label={tx`${txPart(label)} (seconds)`}
           disabled={!on}
           value={draft}
           onChange={(e) => {

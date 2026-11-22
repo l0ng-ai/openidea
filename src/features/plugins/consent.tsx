@@ -6,7 +6,7 @@
 import { useState } from "react";
 import { create } from "zustand";
 import type { CapabilityInfo, Consent } from "@/bindings";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 import { Badge, Checkbox, Dialog, T } from "@/ui";
 import { setConsentPrompt, type ConsentRequest } from "./store";
 import styles from "./PluginsPage.module.css";
@@ -37,7 +37,7 @@ export function capabilityDescription(cap: CapabilityInfo): string {
   // The host appends the agent's contributed JVM flags (`…; JVM options: -XX:…`).
   const flagsAt = cap.id === "java.agent" ? cap.description.indexOf(JVM_OPTIONS) : -1;
   if (flagsAt >= 0) {
-    const description = tx(cap.description.slice(0, flagsAt));
+    const description = txPart(cap.description.slice(0, flagsAt));
     const flags = cap.description.slice(flagsAt + JVM_OPTIONS.length);
     return tx`${description}; JVM options: ${flags}`;
   }

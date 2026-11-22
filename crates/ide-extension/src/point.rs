@@ -122,13 +122,34 @@ pub struct Prepared {
     pub key: Option<String>,
     /// User-facing one-liner for the plugin details page ("Insert Date").
     pub label: String,
+    /// When set, this entry is skipped with a plugin load warning instead of failing the plugin.
+    pub warning: Option<String>,
     /// Makes it take effect. Must not fail for reasons `prepare` could have checked.
     pub commit: Commit,
 }
 
 impl Prepared {
     pub fn new(label: impl Into<String>, commit: impl FnOnce() -> Result<Disposable, String> + Send + 'static) -> Self {
-        Self { capabilities: Vec::new(), files: Vec::new(), key: None, label: label.into(), commit: Box::new(commit) }
+        Self {
+            capabilities: Vec::new(),
+            files: Vec::new(),
+            key: None,
+            label: label.into(),
+            warning: None,
+            commit: Box::new(commit),
+        }
+    }
+
+    /// Skips an invalid declaration with a load warning while letting the rest of the plugin load.
+    pub fn skipped(warning: impl Into<String>) -> Self {
+        Self {
+            capabilities: Vec::new(),
+            files: Vec::new(),
+            key: None,
+            label: String::new(),
+            warning: Some(warning.into()),
+            commit: Box::new(|| Ok(Disposable::noop())),
+        }
     }
 
     pub fn key(mut self, key: impl Into<String>) -> Self {

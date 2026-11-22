@@ -33,7 +33,10 @@
     "perf": "node perf/run.ts",
     "perf:rust": "node perf/rust.ts",
     "eval": "node evals/run.ts",
-    "release:prepare": "node scripts/release-prepare.ts"
+    "release:prepare": "node scripts/release-prepare.ts",
+    "dogfood:build": "node scripts/dogfood.ts build",
+    "dogfood:install": "node scripts/dogfood.ts install",
+    "dogfood:remote": "node scripts/dogfood-remote.ts"
   },
   "simple-git-hooks": {
     "pre-commit": "pnpm lint-staged"
@@ -92,6 +95,7 @@
   },
   "devDependencies": {
     "@lezer/generator": "^1.8.1",
+    "@noble/hashes": "^2.4.0",
     "@playwright/test": "^1.64.1",
     "@tauri-apps/cli": "^2",
     "@testing-library/jest-dom": "^7.0.1",

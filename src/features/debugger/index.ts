@@ -68,7 +68,8 @@ const useAnyOverlay = () =>
         s.attach ||
         s.smartStep ||
         s.streamChooser ||
-        s.streamAbort != null
+        s.streamAbort != null ||
+        s.tableView
       ),
   );
 

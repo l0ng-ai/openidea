@@ -135,6 +135,16 @@ impl Session {
         }
     }
 
+    /// Build › Rebuild replaced the module outputs. The recorded snapshots were copied from
+    /// the outputs before the clean and may hold classes it removed (a class moved to another
+    /// package leaves its old file behind when jdtls wrote it), so none of them is reused:
+    /// the next launch copies the rebuilt outputs.
+    pub(crate) fn forget_reusable_snapshots(&mut self) {
+        if let Err(error) = forget_reusable_snapshots(&self.cache) {
+            tracing::warn!(%error, "Cannot invalidate Java launch snapshots");
+        }
+    }
+
     pub(super) fn build(
         &mut self,
         root: &Path,
@@ -339,6 +349,32 @@ impl Drop for Session {
             }
         }
     }
+}
+
+/// Clears the fingerprint of every launch record under `cache`, so no snapshot matches the
+/// sources any more. The records stay: their modules keep delegating to Maven.
+fn forget_reusable_snapshots(cache: &Path) -> std::io::Result<()> {
+    let records = cache.join("java-launch/records");
+    if !records.try_exists()? {
+        return Ok(());
+    }
+    let mut pending = vec![records];
+    while let Some(dir) = pending.pop() {
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                pending.push(entry.path());
+            } else if kind.is_file() && entry.path().extension().is_some_and(|ext| ext == "json") {
+                let outputs: Option<Outputs> = serde_json::from_slice(&fs::read(entry.path())?).unwrap_or(None);
+                if let Some(mut outputs) = outputs.filter(|o| o.fingerprint.is_some()) {
+                    outputs.fingerprint = None;
+                    write_record(&entry.path(), &outputs).map_err(|e| std::io::Error::other(e.message))?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn referenced_snapshots(cache: &Path) -> std::io::Result<HashSet<PathBuf>> {
@@ -608,6 +644,34 @@ mod tests {
                 .kind,
             ide_core::error::ErrorKind::Cancelled
         );
+    }
+
+    #[test]
+    fn a_menu_rebuild_stops_reusing_snapshots_that_hold_removed_classes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let model = fixture(root);
+        let cancel = CancellationToken::new();
+        // A class jdtls wrote for a source since moved to another package; an incremental
+        // Maven build leaves it in target/classes.
+        fs::create_dir_all(root.join("target/classes")).unwrap();
+        fs::write(root.join("target/classes/Stale.class"), "stale").unwrap();
+        let mut session = Session::new(root.join("cache"));
+        let first = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
+        assert!(first.snapshot.join("0/Stale.class").is_file());
+        let reused = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
+        assert_eq!(reused.snapshot, first.snapshot);
+
+        // Build › Rebuild cleans the outputs and compiles again.
+        fs::remove_file(root.join("target/classes/Stale.class")).unwrap();
+        session.forget_reusable_snapshots();
+        assert!(has_record(root, &root.join("cache"), root));
+        let next = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
+        assert_ne!(next.snapshot, first.snapshot);
+        assert!(!next.snapshot.join("0/Stale.class").exists());
+        assert!(next.snapshot.join("0/Main.class").is_file());
+        let again = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
+        assert_eq!(again.snapshot, next.snapshot);
     }
 
     #[test]

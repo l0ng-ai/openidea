@@ -150,16 +150,22 @@ export const commands = {
 	 *  starting a turn; its output goes to the agent with the next message.
 	 */
 	agentShell: (task: string, command: string, request: RequestId) => typedError<null, IdeError>(__TAURI_INVOKE("agent_shell", { task, command, request })),
+	/**  Resolves a GitHub `owner/repo[/path][@ref]` source and lists the `SKILL.md` skills in it. */
+	agentSkillsBrowse: (source: string, request: RequestId) => typedError<RemoteSkillBrowseResult, IdeError>(__TAURI_INVOKE("agent_skills_browse", { source, request })),
+	/**  Installs the selected skill subtree into `~/.agents/skills` (User) or `<workspace>/.agents/skills` (Workspace). */
+	agentSkillsInstall: (input: InstallRemoteSkillRequest, request: RequestId) => typedError<AgentSkillState_Serialize[], IdeError>(__TAURI_INVOKE("agent_skills_install", { input, request })),
 	/**
-	 *  Every skill discovered in the project and the user's folders, with the mode a session
-	 *  of this project runs it with (without any session's own overrides).
+	 *  Every skill discovered in the project, the user's folders and enabled plugins, with
+	 *  the mode a session runs it with (without any session's own overrides).
 	 */
-	agentSkillsList: () => typedError<AgentSkillState[], IdeError>(__TAURI_INVOKE("agent_skills_list")),
+	agentSkillsList: () => typedError<AgentSkillState_Serialize[], IdeError>(__TAURI_INVOKE("agent_skills_list")),
+	/**  Fetches one skill's `SKILL.md`, file list, and static security scan warnings before installation. */
+	agentSkillsPreview: (owner: string, repo: string, gitRef: string, subpath: string, request: RequestId) => typedError<RemoteSkillPreview, IdeError>(__TAURI_INVOKE("agent_skills_preview", { owner, repo, gitRef, subpath, request })),
 	/**
 	 *  Sets how `name` may run in `scope`, in the settings file of that scope, and returns the
 	 *  updated list. `SKILL.md` files are never touched; the default `auto` removes the entry.
 	 */
-	agentSkillsSetMode: (name: string, scope: McpScope, mode: AgentSkillMode) => typedError<AgentSkillState[], IdeError>(__TAURI_INVOKE("agent_skills_set_mode", { name, scope, mode })),
+	agentSkillsSetMode: (name: string, scope: McpScope, mode: AgentSkillMode) => typedError<AgentSkillState_Serialize[], IdeError>(__TAURI_INVOKE("agent_skills_set_mode", { name, scope, mode })),
 	/**  Stops one of the task's background tasks. */
 	agentStopBackground: (task: string, background: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_stop_background", { task, background })),
 	/**
@@ -1226,8 +1232,15 @@ export const commands = {
 	 *  cancelled; returns the exit code.
 	 */
 	pluginServiceLog: (request: RequestId, pluginId: string, view: string, key: string, tab: string, on: string[], onLine: Channel<PluginOutputLine>) => typedError<number | null, IdeError>(__TAURI_INVOKE("plugin_service_log", { request, pluginId, view, key, tab, on, onLine })),
-	/**  The UI reports the focused editor's file (`editor-focused` events). */
-	pluginSetActiveFile: (path: string | null) => __TAURI_INVOKE<void>("plugin_set_active_file", { path }),
+	/**
+	 *  The UI reports the focused editor's file (`editor-focused` events), with its
+	 *  caret so plugins can scope line labels without re-reading the document.
+	 */
+	pluginSetActiveFile: (path: string | null, editor: {
+	path: string,
+	language: string,
+	selections: Range[],
+} | null) => __TAURI_INVOKE<void>("plugin_set_active_file", { path, editor }),
 	/**  Grants or revokes one declared capability. */
 	pluginSetCapability: (id: string, capability: string, granted: boolean) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_set_capability", { id, capability, granted })),
 	pluginSetEnabled: (id: string, enabled: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_set_enabled", { id, enabled })),
@@ -1341,6 +1354,15 @@ export const commands = {
 	 *  edited (not yet applied); the response status, or why there was none.
 	 */
 	proxyCheckConnection: (proxy: ProxySettings, url: string) => typedError<string, IdeError>(__TAURI_INVOKE("proxy_check_connection", { proxy, url })),
+	/**
+	 *  The requirements of a `requirements*.txt` / `pyproject.toml` the project's interpreter
+	 *  doesn't satisfy; `None` for other files, or with no local interpreter to ask.
+	 */
+	pythonRequirements: (doc: DocId, request: RequestId) => typedError<{
+	/**  The interpreter checked, which installs go to. */
+	python: IpcPath,
+	unsatisfied: UnsatisfiedRequirement[],
+} | null, IdeError>(__TAURI_INVOKE("python_requirements", { doc, request })),
 	/**  Recently opened files, most recent first (⌘E). */
 	recentFiles: () => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("recent_files")),
 	/**  The welcome screen's project groups. */
@@ -2778,18 +2800,7 @@ export type AgentSettings_Serialize = {
 };
 
 /**  One discovered skill: a folder with a `SKILL.md`. */
-export type AgentSkill = {
-	/**  The frontmatter `name`, else the folder's name. */
-	name: string,
-	description: string,
-	/**  Canonical folder holding `SKILL.md` (symlinks resolved, so duplicates collapse). */
-	path: IpcPath,
-	source: AgentSkillSource,
-	/**  The `SKILL.md` passes validation (`name` matches its folder, `description` present). */
-	valid: boolean,
-	/**  What validation found (`name` mismatch, missing or over-long description…). */
-	warnings: string[],
-};
+export type AgentSkill = AgentSkill_Serialize | AgentSkill_Deserialize;
 
 /**  How an agent skill may run (`[agents.skills.<name>] mode = …`). */
 export type AgentSkillMode = 
@@ -2824,6 +2835,8 @@ export type AgentSkillSource =
 "workspace" | 
 /**  The user's `~/.agents/skills` (what `npx skills add` fills). */
 "user" | 
+/**  Contributed by an enabled OpenIDEA plugin (`[[contributes.skills]]`). */
+"plugin" | 
 /**  The project's `.claude/skills`. */
 "claudeWorkspace" | 
 /**  `~/.claude/skills`. */
@@ -2845,14 +2858,86 @@ export type AgentSkillSource =
  *  A skill as Settings › Agents › Skills shows it: discovery plus the effective mode and
  *  which layer decided it.
  */
-export type AgentSkillState = {
-	skill: AgentSkill,
+export type AgentSkillState = AgentSkillState_Serialize | AgentSkillState_Deserialize;
+
+/**
+ *  A skill as Settings › Agents › Skills shows it: discovery plus the effective mode and
+ *  which layer decided it.
+ */
+export type AgentSkillState_Deserialize = {
+	skill: AgentSkill_Deserialize,
 	mode: AgentSkillMode,
 	/**
 	 *  What set `mode`: a session override, the workspace, the user's settings, workspace
 	 *  trust, or nothing (the default `auto`).
 	 */
 	origin: AgentSkillOrigin,
+};
+
+/**
+ *  A skill as Settings › Agents › Skills shows it: discovery plus the effective mode and
+ *  which layer decided it.
+ */
+export type AgentSkillState_Serialize = {
+	skill: AgentSkill_Serialize,
+	mode: AgentSkillMode,
+	/**
+	 *  What set `mode`: a session override, the workspace, the user's settings, workspace
+	 *  trust, or nothing (the default `auto`).
+	 */
+	origin: AgentSkillOrigin,
+};
+
+/**  One discovered skill: a folder with a `SKILL.md`. */
+export type AgentSkill_Deserialize = {
+	/**  The frontmatter `name`, else the folder's name. */
+	name: string,
+	description: string,
+	/**  Optional `argument-hint` from frontmatter, completed in the `/` menu. */
+	hint?: string | null,
+	/**  Canonical folder holding `SKILL.md` (symlinks resolved, so duplicates collapse). */
+	path: IpcPath,
+	source: AgentSkillSource,
+	/**  Other skill roots whose symlinked entry resolved to this same canonical `path`. */
+	alsoIn?: AgentSkillSource[],
+	/**  False when frontmatter sets `user-invocable: false` (omitted from `/` completion). */
+	userInvocable?: boolean,
+	/**  True when frontmatter sets `disable-model-invocation: true` (defaults to `slashOnly`). */
+	disableModelInvocation?: boolean,
+	/**  True when frontmatter sets `context: fork` (passed through natively to supporting CLIs). */
+	contextFork?: boolean,
+	/**  Optional `paths` / `globs` patterns from frontmatter (passed through natively to supporting CLIs). */
+	paths?: string[],
+	/**  The `SKILL.md` passes validation (`name` matches its folder, `description` present). */
+	valid: boolean,
+	/**  What validation found (`name` mismatch, missing or over-long description…). */
+	warnings: string[],
+};
+
+/**  One discovered skill: a folder with a `SKILL.md`. */
+export type AgentSkill_Serialize = {
+	/**  The frontmatter `name`, else the folder's name. */
+	name: string,
+	description: string,
+	/**  Optional `argument-hint` from frontmatter, completed in the `/` menu. */
+	hint?: string | null,
+	/**  Canonical folder holding `SKILL.md` (symlinks resolved, so duplicates collapse). */
+	path: IpcPath,
+	source: AgentSkillSource,
+	/**  Other skill roots whose symlinked entry resolved to this same canonical `path`. */
+	alsoIn?: AgentSkillSource[],
+	/**  False when frontmatter sets `user-invocable: false` (omitted from `/` completion). */
+	userInvocable: boolean,
+	/**  True when frontmatter sets `disable-model-invocation: true` (defaults to `slashOnly`). */
+	disableModelInvocation: boolean,
+	/**  True when frontmatter sets `context: fork` (passed through natively to supporting CLIs). */
+	contextFork: boolean,
+	/**  Optional `paths` / `globs` patterns from frontmatter (passed through natively to supporting CLIs). */
+	paths?: string[],
+	/**  The `SKILL.md` passes validation (`name` matches its folder, `description` present). */
+	valid: boolean,
+	/**  What validation found (`name` mismatch, missing or over-long description…). */
+	warnings: string[],
 };
 
 /**  Where an agent comes from. */
@@ -3560,6 +3645,18 @@ export type CapabilityInfo = {
 	optional: boolean,
 	/**  Currently granted. */
 	granted: boolean,
+};
+
+/**
+ *  The caret moved in the focused editor. Positions are 0-based; `col` counts
+ *  UTF-16 code units, as everywhere in the plugin API.
+ */
+export type CaretMoved = {
+	path: string,
+	line: number,
+	col: number,
+	/**  The caret came to rest at this position; plugins may load what a hover needs. */
+	settled?: boolean,
 };
 
 /**
@@ -6067,7 +6164,7 @@ export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "inv
 "unavailable" | "io" | "protocol" | "internal";
 
 /**  Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`). */
-export type EventKind = "document-changed" | "websocket-ready" | "file-closed" | "settings-changed" | "input-mode-changed" | "run-exited" | "terminal-exited" | "content-tab-action" | "extensions-changed" | "file-opened" | "file-saved" | "files-changed" | "editor-focused" | "action-performed" | "vcs-changed" | 
+export type EventKind = "document-changed" | "websocket-ready" | "file-closed" | "settings-changed" | "input-mode-changed" | "run-exited" | "terminal-exited" | "content-tab-action" | "extensions-changed" | "file-opened" | "file-saved" | "files-changed" | "editor-focused" | "caret-moved" | "action-performed" | "vcs-changed" | 
 /**  Problems of the window's files changed (a language server or a report). */
 "problems-changed" | "scheduled";
 
@@ -7706,6 +7803,18 @@ export type InstallPreview = {
 	 *  refused. Without, an update installs with the grants it has.
 	 */
 	needsConsent: boolean,
+};
+
+export type InstallRemoteSkillRequest = {
+	owner: string,
+	repo: string,
+	gitRef: string,
+	subpath: string,
+	scope: McpScope,
+	/**  Must be `true` when the static security scan produces any warnings. */
+	confirmWarnings?: boolean,
+	/**  Must be `true` to replace an existing folder of the same name in `scope`. */
+	overwrite?: boolean,
 };
 
 /**  The settings folder of a JetBrains IDE (or Android Studio) of this user. */
@@ -10567,6 +10676,12 @@ export type PythonPackage = {
 	version: string,
 };
 
+export type PythonRequirements = {
+	/**  The interpreter checked, which installs go to. */
+	python: IpcPath,
+	unsatisfied: UnsatisfiedRequirement[],
+};
+
 export type PythonSettings = {
 	/**
 	 *  Project interpreter executable; empty = auto-detect (project venv, else `python3`);
@@ -10850,6 +10965,47 @@ export type RemoteSession = {
 	commands: string[],
 };
 
+export type RemoteSkillBrowseResult = {
+	owner: string,
+	repo: string,
+	gitRef: string,
+	treeSha: string,
+	truncated: boolean,
+	skills: RemoteSkillCandidate[],
+};
+
+export type RemoteSkillCandidate = {
+	/**  Target folder name (`<name>` under `.agents/skills/<name>`). */
+	folderName: string,
+	/**  Repository-relative directory holding `SKILL.md` (`""` when at repository root). */
+	subpath: string,
+	fileCount: number,
+	totalBytes: number,
+};
+
+export type RemoteSkillFile = {
+	/**  Path relative to the skill folder (e.g. `"SKILL.md"`, `"scripts/check.sh"`). */
+	path: string,
+	size: number,
+	executable: boolean,
+	symlink: boolean,
+};
+
+export type RemoteSkillPreview = {
+	owner: string,
+	repo: string,
+	gitRef: string,
+	treeSha: string,
+	subpath: string,
+	skillName: string,
+	description: string,
+	skillMarkdown: string,
+	files: RemoteSkillFile[],
+	scanWarnings: SkillScanWarning[],
+	alreadyInstalledUser: boolean,
+	alreadyInstalledWorkspace: boolean,
+};
+
 /**  Where [`remote_connect`] is (`fraction`: 0..1 of a download / upload). */
 export type RemoteStage = "connecting" | 
 /**  `devcontainer up`: building or starting the container. */
@@ -11074,6 +11230,12 @@ export type RunExtras_Deserialize = {
 	stopCommand?: string | null,
 	/**  Settings › Run Targets id the process runs on (over SSH); `None` = this machine. */
 	target?: string | null,
+	/**
+	 *  The test framework a test configuration runs when detection recognised one that the
+	 *  command line doesn't name (a `package.json` script running `playwright test`): picks the
+	 *  test output parser and how a single test is selected.
+	 */
+	testRunner?: string | null,
 };
 
 export type RunExtras_Serialize = {
@@ -11118,6 +11280,12 @@ export type RunExtras_Serialize = {
 	stopCommand?: string | null,
 	/**  Settings › Run Targets id the process runs on (over SSH); `None` = this machine. */
 	target?: string | null,
+	/**
+	 *  The test framework a test configuration runs when detection recognised one that the
+	 *  command line doesn't name (a `package.json` script running `playwright test`): picks the
+	 *  test output parser and how a single test is selected.
+	 */
+	testRunner?: string | null,
 };
 
 /**  A process started from a run configuration. */
@@ -11717,6 +11885,14 @@ export type SizeSource =
  *  capture.
  */
 "addressGaps" | "layout";
+
+export type SkillScanWarning = {
+	kind: SkillScanWarningKind,
+	file: string,
+	message: string,
+};
+
+export type SkillScanWarningKind = "hiddenUnicode" | "outOfRootSymlink" | "executableScript" | "allowedToolsShell";
 
 export type SkipReason = 
 /**  A configuration with this name already exists. */
@@ -12629,6 +12805,13 @@ export type UnityProjectInfo = {
 	projects: string[],
 };
 
+/**  A requirement the project's interpreter does not satisfy. */
+export type UnsatisfiedRequirement = {
+	dependency: ManifestDependency,
+	/**  The installed version that misses the specifier; `None` when not installed. */
+	installed: string | null,
+};
+
 export type UpdateCheck = {
 	enabled: boolean,
 	update: UpdateInfo | null,
@@ -12942,7 +13125,7 @@ export type WindowTab = {
 /**  A workbench event delivered to plugins. */
 export type WorkbenchEvent = { kind: "documentChanged"; value: DocumentChanged } | { kind: "websocketReady"; value: WebsocketReady } | { kind: "runExited"; value: RunExited } | { kind: "terminalExited"; value: TerminalExited } | { kind: "contentTabAction"; value: ContentTabAction } | { kind: "fileClosed"; value: string } | { kind: "settingsChanged"; value: string[] } | 
 /**  Ids of extension points the receiving plugin declares whose contributions changed. */
-{ kind: "extensionsChanged"; value: string[] } | { kind: "inputModeChanged"; value: InputMode } | { kind: "fileOpened"; value: string } | { kind: "fileSaved"; value: string } | { kind: "filesChanged"; value: FilesChanged } | { kind: "editorFocused"; value: string | null } | { kind: "actionPerformed"; value: ActionPerformed } | { kind: "vcsChanged"; value: string } | 
+{ kind: "extensionsChanged"; value: string[] } | { kind: "inputModeChanged"; value: InputMode } | { kind: "fileOpened"; value: string } | { kind: "fileSaved"; value: string } | { kind: "filesChanged"; value: FilesChanged } | { kind: "editorFocused"; value: string | null } | { kind: "caretMoved"; value: CaretMoved } | { kind: "actionPerformed"; value: ActionPerformed } | { kind: "vcsChanged"; value: string } | 
 /**  Problems of the window's files changed; plugins re-read `problems`. */
 { kind: "problemsChanged" } | { kind: "scheduled" };
 

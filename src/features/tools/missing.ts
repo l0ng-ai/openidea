@@ -14,23 +14,28 @@ import { tx } from "@/platform/i18n";
 
 export const missingKey = (name: string) => `lsp-missing-${name}`;
 
+/** What the tool is offered for: code insight, Reformat Code, or the refactoring with this (translated) label. */
+export type InstallPurpose = "codeInsight" | "formatter" | { refactoring: string };
+
 /**
  * `offered`: servers already offered for install. A fallback of one of them (pyright
  * after basedpyright) stays quiet: installing the first is enough, and the Language
- * Servers… page offers the others. So does a companion server (pylsp-rope's refactorings).
+ * Servers… page offers the others. So does a companion server (pylsp-rope's refactorings),
+ * until one of its refactorings is invoked.
  */
 export async function promptInstall(
   name: string,
   sticky = true,
   offered: ReadonlySet<string> = new Set(),
-  formatter = false,
+  purpose: InstallPurpose = "codeInsight",
 ): Promise<boolean> {
   if (!useTools.getState().loaded) await refreshTools();
   const tool = toolByName(name);
-  if (!tool || !tool.canInstall || tool.status !== "missing" || tool.companion) return false;
+  const refactoring = typeof purpose === "object" ? purpose.refactoring : null;
+  if (!tool || !tool.canInstall || tool.status !== "missing" || (tool.companion && !refactoring)) return false;
   const position = tool.alternatives.indexOf(name);
   if (position > 0 && tool.alternatives.slice(0, position).some((n) => offered.has(n))) return false;
-  formatter ||= tool.kind === "formatter";
+  const formatter = purpose === "formatter" || tool.kind === "formatter";
   // An installed alternative (typescript-language-server for vtsls) already serves these files.
   const served = useTools
     .getState()
@@ -41,16 +46,18 @@ export async function promptInstall(
         t.status !== "missing" &&
         t.languages.some((l) => tool.languages.includes(l)),
     );
-  if (!formatter && served) return false;
+  if (!formatter && !refactoring && served) return false;
   const key = missingKey(name);
   const langs = tool.languages.length ? tool.languages.join(", ") : "these files";
   notifications().notify({
     group: "tools",
     level: "warning",
     title: tx`${tool.displayName} is not installed`,
-    body: formatter
-      ? tx`Reformat Code needs ${tool.displayName}. Install it via ${tool.installMethod}?`
-      : tx`Code insight for ${langs} needs ${tool.command}. Install it via ${tool.installMethod}?`,
+    body: refactoring
+      ? tx`${refactoring} needs ${tool.displayName}. Install it via ${tool.installMethod}?`
+      : formatter
+        ? tx`Reformat Code needs ${tool.displayName}. Install it via ${tool.installMethod}?`
+        : tx`Code insight for ${langs} needs ${tool.command}. Install it via ${tool.installMethod}?`,
     key,
     sticky,
     actions: [

@@ -36,7 +36,7 @@ sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.14.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.15.0`, world
 `plugin`).
 
 ## 1. Quick start
@@ -145,6 +145,7 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `runDetectors`      | `id`, `name`, `files`, `command`, `args?`, `test?`, `framework?` (API 1.4; §6.2)                                                                                                                                                       | no            |
 | `runConfigurations` | `files`: marker files for the optional `run-configurations` export (API 1.4)                                                                                                                                                           | yes           |
 | `javaAgents`        | `path` (a jar in the package), `args?`, `vmOptions?`, `jdk?` — a Java agent for Java run configurations, behind `java.agent` (API 1.10; `vmOptions`/`jdk` in 1.14; _Java agents_)                                                      | no            |
+| `skills`            | `path` (`skills/<name>/SKILL.md` in the package) — agent skill folder staged into coding-agent sessions (API 1.15)                                                                                                                     | no            |
 | `mcpTools`          | `name`, `description`, `inputSchema` (package JSON Schema path), `readOnly`, `destructive` (API 1.4; see _Plugin MCP tools_)                                                                                                           | yes           |
 | `snippets`          | `language`, `path` (named JSON snippets; API 1.4)                                                                                                                                                                                      | no            |
 | `providers`         | `kinds`, `languages` (editor providers, see _Providers_)                                                                                                                                                                               | yes           |
@@ -425,6 +426,25 @@ are always available. Calling a gated function without its capability returns
 (Git Toolbox still shows the branch without `vcs.write`).
 
 ## 3. Writing code (Rust SDK)
+
+### API 1.15
+
+API 1.15.0 is in development on `main`. Use `engines.openidea = "^1.15"` and the
+matching SDK. Plugins for 1.14 and earlier keep working. New in 1.15:
+
+- [Events](#events): `caret-moved` (API 1.15) delivers `{path, line, col,
+  settled}` with 0-based UTF-16 positions when the caret moves in the focused
+  editor, so line-scoped labels follow it. `settled` is true for the final
+  position once the caret rests: defer costly work (loading data behind a
+  hover) until then. Subscribe at run time or declare `on-event:caret-moved`;
+  requires `events`.
+- **Agent skills (`[[contributes.skills]]`).** Declarative `path =
+  "skills/<name>/SKILL.md"` entries expose bundled `SKILL.md` folders (up to
+  2 MiB per skill, no symlinks leaving the package) under the **Plugins** group
+  in Settings › Agents › Skills and the Composer picker, staged into agent
+  sessions while the plugin is enabled; workspace and user skills take
+  precedence on a name clash, and invalid entries report a plugin load warning
+  rather than failing the plugin.
 
 ### API 1.14
 
@@ -3001,7 +3021,7 @@ the API itself follows _Evolving the plugin API_ below.
 
 Released versions are frozen: 1.0.0 shipped with OpenIDEA 0.1.36, 1.1.0
 with 0.1.37, 1.2.0 with 0.1.38, 1.3.0 with 0.1.39 and 1.4.0 with 0.1.40.
-API 1.5.0 shipped with 0.1.41, 1.6.0 with 0.1.43, 1.7.0 with 0.1.44 and 1.8.0 with 0.1.45 and 1.9.0 with 0.1.46 and 1.10.0 with 0.1.47; API 1.11.0, 1.12.0, 1.13.0 and 1.14.0 are in development on `main`. wasmtime decides what stays compatible: it resolves interface names
+API 1.5.0 shipped with 0.1.41, 1.6.0 with 0.1.43, 1.7.0 with 0.1.44, 1.8.0 with 0.1.45, 1.9.0 with 0.1.46 and 1.10.0 with 0.1.47; API 1.11.0, 1.12.0, 1.13.0, 1.14.0 and 1.15.0 are in development on `main`. wasmtime decides what stays compatible: it resolves interface names
 by semver (a component importing `openidea:plugin/x@1.0.0` links against a
 host defining `@1.1.0`, and the host finds its exports the same way), but
 function types must match exactly — a record with another field count, or a

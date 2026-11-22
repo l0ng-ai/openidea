@@ -1,7 +1,7 @@
 //! Python environments: creating virtualenvs and managing packages with pip
 //! (or `uv pip` for environments created by uv, which ship without pip).
 
-use crate::exec::{query_in, stream, which};
+use crate::exec::{query_in, query_in_cancellable, stream, which};
 use crate::{Sdk, bin_dir, exe, venv_of};
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
@@ -318,6 +318,82 @@ pub fn install_package(
     let (program, args) = pip_command(python, &installer, &sub);
     let dir = neutral_dir();
     stream(&program, &args, dir.as_ref().map(|d| d.path()), &pip_env(python), cancel, on_line).map(|_| ())
+}
+
+/// Run by the interpreter itself, so markers and PEP 440 specifiers are judged as pip would:
+/// prints, per requirement of `argv[1]` (a JSON list), `null` when satisfied or not applicable
+/// there, else `{"installed": <version or null>}`.
+const CHECK_REQUIREMENTS: &str = r#"
+import json, re, sys
+try:
+    from packaging.requirements import Requirement
+except Exception:
+    try:
+        from pip._vendor.packaging.requirements import Requirement
+    except Exception:
+        Requirement = None
+from importlib import metadata
+norm = lambda n: re.sub(r"[-_.]+", "-", n).lower()
+installed = {}
+for d in metadata.distributions():
+    name = d.metadata["Name"]
+    if name:
+        installed.setdefault(norm(name), d.version)
+out = []
+for line in json.loads(sys.argv[1]):
+    try:
+        if Requirement:
+            r = Requirement(line)
+            name, spec, applies = r.name, r.specifier, r.marker is None or r.marker.evaluate({"extra": ""})
+        else:
+            # Without packaging only names are compared; a marker can't be judged.
+            name, spec, applies = re.match(r"[A-Za-z0-9._-]+", line).group(0), None, ";" not in line
+        version = installed.get(norm(name))
+        if not applies or (version is not None and (spec is None or spec.contains(version, prereleases=True))):
+            out.append(None)
+        else:
+            out.append({"installed": version})
+    except Exception:
+        out.append(None)
+print(json.dumps(out))
+"#;
+
+#[derive(Debug, Deserialize, PartialEq)]
+pub struct Unsatisfied {
+    /// The version installed that misses the specifier; `None` when not installed.
+    pub installed: Option<String>,
+}
+
+/// Which of `requirements` (PEP 508 strings) `python` doesn't satisfy, in order;
+/// `None` for satisfied ones, for ones whose marker excludes this interpreter, and
+/// for ones it can't parse.
+pub fn unsatisfied_requirements(
+    python: &Path,
+    requirements: &[&str],
+    cancel: &CancellationToken,
+) -> IdeResult<Vec<Option<Unsatisfied>>> {
+    let list = serde_json::to_string(requirements).map_err(|e| IdeError::internal(e.to_string()))?;
+    let dir = neutral_dir().ok_or_else(|| IdeError::internal("no temporary directory"))?;
+    let out = query_in_cancellable(
+        python,
+        &["-c", CHECK_REQUIREMENTS, &list],
+        dir.path(),
+        &[],
+        Duration::from_secs(20),
+        cancel,
+    );
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
+    let out =
+        out.ok_or_else(|| IdeError::unavailable(format!("cannot check requirements with {}", python.display())))?;
+    let json = out.lines().rev().find(|l| l.starts_with('[')).unwrap_or("");
+    let result: Vec<Option<Unsatisfied>> =
+        serde_json::from_str(json).map_err(|e| IdeError::internal(format!("unexpected output: {e}")))?;
+    if result.len() != requirements.len() {
+        return Err(IdeError::internal("unexpected output: wrong number of results"));
+    }
+    Ok(result)
 }
 
 pub fn uninstall_package(

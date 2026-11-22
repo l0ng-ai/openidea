@@ -15,7 +15,7 @@ import {
   type MouseEvent,
   type PointerEvent,
 } from "react";
-import { tx, txTemplate } from "@/platform/i18n";
+import { tx, txPart, txTemplate } from "@/platform/i18n";
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
 import { fontWeightOf } from "@/platform/editorSettings";
@@ -1007,7 +1007,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                   <CheckMark
                     checked={agg.checked}
                     indeterminate={agg.indeterminate}
-                    label={tx`Include ${n.label} in commit`}
+                    label={tx`Include ${n.type === "group" && (!n.changelist || n.label === DEFAULT_LIST_NAME) ? txPart(n.label) : n.label} in commit`}
                     onToggle={() => toggle(selected.has(n.key) && selected.size > 1 ? selectedNodes() : [n])}
                   />
                 )}

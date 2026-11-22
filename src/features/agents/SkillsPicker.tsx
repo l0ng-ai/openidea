@@ -24,7 +24,6 @@ import {
 import {
   PickerEmpty,
   PickerGroupLabel,
-  PickerInlineLink,
   PickerPill,
   PickerRow,
   PickerSessionPill,
@@ -105,7 +104,7 @@ export function SkillsPicker({
         )
       }
     >
-      {(query, { openSettings }) => {
+      {(query) => {
         const q = query.trim().toLowerCase();
         const matchesQuery = (item: SessionSkillItem) =>
           !q ||
@@ -118,13 +117,7 @@ export function SkillsPicker({
         return (
           <>
             {groups.map((group) => (
-              <GroupRows
-                key={group.source}
-                source={group.source}
-                items={group.items}
-                onToggle={handleToggleItem}
-                onOpenSettings={() => openSettings(SKILLS_PAGE)}
-              />
+              <GroupRows key={group.source} source={group.source} items={group.items} onToggle={handleToggleItem} />
             ))}
             {groups.length === 0 && (
               <PickerEmpty>
@@ -142,12 +135,10 @@ function GroupRows({
   source,
   items,
   onToggle,
-  onOpenSettings,
 }: {
   source: ResolvedSessionSkills["groups"][number]["source"];
   items: readonly SessionSkillItem[];
   onToggle: (item: SessionSkillItem, enabled: boolean) => void;
-  onOpenSettings: () => void;
 }) {
   const tx = useTx();
   const group = SKILL_SOURCE_GROUPS[source];
@@ -155,30 +146,16 @@ function GroupRows({
     <>
       <PickerGroupLabel title={group.paths}>{tx(group.label)}</PickerGroupLabel>
       {items.map((item) => (
-        <SessionSkillRow
-          key={item.name}
-          item={item}
-          onToggle={(on) => onToggle(item, on)}
-          onOpenSettings={onOpenSettings}
-        />
+        <SessionSkillRow key={item.name} item={item} onToggle={(on) => onToggle(item, on)} />
       ))}
     </>
   );
 }
 
-function SessionSkillRow({
-  item,
-  onToggle,
-  onOpenSettings,
-}: {
-  item: SessionSkillItem;
-  onToggle: (enabled: boolean) => void;
-  onOpenSettings: () => void;
-}) {
+function SessionSkillRow({ item, onToggle }: { item: SessionSkillItem; onToggle: (enabled: boolean) => void }) {
   const tx = useTx();
-  // The settings decide a skill that is off by default; the session only ever turns active skills off.
-  const locked = item.defaultMode === "off";
-  const description = item.state.skill.description;
+  const { skill } = item.state;
+  const description = skill.description;
   return (
     <PickerRow
       name={item.name}
@@ -186,15 +163,17 @@ function SessionSkillRow({
         <>
           <ModePill mode={item.mode} />
           {item.overridden && <PickerSessionPill />}
+          {skill.contextFork && <PickerPill>fork</PickerPill>}
+          {(skill.paths?.length ?? 0) > 0 && <PickerPill>paths</PickerPill>}
         </>
       }
       sub={description || undefined}
-      subTitle={description}
+      subTitle={skill.paths?.length ? `${description} · ${skill.paths.join(", ")}` : description}
       controls={
-        locked ? (
-          <PickerInlineLink onClick={onOpenSettings}>
-            <T>Enable in Settings</T>
-          </PickerInlineLink>
+        item.locked ? (
+          <PickerPill>
+            <T>Untrusted workspace</T>
+          </PickerPill>
         ) : (
           <PickerToggle
             enabled={item.mode !== "off"}

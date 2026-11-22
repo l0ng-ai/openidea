@@ -28,11 +28,16 @@ pub const PUBLIC_NPM_REGISTRY: &str = "https://registry.npmjs.org/";
 fn failed_command(label: &str, output: &str, status: &str) -> IdeError {
     let tail: Vec<&str> = output.lines().rev().filter(|l| !l.trim().is_empty()).take(3).collect();
     let tail: Vec<&str> = tail.into_iter().rev().collect();
+    failed_with(label, &tail, status)
+}
+
+fn failed_with(label: &str, lines: &[impl AsRef<str>], status: &str) -> IdeError {
+    let lines: Vec<&str> = lines.iter().map(AsRef::as_ref).collect();
     IdeError::new(
         ErrorKind::Io,
         format!(
             "`{label}` failed ({status}){}",
-            if tail.is_empty() { String::new() } else { format!(": {}", tail.join(" / ")) }
+            if lines.is_empty() { String::new() } else { format!(": {}", lines.join(" / ")) }
         ),
     )
 }
@@ -83,6 +88,25 @@ pub fn run_streamed(cmd: Command, cancel: &CancellationToken, emit: Emit) -> Ide
         return Err(failed_command(&label, &output, &status));
     }
     Ok(output)
+}
+
+/// Like [`run_streamed`], but a failure quotes the lines `pick` finds in the output instead of
+/// the last three, when it finds any.
+pub fn run_streamed_picking(
+    cmd: Command,
+    cancel: &CancellationToken,
+    emit: Emit,
+    pick: fn(&str) -> Vec<String>,
+) -> IdeResult<String> {
+    let label = describe(&cmd);
+    let (ok, output, status) = run_collect(cmd, cancel, emit)?;
+    if ok {
+        return Ok(output);
+    }
+    match pick(&output) {
+        picked if picked.is_empty() => Err(failed_command(&label, &output, &status)),
+        picked => Err(failed_with(&label, &picked, &status)),
+    }
 }
 
 /// Runs an `npm` / `pnpm` command against the user's configured registry first (preserving
@@ -378,6 +402,13 @@ impl Http {
     /// Sends `Accept: <mime>` (e.g. the npm registry's abbreviated metadata).
     pub fn accept(mut self, mime: &'static str) -> Self {
         self.accept = Some(mime);
+        self
+    }
+
+    /// Skips `GITHUB_TOKEN` / `GH_TOKEN` / `gh auth token` (e.g. retrying a public GitHub endpoint after HTTP 401).
+    pub fn without_github_auth(mut self) -> Self {
+        self.gh = None;
+        self.explicit_github_token = None;
         self
     }
 
