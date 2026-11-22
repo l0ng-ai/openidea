@@ -354,7 +354,13 @@ function cLikeTypePosition(state: EditorState, pos: number): boolean {
   if (token.to !== end || !token.parent) return false;
   // Kotlin puts a function's type parameters right after the `fun` keyword.
   if (token.name === "keyword") return state.sliceDoc(token.from, token.to) === "fun";
-  return /^(?:typeName|variableName)/.test(token.name) && /^[A-Z]/.test(state.sliceDoc(token.from, token.to));
+  if (!/^(?:typeName|variableName)/.test(token.name)) return false;
+  const name = state.sliceDoc(token.from, token.to);
+  // A type, or a generic factory call written against its `<` (`mutableListOf<`, `emptyMap<`).
+  return (
+    /^[A-Z]/.test(name) ||
+    (end === pos && /^(\w+Of|empty[A-Z]\w*|arrayOfNulls|enumValues|enumValueOf|typeOf)$/.test(name))
+  );
 }
 
 /** Standard C++ templates (and casts) written against their `<`. */
@@ -659,3 +665,62 @@ export function semicolonAtStatementEnd(language: string | undefined): Extension
     return true;
   });
 }
+
+/** Whether the line before `pos` leaves a `"` or backtick string open. */
+function insideQuotes(state: EditorState, pos: number): boolean {
+  const line = state.doc.lineAt(pos);
+  let open: string | null = null;
+  const text = line.text.slice(0, pos - line.from);
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!;
+    if (open) {
+      if (c === "\\") i++;
+      else if (c === open) open = null;
+    } else if (c === '"' || c === "`" || c === "'") open = c;
+  }
+  return open !== null;
+}
+
+/** Languages whose string templates write `${expression}`. */
+const TEMPLATE_BRACE_LANGS = new Set([
+  "kotlin",
+  "groovy",
+  "dart",
+  "scala",
+  "javascript",
+  "javascriptreact",
+  "typescript",
+  "typescriptreact",
+]);
+
+/**
+ * `{` typed right after `$` in a string pairs into `${|}` (the closing quote right after it
+ * keeps `closeBrackets()` from pairing it), as IDEA does for Kotlin and JavaScript templates.
+ */
+export function templateBrace(language: string): Extension {
+  return EditorView.inputHandler.of((view, from, to, text) => {
+    if (text !== "{" || from !== to || view.state.readOnly || !TEMPLATE_BRACE_LANGS.has(language)) return false;
+    const { state } = view;
+    if (state.sliceDoc(from - 1, from) !== "$" || state.sliceDoc(from, from + 1) === "}") return false;
+    if (literalAt(state, from - 1)?.kind !== "string" || !insideQuotes(state, from)) return false;
+    view.dispatch({ changes: { from, insert: "{}" }, selection: { anchor: from + 1 }, userEvent: "input.type" });
+    return true;
+  });
+}
+
+/**
+ * Rust: a `'` where a lifetime goes (`<'a>`, `&'a`, `T: 'a`, `+ 'static`, `<'a, 'b>`) stays single;
+ * elsewhere it opens a char literal and pairs as usual.
+ */
+export const rustLifetimeQuote = EditorView.inputHandler.of((view, from, to, text) => {
+  if (text !== "'" || from !== to || view.state.readOnly) return false;
+  const line = view.state.doc.lineAt(from);
+  // Earlier lifetimes on the line are no quotes to count around.
+  const before = line.text.slice(0, from - line.from).replace(/'[A-Za-z_]\w*\b(?!')/g, "");
+  const prev = before.trimEnd().slice(-1);
+  const inAngles = countOutsideStrings(before, "<") > countOutsideStrings(before, ">");
+  const lifetime = prev === "<" || prev === "&" || prev === "+" || (inAngles && (prev === "," || prev === ":"));
+  if (!lifetime) return false;
+  view.dispatch({ changes: { from, insert: "'" }, selection: { anchor: from + 1 }, userEvent: "input.type" });
+  return true;
+});

@@ -144,6 +144,8 @@ function RunAnythingPopup({ root }: { root: string }) {
             ref={field}
             data-autofocus
             leadingIcon="run-anything"
+            variant="bare"
+            className={styles.commandField}
             clearable={false}
             role="combobox"
             aria-autocomplete="list"

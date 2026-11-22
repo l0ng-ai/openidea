@@ -24,6 +24,7 @@ import type {
   EventKind,
   PluginContextKey,
   PluginEvent,
+  ProjectInfo,
   Prompt,
   StatusItem,
   StatusMenuEntry,
@@ -34,7 +35,7 @@ import { EditorSelection } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { setPluginDecorations } from "./decorations";
 import { setPluginConsoleRules } from "./consoleRules";
-import { editorsFor, onEditorEvent } from "@/editor/api";
+import { editorsFor, onEditorEvent, useEditorRegistry, type TextEditorHandle } from "@/editor/api";
 import { executeAction, executeActionOrThrow, getAction, onActionExecuted } from "@/platform/actions";
 import { clearContext, setContext, type ContextValue } from "@/platform/context";
 import { isTauri, onIdeEvent } from "@/platform/ipc";
@@ -351,10 +352,45 @@ function onTaskEvent(e: Extract<PluginEvent, { type: "taskStarted" | "taskProgre
 
 /** Batches are sent at most this often; the backend batches again per plugin. */
 const POST_INTERVAL_MS = 500;
+/** Caret events keep labels responsive instead of waiting for the batch. */
+const CARET_FLUSH_MS = 120;
+/** The caret is at rest after this long; conversation loads wait for it. */
+const CARET_SETTLE_MS = 600;
 
 let wanted = new Set<EventKind>();
 let queue: WorkbenchEvent[] = [];
 let postTimer: ReturnType<typeof setTimeout> | null = null;
+let postDue = 0;
+let settleTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingCaret: { editor: TextEditorHandle; project: ProjectInfo | null; doc: number; path: string } | null = null;
+
+function invalidateCaret() {
+  if (settleTimer) clearTimeout(settleTimer);
+  settleTimer = null;
+  pendingCaret = null;
+  queue = queue.filter((event) => event.kind !== "caretMoved");
+}
+
+function isCurrentCaret(caret: NonNullable<typeof pendingCaret>): boolean {
+  return (
+    pendingCaret === caret &&
+    useEditorRegistry.getState().active === caret.editor &&
+    caret.editor.ctx.doc === caret.doc &&
+    caret.editor.ctx.path === caret.path &&
+    useProject.getState().project === caret.project
+  );
+}
+
+function flush() {
+  postTimer = null;
+  if (pendingCaret && !isCurrentCaret(pendingCaret)) invalidateCaret();
+  const batch = queue;
+  queue = [];
+  if (!batch.length) return;
+  void pluginsBackend()
+    .postEvents(batch)
+    .catch(() => {});
+}
 
 /**
  * Re-reads the event kinds plugins want. Besides `subscriptionsChanged`
@@ -372,27 +408,57 @@ export function refreshEventKinds() {
 }
 
 function post(event: WorkbenchEvent) {
+  // A caret event replaces the queued one for the same file: only the latest
+  // position matters, and moving the caret must not flood every plugin batch.
+  if (event.kind === "caretMoved") {
+    const queued = queue.findIndex((queued) => queued.kind === "caretMoved" && queued.value.path === event.value.path);
+    if (queued >= 0) queue.splice(queued, 1);
+  }
   queue.push(event);
-  if (postTimer) return;
-  postTimer = setTimeout(() => {
-    postTimer = null;
-    const batch = queue;
-    queue = [];
-    void pluginsBackend()
-      .postEvents(batch)
-      .catch(() => {});
-  }, POST_INTERVAL_MS);
+  const delay = event.kind === "caretMoved" ? CARET_FLUSH_MS : POST_INTERVAL_MS;
+  const due = Date.now() + delay;
+  // Keep whichever timer fires first (a caret event shortens a pending batch).
+  if (postTimer) {
+    if (due >= postDue) return;
+    clearTimeout(postTimer);
+  }
+  postDue = due;
+  postTimer = setTimeout(flush, delay);
 }
 
 /** Reports the events plugins subscribed to: files opened and saved, actions run, repositories changed. */
 function trackWorkbenchEvents(): () => void {
   refreshEventKinds();
+  const offActive = useEditorRegistry.subscribe((s, prev) => {
+    if (s.active !== prev.active) invalidateCaret();
+  });
+  const offProject = useProject.subscribe((s, prev) => {
+    if (s.project !== prev.project) invalidateCaret();
+  });
   const offEditor = onEditorEvent((e) => {
+    if (e.type === "docClosed" && e.doc === pendingCaret?.doc) invalidateCaret();
     if (e.type === "docOpened" && wanted.has("file-opened")) post({ kind: "fileOpened", value: e.path });
     if (e.type === "docClosed" && wanted.has("file-closed")) post({ kind: "fileClosed", value: e.path });
     if (e.type === "inputModeChanged" && wanted.has("input-mode-changed"))
       post({ kind: "inputModeChanged", value: { path: e.path, mode: e.mode, sub: e.sub } });
     if (e.type === "docSaved" && wanted.has("file-saved")) post({ kind: "fileSaved", value: e.path });
+    if (e.type === "caretMoved" && wanted.has("caret-moved")) {
+      const editor = useEditorRegistry.getState().active;
+      if (!editor || editor.ctx.doc !== e.doc || editor.ctx.path !== e.path) return;
+      if (pendingCaret && !isCurrentCaret(pendingCaret)) invalidateCaret();
+      const identity = { editor, project: useProject.getState().project, doc: e.doc, path: e.path };
+      pendingCaret = identity;
+      const caret = { path: e.path, line: e.line, col: e.col, settled: false };
+      post({ kind: "caretMoved", value: caret });
+      // Once the caret rests, send one settled event: a plugin may then load the
+      // conversation behind the label. Movement keeps postponing it.
+      if (settleTimer) clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => {
+        if (!isCurrentCaret(identity)) return;
+        settleTimer = null;
+        post({ kind: "caretMoved", value: { ...caret, settled: true } });
+      }, CARET_SETTLE_MS);
+    }
     if (e.type === "docChanged" && wanted.has("document-changed"))
       post({
         kind: "documentChanged",
@@ -424,6 +490,8 @@ function trackWorkbenchEvents(): () => void {
   const offLocalProblems = onLocalDiagnostics(problemsChanged);
   return () => {
     offEditor();
+    offActive();
+    offProject();
     offActions();
     offVcs();
     offSettings();
@@ -431,6 +499,7 @@ function trackWorkbenchEvents(): () => void {
     offLocalProblems();
     if (postTimer) clearTimeout(postTimer);
     postTimer = null;
+    invalidateCaret();
     queue = [];
   };
 }
