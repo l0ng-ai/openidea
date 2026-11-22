@@ -76,6 +76,73 @@ test("⌃R runs the selected configuration and shows its output and exit", async
   expect(started).toMatchObject({ config: { id: "npm:dev", command: "npm", args: ["run", "dev"] } });
 });
 
+test("expanded console folds stay reachable at the start of their rows", async ({ workbench: page }) => {
+  const heading = "Reconciling orders for the overnight settlement and inventory reporting pipeline";
+  await stubRun(
+    page,
+    [
+      {
+        kind: "stdout",
+        text: [
+          "TRACE Reused inventory connection",
+          "TRACE Loaded warehouse configuration",
+          heading,
+          "TRACE Checked warehouse audit result",
+          "TRACE Updated inventory snapshot",
+          "Processed 24 orders",
+          "",
+        ].join("\n"),
+      },
+    ],
+    null,
+  );
+  await page.evaluate(async () => {
+    const projectModule = "/src/platform/project.ts";
+    const layoutModule = "/src/workbench/toolwindows/store.ts";
+    const { useProject } = await import(/* @vite-ignore */ projectModule);
+    const { moveToolWindow, setToolWindowSize } = await import(/* @vite-ignore */ layoutModule);
+    const { settings } = useProject.getState();
+    useProject.setState({
+      settings: { ...settings, console: { ...settings?.console, foldPatterns: ["TRACE "] } },
+    });
+    moveToolWindow("run", "right");
+    setToolWindowSize("right", 320);
+  });
+  await page.keyboard.press("Control+r");
+  const log = page.getByRole("region", { name: "Run", exact: true }).getByRole("log");
+  const expand = log.getByTitle("Expand folded lines", { exact: true });
+  const collapse = log.getByRole("button", { name: "Collapse folded lines", exact: true });
+  await expect(expand).toHaveCount(2);
+
+  await expand.first().click();
+  await expect(log.getByText("TRACE Reused inventory connection", { exact: true })).toBeVisible();
+  await expect(collapse).toHaveCount(1);
+  await collapse.press("Space");
+  await expect(expand).toHaveCount(2);
+
+  await expand.first().press("Enter");
+  await expect(collapse).toBeFocused();
+  await expand.last().click();
+  await expect(collapse).toHaveCount(2);
+  for (const scrollLeft of [0, 120]) {
+    await log.evaluate((element, x) => (element.scrollLeft = x), scrollLeft);
+    expect(await log.evaluate((element) => element.scrollLeft)).toBe(scrollLeft);
+    for (const control of await collapse.all()) {
+      const aligned = await control.evaluate((button) => {
+        const log = button.closest('[role="log"]')!.getBoundingClientRect();
+        const row = button.closest("[data-index]")!.getBoundingClientRect();
+        const box = button.getBoundingClientRect();
+        return Math.abs(box.left - log.left) <= 1 && box.top >= row.top && box.bottom <= row.bottom + 1;
+      });
+      expect(aligned).toBe(true);
+    }
+  }
+  await collapse.first().click();
+  await collapse.first().click();
+  await expect(expand).toHaveCount(2);
+  expect(await ipcCalls(page, "run_stdin")).toEqual([]);
+});
+
 test("⌘F2 stops a running process", async ({ workbench: page }) => {
   await stubRun(page, [{ kind: "stdout", text: "Watching for changes…\n" }], null);
   await page.keyboard.press("Control+r");
