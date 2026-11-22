@@ -131,7 +131,7 @@ export function PermissionLine({ task, entry }: { task: AgentTask; entry: Permis
   );
 }
 
-interface QuestionAnswer {
+export interface QuestionAnswer {
   question: AgentQuestion;
   picked: string[];
   /** The typed answer; `null` while "Other" isn't chosen. */
@@ -150,9 +150,16 @@ const plainLabel = (label: string) => (isRecommended(label) ? label.slice(0, -RE
 
 type AsyncQuestionEntry = Extract<AgentEntry, { type: "question" }>;
 
-/** Blocking requests take priority; async questions stay available after their turn ends. */
-export function QuestionCard({ task, entries }: { task: AgentTask; entries: AgentEntry[] | null }) {
-  const drafts = useRef(new Map<string, QuestionAnswer[]>());
+/** Permission forms and questions that outlive their turn: pinned above the composer. */
+export function QuestionCard({
+  task,
+  entries,
+  drafts,
+}: {
+  task: AgentTask;
+  entries: AgentEntry[] | null;
+  drafts: RefObject<Map<string, QuestionAnswer[]>>;
+}) {
   useEffect(() => {
     const open = new Set(
       entries
@@ -168,7 +175,7 @@ export function QuestionCard({ task, entries }: { task: AgentTask; entries: Agen
   const entry =
     entries?.find(
       (candidate): candidate is PermissionEntry =>
-        candidate.type === "permission" && !candidate.chosen && asksInCard(candidate),
+        candidate.type === "permission" && !candidate.chosen && !!candidate.form,
     ) ??
     entries?.find((candidate): candidate is AsyncQuestionEntry => candidate.type === "question" && !candidate.chosen);
   if (entry?.type === "permission" && entry.form)
@@ -180,20 +187,24 @@ export function QuestionCard({ task, entries }: { task: AgentTask; entries: Agen
       entry={entry}
       questions={entry.questions}
       drafts={drafts}
+      pinned
     />
   ) : null;
 }
 
-function QuestionForm({
+export function QuestionForm({
   task,
   entry,
   questions,
   drafts,
+  pinned = false,
 }: {
   task: AgentTask;
   entry: PermissionEntry | AsyncQuestionEntry;
   questions: AgentQuestion[];
   drafts: RefObject<Map<string, QuestionAnswer[]>>;
+  /** Above the composer rather than in the conversation. */
+  pinned?: boolean;
 }) {
   const cacheKey = `${entry.type}:${entry.id}`;
   const [answers, setAnswers] = useState<QuestionAnswer[]>(
@@ -210,15 +221,14 @@ function QuestionForm({
   const [error, setError] = useState<string | null>(null);
   const pending = useRef(false);
   const questionPrefix = useId();
-  const panelsRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   // Paging with the buttons lands the keyboard focus on the question itself.
   const focusPanel = useRef(false);
   const multiple = answers.length > 1;
   const complete = answers.every(isAnswered);
+  const last = position === answers.length - 1;
   const questionId = (part: string, index: number) => `${questionPrefix}-${part}-${index}`;
   useEffect(() => {
-    if (panelsRef.current) panelsRef.current.scrollTop = 0;
     if (!focusPanel.current) return;
     focusPanel.current = false;
     panelRef.current?.focus();
@@ -249,7 +259,13 @@ function QuestionForm({
     );
   const update = (previous: QuestionAnswer, next: QuestionAnswer) =>
     setAnswers(answers.map((answer) => (answer === previous ? next : answer)));
-  const choose = (answer: QuestionAnswer, label: string, checked: boolean) =>
+  const goTo = (next: number, moveFocus = false) => {
+    if (next < 0 || next >= answers.length) return;
+    focusPanel.current = moveFocus;
+    setPosition(next);
+    setHovered(null);
+  };
+  const choose = (answer: QuestionAnswer, label: string, checked: boolean) => {
     update(
       answer,
       answer.question.multiSelect
@@ -259,6 +275,10 @@ function QuestionForm({
           }
         : { ...answer, picked: [label], other: null },
     );
+    // Picking an option answers a single-select question in one go; answering it shows the next one.
+    if (answer.question.multiSelect || isAnswered(answer) || last) return;
+    goTo(position + 1, true);
+  };
   const chooseOther = (answer: QuestionAnswer, checked: boolean) =>
     update(
       answer,
@@ -271,15 +291,9 @@ function QuestionForm({
     if (option) choose(answer, option.label, !answer.picked.includes(option.label));
     else if (number === answer.question.options.length + 1) chooseOther(answer, answer.other === null);
   };
-  const goTo = (next: number, moveFocus = false) => {
-    if (next < 0 || next >= answers.length) return;
-    focusPanel.current = moveFocus;
-    setPosition(next);
-    setHovered(null);
-  };
   return (
     <form
-      className={styles.questionCard}
+      className={clsx(styles.questionCard, pinned && styles.questionCardPinned)}
       aria-label={entry.title}
       onSubmit={(event) => {
         event.preventDefault();
@@ -318,7 +332,7 @@ function QuestionForm({
         </div>
       )}
       {/* All questions stay mounted in one grid cell, so the card keeps the tallest one's height. */}
-      <div ref={panelsRef} className={clsx(styles.questionPanels, multiple && styles.questionPanelsPaged)}>
+      <div className={styles.questionPanels}>
         {answers.map((item, index) => {
           const current = index === position;
           const group = questionId("group", index);

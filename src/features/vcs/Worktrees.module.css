@@ -1,0 +1,90 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.body {
+  display: flex;
+  flex: 1;
+  gap: var(--space-1);
+  min-width: 0;
+  min-height: 0;
+  font-size: var(--fs-ui);
+}
+
+.toolbar {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-0-5);
+  padding-inline-end: var(--space-1);
+  border-inline-end: 1px solid var(--border);
+}
+
+.tree {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.dialogTree {
+  height: 340px;
+}
+
+.icon {
+  flex: none;
+  color: var(--fg-muted);
+}
+
+.leading {
+  align-self: flex-start;
+  margin-block-start: var(--space-1);
+}
+
+.details {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--space-0-5);
+  min-width: 0;
+  line-height: 1.25;
+}
+
+.line,
+.secondary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.line > svg,
+.secondary > svg {
+  flex: none;
+}
+
+.secondary {
+  color: var(--fg-secondary);
+}
+
+.path {
+  flex: 1 1 0;
+  margin-inline-start: var(--space-1);
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+
+.truncated {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.main {
+  font-weight: 600;
+}

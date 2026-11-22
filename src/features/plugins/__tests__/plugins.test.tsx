@@ -1110,14 +1110,42 @@ describe("PluginsPage", () => {
     await waitFor(() => expect(usePlugins.getState().plugins[0]).toMatchObject({ enabled: true, status: "inactive" }));
   });
 
-  it("uninstalls after confirmation", async () => {
+  it("offers reinstall in the marketplace after confirmed uninstall", async () => {
+    backend = createMemoryPluginsBackend([plugin({ id: "hello", name: "Hello" })]);
+    setPluginsBackend({
+      ...backend,
+      catalog: async () => [],
+      marketUrl: async () => "https://plugins.example/index.json",
+      market: async () => [
+        {
+          id: "hello",
+          name: "Hello",
+          version: "1.0.0",
+          description: "",
+          authors: [],
+          publisher: "acme",
+          download: "hello.oiplugin",
+          digest: "x",
+          capabilities: [],
+          engine: "^1.0",
+          installed: (await backend.list()).plugins.find((p) => p.id === "hello")?.version ?? null,
+          compatible: true,
+        },
+      ],
+    });
     const user = userEvent.setup();
-    render(<PluginsPage initialTab="installed" />);
-    await screen.findByRole("heading", { level: 2 });
+    render(<PluginsPage />);
+    const marketplace = await screen.findByRole("list", { name: "Available plugins" });
+    expect(await within(marketplace).findByText("Installed")).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: /Installed/ }));
+    const installed = await screen.findByRole("list", { name: "Installed plugins" });
+    await user.click(within(installed).getByText("Hello"));
     await user.click(screen.getByRole("button", { name: "Uninstall…" }));
     await user.click(screen.getByRole("button", { name: "Confirm uninstall Hello" }));
-    await waitFor(() => expect(screen.getByRole("heading", { level: 2 })).not.toHaveTextContent("Hello"));
+    await waitFor(() => expect(within(installed).queryByText("Hello")).not.toBeInTheDocument());
     expect(notes.at(-1)).toMatchObject({ title: "Uninstalled Hello" });
+    await user.click(screen.getByRole("tab", { name: "Marketplace" }));
+    expect(await screen.findByRole("button", { name: "Install Hello" })).toBeInTheDocument();
   });
 
   it("keeps failed cleanup visible and lets Uninstall retry", async () => {
@@ -1304,7 +1332,7 @@ describe("marketplace", () => {
     await waitFor(() => expect(within(list).getByText("All Plugins")).toBeInTheDocument());
     expect(within(list).queryByText(new RegExp(NO_REPOSITORY))).not.toBeInTheDocument();
     await user.click(within(list).getAllByText("Hello")[0]!);
-    expect(screen.getByText("Signed by acme")).toBeInTheDocument();
+    expect(screen.getByText("Signed by:").nextElementSibling).toHaveTextContent("acme");
     await user.click(screen.getByRole("button", { name: "Install" }));
     await waitFor(() => expect(usePlugins.getState().plugins.map((p) => p.id)).toEqual(["hello"]));
     expect(downloads).toEqual(["hello"]);
@@ -1352,7 +1380,7 @@ describe("marketplace", () => {
     expect(headers).toEqual(["Featured", "All Plugins", "Examples", "Local"]);
     // The first listed plugin is shown without a click.
     expect(screen.getByRole("heading", { name: "Popular" })).toBeInTheDocument();
-    expect(screen.getByText("Signed by Acme Inc.")).toBeInTheDocument();
+    expect(screen.getByText("Signed by:").nextElementSibling).toHaveTextContent("Acme Inc.");
     await user.click(within(list).getByText("Sample"));
     expect(screen.getByRole("note")).toHaveTextContent("not maintained as a product");
     await user.click(within(list).getByRole("button", { name: "Install Rare" }));
@@ -1424,7 +1452,12 @@ describe("marketplace", () => {
       marketUrl: async () => "https://plugins.example/index.json",
       market: async () => [
         entry("acme.dusk", "Dusk", ["themes"]),
-        entry("acme.lint", "Lint", ["linters", "tools"]),
+        {
+          ...entry("acme.lint", "Lint", ["linters", "tools"]),
+          authors: ["Ada <ada@example.com>"],
+          homepage: "https://example.com/lint",
+          downloads: 42,
+        },
         entry("acme.misc", "Misc", ["robots"]),
       ],
     });
@@ -1441,7 +1474,15 @@ describe("marketplace", () => {
     expect(within(list).queryByText("Dusk")).not.toBeInTheDocument();
     expect(within(list).queryByText("Local")).not.toBeInTheDocument();
     await user.click(within(list).getByText("Lint"));
-    expect(screen.getByText("Linters & Formatters, Tools")).toBeInTheDocument();
+    const header = within(screen.getByRole("heading", { name: "Lint" }).closest("header")!);
+    expect(header.getByText("Linters & Formatters")).toBeInTheDocument();
+    expect(header.getByText("Tools")).toBeInTheDocument();
+    expect(header.getByText("42")).toBeInTheDocument();
+    expect(header.getByText("1.0.0")).toBeInTheDocument();
+    expect(header.getByRole("link", { name: "Ada" })).toHaveAttribute("href", "https://example.com/lint");
+    expect(header.queryByText("ada@example.com")).not.toBeInTheDocument();
+    expect(screen.getByText("ada@example.com")).toBeInTheDocument();
+    expect(within(list).queryByText("1.0.0")).not.toBeInTheDocument();
   });
 
   it("shows a plugin this IDE can't load without installing it", async () => {
@@ -1772,7 +1813,6 @@ describe("marketplace", () => {
     });
     const user = userEvent.setup();
     render(<PluginsPage initialTab="installed" />);
-    expect(await screen.findByText("Unsigned")).toBeInTheDocument();
     await user.click(await screen.findByRole("button", { name: "Roll Back to 1.0.0" }));
     await waitFor(() => expect(rolled).toEqual(["p"]));
     expect(notes.at(-1)).toMatchObject({ title: "Rolled back P to 1.0.0" });

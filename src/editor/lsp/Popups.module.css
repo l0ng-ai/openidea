@@ -6,6 +6,14 @@
   display: flex;
   flex-direction: column;
 }
+.compactListPopup {
+  min-width: 0;
+}
+.listDivider {
+  width: 100%;
+  height: 1px;
+  background: var(--border-popup);
+}
 .listHeader {
   height: 28px;
   flex: none;
@@ -116,12 +124,23 @@
 .listBody {
   display: flex;
   flex-direction: column;
-  min-height: 24px;
+  min-height: var(--h-list-row);
   padding: 0 0 4px;
   box-sizing: content-box;
 }
 .listBody > * {
   flex: 1;
+}
+.centeredList,
+.targetPopup {
+  min-width: min(360px, 90vw);
+}
+.centeredList .listMain,
+.centeredList .listBody,
+.targetPopup .listMain,
+.targetPopup .listBody {
+  flex-shrink: 1;
+  min-height: 0;
 }
 .item {
   display: flex;
@@ -182,6 +201,12 @@
   min-width: 200px;
   max-width: 420px;
 }
+.leadingDetail {
+  flex: 0 0 min(var(--list-leading-detail-width), 42%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
 .detail {
   flex: 0 1 auto;
   min-width: 0;
@@ -190,6 +215,28 @@
   font-size: var(--fs-small);
   color: var(--fg-subtle);
 }
+.targetIdentity {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  min-width: 0;
+  flex: 1;
+}
+.targetIdentity .label {
+  flex: none;
+  max-width: 100%;
+}
+.targetContainer,
+.targetPath {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-subtle);
+}
+.targetPath {
+  max-width: 44%;
+  direction: rtl;
+}
 .shortcut {
   flex: none;
   font-size: var(--fs-small);
@@ -197,6 +244,28 @@
 }
 .shortcut {
   font-family: var(--font-keys);
+}
+.copyPathPopup {
+  width: 500px;
+  min-width: 0;
+  max-width: calc(100vw - 12px);
+}
+.copyPathPopup .listMain,
+.copyPathPopup .listBody {
+  flex-shrink: 1;
+  min-height: 0;
+}
+.copyPathPopup .label {
+  flex: 0 1 auto;
+  max-width: 60%;
+}
+.copyPathPopup .preview {
+  flex: 1;
+  min-width: 0;
+  direction: rtl;
+  text-align: start;
+  font: inherit;
+  color: var(--fg-subtle);
 }
 .itemIcon {
   flex: none;
@@ -332,9 +401,6 @@
   padding: 0;
   border: 0;
 }
-.docPopup .docToolbar .spacer {
-  display: none;
-}
 .docWindowFrame {
   height: 100%;
   display: flex;
@@ -374,51 +440,78 @@
   text-decoration: underline;
 }
 .defPopup {
-  width: min(640px, 90vw);
-  max-height: 460px;
+  width: 600px;
+  height: 400px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 .defHeader {
-  height: 28px;
+  min-height: var(--h-field);
   flex: none;
   display: flex;
   align-items: center;
-  gap: var(--space-1-5);
-  padding: 0 6px 0 12px;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
   background: var(--bg-popup-inline, var(--bg-elev));
   border-bottom: 1px solid var(--border-popup);
   font-size: var(--fs-ui);
   color: var(--fg-muted);
 }
-.defFile {
+.defTarget {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-width: 0;
   color: var(--fg-emphasis);
 }
+.defTarget > svg {
+  flex: none;
+}
+.defName,
 .defPath {
-  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.defPath {
+  max-width: 45%;
+  min-width: 0;
   color: var(--fg-subtle);
 }
 .defFrame {
+  flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
   outline: none;
 }
-.defCount {
+.defActions {
+  margin-inline-start: auto;
+  display: flex;
+  align-items: center;
   flex: none;
+  gap: var(--space-0-5);
+}
+.defCount {
   font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
   color: var(--fg-subtle);
 }
 .defBody {
+  flex: 1;
+  min-height: 0;
   overflow: auto;
-  padding: 4px 12px;
+  padding: var(--space-3) var(--space-2);
+  color: var(--fg-emphasis);
 }
-.defBody pre {
+.defCode {
+  margin: 0;
+  font: inherit;
   white-space: pre;
+}
+.defCode code {
+  font: inherit;
 }
 
 .previewDialog [data-dialog-body] {

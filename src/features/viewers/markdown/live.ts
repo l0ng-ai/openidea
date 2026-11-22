@@ -237,8 +237,13 @@ function livePlugin(path: string) {
 
         if (!u.docChanged) {
           if (u.geometryChanged && u.view.scrollDOM.scrollTop > 0) {
-            const topLine = topLineOf(u.view);
-            if (topLine !== useLiveMarkdown.getState()[path]?.topLine) publish(path, { topLine });
+            u.view.requestMeasure({
+              key: this,
+              read: topLineOf,
+              write: (topLine) => {
+                if (topLine !== useLiveMarkdown.getState()[path]?.topLine) publish(path, { topLine });
+              },
+            });
           }
           if (u.selectionSet) this.publishCaret();
           return;

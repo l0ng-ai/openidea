@@ -13,11 +13,13 @@
 }
 .toolbar {
   flex: none;
-  height: var(--h-header);
+  min-height: var(--h-header);
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  align-content: center;
   gap: var(--space-0-5);
-  padding: 0 6px;
+  padding: var(--space-0-5) var(--space-1-5);
   border-bottom: 1px solid var(--border);
 }
 .toolbar > * {
@@ -29,16 +31,32 @@
   margin: 0 4px;
   background: var(--border-strong);
 }
-.toolbar > .count {
+.toolbar > .statusTools {
   flex-shrink: 1;
-  min-width: 0;
-  margin-left: auto;
-  padding: 0 6px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-0-5);
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  margin-inline-start: auto;
+}
+.statusTools > :not(.count) {
+  flex: none;
+}
+.count {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  padding-inline: var(--space-1-5);
   color: var(--fg-subtle);
   font-size: var(--fs-small);
-  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+  text-align: end;
+}
+.count:empty {
+  display: none;
 }
 /* Narrow (a side-docked preview): the whitespace / highlighting pickers stay in the gear menu. */
 @container diff-editor (max-width: 640px) {
@@ -46,22 +64,10 @@
     display: none;
   }
 }
-@container diff-editor (max-width: 380px) {
-  .toolbar {
-    height: auto;
-    min-height: var(--h-header);
-    flex-wrap: wrap;
-    align-content: center;
-    padding-block: var(--space-0-5);
-  }
+@container diff-editor (max-width: 520px) {
   .toolbar > .sep,
   .toolbar > .inlineOption {
     display: none;
-  }
-  .toolbar > .count {
-    flex: 1 1 auto;
-    order: 1;
-    text-align: end;
   }
 }
 .labels {
@@ -97,6 +103,20 @@
   text-overflow: ellipsis;
   color: var(--fg-subtle);
   font-family: var(--font-ui);
+}
+.sourceLabels {
+  font-size: var(--fs-ui);
+}
+.sourceLabels .label {
+  font-family: var(--font-ui);
+}
+.sourceLabels .labelText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sourceLabels .labelFile {
+  font-size: var(--fs-small);
 }
 .badge {
   padding: 0 5px;

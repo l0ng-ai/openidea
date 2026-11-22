@@ -46,6 +46,85 @@ test("a narrow diff keeps navigation, settings and the difference count visible"
   await expect(toolbar).toContainText("1 of 1 differences");
 });
 
+test("a medium-width diff keeps its full status beside the viewer tools", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 490, height: 650 });
+  await page.evaluate(async () => {
+    const layoutPath = "/src/workbench/toolwindows/store.ts";
+    const inputPath = "/src/features/vcs/diffInput.ts";
+    const { hideAllToolWindows } = await import(layoutPath);
+    const { openDiff, withChain } = await import(inputPath);
+    hideAllToolWindows();
+    localStorage.setItem("openidea.vcs.diffOptions", JSON.stringify({ mode: "split", collapse: false }));
+    const files = ["a.ts", "b.ts"].map((name) => ({
+      path: `/dev/acme-api/${name}`,
+      left: { type: "text", text: "const rate = 0.05;\r\n", label: "Before" },
+      right: { type: "text", text: "const rate = 0.05;\n", label: "After", editable: true },
+    }));
+    await openDiff(withChain(files, 0));
+  });
+
+  const toolbar = page.getByRole("toolbar", { name: "Diff", exact: true });
+  const status = toolbar.getByText("Contents differ only in line separators", { exact: true });
+  const settings = toolbar.getByRole("button", { name: "Settings", exact: true });
+  await expect(status).toBeVisible();
+  expect((await toolbar.boundingBox())!.width).toBeGreaterThan(380);
+  await expect.poll(() => status.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThan(2);
+  const message = (await status.boundingBox())!;
+  const gear = (await settings.boundingBox())!;
+  expect(gear.x).toBeGreaterThanOrEqual(message.x + message.width);
+  expect(Math.abs(gear.y + gear.height / 2 - message.y - message.height / 2)).toBeLessThan(2);
+
+  await expect(toolbar.getByRole("button", { name: "Compare Next File", exact: true })).toBeVisible();
+  await expect(toolbar.getByRole("button", { name: "Unified Viewer", exact: true })).toBeHidden();
+  await settings.click();
+  await page.getByRole("menuitemcheckbox", { name: "Unified Viewer", exact: true }).click();
+  await expect(toolbar.locator("..").locator(".cm-editor")).toHaveCount(1);
+});
+
+test("combined diff file actions stay visible beside a long name in a narrow pane", async ({ workbench: page }) => {
+  const longName = "OrderHistoryCustomerNotificationDeliveryPreferencesValidationDefaults.txt";
+  const directory = "/dev/acme-api/src/main/orders/preferences";
+  await page.evaluate(
+    async (paths) => {
+      const optionsPath = "/src/features/vcs/allInOneDiff.ts";
+      const inputPath = "/src/features/vcs/diffInput.ts";
+      const { setAllInOneDiff } = await import(optionsPath);
+      const { openDiff, withChain } = await import(inputPath);
+      setAllInOneDiff(true);
+      await openDiff(
+        withChain(
+          paths.map((path) => ({
+            path,
+            left: { type: "text", text: "before\n", label: "HEAD" },
+            right: { type: "worktree" },
+          })),
+          0,
+        ),
+      );
+    },
+    [`${directory}/${longName}`, `${directory}/Notes.txt`],
+  );
+  await page.setViewportSize({ width: 460, height: 600 });
+
+  const file = page.getByRole("region", { name: longName, exact: true });
+  const header = file.getByRole("button", { name: /^(Collapse|Expand) File$/ }).locator("..");
+  const open = header.getByRole("button", { name: "Open in Separate Tab", exact: true });
+  const jump = header.getByRole("button", { name: "Jump to Source", exact: true });
+  await expect(open).toBeInViewport({ ratio: 1 });
+  await expect(jump).toBeInViewport({ ratio: 1 });
+  const label = header.getByText(longName, { exact: true });
+  await expect(label).toHaveCSS("text-overflow", "ellipsis");
+  const labelBox = (await label.boundingBox())!;
+  const jumpBox = (await jump.boundingBox())!;
+  expect(labelBox.x).toBeGreaterThan(jumpBox.x + jumpBox.width);
+  await expect(header).toContainText("src/main/orders/preferences");
+
+  await header.getByRole("button", { name: "Collapse File", exact: true }).click();
+  await expect(file.getByRole("button", { name: "Expand File", exact: true })).toBeVisible();
+  await open.click();
+  await expect(page.getByRole("tab", { name: new RegExp(longName), selected: true })).toBeVisible();
+});
+
 test("maximizes a diff preview tab and restores its previous layout", async ({ workbench: page }) => {
   const toolbar = await openChain(page);
   const viewer = toolbar.locator("..");

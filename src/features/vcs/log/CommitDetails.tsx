@@ -21,6 +21,7 @@ import {
   type TreeHandle,
 } from "@/ui";
 import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
+import clsx from "clsx";
 import {
   useCallback,
   useContext,
@@ -52,7 +53,7 @@ import { commitKey, commitRepo } from "../multiRoot";
 import { currentRepo, repoName } from "../store";
 import { CommitMessage } from "./CommitMessage";
 import { useDropdownMenu, useReadOnlyLog } from "./logHooks";
-import { toggle } from "./shared";
+import { PANE_STYLE, toggle } from "./shared";
 
 const LogMergePreview = lazyComponent(() => import("../GitMergeDiff").then((m) => m.GitMergeDiff));
 
@@ -76,7 +77,7 @@ function fileNodeAt<F>(nodes: readonly FileTreeNode<F>[], key: string): FileTree
  * The selected commits' changes: one commit's files against its first parent, or, for several
  * (IDEA), their combined changes with every selected commit listed below.
  */
-export function CommitDetails({ commits }: { commits: Commit[] }) {
+export function CommitDetails({ commits, fileHistory = false }: { commits: Commit[]; fileHistory?: boolean }) {
   const scope = useContext(LogIdContext);
   const [menuBelow, dropdown] = useDropdownMenu();
   const shown = useGitLog((s) => s.shownLog);
@@ -310,9 +311,39 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
     showContextMenu(e, changesMenu(target));
   };
 
+  const messagePanel = (
+    <SplitPanel id="message" style={PANE_STYLE} minSize={fileHistory ? "30%" : "60px"}>
+      <div
+        className={clsx(styles.messageBox, fileHistory && styles.historyMessageBox)}
+        role={fileHistory ? "region" : undefined}
+        aria-label={fileHistory ? tx("Commit message") : undefined}
+      >
+        {many ? (
+          chosen.map((c) => <CommitMessage key={commitKey(c)} commit={c} compact />)
+        ) : (
+          <CommitMessage commit={commit} />
+        )}
+      </div>
+    </SplitPanel>
+  );
   const details = (
-    <SplitGroup orientation="vertical" id="git-log-details" storageKey="openidea.vcs.logDetailsSplit">
-      <SplitPanel id="files" defaultSize="60%" minSize="60px">
+    <SplitGroup
+      orientation={fileHistory ? "horizontal" : "vertical"}
+      id={fileHistory ? "git-file-history-details" : "git-log-details"}
+      storageKey={fileHistory ? "openidea.vcs.fileHistoryDetailsSplit" : "openidea.vcs.logDetailsSplit"}
+    >
+      {fileHistory && (
+        <>
+          {messagePanel}
+          <SplitHandle />
+        </>
+      )}
+      <SplitPanel
+        id="files"
+        style={PANE_STYLE}
+        defaultSize={fileHistory ? "32%" : "60%"}
+        minSize={fileHistory ? "25%" : "60px"}
+      >
         <div
           className={styles.filesPane}
           onFocusCapture={() => setContext("vcsLogChangesFocus", true)}
@@ -411,16 +442,12 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
           )}
         </div>
       </SplitPanel>
-      <SplitHandle />
-      <SplitPanel id="message" minSize="60px">
-        <div className={styles.messageBox}>
-          {many ? (
-            chosen.map((c) => <CommitMessage key={commitKey(c)} commit={c} compact />)
-          ) : (
-            <CommitMessage commit={commit} />
-          )}
-        </div>
-      </SplitPanel>
+      {!fileHistory && (
+        <>
+          <SplitHandle />
+          {messagePanel}
+        </>
+      )}
     </SplitGroup>
   );
   const embedded = preview && diffLocation !== "editor";
@@ -431,14 +458,14 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
       {embedded ? (
         <SplitGroup
           orientation={diffLocation === "right" ? "horizontal" : "vertical"}
-          id={`git-log-preview-${diffLocation}`}
-          storageKey={`openidea.vcs.logPreviewSplit.${diffLocation}`}
+          id={`git-${fileHistory ? "file-history" : "log"}-preview-${diffLocation}`}
+          storageKey={`openidea.vcs.${fileHistory ? "fileHistory" : "log"}PreviewSplit.${diffLocation}`}
         >
-          <SplitPanel id="changes" defaultSize="55%" minSize="20%">
+          <SplitPanel id="changes" style={PANE_STYLE} defaultSize="55%" minSize="20%">
             {details}
           </SplitPanel>
           <SplitHandle />
-          <SplitPanel id="preview" minSize="20%">
+          <SplitPanel id="preview" style={PANE_STYLE} minSize="20%">
             {selectedChange ? (
               selectedChange.mergeParents?.length === 2 && selectedChange.after ? (
                 <LogMergePreview

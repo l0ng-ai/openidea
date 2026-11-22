@@ -14,47 +14,54 @@ import { GlobListEditor, Row, Section, Select, Toggle } from "../components/Form
 import { choosePath } from "@/platform/choosePath";
 import { usePageContext, useSetting } from "../components/context";
 import { SdkField, tildify, useDetected, useJdtlsJdk } from "./components";
+import { isMavenThreadCount } from "./mavenThreads";
 import styles from "./Sdk.module.css";
 
-function PathInput({
-  k,
-  label,
-  placeholder,
-  hint,
-  title,
-  file,
-}: {
+interface PathFieldProps {
   k: string;
-  label: string;
   placeholder: string;
-  hint?: string;
   title: string;
+  id?: string;
+  "aria-label"?: string;
   /** Browse for a file instead of a directory. */
   file?: boolean;
-}) {
+}
+
+function PathField({ k, placeholder, title, id, file, ...aria }: PathFieldProps) {
   const [value, set] = useSetting<string>(k);
+  return (
+    <span className={styles.pathRow}>
+      <Input
+        id={id}
+        mono
+        className={styles.pathInput}
+        value={value}
+        placeholder={placeholder}
+        onChange={(e) => set(e.target.value.trim())}
+        aria-label={aria["aria-label"]}
+      />
+      <IconButton
+        icon="folder-open"
+        size="small"
+        title="Browse…"
+        onClick={async () => {
+          const p = await choosePath({ directory: !file, title, defaultPath: value || undefined });
+          if (p) set(p);
+        }}
+      />
+    </span>
+  );
+}
+
+function PathInput({
+  label,
+  hint,
+  ...field
+}: Omit<PathFieldProps, "id" | "aria-label"> & { label: string; hint?: string }) {
   const id = useId();
   return (
     <Row label={label} htmlFor={id} hint={hint}>
-      <span className={styles.pathRow}>
-        <Input
-          id={id}
-          mono
-          className={styles.pathInput}
-          value={value}
-          placeholder={placeholder}
-          onChange={(e) => set(e.target.value.trim())}
-        />
-        <IconButton
-          icon="folder-open"
-          size="small"
-          title="Browse…"
-          onClick={async () => {
-            const p = await choosePath({ directory: !file, title, defaultPath: value || undefined });
-            if (p) set(p);
-          }}
-        />
-      </span>
+      <PathField {...field} id={id} />
     </Row>
   );
 }
@@ -498,9 +505,19 @@ export function JavaPage() {
 export function GradlePage() {
   const [distribution, setDistribution] = useSetting<string>("languages.java.gradle.distribution");
   const [runUsing, setRunUsing] = useSetting<string>("languages.java.gradle.runUsing");
+  const local = distribution === "local";
   return (
-    <div className={styles.page}>
+    <div className={styles.gradleSettings}>
       <Section>
+        <PathInput
+          k="languages.java.gradle.userHome"
+          label="Gradle user home"
+          placeholder="~/.gradle"
+          title="Select Gradle User Home Directory"
+          hint="Sets GRADLE_USER_HOME. Empty uses Gradle's default."
+        />
+      </Section>
+      <Section title="Build and Run">
         <Row
           label="Build and run using"
           hint="Gradle runs a main class as a JavaExec task on its source set's runtime classpath (Gradle's resource processing included). OpenIDEA launches it on the Java language server's classpath."
@@ -515,6 +532,36 @@ export function GradlePage() {
             ]}
           />
         </Row>
+      </Section>
+      <Section title="Gradle runtime">
+        <Row
+          label="Distribution"
+          hint={
+            local
+              ? "Uses bin/gradle (bin/gradle.bat on Windows) instead of the wrapper or pinned toolchain."
+              : "Uses the Gradle wrapper when present, otherwise the project-pinned mise/asdf Gradle, then Gradle on PATH."
+          }
+        >
+          <div className={styles.gradleDistribution}>
+            <Select
+              value={distribution}
+              onChange={setDistribution}
+              aria-label="Distribution"
+              options={[
+                { value: "wrapper", label: "Gradle wrapper" },
+                { value: "local", label: "Local installation" },
+              ]}
+            />
+            {local && (
+              <PathField
+                k="languages.java.gradle.home"
+                aria-label="Gradle home"
+                placeholder="Gradle installation directory"
+                title="Select Gradle Home Directory"
+              />
+            )}
+          </div>
+        </Row>
         <SdkRow
           k="languages.java.gradle.jvm"
           label="Gradle JVM"
@@ -524,36 +571,6 @@ export function GradlePage() {
           browseTitle="Select JDK Home Directory"
           aria-label="Gradle JVM"
           hint="JDK used for Gradle sync, tasks, run configurations and tests. An explicit JAVA_HOME in a run configuration takes precedence."
-        />
-        <Row
-          label="Distribution"
-          hint="Uses the Gradle wrapper when present, otherwise the project-pinned mise/asdf Gradle, then Gradle on PATH."
-        >
-          <Select
-            value={distribution}
-            onChange={setDistribution}
-            aria-label="Distribution"
-            options={[
-              { value: "wrapper", label: "Gradle wrapper" },
-              { value: "local", label: "Local installation" },
-            ]}
-          />
-        </Row>
-        {distribution === "local" && (
-          <PathInput
-            k="languages.java.gradle.home"
-            label="Gradle home"
-            placeholder="Gradle installation directory"
-            title="Select Gradle Home Directory"
-            hint="Uses bin/gradle (bin/gradle.bat on Windows) instead of the wrapper or pinned toolchain."
-          />
-        )}
-        <PathInput
-          k="languages.java.gradle.userHome"
-          label="Gradle user home"
-          placeholder="~/.gradle"
-          title="Select Gradle User Home Directory"
-          hint="Sets GRADLE_USER_HOME. Empty uses Gradle's default."
         />
       </Section>
     </div>
@@ -566,39 +583,47 @@ export function MavenPage() {
   const [downloadSources, setDownloadSources] = useSetting<boolean>("languages.java.maven.downloadSources");
   const [updateSnapshots, setUpdateSnapshots] = useSetting<boolean>("languages.java.maven.updateSnapshots");
   const [threads, setThreads] = useSetting<string>("languages.java.maven.threads");
+  const threadsInvalid = !!threads?.trim() && !isMavenThreadCount(threads);
   const [activeProfiles, setActiveProfiles] = useSetting<string>("languages.java.maven.activeProfiles");
   const id = useId();
   return (
-    <div className={styles.page}>
+    <div className={styles.mavenSettings}>
       <Section>
-        <Toggle
-          label="Delegate IDE build/run actions to Maven"
-          checked={delegateBuild}
-          onChange={setDelegateBuild}
-          hint="Run and Debug build Maven modules with Maven (the project's javac) instead of the Java language server. Editor problems still come from the language server."
-        />
-        <Toggle
-          label="Automatically download sources"
-          checked={downloadSources}
-          onChange={setDownloadSources}
-          hint="The Java language server downloads the sources of all dependencies when it imports the project. When off, a library class opens decompiled and its Download Sources banner fetches the sources of that library only."
-        />
         <Toggle
           label="Always update snapshots"
           checked={updateSnapshots}
           onChange={setUpdateSnapshots}
           hint="Checks remote repositories for newer SNAPSHOT dependencies on every sync, build and run (-U)."
         />
-        <SdkRow
-          k="languages.java.maven.runnerJre"
-          label="JRE"
-          kind="jdk"
-          emptyLabel="Use Project JDK"
-          directory
-          browseTitle="Select JDK Home Directory"
-          aria-label="JRE"
-          hint="JDK used for Maven sync, builds, goals and tests. An explicit JAVA_HOME in a run configuration takes precedence."
-        />
+        <Row
+          label="Thread count"
+          htmlFor={id}
+          hint={
+            threadsInvalid ? (
+              <span className={styles.error} role="alert">
+                <T>
+                  Not a thread count Maven accepts, so builds run serially. Use a number (4) or a core multiplier (2C,
+                  2.5C).
+                </T>
+              </span>
+            ) : (
+              "Passed as -T to Maven builds and run configurations: a thread count (4) or a core multiplier (2C, 2.5C) for parallel builds of multi-module projects. Empty runs Maven serially."
+            )
+          }
+        >
+          <Input
+            id={id}
+            mono
+            invalid={threadsInvalid}
+            className={styles.mavenThreads}
+            value={threads}
+            placeholder="4, 2C"
+            onChange={(e) => setThreads(e.target.value.trim())}
+            aria-label="Thread count"
+          />
+        </Row>
+      </Section>
+      <Section title="Environment" stackFields>
         <SdkRow
           k="languages.java.maven.home"
           label="Maven home path"
@@ -619,6 +644,13 @@ export function MavenPage() {
           hint="Passed as -s (mirrors, servers, proxies)."
         />
         <PathInput
+          k="languages.java.maven.localRepository"
+          label="Local repository"
+          placeholder="From settings.xml, else ~/.m2/repository"
+          title="Select Local Repository"
+          hint="Passed as -Dmaven.repo.local."
+        />
+        <PathInput
           k="languages.java.maven.toolchains"
           label="Toolchains file"
           placeholder="~/.m2/toolchains.xml"
@@ -626,12 +658,31 @@ export function MavenPage() {
           file
           hint="Passed as -t; selects the JDKs Maven compiles with."
         />
-        <PathInput
-          k="languages.java.maven.localRepository"
-          label="Local repository"
-          placeholder="From settings.xml, else ~/.m2/repository"
-          title="Select Local Repository"
-          hint="Passed as -Dmaven.repo.local."
+      </Section>
+      <Section title="Importing">
+        <Toggle
+          label="Automatically download sources"
+          checked={downloadSources}
+          onChange={setDownloadSources}
+          hint="The Java language server downloads the sources of all dependencies when it imports the project. When off, a library class opens decompiled and its Download Sources banner fetches the sources of that library only."
+        />
+      </Section>
+      <Section title="Runner" stackFields>
+        <Toggle
+          label="Delegate IDE build/run actions to Maven"
+          checked={delegateBuild}
+          onChange={setDelegateBuild}
+          hint="Run and Debug build Maven modules with Maven (the project's javac) instead of the Java language server. Editor problems still come from the language server."
+        />
+        <SdkRow
+          k="languages.java.maven.runnerJre"
+          label="JRE"
+          kind="jdk"
+          emptyLabel="Use Project JDK"
+          directory
+          browseTitle="Select JDK Home Directory"
+          aria-label="JRE"
+          hint="JDK used for Maven sync, builds, goals and tests. An explicit JAVA_HOME in a run configuration takes precedence."
         />
         <Row
           label="Active profiles"
@@ -648,23 +699,8 @@ export function MavenPage() {
             aria-label="Active profiles"
           />
         </Row>
-        <Row
-          label="Thread count"
-          htmlFor={id}
-          hint="Passed as -T to Maven builds and run configurations: a thread count (4) or a core multiplier (2C, 2.5C) for parallel builds of multi-module projects. Empty runs Maven serially."
-        >
-          <span className={styles.pathRow}>
-            <Input
-              id={id}
-              mono
-              className={styles.pathInput}
-              value={threads}
-              placeholder="4, 2C"
-              onChange={(e) => setThreads(e.target.value.trim())}
-              aria-label="Thread count"
-            />
-          </span>
-        </Row>
+      </Section>
+      <Section>
         <Toggle
           label="Use Maven Daemon (mvnd)"
           checked={daemon}

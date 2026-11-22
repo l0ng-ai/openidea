@@ -8,6 +8,7 @@ import {
   backendFolds,
   enclosingFoldRange,
   expandToLevelEffects,
+  foldChipWidth,
   foldSelectionEffects,
   foldsFromRanges,
   foldingExtension,
@@ -417,6 +418,44 @@ describe("comment placeholders", () => {
     const { view, range } = foldComment("  /**\n   * Summary.\n   */\n  class A {}", 2);
     expect(range.from).toBe(2);
     expect(view.dom.querySelector(".cm-line")?.textContent).toBe("  /** Summary. */");
+    view.destroy();
+  });
+});
+
+describe("foldChipWidth", () => {
+  function editor(doc: string) {
+    return new EditorView({
+      state: EditorState.create({ doc, extensions: [foldingExtension()] }),
+      parent: document.body,
+    });
+  }
+
+  it("measures a folded chip drawn after the anchor", () => {
+    const view = editor("const a = 1\nconst b = 2");
+    view.dispatch({ effects: foldEffect.of({ from: view.state.doc.line(1).to, to: view.state.doc.line(2).to }) });
+    // jsdom has no layout: the chip's width is faked like the blame tests' hint boxes.
+    const chip = view.dom.querySelector(".cm-foldPlaceholder")!;
+    chip.getBoundingClientRect = () => ({ width: 18 }) as DOMRect;
+    // Production order: the zero-width anchor sits at the fold start, the chip after it.
+    const anchor = document.createElement("span");
+    chip.before(anchor);
+    expect(foldChipWidth(anchor)).toBe(18);
+    view.destroy();
+  });
+
+  it("is zero with no chip on the line, or when the chip precedes the anchor", () => {
+    const view = editor("const a = 1\nconst b = 2");
+    const other = document.createElement("span");
+    view.dom.querySelectorAll(".cm-line")[1]!.append(other);
+    expect(foldChipWidth(other)).toBe(0);
+    view.dispatch({ effects: foldEffect.of({ from: view.state.doc.line(1).to, to: view.state.doc.line(2).to }) });
+    // A chip earlier in the line (mid-line import folds) cannot overlap a later anchor;
+    // passing the chip itself as the anchor (nothing precedes itself) is also 0.
+    const chip = view.dom.querySelector(".cm-foldPlaceholder")!;
+    chip.getBoundingClientRect = () => ({ width: 18 }) as DOMRect;
+    const anchor = document.createElement("span");
+    chip.after(anchor);
+    expect(foldChipWidth(anchor)).toBe(0);
     view.destroy();
   });
 });

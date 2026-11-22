@@ -140,26 +140,26 @@ fn shipped_components_are_built_for_this_api() {
         let component = engine.compile(&wasm).unwrap();
         let built_for = engine.check_component(&component).unwrap_or_else(|e| panic!("{}: {e}", wasm.display()));
         let built_for = built_for.unwrap_or_else(|| panic!("{} uses no plugin interface", wasm.display()));
-        assert!(
-            (built_for.major, built_for.minor) == (host.major, host.minor)
-                || (built_for.major, built_for.minor) == (1, 14),
-            "{}: built for {}.{}, expected {}.{}",
-            wasm.display(),
-            built_for.major,
-            built_for.minor,
-            host.major,
-            host.minor
-        );
+        assert_eq!((built_for.major, built_for.minor), (host.major, host.minor), "{}", wasm.display());
     }
 }
 
-// Verify backward compatibility: plugins built against 1.14 still load after bumping ENGINE_VERSION to 1.15.
 #[test]
-fn a_1_14_component_still_loads() {
+fn the_hover_actions_component_exports_the_optional_hover_actions_world() {
     let engine = PluginEngine::new().unwrap();
-    let old = engine.compile(&repo().join("crates/ide-plugin/tests/fixtures/hover-actions/dist/plugin.wasm")).unwrap();
-    let built_for = engine.check_component(&old).unwrap().unwrap();
-    assert_eq!((built_for.major, built_for.minor), (1, 14));
+    let component =
+        engine.compile(&repo().join("crates/ide-plugin/tests/fixtures/hover-actions/dist/plugin.wasm")).unwrap();
+    let exports: Vec<String> =
+        component.component_type().exports(engine.engine()).map(|(name, _)| name.to_owned()).collect();
+    assert!(
+        exports.iter().any(|name| name.starts_with(&format!("openidea:plugin/hover-actions@{API_VERSION}.0"))),
+        "{exports:?}"
+    );
+    // A plugin that does not export the optional world stays valid.
+    let old = engine.compile(&repo().join("plugins/official/test-runner/dist/plugin.wasm")).unwrap();
+    let old_exports: Vec<String> =
+        old.component_type().exports(engine.engine()).map(|(name, _)| name.to_owned()).collect();
+    assert!(!old_exports.iter().any(|name| name.starts_with("openidea:plugin/hover-actions")));
 }
 
 // --- a later host, simulated -------------------------------------------------------------

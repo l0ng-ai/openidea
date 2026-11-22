@@ -19,8 +19,45 @@ import styles from "./editor.module.css";
 const BASE_HOVER = 100;
 const IDENT = /[\p{L}\p{N}_$]/u;
 
-/** Identifier (with `a.b.c` member access) around `pos`, or the selection containing it. */
-export function expressionAt(view: EditorView, pos: number): { from: number; to: number; text: string } | null {
+const OPEN: Record<string, string> = { ")": "(", "]": "[" };
+const CLOSE: Record<string, string> = { "(": ")", "[": "]" };
+
+/** Index just past the bracket group opening at `i` (strings skipped), or -1 when it doesn't close on the line. */
+function closeOf(t: string, i: number): number {
+  const stack: string[] = [];
+  for (let j = i; j < t.length; j++) {
+    const c = t[j]!;
+    if (c === '"' || c === "'" || c === "`") {
+      j++;
+      while (j < t.length && t[j] !== c) j += t[j] === "\\" ? 2 : 1;
+      if (j >= t.length) return -1;
+    } else if (CLOSE[c]) stack.push(CLOSE[c]);
+    else if (c === ")" || c === "]") {
+      if (stack.pop() !== c) return -1;
+      if (!stack.length) return j + 1;
+    }
+  }
+  return -1;
+}
+
+/** Index of the bracket opening the group that closes at `i - 1`, or -1. */
+function openOf(t: string, i: number): number {
+  for (let start = i - 1; start >= 0; start--) {
+    if (t[start] === OPEN[t[i - 1]!] && closeOf(t, start) === i) return start;
+  }
+  return -1;
+}
+
+/**
+ * Identifier (with `a.b.c` member access) around `pos`, or the selection containing it. With
+ * `calls`, as for Quick Evaluate: member chains through calls and indexing (`a.getB().c`,
+ * `items[i].name`) and the call of the identifier itself (`o.getX()`, `f(a, b)`).
+ */
+export function expressionAt(
+  view: EditorView,
+  pos: number,
+  { calls = false } = {},
+): { from: number; to: number; text: string } | null {
   const { state } = view;
   const sel = state.selection.main;
   if (!sel.empty && pos >= sel.from && pos <= sel.to) {
@@ -33,7 +70,25 @@ export function expressionAt(view: EditorView, pos: number): { from: number; to:
   let end = start;
   if (!IDENT.test(t[end] ?? "") && !IDENT.test(t[start - 1] ?? "")) return null;
   while (end < t.length && IDENT.test(t[end]!)) end++;
-  while (start > 0 && (IDENT.test(t[start - 1]!) || (t[start - 1] === "." && IDENT.test(t[start - 2] ?? "")))) start--;
+  for (;;) {
+    while (start > 0 && IDENT.test(t[start - 1]!)) start--;
+    if (t[start - 1] === "." && IDENT.test(t[start - 2] ?? "")) start--;
+    else if (calls && t[start - 1] === "." && OPEN[t[start - 2] ?? ""]) {
+      let open = openOf(t, start - 1);
+      // `a.b()[0].c`: walk back over every group, then the name they follow.
+      while (open > 0 && OPEN[t[open - 1]!]) open = openOf(t, open);
+      if (open <= 0 || !IDENT.test(t[open - 1]!)) break;
+      start = open;
+    } else break;
+  }
+  if (calls) {
+    let next = end;
+    while (t[next] === " ") next++;
+    if (t[next] === "(") {
+      const close = closeOf(t, next);
+      if (close > 0) end = close;
+    }
+  }
   const text = t.slice(start, end);
   if (!text || /^\d/.test(text)) return null;
   return { from: line.from + start, to: line.from + end, text };
@@ -95,6 +150,17 @@ export function valueHint(
   return { dom, destroy: () => tree?.unmount() };
 }
 
+export function showQuickValue(
+  view: EditorView,
+  pos: number,
+  expression: string,
+  value: Variable,
+  session: DebugSessionId,
+) {
+  if (value.variablesReference > 0) showValueTree(view, pos, expression, value, session);
+  else showHint(view, () => valueHint(expression, value, session), { pos, timeout: 60_000 });
+}
+
 export function valueTooltip(): Extension {
   return hoverTooltip(
     async (view, pos) => {
@@ -123,18 +189,17 @@ export function valueTooltip(): Extension {
             // The tree outgrows the hint and may move to the other side of the line, away from the
             // mouse, which closed the hover tooltip before it could be reached. Like IDEA's value
             // popup it stays until Escape, a click in the editor or the next step.
-            pin: () => {
-              view.dispatch({ effects: closeHoverTooltips });
-              showHint(view, () => pinnedTree(view, expr.text, value, session.id), {
-                pos: expr.from,
-                timeout: null,
-              });
-            },
+            pin: () => showValueTree(view, expr.from, expr.text, value, session.id),
           }),
       };
     },
     { hoverTime: BASE_HOVER },
   );
+}
+
+function showValueTree(view: EditorView, pos: number, expression: string, value: Variable, session: DebugSessionId) {
+  view.dispatch({ effects: closeHoverTooltips });
+  showHint(view, () => pinnedTree(view, expression, value, session), { pos, timeout: null });
 }
 
 /** An expanded value tree, closed when its session leaves the stop it was evaluated in. */
@@ -144,6 +209,20 @@ function pinnedTree(view: EditorView, expression: string, value: Variable, sessi
     if (s.stopSeq !== stop || s.sessions[session]?.status !== "paused") hideHint(view);
   });
   const hint = valueHint(expression, value, session, 400, { expanded: true });
+  let width = 0;
+  let resizeFrame = 0;
+  const updateWidth = () => {
+    const next = view.dom.clientWidth;
+    if (!next || next === width) return;
+    width = next;
+    hint.dom.style.setProperty("--debug-value-editor-width", `${width}px`);
+  };
+  updateWidth();
+  const resize = new ResizeObserver(() => {
+    cancelAnimationFrame(resizeFrame);
+    resizeFrame = requestAnimationFrame(updateWidth);
+  });
+  resize.observe(view.dom);
   // The tree has the focus, so the editor's Escape doesn't reach the hint.
   hint.dom.addEventListener("keydown", (e) => {
     if (e.key !== "Escape" || e.defaultPrevented) return;
@@ -154,6 +233,8 @@ function pinnedTree(view: EditorView, expression: string, value: Variable, sessi
   return {
     dom: hint.dom,
     destroy: () => {
+      resize.disconnect();
+      cancelAnimationFrame(resizeFrame);
       unsubscribe();
       hint.destroy();
     },

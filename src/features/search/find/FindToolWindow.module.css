@@ -1,16 +1,31 @@
 .root {
   height: 100%;
   display: flex;
-  flex-direction: column;
   min-height: 0;
+  min-width: 0;
 }
 .tabs {
   min-width: 0;
   border: 0;
   background: none;
 }
+.toolbar {
+  flex: none;
+  width: 32px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-0-5);
+  padding: var(--space-1) 0;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+}
+.toolbar > button {
+  flex: none;
+}
 .body {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -20,23 +35,24 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  height: 26px;
-  padding: 0 10px;
+  min-height: 26px;
+  padding: var(--space-0-5) var(--space-2);
   color: var(--fg-subtle);
-  font-size: var(--fs-small);
-}
-.title {
-  color: var(--fg-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: var(--fs-ui);
 }
 .count {
-  flex: none;
-  color: var(--fg-faint);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
-.spacer {
-  flex: 1;
+.replaceActions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-top: 1px solid var(--border);
 }
 .tree {
   flex: 1;
@@ -47,6 +63,7 @@
 }
 .node {
   display: flex;
+  flex: 1;
   align-items: center;
   gap: var(--space-1-5);
   min-width: 0;
@@ -56,6 +73,8 @@
   color: var(--fg-muted);
 }
 .label {
+  flex: none;
+  max-width: 56%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -65,12 +84,20 @@
   color: var(--fg-faint);
   font-size: var(--fs-small);
 }
+.directory {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
 .lineNo {
   flex: none;
-  min-width: 28px;
-  color: var(--fg-gutter);
+  min-width: 3ch;
+  color: var(--fg-line-number);
   font-family: var(--font-mono);
-  font-size: var(--fs-small);
+  font-size: var(--fs-ui);
   text-align: right;
 }
 .code {
@@ -79,6 +106,7 @@
   text-overflow: ellipsis;
   white-space: pre;
   font-family: var(--font-mono);
+  font-size: var(--fs-code);
 }
 .nodeWrap {
   display: contents;

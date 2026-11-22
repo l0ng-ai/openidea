@@ -1,8 +1,15 @@
 .view {
+  --coverage-metrics: 2;
+  --coverage-metric-width: min(29cqi, 128px);
+  --coverage-column-gap: var(--space-2);
+  container-type: inline-size;
   height: 100%;
   display: flex;
   flex-direction: column;
   min-height: 0;
+}
+.noBranches {
+  --coverage-metrics: 1;
 }
 .tabs {
   min-width: 0;
@@ -18,19 +25,24 @@
 .header,
 .row {
   display: grid;
-  grid-template-columns: minmax(120px, 1fr) 170px 170px;
+  grid-template-columns: minmax(0, 1fr) repeat(var(--coverage-metrics), var(--coverage-metric-width));
   align-items: center;
-  column-gap: var(--space-2);
-}
-.header.noBranches,
-.row.noBranches {
-  grid-template-columns: minmax(120px, 1fr) 170px;
+  column-gap: var(--coverage-column-gap);
+  font-size: var(--fs-ui);
 }
 .header {
   flex: none;
   height: 24px;
-  padding: 0 10px 0 28px;
+  padding-inline: 30px 14px;
   border-bottom: 1px solid var(--border);
+  overflow: hidden;
+}
+.header,
+.tree [role="tree"] {
+  scrollbar-gutter: stable;
+}
+.header::-webkit-scrollbar {
+  width: 10px;
 }
 .headerCell {
   display: inline-flex;
@@ -41,7 +53,6 @@
   border: 0;
   background: none;
   font: inherit;
-  font-size: var(--fs-small);
   color: var(--fg-secondary);
   text-align: left;
   cursor: default;
@@ -49,15 +60,21 @@
 .headerCell:hover {
   color: var(--fg-strong);
 }
+.headerCell svg {
+  flex: none;
+}
 .tree {
   flex: 1;
   min-height: 0;
+  /* Keep the chevron and icon in the name column at deeper levels. */
+  --coverage-max-row-inset: max(
+    4px,
+    calc(100% - var(--coverage-metrics) * (var(--coverage-metric-width) + var(--coverage-column-gap)) - 72px)
+  );
 }
 .row {
   flex: 1;
   min-width: 0;
-  padding-right: 10px;
-  white-space: nowrap;
 }
 .name {
   display: flex;
@@ -68,34 +85,30 @@
 .icon {
   flex: none;
 }
-.label {
+.label,
+.value {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.cell {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  min-width: 0;
-}
-.bar {
-  flex: none;
-  width: 48px;
-  height: 6px;
-  border-radius: 1px;
-  background: var(--coverage-uncovered);
-  opacity: 0.85;
-  overflow: hidden;
-}
-.barFill {
-  display: block;
-  height: 100%;
-  background: var(--coverage-covered);
+  white-space: nowrap;
 }
 .value {
-  font-size: var(--fs-small);
   font-variant-numeric: tabular-nums;
   color: var(--fg-secondary);
+}
+@container (width < 360px) {
+  .header,
+  .tree {
+    --coverage-metric-width: min(23cqi, 65px);
+    --coverage-column-gap: var(--space-1);
+  }
+  .count {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
 }
 .link {
   padding: 0;

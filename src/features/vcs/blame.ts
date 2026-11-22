@@ -19,11 +19,6 @@ export function isUncommitted(line: Pick<BlameLine, "commit">): boolean {
   return ZERO.test(line.commit);
 }
 
-export function shortAuthor(name: string): string {
-  const first = name.trim().split(/\s+/)[0] ?? "";
-  return first.length > 12 ? `${first.slice(0, 11)}…` : first;
-}
-
 const BLAME_PALETTE = [
   "var(--project-color-5)",
   "var(--project-color-7)",
@@ -64,56 +59,55 @@ export function commitBackgrounds(lines: readonly Pick<BlameLine, "timeMs" | "co
   return out;
 }
 
+const COLUMNS = ["date", "author", "revision"] as const;
+const GUTTER_ORDER = ["revision", "date", "author"] as const;
+type AnnotateColumn = (typeof COLUMNS)[number];
+type AnnotateColumns = Record<AnnotateColumn, boolean>;
+type BlameLabels = Record<AnnotateColumn, string>;
+
 class BlameMarker extends GutterMarker {
   constructor(
     readonly line: BlameLine,
+    readonly labels: BlameLabels | undefined,
     readonly bg = "",
   ) {
     super();
   }
   eq(o: BlameMarker) {
-    return o.line.commit === this.line.commit && o.bg === this.bg;
+    return (
+      o.line.commit === this.line.commit &&
+      o.bg === this.bg &&
+      COLUMNS.every((column) => o.labels?.[column] === this.labels?.[column])
+    );
   }
   toDOM() {
     const el = document.createElement("span");
     el.className = "cm-vcs-blame-line";
-    const l = this.line;
-    if (isUncommitted(l)) {
-      el.textContent = "";
+    if (!this.labels) {
       el.title = "Not committed yet";
       return el;
     }
-    const author = document.createElement("span");
-    author.className = "cm-vcs-blame-author";
-    author.textContent = shortAuthor(l.author);
-    const date = document.createElement("span");
-    date.className = "cm-vcs-blame-date";
-    date.textContent = formatDate(l.timeMs);
-    const revision = document.createElement("span");
-    revision.className = "cm-vcs-blame-revision";
-    revision.textContent = l.commit.slice(0, 8);
-    el.append(date, author, revision);
+    for (const column of GUTTER_ORDER) {
+      const cell = document.createElement("span");
+      cell.className = `cm-vcs-blame-${column}`;
+      cell.textContent = this.labels[column];
+      el.append(cell);
+    }
     if (this.bg) {
       el.style.setProperty("--blame-bg", this.bg);
       el.style.backgroundColor = this.bg;
     }
-    el.dataset.commit = l.commit;
+    el.dataset.commit = this.line.commit;
     return el;
   }
 }
 
-const spacer = new BlameMarker({
-  commit: "ffffffff",
-  author: "Mmmmmmmm",
-  timeMs: Date.UTC(2020, 11, 28),
-  summary: "",
-});
+const spacer = new BlameMarker(
+  { commit: "ffffffff", author: "", timeMs: 0, summary: "" },
+  { date: "", author: "", revision: "" },
+);
 
 /** The columns the gutter shows (IDEA's annotate Options); kept across sessions. */
-const COLUMNS = ["date", "author", "revision"] as const;
-type AnnotateColumn = (typeof COLUMNS)[number];
-type AnnotateColumns = Record<AnnotateColumn, boolean>;
-
 const COLUMNS_KEY = "openidea.vcs.annotateColumns";
 const DEFAULT_COLUMNS: AnnotateColumns = { date: true, author: true, revision: false };
 
@@ -151,7 +145,16 @@ function setAnnotateColumn(column: AnnotateColumn, shown: boolean) {
 
 /** Hides the columns turned off in Options, here and in editors annotated before the change. */
 const annotateColumns = ViewPlugin.define(
-  (view) => ({ destroy: useAnnotateColumns.subscribe(() => view.dispatch({})) }),
+  (view) => {
+    view.requestMeasure(measureBlameColumns);
+    return {
+      update(update: ViewUpdate) {
+        if (update.startState.field(blameField, false)?.labels !== update.state.field(blameField).labels)
+          view.requestMeasure(measureBlameColumns);
+      },
+      destroy: useAnnotateColumns.subscribe(() => view.dispatch({})),
+    };
+  },
   {
     provide: () =>
       EditorView.editorAttributes.of(() => {
@@ -184,26 +187,61 @@ const setBlame = StateEffect.define<BlameLine[]>();
 interface BlameState {
   lines: BlameLine[];
   markers: RangeSet<GutterMarker>;
+  labels: Map<string, BlameLabels>;
 }
 
-function build(lines: readonly BlameLine[], doc: Text): RangeSet<GutterMarker> {
+function build(lines: BlameLine[], doc: Text): BlameState {
   const bgs = commitBackgrounds(lines);
+  const labels = new Map<string, BlameLabels>();
   const out = [];
   const n = Math.min(lines.length, doc.lines);
   for (let i = 0; i < n; i++) {
     const line = lines[i]!;
-    out.push(new BlameMarker(line, bgs.get(line.commit) ?? "").range(doc.line(i + 1).from));
+    let label = labels.get(line.commit);
+    if (!label && !isUncommitted(line)) {
+      label = { date: formatDate(line.timeMs), author: line.author.trim(), revision: line.commit.slice(0, 8) };
+      labels.set(line.commit, label);
+    }
+    out.push(new BlameMarker(line, label, bgs.get(line.commit) ?? "").range(doc.line(i + 1).from));
   }
-  return RangeSet.of(out);
+  return { lines, markers: RangeSet.of(out), labels };
 }
 
 const blameField = StateField.define<BlameState>({
-  create: () => ({ lines: [], markers: RangeSet.empty }),
+  create: () => ({ lines: [], markers: RangeSet.empty, labels: new Map() }),
   update(value, tr) {
-    for (const e of tr.effects) if (e.is(setBlame)) return { lines: e.value, markers: build(e.value, tr.state.doc) };
+    for (const e of tr.effects) if (e.is(setBlame)) return build(e.value, tr.state.doc);
     return tr.docChanged ? { ...value, markers: value.markers.map(tr.changes) } : value;
   },
 });
+
+type BlameWidthMeasurement = { gutter: HTMLElement; widths: Record<AnnotateColumn, number> };
+
+/** Use the full file's annotation widths so scrolling does not move the code sideways. */
+const measureBlameColumns = {
+  read(view: EditorView): BlameWidthMeasurement | null {
+    const gutter = view.dom.querySelector<HTMLElement>(".cm-vcs-blame");
+    const labels = view.state.field(blameField, false)?.labels;
+    if (!gutter || !labels?.size || typeof CanvasRenderingContext2D === "undefined") return null;
+    const context = view.dom.ownerDocument.createElement("canvas").getContext("2d");
+    if (!context) return null;
+    const style = getComputedStyle(gutter);
+    context.font = `${style.fontSize} ${style.fontFamily}`;
+    const widths = { date: 0, author: 0, revision: 0 };
+    for (const column of COLUMNS) {
+      for (const label of new Set(Array.from(labels.values(), (entry) => entry[column]))) {
+        widths[column] = Math.max(widths[column], context.measureText(label).width);
+      }
+    }
+    return { gutter, widths };
+  },
+  write(result: BlameWidthMeasurement | null) {
+    if (!result) return;
+    const { gutter, widths } = result;
+    for (const column of COLUMNS)
+      gutter.style.setProperty(`--blame-${column}-width`, `${Math.ceil(widths[column]) + 2}px`);
+  },
+};
 
 /** Re-blames `path` and repaints the gutter while annotations are still shown. */
 async function refreshAnnotations(view: EditorView, path: string) {
@@ -242,22 +280,26 @@ class BlameRefresher implements PluginValue {
 }
 
 const blameTheme = EditorView.baseTheme({
-  ".cm-vcs-blame": { cursor: "pointer", borderRight: "1px solid var(--border)" },
+  ".cm-vcs-blame": {
+    cursor: "pointer",
+    borderRight: "1px solid var(--border)",
+    fontFamily: "var(--font-ui)",
+    fontSize: "var(--fs-ui)",
+  },
   ".cm-vcs-blame .cm-gutterElement": { padding: "0", display: "flex", alignItems: "stretch" },
   ".cm-vcs-blame-line": {
     flex: "1",
     display: "inline-flex",
     alignItems: "center",
-    gap: "8px",
-    padding: "0 8px 0 6px",
+    gap: "var(--space-1)",
+    padding: "0 var(--space-2) 0 var(--space-1)",
     color: "var(--fg-secondary)",
-    fontFamily: "var(--font-ui)",
-    fontSize: "var(--fs-small)",
     whiteSpace: "nowrap",
   },
-  ".cm-vcs-blame-date": { minWidth: "7ch", fontVariantNumeric: "tabular-nums" },
-  ".cm-vcs-blame-author": { minWidth: "9ch" },
-  ".cm-vcs-blame-revision": { fontFamily: "var(--font-mono)" },
+  ".cm-vcs-blame-line > span": { flex: "none", overflow: "hidden", textOverflow: "ellipsis" },
+  ".cm-vcs-blame-date": { width: "min(var(--blame-date-width, 9ch), 14em)" },
+  ".cm-vcs-blame-author": { width: "min(var(--blame-author-width, 12ch), 18em)" },
+  ".cm-vcs-blame-revision": { width: "var(--blame-revision-width, 9ch)" },
   "&.cm-vcs-blame-hide-date .cm-vcs-blame-date, &.cm-vcs-blame-hide-author .cm-vcs-blame-author, &.cm-vcs-blame-hide-revision .cm-vcs-blame-revision":
     { display: "none" },
   ".cm-vcs-blame .cm-gutterElement:hover .cm-vcs-blame-line, .cm-vcs-blame .cm-gutterElement.cm-vcs-blame-same-commit .cm-vcs-blame-line":
@@ -322,7 +364,7 @@ class BlameInteraction implements PluginValue {
 
 function blameExtension(lines: BlameLine[], path: string, live: boolean): Extension {
   return [
-    blameField.init((state) => ({ lines, markers: build(lines, state.doc) })),
+    blameField.init((state) => build(lines, state.doc)),
     Prec.high(
       gutter({
         class: "cm-vcs-blame",
@@ -352,13 +394,9 @@ function blameExtension(lines: BlameLine[], path: string, live: boolean): Extens
             const l = lineAt(view, block.from);
             event.preventDefault();
             showContextMenu(event as MouseEvent, [
+              { label: "Close Annotations", run: () => setAnnotations(view, null, path, false) },
               ...(l && !isUncommitted(l)
                 ? [
-                    {
-                      label: "Show Commit in Git Log",
-                      icon: "commit",
-                      run: () => void executeAction("vcs.showCommit", l.commit),
-                    },
                     {
                       label: "Show Diff",
                       icon: "diff",
@@ -369,11 +407,7 @@ function blameExtension(lines: BlameLine[], path: string, live: boolean): Extens
                       icon: "copy",
                       run: () => void writeClipboardText(l.commit),
                     },
-                    {
-                      label: "Ignore This Commit",
-                      icon: "hide",
-                      run: () => void ignoreCommit(view, path, l.commit, live),
-                    },
+                    { kind: "separator" as const },
                     {
                       label: tx("Annotate at Revision…"),
                       icon: "clock",
@@ -386,11 +420,19 @@ function blameExtension(lines: BlameLine[], path: string, live: boolean): Extens
                       run: () =>
                         void import("./annotateRevision").then((m) => m.annotatePreviousRevision(path, l.commit)),
                     },
-                    { kind: "separator" as const },
+                    {
+                      label: "Show Commit in Git Log",
+                      icon: "commit",
+                      run: () => void executeAction("vcs.showCommit", l.commit),
+                    },
+                    {
+                      label: "Ignore This Commit",
+                      icon: "hide",
+                      run: () => void ignoreCommit(view, path, l.commit, live),
+                    },
                   ]
                 : []),
               optionsMenu(),
-              { label: "Close Annotations", run: () => setAnnotations(view, null, path, false) },
             ]);
             return true;
           },

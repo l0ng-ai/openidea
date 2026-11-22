@@ -1,21 +1,16 @@
 /* Islands: the status bar sits on the frame background, no divider. */
 .bar {
-  height: calc(var(--h-statusbar) + 4px);
+  height: var(--h-statusbar);
   flex: none;
   display: flex;
   align-items: center;
-  gap: var(--space-1);
-  padding: 0 10px 0 12px;
+  padding: 0 10px;
   font-family: var(--font-ui);
   font-size: var(--fs-chrome);
   color: var(--fg-muted);
   white-space: nowrap;
   overflow: hidden;
   position: relative;
-}
-/* IDEA's compact status bar is just its widgets' height (StatusBar.Widget.widgetInsets 4,8,3,8). */
-:global(:root[data-compact]) .bar {
-  height: var(--h-statusbar);
 }
 /* Widgets read as plain UI text like IDEA's, whatever their own font. */
 .item {
@@ -103,34 +98,60 @@
 .taskMore {
   color: var(--fg-faint);
 }
-.taskList {
-  width: 320px;
-  padding: 6px 0;
-  font-family: var(--font-ui);
-}
-.taskListHeader {
-  padding: 2px 12px 6px;
-  color: var(--fg-faint);
-  font-size: var(--fs-small);
-}
-.taskRow {
+.taskPopup[data-popup] {
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  padding: 6px 12px;
+  width: min(440px, calc(100vw - 24px));
+  overflow: hidden;
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
 }
-.taskRowHead {
+.taskListHeader {
+  flex: none;
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: var(--space-2);
+  padding: var(--space-1) var(--space-2) var(--space-1) var(--space-4);
+  border-block-end: 1px solid var(--border-popup);
+}
+.taskListHeader h2 {
+  margin: 0;
+  font-size: inherit;
+  font-weight: 600;
+  color: var(--fg-strong);
+}
+.taskList {
+  min-height: 0;
+  margin: 0;
+  padding: var(--space-1) 0;
+  list-style: none;
+  overflow: auto;
+}
+.taskRow {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-4);
+}
+.taskRow + .taskRow {
+  border-block-start: 1px solid var(--border-popup);
+}
+.taskRowProgress {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 4.5ch 24px;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--h-row);
+  font-size: var(--fs-small);
+}
+.taskRowAction {
+  grid-column: 3;
+  justify-self: end;
 }
 .taskRowTitle {
-  flex: 1;
-  min-width: 0;
-  color: var(--fg-emphasis);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  color: var(--fg-strong);
+  font-weight: 500;
+  overflow-wrap: anywhere;
 }
 .taskCancelOff {
   display: inline-flex;
@@ -139,16 +160,22 @@
   pointer-events: none;
 }
 .taskPct {
-  font-family: var(--font-mono);
-  font-size: var(--fs-small);
   color: var(--fg-subtle);
+  font-variant-numeric: tabular-nums;
+  text-align: end;
 }
 .taskMessage {
   color: var(--fg-subtle);
   font-size: var(--fs-small);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.taskEmpty {
+  display: grid;
+  place-items: center;
+  min-height: 84px;
+  padding: var(--space-4);
+  color: var(--fg-muted);
 }
 
 .info {

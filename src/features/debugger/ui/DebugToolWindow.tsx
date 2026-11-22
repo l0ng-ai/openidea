@@ -1,6 +1,6 @@
 /** Debug tool window: toolbar, Threads & Variables (frames + variables), Console. */
 import { writeClipboardText } from "@/platform/clipboard";
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
 import { basename, useProject } from "@/platform/project";
@@ -22,6 +22,8 @@ import {
   type TabItem,
   T,
 } from "@/ui";
+import type { SelectOption } from "@/ui/Select";
+import { revealVertically } from "@/ui/Tabs";
 import { setMuted, useBreakpoints } from "../breakpoints/store";
 import { frameLabel, groupFrames } from "../frames";
 import { blurDebugView, focusDebugView } from "./focusedView";
@@ -31,6 +33,7 @@ import {
   closeSessionTab,
   evaluate,
   isLive,
+  isThreadSuspended,
   selectFrame,
   selectSession,
   selectThread,
@@ -54,6 +57,7 @@ import { useExpressionCompletion } from "./ExpressionCompletion";
 import { sortVariables } from "../values";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { useToolWindowShown } from "@/workbench/contributions";
+import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import styles from "./DebugToolWindow.module.css";
 import { tx, useTx } from "@/platform/i18n";
 
@@ -172,7 +176,36 @@ export function DebugTabs() {
   );
 }
 
+/**
+ * Services › a configuration being debugged: the same debugger as the Debug tool window, for
+ * that session (#4773). `console` replaces the Console tab, e.g. with the console of the run the
+ * debugger is attached to.
+ */
+export function DebugServiceView({ sessionId, console: consolePane }: { sessionId: number; console?: ReactNode }) {
+  const shown = useDebug((s) => {
+    const active = s.active != null ? s.sessions[s.active] : undefined;
+    return !!active && rootOf(active).id === sessionId;
+  });
+  useEffect(() => {
+    if (useDebug.getState().sessions[sessionId]) selectSession(sessionId);
+  }, [sessionId]);
+  // The toolbar acts on the active session: using this view makes its session the active one again.
+  const reselect = () => {
+    if (!shown && useDebug.getState().sessions[sessionId]) selectSession(sessionId);
+  };
+  return (
+    <div className={styles.serviceView} onPointerDownCapture={reselect} onFocusCapture={reselect}>
+      {shown && <DebugView consolePane={consolePane} />}
+    </div>
+  );
+}
+
 export function DebugToolWindow() {
+  const sideDocked = useToolWindowLayout((s) => (s.placements.debug?.anchor ?? "bottom") !== "bottom");
+  return <DebugView sideDocked={sideDocked} />;
+}
+
+function DebugView({ consolePane, sideDocked = false }: { consolePane?: ReactNode; sideDocked?: boolean }) {
   const tx = useTx();
   const active = useDebug((s) => (s.active != null ? s.sessions[s.active] : undefined));
   const muted = useBreakpoints((s) => s.muted);
@@ -299,7 +332,7 @@ export function DebugToolWindow() {
       </div>
       <div role="tabpanel" id={`debug-panel-${tab}`} aria-labelledby={`debug-tab-${tab}`} className={styles.panel}>
         {tab === "variables" ? (
-          <ThreadsAndVariables session={active} />
+          <ThreadsAndVariables session={active} sideDocked={sideDocked} />
         ) : tab === "memory" ? (
           memoryPending ? (
             <div className={styles.emptyWrap}>
@@ -313,7 +346,7 @@ export function DebugToolWindow() {
         ) : tab === "network" ? (
           <NetworkView key={active.id} session={active.id} />
         ) : (
-          <DebugConsole key={active.id} session={active} />
+          (consolePane ?? <DebugConsole key={active.id} session={active} />)
         )}
       </div>
     </div>
@@ -325,32 +358,75 @@ const JVM_ADAPTERS = new Set(["java-debug", "kotlin-debug-adapter", "kotlin-lsp"
 
 // --- threads & frames ----------------------------------------------------------
 
-function ThreadsAndVariables({ session }: { session: DebugSession }) {
+const DEFAULT_THREADS_VARIABLES_LAYOUT = { frames: 34, variables: 66 };
+
+function ThreadsAndVariables({ session, sideDocked }: { session: DebugSession; sideDocked: boolean }) {
   return (
     <SplitGroup
-      orientation="horizontal"
+      orientation={sideDocked ? "vertical" : "horizontal"}
       id="debug-threads-variables"
-      storageKey="openidea.debug.threadsVariables"
+      storageKey={sideDocked ? "openidea.debug.threadsVariables.vertical" : "openidea.debug.threadsVariables"}
+      defaultLayout={DEFAULT_THREADS_VARIABLES_LAYOUT}
       className={styles.split}
     >
-      <SplitPanel id="frames" defaultSize="34%" minSize="160px">
+      <SplitPanel
+        id="frames"
+        defaultSize={`${DEFAULT_THREADS_VARIABLES_LAYOUT.frames}%`}
+        minSize={sideDocked ? "25%" : "160px"}
+      >
         <FramesPane session={session} />
       </SplitPanel>
       <SplitHandle />
-      <SplitPanel id="variables" minSize="200px">
+      <SplitPanel id="variables" minSize={sideDocked ? "25%" : "200px"}>
         <VariablesPane session={session} />
       </SplitPanel>
     </SplitGroup>
   );
 }
 
+function ThreadSelector({ session }: { session: DebugSession }) {
+  const tr = useTx();
+  const value = session.selectedThread == null ? null : String(session.selectedThread);
+  const options = session.threads.map<SelectOption>(({ id, name }) => {
+    const option = { value: String(id), label: name, verbatim: true };
+    if (!isLive(session)) return option;
+    if (!isThreadSuspended(session, id)) return { ...option, icon: "thread-running", detail: "Running" };
+    const reason =
+      id === session.stoppedThread ? session.stopReason : session.suspendedThreads?.find((t) => t.id === id)?.reason;
+    return reason === "breakpoint" || reason?.endsWith(" breakpoint")
+      ? { ...option, icon: "thread-breakpoint", detail: "At breakpoint" }
+      : { ...option, icon: "thread-suspended", detail: "Suspended" };
+  });
+  const selected = options.find((option) => option.value === value);
+  const summary = selected?.detail ? `${selected.label} (${tr(selected.detail)})` : selected?.label;
+  return (
+    <div className={styles.threadHeader}>
+      <Select
+        value={value}
+        options={options}
+        onChange={(v) => void selectThread(session.id, Number(v))}
+        aria-label="Thread"
+        aria-description={summary}
+        title={summary}
+        variant="ghost"
+        className={styles.threadSelect}
+      />
+    </div>
+  );
+}
+
 function FramesPane({ session }: { session: DebugSession }) {
   const root = useProject((s) => s.project?.root ?? null);
   const [showAll, setShowAll] = useState(false);
+  const list = useRef<HTMLDivElement>(null);
+  const selectedRow = useRef<HTMLButtonElement>(null);
   const items = useMemo(
     () => groupFrames(session.frames, root, session.selectedFrame, showAll),
     [session.frames, root, session.selectedFrame, showAll],
   );
+  useLayoutEffect(() => {
+    if (list.current && selectedRow.current) revealVertically(list.current, selectedRow.current);
+  }, [items]);
   const paused = session.status === "paused";
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
@@ -364,20 +440,9 @@ function FramesPane({ session }: { session: DebugSession }) {
   };
   return (
     <div className={styles.frames}>
-      {session.threads.length > 0 && (
-        <Select
-          value={session.selectedThread != null ? String(session.selectedThread) : null}
-          options={session.threads.map((t) => ({
-            value: String(t.id),
-            label: t.name,
-            detail: t.id === session.stoppedThread ? "suspended" : undefined,
-          }))}
-          onChange={(v) => void selectThread(session.id, +v)}
-          aria-label="Thread"
-          className={styles.threadSelect}
-        />
-      )}
+      {session.threads.length > 0 && <ThreadSelector session={session} />}
       <div
+        ref={list}
         className={styles.frameList}
         role="listbox"
         aria-label={tx("Frames")}
@@ -415,9 +480,11 @@ function FramesPane({ session }: { session: DebugSession }) {
           ) : (
             <button
               key={item.frame.id}
+              ref={item.frame.id === session.selectedFrame ? selectedRow : undefined}
               type="button"
               role="option"
               aria-selected={item.frame.id === session.selectedFrame}
+              title={item.frame.path ? `${frameLabel(item.frame)}, ${basename(item.frame.path)}` : item.frame.name}
               className={clsx(
                 styles.frame,
                 item.frame.id === session.selectedFrame && styles.frameSelected,
@@ -459,13 +526,15 @@ function FramesPane({ session }: { session: DebugSession }) {
               }}
             >
               <Icon name="method" size={16} className={styles.frameIcon} />
-              <span className={styles.frameName}>{item.frame.name}</span>
-              {item.frame.path && (
-                <span className={styles.frameFile}>
-                  , {basename(item.frame.path)}
-                  {item.frame.line >= 0 ? `:${item.frame.line + 1}` : ""}
+              <span className={styles.frameText}>
+                <span className={styles.frameLabel}>
+                  <span className={styles.frameName}>{item.frame.name}</span>
+                  {item.frame.path && item.frame.line >= 0 && (
+                    <span className={styles.frameLine}>:{item.frame.line + 1}</span>
+                  )}
                 </span>
-              )}
+                {item.frame.path && <span className={styles.frameFile}>, {basename(item.frame.path)}</span>}
+              </span>
             </button>
           ),
         )}

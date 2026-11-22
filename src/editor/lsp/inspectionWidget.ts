@@ -19,6 +19,14 @@ interface Counts {
   typo: number;
 }
 
+const severityIcons = [
+  { severity: "error", icon: "error", tone: "error" },
+  { severity: "warning", icon: "warning", tone: "warning" },
+  { severity: "info", icon: "warning", tone: "weak" },
+  { severity: "typo", icon: "info", tone: "typo" },
+] as const;
+const MIN_EXPANDED_WIDTH = 360;
+
 export function countsOf(view: EditorView): Counts {
   const c: Counts = { error: 0, warning: 0, info: 0, typo: 0 };
   forEachDiagnostic(view.state, (d) => {
@@ -42,6 +50,13 @@ function button(label: string, onClick: () => void): HTMLButtonElement {
   return b;
 }
 
+function countItem(icon: string, count: number, tone: string): HTMLElement {
+  const item = document.createElement("span");
+  item.className = `cm-openidea-inspection-count cm-openidea-inspection-${tone}`;
+  item.append(iconNode(icon, 14), String(count));
+  return item;
+}
+
 class InspectionWidget {
   dom: HTMLElement;
   private key = "";
@@ -53,10 +68,20 @@ class InspectionWidget {
     this.dom.setAttribute("aria-label", "Inspections");
     editorCorner(view).appendChild(this.dom);
     this.render();
+    this.fit();
   }
 
   update(u: ViewUpdate) {
     if (u.transactions.some((tr) => tr.effects.length) || u.docChanged) this.render();
+    if (u.geometryChanged) this.fit();
+  }
+
+  private fit() {
+    this.view.requestMeasure({
+      key: this,
+      read: (view) => view.scrollDOM.clientWidth,
+      write: (width) => this.dom.toggleAttribute("data-compact", width > 0 && width < MIN_EXPANDED_WIDTH),
+    });
   }
 
   private render() {
@@ -79,21 +104,15 @@ class InspectionWidget {
       open,
     );
     summary.classList.add("cm-openidea-inspection-summary");
-    if (!total) summary.appendChild(iconNode("check", 14, "cm-openidea-inspection-ok"));
-    const add = (n: number, icon: string, cls: string) => {
-      if (!n) return;
-      const item = document.createElement("span");
-      item.className = `cm-openidea-inspection-count ${cls}`;
-      item.appendChild(iconNode(icon, 14));
-      item.appendChild(document.createTextNode(String(n)));
-      summary.appendChild(item);
-    };
-    add(c.error, "error", "cm-openidea-inspection-error");
-    add(c.warning, "warning", "cm-openidea-inspection-warning");
-    add(c.info, "warning", "cm-openidea-inspection-weak");
-    add(c.typo, "info", "cm-openidea-inspection-typo");
-    const children: HTMLElement[] = [summary];
-    if (total) {
+    if (!total) {
+      summary.appendChild(iconNode("check", 14, "cm-openidea-inspection-ok"));
+      this.dom.replaceChildren(summary);
+    } else {
+      const counts = document.createElement("span");
+      counts.className = "cm-openidea-inspection-counts";
+      const severities = severityIcons.filter(({ severity }) => c[severity] > 0);
+      counts.append(...severities.map(({ icon, severity, tone }) => countItem(icon, c[severity], tone)));
+      summary.append(counts, countItem("problems", total, "total"));
       const prev = button(
         `Previous Highlighted Error${shortcutLabel("navigate.prevError") ? ` (${shortcutLabel("navigate.prevError")})` : ""}`,
         () => {
@@ -110,9 +129,11 @@ class InspectionWidget {
         },
       );
       next.appendChild(iconNode("chevron-down", 14));
-      children.push(prev, next);
+      const navigation = document.createElement("div");
+      navigation.className = "cm-openidea-inspection-navigation";
+      navigation.append(prev, next);
+      this.dom.replaceChildren(summary, navigation);
     }
-    this.dom.replaceChildren(...children);
   }
 
   destroy() {
@@ -126,12 +147,13 @@ const inspectionTheme = EditorView.theme({
   ".cm-openidea-inspection": {
     display: "flex",
     alignItems: "center",
-    gap: "1px",
+    gap: "var(--space-1)",
     padding: "1px",
     borderRadius: "var(--radius-small)",
     backgroundColor: "var(--bg-editor, var(--bg-island, var(--bg-app)))",
     fontFamily: "var(--font-ui)",
-    fontSize: "var(--fs-ui)",
+    fontSize: "var(--fs-small)",
+    fontVariantNumeric: "tabular-nums",
     color: "var(--fg-muted)",
     WebkitUserSelect: "none",
     userSelect: "none",
@@ -139,11 +161,10 @@ const inspectionTheme = EditorView.theme({
   ".cm-openidea-inspection-button": {
     display: "inline-flex",
     alignItems: "center",
-    gap: "6px",
     height: "22px",
     minWidth: "22px",
     justifyContent: "center",
-    padding: "0 3px",
+    padding: "0",
     border: "none",
     borderRadius: "var(--radius-small)",
     background: "none",
@@ -152,8 +173,18 @@ const inspectionTheme = EditorView.theme({
   },
   ".cm-openidea-inspection-button:hover": { backgroundColor: "var(--bg-toolbar-hover)" },
   ".cm-openidea-inspection-button:focus-visible": { outline: "1px solid var(--focus-ring)", outlineOffset: "-1px" },
-  ".cm-openidea-inspection-summary": { padding: "0 5px" },
-  ".cm-openidea-inspection-count": { display: "inline-flex", alignItems: "center", gap: "3px" },
+  ".cm-openidea-inspection-summary": { paddingInline: "var(--space-1)" },
+  ".cm-openidea-inspection-counts": { display: "inline-flex", alignItems: "center", gap: "var(--space-1-5)" },
+  ".cm-openidea-inspection-count": { display: "inline-flex", alignItems: "center", gap: "2px" },
+  ".cm-openidea-inspection-total": { display: "none" },
+  ".cm-openidea-inspection[data-compact] .cm-openidea-inspection-counts": { display: "none" },
+  ".cm-openidea-inspection[data-compact] .cm-openidea-inspection-total": { display: "inline-flex" },
+  ".cm-openidea-inspection-navigation": {
+    display: "flex",
+    alignItems: "center",
+    borderInlineStart: "1px solid var(--editor-gutter-border, var(--border))",
+    paddingInlineStart: "var(--space-1)",
+  },
   ".cm-openidea-icon": { display: "inline-flex", alignItems: "center" },
   ".cm-openidea-inspection-error .cm-openidea-icon": { color: "var(--danger)" },
   ".cm-openidea-inspection-warning .cm-openidea-icon": { color: "var(--warning)" },

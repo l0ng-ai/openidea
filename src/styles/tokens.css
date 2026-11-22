@@ -98,6 +98,8 @@ html {
   --diff-inserted-stripe: #447152;
   --diff-deleted-stripe: #656e76;
   --diff-conflict-stripe: #8f5247;
+  /* diff folded-unchanged separator wave (IDEA DIFF_SEPARATOR_WAVE): follows the theme's subtle text. */
+  --diff-separator-wave: var(--fg-subtle);
 
   /* coverage (IDEA LINE_FULL / PARTIAL / NONE_COVERAGE), following the theme's status colours */
   --coverage-covered: var(--gutter-added);
@@ -391,6 +393,9 @@ html {
   --bg-island: #191a1c;
   --island-gap: 6px;
   --island-radius: 10px;
+  /* Tree horizontal inset. Together with the island gap it makes JetBrains'
+     Tree.border left/right padding: 6 + 6 = 12px (4 + 4 = 8px in compact). */
+  --tree-inset: 6px;
   --bg-stripe: var(--bg-frame);
   --bg-stripe-hover: #ffffff17;
   --bg-stripe-selected: #ffffff29;
@@ -586,6 +591,7 @@ html {
   --diff-inserted-stripe: #aadeaa;
   --diff-deleted-stripe: #c8c8c8;
   --diff-conflict-stripe: #ffc8bd;
+  --diff-separator-wave: var(--fg-subtle);
 
   /* syntax (Light scheme + Default / Python defaults) */
   --syn-keyword: #0033b3;
@@ -890,6 +896,7 @@ html {
   --diff-inserted-stripe: #009924;
   --diff-deleted-stripe: #a66a32;
   --diff-conflict-stripe: #ff0d25;
+  --diff-separator-wave: var(--fg-subtle);
 
   --syn-keyword: #e8a885;
   --syn-string: #8ccc94;
@@ -1222,6 +1229,7 @@ html {
   --diff-inserted-stripe: color-mix(in srgb, var(--palette-green) 50%, var(--palette-bg));
   --diff-deleted-stripe: color-mix(in srgb, var(--palette-fg) 35%, var(--palette-bg));
   --diff-conflict-stripe: color-mix(in srgb, var(--palette-red) 50%, var(--palette-bg));
+  --diff-separator-wave: var(--fg-subtle);
   --syn-link: var(--palette-blue);
   --link-hover: var(--palette-cyan);
   --danger: var(--palette-red);
@@ -1524,6 +1532,8 @@ html {
   --fs-chrome: calc(var(--fs-ui) - 1px);
   --island-gap: 4px;
   --island-radius: 8px;
+  /* Compact Tree.border is "2,8,2,8": island gap 4 + tree inset 4 = 8 horizontally. */
+  --tree-inset: 4px;
   --radius-control: 3px;
   --radius-toolbar-button: 4px;
 }

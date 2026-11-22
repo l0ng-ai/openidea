@@ -22,6 +22,7 @@ export interface GitSettingsValid {
   inlineBlame: boolean;
   inlineBlameClickable: boolean;
   showBranchInProjectView: boolean;
+  syncBranchOperations: boolean;
   executable: string;
   updateMethod: UpdateMethod;
   autoUpdateOnPushRejected: boolean;
@@ -44,6 +45,7 @@ export interface GitSettingsValid {
 
 export interface CommitSettingsValid {
   nonModal: boolean;
+  includeChangesByDefault: boolean;
   clearInitialMessage: boolean;
   analyzeCode: boolean;
   checkTodo: boolean;
@@ -69,10 +71,14 @@ export interface CommitSettingsValid {
   agentModel: string;
   /** That model's thinking level for commit messages; empty keeps the agent's. */
   agentEffort: string;
+  /** Show the Generate Commit Message with Agent button above the commit message. */
+  agentButton: boolean;
 }
 
 export interface VcsSettingsValid {
   showDirtyDirectories: boolean;
+  /** Off: diffs the user opens show in a separate window. */
+  diffAsEditorTab: boolean;
   limitHistory: boolean;
   historyLimit: number;
   git: GitSettingsValid;
@@ -271,12 +277,14 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
   vcs: {
     // IDEA's VcsConfiguration.SHOW_DIRTY_RECURSIVELY is off by default.
     showDirtyDirectories: false,
+    diffAsEditorTab: true,
     limitHistory: true,
     historyLimit: 1000,
     git: {
       inlineBlame: false,
       inlineBlameClickable: true,
       showBranchInProjectView: false,
+      syncBranchOperations: true,
       executable: "",
       updateMethod: "merge",
       autoUpdateOnPushRejected: false,
@@ -297,6 +305,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     },
     commit: {
       nonModal: true,
+      includeChangesByDefault: true,
       clearInitialMessage: false,
       analyzeCode: true,
       checkTodo: true,
@@ -316,6 +325,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       agent: "",
       agentModel: "",
       agentEffort: "",
+      agentButton: true,
     },
     confirmation: {
       onCreate: "ask",
@@ -443,12 +453,14 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
   const confirm = ["ask", "silently", "never"] as const;
   return {
     showDirtyDirectories: bool(v.showDirtyDirectories, d.showDirtyDirectories),
+    diffAsEditorTab: bool(v.diffAsEditorTab, d.diffAsEditorTab),
     limitHistory: bool(v.limitHistory, d.limitHistory),
     historyLimit: num(v.historyLimit, d.historyLimit, L.historyLimit, true),
     git: {
       inlineBlame: bool(g.inlineBlame, d.git.inlineBlame),
       inlineBlameClickable: bool(g.inlineBlameClickable, d.git.inlineBlameClickable),
       showBranchInProjectView: bool(g.showBranchInProjectView, d.git.showBranchInProjectView),
+      syncBranchOperations: bool(g.syncBranchOperations, d.git.syncBranchOperations),
       executable: text(g.executable, d.git.executable).trim(),
       updateMethod: oneOf(g.updateMethod, ["merge", "rebase"] as const, d.git.updateMethod),
       autoUpdateOnPushRejected: bool(g.autoUpdateOnPushRejected, d.git.autoUpdateOnPushRejected),
@@ -469,6 +481,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
     },
     commit: {
       nonModal: bool(c.nonModal, d.commit.nonModal),
+      includeChangesByDefault: bool(c.includeChangesByDefault, d.commit.includeChangesByDefault),
       clearInitialMessage: bool(c.clearInitialMessage, d.commit.clearInitialMessage),
       analyzeCode: bool(c.analyzeCode, d.commit.analyzeCode),
       checkTodo: bool(c.checkTodo, d.commit.checkTodo),
@@ -488,6 +501,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       agent: text(c.agent, d.commit.agent),
       agentModel: text(c.agentModel, d.commit.agentModel),
       agentEffort: text(c.agentEffort, d.commit.agentEffort),
+      agentButton: bool(c.agentButton, d.commit.agentButton),
     },
     confirmation: {
       onCreate: oneOf(conf.onCreate, confirm, d.confirmation.onCreate),

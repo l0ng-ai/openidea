@@ -1,4 +1,4 @@
-import type { AgentChange, AgentCommit, AgentEntry, AgentTask } from "@/bindings";
+import type { AgentChange, AgentCommit, AgentConfigOption, AgentEntry, AgentTask } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { tx, useTx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
@@ -10,6 +10,7 @@ import { Composer } from "../Composer";
 import { ConfigPickers } from "../ConfigPickers";
 import { HermesProfilePicker } from "../HermesProfilePicker";
 import { McpPicker } from "../McpPicker";
+import { SkillsPicker } from "../SkillsPicker";
 import styles from "../Session.module.css";
 import { SessionAssets } from "../SessionAssets";
 import { SubmitButton } from "../SubmitButton";
@@ -27,6 +28,7 @@ import {
   sendQueuedNow,
   setTaskConfig,
   setTaskMcpOverrides,
+  setTaskSkillOverrides,
   stopBackgroundTask,
   useAgentCommands,
   useAgents,
@@ -161,22 +163,43 @@ export function SessionComposer({
   const catalog = useAgents((s) => s.modelCatalogs.get(task.provider));
   const requestingModels = useAgents((s) => s.modelRequests.has(task.provider));
   const model = task.config.find((o) => o.category === "model");
-  const canRefreshModels = task.status !== "archived" && !!model && !!provider?.installed && project?.trusted !== false;
-  const candidateModels = canRefreshModels
-    ? (catalog?.config ?? provider?.config)?.find((o) => o.category === "model")?.values
-    : undefined;
+  const catalogModel = (catalog?.config ?? provider?.config)?.find((o) => o.category === "model");
+  const canRefreshModels =
+    task.status !== "archived" &&
+    (!!model || !!task.model || !!catalogModel) &&
+    !!provider?.installed &&
+    project?.trusted !== false;
   const pickerConfig = useMemo(() => {
-    if (!model || !candidateModels?.length) return task.config;
-    const sessionModels = new Set(model.values.map((v) => v.value));
-    const extra = candidateModels.filter((v) => !sessionModels.has(v.value));
-    if (!extra.length) return task.config;
-    const pickerModel = { ...model, values: [...model.values, ...extra] };
-    return task.config.map((o) => (o === model ? pickerModel : o));
-  }, [task.config, model, candidateModels]);
+    if (!canRefreshModels) return task.config;
+    if (!model) {
+      const recovered: AgentConfigOption =
+        catalogModel === undefined
+          ? {
+              id: "model",
+              name: "Model",
+              description: null,
+              category: "model",
+              current: task.model,
+              values: [],
+              via: "option",
+            }
+          : { ...catalogModel, current: task.model ?? catalogModel.current };
+      return [...task.config, recovered];
+    }
+    // The agent's current catalog is what a chat can switch to. The session's own list only
+    // keeps the model it runs selectable when the catalog no longer offers it.
+    const offered = catalogModel?.values;
+    if (!offered?.length) return task.config;
+    const kept = model.values.filter(
+      (v) => (v.value === model.current || v.value === task.model) && !offered.some((o) => o.value === v.value),
+    );
+    return task.config.map((o) => (o === model ? { ...model, values: [...offered, ...kept] } : o));
+  }, [task.config, task.model, model, model?.current, catalogModel, canRefreshModels]);
   const [sending, setSending] = useState(false);
   const configChange = useRef<{ loadingModel: boolean } | null>(null);
   const [configuring, setConfiguring] = useState<typeof configChange.current>(null);
   const [mcpOpenRequest, setMcpOpenRequest] = useState(0);
+  const [skillsOpenRequest, setSkillsOpenRequest] = useState(0);
   const [assetFocus, setAssetFocus] = useState(0);
   const agentCommands = useAgentCommands(task.provider, task.id, task.commands);
   const busy = isBusy(task.status);
@@ -207,8 +230,9 @@ export function SessionComposer({
       .finally(() => setSending(false));
   };
   const setOption = (id: string, value: string) => {
-    const changingModel = id === model?.id;
-    const loadingModel = changingModel && !model.values.some((v) => v.value === value);
+    const pickerModel = pickerConfig.find((o) => o.category === "model");
+    const changingModel = id === pickerModel?.id;
+    const loadingModel = changingModel && !model?.values.some((v) => v.value === value);
     const pendingModel = model?.current != null && model.current !== task.model;
     const change = loadingModel || (changingModel && configChange.current) || pendingModel ? { loadingModel } : null;
     if (change) {
@@ -231,6 +255,7 @@ export function SessionComposer({
       });
   };
   const openMcp = () => setMcpOpenRequest((n) => n + 1);
+  const openSkills = () => setSkillsOpenRequest((n) => n + 1);
   const shown = useEditorShown();
   const effortAnnouncement = useEffortFocus(focusRoot, shown && task.status !== "archived", task.config, setOption);
   return (
@@ -275,9 +300,11 @@ export function SessionComposer({
         onConfig={setOption}
         onSubmit={send}
         onOpenMcp={openMcp}
+        onOpenSkills={openSkills}
         disabled={task.status === "archived"}
         addMenu={[
           { id: "mcp", label: "MCP Servers…", icon: "plugin", disabled: task.status === "archived", run: openMcp },
+          { id: "skills", label: "Skills…", icon: "bulb", disabled: task.status === "archived", run: openSkills },
         ]}
         toolbar={
           <>
@@ -307,6 +334,23 @@ export function SessionComposer({
               hideTrigger
               onChange={(next) =>
                 void setTaskMcpOverrides(task.id, next).catch((e: unknown) =>
+                  notifications().notify({
+                    level: "error",
+                    title: "Couldn't change the setting",
+                    body: String(e),
+                  }),
+                )
+              }
+            />
+            <SkillsPicker
+              provider={task.provider}
+              overrides={task.skillOverrides}
+              disabled={task.status === "archived"}
+              busy={busy}
+              openRequest={skillsOpenRequest}
+              hideTrigger
+              onChange={(next) =>
+                void setTaskSkillOverrides(task.id, next).catch((e: unknown) =>
                   notifications().notify({
                     level: "error",
                     title: "Couldn't change the setting",

@@ -91,7 +91,17 @@ interface Shaping {
 
 export interface DataViewProps extends Pick<
   GridProps,
-  "rowState" | "isModified" | "editable" | "onEdit" | "onResetCell" | "driver" | "sort" | "onSort" | "rowMenu"
+  | "rowState"
+  | "isModified"
+  | "editable"
+  | "onEdit"
+  | "onResetCell"
+  | "driver"
+  | "sort"
+  | "onSort"
+  | "rowMenu"
+  | "initialScrollLeft"
+  | "onHorizontalScroll"
 > {
   columns: readonly GridColumn[];
   rowCount: number;
@@ -238,6 +248,8 @@ export function DataView(props: DataViewProps) {
             onSelectionChange={setRange}
             onFilter={(col, anchor) => setFilterAt({ col, anchor })}
             filtered={(col) => filter.has(col)}
+            initialScrollLeft={props.initialScrollLeft}
+            onHorizontalScroll={props.onHorizontalScroll}
           />
           {filter.size > 0 && (
             <div className={styles.filterPill} role="status">

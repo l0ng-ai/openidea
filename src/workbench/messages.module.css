@@ -1,0 +1,14 @@
+.form {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4) var(--space-1);
+  font-size: var(--fs-ui);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.form > :first-child {
+  align-self: stretch;
+  min-width: 0;
+}

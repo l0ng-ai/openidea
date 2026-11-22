@@ -251,7 +251,45 @@ function TaskCancel({ task: t }: { task: BackgroundTask }) {
   );
 }
 
-const useTaskPopup = create<{ open: boolean }>(() => ({ open: false }));
+const TASK_POPUP_SIZE = "openidea.backgroundTasks.popupSize";
+const TASK_POPUP_MIN_WIDTH = 300;
+const TASK_POPUP_MIN_HEIGHT = 120;
+type TaskPopupSize = { w: number; h: number };
+
+function loadTaskPopupSize(): TaskPopupSize | null {
+  try {
+    const saved = JSON.parse(localStorage.getItem(TASK_POPUP_SIZE) ?? "null") as Partial<TaskPopupSize> | null;
+    if (
+      typeof saved?.w === "number" &&
+      typeof saved.h === "number" &&
+      Number.isFinite(saved.w) &&
+      Number.isFinite(saved.h)
+    ) {
+      return { w: Math.max(TASK_POPUP_MIN_WIDTH, saved.w), h: Math.max(TASK_POPUP_MIN_HEIGHT, saved.h) };
+    }
+  } catch {
+    // Without storage the popup uses its default size.
+  }
+  return null;
+}
+
+const useTaskPopup = create<{ open: boolean; size: TaskPopupSize | null }>(() => ({
+  open: false,
+  size: loadTaskPopupSize(),
+}));
+
+function saveTaskPopupSize(size: TaskPopupSize) {
+  useTaskPopup.setState({ size });
+  try {
+    localStorage.setItem(TASK_POPUP_SIZE, JSON.stringify(size));
+  } catch {
+    // The current session still remembers the size.
+  }
+}
+
+function closeBackgroundTasks() {
+  useTaskPopup.setState({ open: false });
+}
 
 export function showBackgroundTasks() {
   useTaskPopup.setState({ open: true });
@@ -292,11 +330,12 @@ export function TaskStatus() {
 
 export function BackgroundTasksHost() {
   const open = useTaskPopup((s) => s.open);
+  const size = useTaskPopup((s) => s.size);
   const tasks = useTasks((s) => s.tasks);
   // The last task ending (or cancelled from here) closes the popup: its status bar anchor goes away.
   const hadTasks = useRef(tasks.length > 0);
   useLayoutEffect(() => {
-    if (hadTasks.current && !tasks.length) useTaskPopup.setState({ open: false });
+    if (hadTasks.current && !tasks.length) closeBackgroundTasks();
     hadTasks.current = tasks.length > 0;
   }, [tasks.length]);
   const anchor = (tasks.length ? document.querySelector("[data-background-tasks]") : null) ?? {
@@ -309,32 +348,53 @@ export function BackgroundTasksHost() {
       anchor={anchor}
       placement="top-end"
       offset={6}
-      onClose={() => useTaskPopup.setState({ open: false })}
-      aria-label="Background tasks"
+      onClose={closeBackgroundTasks}
+      aria-label={tx("Background tasks")}
+      className={styles.taskPopup}
+      resizable="both"
+      minWidth={TASK_POPUP_MIN_WIDTH}
+      minHeight={TASK_POPUP_MIN_HEIGHT}
+      initialSize={size}
+      onResized={saveTaskPopupSize}
     >
-      <div className={styles.taskList}>
-        <div className={styles.taskListHeader}>
+      <div className={styles.taskListHeader}>
+        <h2 id="background-task-list">
           <T>Background Tasks</T>
-        </div>
-        {tasks.length === 0 && (
-          <div className={styles.taskRow}>
-            <T>No background tasks</T>
-          </div>
-        )}
-        {tasks.map((t) => (
-          <div key={t.id} className={styles.taskRow}>
-            <div className={styles.taskRowHead}>
-              <span className={styles.taskRowTitle}>
-                <T>{t.title}</T>
-              </span>
-              {t.fraction != null && <span className={styles.taskPct}>{Math.round(t.fraction * 100)}%</span>}
-              <TaskCancel task={t} />
-            </div>
-            <ProgressBar value={t.done ? 1 : t.fraction} aria-label={t.title} />
-            {t.message && <div className={styles.taskMessage}>{t.message}</div>}
-          </div>
-        ))}
+        </h2>
+        <IconButton icon="close" size="small" title="Close" onClick={closeBackgroundTasks} />
       </div>
+      {tasks.length ? (
+        <ul
+          className={styles.taskList}
+          role="list"
+          aria-labelledby="background-task-list"
+          tabIndex={-1}
+          data-autofocus=""
+        >
+          {tasks.map((t) => {
+            const progress = t.done ? 1 : t.fraction;
+            return (
+              <li key={t.id} className={styles.taskRow}>
+                <div className={styles.taskRowTitle}>
+                  <T>{t.title}</T>
+                </div>
+                {t.message && <div className={styles.taskMessage}>{t.message}</div>}
+                <div className={styles.taskRowProgress}>
+                  <ProgressBar value={progress} aria-label={t.title} />
+                  {progress != null && <span className={styles.taskPct}>{Math.round(progress * 100)}%</span>}
+                  <div className={styles.taskRowAction}>
+                    <TaskCancel task={t} />
+                  </div>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <div className={styles.taskEmpty}>
+          <T>No background tasks</T>
+        </div>
+      )}
     </Popup>
   );
 }

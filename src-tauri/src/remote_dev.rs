@@ -1084,11 +1084,16 @@ pub async fn remote_invoke(
         .remote_dev
         .get(&label)
         .ok_or_else(|| IdeError::unavailable("this window is not connected to a remote host"))?;
+    let batch_execution = cmd == "db_execute_stream";
+    let mut batch_channel = None;
     if let Value::Object(map) = &mut args {
-        for v in map.values_mut() {
+        for (name, v) in map {
             if let Some(id) = v.get("$channel").and_then(Value::as_u64) {
                 let own = c.next_channel.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 c.channels.lock().insert(own, (on_channel.clone(), id));
+                if batch_execution && name == "onProgress" {
+                    batch_channel = Some(own);
+                }
                 *v = serde_json::json!({ "$channel": own });
             }
         }
@@ -1112,9 +1117,23 @@ pub async fn remote_invoke(
     };
     let web_url = cmd == "web_url";
     let call = Invoke { window: label, cmd, args };
-    let mut result = invoke_reply(&c.peer, call, std::time::Duration::from_secs(30))
-        .await
-        .map_err(|e| lost_connection_error(older_server_error(e, &c.server_version, &c.host), &c))?;
+    let reply = invoke_reply(&c.peer, call, std::time::Duration::from_secs(30)).await;
+    // The batch's notifications precede its reply. Other commands can keep streaming later.
+    if let Some(id) = batch_channel {
+        c.channels.lock().remove(&id);
+    }
+    let mut result = reply.map_err(|e| {
+        if batch_execution
+            && !c.peer.is_closed()
+            && e.kind == ide_core::error::ErrorKind::Protocol
+            && e.message == "command db_execute_stream is not available remotely"
+        {
+            // The console can use the old command. This rejection happens before execution.
+            e
+        } else {
+            lost_connection_error(older_server_error(e, &c.server_version, &c.host), &c)
+        }
+    })?;
     if web_url && let Some(url) = result.as_str() {
         result = Value::String(forward_web_url(&c, url).await?);
     }
@@ -1153,6 +1172,50 @@ pub async fn remote_import_local(
     let result = async {
         let fs = ide_ssh::RemoteFs::new(session.sftp().await?);
         let result = ide_remote::import::import_local(&fs, &from, &to, &cancel).await;
+        fs.close().await;
+        result
+    }
+    .await;
+    state.host.end_request(request);
+    result
+}
+
+/// One file of a [`remote_download_local`] transfer starting: `done` of `total` files are finished.
+#[derive(Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadProgress {
+    pub path: String,
+    pub done: u32,
+    pub total: u32,
+}
+
+/// The project view's Download to…: remote files and folders of this window's project into the
+/// local folder `target`, each under its own name. Like Remote Host › Download to…, nothing is
+/// written outside `target`, even through a local symlink inside it.
+#[desktop_command(trust = trusted)]
+#[tauri::command]
+#[specta::specta]
+pub async fn remote_download_local(
+    window: Window,
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+    target: std::path::PathBuf,
+    request: ide_core::RequestId,
+    on_progress: Channel<DownloadProgress>,
+) -> IdeResult<ide_remote::TransferReport> {
+    let label = AppState::owner_window(window.label());
+    let c = state.remote_dev.get(label).ok_or_else(|| IdeError::unavailable("Remote project is disconnected"))?;
+    let Some(session) = c.session.clone() else {
+        return Err(IdeError::unavailable("Downloading files is not supported in a WSL project yet"));
+    };
+    let cancel = state.host.begin_request(request);
+    let result = async {
+        let fs = ide_ssh::RemoteFs::new(session.sftp().await?);
+        let mut progress = |path: &str, done: usize, total: usize| {
+            let _ =
+                on_progress.send(DownloadProgress { path: path.to_owned(), done: done as u32, total: total as u32 });
+        };
+        let result = ide_remote::service::download_into(&fs, &paths, &target, &cancel, &mut progress).await;
         fs.close().await;
         result
     }
@@ -1391,6 +1454,7 @@ ide_command::desktop_domain!(
     remote_connect,
     remote_current,
     remote_disconnect,
+    remote_download_local,
     remote_forward_port,
     remote_forwarded_ports,
     remote_import_local,

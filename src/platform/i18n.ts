@@ -41,11 +41,13 @@ export const DEFAULT_LOCALE = "en";
 export const LOCALES = {
   en: { name: "English", tag: "en" },
   zh: { name: "简体中文 (Chinese, Simplified)", tag: "zh-CN" },
+  "zh-TW": { name: "繁體中文 (Chinese, Traditional)", tag: "zh-TW" },
   ko: { name: "한국어 (Korean)", tag: "ko" },
   fr: { name: "Français (French)", tag: "fr" },
   pl: { name: "Polski (Polish)", tag: "pl" },
   pt: { name: "Português (Portuguese)", tag: "pt-BR" },
   es: { name: "Español (Spanish)", tag: "es-MX" },
+  tr: { name: "Türkçe (Turkish)", tag: "tr-TR" },
 } as const;
 export type Locale = keyof typeof LOCALES;
 export const SUPPORTED_LOCALES = Object.keys(LOCALES) as Locale[];
@@ -68,11 +70,12 @@ interface I18nState {
 
 export const useI18n = create<I18nState>(() => ({ locale: DEFAULT_LOCALE, messages: en as Catalog, texts: {} }));
 
-/** Maps settings values / BCP 47 tags to a supported locale (`zh-CN` → `zh`, `ko-KR` → `ko`, `system` → browser). */
+/** Maps settings values / BCP 47 tags to a supported locale (`zh-CN` → `zh`, `zh-Hant-HK` → `zh-TW`, `ko-KR` → `ko`, `system` → browser). */
 export function resolveLocale(input: string | null | undefined): Locale {
   let tag = (input ?? "").trim();
   if (!tag || tag === "system" || tag === "auto")
     tag = typeof navigator !== "undefined" ? (navigator.language ?? DEFAULT_LOCALE) : DEFAULT_LOCALE;
+  if (/^zh[-_](tw|hk|mo|hant)\b/i.test(tag)) return "zh-TW";
   const base = tag.toLowerCase().split(/[-_]/)[0] ?? "";
   return (SUPPORTED_LOCALES as readonly string[]).includes(base) ? (base as Locale) : DEFAULT_LOCALE;
 }

@@ -172,7 +172,13 @@
   justify-content: flex-end;
 }
 
-/* Tabs that don't fit: squeezed (labels ellipsized) or wrapped into rows. */
+/* A scrolling tab can shorten its label to keep the close button in view. */
+.fit .tab {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* Squeezed tabs share the available width. */
 .squeeze .scroller {
   flex: 0 1 auto;
 }
@@ -187,12 +193,14 @@
 .squeeze .closeSlot {
   flex: none;
 }
-.squeeze .tabButton {
+.squeeze .tabButton,
+.fit .tabButton {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
 }
-.squeeze .tabLabel {
+.squeeze .tabLabel,
+.fit .tabLabel {
   min-width: 0;
 }
 .wrap {
@@ -208,12 +216,6 @@
 }
 .wrap .tab {
   height: calc(var(--h-header) - 6px);
-}
-.editor.wrap .tab {
-  max-inline-size: 100%;
-}
-.editor.wrap .tabButton {
-  min-inline-size: 0;
 }
 
 /* Vertical strip (editor tabs placed left / right): a scrolling column of full-width tabs. */
@@ -280,6 +282,13 @@
 /* Editor tabs in a row sit 4px apart; wrapped rows keep their row gap. */
 .editor:not(.vertical) .scroller {
   column-gap: var(--space-1);
+}
+/* A long label can shrink to fit its split and keep the close slot in view. */
+.editor:not(.vertical, .squeeze) .tab {
+  max-inline-size: 100%;
+}
+.editor:not(.vertical, .squeeze) .tabButton {
+  min-inline-size: 0;
 }
 /* Every closable tab keeps a close slot at one edge (IDEA), cut to what the close glyph needs: 18px, a 2px
    inset and the 16px button. The label side keeps the 8px inset, so the side doesn't change a tab's width. */

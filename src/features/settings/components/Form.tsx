@@ -43,7 +43,17 @@ export function SearchLabel({ text: source, className }: { text: string; classNa
   return <span className={className}>{parts}</span>;
 }
 
-export function Section({ title, children, className }: { title?: string; children: ReactNode; className?: string }) {
+export function Section({
+  title,
+  children,
+  className,
+  stackFields,
+}: {
+  title?: string;
+  children: ReactNode;
+  className?: string;
+  stackFields?: boolean;
+}) {
   return (
     <section className={clsx(styles.section, className)} aria-label={tx(title)}>
       {title && (
@@ -52,7 +62,7 @@ export function Section({ title, children, className }: { title?: string; childr
           <span className={styles.sectionRule} aria-hidden />
         </div>
       )}
-      <FormGroup className={styles.sectionBody}>{children}</FormGroup>
+      <FormGroup className={clsx(styles.sectionBody, stackFields && styles.stackFields)}>{children}</FormGroup>
     </section>
   );
 }
@@ -307,12 +317,15 @@ export function ColorSwatches({ value, presets, onChange, allowCustom = true, ..
 export interface GlobListEditorProps {
   value: readonly string[];
   onChange: (value: string[]) => void;
+  className?: string;
+  mono?: boolean;
   placeholder?: string;
   "aria-label"?: string;
   /** Shown for an empty list. */
   emptyText?: string;
   /** Accessible name of the inline editor. */
   itemLabel?: string;
+  fullWidth?: boolean;
   /** Entries are paths: + opens this chooser (Edit still takes typing). */
   browse?: { directory: boolean; title: string };
 }
@@ -321,9 +334,12 @@ export interface GlobListEditorProps {
 export function GlobListEditor({
   value,
   onChange,
+  className,
+  mono = true,
   placeholder = "**/pattern",
   emptyText = "No patterns",
   itemLabel = "Pattern",
+  fullWidth,
   browse,
   ...aria
 }: GlobListEditorProps) {
@@ -404,7 +420,7 @@ export function GlobListEditor({
 
   const rows = editing && editing.index >= value.length ? [...value, ""] : value;
   return (
-    <div className={styles.globEditor}>
+    <div className={clsx(styles.globEditor, !fullWidth && styles.globCompact, className)}>
       <div className={styles.listToolbar} role="toolbar" aria-controls={listId}>
         <IconButton icon="plus" title="Add" size="small" onClick={() => void add()} />
         <IconButton icon="minus" title="Remove" size="small" disabled={selected === null} onClick={remove} />
@@ -437,14 +453,14 @@ export function GlobListEditor({
             id={`${listId}-${i}`}
             role="option"
             aria-selected={selected === i}
-            className={clsx(styles.globRow, selected === i && styles.globSelected)}
+            className={clsx(styles.globRow, mono && styles.globMono, selected === i && styles.globSelected)}
             onMouseDown={() => setSelected(i)}
             onDoubleClick={() => setEditing({ index: i, text: glob })}
           >
             {editing?.index === i ? (
               <Input
                 autoFocus
-                mono
+                mono={mono}
                 variant="bare"
                 className={styles.globInput}
                 value={editing.text}

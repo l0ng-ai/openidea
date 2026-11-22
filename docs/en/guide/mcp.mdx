@@ -85,7 +85,7 @@ While the server runs, OpenIDEA writes its port and token to `mcp/server.json` i
 
 | Area          | Tools                                                                                             |
 | ------------- | ------------------------------------------------------------------------------------------------- |
-| Files         | `read_file`, `list_directory_tree`, `create_new_file`, `apply_patch`                              |
+| Files         | `get_workspace_roots`, `read_file`, `list_directory_tree`, `create_new_file`, `apply_patch`       |
 | Search        | `search_text`, `search_regex`, `search_symbol`, `search_file`                                     |
 | Editors       | `get_all_open_file_paths`, `get_current_file`, `open_file_in_editor`                              |
 | Code          | `get_symbol_info`, `find_references`, `get_call_hierarchy`, `rename_refactoring`, `reformat_file` |
@@ -98,6 +98,7 @@ While the server runs, OpenIDEA writes its port and token to `mcp/server.json` i
 
 Notes on what they do:
 
+- `get_workspace_roots` lists the project and the trusted projects attached to it, so an agent working in one of them knows the rest of the workspace.
 - `read_file` also reads sources of dependencies and files inside jar and zip archives.
 - The tools that list things return one page: `limit` items (100 by default; 50 for `search_symbol`, 10 for `list_runs`), from `offset`. `total` (where counting is cheap), `more` and `nextOffset` say what follows. `list_runs` filters by `state` (`running`, `idle`, `error` or one state), `get_run_configurations` by `query`, and `get_project_problems` lists errors only unless `errorsOnly` is false.
 - The query tools (the searches, `find_references`, `get_call_hierarchy`, `get_project_problems`, `git_status`, `get_all_open_file_paths`, `get_run_configurations`, `list_runs`) take `paths`: globs relative to the project root (`src/**`, `!**/test/**`, `*.rs`), or absolute for a project attached outside it, that limit their results. The searches walk only the folders the globs name.

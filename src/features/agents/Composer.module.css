@@ -113,9 +113,13 @@
 .spacer {
   flex: 1;
 }
-.configPicker {
+.configPicker,
+.modelControl {
   display: flex;
   min-width: 0;
+}
+.modelControl {
+  align-items: center;
 }
 .configPicker > button {
   max-width: 100%;
@@ -155,6 +159,11 @@
   color: var(--fg-secondary);
   white-space: nowrap;
   transition: background var(--dur-fast) var(--ease);
+}
+.chip.chipLoading,
+.chip.chipLoading:hover {
+  color: var(--fg-muted);
+  background: none;
 }
 .chip:hover,
 .chip[aria-expanded="true"] {
@@ -219,37 +228,28 @@
   color: var(--fg-muted);
   cursor: default;
 }
-/* The model popup's top: effort (and context size) as segmented controls. */
 .quickSettings {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1-5);
-  padding: 4px 10px 10px;
-  margin-bottom: 4px;
-  border-bottom: 1px solid var(--border);
+  gap: var(--space-3);
+  padding: 4px 12px 10px;
 }
 .quickRow {
   display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-.quickRow > .segmented {
-  flex: 1;
-  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-1);
 }
 .quickLabel {
-  flex: none;
-  width: 72px;
-  color: var(--fg-muted);
+  color: var(--fg-secondary);
   font-size: var(--fs-small);
+  font-weight: 600;
 }
-/* A model's configure button shows on its row's hover only. */
 .modelEffortPopup [role="option"] .modelRowConfigure {
   opacity: 0;
 }
 .modelEffortPopup [role="option"]:hover .modelRowConfigure,
 .modelEffortPopup [role="option"][aria-selected="true"] .modelRowConfigure,
-.modelEffortPopup .modelRowConfigure:focus-visible {
+.modelEffortPopup [role="option"]:focus-within .modelRowConfigure {
   opacity: 1;
 }
 .modelRowConfigure {
@@ -326,7 +326,7 @@
   outline-offset: -2px;
 }
 .segmentActive {
-  background: var(--bg-floating-toolbar);
+  background: var(--bg-toolbar-hover);
   color: var(--fg-strong);
   font-weight: 600;
 }
@@ -392,22 +392,12 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  /* The agent picker keeps its icon and truncates its name instead of taking the row. */
-  .toolbar > :first-child {
-    flex: 0 1 auto;
-    min-width: 0;
-    max-width: 110px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  /* Details give way to the names, except the model's effort and context: the model's
-     name truncates first, since they are only shown here. */
-  .chipDetail:not(.modelDetail) {
+  .chipDetail {
     display: none;
   }
   .modelDetail {
-    flex: none;
+    flex-shrink: 0;
+    max-width: 65%;
   }
   .inlineSetting {
     display: none;

@@ -75,9 +75,19 @@ pub async fn replace_in_files(
     let summary = tokio::task::spawn_blocking(move || {
         let targets = if all_in_scope { scope_targets(&project, &syntax, &query, targets, &cancel)? } else { targets };
         let host = DocumentsHost(&project.documents);
-        ide_search::replace_files(&host, &query, &replacement, preserve_case, &targets, &cancel, &|e| {
-            let _ = events.send(e);
-        })
+        let literals = |path: &Path, text: &str| super::literals_of(&project, &syntax, path, text);
+        ide_search::replace_files_in_context(
+            &host,
+            &query,
+            &replacement,
+            preserve_case,
+            &targets,
+            Some(&literals),
+            &cancel,
+            &|e| {
+                let _ = events.send(e);
+            },
+        )
     })
     .await
     .map_err(|e| ide_core::IdeError::internal(e.to_string()));

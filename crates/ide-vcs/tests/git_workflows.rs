@@ -506,6 +506,37 @@ fn rebase_and_merge_onto_a_branch_named_like_a_tag_use_the_branch() {
 }
 
 #[test]
+fn merge_and_rebase_record_the_branch_name_git_would_show() {
+    let (fx, _bare) = Fixture::with_origin();
+    fx.git(&["switch", "-q", "-c", "topic"]);
+    fx.write("t.txt", "t\n");
+    fx.commit_all("topic");
+    fx.git(&["push", "-q", "origin", "topic"]);
+    fx.git(&["switch", "-q", "main"]);
+    fx.write("m.txt", "m\n");
+    fx.commit_all("main");
+    let repo = fx.repo();
+    let subject = || fx.git(&["log", "-1", "--format=%s"]);
+
+    repo.merge("refs/heads/topic").unwrap();
+    assert_eq!(subject(), "Merge branch 'topic'");
+    fx.git(&["reset", "-q", "--hard", "HEAD~1"]);
+    repo.merge("refs/remotes/origin/topic").unwrap();
+    assert_eq!(subject(), "Merge remote-tracking branch 'origin/topic'");
+    fx.git(&["reset", "-q", "--hard", "HEAD~1"]);
+
+    repo.rebase("refs/heads/topic").unwrap();
+    let reflog = fx.git(&["reflog", "--format=%gs"]);
+    assert!(reflog.contains("rebase (start): checkout topic"), "{reflog}");
+    fx.git(&["reset", "-q", "--hard", "ORIG_HEAD"]);
+
+    // A tag of the same name makes the short name ambiguous: the full ref stays.
+    fx.git(&["tag", "topic", "main~1"]);
+    repo.merge("refs/heads/topic").unwrap();
+    assert_eq!(subject(), "Merge branch 'refs/heads/topic'");
+}
+
+#[test]
 fn interactive_rebase_edit_stops_for_amend() {
     let (fx, ids) = linear();
     let repo = fx.repo();

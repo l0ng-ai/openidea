@@ -275,6 +275,21 @@ describe("Go scheme attributes", () => {
 
 describe("scheme attribute state", () => {
   beforeEach(() => schemePage("editor.colorScheme.language-defaults"));
+  it("shows and clears inherited italics for static symbols (#4493)", () => {
+    act(() => stage("editor.colorScheme", "global", "editor.colorScheme", "dark"));
+
+    const preview = screen.getByLabelText("Color scheme preview");
+    act(() => fireEvent.click(preview.querySelector('span[style*="--syn-static-italic"]')!));
+
+    const italic = screen.getByRole("checkbox", { name: "Italic" });
+    expect(italic).toBeChecked();
+
+    act(() => fireEvent.click(italic));
+    expect(italic).not.toBeChecked();
+    expect(preview.style.getPropertyValue("--syn-static-italic")).toBe("normal");
+    expect(value("colorOverrides")).toEqual({ dark: { staticSymbol: { italic: false } } });
+  });
+
   it("shows the red-green colours the editor uses and the setting behind them (#3851)", () => {
     _setSchemeSource(readFileSync("src/styles/tokens.css", "utf8"));
     try {
@@ -411,6 +426,40 @@ describe("Console Colors (#2698)", () => {
     const preview = screen.getByLabelText("Color scheme preview");
     act(() => fireEvent.click(within(preview).getByText(/^red\s*$/)));
     expect(screen.getByRole("treeitem", { name: "Red", selected: true })).toBeInTheDocument();
+  });
+});
+
+describe("Diff & Merge colors", () => {
+  it("groups change types and the folded wave, and overrides the stripe from the preview", () => {
+    act(() => stage("editor.colorScheme", "global", "editor.colorScheme", "dark"));
+    schemePage("editor.colorScheme.diff-and-merge");
+    const tree = screen.getByRole("tree", { name: "Color scheme attributes" });
+    expect(within(tree).getByRole("treeitem", { name: "Changed lines" })).toBeInTheDocument();
+    expect(within(tree).getByRole("treeitem", { name: "Folded unchanged fragments" })).toBeInTheDocument();
+    // Change-type strips select their attribute; the stripe cell selects the same one.
+    const preview = screen.getByLabelText("Color scheme preview");
+    act(() => fireEvent.click(within(preview).getByText("def MyClass():")));
+    expect(screen.getByRole("treeitem", { name: "Changed", selected: true })).toBeInTheDocument();
+    act(() => fireEvent.click(screen.getByRole("checkbox", { name: "Error stripe mark" })));
+    const stripe = screen.getByRole("textbox", { name: "Error stripe mark hex" });
+    act(() => fireEvent.change(stripe, { target: { value: "#ff4081" } }));
+    expect(value("colorOverrides")).toEqual({ dark: { diffChanged: { errorStripeColor: "#ff4081" } } });
+    expect(preview.style.getPropertyValue("--diff-modified-stripe")).toBe("#ff4081");
+  });
+
+  it("selects the wave attribute from the folded separator", () => {
+    _setSchemeSource(readFileSync("src/styles/tokens.css", "utf8"));
+    try {
+      act(() => stage("editor.colorScheme", "global", "editor.colorScheme", "dark"));
+      schemePage("editor.colorScheme.diff-and-merge");
+      const preview = screen.getByLabelText("Color scheme preview");
+      act(() => fireEvent.click(within(preview).getByText("6 unchanged lines")));
+      expect(screen.getByRole("treeitem", { name: "Wave", selected: true })).toBeInTheDocument();
+      // The default follows the theme's subtle text rather than a hardcoded IDEA colour.
+      expect(screen.getByRole("textbox", { name: "Foreground hex" })).toHaveValue("#73767c");
+    } finally {
+      _setSchemeSource("");
+    }
   });
 });
 

@@ -18,6 +18,15 @@
   min-width: 0;
 }
 
+.mavenSettings .sdkField {
+  min-width: 0;
+  max-width: none;
+}
+
+.mavenThreads {
+  width: 100px;
+}
+
 .interpreterRow {
   display: flex;
   flex-wrap: wrap;
@@ -268,20 +277,45 @@
   min-width: 0;
 }
 
+.gradleSettings .pathRow {
+  max-width: 560px;
+}
+
+.gradleSettings .sdkField {
+  min-width: 0;
+}
+
+.gradleDistribution {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  width: 560px;
+}
+
+.gradleDistribution > :first-child {
+  flex: 0 1 180px;
+}
+
+.gradleDistribution > .pathRow {
+  flex: 1 1 230px;
+}
+
 /* Project Structure */
 .structure {
-  display: grid;
-  grid-template-columns: minmax(240px, 1fr) 220px;
-  gap: 10px;
-  min-height: 420px;
+  height: clamp(380px, 55vh, 520px);
+  border-radius: var(--radius-small);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.structureStacked {
+  height: clamp(440px, calc(100vh - 240px), 560px);
 }
 .structureTree {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  border-radius: var(--radius-small);
-  box-shadow: inset 0 0 0 1px var(--border);
   overflow: hidden;
+  container-type: inline-size;
 }
 .markBar {
   display: flex;
@@ -317,6 +351,7 @@
   color: var(--fg-faint);
 }
 .treeScroll {
+  --tree-detail-flex-shrink: 4;
   flex: 1;
   min-height: 0;
   overflow: auto;
@@ -325,7 +360,13 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+  flex: 1;
+  min-height: 0;
   overflow: auto;
+  padding: var(--space-2);
+}
+.roots > * {
+  flex-shrink: 0;
 }
 .rootGroup {
   display: flex;
@@ -373,10 +414,9 @@
   display: flex;
   align-items: center;
   gap: var(--space-1);
-  padding-left: 20px;
+  padding-inline-start: calc(var(--space-4) + var(--space-1));
   min-height: 22px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-small);
+  font-size: var(--fs-ui);
 }
 .rootPath {
   flex: 1;
@@ -395,8 +435,13 @@
 
 /* Project Structure: content roots and "Exclude files". */
 .contentRoot {
-  padding-left: 4px;
+  padding-inline-start: var(--space-1);
   font-weight: 600;
+}
+.contentRootToolbar {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: var(--space-1);
 }
 .excludeFiles {
   display: grid;
@@ -415,13 +460,49 @@
   color: var(--fg-subtle);
   font-size: var(--fs-small);
 }
+@container (max-width: 280px) {
+  .excludeFiles {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .excludeHint {
+    grid-column: 1;
+  }
+}
 
 /* Download JDK dialog */
+.downloadForm {
+  container-type: inline-size;
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--fs-ui);
+}
 .downloadGrid {
   display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
+  grid-template-columns: fit-content(36%) minmax(0, 1fr);
   align-items: center;
-  gap: var(--space-1-5) 10px;
+  gap: var(--space-1-5) var(--space-3);
+}
+.downloadGrid > label,
+.downloadStatus {
+  overflow-wrap: anywhere;
+}
+.downloadStatus {
+  grid-column: 2;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+@container (max-width: 320px) {
+  .downloadGrid {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: var(--space-1);
+  }
+  .downloadGrid > label:not(:first-child) {
+    margin-top: var(--space-1);
+  }
+  .downloadStatus {
+    grid-column: 1;
+  }
 }
 .downloadProgress {
   display: flex;
@@ -452,6 +533,21 @@
   background: var(--bg-toolbar-selected);
   color: var(--fg);
   font-weight: 500;
+}
+.splitLayout.modulesLayout {
+  display: flex;
+  flex-wrap: wrap;
+  min-height: 0;
+}
+.modulesLayout > .sideList {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+.modulesLayout > .detailPane {
+  flex: 4 1 370px;
+}
+.modulesLayout .sideItems {
+  max-height: min(360px, 42vh);
 }
 .splitLayout {
   display: grid;
@@ -518,6 +614,34 @@
   flex-direction: column;
   gap: 10px;
   min-width: 0;
+}
+.librariesLayout {
+  display: flex;
+  flex-wrap: wrap;
+  min-height: 0;
+}
+.librariesLayout > .sideList {
+  flex: 1 1 128px;
+  min-width: 0;
+}
+.librariesLayout > .detailPane {
+  flex: 3 1 250px;
+}
+.librariesLayout .sideItems {
+  max-height: min(280px, 30vh);
+}
+.libraryRootsTree {
+  height: clamp(144px, 27vh, 240px);
+  font-size: var(--fs-ui);
+}
+.libraryRootNotes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  margin-top: var(--space-1);
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  line-height: 1.4;
 }
 .sdkLayout {
   display: flex;

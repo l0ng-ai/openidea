@@ -10,7 +10,7 @@ import type { ReactNode } from "react";
 import { EditorSelection } from "@codemirror/state";
 import { create } from "zustand";
 import { setContext } from "@/platform/context";
-import { shortcutLabel } from "@/platform/keymap";
+import { formatBinding, hostBinding, shortcutLabel } from "@/platform/keymap";
 import { isSameOrInside } from "@/platform/paths";
 import { basename, dirname, useProject } from "@/platform/project";
 import { editorPrefs } from "@/platform/editorSettings";
@@ -54,6 +54,7 @@ import { hoverActionsAt } from "@/platform/hoverActions";
 import { save as saveFileDialog, type DialogFilter as SaveDialogFilter } from "@/platform/dialog";
 import { isUntitledUri, untitledTitle } from "@/platform/virtualDocs";
 import { isRemoteWindow } from "@/platform/remote";
+import { auxiliaryWindow } from "@/platform/auxWindow";
 import { fileIconName, showContextMenu, type MenuItem } from "@/ui";
 import { canOpenWithSystemApp, canRevealInFileManager, fileManagerName } from "@/platform/fileManager";
 import {
@@ -114,6 +115,7 @@ import { isClassFile } from "@/platform/classFiles";
 import { isVirtualUri, virtualDocument } from "@/platform/virtualDocs";
 import type { VirtualDocument } from "@/platform/ipc";
 import type { Scheduler } from "./sync/DocSync";
+import { selectedLineContext } from "./selectedLines";
 
 export const fileKey = (path: string) => `file:${path}`;
 export const fileInput = (path: string): EditorInput => ({ kind: "file", key: fileKey(path), path });
@@ -466,6 +468,8 @@ export class EditorController implements SlotHost {
     if (prevRoot) this.projectTransition = this.restoreSession(prevRoot);
     if (this.manager.backend.onFsChanged)
       this.disposers.push(this.manager.backend.onFsChanged((e) => this.onFilesRemoved(e.removed)));
+    if (this.manager.backend.onDiskConflict)
+      this.disposers.push(this.manager.backend.onDiskConflict((e) => this.onDiskConflict(e.path)));
     const onWindowBlur = () => {
       if (this.autoSave() && !this.closeSession) {
         void this.manager.saveAll("auto");
@@ -661,6 +665,8 @@ export class EditorController implements SlotHost {
 
   /** Reopens the tabs, splits and carets saved for `root` (after the project opened). */
   async restoreSession(root: string) {
+    // The project window owns the saved layout; a lightweight window shows what it was opened for.
+    if (auxiliaryWindow()) return;
     this.sessionRoot = root;
     // A window close dropped this session: the next open starts from the tabs opened now.
     if (this.forgottenSessions.delete(root)) return;
@@ -889,7 +895,7 @@ export class EditorController implements SlotHost {
             {
               label: "Cut",
               icon: "cut",
-              shortcut: "⌘X",
+              shortcut: formatBinding(hostBinding("Meta+X")),
               disabled: view.state.readOnly,
               run: () => {
                 view.focus();
@@ -899,7 +905,7 @@ export class EditorController implements SlotHost {
             {
               label: "Copy",
               icon: "copy",
-              shortcut: "⌘C",
+              shortcut: formatBinding(hostBinding("Meta+C")),
               run: () => {
                 view.focus();
                 document.execCommand("copy");
@@ -910,11 +916,10 @@ export class EditorController implements SlotHost {
       {
         label: "Paste",
         icon: "paste",
-        shortcut: "⌘V",
+        shortcut: formatBinding(hostBinding("Meta+V")),
         disabled: view.state.readOnly,
         run: () => void pasteEditorClipboard(view),
       },
-      { kind: "separator" },
       {
         label: "Copy / Paste Special",
         submenu: [
@@ -926,6 +931,7 @@ export class EditorController implements SlotHost {
       },
       { kind: "action", action: "editor.toggleColumnSelection", label: "Column Selection Mode" },
       { kind: "separator" },
+      ...(hasSel && useProject.getState().project ? [{ kind: "action" as const, action: "find.inPath" }] : []),
       { kind: "action", action: "find.usages", label: "Find Usages" },
       // IDEA's editor popup: secondary commands live in submenus.
       {
@@ -980,7 +986,7 @@ export class EditorController implements SlotHost {
       ...menuGroupItems("editor", {
         paths: [slot.model.path],
         text: view.state.doc.toString(),
-        line: view.state.doc.lineAt(view.state.selection.main.head).number - 1,
+        line: caretLine,
       }),
       ...(slot.model.virtual
         ? ([
@@ -989,7 +995,8 @@ export class EditorController implements SlotHost {
           ] as MenuItem[])
         : ([
             { kind: "separator" },
-            openInMenu(slot.model.path, view.state.doc.lineAt(view.state.selection.main.head).number - 1),
+            { kind: "action", action: "editor.splitRight" },
+            openInMenu(slot.model.path, selectedLineContext(view.state)),
             { kind: "separator" },
             localHistoryMenu(slot.model.path),
             gitMenu(slot.model.path),
@@ -1729,8 +1736,18 @@ export class EditorController implements SlotHost {
     });
   }
 
-  closeTab(paneId: string, tabId: string): Promise<boolean> {
-    return this.removeGuarded((s) => (s.panes[paneId] ? closeTab(s, paneId, tabId) : s));
+  async closeTab(paneId: string, tabId: string): Promise<boolean> {
+    const hadFocus = this.slots.get(tabId)?.view?.hasFocus ?? false;
+    const closed = await this.removeGuarded((s) => (s.panes[paneId] ? closeTab(s, paneId, tabId) : s));
+    // The closed editor had the keyboard: hand it to the tab that took its place.
+    if (closed && hadFocus) await this.focusActiveEditor();
+    return closed;
+  }
+
+  private async focusActiveEditor() {
+    const tab = this.activeTabOf();
+    if (tab) await this.ensureSlot(tab.id);
+    if (this.activeTabOf()?.id === tab?.id) this.focus();
   }
   closeOthers(paneId: string, tabId: string): Promise<boolean> {
     return this.removeGuarded((s) => (s.panes[paneId] ? closeOthers(s, paneId, tabId) : s), {
@@ -1765,6 +1782,39 @@ export class EditorController implements SlotHost {
     });
   }
   /** Reload from Disk: re-reads the open, unmodified documents of `paths`. */
+  /**
+   * A file changed on disk while its buffer had unsaved changes: the buffer keeps them (autosave
+   * leaves the file alone) until the user loads the disk version or saves over it.
+   */
+  private onDiskConflict(path: string) {
+    const key = `disk-conflict:${path}`;
+    notifications().notify({
+      level: "warning",
+      key,
+      sticky: true,
+      title: tx`${basename(path)} changed on disk`,
+      body: tx(
+        "The file was changed outside the IDE while it has unsaved changes in the editor. Saving keeps the editor's version and overwrites the file.",
+      ),
+      actions: [
+        {
+          label: tx("Load Changes from Disk"),
+          run: () => {
+            const doc = this.manager.get(path)?.getMeta().doc;
+            if (doc === undefined || !this.manager.backend.reloadDiscarding) return;
+            this.manager.backend.reloadDiscarding(doc).catch((e: unknown) =>
+              notifications().notify({
+                level: "error",
+                title: tx("Cannot reload from disk"),
+                body: e instanceof Error ? e.message : String(e),
+              }),
+            );
+          },
+        },
+        { label: tx("Keep Editor Changes"), run: () => {} },
+      ],
+    });
+  }
   async reloadFromDisk(paths: string[]) {
     for (const path of paths) {
       const model = this.manager.get(path);
@@ -1878,6 +1928,8 @@ export class EditorController implements SlotHost {
   /** Open a lightweight aux editor (or a full window outside the project), then remove the original tab. */
   async detachTab(paneId: string, tabId: string): Promise<boolean> {
     const tab = useTabs.getState().panes[paneId]?.tabs.find((t) => t.id === tabId);
+    const moves = tab && useContributions.getState().editorKinds.get(tab.input.kind)?.openInWindow;
+    if (moves) return moves(tab.input);
     const path = tab?.input.path;
     if (
       !tab ||
@@ -1945,6 +1997,11 @@ export class EditorController implements SlotHost {
         }
       },
     });
+  }
+  /** Shows `input` in a lightweight window of this project; resolves to the window's label once it is shown. */
+  openInWindow(input: EditorInput): Promise<string> {
+    if (!isTauri() || isRemoteWindow()) return Promise.reject(new Error(t("app.window.desktopOnly")));
+    return openLightweightEditor({ input: JSON.stringify(input) }, windowBackgroundHex(), input.key);
   }
   /** IDEA "Open in Opposite Group": the tab stays and a copy opens next door (or in a new split). */
   openInOpposite(paneId: string, tabId: string) {
@@ -2218,64 +2275,23 @@ export class EditorController implements SlotHost {
     return [
       { label: "Close", shortcut: shortcutLabel("editor.closeTab"), run: () => void this.closeTab(paneId, tab.id) },
       { label: "Close Other Tabs", disabled: tabs.length < 2, run: () => void this.closeOthers(paneId, tab.id) },
+      { label: "Close All Tabs", run: () => void this.closeAll(paneId) },
+      { label: "Close Unmodified Tabs", run: () => void this.closeUnmodified(paneId) },
+      ...(tabs.some((t) => t.pinned)
+        ? ([{ label: "Close All but Pinned", run: () => void this.closeAll(paneId, true) }] as MenuItem[])
+        : []),
       { label: "Close Tabs to the Left", disabled: index <= 0, run: () => void this.closeToLeft(paneId, tab.id) },
       {
         label: "Close Tabs to the Right",
         disabled: index < 0 || index >= tabs.length - 1,
         run: () => void this.closeToRight(paneId, tab.id),
       },
-      { label: "Close All Tabs", run: () => void this.closeAll(paneId) },
-      { label: "Close Unmodified Tabs", run: () => void this.closeUnmodified(paneId) },
-      ...(tabs.some((t) => t.pinned)
-        ? ([{ label: "Close All but Pinned", run: () => void this.closeAll(paneId, true) }] as MenuItem[])
-        : []),
       ...(tabs.some((t) => !t.pinned && !!t.input.path && useDocMeta.getState()[t.input.path]?.readOnly)
         ? ([{ label: "Close All Read-Only Tabs", run: () => void this.closeReadOnly(paneId) }] as MenuItem[])
         : []),
       { kind: "separator" },
-      { label: tab.pinned ? "Unpin Tab" : "Pin Tab", icon: "pin", run: () => this.togglePin(paneId, tab.id) },
-      ...(tab.preview ? ([{ label: "Keep Tab Open", run: () => this.keepTab(paneId, tab.id) }] as MenuItem[]) : []),
-      { kind: "separator" },
-      { label: "Split and Move Right", run: () => this.moveTabToSplit(paneId, tab.id, paneId, "right") },
-      { label: "Split and Move Down", run: () => this.moveTabToSplit(paneId, tab.id, paneId, "bottom") },
-      {
-        label: "Split Right",
-        icon: "split",
-        shortcut: shortcutLabel("editor.splitRight"),
-        run: activateThen(() => this.split(paneId, "row")),
-      },
-      {
-        label: "Split Down",
-        icon: "split-horizontal",
-        shortcut: shortcutLabel("editor.splitDown"),
-        run: activateThen(() => this.split(paneId, "column")),
-      },
-      ...(split
-        ? ([
-            { label: "Move to Opposite Group", run: () => this.moveToOpposite(paneId, tab.id) },
-            { label: "Open in Opposite Group", run: () => this.openInOpposite(paneId, tab.id) },
-            { label: "Change Splitter Orientation", run: () => this.changeSplitOrientation(paneId) },
-            { label: "Unsplit", run: () => void this.unsplit(paneId) },
-            { label: "Unsplit All", run: () => void this.unsplitAll(paneId) },
-          ] as MenuItem[])
-        : []),
-      ...(tab.input.path &&
-      (tab.input.kind === "file" || documentLifecycle(tab.input, useContributions.getState().editorKinds))
-        ? ([{ label: "Open in New Window", run: () => void this.detachTab(paneId, tab.id) }] as MenuItem[])
-        : []),
-      { kind: "separator" },
       ...(path
         ? ([
-            // Contributed groups (Run / Debug '…', More Run/Debug ›), each followed by a separator.
-            ...menuGroupItems("editorTab", { paths: [path], text: this.slots.get(tab.id)?.view?.state.doc.toString() }),
-            openInMenu(path),
-            { kind: "separator" },
-            localHistoryMenu(path),
-            ...(inProject ? [gitMenu(path)] : []),
-            { kind: "separator" },
-            { kind: "action", action: "diff.compareWith", arg: path, label: "Compare With…" },
-            { kind: "action", action: "diff.compareWithClipboard", arg: { path }, label: "Compare with Clipboard" },
-            { kind: "separator" },
             {
               label: "Copy Path/Reference…",
               submenu: [
@@ -2293,20 +2309,66 @@ export class EditorController implements SlotHost {
                   : []),
               ],
             },
-            { kind: "action", action: "project.rename", arg: path, label: "Rename File…" },
             { kind: "separator" },
+          ] as MenuItem[])
+        : []),
+      {
+        label: "Split Right",
+        icon: "split",
+        shortcut: shortcutLabel("editor.splitRight"),
+        run: activateThen(() => this.split(paneId, "row")),
+      },
+      { label: "Split and Move Right", run: () => this.moveTabToSplit(paneId, tab.id, paneId, "right") },
+      {
+        label: "Split Down",
+        icon: "split-horizontal",
+        shortcut: shortcutLabel("editor.splitDown"),
+        run: activateThen(() => this.split(paneId, "column")),
+      },
+      { label: "Split and Move Down", run: () => this.moveTabToSplit(paneId, tab.id, paneId, "bottom") },
+      ...(split
+        ? ([
+            { label: "Move to Opposite Group", run: () => this.moveToOpposite(paneId, tab.id) },
+            { label: "Open in Opposite Group", run: () => this.openInOpposite(paneId, tab.id) },
+            { label: "Change Splitter Orientation", run: () => this.changeSplitOrientation(paneId) },
+            { label: "Unsplit", run: () => void this.unsplit(paneId) },
+            { label: "Unsplit All", run: () => void this.unsplitAll(paneId) },
+          ] as MenuItem[])
+        : []),
+      { kind: "separator" },
+      { label: tab.pinned ? "Unpin Tab" : "Pin Tab", icon: "pin", run: () => this.togglePin(paneId, tab.id) },
+      ...(tab.preview ? ([{ label: "Keep Tab Open", run: () => this.keepTab(paneId, tab.id) }] as MenuItem[]) : []),
+      ...(useContributions.getState().editorKinds.get(tab.input.kind)?.openInWindow ||
+      (tab.input.path &&
+        (tab.input.kind === "file" || documentLifecycle(tab.input, useContributions.getState().editorKinds)))
+        ? ([{ label: "Open in New Window", run: () => void this.detachTab(paneId, tab.id) }] as MenuItem[])
+        : []),
+      { kind: "action", action: "file.settings", arg: "editor.general.editorTabs", label: "Configure Editor Tabs…" },
+      { kind: "separator" },
+      ...(path
+        ? ([
+            // Contributed groups (Run / Debug '…', More Run/Debug ›), each followed by a separator.
+            ...menuGroupItems("editorTab", { paths: [path], text: this.slots.get(tab.id)?.view?.state.doc.toString() }),
+            openInMenu(path),
+            { kind: "separator" },
+            localHistoryMenu(path),
+            ...(inProject ? [gitMenu(path)] : []),
+            { kind: "separator" },
+            { kind: "action", action: "diff.compareWith", arg: path, label: "Compare With…" },
+            { kind: "action", action: "diff.compareWithClipboard", arg: { path }, label: "Compare with Clipboard" },
+            { kind: "separator" },
+            { kind: "action", action: "project.rename", arg: path, label: "Rename File…" },
           ] as MenuItem[])
         : [
             // Contributed groups for tabs without a file (e.g. "Open in Tool Window").
             ...menuGroupItems("editorTab", { paths: [], input: tab.input }),
           ]),
-      { kind: "action", action: "file.settings", arg: "editor.general.editorTabs", label: "Configure Editor Tabs…" },
     ];
   }
 }
 
 /** Open In › for a file: Project View, Finder / Explorer / Files, associated app, Terminal. */
-function openInMenu(path: string, line?: number): MenuItem {
+function openInMenu(path: string, lines?: { line: number; endLine?: number }): MenuItem {
   return {
     label: "Open In",
     submenu: [
@@ -2326,7 +2388,7 @@ function openInMenu(path: string, line?: number): MenuItem {
         : []),
       { kind: "action", action: "project.openInTerminal", arg: path, label: "Terminal" },
       { kind: "separator" },
-      ...menuGroupItems("openIn", { paths: [path], line }),
+      ...menuGroupItems("openIn", { paths: [path], ...lines }),
     ],
   };
 }

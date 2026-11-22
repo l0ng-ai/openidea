@@ -28,6 +28,7 @@ export interface VcsState {
   root: string | null;
   /** Repository roots, the project's own repository first. */
   roots: string[];
+  branchRoots: Record<string, string>;
   /** Root → merge / rebase / cherry-pick / revert in progress there. */
   operations: Record<string, string>;
   /** Root → its current branch (`head` null when detached) and HEAD commit. */
@@ -56,6 +57,7 @@ const initial: VcsState = {
   available: false,
   root: null,
   roots: [],
+  branchRoots: {},
   operations: {},
   heads: {},
   repo: null,
@@ -239,28 +241,40 @@ export function refreshNow(): Promise<void> {
       );
       const [vcsRoots, status, selected] = await Promise.all([
         call(commands.vcsRoots()),
-        call(commands.vcsStatus()),
+        call(commands.vcsStatus()).then(
+          (files) => ({ files }),
+          (error: unknown) => ({ error }),
+        ),
         scoped,
       ]);
       if (generation !== projectGeneration) return;
       const roots = vcsRoots.map((r) => r.root);
-      if ("error" in selected) {
-        // The selected repository is gone (removed since the last scan): fall back to the primary one.
-        if (!s.repo || roots.includes(s.repo)) throw selected.error;
-        useVcs.setState({ roots, repo: null, branchesLoaded: false, stashesLoaded: false });
+      if (!roots.length) {
+        useVcs.setState({ ...initial, root: s.root, version: s.version });
+        setContext("vcsAvailable", false);
+        setFileDecorations("vcs", new Map());
+        return;
+      }
+      if ("error" in status) throw status.error;
+      if (s.repo && !roots.includes(s.repo)) {
+        // Keep the loaded flags so the retry also reads the new repository's branch and stash lists.
+        useVcs.setState({ repo: roots[0]!, branch: null, branches: [], stashes: [] });
         void refreshNow();
         return;
       }
+      if ("error" in selected) throw selected.error;
       const [branch, branches, stashes] = selected.values;
       const operations = Object.fromEntries(vcsRoots.filter((r) => r.operation).map((r) => [r.root, r.operation!]));
       // `null` (before the first refresh) is the primary repository, listed first.
       const shown = s.repo && roots.includes(s.repo) ? s.repo : (roots[0] ?? null);
       const repo = attentionRepo(shown, s.operations, operations) ?? shown;
       const heads = Object.fromEntries(vcsRoots.map((r) => [r.root, { head: r.head, headCommit: r.headCommit }]));
-      useVcs.setState({ operations, heads });
       const sameRoots = roots.join("\n") === s.roots.join("\n");
+      const branchRoots = Object.fromEntries(vcsRoots.map((r) => [r.root, r.branchRoot]));
+      const sameBranchRoots = sameRoots && roots.every((root) => branchRoots[root] === s.branchRoots[root]);
+      useVcs.setState({ operations, heads, branchRoots: sameBranchRoots ? s.branchRoots : branchRoots });
       if (repo !== s.repo || !sameRoots) useVcs.setState({ roots: sameRoots ? s.roots : roots, repo });
-      applyStatus(status, branch);
+      applyStatus(status.files, branch);
       useVcs.setState({ branches, stashes, error: null });
       // Branch info and branches above are of another repository: load the selected one's.
       if (repo !== shown || (s.repo && repo !== s.repo)) {

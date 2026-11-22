@@ -71,7 +71,7 @@ export function activate(): () => void {
         title: "Remote Development…",
         description: "Opens a project folder on an SSH host; the IDE backend runs on that host.",
         category: "File",
-        icon: "folder",
+        icon: "remote",
         keywords: ["ssh", "remote", "server", "gateway", "connect", "host"],
         run: () => openConnectDialog(),
       },

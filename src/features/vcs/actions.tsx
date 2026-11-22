@@ -1,5 +1,6 @@
 import { showShelfDiff } from "./shelf";
 import { commitRepo } from "./multiRoot";
+import type { Branch } from "@/bindings";
 /** VCS actions (ids match keymaps/intellij-macos.ts where bound). */
 import { executeAction, registerActions, type Action } from "@/platform/actions";
 import { getContext } from "@/platform/context";
@@ -211,16 +212,15 @@ const OPERATIONS: MenuItem[] = [
   { kind: "action", action: "vcs.localHistory" },
 ];
 
+const OPERATIONS_WITHOUT_VCS: MenuItem[] = [
+  { kind: "action", action: "vcs.createRepository" },
+  { kind: "separator" },
+  { kind: "action", action: "vcs.localHistory" },
+];
+
 function showOperations() {
-  openDialog((close) => (
-    <Menu
-      open
-      onClose={close}
-      anchor={{ x: Math.max(16, window.innerWidth / 2 - 140), y: Math.round(window.innerHeight * 0.18) }}
-      items={OPERATIONS}
-      aria-label="VCS Operations"
-    />
-  ));
+  const items = getContext().vcsAvailable ? OPERATIONS : OPERATIONS_WITHOUT_VCS;
+  openDialog((close) => <Menu open onClose={close} anchor="center" items={items} title="VCS Operations" numbers />);
 }
 
 export function registerVcsActions(): () => void {
@@ -355,7 +355,10 @@ export function registerVcsActions(): () => void {
       category: "Git",
       when: VCS,
       keywords: ["worktree"],
-      run: () => showNewWorktree(),
+      run: ({ arg }) => {
+        const branch = (arg as { branch?: Pick<Branch, "name" | "remote" | "current"> } | undefined)?.branch;
+        showNewWorktree({ repo: operationRepo(arg), branch, open: true });
+      },
     },
     {
       id: "vcs.worktrees",
@@ -476,7 +479,7 @@ export function registerVcsActions(): () => void {
         }
         for (const target of targets.slice(0, 5)) {
           const data = typeof target === "string" ? groupDiffData(tree, target) : changeNodeDiffData(tree, target);
-          await openDiff({ ...data, line }, { preview: targets.length === 1 });
+          await openVcsDiff({ ...data, line }, { preview: targets.length === 1 });
         }
       },
     },

@@ -3,10 +3,8 @@
  * migrations; Go to Declaration on callback method symbols and on routes' controller actions.
  */
 import { Text } from "@codemirror/state";
+import { offsetsToRange, registerNavigationProvider, registerRelatedProvider } from "@/editor/api";
 import { docOf } from "@/editor/lsp/lsp";
-import { offsetsToRange } from "@/editor/lsp/positions";
-import { registerNavigationProvider } from "@/editor/navigationProviders";
-import { registerRelatedProvider } from "@/editor/relatedProviders";
 import { tx } from "@/platform/i18n";
 import { call, commands, type Location } from "@/platform/ipc";
 import { controllerName, defLine, railsTargets, type RailsFs, type RailsGroup } from "./conventions";

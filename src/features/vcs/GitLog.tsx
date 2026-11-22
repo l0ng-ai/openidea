@@ -14,7 +14,7 @@ import {
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
 import { spanStyle } from "@/ui/ansi";
 import clsx from "clsx";
-import { useContext, useEffect, useLayoutEffect, useRef } from "react";
+import { useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { LocalChangesView, StashContent, tabItems, useStashTabCounts } from "./CommitView";
 import styles from "./GitLog.module.css";
 import { WorktreesPanel } from "./gitMenuDialogs";
@@ -24,6 +24,7 @@ import { CommitDetails } from "./log/CommitDetails";
 import { CommitList } from "./log/CommitList";
 import { FilterBar } from "./log/FilterBar";
 import { useLogRepositories, useReadOnlyLog } from "./log/logHooks";
+import { PANE_STYLE } from "./log/shared";
 import { LogIdContext } from "./logContext";
 import { invalidateLogDetails } from "./logDetails";
 import { useLogOptions } from "./logOptions";
@@ -38,6 +39,7 @@ import {
   useGitLog,
 } from "./logStore";
 import { branchesByRepo } from "./multiRoot";
+import { stripSlash } from "./model";
 import { clearConsole, useVcsConsole } from "./ops";
 import { loadBranches, useVcs } from "./store";
 
@@ -128,6 +130,23 @@ export function LogView() {
   const readOnly = useReadOnlyLog();
   const showBranches = useLogOptions((s) => s.showBranches);
   const showDetails = useLogOptions((s) => s.showDetails);
+  const historyPath = useGitLog((s) => {
+    const tab = s.logTabs.find((t) => t.id === (scope ?? s.shownLog));
+    return tab?.kind === "history" && stripSlash(tab.target) !== tab.repo ? tab.target : null;
+  });
+  const [filePath, setFilePath] = useState<string | null>(null);
+  useEffect(() => {
+    if (!historyPath) return;
+    let live = true;
+    void call(commands.fsEntryKind(historyPath))
+      .catch(() => null)
+      .then((kind) => {
+        if (live) setFilePath(kind === "dir" ? null : historyPath);
+      });
+    return () => {
+      live = false;
+    };
+  }, [historyPath]);
   const branchesLoaded = useVcs((s) => s.branchesLoaded);
   const lastRefs = useRef<string | null>(null);
   const allRefs = useRef<string | null>(null);
@@ -212,6 +231,31 @@ export function LogView() {
       void reloadLog({ preserve: true });
   }, [version, active]);
 
+  if (historyPath && historyPath === filePath)
+    return (
+      <div className={styles.log}>
+        <FilterBar fileHistory />
+        <SplitGroup
+          orientation="vertical"
+          id="git-file-history"
+          storageKey={`openidea.vcs.fileHistorySplit.${showDetails ? "details" : "noDetails"}`}
+          className={styles.split}
+        >
+          <SplitPanel id="revisions" defaultSize="70%" minSize="25%">
+            <CommitList fileHistory />
+          </SplitPanel>
+          {showDetails && (
+            <>
+              <SplitHandle aria-label={tx("Details")} />
+              <SplitPanel id="details" defaultSize="30%" minSize="20%">
+                <CommitDetails key={selection.join(" ") || "none"} commits={commits} fileHistory />
+              </SplitPanel>
+            </>
+          )}
+        </SplitGroup>
+      </div>
+    );
+
   return (
     // Its own layout without the Branches pane, so each keeps its sizes.
     <SplitGroup
@@ -223,13 +267,13 @@ export function LogView() {
     >
       {showBranches && (
         <>
-          <SplitPanel id="branches" defaultSize="18%" minSize="120px">
+          <SplitPanel id="branches" style={PANE_STYLE} defaultSize="18%" minSize="120px">
             <BranchesPanel />
           </SplitPanel>
           <SplitHandle />
         </>
       )}
-      <SplitPanel id="commits" defaultSize="54%" minSize="25%">
+      <SplitPanel id="commits" style={PANE_STYLE} defaultSize="54%" minSize="25%">
         <div className={styles.log}>
           <FilterBar />
           <CommitList />
@@ -238,7 +282,7 @@ export function LogView() {
       {showDetails && (
         <>
           <SplitHandle />
-          <SplitPanel id="details" defaultSize="28%" minSize="15%">
+          <SplitPanel id="details" style={PANE_STYLE} defaultSize="28%" minSize="15%">
             <CommitDetails key={selection.join(" ") || "none"} commits={commits} />
           </SplitPanel>
         </>

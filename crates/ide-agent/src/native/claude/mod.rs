@@ -172,6 +172,12 @@ struct Session {
     mcp_config: Option<tempfile::TempPath>,
     /// MCP servers switched off for this session (`--disallowedTools`), its own config's too.
     mcp_off: Vec<String>,
+    /// The staged skills folder passed as `--add-dir` (its `.claude/skills` holds the copies).
+    skills_add_dir: Option<PathBuf>,
+    /// The workspace's other roots, each passed as `--add-dir`.
+    additional_dirs: Vec<String>,
+    /// The staged skills' `--settings` JSON (`skillOverrides` for the native ones too).
+    skills_settings: Option<String>,
     shim: Weak<Shim>,
     st: Mutex<State>,
     /// Serializes (re)starting the process.
@@ -356,10 +362,14 @@ impl Shim {
                 None
             }
         });
+        let skills = params.pointer("/_meta/openidea/skills");
         let session = Arc::new(Session {
             id: id.to_owned(),
             mcp_config,
             mcp_off,
+            skills_add_dir: skills.and_then(|s| s.get("claudeAddDir")).and_then(Value::as_str).map(PathBuf::from),
+            additional_dirs: additional_dirs(params),
+            skills_settings: skills.and_then(|s| s.get("claudeSettings")).and_then(Value::as_str).map(str::to_owned),
             shim: Arc::downgrade(self),
             st: Mutex::new(State {
                 proc: None,
@@ -405,9 +415,9 @@ impl Shim {
                     "agentCapabilities": {
                         "loadSession": true,
                         "promptCapabilities": { "image": true, "embeddedContext": true },
-                        "sessionCapabilities": { "fork": {} },
+                        "sessionCapabilities": { "fork": {}, "additionalDirectories": {} },
                         "mcpCapabilities": { "stdio": true, "http": true, "sse": true },
-                        "_meta": { "openidea": { "rollback": true, "steer": true, "backgroundTasks": true } },
+                        "_meta": { "openidea": { "rollback": true, "steer": true, "backgroundTasks": true, "contextUsage": true } },
                     },
                     "agentInfo": { "name": "claude", "title": "Claude Code", "version": self.version() },
                     "authMethods": [],
@@ -491,6 +501,11 @@ impl Shim {
                 let session = self.session(&params)?;
                 session.steer(params.get("prompt").cloned().unwrap_or_default()).map_err(invalid)?;
                 Ok(json!({}))
+            }
+            "_openidea/context_usage" => {
+                let session = self.session(&params)?;
+                let proc = session.st.lock().proc.clone().ok_or_else(|| internal("Claude Code is not running"))?;
+                rt.block_on(proc.control(json!({ "subtype": "get_context_usage" }))).map_err(internal)
             }
             "_openidea/stop_task" => {
                 let session = self.session(&params)?;
@@ -667,6 +682,17 @@ impl Session {
         }
         if !self.mcp_off.is_empty() {
             args.extend(["--disallowedTools".to_owned(), self.mcp_off.join(",")]);
+        }
+        // The staged skills: `.claude/skills` of the added directory is discovered like the
+        // project's own, and the settings hold the modes of the skills it sees natively too.
+        if let Some(dir) = &self.skills_add_dir {
+            args.extend(["--add-dir".to_owned(), dir.to_string_lossy().into_owned()]);
+        }
+        for dir in &self.additional_dirs {
+            args.extend(["--add-dir".to_owned(), dir.clone()]);
+        }
+        if let Some(settings) = &self.skills_settings {
+            args.extend(["--settings".to_owned(), settings.clone()]);
         }
         args.extend(start.args());
         let launch =
@@ -1502,6 +1528,12 @@ fn write_mcp_config(json: &str) -> std::io::Result<tempfile::TempPath> {
 /// The servers switched off for the session (`_meta.openidea.mcpServersOff`) as Claude Code
 /// permission rules that deny all of a server's tools (`mcp__<server>`), so a server of
 /// Claude Code's own configuration stays off too.
+/// The session's `additionalDirectories`: the workspace's other roots.
+fn additional_dirs(params: &Value) -> Vec<String> {
+    let dirs = params.get("additionalDirectories").and_then(Value::as_array);
+    dirs.into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect()
+}
+
 fn mcp_off(params: &Value) -> Vec<String> {
     params
         .pointer("/_meta/openidea/mcpServersOff")

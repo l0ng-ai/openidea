@@ -13,6 +13,8 @@ export interface TextAttributesOverride {
   italic?: boolean;
   effect?: "underline" | "wave" | "strikeout" | "none";
   effectColor?: string;
+  /** IDEA's ERROR_STRIPE_COLOR: the diff overview-lane marker of a change type. */
+  errorStripeColor?: string;
 }
 
 export interface CustomColorScheme {
@@ -143,7 +145,13 @@ export const EDITOR_EXTRA_DEFAULTS = {
     parameterInfoDelay: 1000,
   },
   autoImport: { addUnambiguous: false, optimizeOnTheFly: false, importsOnPaste: "ask" as "ask" | "always" | "never" },
-  folding: { showOutline: true, fileHeader: true, imports: true, docComments: false },
+  folding: {
+    showOutline: true,
+    outlineVisibility: "hover" as "hover" | "always",
+    fileHeader: true,
+    imports: true,
+    docComments: false,
+  },
   tabs: {
     placement: "top",
     multipleRows: false,
@@ -170,6 +178,7 @@ export const EDITOR_EXTRA_DEFAULTS = {
     pairQuotes: true,
     surroundSelection: true,
     tabOutOfPair: true,
+    semicolonAtStatementEnd: true,
     simultaneousTagEditing: true,
     reformatOnPaste: "indentEachLine",
     escapeOnPaste: true,
@@ -278,6 +287,7 @@ export function validateEditorExtras(raw: unknown): EditorExtras {
   const out = coerceLike(raw, EDITOR_EXTRA_DEFAULTS);
   if (!["active", "all"].includes(out.general.wheelZoomScope)) out.general.wheelZoomScope = "active";
   if (!["ask", "always", "never"].includes(out.autoImport.importsOnPaste)) out.autoImport.importsOnPaste = "ask";
+  if (!["hover", "always"].includes(out.folding.outlineVisibility)) out.folding.outlineVisibility = "hover";
   if (!DOCSTRING_FORMATS.includes(out.docstringFormat)) out.docstringFormat = "rest";
   for (const k of ["codeVisionUsagesPosition", "codeVisionAuthorPosition"] as const)
     if (!["top", "right"].includes(out.inlay[k])) out.inlay[k] = "top";

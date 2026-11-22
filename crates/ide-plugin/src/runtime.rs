@@ -676,6 +676,10 @@ pub trait HostApi: Send + Sync {
     fn plugin_dir(&self) -> Result<PathBuf, HostError> {
         Err(HostError::Failed("private plugin storage is unavailable".into()))
     }
+    /// The plugin's install / package directory (read-only for the guest).
+    fn install_dir(&self) -> Result<PathBuf, HostError> {
+        Err(HostError::Failed("plugin install directory is unavailable".into()))
+    }
     /// Replaces the text of a file whose real path the caller already checked:
     /// in one step, keeping its encoding and BOM (a new file is UTF-8). Refused
     /// while an editor holds unsaved changes for it.
@@ -1128,6 +1132,16 @@ fn event_to_wit(e: WorkbenchEvent) -> wit_events::Event {
         WorkbenchEvent::InputModeChanged(mode) => wit_events::Event::Other(wit_types::Extension {
             kind: "input-mode-changed".into(),
             data: serde_json::to_string(&mode).expect("mode serializes"),
+        }),
+        WorkbenchEvent::CaretMoved(caret) => wit_events::Event::Other(wit_types::Extension {
+            kind: "caret-moved".into(),
+            data: serde_json::json!({
+                "path": caret.path,
+                "line": caret.line,
+                "col": caret.col,
+                "settled": caret.settled,
+            })
+            .to_string(),
         }),
         WorkbenchEvent::FileOpened(p) => wit_events::Event::FileOpened(p),
         WorkbenchEvent::FileSaved(p) => wit_events::Event::FileSaved(p),

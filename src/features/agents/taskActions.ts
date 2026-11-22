@@ -1,6 +1,7 @@
 import type { AgentTask } from "@/bindings";
 import type { Action } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
+import { auxiliaryWindow } from "@/platform/auxWindow";
 import { useProject } from "@/platform/project";
 import type { MenuItem } from "@/ui";
 import { confirm, showError, confirmChecked } from "@/workbench/messages";
@@ -396,6 +397,9 @@ export function taskMenu(tasks: AgentTask[]): MenuItem[] {
     ...(!multiple
       ? ([
           { kind: "action", action: "agents.renameTask", label: "Rename…", icon: "edit", arg: task.id },
+          ...(!auxiliaryWindow()
+            ? ([{ kind: "action", action: "agents.moveToNewWindow", arg: task.id }] satisfies MenuItem[])
+            : []),
           ...(hasTaskTerminal(task, projectRoot)
             ? ([
                 { kind: "action", action: "terminal.openAt", label: "Terminal", icon: "terminal", arg: task.cwd },

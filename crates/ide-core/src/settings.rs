@@ -130,6 +130,11 @@ pub struct AgentSettings {
     #[serde(deserialize_with = "or_default")]
     #[specta(type = BTreeMap<String, AgentMcpServer>)]
     pub mcp_servers: BTreeMap<String, AgentMcpServer>,
+    /// How agent skills may run, keyed by skill name (`[agents.skills.<name>]`); `SKILL.md`
+    /// files on disk are never modified.
+    #[serde(deserialize_with = "or_default")]
+    #[specta(type = BTreeMap<String, AgentSkillPolicy>)]
+    pub skills: BTreeMap<String, AgentSkillPolicy>,
 }
 
 impl Default for AgentSettings {
@@ -150,6 +155,7 @@ impl Default for AgentSettings {
             new_task_approvals: NewTaskApprovals::Bypass,
             defaults: BTreeMap::new(),
             mcp_servers: BTreeMap::new(),
+            skills: BTreeMap::new(),
         }
     }
 }
@@ -202,6 +208,34 @@ impl Default for AgentMcpServer {
             headers: BTreeMap::new(),
             agents: Vec::new(),
         }
+    }
+}
+
+/// How an agent skill may run (`[agents.skills.<name>] mode = …`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentSkillMode {
+    /// The model decides when to use it.
+    #[default]
+    Auto,
+    /// Only when the user invokes it with `/name`.
+    SlashOnly,
+    /// Never.
+    Off,
+}
+
+/// A skill's policy in Settings › Agents › Skills, stored without touching its `SKILL.md`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AgentSkillPolicy {
+    #[serde(deserialize_with = "or_default")]
+    #[specta(type = AgentSkillMode)]
+    pub mode: AgentSkillMode,
+}
+
+impl Default for AgentSkillPolicy {
+    fn default() -> Self {
+        Self { mode: AgentSkillMode::Auto }
     }
 }
 
@@ -1220,6 +1254,7 @@ pub struct ArduinoSettings {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct MarkdownSettings {
+    pub preview_layout: MarkdownPreviewLayout,
     /// Preview (and notebook Markdown cell) font size in px; unset follows the editor font size.
     pub preview_font_size: Option<u32>,
     /// "Detect commands that can be run right from Markdown files": gutter run icons on
@@ -1231,8 +1266,21 @@ pub struct MarkdownSettings {
 
 impl Default for MarkdownSettings {
     fn default() -> Self {
-        Self { preview_font_size: None, run_commands: true, command_directory: None }
+        Self {
+            preview_layout: MarkdownPreviewLayout::default(),
+            preview_font_size: None,
+            run_commands: true,
+            command_directory: None,
+        }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum MarkdownPreviewLayout {
+    #[default]
+    SideBySide,
+    Stacked,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -1853,6 +1901,20 @@ mod tests {
                 assert_eq!(serde_json::from_value::<Settings>(json).unwrap().general, settings.general);
             }
         }
+    }
+
+    #[test]
+    fn markdown_preview_layout_defaults_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{"languages":{"markdown":{"previewFontSize":16}}}"#).unwrap();
+        assert_eq!(old.languages.markdown.preview_layout, MarkdownPreviewLayout::SideBySide);
+        assert_eq!(old.languages.markdown.preview_font_size, Some(16));
+
+        let stacked: Settings =
+            serde_json::from_str(r#"{"languages":{"markdown":{"previewLayout":"stacked"}}}"#).unwrap();
+        assert_eq!(stacked.languages.markdown.preview_layout, MarkdownPreviewLayout::Stacked);
+        let saved = serde_json::to_value(&stacked).unwrap();
+        assert_eq!(saved["languages"]["markdown"]["previewLayout"], "stacked");
+        assert_eq!(serde_json::from_value::<Settings>(saved).unwrap().languages.markdown, stacked.languages.markdown);
     }
 
     #[test]

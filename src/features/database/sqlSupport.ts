@@ -10,13 +10,13 @@ import {
   CONTRIBUTED_DEFINITION,
   CONTRIBUTED_FORMAT,
   CONTRIBUTED_HOVER,
+  offsetToPos,
   type ContributedDefinition,
   type ContributedFormatter,
   type ContributedHover,
 } from "@/editor/api";
 import { setFileDiagnostics } from "@/editor/lsp/diagnostics";
 import { showHint } from "@/editor/lsp/hint";
-import { offsetToPos } from "@/editor/lsp/positions";
 import type { DbCompletion, DbCompletionTable, DbDriver } from "@/platform/ipc";
 import { formatSql } from "./sql/format";
 import { SqlResolver, type SqlSymbol } from "./sql/resolve";
@@ -108,7 +108,7 @@ function inspections(path: string, sql: SqlText): Extension {
 }
 
 function definition(path: string, sql: SqlText): ContributedDefinition {
-  return (view, pos) => {
+  const handle: ContributedDefinition = (view, pos) => {
     if (sql.at && !sql.at(view.state, pos)) return false;
     const r = resolver(path, view.state, sql).resolveAt(pos);
     const sym = r?.symbol;
@@ -143,6 +143,9 @@ function definition(path: string, sql: SqlText): ContributedDefinition {
         return true;
     }
   };
+  const at = sql.at;
+  if (at) handle.canHandle = (state, pos) => at(state, pos);
+  return handle;
 }
 
 const code = (s: string) => `\`${s.replace(/`/g, "")}\``;

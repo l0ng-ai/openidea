@@ -44,6 +44,8 @@ mod windows;
 #[cfg(windows)]
 mod windows_error_mode;
 #[cfg(windows)]
+mod windows_webview_keys;
+#[cfg(windows)]
 mod windows_webview_recovery;
 
 use parking_lot::Mutex;
@@ -139,6 +141,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init());
+    #[cfg(windows)]
+    let app = app.plugin(windows_webview_keys::init());
     #[cfg(windows)]
     let app = app.plugin(windows_webview_recovery::init());
     #[cfg(target_os = "linux")]
@@ -288,6 +292,12 @@ pub fn run() {
             window_groups::frame_changed(window.app_handle(), window.label());
         }
         tauri::WindowEvent::Destroyed => {
+            // Also release a view that failed during startup, before the parent could watch it.
+            if let Some(state) = window.try_state::<AppState>()
+                && let Ok(project) = state.host.project(window.label())
+            {
+                project.agents.unsubscribe(window.label());
+            }
             window_zoom::forget(window.label());
             #[cfg(target_os = "macos")]
             {

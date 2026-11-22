@@ -28,6 +28,7 @@ import {
 import {
   acceptCompletion,
   closeCompletion,
+  completionStatus,
   currentCompletions,
   snippet,
   startCompletion,
@@ -317,6 +318,22 @@ describe("applying completions", () => {
       // Later edits from elsewhere leave the caret alone.
       view.dispatch({ changes: { from: 15, insert: " " }, annotations: remoteChange.of(true) });
       expect(view.state.selection.main.head).toBe(15);
+    } finally {
+      setInvokeRoute(null);
+    }
+  });
+
+  it("puts the caret inside the parentheses of a server-inserted call that takes arguments", async () => {
+    setInvokeRoute(() => Promise.resolve(null));
+    try {
+      const { view, req } = setup("x.rea|\n", "", [completionExtension()]);
+      view.dispatch({ effects: StateEffect.appendConfig.of(lspDoc.of({ doc: 1 } as EditorDocContext)) });
+      const command = { title: "Apply Completion", command: "jetbrains.kotlin.completion.apply", arguments: ["1"] };
+      const kotlin = item({ label: "read", kind: "method", labelDetail: "(name: String)", insertText: "", command });
+      applyLspCompletion(view, makeCompletion(kotlin, req), 5, 5, "insert");
+      view.dispatch({ changes: { from: 5, insert: "d()" }, annotations: remoteChange.of(true) });
+      expect(view.state.doc.toString()).toBe("x.read()\n");
+      expect(view.state.selection.main.head).toBe(7);
     } finally {
       setInvokeRoute(null);
     }
@@ -838,6 +855,38 @@ describe("completion footer", () => {
   afterEach(() => {
     view?.destroy();
     view = null;
+  });
+
+  it("formats partial results while the language server is still answering", async () => {
+    let finishReply = () => {};
+    const reply = new Promise((resolve) => {
+      finishReply = () => resolve({ isIncomplete: false, items: [] });
+    });
+    setInvokeRoute((cmd) => (cmd === "lsp_completion" ? reply : Promise.resolve(null)));
+    const source: CompletionSource = (ctx) => ({ from: ctx.pos, options: [{ label: "localSuggestion" }] });
+    view = new EditorView({
+      state: EditorState.create({
+        doc: "thing.",
+        selection: { anchor: 6 },
+        extensions: [
+          lspDoc.of({ doc: 902, path: "/p/Example.java", language: "java", uiMode: "Java", readOnly: false }),
+          completionExtension(),
+          EditorState.languageData.of(() => [{ openideaCompletion: source }]),
+        ],
+      }),
+      parent: document.body,
+    });
+    try {
+      startCompletion(view);
+      await vi.waitFor(() => {
+        expect(completionStatus(view!.state)).toBe("pending");
+        expect(document.querySelector(".cm-tooltip-autocomplete > .cm-lsp-completion-footer")).not.toBeNull();
+      });
+    } finally {
+      closeCompletion(view);
+      setInvokeRoute(null);
+      finishReply();
+    }
   });
 
   it("stays below the list after CodeMirror rebuilds the options", async () => {

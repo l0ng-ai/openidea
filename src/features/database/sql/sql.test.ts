@@ -8,6 +8,7 @@ import { identName, inLiteral, lex } from "./lexer";
 import { DATA_TYPES, statementStarters } from "./dialect";
 import { bindParams, findParams } from "./params";
 import { SqlResolver } from "./resolve";
+import { jdbcDialect } from "../vendors";
 
 const col = (name: string, dataType = "INTEGER", primaryKey = false, hasDefault = false) => ({
   name,
@@ -278,6 +279,51 @@ describe("completion candidates", () => {
     expect(quoteIdent("EMPLOYEES", "oracle")).toBe("EMPLOYEES");
     expect(quoteIdent("employees", "oracle")).toBe('"employees"');
     expect(quoteIdent('a"b', "oracle")).toBe('"a""b"');
+  });
+
+  it("quotes a custom JDBC source's names by the dialect its URL speaks", () => {
+    expect(jdbcDialect("jdbc:oracle:thin:@//db.local:1521/ORCL")).toBe("oracle");
+    expect(jdbcDialect("JDBC:Oracle:thin:@db:1521:ORCL")).toBe("oracle");
+    expect(jdbcDialect("jdbc:postgresql://db.local/shop")).toBe("postgres");
+    expect(jdbcDialect("jdbc:MariaDB://db/shop")).toBe("mysql");
+    expect(jdbcDialect("jdbc:sqlserver://db;databaseName=shop")).toBe("sqlServer");
+    expect(jdbcDialect("jdbc:unknown://db/shop")).toBeNull();
+    expect(jdbcDialect("")).toBeNull();
+    expect(jdbcDialect(null)).toBeNull();
+    // Oracle folds unquoted names to upper case, so only an upper-case name stays bare.
+    expect(quoteIdent("MyTable", "jdbc", "oracle")).toBe('"MyTable"');
+    expect(quoteIdent("MYTABLE", "jdbc", "oracle")).toBe("MYTABLE");
+    expect(quoteIdent("mytable", "jdbc", "oracle")).toBe('"mytable"');
+    // Without a dialect, a plain word still stays bare: the source never said which server it is.
+    expect(quoteIdent("MyTable", "jdbc")).toBe("MyTable");
+    expect(quoteIdent("MyTable", "jdbc", null)).toBe("MyTable");
+    const hr: DbCompletion = {
+      defaultSchema: "HR",
+      tables: [
+        {
+          schema: "HR",
+          name: "MyTable",
+          kind: "table",
+          columns: [col("ID", "NUMBER", true), col("fullName", "VARCHAR2")],
+        },
+      ],
+      foreignKeys: [],
+    };
+    const tables = sqlCandidates({
+      model: hr,
+      analysis: at("SELECT * FROM |", "jdbc"),
+      driver: "jdbc",
+      dialect: jdbcDialect("jdbc:oracle:thin:@//db.local:1521/ORCL"),
+    });
+    expect(tables.find((c) => c.label === "MyTable")?.insert).toBe('"MyTable"');
+    const columns = sqlCandidates({
+      model: hr,
+      analysis: at("SELECT | FROM MyTable", "jdbc"),
+      driver: "jdbc",
+      dialect: "oracle",
+    });
+    expect(columns.find((c) => c.label === "ID")?.insert).toBe("ID");
+    expect(columns.find((c) => c.label === "fullName")?.insert).toBe('"fullName"');
   });
 
   it("offers Snowflake vocabulary and quotes names the server folds to upper case", () => {

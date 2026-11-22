@@ -62,6 +62,14 @@ async function askServer(view: EditorView, signal?: AbortSignal, only?: string[]
   }
 }
 
+/** typescript-language-server returns refactorings only when `only` names `refactor` itself. */
+const WHOLE_REFACTOR_KIND = new Set(["javascript", "javascriptreact", "typescript", "typescriptreact"]);
+
+/** The code action kind to ask `language`'s server for, to get the refactorings of `kind`. */
+export function requestKind(kind: string, language: string): string {
+  return WHOLE_REFACTOR_KIND.has(language) && kind.startsWith("refactor.") ? "refactor" : kind;
+}
+
 /** Server actions per IDEA refactoring, plus the unmapped refactorings (by title). */
 export function groupActions(actions: readonly CodeAction[]): {
   mapped: Map<RefactoringId, CodeAction[]>;
@@ -173,7 +181,7 @@ export async function runRefactoring(view: EditorView, id: RefactoringId): Promi
   const state = view.state;
   let answer: ServerAnswer;
   try {
-    answer = await askServer(view, run.signal, r.kind ? [r.kind] : undefined);
+    answer = await askServer(view, run.signal, r.kind ? [requestKind(r.kind, ctx.language)] : undefined);
   } catch (e) {
     if (isCancelled(e)) return;
     throw e;
@@ -189,7 +197,17 @@ export async function runRefactoring(view: EditorView, id: RefactoringId): Promi
   }
   const introduce = INTRODUCE[id];
   if (introduce) {
-    const reason = answer.status === "ok" ? "empty" : answer.status === "notReady" ? "notReady" : "error";
+    // A server offering another extraction there (gopls has only Extract constant for `1 + 2`)
+    // takes the selection for an expression: build the variable from the syntax.
+    const otherExtraction = [...groupActions(all).mapped.keys()].some((k) => INTRODUCE[k] && k !== id);
+    const reason =
+      answer.status === "ok"
+        ? otherExtraction
+          ? "otherKind"
+          : "empty"
+        : answer.status === "notReady"
+          ? "notReady"
+          : "error";
     if (await introduceFallback(view, introduce, reason)) return;
   }
   showHint(view, cannotPerform(await unavailableReason(view, r, answer, all)));
@@ -263,7 +281,13 @@ export function refactorThisItems(
       go = () => introduceFallback(view, INTRODUCE[r.id]!, answer.status === "notReady" ? "notReady" : "error");
     if (!go) continue;
     const exec = go;
-    items.push({ id: r.id, label: r.label, shortcut: shortcutLabel(r.action), run: () => void exec() });
+    items.push({
+      id: r.id,
+      label: r.label,
+      section: r.section,
+      shortcut: shortcutLabel(r.action),
+      run: () => void exec(),
+    });
   }
   other.forEach((a, i) =>
     items.push({
@@ -326,6 +350,7 @@ export async function refactorThis(view: EditorView, rename: (view: EditorView) 
     anchor: caretAnchor(view, state.selection.main.head),
     title: "Refactor This",
     items,
+    compact: true,
     numbered: true,
   });
 }
@@ -338,6 +363,7 @@ export function showNothingHere(
     kind: "list",
     anchor,
     title: "Refactor This",
+    compact: true,
     items: [{ id: "nothing", label: "Nothing here", disabled: "No refactoring applies here", run: () => {} }],
   });
 }

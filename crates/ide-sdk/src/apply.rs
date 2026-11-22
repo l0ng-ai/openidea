@@ -1337,6 +1337,10 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
         cfg.args = vec!["--lsp".into(), "--stdio".into()];
         cfg.display_name = Some("TypeScript 7".into());
         cfg.initialization_options = None;
+        // Completing a JSX prop adds `=""` or `={}` by its type, as vtsls does by default;
+        // TypeScript 7 adds no value unless asked.
+        let jsx = json!({ "preferences": { "jsxAttributeCompletionStyle": "auto" } });
+        merge_init_options(cfg, json!({ "typescript": jsx, "javascript": jsx }));
         cfg.tsserver_project = false;
         return;
     }

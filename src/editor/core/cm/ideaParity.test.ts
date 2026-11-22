@@ -308,6 +308,8 @@ describe("error stripe", () => {
   it("finds the scrollbar thumb the marks must let through", () => {
     // Nothing to scroll: no thumb.
     expect(scrollbarThumb(0, 400, 400)).toBeNull();
+    expect(scrollbarThumb(0, 401, 400)).toBeNull();
+    expect(scrollbarThumb(0, 402, 400)).not.toBeNull();
     // A quarter of the document visible: a 100px thumb, at the top, then at the bottom.
     expect(scrollbarThumb(0, 1600, 400)).toEqual({ top: 0, bottom: 100 });
     expect(scrollbarThumb(1200, 1600, 400)).toEqual({ top: 300, bottom: 400 });

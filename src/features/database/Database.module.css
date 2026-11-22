@@ -229,6 +229,52 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-small);
 }
+.introspectionTrigger {
+  display: inline-flex;
+  flex: none;
+}
+.introspectionCount {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--space-1);
+  background: transparent;
+  color: var(--fg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  font: inherit;
+  font-size: var(--fs-small);
+  line-height: 16px;
+}
+.introspectionCount:hover,
+.introspectionCount:focus-visible,
+.introspectionCount[aria-expanded="true"] {
+  color: var(--fg-strong);
+  border-color: var(--accent);
+}
+.introspectionPopup {
+  display: flex;
+  flex-direction: column;
+  width: min(276px, calc(100vw - 24px));
+  padding: var(--space-2);
+  gap: var(--space-2);
+}
+.introspectionModes,
+.introspectionNames {
+  display: grid;
+  align-content: start;
+  gap: var(--space-1);
+}
+.introspectionNames {
+  max-height: min(220px, 40vh);
+  overflow: auto;
+  padding: var(--space-1);
+  border-block: 1px solid var(--border);
+}
+.introspectionActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
 .textTool {
   flex: none;
   height: 20px;

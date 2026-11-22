@@ -5,6 +5,7 @@ use crate::{DataSource, DbManager, QueryResult, ResultColumn};
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::collections::HashMap;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -21,6 +22,9 @@ const LIMIT: usize = 16 * 1024 * 1024;
 pub struct DbJdbcDriver {
     pub id: String,
     pub name: String,
+    /// Data source preset id; absent for a generic JDBC profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor: Option<String>,
     pub jars: Vec<String>,
     pub class_name: String,
     pub url_template: String,
@@ -145,7 +149,7 @@ impl DbManager {
     fn jdbc_approval(&self, source: &DataSource) -> IdeResult<(PathBuf, String)> {
         let registry = self.jdbc_registry()?;
         let key = serde_json::to_vec(&(&self.root, &source.id)).map_err(|e| IdeError::internal(e.to_string()))?;
-        let settings = serde_json::to_vec(&(
+        let mut settings = serde_json::to_vec(&(
             &source.jdbc_driver,
             &source.url,
             &source.user,
@@ -154,6 +158,9 @@ impl DbManager {
             &source.options,
         ))
         .map_err(|e| IdeError::internal(e.to_string()))?;
+        if self.jdbc_password_isolated(source) {
+            settings.extend_from_slice(b"\0jdbc-password");
+        }
         Ok((
             registry.with_file_name("jdbc-approvals").join(blake3::hash(&key).to_hex().as_str()),
             blake3::hash(&settings).to_hex().to_string(),
@@ -194,6 +201,9 @@ impl DbManager {
             .into_iter()
             .find(|d| d.id == source.jdbc_driver)
             .ok_or_else(|| IdeError::invalid("Select an installed JDBC driver profile"))?;
+        if !source.vendor.is_empty() && driver.vendor.as_deref() != Some(source.vendor.as_str()) {
+            return Err(IdeError::invalid("The JDBC driver profile is not associated with this data source type"));
+        }
         JdbcPool::connect(source, password, driver, self.jdbc_registry()?.with_file_name("jdbc"))
             .await
             .map(Box::new)
@@ -302,7 +312,9 @@ async fn read_frame(output: &mut (impl AsyncRead + Unpin)) -> IdeResult<Vec<u8>>
 const CANCEL_GRACE: Duration = Duration::from_secs(3);
 
 fn cancel_timeout() -> IdeError {
-    IdeError::invalid("The JDBC driver did not stop in time. The session was closed. Reconnect to continue.")
+    IdeError::invalid(
+        "Cancellation timed out and the JDBC session was closed. Check the statement's status on the server before running it again. The next query will try to reconnect.",
+    )
 }
 
 async fn exchange(
@@ -458,6 +470,44 @@ impl JdbcPool {
     }
 
     async fn request(&self, fields: &[&str], sql: &str, cancel: &CancellationToken) -> IdeResult<QueryResult> {
+        let result = self.exchange_once(fields, sql, cancel).await;
+        if let Err(e) = &result
+            && fields.first() != Some(&"open")
+            && e.kind != ide_core::error::ErrorKind::Cancelled
+            && !self.is_closed()
+            && !self.session_valid().await
+        {
+            // The session is gone (a proxy or tunnel dropped the idle TCP connection): close the
+            // pool so the next statement or Connect starts a new one instead of failing forever.
+            self.close().await;
+        }
+        result
+    }
+
+    /// Keep-alive: checks the session (any SQL would be dialect-specific) and closes a dead one.
+    pub(crate) async fn ping(&self) -> IdeResult<()> {
+        if self.session_valid().await {
+            return Ok(());
+        }
+        self.close().await;
+        Err(IdeError::new(ide_core::error::ErrorKind::Io, "JDBC connection was lost"))
+    }
+
+    /// Whether the JDBC session still works, asked after a failed statement.
+    async fn session_valid(&self) -> bool {
+        if self.bridge.lock().await.is_none() {
+            return false;
+        }
+        let cancel = CancellationToken::new();
+        match tokio::time::timeout(Duration::from_secs(10), self.exchange_once(&["valid"], "", &cancel)).await {
+            Ok(Ok(result)) => {
+                result.rows.first().and_then(|row| row.first()).cloned().flatten().as_deref() != Some("false")
+            }
+            Ok(Err(_)) | Err(_) => false,
+        }
+    }
+
+    async fn exchange_once(&self, fields: &[&str], sql: &str, cancel: &CancellationToken) -> IdeResult<QueryResult> {
         let mut slot = tokio::select! {
             biased;
             () = cancel.cancelled() => return Err(IdeError::cancelled()),
@@ -562,14 +612,32 @@ fn decode(data: &[u8], sql: &str, elapsed_ms: f64) -> IdeResult<QueryResult> {
 impl DbManager {
     pub(crate) async fn jdbc_completion(&self, id: &str, pool: &JdbcPool) -> IdeResult<crate::CompletionModel> {
         let mut tables = vec![];
-        let schemas = self.schemas(id).await?;
+        let mut column_count = 0;
+        // Read the schemas the source's Schemas tab picks, like the database tree does. It also
+        // keeps large instances usable: an Oracle server exposes dozens of system schemas, and
+        // dumping the columns of all of them takes minutes, during which the bridge (a single
+        // Java process that runs one command at a time) executes none of the user's statements.
+        let introspection = self.source(id)?.introspection;
+        let schemas: Vec<String> =
+            self.schemas(id).await?.into_iter().filter(|s| introspection.shows_schema(s)).collect();
         for schema in &schemas {
+            // Columns of the whole namespace in one call; a driver that refuses it still completes tables.
+            let mut columns = if column_count < crate::MAX_META_ROWS {
+                pool.metadata(&["schemaColumns", schema]).await.map(schema_columns).unwrap_or_else(|e| {
+                    tracing::warn!("JDBC columns of {schema}: {}", e.message);
+                    HashMap::new()
+                })
+            } else {
+                HashMap::new()
+            };
             for table in self.tables(id, schema).await? {
+                let columns = columns.remove(&table.name).unwrap_or_default();
+                column_count += columns.len();
                 tables.push(crate::CompletionTable {
                     schema: schema.clone(),
                     name: table.name,
                     kind: table.kind,
-                    columns: vec![],
+                    columns,
                 });
                 if tables.len() >= crate::MAX_META_ROWS {
                     break;
@@ -594,9 +662,48 @@ impl DbManager {
     }
 }
 
+/// The bridge's `schemaColumns` rows (table, name, type, nullable, default) by table.
+fn schema_columns(rows: Vec<Vec<Option<String>>>) -> HashMap<String, Vec<crate::CompletionColumn>> {
+    let mut by_table: HashMap<String, Vec<crate::CompletionColumn>> = HashMap::new();
+    for row in rows {
+        let mut it = row.into_iter();
+        let (Some(Some(table)), Some(Some(name))) = (it.next(), it.next()) else { continue };
+        let data_type = it.next().flatten().unwrap_or_default();
+        let nullable = it.next().flatten().as_deref() != Some("0");
+        let has_default = it.next().flatten().is_some();
+        by_table.entry(table).or_default().push(crate::CompletionColumn {
+            name,
+            data_type,
+            nullable,
+            primary_key: false,
+            has_default,
+        });
+    }
+    by_table
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schema_columns_group_by_table() {
+        let row = |t: &str, n: &str, null: &str, def: Option<&str>| {
+            vec![Some(t.into()), Some(n.into()), Some("INT".into()), Some(null.into()), def.map(Into::into)]
+        };
+        let by_table = schema_columns(vec![
+            row("orders", "id", "0", None),
+            row("orders", "note", "1", Some("'none'")),
+            row("items", "sku", "1", None),
+            vec![None, Some("orphan".into())],
+        ]);
+        let orders = &by_table["orders"];
+        assert_eq!(orders.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["id", "note"]);
+        assert_eq!((orders[0].nullable, orders[0].has_default), (false, false));
+        assert_eq!((orders[1].nullable, orders[1].has_default), (true, true));
+        assert_eq!(by_table["items"].len(), 1);
+        assert_eq!(by_table.len(), 2);
+    }
 
     #[tokio::test]
     async fn frame_codec_checks_both_16_mib_boundaries() {

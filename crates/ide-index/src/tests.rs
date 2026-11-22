@@ -191,6 +191,19 @@ fn file_ranking_is_idea_like() {
 }
 
 #[test]
+fn a_pasted_absolute_path_finds_the_indexed_file() {
+    let fx = sample();
+    let idx = fx.open();
+    let abs = fx.root.join("src/ui/Button.tsx");
+    let abs = abs.to_string_lossy().into_owned();
+    assert_eq!(files(&idx, &abs)[0], "src/ui/Button.tsx");
+    // A trailing `:line:col`, and a path outside the project that names no file.
+    assert_eq!(files(&idx, &format!("{abs}:12:4"))[0], "src/ui/Button.tsx");
+    let outside = fx.root.parent().unwrap().join("elsewhere/Button.tsx");
+    assert!(files(&idx, &outside.to_string_lossy()).is_empty());
+}
+
+#[test]
 fn find_dirs_ranks_folder_names() {
     let f = sample();
     let idx = f.open();
@@ -812,7 +825,7 @@ fn workspace_scope_excludes_state_from_scans_updates_and_cached_results() {
     let idx = ProjectIndex::open(
         &fx.root,
         &fx.cache,
-        crate::IndexRoots { include_root: false, folders: vec![member.clone()] },
+        crate::IndexRoots { include_root: false, folders: vec![member.clone()], ..Default::default() },
         Vec::new(),
         Arc::new(LanguageRegistry::load(None).unwrap()),
         Arc::new(Syntax::new()),
@@ -828,7 +841,7 @@ fn workspace_scope_excludes_state_from_scans_updates_and_cached_results() {
     assert!(idx.wait_idle(WAIT));
     assert!(symbols(&idx, "hidden", SymbolFilter::All).is_empty());
     assert_eq!(symbols(&idx, "visible", SymbolFilter::All), ["visible"]);
-    idx.set_scope(crate::IndexRoots { include_root: false, folders: Vec::new() }, Vec::new());
+    idx.set_scope(crate::IndexRoots { include_root: false, folders: Vec::new(), ..Default::default() }, Vec::new());
     assert!(idx.wait_idle(WAIT));
     assert!(idx.find_files("", 100).is_empty());
 }
@@ -1091,7 +1104,7 @@ fn repository_rule_changes_refresh_members_of_an_unindexed_container() {
     let idx = ProjectIndex::open(
         &fx.root,
         &fx.cache,
-        IndexRoots { include_root: false, folders: vec![fx.root.join("member")] },
+        IndexRoots { include_root: false, folders: vec![fx.root.join("member")], ..Default::default() },
         vec![],
         Arc::new(LanguageRegistry::load(None).unwrap()),
         Arc::new(Syntax::new()),

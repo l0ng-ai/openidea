@@ -1,7 +1,7 @@
 /**
  * Tab strip with the design's accent underline. Roving focus (←/→ or ↑/↓ when
  * vertical, Home/End), closable tabs (button, middle click, Delete), wheel
- * scrolling and an overflow dropdown listing every tab when they don't fit.
+ * scrolling and an overflow dropdown when tabs don't fit.
  */
 import {
   createContext,
@@ -20,6 +20,7 @@ import clsx from "clsx";
 import { Icon, type IconName } from "./icons";
 import { IconButton } from "./Button";
 import { Menu, type MenuItem } from "./Menu";
+import { HiddenTabsPopup } from "./HiddenTabsPopup";
 import { tooltipAttrs } from "./Tooltip";
 import { isOutsideWindow, registerDropTarget, startPointerDrag } from "./pointerDrag";
 import { Given } from "./T";
@@ -149,8 +150,10 @@ export interface TabsProps {
   focusContent?: () => boolean;
   /** Enables drag & drop reordering (and moving between strips of the same type). */
   dnd?: TabsDnd;
-  /** Tabs that don't fit: `scroll` the strip (default), `squeeze` them, or `wrap` into rows. */
-  layout?: "scroll" | "squeeze" | "wrap";
+  /** `fit` keeps each tab within the scrolling strip. `squeeze` shrinks tabs together and `wrap` adds rows. */
+  layout?: "scroll" | "fit" | "squeeze" | "wrap";
+  /** For editor strips, show only tabs clipped by the strip in the overflow popup. */
+  hiddenTabsOnly?: boolean;
   /** Side of the label the close button sits on. */
   closePosition?: "right" | "left";
   /** `vertical`: a column of tabs (editor tabs placed left / right); always scrolls, `layout` is ignored. */
@@ -174,6 +177,7 @@ export function Tabs({
   focusContent,
   dnd,
   layout = "scroll",
+  hiddenTabsOnly = false,
   closePosition = "right",
   orientation = "horizontal",
   ...aria
@@ -184,6 +188,7 @@ export function Tabs({
   const tabRefs = useRef(new Map<string, HTMLButtonElement>());
   const [overflow, setOverflow] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const closeMenu = useCallback(() => setMenuOpen(false), [setMenuOpen]);
   const moreRef = useRef<HTMLButtonElement>(null);
   const [drop, setDrop] = useState<number | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
@@ -285,12 +290,15 @@ export function Tabs({
     };
   }, [tabIds]);
 
+  const observedTabs = layout === "fit" ? tabIds : null;
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     // A vertical strip shows its scrollbar instead of the overflow dropdown.
     const measure = () => {
-      setOverflow(!vertical && el.scrollWidth > el.clientWidth + 1);
+      const overflowing = !vertical && el.scrollWidth > el.clientWidth + 1;
+      setOverflow(overflowing);
+      if (!overflowing && hiddenTabsOnly) closeMenu();
       // A resize (e.g. the editor area narrowing) must scroll the active tab back
       // into view instead of leaving its close button clipped until a tab switch.
       revealTab(latest.current.activeId, true);
@@ -299,8 +307,10 @@ export function Tabs({
     if (typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(measure);
     ro.observe(el);
+    // A renamed tab can move or resize the selected slot without resizing the strip.
+    if (observedTabs) for (const tab of el.children) ro.observe(tab);
     return () => ro.disconnect();
-  }, [items.length, revealTab, vertical]);
+  }, [items.length, observedTabs, revealTab, vertical, hiddenTabsOnly, closeMenu]);
 
   useEffect(() => {
     // The whole tab (label + close button) into view, without scrolling any outer container.
@@ -539,16 +549,34 @@ export function Tabs({
             size="small"
             iconSize={10}
             className={styles.more}
+            aria-haspopup={hiddenTabsOnly ? "grid" : "menu"}
+            aria-expanded={menuOpen}
             onClick={() => setMenuOpen((v) => !v)}
           />
-          <Menu
-            open={menuOpen}
-            onClose={() => setMenuOpen(false)}
-            anchor={moreRef}
-            items={menuItems}
-            placement="bottom-end"
-            aria-label="Tabs"
-          />
+          {hiddenTabsOnly ? (
+            menuOpen && (
+              <HiddenTabsPopup
+                anchor={moreRef}
+                scroller={scrollRef}
+                buttons={tabRefs}
+                items={items}
+                closePosition={closePosition}
+                onSelect={onSelect}
+                onCloseTab={onClose}
+                onCloseOthers={onCloseOthers}
+                onDismiss={closeMenu}
+              />
+            )
+          ) : (
+            <Menu
+              open={menuOpen}
+              onClose={closeMenu}
+              anchor={moreRef}
+              items={menuItems}
+              placement="bottom-end"
+              aria-label="Tabs"
+            />
+          )}
         </>
       )}
       {!vertical && trailing && <div className={styles.trailing}>{trailing}</div>}

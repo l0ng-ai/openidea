@@ -81,6 +81,11 @@ export function literalRanges(state: EditorState): readonly LiteralRange[] {
 
 /** What `pos` lies in: a comment, a string literal or plain code (`null`). */
 export function literalKindAt(state: EditorState, pos: number): LiteralKind | null {
+  return literalAt(state, pos)?.kind ?? null;
+}
+
+/** The comment or string literal `pos` lies in, if any. */
+export function literalAt(state: EditorState, pos: number): LiteralRange | null {
   const ranges = literalRanges(state);
   let lo = 0;
   let hi = ranges.length - 1;
@@ -89,7 +94,7 @@ export function literalKindAt(state: EditorState, pos: number): LiteralKind | nu
     const r = ranges[mid]!;
     if (pos < r.from) hi = mid - 1;
     else if (pos >= r.to) lo = mid + 1;
-    else return r.kind;
+    else return r;
   }
   return null;
 }

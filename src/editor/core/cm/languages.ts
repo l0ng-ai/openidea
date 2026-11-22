@@ -15,8 +15,10 @@ import {
   indentNodeProp,
   indentService,
   language as languageFacet,
+  syntaxTree,
   type StreamParser,
 } from "@codemirror/language";
+import { NodeProp, type SyntaxNode } from "@lezer/common";
 import { styleTags, tags as t } from "@lezer/highlight";
 import { languages as languageData } from "@codemirror/language-data";
 import type { DocBackend, LanguageInfo } from "../backend";
@@ -450,8 +452,19 @@ const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
 
 const bracedIndent = delimitedIndent({ closing: "}" });
 
-/** Grammar props the stock languages lack: indentation that follows the language's usual style. */
+/**
+ * JSX tags pair up as HTML's do: Enter between `<div>` and `</div>` puts the caret on an
+ * indented line of its own with the closing tag below, and the tags match each other.
+ */
+const JSX_TAG_PAIRS = [
+  NodeProp.closedBy.add({ JSXOpenTag: ["JSXCloseTag"] }),
+  NodeProp.openedBy.add({ JSXCloseTag: ["JSXOpenTag"] }),
+];
+
+/** Grammar props the stock languages lack: indentation that follows the language's usual style, JSX tag pairs. */
 const EXTRA_PROPS: Record<string, NonNullable<Parameters<LRLanguage["configure"]>[0]["props"]>> = {
+  JSX: JSX_TAG_PAIRS,
+  TSX: JSX_TAG_PAIRS,
   // clang-format's built-in styles (NamespaceIndentation: None, no extern block indent) keep the
   // contents of `namespace x { … }` and `extern "C" { … }` at the level of the braces' line.
   "C++": [
@@ -465,6 +478,88 @@ const EXTRA_PROPS: Record<string, NonNullable<Parameters<LRLanguage["configure"]
   ],
 };
 
+/** An annotation usage (`@Ann`, `@a.b.Ann(…)`, with an optional trailing comment), not `@interface`. */
+const JAVA_ANNOTATION = /^@(?!interface\b)[\w$.]+(?:\s*\([\s\S]*\))?\s*(?:\/\/[^\n]*|\/\*[\s\S]*?\*\/)?$/;
+
+/**
+ * An annotation line ends the declaration it annotates, so Enter after it keeps the line's
+ * indentation. The stock grammar gets this wrong: an annotation, or an unfinished annotation
+ * type declaration, is a `Statement`, which indents one level deeper.
+ */
+const annotationIndent = indentService.of((cx, pos) => {
+  if (cx.simulatedBreak == null) return undefined;
+  const state = cx.state;
+  const tree = syntaxTree(state);
+  if (tree.length < pos) return undefined;
+  for (let node: SyntaxNode | null = tree.resolveInner(pos, -1); node; node = node.parent) {
+    if (node.name !== "Annotation" && node.name !== "MarkerAnnotation") continue;
+    // The break must follow the whole annotation, with at most whitespace or a comment between.
+    if (node.to > pos || !/^(?:\s|\/\/[^\n]*|\/\*[\s\S]*?\*\/)*$/.test(state.sliceDoc(node.to, pos))) return undefined;
+    if (!JAVA_ANNOTATION.test(state.sliceDoc(node.from, node.to))) return undefined;
+    const line = state.doc.lineAt(node.from);
+    return cx.countColumn(line.text, line.text.search(/\S|$/));
+  }
+  return undefined;
+});
+
+/**
+ * Python, as PyCharm: Enter after a statement that ends its block (`return`, `pass`, `raise`,
+ * `break`, `continue`) goes one level out, and a bare `except:` is realigned with its `try`.
+ */
+const pythonDedent = [
+  indentService.of((cx, pos) => {
+    if (cx.simulatedBreak == null) return bareExceptIndent(cx.state, pos);
+    if (cx.textAfterPos(pos).trim()) return undefined;
+    const line = cx.state.doc.lineAt(pos);
+    const before = line.text.slice(0, pos - line.from);
+    const code = indentationCode(before, "#");
+    if (!dedentsAfter(code, "python") || unbalanced(code)) return undefined;
+    return Math.max(0, cx.countColumn(before, before.search(/\S|$/)) - cx.unit);
+  }),
+  EditorState.languageData.of(() => [{ indentOnInput: /^\s*except:$/ }]),
+];
+
+/** The indentation of the `try:` (or earlier `except`) a bare `except:` line at `pos` belongs to. */
+function bareExceptIndent(state: EditorState, pos: number): number | undefined {
+  const line = state.doc.lineAt(pos);
+  if (!/^\s*except:/.test(line.text)) return undefined;
+  const own = line.text.search(/\S/);
+  for (let n = line.number - 1; n >= 1; n--) {
+    const text = state.doc.line(n).text;
+    const indent = text.search(/\S/);
+    if (indent < 0 || indent >= own) continue;
+    return /^\s*(try|except\b.*|else):\s*(#.*)?$/.test(text) ? indent : undefined;
+  }
+  return undefined;
+}
+
+/** Whether `code` leaves a bracket open (the statement continues on the next line). */
+function unbalanced(code: string): boolean {
+  let depth = 0;
+  for (const c of code) depth += "([{".includes(c) ? 1 : ")]}".includes(c) ? -1 : 0;
+  return depth > 0;
+}
+
+/** Extensions the stock modes lack, by CodeMirror language name. */
+/**
+ * Kotlin: Enter after a `when` branch's `->` or an assignment's `=` with nothing after it
+ * continues one level deeper (the branch body or the assigned expression follows), as IDEA does.
+ */
+const kotlinContinuation = indentService.of((cx, pos) => {
+  if (cx.simulatedBreak == null || cx.textAfterPos(pos).trim()) return undefined;
+  const line = cx.state.doc.lineAt(pos);
+  const before = line.text.slice(0, pos - line.from);
+  const code = indentationCode(before, "//");
+  if (!/(->|[^=!<>]=)$/.test(code) || unbalanced(code)) return undefined;
+  return cx.countColumn(before, before.search(/\S|$/)) + cx.unit;
+});
+
+const EXTRA_SUPPORT: Record<string, Extension[]> = {
+  Java: [annotationIndent],
+  Python: pythonDedent,
+  Kotlin: [kotlinContinuation],
+};
+
 function patchSupport(desc: LanguageDescription, support: LanguageSupport): LanguageSupport {
   const extra = EXTRA_TAGS[desc.name];
   const props = [...(extra ? [styleTags(extra)] : []), ...(EXTRA_PROPS[desc.name] ?? [])];
@@ -472,6 +567,7 @@ function patchSupport(desc: LanguageDescription, support: LanguageSupport): Lang
     props.length && support.language instanceof LRLanguage ? support.language.configure({ props }) : support.language;
   const result = new LanguageSupport(language, [
     support.support,
+    ...(EXTRA_SUPPORT[desc.name] ?? []),
     docCommentTags(desc.name),
     EditorView.editorAttributes.of({ "data-language": desc.name }),
   ]);
@@ -487,7 +583,7 @@ export function loadedSupport(desc: LanguageDescription | null): LanguageSupport
 }
 
 const COLON_INDENT_LANGS = new Set(["gdscript", "python"]);
-const DEDENT_STATEMENT = /^\s*(?:pass|break|continue|return)\b/;
+const DEDENT_STATEMENT = /^\s*(?:pass|break|continue|return|raise)\b/;
 const KEYWORD_OPEN_LANGS = new Set(["elixir", "ruby", "lua"]);
 const KEYWORD_OPEN =
   /\b(?:do(?:\s*\|[^|]*\|)?|then|->)$|^\s*(?:def|defp|defmodule|class|module|function|local\s+function|if|unless|elsif|elseif|else|while|until|for|case|begin|cond|with|receive|try)\b/;

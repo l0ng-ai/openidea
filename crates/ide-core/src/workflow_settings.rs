@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 pub struct VcsSettings {
     /// Colour folders that contain changed files (project tree, tabs).
     pub show_dirty_directories: bool,
+    /// Diffs the user opens show in an editor tab; off, in a separate window.
+    pub diff_as_editor_tab: bool,
     /// Stop file history (Show History) after `history_limit` commits.
     pub limit_history: bool,
     pub history_limit: u32,
@@ -55,6 +57,7 @@ impl Default for VcsSettings {
         Self {
             // IDEA's VcsConfiguration.SHOW_DIRTY_RECURSIVELY is off by default.
             show_dirty_directories: false,
+            diff_as_editor_tab: true,
             limit_history: true,
             history_limit: 1000,
             git: GitSettings::default(),
@@ -76,6 +79,8 @@ pub struct GitSettings {
     /// label is plain text and a click on it places the caret as past the line end.
     pub inline_blame_clickable: bool,
     pub show_branch_in_project_view: bool,
+    /// Branch operations from the branches popup act on every repository of the project.
+    pub sync_branch_operations: bool,
     /// Path to the git executable; empty = auto-detect.
     pub executable: String,
     /// Default of Update Project: `merge` | `rebase`.
@@ -117,6 +122,7 @@ impl Default for GitSettings {
             inline_blame: false,
             inline_blame_clickable: true,
             show_branch_in_project_view: false,
+            sync_branch_operations: true,
             executable: String::new(),
             update_method: "merge".into(),
             auto_update_on_push_rejected: false,
@@ -145,6 +151,7 @@ pub struct CommitSettings {
     /// Commit from the Commit tool window; off = Local Changes in the Git tool
     /// window and a Commit dialog.
     pub non_modal: bool,
+    pub include_changes_by_default: bool,
     /// Start with an empty message instead of the last one / the changelist's.
     pub clear_initial_message: bool,
     pub analyze_code: bool,
@@ -176,12 +183,15 @@ pub struct CommitSettings {
     pub agent_model: String,
     /// That model's thinking level for commit messages; empty keeps the agent's.
     pub agent_effort: String,
+    /// Show the Generate Commit Message with Agent button above the commit message.
+    pub agent_button: bool,
 }
 
 impl Default for CommitSettings {
     fn default() -> Self {
         Self {
             non_modal: true,
+            include_changes_by_default: true,
             clear_initial_message: false,
             analyze_code: true,
             check_todo: true,
@@ -201,6 +211,7 @@ impl Default for CommitSettings {
             agent: String::new(),
             agent_model: String::new(),
             agent_effort: String::new(),
+            agent_button: true,
         }
     }
 }
@@ -604,5 +615,18 @@ impl Default for AgentSecuritySettings {
                 "reboot*".into(),
             ],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn git_settings_without_sync_key_execute_on_all_repositories() {
+        let missing: GitSettings = serde_json::from_str("{}").unwrap();
+        assert!(missing.sync_branch_operations);
+        let off: GitSettings = serde_json::from_str(r#"{"syncBranchOperations":false}"#).unwrap();
+        assert!(!off.sync_branch_operations);
     }
 }

@@ -1,5 +1,6 @@
 /** Imperative dialogs for VCS actions, rendered by one overlay contribution. */
 import { Fragment, useId, useState, type KeyboardEvent, type ReactNode } from "react";
+import clsx from "clsx";
 import { create } from "zustand";
 import { Checkbox, Dialog, HighlightedText, Input, List, Popup, T, listNavigate, useSanitizedField } from "@/ui";
 import { isImeKey } from "@/platform/ime";
@@ -39,6 +40,7 @@ export function VcsDialogHost() {
 export interface PromptOptions {
   title: string;
   label?: string;
+  labelPlacement?: "inline";
   initial?: string;
   placeholder?: string;
   okLabel?: string;
@@ -80,6 +82,7 @@ function PromptDialog(props: PromptOptions & { onDone: (r: PromptResult | null) 
   const {
     title,
     label,
+    labelPlacement,
     initial = "",
     placeholder,
     okLabel = "OK",
@@ -91,7 +94,9 @@ function PromptDialog(props: PromptOptions & { onDone: (r: PromptResult | null) 
     onDone,
   } = props;
   const tx = useTx();
-  const listId = useId();
+  const fieldId = useId();
+  const listId = `${fieldId}-prefixes`;
+  const inline = !!label && labelPlacement === "inline";
   const { ref, clean } = useSanitizedField(sanitize);
   const [value, setValue] = useState(initial);
   const [checked, setChecked] = useState(checkbox?.initial ?? false);
@@ -105,6 +110,7 @@ function PromptDialog(props: PromptOptions & { onDone: (r: PromptResult | null) 
   const shown = suggestions.length > 0;
   const canOverwrite = props.overwriteBranch?.(value) ?? false;
   const error = validate ? validate(value, canOverwrite && overwrite) : value.trim() ? null : "Value must not be empty";
+  const errorId = touched && error && value ? `${fieldId}-error` : undefined;
   const submit = () => {
     setTouched(true);
     if (!error) onDone({ value: value.trim(), checked, ...(canOverwrite ? { overwrite } : {}) });
@@ -136,33 +142,41 @@ function PromptDialog(props: PromptOptions & { onDone: (r: PromptResult | null) 
       else submit();
     }
   };
+  const options = (checkbox || canOverwrite) && (
+    <>
+      {checkbox && <Checkbox checked={checked} onChange={setChecked} label={checkbox.label} />}
+      {canOverwrite && <Checkbox checked={overwrite} onChange={setOverwrite} label="Overwrite existing branch" />}
+    </>
+  );
   return (
     <Dialog
       open
       title={title}
       onClose={() => onDone(null)}
-      width={420}
+      width={inline ? 520 : 420}
       buttons={[
         { label: okLabel, role: "default", disabled: !!error, onClick: submit },
         { label: "Cancel", role: "cancel" },
       ]}
     >
       <form
-        className={styles.form}
+        className={clsx(styles.form, inline && styles.inlinePrompt)}
         onSubmit={(e) => {
           e.preventDefault();
           submit();
         }}
       >
         {label && (
-          <label className={styles.fieldLabel}>
+          <label htmlFor={fieldId} className={styles.fieldLabel}>
             <T>{label}</T>
           </label>
         )}
         <Input
           ref={ref}
+          id={fieldId}
           data-autofocus
-          aria-label={label ?? title}
+          aria-label={label ? undefined : title}
+          aria-describedby={errorId}
           role={hasPrefixes ? "combobox" : undefined}
           aria-autocomplete={hasPrefixes ? "list" : undefined}
           aria-expanded={hasPrefixes ? shown : undefined}
@@ -218,9 +232,12 @@ function PromptDialog(props: PromptOptions & { onDone: (r: PromptResult | null) 
             />
           </div>
         </Popup>
-        {touched && error && value && <div className={styles.error}>{error}</div>}
-        {checkbox && <Checkbox checked={checked} onChange={setChecked} label={checkbox.label} />}
-        {canOverwrite && <Checkbox checked={overwrite} onChange={setOverwrite} label="Overwrite existing branch" />}
+        {errorId && (
+          <div id={errorId} className={styles.error}>
+            {error}
+          </div>
+        )}
+        {inline && options ? <div className={styles.inlinePromptOptions}>{options}</div> : options}
       </form>
     </Dialog>
   );

@@ -2,13 +2,14 @@
 //! remote server ([`crate::rpc`]). `db_export_file` stays in the desktop
 //! shell: its path comes from a local save dialog, so the export must land
 //! on the user's machine, not the side the project runs on.
+use super::Channel;
 use crate::Host;
 use ide_command::command;
 use ide_core::{IdeError, IdeResult, IpcPath, RequestId};
 use ide_db::split::SqlStatement;
 use ide_db::{
-    CompletionModel, DataSource, Databases, DbObjectKind, DbRowEdit, HistoryEntry, PlanNode, QueryResult,
-    SchemaObjects, SortKey, TableDetails, TableInfo, TablePage,
+    CompletionModel, DataSource, Databases, DbObjectKind, DbRowEdit, DbVisibilityChange, HistoryEntry, PlanNode,
+    QueryResult, SchemaObjects, SortKey, TableDetails, TableInfo, TablePage,
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -22,6 +23,14 @@ pub struct StatementOutcome {
     pub statement: SqlStatement,
     pub result: Option<QueryResult>,
     pub error: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Type)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ExecutionEvent {
+    Started { index: u32 },
+    Completed { index: u32, outcome: StatementOutcome },
+    Done { error: Option<IdeError> },
 }
 
 #[command(trust = trusted)]
@@ -63,6 +72,25 @@ pub async fn db_save_sources(host: &Host, window: &str, sources: Vec<DataSource>
     // Replaces the project's data sources with `sources`.
     let db = host.project(window)?.db.clone();
     db.save_sources(sources).await?;
+    sources_changed(host, window)
+}
+
+#[command(trust = trusted)]
+pub async fn db_save_source_visibility(
+    host: &Host,
+    window: &str,
+    id: String,
+    available: Vec<String>,
+    change: DbVisibilityChange,
+) -> IdeResult<()> {
+    let db = host.project(window)?.db.clone();
+    tokio::task::spawn_blocking(move || db.save_source_visibility(&id, &available, change))
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))??;
+    sources_changed(host, window)
+}
+
+fn sources_changed(host: &Host, window: &str) -> IdeResult<()> {
     let root = host.project(window)?.root.clone();
     for project in host.projects().into_iter().filter(|p| p.root == root) {
         project.sink.emit(ide_core::IdeEvent::DbSourcesChanged);
@@ -357,36 +385,79 @@ pub async fn db_execute(
     max_rows: u32,
     schema: Option<String>,
 ) -> IdeResult<Vec<StatementOutcome>> {
-    // Runs `statements` in order on data source `id`, stopping at the first
-    // error. Each result reads past its first `skip` rows (a later page) and keeps
-    // `max_rows`. `schema` is the console's active context: the connection running
-    // each statement is put in it first. Cancel with `cancel_request(request)`.
+    let mut outcomes = Vec::new();
+    execute_statements(host, window, request, &id, statements, skip, max_rows, schema.as_deref(), |event| {
+        if let ExecutionEvent::Completed { outcome, .. } = event {
+            outcomes.push(outcome);
+        }
+        Ok(())
+    })
+    .await?;
+    Ok(outcomes)
+}
+
+#[allow(clippy::too_many_arguments)]
+#[command(trust = trusted)]
+pub async fn db_execute_stream(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    id: String,
+    statements: Vec<SqlStatement>,
+    max_rows: u32,
+    schema: Option<String>,
+    on_progress: Channel<ExecutionEvent>,
+) -> IdeResult<()> {
+    let result = execute_statements(host, window, request, &id, statements, 0, max_rows, schema.as_deref(), |event| {
+        on_progress.send(event)
+    })
+    .await;
+    // The invocation reply can reach the viewer before a large result frame.
+    on_progress.send(ExecutionEvent::Done { error: result.err() })
+}
+
+/// Runs in order on one request and stops on cancellation or the first error.
+#[allow(clippy::too_many_arguments)]
+async fn execute_statements(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    id: &str,
+    statements: Vec<SqlStatement>,
+    skip: u32,
+    max_rows: u32,
+    schema: Option<&str>,
+    mut emit: impl FnMut(ExecutionEvent) -> IdeResult<()>,
+) -> IdeResult<()> {
     let db = host.project(window)?.db.clone();
     let cancel = host.begin_request(request);
-    let mut out = Vec::new();
-    for statement in statements {
-        match db
-            .execute_from(&id, &statement.text, skip as usize, max_rows.max(1) as usize, &cancel, schema.as_deref())
-            .await
-        {
-            Ok(result) => out.push(StatementOutcome { statement, result: Some(result), error: None }),
-            Err(e) if e.kind == ide_core::error::ErrorKind::Cancelled => {
-                host.end_request(request);
-                return Err(e);
+    let result = async {
+        for (index, statement) in statements.into_iter().enumerate() {
+            if cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
             }
-            Err(e) if e.kind == ide_core::error::ErrorKind::PermissionDenied && out.is_empty() => {
-                // Not connected for lack of a password: the UI asks and retries.
-                host.end_request(request);
-                return Err(e);
-            }
-            Err(e) => {
-                out.push(StatementOutcome { statement, result: None, error: Some(e.message) });
+            emit(ExecutionEvent::Started { index: index as u32 })?;
+            let outcome = match db
+                .execute_from(id, &statement.text, skip as usize, max_rows.max(1) as usize, &cancel, schema)
+                .await
+            {
+                Ok(result) => StatementOutcome { statement, result: Some(result), error: None },
+                Err(e) if e.kind == ide_core::error::ErrorKind::Cancelled => return Err(e),
+                // The UI may retry a login failure only before any statement has completed.
+                Err(e) if e.kind == ide_core::error::ErrorKind::PermissionDenied && index == 0 => return Err(e),
+                Err(e) => StatementOutcome { statement, result: None, error: Some(e.message) },
+            };
+            let failed = outcome.error.is_some();
+            emit(ExecutionEvent::Completed { index: index as u32, outcome })?;
+            if failed {
                 break;
             }
         }
+        Ok(())
     }
+    .await;
     host.end_request(request);
-    Ok(out)
+    result
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -539,6 +610,7 @@ ide_command::domain!(
     db_disconnect,
     db_drop_database,
     db_execute,
+    db_execute_stream,
     db_explain,
     db_finish_transaction,
     db_history,
@@ -550,6 +622,7 @@ ide_command::domain!(
     db_object_ddl,
     db_remove_history,
     db_retain_catalog,
+    db_save_source_visibility,
     db_save_sources,
     db_saved_catalog,
     db_schema_objects,
@@ -567,3 +640,69 @@ ide_command::domain!(
     db_test_tunnel,
     db_trust_ssh_host,
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::HostConfig;
+    use ide_db::DbDriver;
+    use std::sync::Arc;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_reporting_error_stops_the_batch_and_releases_the_request() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let root = base.join("project");
+        std::fs::create_dir(&root).unwrap();
+        let host = Host::new(HostConfig {
+            config_dir: base.join("config"),
+            data_dir: base.join("data"),
+            local_data_dir: base.join("local"),
+            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+            syntax: Arc::default(),
+            sink_for: Box::new(|_| Arc::new(|_| {})),
+            owner: |w| w,
+            runtime: tokio::runtime::Handle::current(),
+            project_environment: false,
+        });
+        let window = "main";
+        host.open_project(window, &root).unwrap();
+        host.set_project_trust(&root, true, false).await.unwrap();
+        let id = "test";
+        let file = root.join("test.sqlite");
+        std::fs::File::create(&file).unwrap();
+        db_save_sources(
+            &host,
+            window,
+            vec![DataSource { id: id.into(), name: id.into(), file: Some(file.into()), ..Default::default() }],
+        )
+        .await
+        .unwrap();
+
+        let statements =
+            ide_db::split::split("CREATE TABLE items (n INTEGER); INSERT INTO items VALUES (1);", DbDriver::Sqlite);
+        let request = RequestId(1);
+        let error = execute_statements(&host, window, request, id, statements, 0, 10, None, |event| match event {
+            ExecutionEvent::Started { index: 0 } => Ok(()),
+            ExecutionEvent::Completed { index: 0, outcome } => {
+                assert!(outcome.error.is_none(), "{:?}", outcome.error);
+                Err(IdeError::internal("cannot report result"))
+            }
+            _ => panic!("the failed callback must stop execution"),
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error.message, "cannot report result");
+
+        // After cleanup, cancel is remembered for the next request with this id.
+        host.cancel_request(request);
+        assert!(host.begin_request(request).is_cancelled());
+
+        let query = ide_db::split::split(
+            "SELECT 99 AS n UNION ALL SELECT count(*) FROM items ORDER BY n DESC",
+            DbDriver::Sqlite,
+        );
+        let outcomes = db_execute(&host, window, RequestId(2), id.into(), query, 1, 10, None).await.unwrap();
+        assert_eq!(outcomes[0].result.as_ref().unwrap().rows, vec![vec![Some("0".into())]]);
+    }
+}

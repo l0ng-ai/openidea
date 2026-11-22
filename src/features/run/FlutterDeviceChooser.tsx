@@ -75,6 +75,7 @@ function Chooser({ root }: { root: string }) {
         ref={anchor}
         variant="title"
         className={styles.widgetDevice}
+        data-toolbar-icon-dropdown=""
         tooltip={pinned ? tx`Flutter device, pinned by “${selected?.name ?? ""}”` : tx("Flutter Device")}
         aria-label={tx`Flutter device: ${label}`}
         aria-haspopup="menu"
@@ -82,7 +83,9 @@ function Chooser({ root }: { root: string }) {
         onClick={() => void executeAction("run.flutterChooseDevice")}
       >
         <Icon name={problem ? "warning" : "project-flutter"} size={16} />
-        <span className={styles.widgetName}>{label}</span>
+        <span className={styles.widgetName} data-toolbar-label="">
+          {label}
+        </span>
         <Icon name="chevron-down" size={14} className={styles.widgetChevron} />
       </BarButton>
       <Menu

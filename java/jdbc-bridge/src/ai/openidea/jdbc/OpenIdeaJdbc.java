@@ -120,6 +120,17 @@ public final class OpenIdeaJdbc {
                     n++;
                 }
             }
+        } else if (op.equals("schemaColumns")) {
+            // Every column of the namespace in one call (SQL completion), without primary keys.
+            header(out, "table", "name", "type", "nullable", "default");
+            try (ResultSet rs = m.getColumns(catalog, schema, "%", "%")) {
+                int n = 0;
+                while (rs.next() && n < 100000) {
+                    row(out, rs.getString("TABLE_NAME"), rs.getString("COLUMN_NAME"), rs.getString("TYPE_NAME"),
+                        rs.getInt("NULLABLE") == 0 ? "0" : "1", rs.getString("COLUMN_DEF"));
+                    n++;
+                }
+            }
         } else {
             header(out, "name", "type", "nullable", "default", "primary");
             String table = a.get(1);
@@ -233,7 +244,7 @@ public final class OpenIdeaJdbc {
             switch (op) {
                 case "open" -> open(a, reply);
                 case "schemas" -> schemas(reply);
-                case "tables", "columns" -> metadata(op, a, reply);
+                case "tables", "columns", "schemaColumns" -> metadata(op, a, reply);
                 case "namespace" -> {
                     header(reply, "namespace");
                     String name = null;
@@ -242,6 +253,20 @@ public final class OpenIdeaJdbc {
                         name = catalogs ? connection.getCatalog() : connection.getSchema();
                     } catch (SQLException | AbstractMethodError ignored) {}
                     row(reply, name);
+                }
+                case "valid" -> {
+                    // After a failed statement: whether the session survived (a dropped TCP
+                    // connection leaves every later statement failing until the IDE reconnects).
+                    header(reply, "valid");
+                    boolean valid;
+                    try {
+                        valid = connection != null && !connection.isClosed() && connection.isValid(5);
+                    } catch (AbstractMethodError | SQLFeatureNotSupportedException e) {
+                        valid = true; // A pre-JDBC 4 driver cannot tell: keep the session.
+                    } catch (SQLException e) {
+                        valid = false;
+                    }
+                    row(reply, Boolean.toString(valid));
                 }
                 case "page" -> execute(work, a, reply, true);
                 case "query" -> {

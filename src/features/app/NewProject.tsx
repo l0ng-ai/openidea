@@ -65,9 +65,28 @@ function errorText(e: unknown) {
   return e instanceof Error ? e.message : String(e);
 }
 
-/** Default Project Directory, else the parent of the open project. */
+const LOCATION_KEY = "openidea.newProject.location";
+const DEFAULT_NAME = "untitled";
+
+function lastLocation(): string {
+  try {
+    return localStorage.getItem(LOCATION_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function saveLocation(dir: string) {
+  try {
+    localStorage.setItem(LOCATION_KEY, dir);
+  } catch {
+    // Not kept: the next project starts from the default location.
+  }
+}
+
+/** Default Project Directory, else where the last project was created, else the parent of the open project. */
 function initialLocation(): string {
-  const preset = defaultProjectDirectory();
+  const preset = defaultProjectDirectory() || lastLocation();
   if (preset) return preset;
   const root = useProject.getState().project?.root;
   return root ? root.slice(0, Math.max(root.lastIndexOf("/"), 1)) : "";
@@ -119,7 +138,11 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [selected, setSelected] = useState("empty");
   const [query, setQuery] = useState("");
-  const [name, setName] = useState("untitled");
+  const [name, setName] = useState(DEFAULT_NAME);
+  /** Until the user types a name, it follows the first free `untitled…` in the location. */
+  const [nameEdited, setNameEdited] = useState(false);
+  /** The project path last found taken (something other than an empty folder is there). */
+  const [takenPath, setTakenPath] = useState<string | null>(null);
   const [location, setLocation] = useState(initialLocation);
   const [git, setGit] = useState(true);
   /** Values the user set, per generator; the rest are rendered defaults. */
@@ -212,8 +235,42 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
   const setValue = (id: string, value: string) =>
     setEdited((all) => ({ ...all, [selected]: { ...(all[selected] ?? {}), [id]: value } }));
 
-  const nameError = projectNameError(name);
-  const path = location.trim() && !nameError ? joinPath(location.trim(), name) : "";
+  const syntaxError = projectNameError(name);
+  const path = location.trim() && !syntaxError ? joinPath(location.trim(), name) : "";
+  const nameError =
+    syntaxError ?? (path && takenPath === path ? "A folder with this name already exists and is not empty" : null);
+
+  useEffect(() => {
+    const dir = location.trim();
+    if (nameEdited || !dir) return;
+    let live = true;
+    const timer = setTimeout(() => {
+      call(commands.scaffoldFreeName(dir, DEFAULT_NAME))
+        .then((free) => live && setName(free))
+        .catch(() => {});
+    }, 200);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [location, nameEdited]);
+
+  useEffect(() => {
+    if (!path) return;
+    let live = true;
+    const dir = location.trim();
+    const timer = setTimeout(() => {
+      call(commands.scaffoldTargetTaken(dir, name.trim()))
+        .then((taken) => live && setTakenPath(taken ? path : null))
+        .catch(() => {});
+    }, 150);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+    // `path` already reflects `location` and `name`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [path]);
   const visibleFields = fields.filter((f) => isVisible(f, values));
   const invalidField = visibleFields.find((f) => fieldError(f, values[f.id] ?? ""));
   const missing = requirements.filter((r) => !r.satisfied);
@@ -265,6 +322,7 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
           channel,
         ),
       );
+      saveLocation(location.trim());
       onClose();
       await openProjectInWindow(dir, useProject.getState().project !== null);
     } catch (e) {
@@ -354,7 +412,10 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
                 data-autofocus
                 value={name}
                 invalid={!!nameError}
-                onChange={(e) => setName(e.target.value)}
+                onChange={(e) => {
+                  setNameEdited(true);
+                  setName(e.target.value);
+                }}
               />
               <label className={styles.label} htmlFor="np-location">
                 <T>Location:</T>
@@ -376,7 +437,7 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
                 />
               </div>
               <span />
-              <div className={styles.hint}>
+              <div className={nameError ? `${styles.hint} ${styles.hintError}` : styles.hint}>
                 {nameError ? txTemplate(nameError) : path && txTemplate(`Project will be created in: ${path}`)}
               </div>
               {generator?.git && (

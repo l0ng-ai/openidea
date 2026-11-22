@@ -1,5 +1,5 @@
 /** Actions of the LSP editor layer (ids from keymaps/intellij-macos.ts). */
-import { isGenerateAction } from "./generate";
+import { generateActionIcon, isGenerateAction } from "./generate";
 import type { EditorView } from "@codemirror/view";
 import { executeAction, registerActions, type Action } from "@/platform/actions";
 import { activeEditor, editorsFor, registerSaveParticipant, whenSynced, type TextEditorHandle } from "@/editor/api";
@@ -29,6 +29,7 @@ import {
   startHierarchyRefactoring,
 } from "@/editor/refactor";
 import { evaluateWhen } from "@/platform/context";
+import { tx } from "@/platform/i18n";
 
 /** Editor actions apply to the active text editor unless a tool window or popup owns the keyboard. */
 export const EDITOR_WHEN = "textEditorActive && (editorFocus || !toolWindowFocus)";
@@ -103,12 +104,31 @@ const fixEslintProblems = (v: EditorView) =>
     none: "No ESLint problems to fix",
     label: "Fix ESLint Problems",
   });
-const optimizeImports = (v: EditorView) =>
-  runKindAction(v, "source.organizeImports", {
+/**
+ * typescript-language-server's organize imports only sorts and merges them; removing the unused
+ * ones is its own action, so Optimize Imports runs that first in these languages.
+ */
+const REMOVE_UNUSED_IMPORTS_FIRST = new Set(["javascript", "javascriptreact", "typescript", "typescriptreact"]);
+
+/** Removes unused imports where the server keeps that apart from organizing them; true when it did. */
+export async function removeUnusedImports(view: EditorView): Promise<boolean> {
+  const language = docOf(view)?.language;
+  if (!language || !REMOVE_UNUSED_IMPORTS_FIRST.has(language)) return false;
+  return applyKindSilently(view, "source.removeUnusedImports");
+}
+
+const optimizeImports = async (v: EditorView) => {
+  if (await removeUnusedImports(v)) {
+    // Then sort what is left; there may be nothing to sort.
+    await applyKindSilently(v, "source.organizeImports");
+    return;
+  }
+  return runKindAction(v, "source.organizeImports", {
     whole: true,
     none: "Optimize imports is not available",
     label: "Optimize Imports",
   });
+};
 
 export interface CleanupOptions {
   fixAll?: boolean;
@@ -139,7 +159,10 @@ async function vcsChangedRanges(view: EditorView): Promise<Array<{ from: number;
 /** Code Cleanup of one document: the server's fix-all, organize imports, then reformat (whose result it returns). */
 async function cleanup(view: EditorView, o: CleanupOptions): Promise<FormatResult | null> {
   if (o.fixAll !== false) await applyKindSilently(view, "source.fixAll");
-  if (o.optimizeImports !== false) await applyKindSilently(view, "source.organizeImports");
+  if (o.optimizeImports !== false) {
+    await removeUnusedImports(view);
+    await applyKindSilently(view, "source.organizeImports");
+  }
   if (o.reformat === false) return null;
   const ranges = o.changedTextOnly ? await vcsChangedRanges(view) : undefined;
   return formatDocument(view, { explicit: false, selectionOnly: false, ranges });
@@ -374,7 +397,9 @@ export function registerLspActions(): () => void {
         runKindAction(v, "", {
           predicate: isGenerateAction,
           none: "Nothing to generate here",
-          label: "Generate",
+          label: tx("Generate"),
+          compact: true,
+          actionIcon: generateActionIcon,
         }),
       { keyWhen: GENERATE_KEY_WHEN },
     ),

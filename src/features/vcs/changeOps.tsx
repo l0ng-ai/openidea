@@ -2,7 +2,7 @@
 import { useEffect, useId, useState } from "react";
 import type { FileStatus, Stash } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
-import { Checkbox, Dialog, Icon, IconButton, Input, T, fileIconName } from "@/ui";
+import { Button, Checkbox, Dialog, Input, Radio, T } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { addedThenDeleted, groupOf, remainingOverrides, renamedFromPath } from "./changes";
 import { runCommitChecks } from "./commitChecks";
@@ -12,12 +12,15 @@ import { workflowSettings } from "@/platform/workflowSettings";
 import { notifyFileOperation } from "@/platform/fileOps";
 import { confirmDialog, openDialog } from "./dialogs";
 import { RepoPicker, useBranchInfo } from "./gitMenuDialogs";
-import { KIND_COLOR, baseName, dirName, effectiveKind, relTo, stripSlash } from "./model";
+import { baseName, effectiveKind, stripSlash } from "./model";
 import { logConsole, runOp, saveAll } from "./ops";
 import { ensureCommitIdentity } from "./commitIdentity";
-import { showCompareRevisions } from "./operations";
-import { currentRepo, loadStashes, refreshNow, useVcs } from "./store";
+import { conflictsInstead, showCompareRevisions } from "./operations";
+import { FileChecklist } from "./shelf";
+import { currentRepo, loadStashes, refreshNow, repoName, useVcs } from "./store";
 import styles from "./common.module.css";
+import rollbackStyles from "./RollbackDialog.module.css";
+import unstashStyles from "./UnstashDialog.module.css";
 import { tx } from "@/platform/i18n";
 
 export function firstLine(message: string): string {
@@ -216,12 +219,16 @@ export function showRollbackDialog(files: FileStatus[]) {
 }
 
 function RollbackDialog({ files, onClose }: { files: FileStatus[]; onClose: () => void }) {
-  const root = useVcs((s) => s.root) ?? "";
   const [selected, setSelected] = useState(() => new Set(files.map((f) => f.path)));
   const [deleteAdded, setDeleteAdded] = useState(false);
-  const hasAdded = files.some((f) => f.staged === "added");
+  const chosen = files.filter((f) => selected.has(f.path));
+  const counts = { added: 0, modified: 0, deleted: 0 };
+  for (const file of chosen) {
+    const kind = effectiveKind(file);
+    counts[kind === "added" || kind === "deleted" ? kind : "modified"]++;
+  }
+  const { added, modified, deleted } = counts;
   const run = async () => {
-    const chosen = files.filter((f) => selected.has(f.path));
     onClose();
     if (!chosen.length) return;
     await saveAll();
@@ -240,49 +247,40 @@ function RollbackDialog({ files, onClose }: { files: FileStatus[]; onClose: () =
       open
       title="Rollback Changes"
       onClose={onClose}
-      width={520}
-      footerStart={
-        hasAdded && (
-          <Checkbox checked={deleteAdded} onChange={setDeleteAdded} label="Delete local copies of added files" />
-        )
-      }
+      className={rollbackStyles.dialog}
+      width={540}
+      minWidth={320}
+      minHeight={240}
+      resizable="both"
       buttons={[
-        { label: "Rollback", role: "default", autoFocus: true, disabled: !selected.size, onClick: () => void run() },
-        { label: "Cancel", role: "cancel" },
+        { label: "Rollback", role: "default", disabled: !chosen.length, onClick: () => void run() },
+        { label: "Close", role: "cancel" },
       ]}
     >
-      <div className={styles.section}>
-        {files.length === 1
-          ? tx`${selected.size} of ${files.length} file will be reverted to their last committed state. Uncommitted changes are lost.`
-          : tx`${selected.size} of ${files.length} files will be reverted to their last committed state. Uncommitted changes are lost.`}
+      <div className={rollbackStyles.content}>
+        <FileChecklist
+          files={files}
+          selected={selected}
+          onChange={setSelected}
+          label="Files to roll back"
+          className={rollbackStyles.tree}
+        />
+        <div className={rollbackStyles.summary} role="status">
+          {!chosen.length && <T>No files selected</T>}
+          {added > 0 && <span className={rollbackStyles.added}>{tx`${added} added`}</span>}
+          {modified > 0 && <span className={rollbackStyles.modified}>{tx`${modified} modified`}</span>}
+          {deleted > 0 && <span className={rollbackStyles.deleted}>{tx`${deleted} deleted`}</span>}
+        </div>
+        <Checkbox
+          checked={added > 0 && deleteAdded}
+          disabled={!added}
+          onChange={setDeleteAdded}
+          label="Delete local copies of added files"
+        />
+        <p className={rollbackStyles.warning}>
+          <T>Rollback discards uncommitted changes in the selected files.</T>
+        </p>
       </div>
-      <div className={styles.fileList} role="group" aria-label={tx("Files to roll back")}>
-        {files.map((f) => {
-          const kind = effectiveKind(f) ?? "modified";
-          return (
-            <div key={f.path} className={styles.fileRow}>
-              <Checkbox
-                aria-label={tx`Include ${baseName(f.path)}`}
-                checked={selected.has(f.path)}
-                onChange={(v) =>
-                  setSelected((s) => {
-                    const n = new Set(s);
-                    if (v) n.add(f.path);
-                    else n.delete(f.path);
-                    return n;
-                  })
-                }
-              />
-              <Icon name={fileIconName(baseName(f.path), f.path)} size={14} />
-              <span className={styles.fileName} style={{ color: KIND_COLOR[kind] }}>
-                {baseName(f.path)}
-              </span>
-              <span className={styles.fileDir}>{dirName(relTo(root, stripSlash(f.path)))}</span>
-            </div>
-          );
-        })}
-      </div>
-      <div style={{ height: 12 }} />
     </Dialog>
   );
 }
@@ -445,6 +443,7 @@ export async function unstash(o: UnstashOptions, repo = currentRepo()) {
   const { title, success } = unstashTitles(o);
   await runOp(title, () => call(commands.vcsStashApply(repo, o.index, o.pop, o.reinstateIndex, o.branch)), {
     success,
+    onError: conflictsInstead,
   });
   void loadStashes().catch((e) => logConsole("err", String(e)));
 }
@@ -458,37 +457,71 @@ export function showUnstashDialog(index = 0, repo = currentRepo()) {
   openDialog((close) => <UnstashDialog initial={index} repo={repo} onClose={close} />);
 }
 
-function UnstashDialog({ initial, repo, onClose }: { initial: number; repo: string | null; onClose: () => void }) {
-  const [stashes, setStashes] = useState<Stash[]>([]);
+function UnstashDialog({
+  initial,
+  repo: initialRepo,
+  onClose,
+}: {
+  initial: number;
+  repo: string | null;
+  onClose: () => void;
+}) {
+  const id = useId();
+  const [{ repo, index }, setSelection] = useState({ repo: initialRepo, index: initial });
+  const roots = useVcs((s) => s.roots);
+  const projectRoot = useVcs((s) => s.root);
+  const root = repo ?? roots[0] ?? projectRoot;
+  const head = useBranchInfo(repo);
+  const currentBranch = head?.head ?? (head?.headCommit ? tx("Detached HEAD") : "—");
+  const [loaded, setLoaded] = useState<{ repo: string | null; tick: number; stashes: Stash[] } | null>(null);
   const [tick, setTick] = useState(0);
+  const [dropping, setDropping] = useState(false);
+  const stashes = loaded?.repo === repo ? loaded.stashes : null;
+  const loading = stashes === null || loaded?.tick !== tick;
   useEffect(() => {
     let live = true;
     void call(commands.vcsStashes(repo))
-      .then((value) => live && setStashes(value))
-      .catch((e) => logConsole("err", String(e)));
+      .then((stashes) => live && setLoaded({ repo, tick, stashes }))
+      .catch((e) => {
+        if (live) setLoaded({ repo, tick, stashes: [] });
+        logConsole("err", String(e));
+      });
     return () => {
       live = false;
     };
   }, [repo, tick]);
-  const [index, setIndex] = useState(initial);
   const [pop, setPop] = useState(false);
   const [reinstateIndex, setReinstateIndex] = useState(false);
   const [branch, setBranch] = useState("");
   const asBranch = branch.trim();
-  const chosen = stashes.find((s) => s.index === index) ?? stashes[0];
+  const chosen = stashes?.find((s) => s.index === index) ?? stashes?.[0];
+  const ready = !!chosen && !loading && !dropping;
+  const chooseRepo = (next: string) => {
+    if (root === next) return;
+    setSelection({ repo: next, index: 0 });
+    setLoaded(null);
+    setBranch("");
+  };
   const view = () => {
-    if (!chosen) return;
+    if (!ready || !chosen) return;
     const ref = `stash@{${chosen.index}}`;
     showCompareRevisions(`${ref}^`, ref, `${ref}^`, ref, repo);
   };
   const drop = async () => {
-    if (!chosen || !(await dropStash(chosen.index, chosen.message, repo))) return;
-    // The older stashes move up: the next one takes the dropped one's index, else the new last one.
-    setIndex(Math.max(0, Math.min(chosen.index, stashes.length - 2)));
-    setTick((n) => n + 1);
+    if (!ready || !chosen || !stashes) return;
+    setDropping(true);
+    try {
+      if (!(await dropStash(chosen.index, chosen.message, repo))) return;
+      // The older stashes move up: the next one takes the dropped one's index, else the new last one.
+      const next = Math.max(0, Math.min(chosen.index, stashes.length - 2));
+      setSelection((selection) => (selection.repo === repo ? { repo, index: next } : selection));
+      setTick((n) => n + 1);
+    } finally {
+      setDropping(false);
+    }
   };
   const submit = () => {
-    if (!chosen) return;
+    if (!ready || !chosen) return;
     onClose();
     void unstash({ index: chosen.index, pop, reinstateIndex, branch: asBranch || null }, repo);
   };
@@ -497,54 +530,107 @@ function UnstashDialog({ initial, repo, onClose }: { initial: number; repo: stri
       open
       title="Unstash Changes"
       onClose={onClose}
-      width={520}
+      width={600}
       buttons={[
         {
           label: asBranch ? "Create Branch" : pop ? "Pop Stash" : "Apply Stash",
           role: "default",
-          disabled: !chosen,
+          disabled: !ready,
           onClick: submit,
         },
         { label: "Cancel", role: "cancel" },
       ]}
     >
       <form
-        className={styles.form}
+        className={unstashStyles.form}
         onSubmit={(e) => {
           e.preventDefault();
           submit();
         }}
       >
-        <div className={styles.manageBar} role="toolbar" aria-label={tx("Stashes")}>
-          <IconButton icon="diff" title="Show Changes" size="small" disabled={!chosen} onClick={view} />
-          <IconButton icon="trash" title="Drop Stash" size="small" disabled={!chosen} onClick={() => void drop()} />
-        </div>
-        <div className={styles.choiceList} role="radiogroup" aria-label={tx("Stashes")}>
-          {stashes.length === 0 && (
-            <div className={styles.hint}>
-              <T>No stashes</T>
-            </div>
-          )}
-          {stashes.map((s) => (
-            <label key={s.index} className={styles.radioRow}>
-              <input type="radio" name="stash" checked={chosen?.index === s.index} onChange={() => setIndex(s.index)} />
-              <span className={styles.radioText}>
-                <span>{`stash@{${s.index}}: ${s.message}`}</span>
-              </span>
+        {roots.length > 1 ? (
+          <>
+            <label className={unstashStyles.label} htmlFor={`${id}-repo`}>
+              <T>Repository:</T>
             </label>
-          ))}
+            <RepoPicker id={`${id}-repo`} repo={repo} onChange={chooseRepo} />
+          </>
+        ) : (
+          <>
+            <span className={unstashStyles.label}>
+              <T>Repository:</T>
+            </span>
+            <span className={unstashStyles.fact}>{root ? repoName(root) : "—"}</span>
+          </>
+        )}
+        <span className={unstashStyles.label}>
+          <T>Current branch:</T>
+        </span>
+        <span className={unstashStyles.fact} title={currentBranch}>
+          {currentBranch}
+        </span>
+        <span className={unstashStyles.listLabel} id={`${id}-stashes`}>
+          <T>Stashes:</T>
+        </span>
+        <div className={unstashStyles.stashPanel}>
+          <div
+            className={unstashStyles.stashes}
+            role="radiogroup"
+            aria-labelledby={`${id}-stashes`}
+            aria-busy={loading || dropping}
+          >
+            {stashes?.length ? (
+              stashes.map((stash) => {
+                const name = `stash@{${stash.index}}: ${stash.message}`;
+                return (
+                  <Radio
+                    key={stash.index}
+                    className={unstashStyles.stash}
+                    name={`${id}-stash`}
+                    checked={chosen?.index === stash.index}
+                    disabled={loading || dropping}
+                    onChange={() => setSelection({ repo, index: stash.index })}
+                    label={
+                      <span className={unstashStyles.stashText} title={name}>
+                        {name}
+                      </span>
+                    }
+                  />
+                );
+              })
+            ) : (
+              <div className={unstashStyles.status}>
+                <T>{stashes === null ? "Loading…" : "No stashes"}</T>
+              </div>
+            )}
+          </div>
+          <div className={unstashStyles.actions}>
+            <Button disabled={!ready} onClick={view}>
+              Show Changes
+            </Button>
+            <Button disabled={!ready} onClick={() => void drop()}>
+              Drop Stash
+            </Button>
+          </div>
         </div>
-        <Checkbox checked={pop || !!asBranch} disabled={!!asBranch} onChange={setPop} label="Pop stash" />
-        <Checkbox
-          checked={reinstateIndex || !!asBranch}
-          disabled={!!asBranch}
-          onChange={setReinstateIndex}
-          label="Reinstate index"
-        />
-        <label className={styles.fieldLabel}>
+        <div className={unstashStyles.options}>
+          <Checkbox checked={pop || !!asBranch} disabled={!!asBranch} onChange={setPop} label="Pop stash" />
+          <Checkbox
+            checked={reinstateIndex || !!asBranch}
+            disabled={!!asBranch}
+            onChange={setReinstateIndex}
+            label="Reinstate index"
+          />
+        </div>
+        <label className={unstashStyles.label} htmlFor={`${id}-branch`}>
           <T>As new branch:</T>
         </label>
-        <Input mono aria-label="As new branch" value={branch} onChange={(e) => setBranch(e.target.value)} />
+        <Input
+          id={`${id}-branch`}
+          aria-label={tx("As new branch")}
+          value={branch}
+          onChange={(e) => setBranch(e.target.value)}
+        />
       </form>
     </Dialog>
   );

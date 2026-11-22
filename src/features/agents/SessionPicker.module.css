@@ -181,6 +181,13 @@
   background: var(--success);
 }
 
+.empty {
+  padding: 12px;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  text-align: center;
+}
+
 .inlineLink {
   padding: 2px 6px;
   border: 0;
@@ -198,14 +205,10 @@
   color: var(--fg-strong);
 }
 
-.empty {
-  padding: 12px;
-  color: var(--fg-muted);
-  font-size: var(--fs-small);
-  text-align: center;
-}
-
 .footer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
   padding: 6px 12px 2px;
   border-top: 1px solid var(--border);
   color: var(--fg-muted);

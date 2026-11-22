@@ -92,15 +92,18 @@ pub struct ProjectIndex {
 }
 
 /// Folders indexed alongside the internal state root.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Default, PartialEq)]
 pub struct IndexRoots {
     pub include_root: bool,
     pub folders: Vec<PathBuf>,
+    /// Folders with exclude globs of their own (an attached project's), relative to the folder;
+    /// the other folders share the project's.
+    pub excludes: std::collections::BTreeMap<PathBuf, Vec<String>>,
 }
 
 impl From<Vec<PathBuf>> for IndexRoots {
     fn from(folders: Vec<PathBuf>) -> Self {
-        Self { include_root: true, folders }
+        Self { include_root: true, folders, ..Default::default() }
     }
 }
 
@@ -265,7 +268,7 @@ impl ProjectIndex {
     pub fn find_files(&self, query: &str, limit: usize) -> Vec<FileMatch> {
         let recent = self.shared.recent.lock().clone();
         let d = self.shared.data.read();
-        matching::find_files(&d, &matching::Recents::new(&recent), query, limit)
+        matching::find_files(&d, &matching::Recents::new(&recent), query, Some(&self.root), limit)
     }
 
     /// All indexed files with this exact basename, for resolving printed source locations.
@@ -301,7 +304,7 @@ impl ProjectIndex {
 
     /// Fuzzy search for folders that hold indexed files; `rel_path` ends in `/`.
     pub fn find_dirs(&self, query: &str, limit: usize) -> Vec<FileMatch> {
-        matching::find_dirs(&self.shared.data.read(), query, limit)
+        matching::find_dirs(&self.shared.data.read(), query, Some(&self.root), limit)
     }
 
     /// Fuzzy symbol search; CamelHump aware (`OCo` → `OrderController`).
@@ -574,11 +577,11 @@ pub mod bench_support {
         }
 
         pub fn find_files(&self, query: &str, limit: usize) -> Vec<FileMatch> {
-            matching::find_files(&self.data, &matching::Recents::new(&self.recent), query, limit)
+            matching::find_files(&self.data, &matching::Recents::new(&self.recent), query, None, limit)
         }
 
         pub fn find_dirs(&self, query: &str, limit: usize) -> Vec<FileMatch> {
-            matching::find_dirs(&self.data, query, limit)
+            matching::find_dirs(&self.data, query, None, limit)
         }
 
         pub fn find_symbols(&self, query: &str, filter: SymbolFilter, limit: usize) -> Vec<SymbolMatch> {

@@ -384,6 +384,7 @@ fn run_raw_env_once(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     tracing::debug!(?args, "git");
+    let refresh = IndexRefresh::before(root, args, env);
     let mut session = CommandSession::start(&mut cmd);
     let mut child = cmd.spawn().map_err(spawn_error)?;
     let writer = match (stdin, child.stdin.take()) {
@@ -401,7 +402,47 @@ fn run_raw_env_once(
         let _ = w.join();
     }
     session.finish(out.status.success(), &String::from_utf8_lossy(&out.stderr));
+    refresh.after();
     Ok(Output { stdout: out.stdout, stderr: out.stderr, code: out.status.code() })
+}
+
+/// `git diff` against the working tree rewrites the index when it meets files whose stat data
+/// is stale (`diff.autoRefreshIndex`), even under `--no-optional-locks`. Like status's
+/// write-back, that is a side effect of reading: recorded as ours, watchers don't report it as
+/// a repository change. Otherwise a view that re-reads on repository changes re-triggers itself,
+/// endlessly where git and gix disagree on stat data (Windows, #4792).
+struct IndexRefresh(Option<(PathBuf, crate::index_writes::Stamp)>);
+
+impl IndexRefresh {
+    fn before(root: &Path, args: &[&str], env: &[(&str, &std::ffi::OsStr)]) -> Self {
+        let reads_worktree = subcommand(args) == "diff"
+            && !args.iter().any(|a| matches!(*a, "--cached" | "--staged" | "--no-index"))
+            && !env.iter().any(|(k, _)| *k == "GIT_INDEX_FILE");
+        Self(reads_worktree.then(|| index_file(root)).flatten().map(|index| {
+            let stamp = crate::index_writes::stamp(&index);
+            (index, stamp)
+        }))
+    }
+
+    fn after(self) {
+        if let Some((index, stamp)) = self.0
+            && !stamp.still_holds(&index)
+        {
+            crate::index_writes::lock().record(&index);
+        }
+    }
+}
+
+/// The index of the working tree at `root`: `.git/index`, or a linked worktree's own index
+/// in the gitdir its `.git` file names.
+fn index_file(root: &Path) -> Option<PathBuf> {
+    let dot_git = root.join(".git");
+    if dot_git.is_dir() {
+        return Some(dot_git.join("index"));
+    }
+    let text = std::fs::read_to_string(&dot_git).ok()?;
+    let dir = Path::new(text.trim().strip_prefix("gitdir:")?.trim());
+    Some(root.join(dir).join("index"))
 }
 
 /// Captures binary/NUL-delimited read output while allowing cancellation to kill git.
@@ -497,6 +538,7 @@ fn run_capture(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     own_group(&mut cmd);
+    let refresh = IndexRefresh::before(root, args, &[]);
     let mut session = CommandSession::start(&mut cmd);
     let mut child = cmd.spawn().map_err(spawn_error)?;
     let writer = match (stdin, child.stdin.take()) {
@@ -550,6 +592,7 @@ fn run_capture(
     };
     let out = Output { stdout: join(stdout)?, stderr: join(stderr)?, code: status.code() };
     session.finish(status.success(), &String::from_utf8_lossy(&out.stderr));
+    refresh.after();
     if out.stdout.len() > max || out.stderr.len() > max {
         return Err(IdeError::invalid(format!("git output exceeds {max} bytes")));
     }

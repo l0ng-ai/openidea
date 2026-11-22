@@ -9,6 +9,7 @@ import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@
 import type { LineHunk } from "@/bindings";
 import { tx } from "@/platform/i18n";
 import { commands } from "@/platform/ipc";
+import { onWorkflowSettingsChange, workflowSettings } from "@/platform/workflowSettings";
 import { checkOf, hunkIncluded, toggledHunk } from "./changes";
 import { useChangelists, withListDefaults } from "./changelists";
 import { stagingAreaOn } from "./staging";
@@ -39,7 +40,8 @@ function inclusionOf(path: string) {
   const { status, root } = useVcs.getState();
   const { checks, excludedHunks } = useCommit.getState();
   const effective = withListDefaults(status, root ?? "", useChangelists.getState().state, checks);
-  return { key: fs.path, check: checkOf(fs, effective), excluded: excludedHunks.get(fs.path) };
+  const check = checkOf(fs, effective, workflowSettings().vcs.commit.includeChangesByDefault);
+  return { key: fs.path, check, excluded: excludedHunks.get(fs.path) };
 }
 
 /** Includes / excludes one changed block of `path`; `all` are the keys of every block. */
@@ -97,12 +99,14 @@ export function inclusionGutter(path: string, base: string): Extension {
       seq = 0;
       live = true;
       unsubscribe: () => void;
+      unsubscribeDefault: () => void;
       constructor(readonly view: EditorView) {
         this.schedule(0);
+        const redraw = () => queueMicrotask(() => this.live && this.view.dispatch({ effects: refresh.of(null) }));
         this.unsubscribe = useCommit.subscribe((s, p) => {
-          if (s.checks !== p.checks || s.excludedHunks !== p.excludedHunks)
-            queueMicrotask(() => this.live && this.view.dispatch({ effects: refresh.of(null) }));
+          if (s.checks !== p.checks || s.excludedHunks !== p.excludedHunks) redraw();
         });
+        this.unsubscribeDefault = onWorkflowSettingsChange((s) => s.vcs.commit.includeChangesByDefault, redraw);
       }
       update(u: ViewUpdate) {
         if (u.docChanged) this.schedule(250);
@@ -129,6 +133,7 @@ export function inclusionGutter(path: string, base: string): Extension {
       destroy() {
         if (this.timer) clearTimeout(this.timer);
         this.unsubscribe();
+        this.unsubscribeDefault();
         this.live = false;
       }
     },

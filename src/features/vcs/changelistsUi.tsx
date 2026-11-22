@@ -1,6 +1,7 @@
 /** Change list dialogs: New / Edit Changelist, Move to Another Changelist, delete. */
-import { useState } from "react";
-import { Checkbox, Dialog, Input, Select, T } from "@/ui";
+import { useId, useRef, useState, type ChangeEvent } from "react";
+import { Checkbox, Dialog, IconButton, Input, Popup, SelectListbox, T, type SelectOption } from "@/ui";
+import type { InputProps } from "@/ui/Input";
 import { notifications } from "@/workbench/contributions";
 import {
   activeList,
@@ -22,6 +23,7 @@ import { isModalCommit, openCommit } from "./commitUi";
 import { confirmDialog, openDialog } from "./dialogs";
 import { fileCount, stripSlash } from "./model";
 import { refreshNow, useVcs } from "./store";
+import formStyles from "./ChangelistForm.module.css";
 import styles from "./common.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -31,43 +33,137 @@ interface FormValue {
   active: boolean;
 }
 
+function ChangelistNamePicker({
+  field,
+  options,
+  newName,
+  onChoose,
+}: {
+  field: InputProps;
+  options: readonly SelectOption[];
+  newName: boolean;
+  onChoose: (name: string) => void;
+}) {
+  const anchor = useRef<HTMLDivElement>(null);
+  const input = useRef<HTMLInputElement>(null);
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <div
+        ref={anchor}
+        className={formStyles.picker}
+        data-invalid={field.invalid || undefined}
+        data-open={open || undefined}
+      >
+        <Input
+          {...field}
+          ref={input}
+          variant="bare"
+          autoSelect
+          onKeyDown={(event) => {
+            if (event.key !== "ArrowDown" || event.nativeEvent.isComposing || !options.length) return;
+            event.preventDefault();
+            setOpen(true);
+          }}
+        />
+        {newName && (
+          <span className={formStyles.newName}>
+            <T>New</T>
+          </span>
+        )}
+        <IconButton
+          icon="chevron-down"
+          title="Choose changelist"
+          size="small"
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          disabled={!options.length}
+          onClick={() => {
+            input.current?.focus();
+            setOpen(!open);
+          }}
+        />
+      </div>
+      <Popup open={open} onClose={() => setOpen(false)} anchor={anchor} matchWidth role="presentation">
+        <SelectListbox
+          options={options}
+          value={typeof field.value === "string" ? field.value : null}
+          aria-label="Target changelist"
+          onChoose={(name) => {
+            onChoose(name);
+            setOpen(false);
+          }}
+        />
+      </Popup>
+    </>
+  );
+}
+
 function ChangelistForm({
   value,
   onChange,
   error,
   activeDisabled,
+  nameOptions,
+  existingDetails,
+  hint,
 }: {
   value: FormValue;
   onChange: (v: FormValue) => void;
   error: string | null;
   activeDisabled?: boolean;
+  nameOptions?: readonly SelectOption[];
+  existingDetails?: Pick<FormValue, "comment" | "active">;
+  hint?: string;
 }) {
+  const id = useId();
+  const errorId = value.name && error ? `${id}-error` : undefined;
+  const nameField = {
+    id: `${id}-name`,
+    "data-autofocus": "",
+    value: value.name,
+    invalid: !!errorId,
+    "aria-describedby": errorId,
+    onChange: (e: ChangeEvent<HTMLInputElement>) => onChange({ ...value, name: e.target.value }),
+  };
   return (
-    <div className={styles.form}>
-      <label className={styles.fieldLabel} htmlFor="openidea-cl-name">
+    <div className={formStyles.form}>
+      {hint && <div className={formStyles.hint}>{hint}</div>}
+      <label className={formStyles.nameLabel} htmlFor={`${id}-name`}>
         <T>Name:</T>
       </label>
-      <Input
-        id="openidea-cl-name"
-        data-autofocus
-        value={value.name}
-        invalid={!!value.name && !!error}
-        onChange={(e) => onChange({ ...value, name: e.target.value })}
-      />
-      {value.name && error && <div className={styles.error}>{error}</div>}
-      <label className={styles.fieldLabel} htmlFor="openidea-cl-comment">
+      <div className={formStyles.nameField}>
+        {nameOptions ? (
+          <ChangelistNamePicker
+            field={nameField}
+            options={nameOptions}
+            newName={!existingDetails && !error}
+            onChoose={(name) => onChange({ ...value, name })}
+          />
+        ) : (
+          <Input {...nameField} />
+        )}
+        {errorId && (
+          <div className={styles.error} id={errorId}>
+            {error}
+          </div>
+        )}
+      </div>
+      <label className={formStyles.commentLabel} htmlFor={`${id}-comment`}>
         <T>Comment:</T>
       </label>
       <textarea
-        id="openidea-cl-comment"
+        id={`${id}-comment`}
         className={styles.textarea}
-        rows={3}
-        value={value.comment}
+        rows={4}
+        value={existingDetails?.comment ?? value.comment}
+        readOnly={!!existingDetails}
         onChange={(e) => onChange({ ...value, comment: e.target.value })}
       />
       <Checkbox
-        checked={value.active}
-        disabled={activeDisabled}
+        className={formStyles.active}
+        checked={existingDetails?.active ?? value.active}
+        disabled={activeDisabled || !!existingDetails}
         onChange={(active) => onChange({ ...value, active })}
         label="Set active"
       />
@@ -97,7 +193,7 @@ function NewChangelistDialog({ moveRels, onClose }: { moveRels: readonly string[
       open
       title="New Changelist"
       onClose={onClose}
-      width={420}
+      width={500}
       buttons={[
         { label: "OK", role: "default", disabled: !!error, onClick: create },
         { label: "Cancel", role: "cancel" },
@@ -136,7 +232,7 @@ function EditChangelistDialog({ id, onClose }: { id: string; onClose: () => void
       open
       title="Edit Changelist"
       onClose={onClose}
-      width={420}
+      width={500}
       buttons={[
         { label: "OK", role: "default", disabled: !!error, onClick: save },
         { label: "Cancel", role: "cancel" },
@@ -288,13 +384,26 @@ function TargetListDialog({
   const state = useChangelists((s) => s.state);
   const [currentLists] = useState(() => new Set(exclude));
   const others = state.lists.filter((l) => !(currentLists.size === 1 && currentLists.has(l.id)));
-  const [mode, setMode] = useState<"existing" | "new">(others.length ? "existing" : "new");
-  const [target, setTarget] = useState((others.find((l) => l.id === state.active) ?? others[0])?.id ?? state.active);
-  const [value, setValue] = useState<FormValue>({ name: suggestedName, comment: "", active: false });
-  const error = mode === "new" ? validateListName(state, value.name) : null;
+  const [value, setValue] = useState<FormValue>(() => ({
+    name: (others.find((l) => l.id === state.active) ?? others[0])?.name ?? suggestedName,
+    comment: "",
+    active: false,
+  }));
+  const target = others.find((l) => l.name.toLowerCase() === value.name.trim().toLowerCase());
+  const error = target ? null : validateListName(state, value.name);
+  const nameOptions: SelectOption[] = others.map((l) => ({
+    value: l.name,
+    label: l.id === state.active ? tx`${l.name} (active)` : l.name,
+    verbatim: true,
+  }));
+  if (!validateListName(state, suggestedName)) {
+    nameOptions.unshift({ value: suggestedName, label: suggestedName, detail: "New", verbatim: true });
+  }
   const choose = () => {
     if (error) return;
-    if (mode === "new") {
+    if (target) {
+      onChoose(target.id);
+    } else {
       let id = "";
       updateChangelists((s) => {
         const r = addList(s, value.name, { comment: value.comment, makeActive: value.active });
@@ -302,8 +411,6 @@ function TargetListDialog({
         return r.state;
       });
       onChoose(id);
-    } else {
-      onChoose(target);
     }
     onClose();
   };
@@ -312,41 +419,20 @@ function TargetListDialog({
       open
       title={title}
       onClose={onClose}
-      width={440}
+      width={500}
       buttons={[
         { label: "OK", role: "default", disabled: !!error, onClick: choose },
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div className={styles.form} role="radiogroup" aria-label={tx("Target changelist")}>
-        {hint && <div className={styles.hint}>{hint}</div>}
-        <label className={styles.radioRow}>
-          <input
-            type="radio"
-            name="target"
-            checked={mode === "existing"}
-            disabled={!others.length}
-            onChange={() => setMode("existing")}
-          />
-          <span className={styles.radioText}>
-            <T>Existing changelist:</T>
-          </span>
-        </label>
-        <Select
-          value={target}
-          disabled={mode !== "existing"}
-          aria-label="Existing changelist"
-          onChange={setTarget}
-          options={others.map((l) => ({ value: l.id, label: l.id === state.active ? tx`${l.name} (active)` : l.name }))}
-        />
-        <label className={styles.radioRow}>
-          <input type="radio" name="target" checked={mode === "new"} onChange={() => setMode("new")} />
-          <span className={styles.radioText}>
-            <T>New changelist:</T>
-          </span>
-        </label>
-      </div>
-      {mode === "new" && <ChangelistForm value={value} onChange={setValue} error={error} />}
+      <ChangelistForm
+        value={value}
+        onChange={setValue}
+        error={error}
+        hint={hint}
+        nameOptions={nameOptions}
+        existingDetails={target ? { comment: target.comment ?? "", active: target.id === state.active } : undefined}
+      />
     </Dialog>
   );
 }

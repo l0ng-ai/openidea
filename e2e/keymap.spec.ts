@@ -133,3 +133,20 @@ test("rectangular drag remains configurable after removal and saves a middle mou
   await expect(row).toContainText("Middle Click");
   await settings.getByRole("button", { name: "Cancel", exact: true }).click();
 });
+
+test("the action search also finds actions by typed shortcut text", async ({ workbench: page }) => {
+  await page.keyboard.press("Meta+,");
+  const settings = page.getByRole("dialog", { name: "Settings", exact: true });
+  await settings.getByRole("treeitem", { name: "Keymap", exact: true }).click();
+  const search = settings.getByRole("textbox", { name: "Search actions", exact: true });
+  const actions = settings.getByRole("tree", { name: "Actions" });
+  const goToFile = actions.getByRole("treeitem", { name: /Go to File/ });
+  for (const query of ["cmd+shift+o", "Shift+Meta+O", "⇧⌘O"]) {
+    await search.fill(query);
+    await expect(goToFile).toBeVisible();
+    await expect(actions.getByRole("treeitem", { name: /Recent Files/ })).toHaveCount(0);
+  }
+  const shots = process.env.OPENIDEA_E2E_SHOTS;
+  if (shots) await settings.screenshot({ path: `${shots}/after.png`, animations: "disabled" });
+  await settings.getByRole("button", { name: "Cancel", exact: true }).click();
+});

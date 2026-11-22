@@ -1649,7 +1649,7 @@ pub fn jvm_inspect_bundle(data_dir: &Path) -> Option<PathBuf> {
     install_bundle(
         data_dir,
         "jvm-inspect",
-        "1.1.0",
+        "1.2.0",
         include_bytes!("../../../java/jvm-inspect/openidea-jvm-inspect.jar"),
     )
 }
@@ -1745,7 +1745,7 @@ mod usages_bundle_tests {
             std::fs::write(dir.path().join(name), b"old").unwrap();
         }
         let jar = super::jvm_inspect_bundle(dir.path()).unwrap();
-        assert_eq!(jar, dir.path().join("jvm-inspect-1.1.0.jar"));
+        assert_eq!(jar, dir.path().join("jvm-inspect-1.2.0.jar"));
         assert_eq!(std::fs::read(&jar).unwrap(), include_bytes!("../../../java/jvm-inspect/openidea-jvm-inspect.jar"));
         assert!(!dir.path().join("jvm-inspect-0.9.0.jar").exists());
         assert_eq!(std::fs::read(dir.path().join("java-usages-1.7.0.jar")).unwrap(), b"old");

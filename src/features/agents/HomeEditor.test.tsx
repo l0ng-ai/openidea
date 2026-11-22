@@ -90,15 +90,16 @@ beforeEach(() => {
 });
 
 const modelButton = () => screen.getByRole("button", { name: "Model" });
+const settingsButton = () => screen.getByRole("button", { name: /^Model settings:/ });
 
 async function chooseModel(model: string) {
   if (!screen.queryByRole("dialog", { name: "Model" })) fireEvent.click(modelButton());
-  fireEvent.click(screen.getByRole("option", { name: model }));
+  fireEvent.click(screen.getByTitle(model));
   fireEvent.pointerDown(document.body);
 }
 
 async function chooseEffort(effort: string) {
-  if (!screen.queryByRole("dialog", { name: "Model" })) fireEvent.click(modelButton());
+  fireEvent.click(settingsButton());
   const group = screen.getByRole("radiogroup", { name: "Effort Level" });
   fireEvent.click(within(group).getByRole("radio", { name: effort }));
   fireEvent.keyDown(document, { key: "Escape" });
@@ -107,14 +108,14 @@ async function chooseEffort(effort: string) {
 it("switches model-specific levels and restores each draft effort before starting", async () => {
   render(<HomeEditor />);
   expect(modelButton()).toHaveTextContent("big");
-  expect(modelButton()).toHaveTextContent("high");
+  expect(settingsButton()).toHaveTextContent("high");
   await chooseModel("small");
-  expect(modelButton()).toHaveTextContent("minimal");
+  expect(settingsButton()).toHaveTextContent("minimal");
   await chooseEffort("medium");
   await chooseModel("big");
-  expect(modelButton()).toHaveTextContent("high");
+  expect(settingsButton()).toHaveTextContent("high");
   await chooseModel("small");
-  expect(modelButton()).toHaveTextContent("medium");
+  expect(settingsButton()).toHaveTextContent("medium");
   fireEvent.click(screen.getByRole("button", { name: "Start" }));
   await waitFor(() => expect(backend.create).toHaveBeenCalled());
   expect(backend.create.mock.calls[0]![0].config).toEqual([
@@ -143,12 +144,10 @@ it("uses GitHub Copilot's own defaults and preserves per-model context tier and 
   useAgents.setState({ providers: [copilot], draft: savedDraft({ provider: "copilot", config: {} }) });
   render(<HomeEditor />);
   expect(modelButton()).toHaveTextContent("gemini-4-carbon");
-  expect(modelButton()).toHaveTextContent("medium");
-  expect(modelButton()).toHaveTextContent("default");
+  expect(settingsButton()).toHaveTextContent("medium · default");
   await chooseModel("gpt-5.6-sol");
   expect(modelButton()).toHaveTextContent("gpt-5.6-sol");
-  expect(modelButton()).toHaveTextContent("medium");
-  expect(modelButton()).toHaveTextContent("default");
+  expect(settingsButton()).toHaveTextContent("medium · default");
   fireEvent.click(screen.getByRole("button", { name: "Start" }));
   await waitFor(() => expect(backend.create).toHaveBeenCalled());
   expect(backend.create.mock.calls[0]![0].config).toEqual([
@@ -182,7 +181,7 @@ it("ignores old provider-wide effort choices and refreshes unsupported per-model
     draft: savedDraft({ provider: "fake", config: { effort: "low" }, thoughtLevels: { big: { effort: "removed" } } }),
   });
   render(<HomeEditor />);
-  expect(modelButton()).toHaveTextContent("high");
+  expect(settingsButton()).toHaveTextContent("high");
   fireEvent.click(screen.getByRole("button", { name: "Start" }));
   await waitFor(() => expect(backend.create).toHaveBeenCalled());
   expect(backend.create.mock.calls[0]![0].config).toContainEqual({ id: "effort", value: "high" });

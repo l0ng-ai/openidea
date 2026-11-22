@@ -84,11 +84,16 @@ pub struct Launch {
     pub editor: Option<Box<EditorLaunch>>,
 }
 
-/// A file opened in a lightweight editor window, with optional caret / selection (0-based).
+/// What a lightweight editor window shows: a file, with optional caret / selection (0-based), or
+/// the tab of another editor kind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct EditorLaunch {
-    pub path: ide_core::IpcPath,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<ide_core::IpcPath>,
+    /// The tab's editor input, as JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -132,7 +137,7 @@ pub struct ComparisonLaunch {
 
 /// One side of a diff window's comparison (the UI's `DiffSide`, `diffInput.ts`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum DiffSide {
     /// File content at a Git revision (`HEAD`, `:0` = index, a commit id).
     Rev {
@@ -146,6 +151,8 @@ pub enum DiffSide {
     Worktree {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label_detail: Option<String>,
     },
     /// Another file (Compare With…, Compare Files).
     File {
@@ -153,8 +160,13 @@ pub enum DiffSide {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
     },
-    /// Literal text: a side that does not exist.
-    Text { text: String, label: String },
+    /// Literal text, such as clipboard contents or an editor selection.
+    Text {
+        text: String,
+        label: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label_detail: Option<String>,
+    },
     /// A Local History revision.
     History { id: String, label: String },
 }
@@ -355,6 +367,12 @@ impl WindowsState {
 
     pub fn take_launch(&self, label: &str) -> Option<Launch> {
         let mut launches = self.launches.lock();
+        // Lightweight windows need their launch again when their webview reloads.
+        if let Some(launch) = launches.get(label)
+            && launch.editor.is_some()
+        {
+            return Some(launch.clone());
+        }
         let launch = launches.remove(label)?;
         if launch.project.is_some() || launch.remote.is_some() || !launch.files.is_empty() || launch.diff.is_some() {
             self.opening.lock().insert(label.to_owned(), launch.clone());
@@ -2204,7 +2222,7 @@ mod tests {
         let mut diff = DiffLaunch {
             path: "/p/a.txt".into(),
             left: DiffSide::Rev { rev: "HEAD".into(), path: None, label: None },
-            right: DiffSide::Worktree { label: None },
+            right: DiffSide::Worktree { label: None, label_detail: None },
             line: None,
         };
         let id = diff_window_id(&diff);
@@ -2214,6 +2232,18 @@ mod tests {
         assert_ne!(diff_window_id(&diff), id);
         diff.path = "/p/b.txt".into();
         assert_ne!(diff_window_id(&diff), id);
+    }
+
+    #[test]
+    fn diff_window_keeps_file_and_selection_label_details() {
+        for side in [
+            serde_json::json!({"type": "worktree", "label": "file.rs", "labelDetail": "src"}),
+            serde_json::json!({"type": "text", "text": "let x = 1;", "label": "Selection from file.rs", "labelDetail": ""}),
+            serde_json::json!({"type": "text", "text": "let x = 2;", "label": "From Clipboard"}),
+        ] {
+            let parsed = serde_json::from_value::<DiffSide>(side.clone()).unwrap();
+            assert_eq!(serde_json::to_value(parsed).unwrap(), side);
+        }
     }
 
     #[test]
@@ -2753,6 +2783,27 @@ mod tests {
         st.set_launch("project-1", Launch { project: Some("/p".into()), ..Default::default() });
         assert_eq!(st.take_launch("project-1").and_then(|l| l.project), Some("/p".into()));
         assert_eq!(st.take_launch("project-1"), None);
+    }
+
+    #[test]
+    fn editor_launch_survives_webview_reload_until_window_closes() {
+        let st = WindowsState::default();
+        let launch = Launch {
+            editor: Some(Box::new(EditorLaunch {
+                path: None,
+                input: Some(r#"{"kind":"agent-session","key":"agent:running-task"}"#.into()),
+                line: None,
+                column: None,
+                end_line: None,
+                end_column: None,
+            })),
+            ..Default::default()
+        };
+        st.set_launch("editor-main-3", launch.clone());
+        assert_eq!(st.take_launch("editor-main-3"), Some(launch.clone()));
+        assert_eq!(st.take_launch("editor-main-3"), Some(launch));
+        st.forget("editor-main-3");
+        assert!(st.take_launch("editor-main-3").is_none());
     }
 
     #[test]

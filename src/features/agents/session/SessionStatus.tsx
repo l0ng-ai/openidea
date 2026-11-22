@@ -1,10 +1,11 @@
-import type { AgentChange, AgentCommit, AgentEntry, AgentLimit, AgentTask, AgentUsage } from "@/bindings";
+import type { AgentChange, AgentCommit, AgentEntry, AgentLimit, AgentTask } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
 import { basename, useProject } from "@/platform/project";
 import { Icon, IconButton, showContextMenu, T } from "@/ui";
 import styles from "../Session.module.css";
-import { costLabel, limitLabel, turnTokensLabel, usageLabel, workTime } from "../composerModel";
+import { costLabel, limitLabel, turnTokensLabel, workTime } from "../composerModel";
+import { ContextMeter } from "./ContextMeter";
 import { formatDuration, formatSentAt } from "../conversation";
 import { branchLabel, hasTaskTerminal, isBusy, providerIcon, statusLabel } from "../model";
 import { useAgents } from "../store";
@@ -157,7 +158,7 @@ function Meters({ task, entries }: { task: AgentTask; entries: AgentEntry[] | nu
   const work = show?.showWorkTime !== false && entries ? workTime(entries, busy ? now : null) : 0;
   return (
     <span className={styles.meters}>
-      {usage && <Usage usage={usage} />}
+      {usage && <ContextMeter key={task.id} task={task} usage={usage} />}
       {turnTokens && <span title={tx("Tokens of the last turn")}>{turnTokensLabel(turnTokens)}</span>}
       {limits.map((l) => (
         <Limit key={l.window} limit={l} now={now} />
@@ -177,19 +178,6 @@ function Limit({ limit, now }: { limit: AgentLimit; now: number }) {
         <span style={{ width: `${label.percent}%` }} />
       </span>
       {label.short}
-    </span>
-  );
-}
-
-/** Context window use: "167k/1M (17%)", the exact counts in the tooltip. */
-function Usage({ usage }: { usage: AgentUsage }) {
-  const label = usageLabel(usage);
-  return (
-    <span className={styles.meter} title={label.detail} aria-label={`Context ${label.short}, ${label.detail}`}>
-      <span className={styles.usageBar} aria-hidden>
-        <span style={{ width: `${label.percent}%` }} />
-      </span>
-      {`${label.percent}%`}
     </span>
   );
 }

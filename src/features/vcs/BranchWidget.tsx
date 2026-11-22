@@ -26,12 +26,20 @@ import {
 } from "@/ui";
 import { useRowHeight } from "@/ui/density";
 import type { PopupAnchor } from "@/ui/Popup";
-import { buildBranchRows, preferredBranchRow, withExpanded, type BranchRow, type PopupAction } from "./branches";
+import {
+  buildBranchRows,
+  preferredBranchRow,
+  scopedExpansion,
+  withExpanded,
+  type BranchRow,
+  type PopupAction,
+} from "./branches";
 import { branchPresentation, extensionPopupActions, useBranchWidgetExtensions } from "./branchWidgetExtensions";
 import { branchMenu, commonBranchMenu, inRepo, tagMenu } from "./branchMenu";
 import { loadFavoriteBranches, recentBranches, toggleFavoriteBranch, useFavoriteBranches } from "./branchOps";
 import { inProgress, operationTitle, type InProgress } from "./operations";
 import {
+  branchRepositoryRoots,
   buildMultiRepoRows,
   currentRepoFor,
   preferredRepoRow,
@@ -46,6 +54,7 @@ import { showSyncCommits } from "./SyncCommitsPopup";
 import type { SyncDirection } from "./syncCommits";
 import styles from "./BranchWidget.module.css";
 import { tx } from "@/platform/i18n";
+import { useWorkflowSettings } from "@/platform/workflowSettings";
 
 /** `active` until the user moves: a new filter selects the row IDEA prefers for it. */
 const PREFERRED = -1;
@@ -78,22 +87,32 @@ function useCurrentRepo(): string | null {
   return useVcs((s) => currentRepoFor(path, s.roots, s.repo));
 }
 
+function useBranchRepositories(current: string | null) {
+  const roots = useVcs((s) => s.roots);
+  const branchRoots = useVcs((s) => s.branchRoots);
+  return useMemo(() => branchRepositoryRoots(roots, branchRoots, current), [roots, branchRoots, current]);
+}
+
 export function BranchWidget() {
   const available = useVcs((s) => s.available);
   const selected = useVcs((s) => s.branch);
-  const count = useVcs((s) => s.roots.length);
   const current = useCurrentRepo();
+  const roots = useBranchRepositories(current);
+  const heads = useVcs((s) => s.heads);
+  const branchRoot = useVcs((s) => (current ? (s.branchRoots[current] ?? current) : null));
   // Several repositories on different branches: the widget names the current one.
-  const diverged = useVcs((s) => widgetShowsRepo(s.roots.map((r) => ({ head: s.heads[r]?.head ?? null }))));
+  const diverged = widgetShowsRepo(roots.map((r) => ({ head: heads[r]?.head ?? null })));
   // The current repository is not the selected one: its HEAD from the last scan (no upstream).
-  const other = useVcs((s) => (diverged && current && current !== s.repo ? (s.heads[current] ?? null) : null));
+  const other = useVcs((s) =>
+    (diverged || roots.length === 1) && current && current !== s.repo ? (s.heads[current] ?? null) : null,
+  );
   const otherOp = useVcs((s) => (current ? (s.operations[current] ?? null) : null));
   const open = useBranchesPopup((s) => s.open);
   const extensions = useBranchWidgetExtensions((s) => s.extensions);
   if (!available || !selected) return null;
   // Another feature presents the current branch (the GitHub pull request on it).
   const presented = other ? null : branchPresentation(extensions);
-  const repo = diverged && current ? repoName(current) : null;
+  const repo = diverged && branchRoot ? repoName(branchRoot) : null;
   const branch: BranchInfo = other
     ? { head: other.head, headCommit: other.headCommit, upstream: null, ahead: 0, behind: 0, operation: otherOp }
     : selected;
@@ -111,7 +130,7 @@ export function BranchWidget() {
     repo ? tx`Repository: ${repo}` : "",
     tx`Git branch: ${head}`,
     branch.upstream ? tx`Tracking ${branch.upstream}` : "",
-    count > 1 && !repo ? tx`In all ${count} repositories` : "",
+    roots.length > 1 && !repo ? tx`In all ${roots.length} repositories` : "",
     sync,
   ]
     .filter(Boolean)
@@ -129,6 +148,7 @@ export function BranchWidget() {
     <>
       <BarButton
         data-branches-widget
+        data-toolbar-icon-dropdown=""
         variant="title"
         className={styles.widget}
         tooltip={tooltip}
@@ -137,8 +157,12 @@ export function BranchWidget() {
         onClick={() => useBranchesPopup.setState({ open: !open })}
       >
         <Icon name={presented?.icon ?? (branch.head ? "branch" : "commit")} size={16} className={styles.icon} />
-        {repo && <span className={styles.repo}>{repo}</span>}
-        <span className={styles.name}>
+        {repo && (
+          <span className={styles.repo} data-toolbar-label="">
+            {repo}
+          </span>
+        )}
+        <span className={styles.name} data-toolbar-label="">
           {inProgress(branch.operation)
             ? operationTitle(inProgress(branch.operation)!, branch.head)
             : (presented?.text ?? headLabel(branch))}
@@ -167,12 +191,14 @@ const POPUP_ACTIONS: PopupAction[] = [
   { id: "vcs.push", label: "Push…", icon: "git-push", group: "sync" },
   { id: "vcs.syncCommits", label: "Incoming and Outgoing Commits…", icon: "history", group: "sync" },
   { id: "vcs.newBranch", label: "New Branch…", icon: "plus", group: "branch" },
+  { id: "vcs.newWorktree", label: "New Worktree…", group: "branch" },
   { id: "vcs.checkoutRevision", label: "Checkout Tag or Revision…", icon: "branch", group: "branch" },
 ];
 
 /** A single repository's own entries (its submenu in the popup with several repositories). */
 const REPO_ACTIONS: PopupAction[] = [
   { id: "vcs.newBranch", label: "New Branch…", icon: "plus", group: "branch" },
+  { id: "vcs.newWorktree", label: "New Worktree…", group: "branch" },
   { id: "vcs.checkoutRevision", label: "Checkout Tag or Revision…", icon: "branch", group: "branch" },
 ];
 
@@ -262,12 +288,19 @@ function loadExpansion(root: string | null) {
   useExpansion.setState(next);
 }
 
-function useExpanded(kind: "single" | "multi") {
-  const expanded = useExpansion((s) => s[kind]);
+/**
+ * The expansion of one popup kind. `repo` scopes it to one repository's branches (a
+ * repository's submenu in a multi-repository project), so expanding a group there leaves
+ * the other repositories' submenus as they were.
+ */
+function useExpanded(kind: "single" | "multi", repo?: string) {
+  const all = useExpansion((s) => s[kind]);
+  const prefix = repo === undefined ? "" : `${repo}\u0000`;
+  const expanded = useMemo(() => scopedExpansion(all, prefix), [all, prefix]);
   const setOpen = (key: string, open: boolean) => {
     const s = useExpansion.getState();
-    if (s[kind].get(key) === open) return;
-    const next = { ...s, [kind]: withExpanded(s[kind], key, open) };
+    if (s[kind].get(prefix + key) === open) return;
+    const next = { ...s, [kind]: withExpanded(s[kind], prefix + key, open) };
     useExpansion.setState(next);
     if (!next.root) return;
     try {
@@ -379,7 +412,10 @@ const caretAt = (e: KeyboardEvent, where: "start" | "end") => {
 };
 
 function BranchesPopup({ anchor, onClose }: { anchor: PopupAnchor; onClose: () => void }) {
-  const multi = useVcs((s) => s.roots.length > 1);
+  const current = useCurrentRepo();
+  const roots = useBranchRepositories(current);
+  const selected = useVcs((s) => s.repo);
+  const multi = roots.length > 1;
   const extensions = useBranchWidgetExtensions((s) => s.extensions);
   const actions = useMemo(() => [...POPUP_ACTIONS, ...extensionPopupActions(extensions)], [extensions]);
   // ⌥⌘N is also Inline (enabled while a popup is open over an editor): the search field handles it here.
@@ -402,9 +438,13 @@ function BranchesPopup({ anchor, onClose }: { anchor: PopupAnchor; onClose: () =
       onResized={savePopupSize}
     >
       {multi ? (
-        <MultiRepoPanel onClose={onClose} actions={actions} />
+        <MultiRepoPanel onClose={onClose} actions={actions} roots={roots} current={current} />
       ) : (
-        <BranchesPanel onClose={onClose} actions={actions} />
+        <BranchesPanel
+          onClose={onClose}
+          actions={actions}
+          root={current !== selected ? (current ?? undefined) : undefined}
+        />
       )}
     </Popup>
   );
@@ -428,8 +468,10 @@ function BranchesPanel({ onClose, actions: baseActions, root, fallback, onBack }
   const live = root === undefined || selected === root;
   const storeBranches = useVcs((s) => s.branches);
   const storeLoaded = useVcs((s) => s.branchesLoaded);
-  const branches = live && (storeLoaded || !fallback) ? storeBranches : (fallback ?? NO_BRANCHES);
-  const loaded = (live && storeLoaded) || !!fallback;
+  const [fetched, setFetched] = useState<{ root: string; branches: Branch[] }>();
+  const otherBranches = fallback ?? (fetched && fetched.root === root ? fetched.branches : undefined);
+  const branches = live && (storeLoaded || !otherBranches) ? storeBranches : (otherBranches ?? NO_BRANCHES);
+  const loaded = (live && storeLoaded) || !!otherBranches;
   const current = useVcs((s) =>
     live ? (s.branch?.head ?? null) : root ? (s.heads[root]?.head ?? null) : (s.branch?.head ?? null),
   );
@@ -441,9 +483,20 @@ function BranchesPanel({ onClose, actions: baseActions, root, fallback, onBack }
   const favorites = useFavoriteBranches((s) => s.names);
   const [tags, setTags] = useState<string[]>([]);
   useEffect(() => {
-    if (root === undefined) void loadBranches().catch(() => undefined);
+    if (live) void loadBranches().catch(() => undefined);
     loadFavoriteBranches();
-  }, [root]);
+  }, [root, live]);
+  useEffect(() => {
+    if (!root || live || fallback) return;
+    let active = true;
+    call(commands.vcsBranches(root)).then(
+      (branches) => active && setFetched({ root, branches }),
+      () => undefined,
+    );
+    return () => {
+      active = false;
+    };
+  }, [root, live, fallback]);
   useEffect(() => {
     let live = true;
     call(commands.vcsTags(root ?? currentRepo())).then(
@@ -459,7 +512,7 @@ function BranchesPanel({ onClose, actions: baseActions, root, fallback, onBack }
   const conflicts = useVcs((s) => s.status.filter((f) => f.unstaged === "conflicted").length);
   const actions = useMemo(() => [...operationActions(op, conflicts), ...baseActions], [op, conflicts, baseActions]);
   const options = usePopupOptions();
-  const [expanded, setOpen] = useExpanded("single");
+  const [expanded, setOpen] = useExpanded("single", root);
   const rows = useMemo(
     () => buildBranchRows(branches, recent, query, actions, favorites, tags, { ...options, expanded }),
     [branches, recent, query, actions, favorites, tags, options, expanded],
@@ -619,20 +672,30 @@ function SubMenu({
  * each opening its own branches (on hover or →); then the branches they all have
  * (acting on all of them) or, when their branches differ, the current repository's.
  */
-function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => void; actions: readonly PopupAction[] }) {
+function MultiRepoPanel({
+  onClose,
+  actions: popupActions,
+  roots,
+  current,
+}: {
+  onClose: () => void;
+  actions: readonly PopupAction[];
+  roots: readonly string[];
+  current: string | null;
+}) {
   const rowHeight = useRowHeight(ROW_HEIGHT);
-  const roots = useVcs((s) => s.roots);
+  const branchRoots = useVcs((s) => s.branchRoots);
   const heads = useVcs((s) => s.heads);
   const operations = useVcs((s) => s.operations);
   const version = useVcs((s) => s.version);
   const favorites = useFavoriteBranches((s) => s.names);
-  const current = useCurrentRepo();
   const [recent] = useState(recentBranches);
   const [tags, setTags] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const [expanded, setOpen] = useExpanded("multi");
   const options = usePopupOptions();
+  const sync = useWorkflowSettings((s) => s.vcs.git.syncBranchOperations);
   const [all, setAll] = useState<Record<string, Branch[]>>({});
   const [menuFor, setMenuFor] = useState<{ items: MenuItem[]; label: string; el: HTMLElement } | null>(null);
   const [repoMenu, setRepoMenu] = useState<{ root: string; el: HTMLElement; focus: boolean } | null>(null);
@@ -671,20 +734,24 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
     () =>
       roots.map((root) => ({
         root,
-        name: repoName(root),
+        name: repoName(branchRoots[root] ?? root),
         head: heads[root]?.head ?? null,
         headCommit: heads[root]?.headCommit ?? null,
       })),
-    [roots, heads],
+    [roots, heads, branchRoots],
   );
   const op = useVcs((s) => inProgress(s.branch?.operation));
   const conflicts = useVcs((s) => s.status.filter((f) => f.unstaged === "conflicted").length);
   const actions = useMemo(
     () => [
       ...operationActions(op, conflicts),
-      ...popupActions.map((a) => (a.id === "vcs.newBranch" ? { ...a, arg: { repos: roots } } : a)),
+      ...popupActions.map((a) => {
+        if (a.id === "vcs.newBranch" && sync) return { ...a, arg: { repos: roots } };
+        if (a.id === "vcs.newWorktree") return { ...a, arg: { repo: current } };
+        return a;
+      }),
     ],
-    [op, conflicts, roots, popupActions],
+    [op, conflicts, roots, popupActions, sync, current],
   );
   const rows = useMemo(
     () =>
@@ -699,10 +766,11 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
         current,
         recent,
         tags,
+        sync,
       }),
-    [repos, all, query, actions, expanded, favorites, current, recent, tags, options],
+    [repos, all, query, actions, expanded, favorites, current, recent, tags, options, sync],
   );
-  const isSection = (r: RepoRow) => r.type === "section";
+  const isSection = (r: RepoRow) => r.type === "section" || r.type === "notice";
   const activeIndex = pickActive(rows, active, isSection, () => preferredRepoRow(rows, query));
 
   const closeAll = () => {
@@ -727,7 +795,12 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
     }
     setRepoMenu(null);
     if (row.type === "common") {
-      setMenuFor({ items: commonBranchMenu(row.branch, roots, closeAll), label: tx`Branch ${row.branch.name}`, el });
+      const shared = widgetShowsRepo(repos) ? null : (repos[0]?.head ?? null);
+      setMenuFor({
+        items: commonBranchMenu(row.branch, roots, shared, closeAll),
+        label: tx`Branch ${row.branch.name}`,
+        el,
+      });
     } else if (row.type === "branch") {
       const items = inRepo(row.repo.root, branchMenu(row.branch, row.repo.head, closeAll));
       setMenuFor({ items, label: tx`Branch ${row.branch.name} of ${row.repo.name}`, el });
@@ -758,7 +831,7 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
     if (isNewBranchStroke(strokeOf(e))) {
       e.preventDefault();
       onClose();
-      void executeAction("vcs.newBranch", { repos: roots });
+      void executeAction("vcs.newBranch", sync ? { repos: roots } : undefined);
       return;
     }
     if (e.key === "Enter") {
@@ -815,7 +888,13 @@ function MultiRepoPanel({ onClose, actions: popupActions }: { onClose: () => voi
           isSection={isSection}
           sectionHeightOf={(r) => (r.type === "section" && !r.label ? SEPARATOR_HEIGHT : undefined)}
           renderSection={(r) =>
-            r.type === "section" && r.label ? (
+            r.type === "notice" ? (
+              <span className={styles.notice} title={r.detail} role="status">
+                <Icon name="warning" size={14} />
+                <span className={styles.noticeLabel}>{r.label}</span>
+                <span className={styles.noticeDetail}>{r.detail}</span>
+              </span>
+            ) : r.type === "section" && r.label ? (
               <span className={styles.section}>{tx(r.label)}</span>
             ) : (
               <span className={styles.separator} role="separator" />

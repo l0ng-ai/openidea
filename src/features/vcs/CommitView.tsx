@@ -3,7 +3,7 @@
  * parts also make the Git window's Local Changes / Stash tabs and the Commit dialog.
  */
 import { writeClipboardText } from "@/platform/clipboard";
-import { useWorkflowSettings } from "@/platform/workflowSettings";
+import { useWorkflowSettings, workflowSettings } from "@/platform/workflowSettings";
 import { formatBinding, isMacHost, macStroke, normalizeBinding, shortcutLabel, strokeOf } from "@/platform/keymap";
 import {
   useCallback,
@@ -334,32 +334,92 @@ export function nodeMenu(
   const untracked = files.filter((f) => f.unstaged === "untracked");
   const toIgnore = ignoreTargets(nodes, repos);
   const conflicted = files.filter((f) => f.unstaged === "conflicted");
-  const items: MenuItem[] = [
-    ...(conflicted.length
+  const staging = stagingAreaOn();
+  const rollback: MenuItem = { kind: "action", action: "vcs.rollback", arg: paths, label: "Rollback…" };
+  const stash: MenuItem = { kind: "action", action: "vcs.stashSelected", arg: paths, disabled: !paths.length };
+  const stageActions: MenuItem[] = [
+    {
+      label: "Stage",
+      icon: "plus",
+      // Under Staged Changes, a partially staged file only offers Unstage.
+      disabled: !files.some((f) => f.unstaged) || nodes.every((n) => n.group === "staged"),
+      run: () => void runOp(tx`Stage ${paths.length} files`, () => call(commands.vcsStage(paths))),
+    },
+    {
+      label: "Unstage",
+      icon: "minus",
+      disabled: !files.some((f) => f.staged) || nodes.every((n) => n.group === "unstaged" || n.group === "unversioned"),
+      run: () => void runOp(tx`Unstage ${paths.length} files`, () => call(commands.vcsUnstage(paths))),
+    },
+  ];
+  const fileActions: MenuItem[] = [
+    ...(untracked.length
+      ? [{ kind: "action" as const, action: "vcs.addToVcs", arg: untracked.map((f) => f.path) }]
+      : []),
+    ...(deletable.length
       ? [
           {
-            label: "Accept Yours",
-            run: () => void Promise.all(conflicted.map((f) => acceptSide(f, "ours"))).then(() => refreshNow()),
+            label: "Delete…",
+            icon: "trash",
+            shortcut: formatBinding(isMacHost() ? "Backspace" : "Delete"),
+            run: () => void deleteFiles(deletable),
           },
+        ]
+      : []),
+    ...(toIgnore.length
+      ? [
+          {
+            label: "Add to .gitignore",
+            submenu: [
+              { kind: "action" as const, action: "vcs.ignoreShared", arg: toIgnore, label: ".gitignore" },
+              { kind: "action" as const, action: "vcs.ignoreLocal", arg: toIgnore, label: ".git/info/exclude" },
+            ],
+          },
+        ]
+      : []),
+  ];
+  // The staging menu operates on the index. A change list can commit or move individual files.
+  const primary: MenuItem[] = staging
+    ? [...stageActions, stash, rollback, ...fileActions]
+    : [
+        {
+          label: "Commit File…",
+          icon: "commit",
+          disabled: !files.some((f) => groupOf(f) === "changes"),
+          run: () => commitFiles(paths),
+        },
+        rollback,
+        ...(nodes.some((n) => n.changelist)
+          ? [
+              {
+                kind: "action" as const,
+                action: "vcs.changelist.move",
+                arg: paths,
+                label: "Move to Another Changelist…",
+              },
+            ]
+          : []),
+      ];
+  const contributed = menuGroupItems("changes", {
+    paths: files.filter(onDisk).map((f) => stripSlash(f.path)),
+  });
+  return [
+    ...(conflicted.length
+      ? [
+          { kind: "action" as const, action: "vcs.resolveConflicts", label: "Resolve Conflicts…" },
           {
             label: "Accept Theirs",
             run: () => void Promise.all(conflicted.map((f) => acceptSide(f, "theirs"))).then(() => refreshNow()),
           },
+          {
+            label: "Accept Yours",
+            run: () => void Promise.all(conflicted.map((f) => acceptSide(f, "ours"))).then(() => refreshNow()),
+          },
           { kind: "separator" as const },
         ]
       : []),
-    // With the staging area a commit takes the whole index: there is no committing one file.
-    ...(stagingAreaOn()
-      ? []
-      : [
-          {
-            label: "Commit File…",
-            icon: "commit" as const,
-            disabled: !files.some((f) => groupOf(f) === "changes"),
-            run: () => commitFiles(paths),
-          },
-          { kind: "separator" as const },
-        ]),
+    ...primary,
+    { kind: "separator" },
     // The node itself, like double-click: under Staged or Unstaged its side of the index.
     opts?.roots && first
       ? {
@@ -383,57 +443,14 @@ export function nodeMenu(
       disabled: !first?.path || first.kind === "deleted",
       run: () => first?.path && void editorService().openFile(first.path, { focus: true }),
     },
+    { label: "Copy Path", icon: "copy", run: () => copyChangePaths(nodes, "absolute") },
+    { label: "Copy File Name", icon: "copy", run: () => copyChangePaths(nodes, "name") },
+    ...(staging ? [] : [{ kind: "separator" as const }, ...fileActions, ...stageActions]),
     { kind: "separator" },
-  ];
-  if (conflicted.length) items.push({ kind: "action", action: "vcs.resolveConflicts", label: "Resolve Conflicts…" });
-  items.push(
-    { kind: "action", action: "vcs.rollback", arg: paths, label: "Rollback…" },
-    ...(untracked.length
-      ? [{ kind: "action" as const, action: "vcs.addToVcs", arg: untracked.map((f) => f.path) }]
-      : []),
-    ...(deletable.length
-      ? [
-          {
-            label: "Delete…",
-            icon: "trash",
-            shortcut: formatBinding(isMacHost() ? "Backspace" : "Delete"),
-            run: () => void deleteFiles(deletable),
-          },
-        ]
-      : []),
-    // Both destinations, as in the project view's Git menu.
-    ...(toIgnore.length
-      ? [
-          {
-            label: "Add to .gitignore",
-            submenu: [
-              { kind: "action" as const, action: "vcs.ignoreShared", arg: toIgnore, label: ".gitignore" },
-              { kind: "action" as const, action: "vcs.ignoreLocal", arg: toIgnore, label: ".git/info/exclude" },
-            ],
-          },
-        ]
-      : []),
-    {
-      label: "Stage",
-      icon: "plus",
-      // Under Staged Changes, a partially staged file only offers Unstage.
-      disabled: !files.some((f) => f.unstaged) || nodes.every((n) => n.group === "staged"),
-      run: () => void runOp(tx`Stage ${paths.length} files`, () => call(commands.vcsStage(paths))),
-    },
-    {
-      label: "Unstage",
-      icon: "minus",
-      disabled: !files.some((f) => f.staged) || nodes.every((n) => n.group === "unstaged" || n.group === "unversioned"),
-      run: () => void runOp(tx`Unstage ${paths.length} files`, () => call(commands.vcsUnstage(paths))),
-    },
-    { kind: "separator" },
-    ...(nodes.some((n) => n.changelist)
-      ? [{ kind: "action" as const, action: "vcs.changelist.move", arg: paths, label: "Move to Another Changelist…" }]
-      : []),
-    { kind: "action", action: "vcs.shelve", arg: paths },
     { kind: "action", action: "vcs.createPatch", arg: paths },
-    { kind: "action", action: "vcs.stashSelected", arg: paths, disabled: !paths.length },
     { label: "Copy as Patch to Clipboard", run: () => void copyChangesAsPatch(paths) },
+    { kind: "action", action: "vcs.shelve", arg: paths },
+    ...(staging ? [] : [stash]),
     { kind: "separator" },
     {
       label: "Show History",
@@ -443,15 +460,8 @@ export function nodeMenu(
     },
     { kind: "action", action: "vcs.localHistory", arg: first?.path },
     { kind: "action", action: "vcs.annotate", arg: first?.path },
-    { kind: "separator" },
-    // Other features' groups (Deployment) for the files that exist.
-    ...menuGroupItems("changes", {
-      paths: files.filter(onDisk).map((f) => stripSlash(f.path)),
-    }),
-    { label: "Copy Path", icon: "copy", run: () => copyChangePaths(nodes, "absolute") },
-    { label: "Copy File Name", icon: "copy", run: () => copyChangePaths(nodes, "name") },
-  );
-  return items;
+    ...(contributed.length ? [{ kind: "separator" as const }, ...contributed] : []),
+  ];
 }
 
 /**
@@ -536,7 +546,11 @@ function useCommitChecks() {
 export function useIncludedCount(): number {
   const status = useVcs((s) => s.status);
   const checks = useCommitChecks();
-  return useMemo(() => planCommit(status, checks).included.length, [status, checks]);
+  const includeByDefault = useWorkflowSettings((s) => s.vcs.commit.includeChangesByDefault);
+  return useMemo(
+    () => planCommit(status, checks, includeByDefault).included.length,
+    [status, checks, includeByDefault],
+  );
 }
 
 /**
@@ -641,6 +655,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const changelists = useChangelists((s) => s.state);
   const lists = staging ? undefined : changelists;
   const checks = useCommitChecks();
+  const includeByDefault = useWorkflowSettings((s) => s.vcs.commit.includeChangesByDefault);
   const checkboxes = mode !== "local" && !staging;
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   // IDEA starts with Unversioned Files collapsed.
@@ -755,10 +770,12 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
     const files = filesOf(nodes);
     const { status: st, root: r } = useVcs.getState();
     const cur = withListDefaults(st, r ?? "", useChangelists.getState().state, useCommit.getState().checks);
-    const agg = aggregateCheck(files, cur);
+    const includeByDefault = workflowSettings().vcs.commit.includeChangesByDefault;
+    const agg = aggregateCheck(files, cur, includeByDefault);
     const target = agg.on === files.length && !agg.indeterminate ? "none" : "all";
     const next = new Map(cur);
-    for (const f of files) next.set(f.path, files.length === 1 ? toggledCheck(checkOf(f, cur)) : target);
+    for (const f of files)
+      next.set(f.path, files.length === 1 ? toggledCheck(checkOf(f, cur, includeByDefault)) : target);
     useCommit.setState({ checks: next });
   }, []);
 
@@ -934,7 +951,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
             </span>
           }
           renderNode={(n, st) => {
-            const agg = aggregateCheck(n.files, checks);
+            const agg = aggregateCheck(n.files, checks, includeByDefault);
             const label = (
               <span
                 className={clsx(
@@ -1002,7 +1019,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                   />
                 )}
                 {label}
-                {n.type === "group" && <span className={styles.detail}>{fileCount(n.files.length)}</span>}
+                {n.type !== "file" && <span className={styles.nodeCount}>{fileCount(n.files.length)}</span>}
                 {!staging && n.type === "file" && n.files[0] && isPartiallyStaged(n.files[0]) && (
                   <span className={styles.partial} title={tx("Partially staged: only staged hunks are committed")}>
                     <T>partial</T>
@@ -1323,7 +1340,7 @@ function CommitPanel({ included }: { included: number }) {
 
   return (
     <div className={styles.commit}>
-      <CommitMessageField included={included} runner={runner} />
+      <CommitMessageField included={included} runner={runner} autoFocus />
       <div className={styles.commitActions}>
         <Button variant="primary" disabled={!canCommit} onClick={() => void runner.run(false)} title="⌘↩">
           <T>{commitLabel(amend, checkProblems.length > 0, commitAll)}</T>

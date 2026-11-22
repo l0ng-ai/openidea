@@ -68,7 +68,7 @@ describe("locationItems", () => {
     project("/p");
     const item = (await locationItems([target("/p/src/mod.py", "refresh", 3)]))[0]!;
     expect(item.label).toBe("refresh");
-    expect(item.detail).toBe("_StatefulDataset · src/mod.py:4");
+    expect(item.target).toEqual({ container: "_StatefulDataset", path: "src/mod.py:4" });
     // No signature preview line in the row.
     expect(item.preview).toBeUndefined();
   });
@@ -79,7 +79,7 @@ describe("locationItems", () => {
     readManyFileLines.mockResolvedValue(new Map([[path, lines]]));
     project("/p");
     const item = (await locationItems([target(path, "refresh", 3)]))[0]!;
-    expect(item.detail).toBe("_StatefulDataset · …/unit_tests/test_data.py:4");
+    expect(item.target).toEqual({ container: "_StatefulDataset", path: "…/unit_tests/test_data.py:4" });
   });
 
   it("does not take the container from a line comment mentioning 'class'", async () => {
@@ -94,8 +94,7 @@ describe("locationItems", () => {
     readManyFileLines.mockResolvedValue(new Map([["/p/src/mod.py", lines]]));
     project("/p");
     const item = (await locationItems([target("/p/src/mod.py", "refresh", 5)]))[0]!;
-    expect(item.detail).not.toContain("does");
-    expect(item.detail).toContain("_StatefulDataset");
+    expect(item.target?.container).toBe("_StatefulDataset");
   });
 
   it("does not take the container from a docstring mentioning 'class'", async () => {
@@ -113,9 +112,7 @@ describe("locationItems", () => {
     readManyFileLines.mockResolvedValue(new Map([["/p/src/mod.py", lines]]));
     project("/p");
     const item = (await locationItems([target("/p/src/mod.py", "refresh", 8)]))[0]!;
-    expect(item.detail).not.toContain("factory");
-    expect(item.detail).not.toContain("helper");
-    expect(item.detail).toContain("_StatefulDataset");
+    expect(item.target?.container).toBe("_StatefulDataset");
   });
 
   it("does not open a docstring fence inside a comment", async () => {
@@ -131,7 +128,7 @@ describe("locationItems", () => {
     project("/p");
     const item = (await locationItems([target("/p/src/mod.py", "refresh", 5)]))[0]!;
     // The scan must still reach the class declaration above the comment lines.
-    expect(item.detail).toContain("_StatefulDataset");
+    expect(item.target?.container).toBe("_StatefulDataset");
   });
 
   it("prefers the index container over the enclosing-type heuristic", async () => {
@@ -155,8 +152,7 @@ describe("locationItems", () => {
     project("/p");
     const item = (await locationItems([target("/p/src/mod.py", "refresh", 4)]))[0]!;
     // The index's answer wins even though the heuristic would answer from the comment.
-    expect(item.detail).not.toContain("class");
-    expect(item.detail).toContain("DatasetMixin");
+    expect(item.target?.container).toBe("DatasetMixin");
   });
 
   it("falls back to the enclosing-type heuristic when the index misses", async () => {
@@ -165,7 +161,7 @@ describe("locationItems", () => {
     findSymbols.mockResolvedValue([]);
     project("/p");
     const item = (await locationItems([target("/p/src/mod.py", "refresh", 3)]))[0]!;
-    expect(item.detail).toContain("_StatefulDataset");
+    expect(item.target?.container).toBe("_StatefulDataset");
   });
 
   it("keeps index symbols' own container detail", async () => {
@@ -184,7 +180,7 @@ describe("locationItems", () => {
       ])
     )[0]!;
     expect(item.label).toBe("Configurable");
-    expect(item.detail).toBe("config · src/mod.py:1");
+    expect(item.target).toEqual({ container: "config", path: "src/mod.py:1" });
   });
 
   it("names same-named targets (a method's implementations) by their containers", async () => {
@@ -197,12 +193,105 @@ describe("locationItems", () => {
     );
     project("/p");
     const items = await locationItems([target("/p/src/a.py", "refresh", 3), target("/p/src/b.py", "refresh", 3)]);
-    expect(items.map((i) => [i.label, i.detail])).toEqual([
-      ["Cached", "src/a.py:4"],
-      ["Remote", "src/b.py:4"],
+    expect(items.map((i) => [i.label, i.target])).toEqual([
+      ["Cached", { container: null, path: "src/a.py:4" }],
+      ["Remote", { container: null, path: "src/b.py:4" }],
     ]);
     // A single target, or targets with different names, keep their own names.
     expect((await locationItems([target("/p/src/a.py", "refresh", 3)]))[0]!.label).toBe("refresh");
+  });
+
+  describe("takes the container only from a type whose body holds the target", () => {
+    const cart = [
+      'import { type Cents } from "./money.ts";',
+      "",
+      "export interface Product {",
+      "  id: string;",
+      "  price: Cents;",
+      "}",
+      "",
+      "export interface CartLine {",
+      "  product: Product;",
+      "  quantity: number;",
+      "}",
+      "",
+      'export type Discount = { kind: "percent"; percent: number } | { kind: "fixed"; amount: Cents };',
+      "",
+      "export class Cart {",
+      "  private discount: Discount | null = null;",
+      "",
+      "  total(): Cents {",
+      "    return 0;",
+      "  }",
+      "}",
+    ];
+    const at = (line: number, col: number) => ({
+      path: "/p/src/cart.ts",
+      uri: null,
+      range: { start: { line, col }, end: { line, col: col + 1 } },
+    });
+    beforeEach(() => {
+      readManyFileLines.mockResolvedValue(new Map([["/p/src/cart.ts", cart]]));
+      project("/p");
+    });
+
+    it("anonymous targets after a closed interface", async () => {
+      const union = cart[12]!;
+      const items = await locationItems([at(12, union.indexOf("{")), at(12, union.lastIndexOf("{ kind"))]);
+      expect(items.map((i) => [i.label, i.target])).toEqual([
+        ["cart.ts", { container: null, path: "src/cart.ts:13" }],
+        ["cart.ts", { container: null, path: "src/cart.ts:13" }],
+      ]);
+    });
+
+    it("a named target after a closed interface", async () => {
+      const item = (await locationItems([at(7, cart[7]!.indexOf("CartLine"))]))[0]!;
+      expect([item.label, item.target]).toEqual(["CartLine", { container: null, path: "src/cart.ts:8" }]);
+    });
+
+    it("a member after a closed type, inside its own class", async () => {
+      const item = (await locationItems([at(17, cart[17]!.indexOf("total"))]))[0]!;
+      expect([item.label, item.target]).toEqual(["total", { container: "Cart", path: "src/cart.ts:18" }]);
+    });
+
+    it("indentation-delimited bodies: a function after a class, a method after a dict literal", async () => {
+      const lines = [
+        "class Config:",
+        "    defaults = {}",
+        "",
+        "    def load(self) -> None:",
+        "        pass",
+        "",
+        "def main() -> None:",
+        "    pass",
+      ];
+      readManyFileLines.mockResolvedValue(new Map([["/p/src/mod.py", lines]]));
+      const items = await locationItems([target("/p/src/mod.py", "load", 3), target("/p/src/mod.py", "main", 6)]);
+      expect(items.map((i) => i.target)).toEqual([
+        { container: "Config", path: "src/mod.py:4" },
+        { container: null, path: "src/mod.py:7" },
+      ]);
+      const main = {
+        ...target("/p/src/mod.py", "main", 6),
+        range: { start: { line: 6, col: 0 }, end: { line: 6, col: 3 } },
+      };
+      expect((await locationItems([main]))[0]!.target).toEqual({ container: null, path: "src/mod.py:7" });
+    });
+
+    it("Go: a method's container is its receiver, declared outside the struct's body", async () => {
+      const lines = [
+        "type Square struct {",
+        "\tside float64",
+        "}",
+        "",
+        "func (s *Square) Area() float64 {",
+        "\treturn 0",
+        "}",
+      ];
+      readManyFileLines.mockResolvedValue(new Map([["/p/shapes.go", lines]]));
+      const at = { path: "/p/shapes.go", uri: null, range: { start: { line: 4, col: 17 }, end: { line: 4, col: 21 } } };
+      expect((await locationItems([at]))[0]!.target).toEqual({ container: "Square", path: "shapes.go:5" });
+    });
   });
 
   it("does not query the index for index symbols, which carry their container", async () => {

@@ -1,6 +1,7 @@
 //! Cucumber sources: the project's `.feature` files and the JavaScript / TypeScript files
 //! (`@cucumber/cucumber`, `playwright-bdd`) and Java / Kotlin files (cucumber-jvm's
-//! `@Given("…")` annotations and Java 8 lambdas) that could define steps, with their text. The UI
+//! `@Given("…")` annotations and Java 8 lambdas) and Python files (behave and pytest-bdd's
+//! `@given('…')` decorators) that could define steps, with their text. The UI
 //! owns the Gherkin and step-expression parsing and the index it feeds (as for `routes`),
 //! so this side stays a cheap scan.
 
@@ -21,6 +22,8 @@ const MAX_FILE_BYTES: u64 = 2 << 20;
 
 /// What a step definition call starts with (`Given('…'`, `defineStep(/…/`).
 const STEP_CALLS: [&str; 5] = ["Given(", "When(", "Then(", "Step(", "defineStep("];
+/** What a Python step decorator starts with (behave also takes the capitalized names). */
+const PYTHON_STEP_CALLS: [&str; 8] = ["@given(", "@when(", "@then(", "@step(", "@Given(", "@When(", "@Then(", "@Step("];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -38,8 +41,12 @@ fn is_feature(path: &Path) -> bool {
 fn is_script(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|e| e.to_str()),
-        Some("js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" | "mts" | "cts" | "java" | "kt")
+        Some("js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" | "mts" | "cts" | "java" | "kt" | "py")
     )
+}
+
+fn is_python(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()) == Some("py")
 }
 
 /// The feature files and step definition files under `root`.
@@ -55,7 +62,8 @@ pub(crate) fn sources_in(root: &Path, excludes: &[String]) -> Vec<StepSource> {
             return;
         }
         let Ok(text) = std::fs::read_to_string(path) else { return };
-        if !feature && !STEP_CALLS.iter().any(|call| text.contains(call)) {
+        let calls: &[&str] = if is_python(path) { &PYTHON_STEP_CALLS } else { &STEP_CALLS };
+        if !feature && !calls.iter().any(|call| text.contains(call)) {
             return;
         }
         let Ok(mut found) = found.lock() else { return };
@@ -73,11 +81,12 @@ pub(crate) fn sources_in(root: &Path, excludes: &[String]) -> Vec<StepSource> {
 /// Every Cucumber source of the project (its folder and the content roots outside it).
 pub fn cucumber_sources(host: &Host, window: &str) -> IdeResult<Vec<StepSource>> {
     let project = host.project(window)?;
-    let mut excludes = project.search_excludes();
-    // Cucumber's own sources (and every other package's) are not the project's steps.
-    excludes.push("node_modules".to_owned());
     let mut out = Vec::new();
     for root in std::iter::once(project.root.clone()).chain(project.content_roots()) {
+        let mut excludes = project.search_excludes_in(&root);
+        // Cucumber's own sources (and every other package's) are not the project's steps.
+        excludes.push("node_modules".to_owned());
+        excludes.push("site-packages".to_owned());
         out.extend(sources_in(&root, &excludes));
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));
@@ -104,11 +113,23 @@ mod tests {
         std::fs::write(root.join("src/CartSteps.java"), "@Given(\"an empty cart\")\npublic void empty() {}").unwrap();
         std::fs::write(root.join("src/App.java"), "class App {}").unwrap();
         std::fs::write(root.join("src/notes.md"), "Given('x')").unwrap();
+        std::fs::write(root.join("steps/cart_steps.py"), "@given('an empty cart')\ndef step_impl(context): pass")
+            .unwrap();
+        std::fs::write(root.join("src/util.py"), "def given(x): return x\nWhen = given('x')").unwrap();
         std::fs::write(root.join("node_modules/@cucumber/cucumber/lib/index.js"), "Given('x')").unwrap();
         let files = sources_in(root, &["node_modules".to_owned()]);
         let names: Vec<String> =
             files.iter().map(|f| f.path.0.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/")).collect();
-        assert_eq!(names, ["features/cart.feature", "src/CartSteps.java", "steps/bdd.mjs", "steps/cart.steps.ts"]);
+        assert_eq!(
+            names,
+            [
+                "features/cart.feature",
+                "src/CartSteps.java",
+                "steps/bdd.mjs",
+                "steps/cart.steps.ts",
+                "steps/cart_steps.py"
+            ]
+        );
         assert!(files[0].feature && !files[1].feature);
         assert!(files[3].text.contains("an empty cart"));
     }

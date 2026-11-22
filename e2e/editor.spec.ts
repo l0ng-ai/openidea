@@ -13,6 +13,40 @@ test("opens a file from the project tree and types into it", async ({ workbench:
   await expect(editor.locator(".cm-content")).not.toContainText("// typed by e2e");
 });
 
+test("indentation shows the language and current width with room for the keyboard choices", async ({
+  workbench: page,
+}) => {
+  await openFromTree(page, "build.gradle.kts");
+  await page.evaluate(async () => {
+    const path = "/src/editor/core/controller.ts";
+    const { editorController, useEditorStatus } = await import(/* @vite-ignore */ path);
+    const active = useEditorStatus.getState().status!.path;
+    editorController().manager.get(active)!.setIndent({ tabSize: 3, insertSpaces: true });
+  });
+
+  const status = page.getByRole("button", { name: "3 spaces", exact: true });
+  await status.click();
+  const menu = page.getByRole("menu", { name: "Indentation", exact: true });
+  const title = page.getByText("Kotlin Code Style", { exact: true });
+  await expect(title).toBeVisible();
+  await page.setViewportSize({ width: 500, height: 520 });
+  await expect(title).toBeInViewport({ ratio: 1 });
+  await expect(title).toHaveCSS("font-size", "13px");
+  await expect(title).toHaveCSS("font-weight", "600");
+  await expect(menu.getByRole("menuitemcheckbox", { name: "3 spaces", checked: true })).toBeInViewport({ ratio: 1 });
+  await expect(menu.getByRole("menuitem", { name: "Configure Indents…" })).toBeInViewport({ ratio: 1 });
+
+  await expect(menu.getByRole("menuitemcheckbox", { name: "2 spaces", checked: false })).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect(menu).toBeHidden();
+  const four = page.getByRole("button", { name: "4 spaces", exact: true });
+  await expect(four).toBeVisible();
+  await four.click();
+  await expect(menu.getByRole("menuitemcheckbox", { name: "4 spaces", checked: true })).toBeVisible();
+});
+
 test("Delete edits text after the focused Project tree is remounted", async ({ workbench: page }) => {
   const editor = await openFromTree(page, "README.md");
   const content = editor.locator(".cm-content");
@@ -53,6 +87,39 @@ test("⌘F opens the find bar and highlights matches; Escape returns to the edit
   await page.keyboard.press("Escape");
   await expect(find).toBeHidden();
   await expect(editor.locator(".cm-content")).toBeFocused();
+});
+
+test("Go to Line keeps its label beside the selected coordinates and returns focus to the editor", async ({
+  workbench: page,
+}) => {
+  const editor = await openFromTree(page, "build.gradle.kts");
+  const content = editor.locator(".cm-content");
+  await content.focus();
+  await page.keyboard.press("Meta+l");
+  const dialog = page.getByRole("dialog", { name: "Go to Line:Column", exact: true });
+  const coordinates = dialog.getByRole("textbox", { name: "Line and column", exact: true });
+  await expect(coordinates).toBeFocused();
+  await expect(coordinates).toHaveValue("1:1");
+  expect(await coordinates.evaluate((el: HTMLInputElement) => [el.selectionStart, el.selectionEnd])).toEqual([0, 3]);
+
+  await page.setViewportSize({ width: 360, height: 500 });
+  const label = dialog.getByText("Line and column", { exact: true });
+  await expect(label).toBeVisible();
+  const text = (await label.boundingBox())!;
+  const field = (await coordinates.boundingBox())!;
+  expect(text.x + text.width).toBeLessThan(field.x);
+  expect(Math.abs(text.y + text.height / 2 - field.y - field.height / 2)).toBeLessThan(2);
+  await expect(coordinates).toHaveCSS("font-size", await label.evaluate((el) => getComputedStyle(el).fontSize));
+
+  await coordinates.fill("0:2");
+  await expect(coordinates).toHaveAttribute("aria-invalid", "true");
+  await expect(dialog.getByRole("button", { name: "OK", exact: true })).toBeDisabled();
+  await coordinates.fill("6:8");
+  await coordinates.press("Enter");
+  await expect(dialog).toBeHidden();
+  await expect(content).toBeFocused();
+  await page.setViewportSize({ width: 960, height: 600 });
+  await expect(page.getByRole("button", { name: "6:8", exact: true })).toBeVisible();
 });
 
 test("each file keeps its own find bar, query and caret", async ({ workbench: page }) => {
@@ -373,6 +440,48 @@ test("Markdown preview highlights ⌘F matches, selected words and scales diagra
   expect(reset.excalidraw).toBeCloseTo(base.excalidraw, 1);
 });
 
+test("Markdown preview keeps following find and edits after scrolling the source", async ({ workbench: page }) => {
+  const editor = await openFromTree(page, "README.md");
+  const content = editor.locator(".cm-content");
+  const preview = page.getByRole("document", { name: "Markdown preview" });
+  await content.click();
+  await page.keyboard.press("Meta+a");
+  const spacer = Array.from({ length: 90 }, (_, i) => `Paragraph ${i}.`).join("\n\n");
+  await page.keyboard.insertText(`First needle\n\n${spacer}\n\nSecond needle\n\n${spacer}\n\nThird needle`);
+  await content.press("Control+Home");
+  await expect(preview).toContainText("Third needle");
+  await editor.locator(".cm-scroller").evaluate((el) => (el.scrollTop = 2000));
+  await expect.poll(() => preview.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+
+  await preview.focus();
+  await page.keyboard.press("Meta+f");
+  const find = page.getByRole("textbox", { name: "Find" });
+  await find.fill("needle");
+  const visibleMatch = () =>
+    preview.evaluate((el) => {
+      const match = (CSS.highlights.get("markdown-find-current") as unknown as Set<Range> | undefined)
+        ?.values()
+        .next().value;
+      if (!match) return null;
+      const box = el.getBoundingClientRect();
+      const range = match.getBoundingClientRect();
+      return range.top >= box.top && range.bottom <= box.bottom ? match.startContainer.textContent : null;
+    });
+  await expect.poll(visibleMatch).toBe("First needle");
+  await find.press("ArrowDown");
+  await expect.poll(visibleMatch).toBe("Second needle");
+  await find.press("ArrowDown");
+  await expect.poll(visibleMatch).toBe("Third needle");
+  await find.press("ArrowUp");
+  await expect.poll(visibleMatch).toBe("Second needle");
+
+  await find.press("Escape");
+  await content.focus();
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.insertText("- **$`v_0`$ Flat wings.**");
+  await expect(preview.locator("strong .katex annotation")).toHaveText("v_0");
+});
+
 test("Markdown preview aligns Mermaid diagrams to their container align attribute", async ({ workbench: page }) => {
   const editor = await openFromTree(page, "README.md");
   const content = editor.locator(".cm-content");
@@ -591,12 +700,24 @@ test("dragging the Markdown split divider resizes and reflows editor and preview
   const box = (await handle.boundingBox())!;
   const startX = box.x + box.width / 2;
   const midY = box.y + box.height / 2;
+  const cursorAt = (x: number) =>
+    page.evaluate(({ x, y }) => getComputedStyle(document.elementFromPoint(x, y)!).cursor, { x, y: midY });
+
+  await page.mouse.move(startX + 40, midY);
+  await page.mouse.move(startX, midY);
+  expect(await cursorAt(startX)).toMatch(/resize$/);
+  await page.mouse.move(startX - 5, midY);
+  expect(await cursorAt(startX - 5)).not.toMatch(/resize$/);
 
   await page.mouse.move(startX, midY);
   await page.mouse.down();
   await page.mouse.move(startX - 180, midY, { steps: 6 });
   await expect(handle).toHaveAttribute("data-separator", "active");
+  const sourceX = (await editor.boundingBox())!.x + 60;
+  expect(await cursorAt(sourceX)).toMatch(/resize$/);
   await page.mouse.up();
+  await page.mouse.move(sourceX, midY);
+  expect(await cursorAt(sourceX)).toBe("text");
 
   await expect.poll(async () => (await editor.boundingBox())!.width).toBeLessThan(initialEditor - 150);
   await expect.poll(async () => (await preview.boundingBox())!.width).toBeGreaterThan(initialPreview + 150);
@@ -649,4 +770,63 @@ test("Markdown Preview only leaves the Project view clickable", async ({ workben
   // which swallowed the click.
   await row.click();
   await expect(row).toHaveAttribute("aria-selected", "true");
+});
+
+test("drags selected text to move it, and copies it with Option held", async ({ workbench: page }) => {
+  const editor = await openFromTree(page, "build.gradle.kts");
+  const content = editor.locator(".cm-content");
+  /** Sets the document and selection, and returns the client point of each requested position. */
+  const prepare = (doc: string, from: number, to: number, points: number[]) =>
+    content.evaluate(
+      async (el, { doc, from, to, points }) => {
+        const viewModule = "/node_modules/.vite/deps/@codemirror_view.js";
+        const { EditorView } = await import(/* @vite-ignore */ viewModule);
+        const view = EditorView.findFromDOM(el as HTMLElement)!;
+        view.dispatch({
+          changes: { from: 0, to: view.state.doc.length, insert: doc },
+          selection: { anchor: from, head: to },
+        });
+        view.focus();
+        return points.map((p) => {
+          const c = view.coordsAtPos(p, 1)!;
+          return { x: c.left + 1, y: (c.top + c.bottom) / 2 };
+        });
+      },
+      { doc, from, to, points },
+    );
+  const docText = () =>
+    content.evaluate(async (el) => {
+      const viewModule = "/node_modules/.vite/deps/@codemirror_view.js";
+      const { EditorView } = await import(/* @vite-ignore */ viewModule);
+      return EditorView.findFromDOM(el as HTMLElement)!.state.doc.toString();
+    });
+  const drag = async (from: { x: number; y: number }, to: { x: number; y: number }, copy = false) => {
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(from.x + 10, from.y + 2, { steps: 2 });
+    // Option is pressed once the drag is under way: Option+press itself starts a column selection.
+    if (copy) await page.keyboard.down("Alt");
+    await page.mouse.move(to.x, to.y, { steps: 4 });
+    await expect(editor.locator(".cm-openidea-textDropLayer .cm-dropCursor")).toHaveCount(1);
+    await page.mouse.up();
+    if (copy) await page.keyboard.up("Alt");
+  };
+
+  // "alpha" (0–5) dragged to the start of the third line.
+  let [grab, target] = await prepare("alpha beta\ngamma\ndelta", 0, 5, [2, 17]);
+  await drag(grab!, target!);
+  await expect.poll(docText).toBe(" beta\ngamma\nalphadelta");
+  await expect(editor.locator(".cm-openidea-textDropLayer .cm-dropCursor")).toHaveCount(0);
+
+  // With Option held, the text is copied instead.
+  [grab, target] = await prepare("alpha beta\ngamma\ndelta", 0, 5, [2, 17]);
+  await drag(grab!, target!, true);
+  await expect.poll(docText).toBe("alpha beta\ngamma\nalphadelta");
+
+  // A click on the selection without dragging places the caret there.
+  [grab] = await prepare("alpha beta", 0, 5, [2]);
+  await page.mouse.click(grab!.x, grab!.y);
+  await expect.poll(docText).toBe("alpha beta");
+  await page.keyboard.type("X");
+  await expect.poll(docText).toBe("alXpha beta");
 });

@@ -3,7 +3,8 @@ import { EditorState } from "@codemirror/state";
 import { languages } from "@codemirror/language-data";
 import { completedSyntaxState } from "@/test/syntax";
 import { BracketScanner, DEFAULT_RAINBOW_OPTIONS } from "./rainbowBrackets";
-import { renderLineContent, selectedSpans } from "./stickyScroll";
+import { renderLineContent } from "./renderLineContent";
+import { selectedSpans } from "./stickyScroll";
 
 describe("selectedSpans", () => {
   // the sticky line `def run():` at 100..110

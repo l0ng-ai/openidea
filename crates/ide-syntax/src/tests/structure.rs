@@ -407,3 +407,24 @@ fn web_script_queries_preserve_parse_size_errors() {
         assert_eq!(service().locals(&snap, Pos::new(0, 0), &none()), Err(StructureError::TooLarge));
     }
 }
+
+#[test]
+fn structural_ranges_switch_and_when_branches() {
+    let go = lang("go");
+    let src = "package main\n\nfunc f(x int) {\n\tswitch x {\n\tcase 1:\n\t\tprintln(\"one\")\n\tcase 2:\n\t\tprintln(\"two\")\n\t}\n}\n";
+    // On `case 1:` the whole branch moves, among the branches only (not past the subject `x`).
+    let r = service().structural_ranges(&snap(&go, src), Pos::new(4, 1), &none()).unwrap();
+    assert_eq!(r.statement.unwrap().kind, "expression_case");
+    assert!(r.prev_statement.is_none());
+    assert_eq!(r.next_statement.unwrap().range.start, Pos::new(6, 1));
+    // A statement inside the branch is still the statement.
+    let r = service().structural_ranges(&snap(&go, src), Pos::new(5, 2), &none()).unwrap();
+    assert_eq!(r.statement.unwrap().range, span(src, "println(\"one\")"));
+
+    let kt = lang("kotlin");
+    let src = "fun f(x: Int) {\n    when (x) {\n        1 -> println(\"one\")\n        2 -> println(\"two\")\n        else -> println(\"other\")\n    }\n}\n";
+    let r = service().structural_ranges(&snap(&kt, src), Pos::new(2, 9), &none()).unwrap();
+    assert_eq!(r.statement.unwrap().range, span(src, "1 -> println(\"one\")"));
+    assert!(r.prev_statement.is_none());
+    assert_eq!(r.next_statement.unwrap().range, span(src, "2 -> println(\"two\")"));
+}

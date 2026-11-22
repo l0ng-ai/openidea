@@ -15,6 +15,7 @@ import { canSend, emptyDraft } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
 import { HermesProfilePicker } from "./HermesProfilePicker";
 import { McpPicker } from "./McpPicker";
+import { SkillsPicker } from "./SkillsPicker";
 import { useEffortFocus } from "./effortFocus";
 import { useAgentFontZoomSurface } from "./fontZoom";
 import { HOME_KEY, providerIcon } from "./model";
@@ -26,6 +27,7 @@ import {
   refreshProviders,
   refreshModels,
   setDraftMcpOverrides,
+  setDraftSkillOverrides,
   setDraftOption,
   startTask,
   updateDraft,
@@ -65,6 +67,7 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [mcpOpenRequest, setMcpOpenRequest] = useState(0);
+  const [skillsOpenRequest, setSkillsOpenRequest] = useState(0);
   // Kept mounted while another tab shows: what changed meanwhile is read again when it shows.
   const shown = useEditorShown();
 
@@ -99,7 +102,8 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
   const requestingModels = useAgents((s) => s.modelRequests.has(provider?.id ?? ""));
   const requestTarget = useAgents((s) => s.modelRequestTargets.get(provider?.id ?? ""));
   const { defaults, fitWindowWidth } = useAgentSettings();
-  const config = draftConfig(provider, draft, (provider && defaults[provider.id]) || {});
+  const providerDefaults = (provider && defaults[provider.id]) || {};
+  const config = draftConfig(provider, draft, providerDefaults);
   const model = config.find((o) => o.category === "model");
   const selectedModel = model?.current ?? null;
   const selectedModelRef = useRef(selectedModel);
@@ -161,6 +165,7 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
     (!project?.workspace || repoState?.root === root);
 
   const openMcp = () => setMcpOpenRequest((n) => n + 1);
+  const openSkills = () => setSkillsOpenRequest((n) => n + 1);
   // The agent shows as its icon; its name and version are in the tooltip.
   const agentTitle = [provider?.name ?? tx("Agent"), probe?.version].filter(Boolean).join(" ");
 
@@ -206,8 +211,16 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
           onConfig={setDraftOption}
           onSubmit={start}
           onOpenMcp={openMcp}
+          onOpenSkills={openSkills}
           disabled={!canStart}
-          addMenu={provider ? [{ id: "mcp", label: "MCP Servers…", icon: "plugin", run: openMcp }] : undefined}
+          addMenu={
+            provider
+              ? [
+                  { id: "mcp", label: "MCP Servers…", icon: "plugin", run: openMcp },
+                  { id: "skills", label: "Skills…", icon: "bulb", run: openSkills },
+                ]
+              : undefined
+          }
           toolbar={
             <>
               <span className={styles.agentPicker} {...tooltipAttrs(agentTitle, undefined, true)}>
@@ -252,6 +265,15 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
                   overrides={draft.mcpOverrides}
                   onChange={setDraftMcpOverrides}
                   openRequest={mcpOpenRequest}
+                  hideTrigger
+                />
+              )}
+              {provider && (
+                <SkillsPicker
+                  provider={provider.id}
+                  overrides={draft.skillOverrides}
+                  onChange={setDraftSkillOverrides}
+                  openRequest={skillsOpenRequest}
                   hideTrigger
                 />
               )}

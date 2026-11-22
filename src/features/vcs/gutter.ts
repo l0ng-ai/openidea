@@ -235,14 +235,19 @@ const laneTheme = EditorView.baseTheme({
  */
 export function laneMouseDown(view: EditorView, event: MouseEvent, path: string): boolean {
   if (event.button !== 0 || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return false;
+  const deletedMarker = event.target instanceof Element ? event.target.closest(".cm-openidea-laneDeleted") : null;
   const lane = view.dom.querySelector(".cm-openidea-lane");
   if (!lane) return false;
-  const rect = lane.getBoundingClientRect();
-  if (event.clientX < rect.left - 1 || event.clientX > rect.right + 3) return false;
-  if (event.clientY < rect.top || event.clientY > rect.bottom) return false;
-  const block = view.lineBlockAtHeight(event.clientY - view.documentTop);
+  if (!deletedMarker) {
+    const rect = lane.getBoundingClientRect();
+    if (event.clientX < rect.left - 1 || event.clientX > rect.right + 3) return false;
+    if (event.clientY < rect.top || event.clientY > rect.bottom) return false;
+  }
+  const markerRect = deletedMarker?.getBoundingClientRect();
+  const y = markerRect ? markerRect.top + markerRect.height / 2 + 1 : event.clientY;
+  const block = view.lineBlockAtHeight(y - view.documentTop);
   const hunk = hunkAtPos(view.state, block.from);
-  if (!hunk) return false;
+  if (!hunk || (deletedMarker && hunk.kind !== "deleted")) return false;
   event.preventDefault();
   event.stopPropagation();
   showHunkPopup(view, hunk, path);
@@ -273,11 +278,14 @@ export function changeMarkers(ctx: EditorDocContext): Extension {
 }
 
 /** Moves the caret to the next / previous change in `view`. Returns whether it moved. */
-export function gotoChange(view: EditorView, dir: 1 | -1): EditorHunk | undefined {
+export function gotoChange(
+  view: EditorView,
+  dir: 1 | -1,
+  from = view.state.selection.main.head,
+): EditorHunk | undefined {
   const hunks = editorHunks(view.state);
   if (!hunks.length) return undefined;
-  const head = view.state.selection.main.head;
-  const lineFrom = view.state.doc.lineAt(head).from;
+  const lineFrom = view.state.doc.lineAt(from).from;
   const sorted = [...hunks].sort((a, b) => a.from - b.from);
   let target: EditorHunk | undefined;
   if (dir === 1) target = sorted.find((h) => h.from > lineFrom && view.state.doc.lineAt(h.from).from > lineFrom);
@@ -287,7 +295,7 @@ export function gotoChange(view: EditorView, dir: 1 | -1): EditorHunk | undefine
       .find(
         (h) =>
           view.state.doc.lineAt(Math.min(h.from, view.state.doc.length)).from < lineFrom &&
-          !(h.from <= head && head < h.to),
+          !(h.from <= from && from < h.to),
       );
   target ??= dir === 1 ? sorted[0] : sorted[sorted.length - 1];
   if (!target) return undefined;

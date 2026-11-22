@@ -14,6 +14,7 @@ import { EditorView, keymap, placeholder as placeholderText, type ViewUpdate } f
 import type { AgentCommand, AgentConfigOption, AgentImage, SendKey, SymbolMatch, WhileRunning } from "@/bindings";
 import { useEditorRegistry, openEditorPaths } from "@/editor/api";
 import { call, commands, isTauri } from "@/platform/ipc";
+import { isDraggingOut } from "@/platform/dragOut";
 import { nativeDropPoint } from "@/platform/nativeDrop";
 import { invokeLocal } from "@/platform/tauriCore";
 import { useTx } from "@/platform/i18n";
@@ -129,6 +130,8 @@ export interface ComposerProps {
   onSubmit: (now: boolean) => void;
   /** Opens the per-session MCP servers picker when `/mcp` is run. */
   onOpenMcp?: () => void;
+  /** Opens the per-session skills picker when `/skills` is run. */
+  onOpenSkills?: () => void;
   disabled?: boolean;
   autoFocus?: boolean;
   /** A request from this host to focus its input without changing the selection. */
@@ -513,17 +516,26 @@ export function Composer(props: ComposerProps) {
         ...rest,
       ];
     }
+    const openPickerCommands: AgentCommand[] = [];
+    if (props.onOpenMcp && !props.commands.some((c) => c.name === "mcp")) {
+      openPickerCommands.push({
+        name: "mcp",
+        description: tx("Configure MCP servers for this session"),
+        hint: null,
+        source: "command" as const,
+      });
+    }
+    if (props.onOpenSkills && !props.commands.some((c) => c.name === "skills")) {
+      openPickerCommands.push({
+        name: "skills",
+        description: tx("Configure skills for this session"),
+        hint: null,
+        source: "command" as const,
+      });
+    }
     const availableCommands =
-      props.onOpenMcp && completion.query.length > 0 && !props.commands.some((c) => c.name === "mcp")
-        ? [
-            {
-              name: "mcp",
-              description: tx("Configure MCP servers for this session"),
-              hint: null,
-              source: "command" as const,
-            },
-            ...props.commands,
-          ]
+      completion.query.length > 0 && openPickerCommands.length > 0
+        ? [...openPickerCommands, ...props.commands]
         : props.commands;
     const out: Item[] = [];
     let source: "command" | "skill" | undefined;
@@ -536,7 +548,18 @@ export function Composer(props: ComposerProps) {
       out.push({ kind: "command", command });
     }
     return out;
-  }, [completion, files, shellFound, shellQuery, recentCommands, props.history, props.commands, props.onOpenMcp, tx]);
+  }, [
+    completion,
+    files,
+    shellFound,
+    shellQuery,
+    recentCommands,
+    props.history,
+    props.commands,
+    props.onOpenMcp,
+    props.onOpenSkills,
+    tx,
+  ]);
   const activeIndex = items[active] && !isSection(items[active]!) ? active : firstSelectable(items, isSection);
   const open = !!completion && items.some((item) => !isSection(item));
   const anchorAt = open ? completion.to : null;
@@ -627,6 +650,11 @@ export function Composer(props: ComposerProps) {
       replace(completion.from, completion.to, "");
       setCompletion(null);
       props.onOpenMcp();
+      return;
+    } else if (item.command.name === "skills" && props.onOpenSkills) {
+      replace(completion.from, completion.to, "");
+      setCompletion(null);
+      props.onOpenSkills();
       return;
     } else {
       const next = applyCompletion(current, completion, `/${item.command.name}`);
@@ -875,6 +903,8 @@ export function Composer(props: ComposerProps) {
     void import("@tauri-apps/api/webview").then(({ getCurrentWebview }) =>
       getCurrentWebview()
         .onDragDropEvent((event) => {
+          // Project files dragged out of the window come back as an OS drop: not attachments.
+          if (isDraggingOut()) return;
           const p = event.payload;
           if (p.type === "enter" || p.type === "over") {
             setFileOver(inBox(p.position));
@@ -975,6 +1005,12 @@ export function Composer(props: ComposerProps) {
         setText("");
         setCompletion(null);
         props.onOpenMcp();
+        return handled();
+      }
+      if (props.onOpenSkills && view.state.doc.toString().trim() === "/skills") {
+        setText("");
+        setCompletion(null);
+        props.onOpenSkills();
         return handled();
       }
       if (!props.disabled) props.onSubmit(send === "now");

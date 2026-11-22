@@ -43,7 +43,7 @@ It reads repository state (status, diffs, blame, log) in-process, and runs the `
 - When creating a project, check **Create Git repository** in the New Project dialog.
 - **Git › Create Git Repository…** runs `git init` in a folder you pick (the project root by default) and registers the new repository right away; a repository created in the terminal is picked up the same way.
 
-OpenIDEA finds the repository that contains the project and nested repositories up to four levels deep (skipping folders such as `node_modules`, `target` and `build`). Status, commit, fetch and update cover all of them; branch and log actions work on the selected repository. Submodules show as nested repositories, without submodule commands.
+OpenIDEA finds the repository that contains the project and nested repositories up to four levels deep (skipping folders such as `node_modules`, `target` and `build`). Status, commit, fetch and update cover all of them; branch operations from the branches popup cover all of them too (see [Branches](#branches)); log actions work on the selected repository. Submodules show as nested repositories, without submodule commands.
 
 ## Commit changes
 
@@ -143,7 +143,7 @@ Select a branch (`→` or `Enter`) for its actions:
 
 If local changes block a checkout, you can choose **Smart Checkout** (stash, check out, unstash), **Force Checkout** or **Don't Checkout**. A deleted branch can be brought back with **Restore** in the notification.
 
-With several repositories, the popup shows branches common to all of them, plus a submenu per repository.
+With several repositories, the popup shows branches common to all of them, plus a submenu per repository; an operation on a common branch (Checkout, Checkout and Rebase, Rebase, Merge, Update, Rename, Delete…) runs in every repository, and if it fails in one of them, OpenIDEA offers to roll back the others. When the repositories are on different branches, the popup says **Branches have diverged** and still lists the common branches, so checking one out brings them back in step. Turn off **Execute branch operations on all repositories** in the Git settings to list and act on the selected repository only.
 
 ## Sync with remotes
 
@@ -178,6 +178,7 @@ The **Log** tab of the Git tool window shows the commit graph.
 - **Graph Options**: sort by date, topologically or incoming first; first parent only; no merges.
 - **View Options**: reference display, details pane, and columns (**Author**, **Date**, **Hash**, **Signature**, **GitHub Commit Checks**).
 - The branches pane on the left filters the log by branch and has branch actions. Select several local branches and choose **Update Selected** to fast-forward each to its tracked branch, fetching each remote once; one notification lists the branches that were updated and those that could not be fast-forwarded or have no tracked branch.
+- With several repositories, the branches pane lists each branch once; a branch that only some repositories have shows their names after it in grey, and its actions run in those repositories. **Group by Repository** in the pane's toolbar shows one subtree per repository instead.
 - The details pane shows the changed files, the commit message, who committed it, which branches contain it and its signature.
 
 Right-click a commit for **Copy Revision Number** (`⌥⇧⌘C` / `Ctrl+Alt+Shift+C`), **Create Patch…**, **Cherry-Pick**, **Checkout Revision**, **Browse Repository at Revision**, **Compare with Local**, **Reset Current Branch to Here…**, **Revert Commit**, **Undo Commit…**, **New Branch…**, **New Tag…**, **View in Browser** and more. With two commits selected, **Compare Versions** diffs them.
@@ -238,16 +239,16 @@ Retention is set in the **Local History** section of **Settings › Appearance &
 
 **Settings › Version Control** has these pages:
 
-| Page                   | Main options                                                                                                                                                                                               |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Commit**             | Non-modal commit interface, clearing the message after commit, message inspections (blank line after subject, subject and body length, right margin), default commit checks.                               |
-| **Confirmation**       | What to do when files are created or deleted, **Show options before Update**, confirm before dropping commits, highlight modified folders in the Project view, history row limit.                          |
-| **Directory Mappings** | The detected repositories (read-only).                                                                                                                                                                     |
-| **Issue Navigation**   | Regex patterns that turn issue IDs in commit messages into links (presets for JIRA, YouTrack and GitHub).                                                                                                  |
-| **Log**                | Reference and time display, visible columns.                                                                                                                                                               |
-| **Shelf**              | Remove applied files from the shelf.                                                                                                                                                                       |
-| **Git**                | Git executable, inline blame, commit warnings, sign-off default, push options and protected branches, update method (merge or rebase), incoming-commit checks, saved passwords, combining stash and shelf. |
-| **GitHub**             | See [GitHub](/en/guide/github).                                                                                                                                                                            |
+| Page                   | Main options                                                                                                                                                                                                                                      |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Commit**             | Non-modal commit interface, clearing the message after commit, message inspections (blank line after subject, subject and body length, right margin), default commit checks.                                                                      |
+| **Confirmation**       | What to do when files are created or deleted, **Show options before Update**, confirm before dropping commits, highlight modified folders in the Project view, history row limit.                                                                 |
+| **Directory Mappings** | The detected repositories (read-only).                                                                                                                                                                                                            |
+| **Issue Navigation**   | Regex patterns that turn issue IDs in commit messages into links (presets for JIRA, YouTrack and GitHub).                                                                                                                                         |
+| **Log**                | Reference and time display, visible columns.                                                                                                                                                                                                      |
+| **Shelf**              | Remove applied files from the shelf.                                                                                                                                                                                                              |
+| **Git**                | Git executable, inline blame, commit warnings, sign-off default, push options and protected branches, update method (merge or rebase), incoming-commit checks, saved passwords, combining stash and shelf, branch operations on all repositories. |
+| **GitHub**             | See [GitHub](/en/guide/github).                                                                                                                                                                                                                   |
 
 ## Not supported
 

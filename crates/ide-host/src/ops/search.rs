@@ -22,6 +22,17 @@ pub fn literal_range(l: ide_language::Literal) -> ide_search::LiteralRange {
     ide_search::LiteralRange { start: l.start, end: l.end, kind }
 }
 
+/// Comments and string literals of `text`, for the search context of Find and Replace in Files.
+pub(crate) fn literals_of(
+    project: &crate::project::Project,
+    syntax: &ide_language::Syntax,
+    path: &Path,
+    text: &str,
+) -> Option<Vec<ide_search::LiteralRange>> {
+    let language = project.languages.detect(path, text.lines().next());
+    Some(syntax.literals(&language, text)?.into_iter().map(literal_range).collect())
+}
+
 /// Find in Files. Results stream through `on_event`; ends with `Done`.
 /// Cancel with `cancel_request(request)`.
 #[command(trust = always)]
@@ -98,10 +109,7 @@ pub(crate) fn search_project(
         Some(ProjectFileSet::Test) => roots.is_test(rel),
         _ => true,
     };
-    let literals = |path: &Path, text: &str| {
-        let language = project.languages.detect(path, text.lines().next());
-        Some(syntax.literals(&language, text)?.into_iter().map(literal_range).collect())
-    };
+    let literals = |path: &Path, text: &str| literals_of(project, syntax, path, text);
     let defaults = project.documents.file_defaults();
     let decode = |path: &Path, bytes: &[u8]| ide_vfs::decode_text(bytes, defaults.fallback_for(path));
     let mut total = SearchSummary::default();
@@ -115,6 +123,10 @@ pub(crate) fn search_project(
         if let Some(prefix) = &prefix {
             remaining.include = rebase_masks(&query.include, prefix);
             remaining.exclude = rebase_masks(&query.exclude, prefix);
+            // An attached project's own excluded folders: the project's were rebased away.
+            if !query.include_excluded && project.member_excludes.read().contains_key(dir) {
+                remaining.exclude.extend(project.search_excludes_in(dir));
+            }
             // Only paths elsewhere were asked for.
             if remaining.include.is_empty() && !query.include.is_empty() {
                 continue;

@@ -325,9 +325,9 @@ function RecentFilesDialog() {
       open
       onClose={hideRecentPopup}
       restoreFocus={keepFocus}
-      width={720}
+      width={switcher ? 560 : 720}
       aria-label={title}
-      className={styles.dialog}
+      className={clsx(styles.dialog, switcher && styles.switcher)}
     >
       <header className={styles.header}>
         <span className={styles.title}>

@@ -1,11 +1,13 @@
 /** Inline change popup shown when clicking a gutter change marker. */
 import { writeClipboardText } from "@/platform/clipboard";
-import { useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { EditorView } from "@codemirror/view";
 import { executeAction } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
-import { IconButton, Popup } from "@/ui";
+import { previewColors, tokenSpans, type CodeToken } from "@/editor/lineTokens";
+import { IconButton, Popup, selectableText } from "@/ui";
+import type { PopupAnchor } from "@/ui/Popup";
 import { editorHunks, gotoChange, setHunkPopupHooks, type EditorHunk } from "./gutter";
 import styles from "./HunkPopup.module.css";
 import { tx } from "@/platform/i18n";
@@ -14,8 +16,8 @@ interface PopupState {
   view: EditorView;
   hunk: EditorHunk;
   path: string;
-  x: number;
-  y: number;
+  anchor: PopupAnchor;
+  width: number;
   id: number;
 }
 
@@ -42,13 +44,25 @@ export function closeHunkPopup() {
 
 export function openHunkPopup(view: EditorView, hunk: EditorHunk, path: string) {
   const doc = view.state.doc;
-  const endPos = hunk.to > hunk.from ? Math.max(hunk.from, hunk.to - 1) : Math.min(hunk.from, doc.length);
-  const coords = view.coordsAtPos(doc.lineAt(endPos).from);
-  const gutterRect = view.dom.querySelector(".cm-openidea-lane")?.getBoundingClientRect();
-  const x = gutterRect ? gutterRect.right : (coords?.left ?? 0);
-  const y = coords ? (hunk.to > hunk.from ? coords.bottom : coords.top) : 0;
+  const from = Math.min(hunk.from, doc.length);
+  const to = Math.min(Math.max(from, hunk.to - 1), doc.length);
+  const anchor = {
+    contextElement: view.scrollDOM,
+    getBoundingClientRect: () => {
+      const start = view.coordsAtPos(from);
+      const visible = view.scrollDOM.getBoundingClientRect();
+      const gutter = view.dom.querySelector(".cm-openidea-lane")?.getBoundingClientRect();
+      const x = Math.max(start?.left ?? visible.left, gutter?.right ?? visible.left);
+      const top = view.documentTop + view.lineBlockAt(from).top;
+      const bottom = hunk.to > hunk.from ? view.documentTop + view.lineBlockAt(to).bottom : top;
+      const clampY = (y: number) => Math.min(visible.bottom, Math.max(visible.top, y));
+      // Flipping above the change leaves the current lines in the editor visible.
+      return new DOMRect(x, clampY(top), 0, Math.max(0, clampY(bottom) - clampY(top)));
+    },
+  };
+  const width = Math.max(240, view.scrollDOM.getBoundingClientRect().right - anchor.getBoundingClientRect().left);
   openFor = view;
-  render({ view, hunk, path, x, y, id: ++seq });
+  render({ view, hunk, path, anchor, width, id: ++seq });
 }
 
 export function installHunkPopup(): () => void {
@@ -67,21 +81,40 @@ export function installHunkPopup(): () => void {
   };
 }
 
-function splitLines(text: string): string[] {
-  if (!text) return [];
-  const lines = text.split("\n");
-  if (lines[lines.length - 1] === "") lines.pop();
-  return lines;
-}
-
 const KIND_TITLE = { added: "Added lines", modified: "Modified lines", deleted: "Deleted lines" } as const;
+
+function OriginalText({ view, path, text }: { view: EditorView; path: string; text: string }) {
+  const [tokens, setTokens] = useState<CodeToken[] | null>(null);
+  const [font] = useState(() => {
+    const { fontFamily, fontSize, fontWeight, lineHeight, fontVariantLigatures } = getComputedStyle(view.contentDOM);
+    return { fontFamily, fontSize, fontWeight, lineHeight, fontVariantLigatures, tabSize: view.state.tabSize };
+  });
+  useEffect(() => {
+    if (text.length > 100_000) return;
+    let alive = true;
+    void previewColors(text, path).then((colorize) => {
+      if (alive && colorize) setTokens(colorize(0, text.length));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [text, path]);
+  return (
+    <pre
+      role="region"
+      aria-label={tx("Original text")}
+      tabIndex={0}
+      className={`${styles.preview} ${selectableText}`}
+      style={font}
+    >
+      {tokenSpans(text, 0, text.length, tokens)}
+    </pre>
+  );
+}
 
 function HunkPopupView({ state }: { state: PopupState }) {
   const { view, hunk, path } = state;
   const [copied, setCopied] = useState(false);
-  const current = view.state.sliceDoc(hunk.from, hunk.to);
-  const oldLines = splitLines(hunk.oldText);
-  const newLines = splitLines(current);
   const all = editorHunks(view.state);
   const index = all.findIndex((h) => h.start === hunk.start && h.oldStart === hunk.oldStart);
 
@@ -97,7 +130,7 @@ function HunkPopupView({ state }: { state: PopupState }) {
   };
 
   const step = (dir: 1 | -1) => {
-    const target = gotoChange(view, dir);
+    const target = gotoChange(view, dir, hunk.from);
     if (target) requestAnimationFrame(() => openHunkPopup(view, target, path));
     else closeHunkPopup();
   };
@@ -105,12 +138,14 @@ function HunkPopupView({ state }: { state: PopupState }) {
   return (
     <Popup
       open
-      anchor={{ x: state.x, y: state.y }}
+      anchor={state.anchor}
       placement="bottom-start"
       offset={2}
       onClose={closeHunkPopup}
-      aria-label={KIND_TITLE[hunk.kind]}
+      aria-label={tx(KIND_TITLE[hunk.kind])}
       className={styles.popup}
+      style={{ "--hunk-popup-width": `${state.width}px` } as CSSProperties}
+      unstyled
     >
       <div className={styles.toolbar} role="toolbar" aria-label={tx("Change actions")}>
         <IconButton
@@ -152,26 +187,7 @@ function HunkPopupView({ state }: { state: PopupState }) {
         </span>
         <IconButton icon="close" title="Close" size="small" onClick={closeHunkPopup} />
       </div>
-      {(oldLines.length > 0 || newLines.length > 0) && (
-        <div className={styles.body}>
-          {oldLines.map((l, i) => (
-            <div key={`o${i}`} className={styles.removed}>
-              <span className={styles.sign} aria-hidden>
-                -
-              </span>
-              {l || " "}
-            </div>
-          ))}
-          {newLines.map((l, i) => (
-            <div key={`n${i}`} className={styles.added}>
-              <span className={styles.sign} aria-hidden>
-                +
-              </span>
-              {l || " "}
-            </div>
-          ))}
-        </div>
-      )}
+      {hunk.oldText && <OriginalText view={view} path={path} text={hunk.oldText} />}
     </Popup>
   );
 }

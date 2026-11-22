@@ -168,6 +168,17 @@
   font-size: var(--fs-ui);
   pointer-events: none;
 }
+.speedAbove {
+  top: auto;
+  bottom: 100%;
+  left: var(--space-1);
+  height: var(--h-field);
+  max-width: calc(100% - 2 * var(--space-1));
+  padding-inline: var(--space-2);
+}
+.speedAbove .caret {
+  margin-inline: calc(-1 * var(--space-1)) 0;
+}
 /* The field variant sits on the 32px toolbar row above the tree, covering its first buttons. */
 .speedField {
   top: auto;

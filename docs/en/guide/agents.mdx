@@ -55,7 +55,9 @@ Codex keeps its own project trust decision. If it disables the current project's
   <Step title="Pick the agent and its settings">
     Choose the agent, and its model, mode and other options when it offers them. Cached models appear immediately; the selected agent's catalog refreshes in the background when it is more than 15 minutes old, without sending a prompt or attaching project MCP servers.
 
-    Model-specific effort levels and context options are looked up when you select a model whose settings are not cached, even before its first task. **Loading model settings…** appears beside the model during this short-lived lookup; no prompt is sent and existing tasks are not changed. Each model keeps its own choices, and models that report no effort control do not borrow another model's levels.
+    Click the model name to switch models, or click the settings beside it (for example **High · 1M**) to change effort or context size directly. In the model list, use the arrow on a model's row to see its settings without selecting it. Changing a setting selects that model; going back without an edit keeps the previous selection. These controls are also available in an existing chat.
+
+    If settings aren't cached, OpenIDEA looks them up when you select or inspect the model. No prompt is sent. Each model keeps its own draft choices, and models that report no effort control do not borrow another model's levels.
 
     After changing the agent CLI or account, open the model picker and choose **Refresh models**. Refreshes share one lookup and have a 30-second cooldown after completion, including failures. Selecting an uncached model's settings does not wait for another model's cooldown. Cached choices remain usable while refreshing or after a failure; use **Refresh models** to retry a failed lookup after its cooldown.
 
@@ -80,6 +82,8 @@ The task tab shows the conversation: your messages, the agent's replies, its rea
 On your own messages you can **Edit** (the messages after it are replaced; files already changed stay as they are) or **Retract Message**. On replies you can **Copy Markdown**, **Quote Reply**, **Regenerate Response** and **Branch Conversation from Here**, which starts a new task from that point.
 
 In an existing chat, open **Model › Refresh models** to discover newly available models without sending a message or changing the selection. If the agent can't switch in place, the choice stays pending. You can choose an effort level as soon as the provider reports the new model's options. On your next message, OpenIDEA reopens the same session and applies the model and any effort you selected before sending. If the session can't be reopened or rejects either choice, OpenIDEA restores the previous selection and reports the error without sending the message.
+
+The model picker of an existing chat offers the agent's current model list, the same one New Task uses, plus the model the chat runs. It doesn't depend on what that chat's session reported when it started, so a model found by a refresh in any chat or in New Task can be chosen in every chat of that agent.
 
 **Focus Agent Input** defaults to `⌘L` on macOS and `Ctrl+L` on Windows / Linux in every built-in keymap. When focus is inside your writable task conversation, in either an editor tab or the tool window, it returns focus to the message input without changing your draft, caret position or selection—even when pressed repeatedly. It does not send a message or jump through message history.
 
@@ -123,7 +127,7 @@ Tasks are saved per project and survive restarts. When the agent supports resumi
 
 **Settings › Tools › Agents** (also **More Agents…** in the agent picker) has two tabs:
 
-- **Built-in**: for each built-in agent, whether its executable was found on `PATH`, a field to point at a **Custom executable**, **Environment variables** for the agent process (written as `NAME=value; OTHER=value`; the values are kept in the OS credential store) and how to sign in. Changes apply to new sessions.
+- **Built-in**: for each built-in agent, whether its executable was found on `PATH`, a field to point at a **Custom executable**, **Environment variables** for the agent process (written as `NAME=value; OTHER=value`; the values are kept in the OS credential store) and how to sign in. Changes apply to new sessions. When the agent is a global npm install (such as Claude Code, Codex or Gemini CLI), **Check for updates** compares it with npm's latest stable release and **Update to…** updates that installation.
 - **ACP Registry**: agents published in the [ACP Registry](https://agentclientprotocol.com). Search, **Install**, **Update** and **Remove**. Installed agents are kept in OpenIDEA's data directory; downloads are checked against the registry's SHA-256 when it provides one.
 
 **Settings › Tools › Agents › Chat** chooses what the task header shows: **Context window usage**, **Time spent on the task**, **Usage limits** (when the agent reports them, such as Claude Code) and **Session cost**.
@@ -136,6 +140,14 @@ Tasks are saved per project and survive restarts. When the agent supports resumi
 - **Project (`Workspace`)**: saved in `.openidea/settings.toml`; entries with the same name override Global servers, and servers added outside OpenIDEA stay off until approved.
 - **Agent Configs**: discovers servers already configured in `~/.copilot/mcp-config.json` (and installed Copilot CLI plugins), `~/.claude.json`, `~/.codex/config.toml`, `~/.cursor/mcp.json`, `~/.gemini/settings.json`, `~/.jetbrains/mcp/mcp.json`, `.mcp.json`, and `.vscode/mcp.json` so you can import them into Global or Project settings with one click. You can also add or edit servers via structured fields or raw `mcpServers` JSON (**Add from JSON**), and run **Test Connection** to inspect the tools a server advertises.
 - **Per-session (`MCP` / `/mcp`)**: in both **New Agent Task** and active task conversations, open **MCP** in the composer toolbar (or run `/mcp`) to enable or disable individual servers—including the built-in `openidea` server—for that task only, or click **Reset** to return to the inherited defaults.
+
+### Agent skills
+
+**Settings › Agents › Skills** lists every skill (`SKILL.md` folders) in one place, grouped by the folder it was found in: the project's `.agents/skills` and `.openidea/skills`, your `~/.agents/skills` (what `npx skills add` fills), and each CLI's own folders (`.claude/skills`, `.github/skills`, `.codex/skills`, `.cursor/skills`, `~/.claude/skills`, `~/.copilot/skills` and its installed plugins, `~/.codex/skills`, `~/.cursor/skills`). Symlinked copies of the same skill appear once, and expanding a row shows its canonical path and the `SKILL.md` validation result.
+
+Each skill runs in one of three modes, set globally or per workspace without ever editing the skill's files: **Auto** (the model decides), **Slash only** (just `/name`), or **Off**. A workspace can turn a global skill off without prose rules in `AGENTS.md`; a skill the settings keep off shows as **Enable in Settings** in the session picker.
+
+In the composer, `/skills` (or the **Add Context** menu) opens the per-session picker next to the MCP one: turn individual skills off for this task only, or **Reset** to the inherited modes. The `/` menu offers the active skills of every agent, and Claude Code, Copilot and Codex all receive the same set. Agents that only speak ACP keep their own `/` menu, so turning a skill off there stops OpenIDEA from offering it but is otherwise best-effort.
 
 While the agent works, the line under the conversation says what it is doing: thinking, reading, editing, running a command, writing its reply.
 

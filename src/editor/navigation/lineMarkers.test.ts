@@ -29,13 +29,16 @@ import {
   emptyCache,
   enabledGroups,
   fillMarkers,
+  libraryCandidates,
   markerBatches,
+  markerDeps,
   markersOf,
   noteOtherChanges,
   openMarkerTargets,
   type MarkerDeps,
 } from "./implementationGutter";
 import { importBindings } from "./inheritanceGraph";
+import { setLibraryRoots } from "@/editor/api";
 
 const ALL = enabledGroups({ showGutterIcons: true, gutterIconsDisabled: [] });
 
@@ -486,6 +489,43 @@ describe("settings", () => {
       "inheritors",
     ]);
     expect(enabledGroups({ showGutterIcons: false, gutterIconsDisabled: [] }).size).toBe(0);
+  });
+});
+
+describe("library sources", () => {
+  const shapeImpls = {
+    [`${SHAPE_PATH}:0`]: [loc("/p/Circle.java", 0, 13), loc("/p/Square.java", 0, 13)],
+    [`${SHAPE_PATH}:1`]: [loc("/p/Circle.java", 2, 18), loc("/p/Square.java", 1, 18)],
+  };
+
+  it("ask for the inheritors of types only, not one project-wide search per method", async () => {
+    const { deps, calls } = server(shapeImpls, {});
+    const candidates = libraryCandidates(markerCandidates(SHAPE_OUTLINE, lines(SHAPE)));
+    const cache = emptyCache();
+    await fillMarkers(SHAPE_PATH, candidates, ALL, deps(SHAPE_PATH), cache);
+    expect(calls.implementations).toEqual([[{ line: 0, col: 17 }]]);
+    expect(cachedMarkers(candidates, ALL, cache).map((m) => [m.line, m.kind, m.tooltip])).toEqual([
+      [0, "implemented", "Is implemented by Circle, Square"],
+    ]);
+  });
+
+  it("still ask the server for inheritors and subtypes", async () => {
+    const off = setLibraryRoots("test", ["/venv/site-packages"]);
+    try {
+      const library = {
+        doc: 1,
+        path: "/venv/site-packages/m/a.py",
+        language: "python",
+        uiMode: null,
+        readOnly: true,
+      };
+      const deps = markerDeps(library, [], 1, emptyCache());
+      // No server in tests: unavailable.
+      await expect(deps.implementations([{ line: 0, col: 4 }])).rejects.toMatchObject({ kind: "unavailable" });
+      expect(deps.supers.subtypes).toBeDefined();
+    } finally {
+      off();
+    }
   });
 });
 

@@ -11,7 +11,7 @@ export interface ChooserItem {
   section?: boolean;
   /** Typing this character picks the item (see `ChooserRequest.mnemonics`). */
   mnemonic?: string;
-  /** Where the mnemonic is underlined in the label; without it the label gets an `M. ` prefix. */
+  /** Where the mnemonic is underlined in the label. Omit for a separate leading column. */
   mnemonicIndex?: number;
 }
 

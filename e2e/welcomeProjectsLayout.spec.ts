@@ -16,10 +16,12 @@ test("Welcome keeps project search and actions on one row at a narrow width", as
   await expect(list.getByRole("option")).toHaveCount(4);
   await expect(more).toBeVisible();
   await expect(open).toHaveText("Open");
+  await expect(projects.getByRole("button", { name: "Remote Development", exact: true })).toBeVisible();
 
   await page.setViewportSize({ width: 440, height: 620 });
   const boxes = await Promise.all([search.boundingBox(), open.boundingBox(), more.boundingBox()]);
-  expect(boxes[0]!.width).toBeGreaterThan(95);
+  // Four icon-only header actions plus More Actions leave the field room for its placeholder.
+  expect(boxes[0]!.width).toBeGreaterThan(64);
   for (const box of boxes.slice(1)) {
     expect(Math.abs(box!.y + box!.height / 2 - (boxes[0]!.y + boxes[0]!.height / 2))).toBeLessThan(2);
     expect(box!.x + box!.width).toBeLessThanOrEqual(440);
@@ -32,7 +34,7 @@ test("Welcome keeps project search and actions on one row at a narrow width", as
   await expect(list.getByRole("option")).toContainText("tokio");
   await more.press("Enter");
   const menu = page.getByRole("menu", { name: "More Actions" });
-  for (const label of ["New File", "Open File", "Remote Development"]) {
+  for (const label of ["New File", "Open File"]) {
     await expect(menu.getByRole("menuitem", { name: new RegExp(label) })).toBeVisible();
   }
   await page.keyboard.press("Escape");

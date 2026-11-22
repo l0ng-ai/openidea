@@ -36,6 +36,7 @@ import {
 } from "./operations";
 import { nameOf, parentOf } from "./paths";
 import { showFilePathPopup } from "./filePath";
+import { canDownload, downloadTo } from "./download";
 import { showNewPopup, treeHandle } from "./ProjectView";
 import { lastFileRefactoring, undoFileRefactoring } from "./fileRefactor";
 import {
@@ -118,9 +119,24 @@ export function selectInProjectView(path?: string | null, focus = true) {
  * menu groups), the navigation bar, Finder / Explorer and the terminal.
  */
 export function selectInTargets(path: string): MenuItem[] {
+  const { unity } = useProjectTree.getState();
+  const views = VIEW_MODES.filter(([mode]) => mode !== "unity" || unity).map(([mode, label]) => ({
+    label,
+    disabled: !modeShows(path, mode),
+    run: () => {
+      setViewMode(mode);
+      selectInProjectView(path);
+    },
+  }));
   return [
-    { kind: "header", label: "Select In" },
-    { label: "Project View", icon: "toolwindow-project", run: () => void selectInProjectView(path) },
+    { kind: "header", label: "Select In", asTitle: true },
+    {
+      label: "Project View",
+      icon: "toolwindow-project",
+      run: () => void selectInProjectView(path),
+      submenu: views,
+      performOnSelect: true,
+    },
     ...menuGroupItems("selectIn", { paths: [path] }),
     ...(getAction("navigate.navigationBar") && maybeEditorService()?.activePath() === path
       ? [{ kind: "action" as const, action: "navigate.navigationBar", label: "Navigation Bar" }]
@@ -152,7 +168,6 @@ export function showNewPopupForEditor(orRoot = false): boolean {
 }
 
 function showSelectIn(path: string) {
-  // At the caret, like IDEA's popup; centred near the top otherwise.
   const view = activeEditor()?.view;
   const coords = view && activeEditor()?.ctx.path === path ? view.coordsAtPos(view.state.selection.main.head) : null;
   const at = coords ? { x: coords.left, y: coords.bottom + 2 } : { x: window.innerWidth / 2 - 100, y: 80 };
@@ -411,6 +426,17 @@ export function registerProjectActions(): () => void {
       when: OPEN,
       keywords: ["show in explorer", "open in finder"],
       run: ({ arg }) => revealInFinder(nodesFrom(contextTarget(arg))),
+    },
+    {
+      id: "project.downloadTo",
+      title: "Download to…",
+      category: "Project View",
+      icon: "download",
+      when: OPEN,
+      enabled: () => canDownload(),
+      description: "Copy the selected files and folders of a remote project to a folder on this computer",
+      keywords: ["save to local", "copy to local", "scp", "remote"],
+      run: ({ arg }) => downloadTo(nodesFrom(contextTarget(arg)).map((n) => n.path)),
     },
     {
       id: "project.openWithAssociatedApp",

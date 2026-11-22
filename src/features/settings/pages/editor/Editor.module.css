@@ -34,6 +34,12 @@
   align-items: center;
   gap: var(--space-1-5);
 }
+.inlineChoices {
+  flex-wrap: wrap;
+  min-height: var(--h-field);
+  max-width: 100%;
+  gap: var(--space-1) var(--space-4);
+}
 .inlineLabel::after {
   content: ":";
 }
@@ -42,6 +48,26 @@
 }
 .inlineText {
   width: 180px;
+}
+.checkWithField {
+  align-items: flex-start;
+  gap: var(--space-1) var(--space-2);
+}
+.checkWithField > label {
+  min-width: 0;
+  min-height: var(--h-field);
+}
+.inlineField {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  width: 280px;
+  max-width: 100%;
+}
+.inlineFieldHint {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  line-height: 1.4;
 }
 .suffix {
   color: var(--fg);
@@ -92,6 +118,24 @@
   flex-wrap: wrap;
   gap: var(--space-1) var(--space-4);
 }
+.stackedRadioBlock,
+.stackedRadios {
+  flex-direction: column;
+  align-items: flex-start;
+}
+.stackedRadioBlock {
+  margin-inline-end: 0;
+}
+.stackedRadios {
+  max-width: 100%;
+}
+.stackedRadios .radio {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.stackedRadioBlock .radioLabel + .stackedRadios {
+  padding-inline-start: calc(var(--space-4) + var(--space-1));
+}
 .radio {
   display: inline-flex;
   align-items: center;
@@ -118,6 +162,48 @@
 }
 .radio input:disabled {
   opacity: 0.5;
+}
+
+.gutterIconList {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-1);
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--bg-field);
+  font-size: var(--fs-ui);
+}
+.gutterIconRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding-inline: var(--space-2);
+  border-radius: var(--radius-selection);
+}
+.gutterIconRow:has(input:enabled):hover {
+  background: var(--bg-hover);
+}
+.gutterIconPreview {
+  display: grid;
+  flex: 0 0 16px;
+  place-items: center;
+}
+.gutterIconRow:has(input:disabled) .gutterIconPreview {
+  opacity: 0.5;
+}
+.gutterIconRow .gutterIconChoice {
+  flex: 1;
+  min-width: 0;
+  min-height: var(--h-list-row);
+  padding-block: var(--space-0-5);
+  overflow-wrap: anywhere;
+}
+.gutterSwatch {
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-small);
+  background: var(--accent);
 }
 
 /* Font page */
@@ -465,6 +551,93 @@
   display: inline-flex;
   align-items: center;
   gap: 1px;
+}
+
+/* Diff & Merge preview mirrors the two real diff surfaces: the change-type strips on a
+   side-by-side diff and the wavy separator where IDEA folds an unchanged fragment. */
+.diffPreview {
+  margin: 14px 0 0;
+  border-radius: var(--radius-small);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  background: var(--bg-editor, var(--bg-island));
+  overflow: auto;
+  max-height: 260px;
+}
+.diffPane {
+  padding: 4px 0;
+  font-family: var(--openidea-editor-font, var(--font-mono));
+  font-weight: var(--fw-code);
+  font-size: var(--fs-code);
+  line-height: var(--lh-code);
+  color: var(--fg-editor, var(--fg));
+}
+.diffLine {
+  display: flex;
+  align-items: stretch;
+  min-height: 22px;
+}
+.diffLineBody {
+  flex: 1;
+  display: block;
+  padding: 2px 8px;
+  min-width: 0;
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.diffStripe {
+  flex: none;
+  width: 4px;
+  align-self: stretch;
+}
+.diffConflictMark {
+  padding: 0 4px;
+  border-radius: 2px;
+  color: var(--fg-editor, var(--fg));
+}
+.diffFold {
+  padding: 4px 0;
+  font-family: var(--openidea-editor-font, var(--font-mono));
+  font-size: var(--fs-code);
+  line-height: var(--lh-code);
+  color: var(--fg-editor, var(--fg));
+}
+.diffFoldCode {
+  padding: 2px 12px;
+  white-space: pre;
+}
+.diffFoldWave {
+  position: relative;
+  height: 24px;
+  margin: 2px 0;
+  display: flex;
+  align-items: center;
+  padding-left: 12px;
+  border-bottom: 2px solid var(--diff-separator-wave);
+  background: linear-gradient(
+    to bottom,
+    transparent 0,
+    color-mix(in srgb, var(--diff-separator-wave) 22%, var(--bg-editor)) 50%,
+    transparent 100%
+  );
+}
+.diffFoldWave::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 6px;
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--diff-separator-wave) 0,
+    var(--diff-separator-wave) 1px,
+    transparent 1px,
+    transparent 5px
+  );
+}
+.diffFoldChevron {
+  font-family: var(--font-ui);
+  font-size: var(--fs-small);
+  color: var(--fg-subtle);
 }
 
 /* Code Style tables */

@@ -88,6 +88,40 @@ test("⌘F2 stops a running process", async ({ workbench: page }) => {
   await expect(run.getByRole("tab", { name: "dev" })).toHaveAttribute("data-tooltip", /exit code 143$/);
 });
 
+test("a long Run tab fits its side panel with room for the pin and close buttons", async ({ workbench: page }) => {
+  const name = "orders:reconcile:weekly-report-from-production-catalog";
+  await stubRun(page, [{ kind: "stdout", text: "Order report ready.\n" }], 0, { name });
+  await page.evaluate(async () => {
+    const path = "/src/workbench/toolwindows/store.ts";
+    const { moveToolWindow, setToolWindowSize } = await import(/* @vite-ignore */ path);
+    moveToolWindow("run", "right");
+    setToolWindowSize("right", 240);
+  });
+  await page.keyboard.press("Control+r");
+  const run = page.getByRole("region", { name: "Run", exact: true });
+  const strip = run.getByRole("tablist", { name: "Run sessions" });
+  const selected = strip.getByRole("tab", { name, selected: true });
+  await expect(selected).toBeVisible();
+  await expect
+    .poll(() =>
+      selected.evaluate((tab) => {
+        const slot = tab.parentElement!;
+        const bounds = slot.getBoundingClientRect();
+        const clip = slot.parentElement!.getBoundingClientRect();
+        return bounds.left >= clip.left - 1 && bounds.right <= clip.right + 1;
+      }),
+    )
+    .toBe(true);
+  await expect(run.getByRole("button", { name: "Show Hidden Tabs" })).toBeHidden();
+  await expect(selected).toHaveAttribute("data-tooltip", new RegExp(`^${name}.*exit code 0$`));
+
+  await selected.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Pin Tab", exact: true }).click();
+  await strip.getByRole("button", { name: "Unpin Tab", exact: true }).click();
+  await strip.getByRole("button", { name: "Close Tab", exact: true }).click();
+  await expect(run).toBeHidden();
+});
+
 test("a short Run pane has room for the full toolbar above the output", async ({ workbench: page }) => {
   await page.setViewportSize({ width: 400, height: 500 });
   const output = "Watching for changes…";
@@ -248,6 +282,75 @@ test("test results keep counts, actions and selected output visible as the pane 
   await page.setViewportSize({ width: 540, height: 740 });
   await expect.poll(async () => Math.abs((await treeHeight()) - customizedHeight)).toBeLessThan(2);
   await expect(output).toContainText(message);
+});
+
+test("test results group failure navigation and let users hide row durations", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 540, height: 740 });
+  const first = "TestCheckoutTotalsWithTaxRoundingAndPendingRefunds";
+  const second = "TestCheckoutTotalsWithDiscountsAndLateCouponAllocation";
+  const records = [
+    { Action: "output", Test: first, Output: "tax total differed\n" },
+    { Action: "fail", Test: first, Elapsed: 0.125 },
+    { Action: "output", Test: second, Output: "coupon allocation differed\n" },
+    { Action: "fail", Test: second, Elapsed: 0.28 },
+    { Action: "fail", Elapsed: 0.45 },
+  ];
+  await stubRun(
+    page,
+    records.map((record) => ({
+      kind: "stdout",
+      text: JSON.stringify({ Package: "example.com/checkout", ...record }) + "\n",
+    })),
+    1,
+    {
+      id: "go:checkout-tests",
+      name: "Checkout tests",
+      kind: "go",
+      command: "go",
+      args: ["test", "-json"],
+      isTest: true,
+    },
+  );
+  await page.keyboard.press("Control+r");
+
+  const run = page.getByRole("region", { name: "Run", exact: true });
+  const tree = run.getByRole("tree", { name: "Test results" });
+  const toolbar = run.getByRole("toolbar", { name: "Test results" });
+  const more = toolbar.getByRole("button", { name: "More Actions", exact: true });
+  const firstRow = tree.getByRole("treeitem", { name: new RegExp(first) });
+  const secondRow = tree.getByRole("treeitem", { name: new RegExp(second) });
+  await firstRow.click();
+  await more.click();
+  const next = page.getByRole("menuitem", { name: /^Next Failed Test/ });
+  await expect(next).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: /^Previous Failed Test/ })).toHaveAttribute("aria-disabled", "true");
+  await expect(toolbar.getByRole("button", { name: /Failed Test/ })).toHaveCount(0);
+  await next.click();
+  await expect(secondRow).toHaveAttribute("aria-selected", "true");
+  const output = run.getByRole("log");
+  await expect(output).toContainText("coupon allocation differed");
+
+  await expect(secondRow.getByText("280 ms", { exact: true })).toBeVisible();
+  const label = secondRow.getByText(second, { exact: true });
+  const width = (await label.boundingBox())!.width;
+  await more.click();
+  await expect(page.getByRole("menuitem", { name: /^Next Failed Test/ })).toHaveAttribute("aria-disabled", "true");
+  const options = page.getByRole("menuitem", { name: "Test Runner Options", exact: true });
+  await page.keyboard.press("End");
+  await expect(options).toBeFocused();
+  await page.keyboard.press("ArrowRight");
+  const durations = page.getByRole("menuitemcheckbox", { name: "Show Test Durations", exact: true });
+  await expect(durations).toHaveAttribute("aria-checked", "true");
+  await durations.press("Enter");
+  await expect(secondRow.getByText("280 ms", { exact: true })).toHaveCount(0);
+  await expect.poll(async () => (await label.boundingBox())!.width).toBeGreaterThan(width);
+  await expect(secondRow).toHaveAttribute("aria-selected", "true");
+  await expect(output).toContainText("coupon allocation differed");
+  const summary = run.getByRole("status").filter({ hasText: "2 failing" });
+  await expect(summary.getByText("2 failing", { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("openidea.run.testFilters")!).showDurations)).toBe(
+    false,
+  );
 });
 
 test("CMake builds the selected target in Build before starting only the application in Run", async ({

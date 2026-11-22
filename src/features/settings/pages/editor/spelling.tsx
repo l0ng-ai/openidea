@@ -4,13 +4,15 @@
  * dictionaries, also filled by the "Save to dictionary" quick fix) and custom
  * dictionary files.
  */
+import { useId, useState } from "react";
 import { useSettingsDialog } from "../../model/staging";
 import { useSetting } from "../../components/context";
-import { GlobListEditor, Row, Section } from "../../components/Form";
+import { GlobListEditor, Row, SearchLabel, Section } from "../../components/Form";
 import { useProject } from "@/platform/project";
-import { T } from "@/ui";
+import { T, Tabs } from "@/ui";
 import type { PageSpec } from "../spec";
-import styles from "../../components/Form.module.css";
+import formStyles from "../../components/Form.module.css";
+import styles from "./Spelling.module.css";
 
 function NaturalLanguagesPage() {
   return (
@@ -19,7 +21,7 @@ function NaturalLanguagesPage() {
         label="English (USA, UK)"
         hint="Bundled Hunspell dictionaries (SCOWL en_US and en_GB) and common programming terms."
       >
-        <span className={styles.hint}>
+        <span className={formStyles.hint}>
           <T>Used by Proofreading › Typo</T>
         </span>
       </Row>
@@ -29,45 +31,86 @@ function NaturalLanguagesPage() {
 
 const words = (list: readonly string[]) => [...new Set(list.map((w) => w.trim()).filter(Boolean))];
 
-function SpellingPage() {
+const wordDictionaries = [
+  { id: "project", label: "Project dictionary", hint: "Stored with the project." },
+  { id: "application", label: "Application dictionary", hint: "Accepted in every project." },
+];
+
+function AcceptedWords() {
   const hasProject = useProject((s) => !!s.project);
   const newProjects = useSettingsDialog((s) => s.newProjects);
   const [projectWords, setProjectWords] = useSetting<string[]>("spelling.projectWords", "project");
   const [ideWords, setIdeWords] = useSetting<string[]>("spelling.ideWords", "global");
-  const [dictionaries, setDictionaries] = useSetting<string[]>("spelling.customDictionaries", "global");
+  const [scope, setScope] = useState("project");
+  const id = useId();
+  const showProject = hasProject && !newProjects;
+  const scopes = showProject ? wordDictionaries : wordDictionaries.slice(1);
+  const activeScope = showProject ? scope : "application";
+
   return (
     <>
-      <Section title="Accepted words">
-        {hasProject && !newProjects && (
-          <Row label="Project dictionary" stacked hint="Stored with the project.">
-            <GlobListEditor
-              aria-label="Project dictionary"
-              value={projectWords ?? []}
-              onChange={(v) => setProjectWords(words(v))}
-              placeholder="word"
-              emptyText="No words"
-              itemLabel="Word"
-            />
-          </Row>
-        )}
-        <Row label="Application dictionary" stacked hint="Accepted in every project.">
-          <GlobListEditor
-            aria-label="Application dictionary"
-            value={ideWords ?? []}
-            onChange={(v) => setIdeWords(words(v))}
-            placeholder="word"
-            emptyText="No words"
-            itemLabel="Word"
-          />
-        </Row>
-      </Section>
+      {showProject && (
+        <Tabs
+          items={wordDictionaries}
+          activeId={activeScope}
+          onSelect={setScope}
+          variant="compact"
+          layout="wrap"
+          panelIdPrefix={id}
+          aria-label="Accepted words"
+        />
+      )}
+      {scopes.map(({ id: scopeId, label, hint }) => {
+        const isProject = scopeId === "project";
+        const active = activeScope === scopeId;
+        const value = isProject ? projectWords : ideWords;
+        const setValue = isProject ? setProjectWords : setIdeWords;
+        return (
+          <div
+            key={scopeId}
+            id={`${id}-panel-${scopeId}`}
+            role={showProject ? "tabpanel" : undefined}
+            aria-labelledby={showProject ? `${id}-tab-${scopeId}` : undefined}
+            hidden={!active}
+            className={styles.wordPanel}
+          >
+            {active && (
+              <>
+                {!showProject && <SearchLabel text={label} />}
+                <GlobListEditor
+                  className={styles.list}
+                  aria-label={label}
+                  value={value ?? []}
+                  onChange={(v) => setValue(words(v))}
+                  placeholder="word"
+                  emptyText="No words"
+                  itemLabel="Word"
+                  mono={false}
+                />
+                <p className={styles.note}>
+                  <T>{hint}</T>
+                </p>
+              </>
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+function SpellingPage() {
+  const [dictionaries, setDictionaries] = useSetting<string[]>("spelling.customDictionaries", "global");
+  return (
+    <div className={styles.spelling}>
       <Section title="Custom dictionaries">
         <Row
           label="Dictionary files"
           stacked
-          hint="Plain-text word lists (one word per line) or Hunspell .dic files. Relative paths resolve against the project root, ~/ against the home folder."
+          hint="Plain-text word lists (one word per line) or Hunspell .dic files; a .dic with its .aff beside it also accepts the inflected forms and compounds its rules allow. Relative paths resolve against the project root, ~/ against the home folder."
         >
           <GlobListEditor
+            className={styles.list}
             aria-label="Custom dictionaries"
             value={dictionaries ?? []}
             onChange={(v) => setDictionaries(words(v))}
@@ -77,7 +120,10 @@ function SpellingPage() {
           />
         </Row>
       </Section>
-    </>
+      <Section title="Accepted words">
+        <AcceptedWords />
+      </Section>
+    </div>
   );
 }
 

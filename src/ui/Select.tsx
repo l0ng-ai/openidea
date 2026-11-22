@@ -42,7 +42,9 @@ export interface SelectProps<V extends string = string> {
   /** `ghost` renders as plain text + chevron (title bar widgets); `chip` as a chip that opens. */
   variant?: "framed" | "ghost" | "chip";
   className?: string;
+  title?: string;
   "aria-label"?: string;
+  "aria-description"?: string;
   /** Custom trigger content. */
   renderValue?: (option: SelectOption<V> | undefined) => ReactNode;
   /** Show a search box in the popup (useful for long option lists); typing on the closed trigger opens it with that text. */
@@ -292,6 +294,9 @@ export function SelectListbox<V extends string = string>({
                   className={styles.rowAction}
                   onMouseDown={(e) => e.stopPropagation()}
                   onClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") e.stopPropagation();
+                  }}
                 >
                   {action}
                 </span>
@@ -321,6 +326,7 @@ export function Select<V extends string = string>({
   disabled,
   variant = "framed",
   className,
+  title,
   renderValue,
   searchable = false,
   onPreview,
@@ -352,6 +358,8 @@ export function Select<V extends string = string>({
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label={given(aria["aria-label"])}
+        aria-description={aria["aria-description"]}
+        title={title}
         disabled={disabled}
         className={clsx(styles.trigger, styles[variant], className)}
         onClick={() => (open ? setOpen(false) : openPopup())}

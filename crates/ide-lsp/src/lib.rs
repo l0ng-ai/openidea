@@ -48,6 +48,7 @@ mod xml_catalog;
 
 pub use injections::{InjectedRange, InjectionProvider, MAX_INJECTED_DOCUMENT_BYTES};
 pub use inspect::{CheckedServer, DocumentCheck, FileInspection, InspectHost, InspectOptions};
+pub use jdtls::exception_breakpoints::JdtExceptionBreakpoints;
 pub use jdtls::jvm_inspect::JdtJvmInspector;
 pub use jdtls::stream_trace::JdtStreamTracer;
 pub use kotlin_lsp::{KotlinDebugServer, KotlinDebugUnavailable};
@@ -1049,12 +1050,14 @@ impl LspManager {
         if let Err(e) = peer.notify("initialized", json!({})) {
             tracing::warn!("{}: {e}", server.name);
         }
-        // Servers that don't ask with `workspace/configuration` only learn settings this way.
-        let cfg = server.effective_config();
-        if cfg.settings.is_some()
-            && let Err(e) =
-                peer.notify("workspace/didChangeConfiguration", json!({ "settings": handler::all_settings(&cfg) }))
-        {
+        // Sent even without settings: servers that don't ask with `workspace/configuration`
+        // only learn settings this way, and Pyright, given workspace folders, waits for it
+        // before asking and loading the workspace.
+        let mut settings = handler::all_settings(&server.effective_config());
+        if settings.is_null() {
+            settings = json!({});
+        }
+        if let Err(e) = peer.notify("workspace/didChangeConfiguration", json!({ "settings": settings })) {
             tracing::debug!("{}: didChangeConfiguration: {e}", server.name);
         }
 

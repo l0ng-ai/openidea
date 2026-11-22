@@ -34,8 +34,21 @@ import type { HunkKind } from "@/bindings";
 import type { LineEnding } from "@/platform/ipc";
 import { create } from "zustand";
 import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
+import { isSameOrInside } from "@/platform/paths";
+import { useProject } from "@/platform/project";
+import { rootOfPath } from "@/platform/projectRoots";
+import { isVirtualUri } from "@/platform/virtualDocs";
 import { cornerInset } from "@/editor/core/cm/cornerInset";
 export { iconAreaSource, mapLineStart, type IconAreaSource } from "@/editor/core/cm/iconArea";
+export {
+  invalidateNavigationProviders,
+  navigationEpoch,
+  onNavigationProvidersChanged,
+  registerNavigationProvider,
+  type NavigationMatch,
+} from "@/editor/navigationProviders";
+export { registerRelatedProvider, type RelatedContext, type RelatedItem } from "@/editor/relatedProviders";
+export { offsetsToRange, offsetToPos, posToOffset, rangeToOffsets } from "@/editor/lsp/positions";
 
 /** Documents above this size (UTF-16 units) skip per-line decorations. */
 export const HEAVY_LIMIT = 8_000_000;
@@ -490,7 +503,11 @@ export type ContributedFormatter = (
   range: { from: number; to: number } | null,
 ) => Array<{ from: number; to: number; insert: string }>;
 /** Go to Declaration / ⌘-click: `true` when it handled `pos`. */
-export type ContributedDefinition = (view: EditorView, pos: number) => boolean;
+export interface ContributedDefinition {
+  (view: EditorView, pos: number): boolean;
+  /** Cheap, side-effect-free eligibility for hover underline and navigation probing. */
+  canHandle?(state: EditorState, pos: number): boolean;
+}
 /** Hover and Quick Documentation: Markdown about the symbol at `pos`. */
 export type ContributedHover = (
   state: EditorState,
@@ -499,6 +516,16 @@ export type ContributedHover = (
 
 export function contributedAt<T>(state: EditorState, key: string, pos: number): T | undefined {
   return state.languageDataAt<T>(key, pos)[0];
+}
+
+/**
+ * Every provider registered for a contributed language-data key at `pos`. A provider may
+ * be present for the document but decline this particular position (the MyBatis SQL
+ * provider on a Maven POM, for example), so callers that dispatch a request must not stop
+ * at the first entry when it returns "not handled".
+ */
+export function contributedAtAll<T>(state: EditorState, key: string, pos: number): readonly T[] {
+  return state.languageDataAt<T>(key, pos);
 }
 
 /** A context action a feature offers at the caret, listed by Show Context Actions (⌥↵). */
@@ -771,9 +798,54 @@ export function setLibraryRoots(owner: string, roots: readonly string[]): () => 
 }
 
 export function isLibraryPath(path: string): boolean {
+  if (navigatedLibraryFiles.has(path)) return true;
   for (const roots of libraryRoots.values())
     for (const r of roots) if (path === r || path.startsWith(r.endsWith("/") ? r : `${r}/`)) return true;
   return false;
+}
+
+/** Whether `path` lies outside every folder of the open project (or workspace). */
+function outsideProject(path: string): boolean {
+  const project = useProject.getState().project;
+  if (!project) return false;
+  const folders = project.workspace ? project.workspace.projects : [project.root];
+  return !folders.some((root) => isSameOrInside(path, root));
+}
+
+/** Files outside the project that code navigation opened: library sources, shown read-only. */
+const navigatedLibraryFiles = new Set<string>();
+
+/**
+ * Opens a code location a language server or the index answered (a declaration, an
+ * implementation, a documentation link) and selects `selection`. A file outside the project is a
+ * library source wherever the server keeps it (an SDK, its own cache or bundled stubs, a temporary
+ * copy), so it opens read-only like the External Libraries' files.
+ */
+export async function openCodeLocation(
+  path: string,
+  selection?: { line: number; col: number },
+  options: { focus?: boolean } = {},
+): Promise<void> {
+  if (!isVirtualUri(path) && outsideProject(path)) navigatedLibraryFiles.add(path);
+  await maybeEditorService()?.openFile(path, { selection, focus: options.focus ?? true });
+}
+
+/**
+ * A document outside the project's own code: a server's virtual document (a library class), a
+ * file under the library roots or in a `node_modules` folder (the library roots list only direct
+ * dependencies, and a package manager's store holds the real paths), in a folder marked Excluded
+ * (a virtual environment, build output, a `vendor` copy the user marked; the innermost mark wins,
+ * so a source folder inside stays the project's), or outside the open project's folders (the stubs
+ * a language server ships, a standard library it resolves elsewhere). Background features skip
+ * what needs a search over the whole project here (usage counts, inheritor markers, server
+ * lenses): a library symbol is referenced everywhere, so each such request makes the server
+ * analyse every file, and an explicit Find Usages or Go to Implementation still answers.
+ */
+export function isLibrarySource(ctx: Pick<EditorDocContext, "path" | "virtual">): boolean {
+  if (ctx.virtual || isLibraryPath(ctx.path) || /(^|[\\/])node_modules[\\/]/.test(ctx.path)) return true;
+  if (!useProject.getState().project) return false;
+  if (outsideProject(ctx.path)) return true;
+  return rootOfPath(ctx.path)?.kind === "excluded";
 }
 
 // --- documents shown outside editor tabs ---------------------------------------

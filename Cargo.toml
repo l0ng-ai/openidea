@@ -5,7 +5,7 @@ members = ["crates/*", "src-tauri"]
 exclude = ["sdk", "plugins"]
 
 [workspace.package]
-version = "0.1.49"
+version = "0.1.50"
 edition = "2024"
 rust-version = "1.96"
 license = "Apache-2.0"
@@ -38,6 +38,7 @@ ide-web = { path = "crates/ide-web" }
 ide-spell = { path = "crates/ide-spell" }
 ide-agent = { path = "crates/ide-agent" }
 ide-clipboard = { path = "crates/ide-clipboard" }
+ide-drag-out = { path = "crates/ide-drag-out" }
 ide-fonts = { path = "crates/ide-fonts" }
 ide-ssh = { path = "crates/ide-ssh" }
 ide-remote = { path = "crates/ide-remote" }

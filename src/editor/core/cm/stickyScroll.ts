@@ -8,11 +8,11 @@
 import { EditorSelection, Facet, type EditorState, type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { foldNodeProp, syntaxTree } from "@codemirror/language";
-import { highlightTree } from "@lezer/highlight";
 import { backendFolds } from "./folding";
-import { openideaHighlightStyle } from "./highlight";
 import { LINE_INSET } from "./lineInset";
-import { bracketClass, bracketScanner, DEFAULT_BRACKET_COLORS, type BracketMark } from "./rainbowBrackets";
+import { bracketScanner } from "./rainbowBrackets";
+import { MAX_PREVIEW_LINE_LENGTH, renderLineContent } from "./renderLineContent";
+import { editorLineNumber } from "./relativeLineNumbers";
 
 /** Maximum number of sticky lines (Settings › Editor › Code Editing). */
 export const stickyMaxLines = Facet.define<number, number>({
@@ -49,66 +49,6 @@ export function enclosingHeaders(state: EditorState, lineNo: number): number[] {
     .filter((n) => n < lineNo)
     .sort((a, b) => a - b)
     .slice(-state.facet(stickyMaxLines));
-}
-
-/** Characters of a sticky line rendered at most. */
-const MAX_TEXT = 400;
-
-/**
- * Renders line `lineNo` highlighted into `target`; `brackets` (ascending, as from the
- * rainbow bracket scanner) are wrapped in their rainbow class, outside the token's span
- * as in the editor.
- */
-export function renderLineContent(
-  state: EditorState,
-  lineNo: number,
-  target: HTMLElement,
-  brackets: readonly BracketMark[] = [],
-  colors = DEFAULT_BRACKET_COLORS,
-) {
-  const line = state.doc.line(lineNo);
-  const text = line.text.length > MAX_TEXT ? line.text.slice(0, MAX_TEXT) : line.text;
-  const end = line.from + text.length;
-  const tree = syntaxTree(state);
-  let pos = line.from;
-  let next = 0;
-  const node = (to: number, cls: string): Node => {
-    const s = state.doc.sliceString(pos, to);
-    pos = to;
-    if (!cls) return document.createTextNode(s);
-    const span = document.createElement("span");
-    span.className = cls;
-    span.textContent = s;
-    return span;
-  };
-  const push = (to: number, cls: string) => {
-    while (to > pos) {
-      while (next < brackets.length && brackets[next]!.from < pos) next++;
-      const bracket = brackets[next];
-      if (!bracket || bracket.from >= to) {
-        target.appendChild(node(to, cls));
-        return;
-      }
-      if (bracket.from > pos) target.appendChild(node(bracket.from, cls));
-      const wrap = document.createElement("span");
-      wrap.className = bracketClass(bracket.depth, colors);
-      wrap.appendChild(node(bracket.from + 1, cls));
-      target.appendChild(wrap);
-    }
-  };
-  if (tree.length >= end) {
-    highlightTree(
-      tree,
-      openideaHighlightStyle,
-      (from, to, cls) => {
-        push(Math.max(from, pos), "");
-        push(Math.min(to, end), cls);
-      },
-      line.from,
-      end,
-    );
-  }
-  push(end, "");
 }
 
 /** Character offset in a rendered sticky line closest to `clientX`. */
@@ -164,6 +104,26 @@ function xAtOffset(inner: HTMLElement, offset: number): number {
   return range.getBoundingClientRect().right;
 }
 
+export function readEditorTopLayout(view: EditorView) {
+  const scroller = view.scrollDOM;
+  const viewport = scroller.getBoundingClientRect();
+  const gutters = view.dom.querySelector(".cm-gutters")?.getBoundingClientRect();
+  const numbers = view.dom.querySelector(".cm-lineNumbers")?.getBoundingClientRect();
+  const overview = view.dom.querySelector(".cm-openidea-overview")?.getBoundingClientRect();
+  const width = scroller.clientWidth;
+  return {
+    viewport,
+    top: scroller.offsetTop,
+    left: scroller.offsetLeft,
+    width,
+    rightInset: overview?.width ? Math.max(0, width - (overview.left - viewport.left) / view.scaleX) : 0,
+    gutterWidth: (gutters?.width ?? 0) / view.scaleX,
+    numberWidth: (numbers?.width ?? 0) / view.scaleX,
+    // Gutters left of the line numbers (e.g. VCS annotations) shift the number column.
+    numberLeft: gutters && numbers ? Math.max(0, (numbers.left - gutters.left) / view.scaleX) : 0,
+  };
+}
+
 class StickyScroll {
   dom: HTMLElement;
   private lines: number[] = [];
@@ -171,8 +131,10 @@ class StickyScroll {
    * Text and syntax tree the rows were rendered from (re-render when either changes), and
    * the document while bracket colours are on (an edit above may change their depth).
    */
-  private renderedFrom: { texts: string[]; tree: unknown; doc: unknown; scanner: unknown } | null = null;
+  private renderedFrom: { texts: string[]; numbers: string[]; tree: unknown; doc: unknown; scanner: unknown } | null =
+    null;
   private gutterWidth = 0;
+  private numberWidth = 0;
   private numberLeft = 0;
   private scheduled = false;
   private selectionDirty = true;
@@ -213,21 +175,11 @@ class StickyScroll {
       key: this,
       read: (view) => {
         this.scheduled = false;
-        const scroller = view.scrollDOM;
-        const scrollTop = scroller.scrollTop;
-        const docOffset = view.documentTop - scroller.getBoundingClientRect().top + scrollTop;
+        const layout = readEditorTopLayout(view);
+        const scrollTop = view.scrollDOM.scrollTop;
+        const docOffset = view.documentTop - layout.viewport.top + scrollTop;
         const lh = view.defaultLineHeight;
-        const gutters = view.dom.querySelector<HTMLElement>(".cm-gutters");
-        const numbers = view.dom.querySelector<HTMLElement>(".cm-lineNumbers");
-        const gutterWidth = gutters?.offsetWidth ?? 0;
-        const numberWidth = numbers?.offsetWidth ?? 0;
-        // Gutters left of the line numbers (e.g. VCS annotations) shift the number column.
-        const numberLeft =
-          gutters && numbers
-            ? Math.max(0, numbers.getBoundingClientRect().left - gutters.getBoundingClientRect().left)
-            : 0;
-        if (scrollTop - docOffset <= 0)
-          return { lines: [] as number[], gutterWidth, numberWidth, numberLeft, scrollLeft: 0 };
+        if (scrollTop - docOffset <= 0) return { lines: [] as number[], layout, scrollLeft: 0 };
         // n sticky rows cover the first n visible lines; they show the n outermost
         // headers of the first line below them, as long as it has that many.
         const lineBelow = (n: number) => {
@@ -240,11 +192,13 @@ class StickyScroll {
           if (enclosing.length < n) break;
           headers = enclosing.slice(0, n);
         }
-        return { lines: headers, gutterWidth, numberWidth, numberLeft, scrollLeft: scroller.scrollLeft };
+        return { lines: headers, layout, scrollLeft: view.scrollDOM.scrollLeft };
       },
-      write: ({ lines, gutterWidth, numberWidth, numberLeft, scrollLeft }) => {
+      write: ({ lines, layout, scrollLeft }) => {
         const state = this.view.state;
+        const { top, left, width, rightInset, gutterWidth, numberWidth, numberLeft } = layout;
         const texts = lines.map((n) => (n <= state.doc.lines ? state.doc.line(n).text : ""));
+        const numbers = numberWidth > 0 ? lines.map((n) => editorLineNumber(state, n)) : [];
         const tree = syntaxTree(state);
         const scanner = bracketScanner(this.view);
         const prev = this.renderedFrom;
@@ -255,7 +209,8 @@ class StickyScroll {
           prev.tree === tree &&
           prev.doc === (scanner ? state.doc : null) &&
           prev.scanner === scanner &&
-          texts.every((t, i) => t === prev.texts[i]);
+          texts.every((t, i) => t === prev.texts[i]) &&
+          numbers.every((number, i) => number === prev.numbers[i]);
         if (!lines.length) {
           this.dom.style.display = "none";
           this.lines = [];
@@ -263,23 +218,44 @@ class StickyScroll {
           return;
         }
         this.dom.style.display = "";
-        const rebuild = !same || gutterWidth !== this.gutterWidth || numberLeft !== this.numberLeft;
+        this.dom.style.top = `${top}px`;
+        this.dom.style.left = `${left}px`;
+        this.dom.style.width = `${width}px`;
+        this.dom.style.paddingRight = `${rightInset}px`;
+        if (this.dom.style.tabSize !== String(state.tabSize)) {
+          this.dom.style.tabSize = String(state.tabSize);
+          this.selectionDirty = true;
+        }
+        const rebuild =
+          !same ||
+          gutterWidth !== this.gutterWidth ||
+          numberWidth !== this.numberWidth ||
+          numberLeft !== this.numberLeft;
         if (rebuild) {
           this.lines = lines;
-          this.renderedFrom = { texts, tree, doc: scanner ? state.doc : null, scanner };
+          this.renderedFrom = { texts, numbers, tree, doc: scanner ? state.doc : null, scanner };
           this.gutterWidth = gutterWidth;
+          this.numberWidth = numberWidth;
           this.numberLeft = numberLeft;
           const frag = document.createDocumentFragment();
-          for (const n of lines) {
+          for (const [i, n] of lines.entries()) {
             const row = document.createElement("div");
             row.className = "cm-openidea-stickyLine";
             row.dataset.line = String(n);
-            const num = document.createElement("span");
-            num.className = "cm-openidea-stickyNumber";
-            num.style.width = `${numberWidth}px`;
-            num.style.marginLeft = `${numberLeft}px`;
-            num.style.marginRight = `${Math.max(0, gutterWidth - numberLeft - numberWidth)}px`;
-            num.textContent = String(n);
+            if (gutterWidth > 0) {
+              const gutter = document.createElement("span");
+              gutter.className = "cm-openidea-stickyGutter";
+              gutter.style.width = `${gutterWidth}px`;
+              if (numbers[i] !== undefined) {
+                const num = document.createElement("span");
+                num.className = "cm-openidea-stickyNumber";
+                num.style.width = `${numberWidth}px`;
+                num.style.marginLeft = `${numberLeft}px`;
+                num.textContent = numbers[i];
+                gutter.appendChild(num);
+              }
+              row.appendChild(gutter);
+            }
             const text = document.createElement("span");
             text.className = "cm-openidea-stickyText";
             const inner = document.createElement("span");
@@ -291,11 +267,11 @@ class StickyScroll {
               state,
               n,
               inner,
-              scanner?.marks(state, line.from, line.from + Math.min(MAX_TEXT, line.length)),
+              scanner?.marks(state, line.from, line.from + Math.min(MAX_PREVIEW_LINE_LENGTH, line.length)),
               scanner?.colors,
             );
             text.appendChild(inner);
-            row.append(num, text);
+            row.appendChild(text);
             frag.appendChild(row);
           }
           this.dom.replaceChildren(frag);
@@ -381,3 +357,5 @@ class StickyScroll {
   }
 }
 export const stickyScroll: Extension = ViewPlugin.fromClass(StickyScroll);
+
+export { renderLineContent as renderContextLine };

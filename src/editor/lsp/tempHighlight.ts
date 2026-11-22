@@ -10,11 +10,13 @@ import { Decoration, EditorView } from "@codemirror/view";
 export interface HighlightRange {
   from: number;
   to: number;
+  tone?: "removed";
 }
 
 const setTemporary = StateEffect.define<readonly HighlightRange[]>();
 
 const mark = Decoration.mark({ class: "cm-lsp-chooser-highlight" });
+const removed = Decoration.mark({ class: "cm-lsp-chooser-removed" });
 
 const temporaryField = StateField.define<readonly HighlightRange[]>({
   create: () => [],
@@ -25,23 +27,23 @@ const temporaryField = StateField.define<readonly HighlightRange[]>({
   provide: (f) =>
     EditorView.decorations.from(f, (ranges) =>
       Decoration.set(
-        ranges.filter((r) => r.from < r.to).map((r) => mark.range(r.from, r.to)),
+        ranges.filter((r) => r.from < r.to).map((r) => (r.tone === "removed" ? removed : mark).range(r.from, r.to)),
         true,
       ),
     ),
 });
 
 /** Highlights `ranges` until the next call, `clearTemporaryHighlight` or an edit; scrolls the first into view. */
-export function highlightRanges(view: EditorView, ranges: readonly HighlightRange[]): void {
+export function highlightRanges(view: EditorView, ranges: readonly HighlightRange[], { scroll = true } = {}): void {
   const len = view.state.doc.length;
   const clamped = ranges
-    .map((r) => ({ from: Math.max(0, Math.min(r.from, len)), to: Math.max(0, Math.min(r.to, len)) }))
+    .map((r) => ({ ...r, from: Math.max(0, Math.min(r.from, len)), to: Math.max(0, Math.min(r.to, len)) }))
     .sort((a, b) => a.from - b.from);
   const effects: StateEffect<unknown>[] = [setTemporary.of(clamped)];
   if (!view.state.field(temporaryField, false))
     effects.push(StateEffect.appendConfig.of(temporaryHighlightExtension()));
   const first = clamped[0];
-  if (first) effects.push(EditorView.scrollIntoView(first.from, { y: "nearest" }));
+  if (scroll && first) effects.push(EditorView.scrollIntoView(first.from, { y: "nearest" }));
   view.dispatch({ effects });
 }
 

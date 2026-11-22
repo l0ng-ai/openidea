@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import clsx from "clsx";
-import { executeAction } from "@/platform/actions";
+import { executeAction, getAction } from "@/platform/actions";
 import {
   findOccurrence,
   Icon,
@@ -15,13 +15,23 @@ import {
   type TreeHandle,
 } from "@/ui";
 import { useOccurrenceNavigator } from "@/workbench/contributions";
-import { openTarget } from "./navigate";
-import { formatDuration, nodeDuration, nodeStatus, type TestNode, type TestResults, type TestStatus } from "./testing";
+import { openTarget, resolveTarget } from "./navigate";
+import {
+  formatDuration,
+  nodeDuration,
+  nodeOutput,
+  nodeStatus,
+  type TestNode,
+  type TestResults,
+  type TestStatus,
+} from "./testing";
 import { parseComparison } from "./testing/comparison";
 import { TEST_TREE_FOCUS, testTree } from "./testTree";
 import { ExportTestResultsDialog } from "./ExportTestResultsDialog";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
+
+const DIAGNOSE = "agents.diagnoseTestFailure";
 
 /** Test tree filters and sorting, kept across runs and restarts (IDEA hides passed tests by default). */
 const FILTERS_KEY = "openidea.run.testFilters";
@@ -29,6 +39,7 @@ const FILTERS_KEY = "openidea.run.testFilters";
 interface TestFilters {
   showPassed: boolean;
   showIgnored: boolean;
+  showDurations: boolean;
   sortAlphabetically: boolean;
   sortByDuration: boolean;
 }
@@ -40,11 +51,18 @@ export function loadTestFilters(): TestFilters {
     return {
       showPassed: v.showPassed === true,
       showIgnored: v.showIgnored !== false,
+      showDurations: v.showDurations !== false,
       sortAlphabetically: v.sortAlphabetically === true && v.sortByDuration !== true,
       sortByDuration: v.sortByDuration === true,
     };
   } catch {
-    return { showPassed: false, showIgnored: true, sortAlphabetically: false, sortByDuration: false };
+    return {
+      showPassed: false,
+      showIgnored: true,
+      showDurations: true,
+      sortAlphabetically: false,
+      sortByDuration: false,
+    };
   }
 }
 
@@ -187,7 +205,7 @@ export function TestTreeView({
   canRunTests,
 }: TestTreeViewProps) {
   const [filters, setFilters] = useState(loadTestFilters);
-  const { showPassed, showIgnored, sortAlphabetically, sortByDuration } = filters;
+  const { showPassed, showIgnored, showDurations, sortAlphabetically, sortByDuration } = filters;
   const toggle = (key: keyof TestFilters) =>
     setFilters((f) => {
       const next = { ...f, [key]: !f[key] };
@@ -213,6 +231,23 @@ export function TestTreeView({
   const jumpToSource = (n: TestNode) => {
     const target = n.location ?? firstLocated(n)?.location;
     if (target) void openTarget(target, cwd, true);
+  };
+
+  // The agents feature's action: the failure becomes a draft the user reviews and sends.
+  const diagnose = async (n: TestNode, name: string) => {
+    const located = n.location ?? firstLocated(n)?.location;
+    const path = located ? await resolveTarget(located, cwd).catch(() => null) : null;
+    // Rust's `left` / `right` don't say which side is expected; the output excerpt shows them as written.
+    const parsed = parseComparison(n.output);
+    const comparison = parsed?.labels ? null : parsed;
+    await executeAction(DIAGNOSE, {
+      name,
+      path,
+      line: path ? located?.line : undefined,
+      expected: comparison?.expected,
+      actual: comparison?.actual,
+      output: nodeOutput(n),
+    });
   };
 
   const contextMenu = (node: TestNode | null, sel: Set<string>, e: MouseEvent) => {
@@ -245,6 +280,8 @@ export function TestTreeView({
       }
       if (ids.length === 1 && nodeStatus(node) === "failed" && parseComparison(node.output))
         items.push({ label: "Show Diff", icon: "diff", run: () => void showTestDiff(node) });
+      if (ids.length === 1 && !node.children.length && nodeStatus(node) === "failed" && getAction(DIAGNOSE))
+        items.push({ label: "Diagnose with Agent", icon: "toolwindow-agents", run: () => void diagnose(node, name) });
       items.push({
         label: "Jump to Source",
         icon: "external-link",
@@ -294,10 +331,14 @@ export function TestTreeView({
     testTree.expandAll = () => setExpanded(suiteIds(results.roots));
     testTree.collapseAll = () => setExpanded(new Set());
     testTree.exportResults = canExport ? () => setExporting(true) : null;
+    testTree.showDurations = showDurations;
+    testTree.toggleDurations = () => toggle("showDurations");
     return () => {
       testTree.expandAll = null;
       testTree.collapseAll = null;
       testTree.exportResults = null;
+      testTree.showDurations = null;
+      testTree.toggleDurations = null;
     };
   });
   const hasSuites = roots.some((n) => n.children.length > 0);
@@ -316,22 +357,24 @@ export function TestTreeView({
   return (
     <div className={styles.testPane}>
       <Toolbar className={styles.testToolbar} aria-label="Test results">
-        <IconButton
-          icon="test-show-passed"
-          size="small"
-          iconSize={16}
-          title="Show Passed"
-          pressed={showPassed}
-          onClick={() => toggle("showPassed")}
-        />
-        <IconButton
-          icon="test-show-ignored"
-          size="small"
-          iconSize={16}
-          title="Show Ignored"
-          pressed={showIgnored}
-          onClick={() => toggle("showIgnored")}
-        />
+        <div className={styles.testFilters}>
+          <IconButton
+            icon="test-show-passed"
+            size="small"
+            iconSize={16}
+            title="Show Passed"
+            pressed={showPassed}
+            onClick={() => toggle("showPassed")}
+          />
+          <IconButton
+            icon="test-show-ignored"
+            size="small"
+            iconSize={16}
+            title="Show Ignored"
+            pressed={showIgnored}
+            onClick={() => toggle("showIgnored")}
+          />
+        </div>
         <IconButton
           ref={sortButton}
           icon="test-sort"
@@ -356,22 +399,6 @@ export function TestTreeView({
             },
           ]}
           onClose={() => setSortMenu(false)}
-        />
-        <IconButton
-          icon="arrow-up"
-          action="navigate.prevOccurrence"
-          size="small"
-          iconSize={16}
-          title="Previous Failed Test"
-          disabled={!hasPrevFailed}
-        />
-        <IconButton
-          icon="arrow-down"
-          action="navigate.nextOccurrence"
-          size="small"
-          iconSize={16}
-          title="Next Failed Test"
-          disabled={!hasNextFailed}
         />
         <IconButton
           ref={moreButton}
@@ -402,10 +429,29 @@ export function TestTreeView({
             },
             { kind: "separator" },
             {
+              kind: "action",
+              action: "navigate.prevOccurrence",
+              label: "Previous Failed Test",
+              disabled: !hasPrevFailed,
+            },
+            {
+              kind: "action",
+              action: "navigate.nextOccurrence",
+              label: "Next Failed Test",
+              disabled: !hasNextFailed,
+            },
+            { kind: "separator" },
+            {
               icon: "export",
               label: "Export Test Results…",
               disabled: !canExport,
               run: () => setExporting(true),
+            },
+            { kind: "separator" },
+            {
+              label: "Test Runner Options",
+              icon: "settings",
+              submenu: [{ kind: "action", action: "run.toggleTestDurations" }],
             },
           ]}
         />
@@ -437,7 +483,7 @@ export function TestTreeView({
         onContextMenu={contextMenu}
         renderNode={(n) => {
           const s = nodeStatus(n);
-          const d = nodeDuration(n);
+          const d = showDurations ? nodeDuration(n) : undefined;
           return (
             <span className={styles.testRow}>
               <StatusIcon status={s} />

@@ -217,6 +217,12 @@ describe("languages settings", () => {
     expect(validateLanguages({ markdown: { previewFontSize: "x" } }).markdown.previewFontSize).toBeNull();
   });
 
+  it("defaults Markdown preview to side by side and accepts a stacked layout", () => {
+    expect(validateLanguages({}).markdown.previewLayout).toBe("sideBySide");
+    expect(validateLanguages({ markdown: { previewLayout: "stacked" } }).markdown.previewLayout).toBe("stacked");
+    expect(validateLanguages({ markdown: { previewLayout: "other" } }).markdown.previewLayout).toBe("sideBySide");
+  });
+
   it("detects Markdown commands by default and asks for their folder until one is chosen", () => {
     expect(validateLanguages({}).markdown).toMatchObject({ runCommands: true, commandDirectory: null });
     expect(validateLanguages({ markdown: { runCommands: false, commandDirectory: "file" } }).markdown).toMatchObject({

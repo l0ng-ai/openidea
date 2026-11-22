@@ -52,7 +52,7 @@ it("offers no repository choice when the project has one repository", async () =
   useVcs.setState({ roots: ["/p"], repo: null });
   render(<VcsDialogHost />);
   await act(() => showRebaseDialog());
-  expect(await screen.findByText("Rebase main onto:")).toBeInTheDocument();
+  expect(await screen.findByRole("dialog", { name: "Rebase main" })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Repository" })).toBeNull();
 
   await pick("Upstream", "feature-a");
@@ -64,11 +64,11 @@ it("offers no repository choice when the project has one repository", async () =
 it("rebases the repository picked in the dialog, offering that repository's branches", async () => {
   render(<VcsDialogHost />);
   await act(() => showRebaseDialog());
-  expect(await screen.findByText("Rebase main onto:")).toBeInTheDocument();
+  expect(await screen.findByRole("dialog", { name: "Rebase main" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Repository" })).toHaveTextContent("a");
 
   await pick("Repository", "b");
-  expect(await screen.findByText("Rebase dev onto:")).toBeInTheDocument();
+  expect(await screen.findByRole("dialog", { name: "Rebase dev" })).toBeInTheDocument();
 
   fireEvent.click(screen.getByRole("button", { name: "Upstream" }));
   expect(await screen.findByRole("option", { name: "feature-b" })).toBeInTheDocument();
@@ -85,22 +85,23 @@ it("rebases the repository picked in the dialog, offering that repository's bran
 it("clears the chosen branches when another repository is picked", async () => {
   render(<VcsDialogHost />);
   await act(() => showRebaseDialog());
-  expect(await screen.findByText("Rebase main onto:")).toBeInTheDocument();
+  expect(await screen.findByRole("dialog", { name: "Rebase main" })).toBeInTheDocument();
 
   // Branch names both repositories have still have to be chosen again for the new one.
   await pick("Upstream", "shared");
-  fireEvent.click(screen.getByRole("checkbox", { name: "--onto" }));
+  fireEvent.click(screen.getByRole("button", { name: "Modify options" }));
+  fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: "--onto" }));
   await pick("New base", "shared");
   expect(screen.getByRole("button", { name: "Rebase" })).toBeEnabled();
 
   await pick("Repository", "b");
-  expect(await screen.findByText("Rebase commits of dev not on:")).toBeInTheDocument();
+  expect(await screen.findByRole("dialog", { name: "Rebase dev" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Rebase" })).toBeDisabled();
-  expect(screen.getByRole("button", { name: "Upstream" })).not.toHaveTextContent("shared");
+  expect(screen.getByRole("button", { name: "Old base" })).not.toHaveTextContent("shared");
   expect(screen.getByRole("button", { name: "New base" })).not.toHaveTextContent("shared");
 
   // Picking the repository that is already selected keeps the choice.
-  await pick("Upstream", "shared");
+  await pick("Old base", "shared");
   await pick("New base", "shared");
   await pick("Repository", "b");
   expect(screen.getByRole("button", { name: "Rebase" })).toBeEnabled();

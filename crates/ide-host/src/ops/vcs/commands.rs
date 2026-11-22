@@ -151,6 +151,8 @@ impl LogAccess {
 pub struct VcsRoot {
     /// Worktree root.
     pub root: ide_core::IpcPath,
+    /// Root representing all mapped worktrees of the same Git repository in branch lists.
+    pub branch_root: ide_core::IpcPath,
     /// Merge / rebase / cherry-pick / revert in progress.
     pub operation: Option<String>,
     /// Current branch; `None` when HEAD is detached (or unreadable).
@@ -348,11 +350,28 @@ pub fn vcs_roots(host: &Host, window: &str) -> IdeResult<Vec<VcsRoot>> {
     let primary = repos.primary().map(|r| r.root().to_path_buf());
     let mut all: Vec<&std::sync::Arc<Repo>> = repos.all().iter().collect();
     all.sort_by_key(|r| Some(r.root()) != primary.as_deref());
-    Ok(all
-        .into_iter()
-        .map(|r| {
+    let roots: Vec<_> = all.into_iter().map(|repo| (repo, repo.metadata_dirs().ok())).collect();
+    let mut branch_roots = std::collections::HashMap::new();
+    for (repo, dirs) in &roots {
+        if let Some([git_dir, common_dir]) = dirs {
+            let first = branch_roots.entry(common_dir).or_insert(repo.root());
+            if git_dir == common_dir {
+                *first = repo.root();
+            }
+        }
+    }
+    Ok(roots
+        .iter()
+        .map(|(r, dirs)| {
             let (head, head_commit) = r.head().unwrap_or_default();
-            VcsRoot { root: r.root().to_path_buf().into(), operation: r.operation().ok().flatten(), head, head_commit }
+            let branch_root = dirs.as_ref().and_then(|[_, common_dir]| branch_roots.get(common_dir));
+            VcsRoot {
+                root: r.root().into(),
+                branch_root: branch_root.copied().unwrap_or_else(|| r.root()).into(),
+                operation: r.operation().ok().flatten(),
+                head,
+                head_commit,
+            }
         })
         .collect())
 }
@@ -633,8 +652,14 @@ pub async fn vcs_add_to_ignore(
     host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || {
+        // The Changes view lists every repository of the window (the project's and the
+        // attached ones'): a path inside the project folder, or in any of those repositories.
+        // The folder check stays so a request right after opening, before the repositories
+        // are discovered, still works.
+        let repos = project.repos();
         for path in &paths {
-            if path == &project.root || !path.starts_with(&project.root) {
+            let in_project = path != &project.root && path.starts_with(&project.root);
+            if !in_project && repos.for_path(path).is_none() {
                 return Err(ide_core::IdeError::invalid("Ignore selection is outside the project"));
             }
         }

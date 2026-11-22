@@ -237,3 +237,19 @@ fn versions_and_ansi() {
     assert_eq!(strip_ansi("\u{1b}[32m✔\u{1b}[0m done\r"), "✔ done");
     assert_eq!(strip_ansi("\u{1b}]8;;http://x\u{7}link\u{1b}]8;;\u{7}"), "link");
 }
+
+#[test]
+fn taken_targets_and_free_names() {
+    let tmp = tempfile::tempdir().unwrap();
+    let at = |n: &str| tmp.path().join(n);
+    assert!(!target_taken(&at("untitled")));
+    assert_eq!(free_name(tmp.path(), "untitled"), "untitled");
+
+    std::fs::create_dir(at("untitled")).unwrap();
+    assert!(!target_taken(&at("untitled")), "an empty folder takes the project");
+    std::fs::write(at("untitled/a.txt"), "").unwrap();
+    assert!(target_taken(&at("untitled")));
+    std::fs::write(at("untitled1"), "").unwrap();
+    assert!(target_taken(&at("untitled1")), "a file is in the way");
+    assert_eq!(free_name(tmp.path(), "untitled"), "untitled2");
+}

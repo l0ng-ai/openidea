@@ -65,6 +65,14 @@
   flex: 1;
   min-height: 0;
 }
+/* Long repository lists shrink before the branch name. */
+.mergedBranchTree {
+  --tree-detail-flex-shrink: 1000;
+}
+.branchRepos {
+  margin-left: var(--space-1-5);
+  color: var(--fg-subtle);
+}
 .branchDetail {
   min-width: 0;
   display: inline-flex;
@@ -555,6 +563,10 @@
   user-select: text;
   font-size: var(--fs-ui);
 }
+.historyMessageBox {
+  padding: var(--space-2) var(--space-3);
+  border-top: 0;
+}
 .commitTooltip {
   width: min(520px, calc(100vw - 32px));
   max-height: 60vh;
@@ -618,32 +630,35 @@
   flex: 1;
   min-width: 0;
 }
+.messageText {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
 .subjectLine {
   color: var(--fg-strong);
-  font-weight: 600;
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.5;
 }
 .fullMessage {
-  margin-top: 6px;
+  margin-top: var(--space-1-5);
   color: var(--fg);
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.5;
 }
 .meta {
-  margin-top: 10px;
+  font-size: var(--fs-small);
   color: var(--fg-subtle);
   line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.messageText + .meta {
+  margin-top: var(--space-2);
+}
+.meta + .meta,
+.commitEntry .messageText + .meta {
+  margin-top: var(--space-0-5);
 }
 .commitEntry + .commitEntry {
   margin-top: 10px;
   padding-top: 10px;
   border-top: 1px solid var(--border);
-}
-.metaCompact {
-  margin-top: 2px;
 }
 .meta .refs {
   margin-left: 0;
@@ -657,6 +672,10 @@
 }
 .hash {
   font-family: var(--font-mono);
+}
+.messageText .linkButton,
+.meta .linkButton {
+  max-width: 100%;
 }
 .linkButton {
   color: var(--link);

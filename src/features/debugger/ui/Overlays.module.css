@@ -221,6 +221,17 @@
   font-size: var(--fs-small);
 }
 
+.unsupportedField {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+/* A disabled control gets no pointer events in WebKit: the field shows the tooltip instead. */
+.unsupportedField > * {
+  pointer-events: none;
+}
+
 /* evaluate dialog */
 .evalDialog {
   height: min(440px, 100%);
@@ -294,6 +305,38 @@
   height: 260px;
 }
 
+.stepPopup {
+  display: flex;
+  flex-direction: column;
+  width: min(460px, calc(100vw - 12px));
+  padding-block-end: var(--space-0-5);
+  overflow: hidden;
+  font-size: var(--fs-ui);
+}
+
+.stepHeading {
+  flex: none;
+  padding: var(--space-1-5) var(--space-3);
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+
+.stepTargets {
+  display: flex;
+  min-height: 0;
+}
+
+.stepList {
+  flex: 1;
+  min-width: 0;
+}
+
+.stepLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .exceptions {
   border-top: 1px solid var(--border-popup);
   padding: 6px 12px 8px;
@@ -332,16 +375,109 @@
   padding: 0 0 4px 22px;
 }
 
-.attachList {
-  height: 360px;
+.attachDialog {
+  height: 520px;
+}
+
+.attachDialog > [data-dialog-body] {
+  display: flex;
+  flex-direction: column;
+}
+
+.attachContent {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-2);
   min-height: 0;
+  padding: var(--space-3) var(--space-4);
+}
+
+.attachContent > p {
+  margin: 0;
+  color: var(--fg-muted);
+}
+
+.attachGrid {
+  container: attach-processes / inline-size;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: calc(var(--h-list-row) * 4);
+  overflow: hidden;
+  border: 1px solid var(--border-popup);
+  border-radius: var(--radius-small);
+  font-size: var(--fs-ui);
+}
+
+.attachHeader,
+.attachRow {
+  display: grid;
+  grid-template-columns: clamp(112px, 22vw, 184px) 60px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+}
+
+.attachHeader {
+  height: var(--h-list-row);
+  padding: 0 var(--space-2);
+  background: var(--bg-popup);
+  border-bottom: 1px solid var(--border-popup);
+  color: var(--fg-subtle);
+}
+
+.attachList {
+  --list-inset: 0px;
+  flex: 1;
+  scrollbar-gutter: stable;
+}
+
+.attachList [role="row"] {
+  border-radius: 0;
 }
 
 .attachPid {
-  min-width: 48px;
-  color: var(--fg-subtle);
-  font-family: var(--font-mono);
+  text-align: end;
   font-variant-numeric: tabular-nums;
+}
+
+.attachCommand {
+  display: flex;
+  gap: var(--space-2);
+  min-width: 0;
+  font-family: var(--font-mono);
+}
+
+.attachCommand > :first-child {
+  flex: 1;
+}
+
+.attachCell,
+.attachEndpoint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachPort {
+  display: none;
+}
+
+@container attach-processes (max-width: 480px) {
+  .attachFullAddress {
+    display: none;
+  }
+
+  .attachPort {
+    display: inline;
+  }
+}
+
+.attachEndpoint {
+  max-width: 60%;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
 }
 
 /* Evaluate: a field that grows with ⇧Enter, like IDEA's expression editor. */
@@ -367,10 +503,10 @@
   border: 0;
   background: none;
   color: var(--fg-strong);
-  font-family: var(--font-mono);
-  font-size: var(--fs-code);
+  font-family: var(--evaluate-font, var(--font-mono));
+  font-size: var(--evaluate-font-size, var(--fs-code));
   font-weight: var(--fw-code);
-  line-height: var(--lh-code);
+  line-height: var(--evaluate-line-height, var(--lh-code));
   outline: none;
   -webkit-user-select: text;
   user-select: text;
@@ -381,4 +517,16 @@
 .evalHistory {
   align-self: flex-start;
   margin: var(--space-1);
+}
+
+.evalHistoryPopup {
+  width: 0;
+  padding-block: var(--space-1);
+}
+
+.evalHistoryPopup [role="menuitem"] {
+  height: max(var(--h-list-row), var(--evaluate-line-height, var(--lh-code)));
+  font-family: var(--evaluate-font, var(--font-mono));
+  font-size: var(--evaluate-font-size, var(--fs-code));
+  font-weight: var(--fw-code);
 }

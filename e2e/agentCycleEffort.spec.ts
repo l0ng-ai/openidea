@@ -109,6 +109,7 @@ async function seed(
   model = "atlas",
   status: AgentTask["status"] = "ready",
   catalogOnly = false,
+  offered = provider,
 ) {
   await stubDesktop(page);
   await page.evaluate(
@@ -218,7 +219,7 @@ async function seed(
       if (surface === "new") store.openHome();
       else store.openTask(firstTask.id);
     },
-    { placement, surface, provider, firstTask, secondTask, subagent, model, status, modelId, catalogOnly },
+    { placement, surface, provider: offered, firstTask, secondTask, subagent, model, status, modelId, catalogOnly },
   );
   await expect(box(page)).toBeVisible();
   await page.evaluate(() => document.fonts.ready);
@@ -233,9 +234,8 @@ function history(page: Page) {
 function modelButton(page: Page) {
   return page.getByRole("button", { name: "Model", exact: true }).filter({ visible: true });
 }
-/** The effort is shown on the model button, after the model's name. */
 function effortLabel(page: Page) {
-  return modelButton(page).locator("[class*='modelDetail']");
+  return page.getByRole("button", { name: /^Model settings:/ }).filter({ visible: true });
 }
 async function expectEffort(page: Page, name: string) {
   await expect(effortLabel(page)).toHaveText(name);
@@ -282,6 +282,44 @@ async function expectNoSubmission(page: Page) {
   expect(await ipcCalls(page, "agent_prompt")).toEqual([]);
   expect(await ipcCalls(page, "agent_interrupt")).toEqual([]);
   expect(await ipcCalls(page, "agent_create")).toEqual([]);
+}
+
+for (const surface of ["new", "task"] as const) {
+  test(`${surface}: switch models from the list, then set effort and context from the settings chip`, async ({
+    workbench: page,
+  }) => {
+    const context = option(
+      "context_tier",
+      "model_config",
+      [
+        ["default", "200K"],
+        ["long_context", "1M"],
+      ],
+      "default",
+    );
+    const offered = {
+      ...provider,
+      thoughtLevels: { ...provider.thoughtLevels, atlas: [atlas, context], swift: [swift, context] },
+    };
+    await seed(page, "editor", surface, "atlas", "ready", false, offered);
+    await box(page).fill("Review the project structure");
+    await modelButton(page).click();
+    const row = page.getByRole("option", { name: /^Swift\b/ });
+    await row.hover();
+    await expect(row.getByRole("button", { name: /^Configure/ })).toHaveCount(0);
+    if (surface === "task") await row.press("Enter");
+    else await row.click();
+    await expect(modelButton(page)).toHaveText("Swift");
+    const settings = page.getByRole("button", { name: /^Model settings:/ });
+    await settings.click();
+    await expect(page.getByRole("button", { name: "Back to models" })).toHaveCount(0);
+    await page.getByRole("radio", { name: "Thorough" }).click();
+    await page.getByRole("radio", { name: "1M" }).click();
+    await expect(settings).toHaveText("Thorough · 1M");
+    await page.keyboard.press("Escape");
+    await expect(box(page)).toHaveText("Review the project structure");
+    await expectNoSubmission(page);
+  });
 }
 
 for (const placement of ["editor", "toolWindow"] as const) {
@@ -379,7 +417,7 @@ test("Settings and effort popup exclude the agent shortcut", async ({ workbench:
   await expect(search).toBeFocused();
   await expect(search).toHaveValue("keymap");
   await settings.getByRole("button", { name: "Cancel", exact: true }).click();
-  await modelButton(page).click();
+  await effortLabel(page).click();
   const popup = page.getByRole("radiogroup", { name: "Effort Level", exact: true });
   await expect(popup).toBeVisible();
   await page.keyboard.press("Alt+t");
@@ -598,12 +636,12 @@ test("New Task discovers uncached model effort before the first prompt", async (
     await expect
       .poll(async () => (await ipcCalls(page, "agent_refresh_models")).filter((call) => call.model === "swift"))
       .toEqual([{ provider: provider.id, force: false, model: "swift" }]);
-    await expect(page.getByRole("status").filter({ hasText: "Loading model settings…" })).toBeVisible();
+    await expect(page.getByRole("status", { name: "Loading model settings…" })).toBeVisible();
     await expect(effortLabel(page)).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath("model-settings-loading.png") });
     await page.evaluate(() => document.dispatchEvent(new Event("test:model-settings-ready")));
     await expectEffort(page, "Quick");
-    await modelButton(page).click();
+    await effortLabel(page).click();
     const efforts = page.getByRole("radiogroup", { name: "Effort Level", exact: true });
     await expect(efforts.getByRole("radio", { name: "Quick", exact: true })).toBeVisible();
     await expect(efforts.getByRole("radio", { name: "Thorough", exact: true })).toBeVisible();
@@ -627,7 +665,7 @@ test("an existing chat can choose effort for a refreshed model before sending", 
   await page.getByRole("button", { name: "Refresh models", exact: true }).click();
   await swiftModel.click();
 
-  const loading = page.getByRole("status").filter({ hasText: "Loading model settings…" });
+  const loading = page.getByRole("status", { name: "Loading model settings…" });
   const send = page.getByRole("button", { name: "Send", exact: true });
   await expect(loading).toBeVisible();
   await expect(send).toBeDisabled();
@@ -636,7 +674,7 @@ test("an existing chat can choose effort for a refreshed model before sending", 
   await expect(loading).toHaveCount(0);
   await expect(modelButton(page)).toHaveAttribute("title", /^Model: Swift\b/);
   await expectEffort(page, "Quick");
-  await modelButton(page).click();
+  await effortLabel(page).click();
   const efforts = page.getByRole("radiogroup", { name: "Effort Level", exact: true });
   await expect(efforts.getByRole("radio", { name: "Gentle", exact: true })).toHaveCount(0);
   await efforts.getByRole("radio", { name: "Thorough", exact: true }).click();

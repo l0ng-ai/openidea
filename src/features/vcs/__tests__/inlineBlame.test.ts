@@ -437,6 +437,43 @@ describe("current line decoration", () => {
     expect(label()!.style.left).toBe("");
   });
 
+  it("steps past a folded chip drawn after its anchor, including one that appears later", async () => {
+    // jsdom has no layout: the chip's width is faked like the hint boxes above.
+    class FakeChip extends WidgetType {
+      toDOM() {
+        const el = document.createElement("span");
+        el.className = "cm-foldPlaceholder";
+        el.getBoundingClientRect = () => ({ width: 18 }) as DOMRect;
+        return el;
+      }
+    }
+    const lens = new Compartment();
+    view = new EditorView({
+      parent: document.body,
+      state: EditorState.create({ doc: "one\ntwo\nthree", extensions: [inlineBlame(ctx), lens.of([])] }),
+    });
+    await tick();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(label()!.style.left).toBe("");
+
+    // The chip lands after the blame's anchor only in a later update (the fold happens after
+    // the blame mounted): the blame must still step past it. Side 3 mirrors the production DOM
+    // order, where CodeMirror draws the fold's replace widget after the side-1/2 anchors.
+    view.dispatch({
+      effects: lens.reconfigure(
+        EditorView.decorations.of(Decoration.set([Decoration.widget({ widget: new FakeChip(), side: 3 }).range(3)])),
+      ),
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    // chip 18px: 3ch gap + chip
+    expect(label()!.style.left).toBe("calc(3ch + 18px)");
+
+    // and it gives the space back when the fold expands again
+    view.dispatch({ effects: lens.reconfigure([]) });
+    await vi.advanceTimersByTimeAsync(10);
+    expect(label()!.style.left).toBe("");
+  });
+
   it("is an out-of-flow, zero-width anchor so soft wrap cannot fold it onto a new row", () => {
     const anchor = inlineBlameTheme[".cm-vcs-inline-blame"];
     const inner = inlineBlameTheme[".cm-vcs-inline-blame-inner"];
@@ -446,5 +483,12 @@ describe("current line decoration", () => {
     expect(inner).toMatchObject({ position: "absolute", whiteSpace: "nowrap" });
     // The visible label is the pointer/click region; the anchor stays zero-width.
     expect(inlineBlameTheme['.cm-vcs-inline-blame-inner[role="button"]']).toEqual({ cursor: "pointer" });
+  });
+
+  it("caps the commit tooltip's height and scrolls inside it, so a long message stays on screen", () => {
+    expect(inlineBlameTheme[".cm-vcs-inline-blame-tooltip"]).toMatchObject({
+      maxHeight: expect.any(String),
+      overflow: "auto",
+    });
   });
 });

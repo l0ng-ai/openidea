@@ -8,13 +8,6 @@
 .resizable {
   min-width: 0;
 }
-.sidebar {
-  flex: none;
-  width: 260px;
-  display: flex;
-  flex-direction: column;
-  border-right: 1px solid var(--border);
-}
 .header {
   flex: none;
   height: var(--h-header);
@@ -76,12 +69,6 @@
 }
 .deletedPath {
   text-decoration: line-through;
-}
-.diff {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
 }
 .message {
   padding: var(--space-4);
