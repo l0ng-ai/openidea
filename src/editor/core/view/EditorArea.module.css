@@ -64,6 +64,11 @@
   content-visibility: hidden;
   z-index: -1;
 }
+/* WebKit leaves a stale selection highlight on a subtree whose rendering was skipped when the selection cleared. */
+.keptHidden[data-selection] {
+  content-visibility: visible;
+  opacity: 0;
+}
 .host {
   flex: 1;
   min-height: 0;
