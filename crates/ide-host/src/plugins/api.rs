@@ -361,6 +361,18 @@ struct ProcState {
     stopped: bool,
 }
 
+impl ProcState {
+    /// Ends a child whose output went over the limit. `kill_tree` reaps it, so its status
+    /// is noted here: a later reap must not wait on a process id that is already gone.
+    fn stop_overflowed(&mut self) {
+        self.stdin = None;
+        ide_core::process::kill_tree(&mut self.child);
+        if self.status.is_none() {
+            self.status = Some(self.child.try_wait().ok().flatten().and_then(|s| s.code()).unwrap_or(-1));
+        }
+    }
+}
+
 /// Which pipe a reader thread drains.
 #[derive(Clone, Copy)]
 enum Stream {
@@ -424,7 +436,7 @@ impl Proc {
                                         let limit_mib = (state.max_total + (1 << 20) - 1) >> 20;
                                         state.overflow_err =
                                             Some(format!("process stdout exceeded {limit_mib} MiB limit"));
-                                        ide_core::process::kill_tree(&mut state.child);
+                                        state.stop_overflowed();
                                         this.can_read.notify_all();
                                         break;
                                     }
@@ -436,7 +448,7 @@ impl Proc {
                                         let limit_mib = (state.max_total + (1 << 20) - 1) >> 20;
                                         state.overflow_err =
                                             Some(format!("process stderr exceeded {limit_mib} MiB limit"));
-                                        ide_core::process::kill_tree(&mut state.child);
+                                        state.stop_overflowed();
                                         this.can_read.notify_all();
                                         break;
                                     }
