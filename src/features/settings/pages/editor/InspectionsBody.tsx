@@ -67,7 +67,7 @@ import {
   type LanguageServers,
 } from "./inspectionsModel";
 import styles from "./Inspections.module.css";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 import { useLanguageListVersion } from "@/platform/languageList";
 
 function useLanguages(): LanguageServers[] {
@@ -448,7 +448,7 @@ function InspectionRow({
           checked={state === "on"}
           indeterminate={state === "mixed"}
           onChange={() => onToggle(state !== "on")}
-          aria-label={tx`Enable ${node.name}`}
+          aria-label={tx`Enable ${txPart(node.name)}`}
         />
       </span>
     </span>

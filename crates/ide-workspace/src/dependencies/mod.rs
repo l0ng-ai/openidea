@@ -4,6 +4,7 @@ pub mod cargo;
 pub mod go;
 pub mod maven;
 pub mod npm;
+pub mod python;
 
 pub use cache::VersionCache;
 use ide_core::{CancellationToken, IdeResult};
@@ -47,4 +48,21 @@ pub struct DependencyVersions {
     pub dependency: ManifestDependency,
     pub versions: Vec<String>,
     pub update: Option<DependencyUpdate>,
+}
+
+/// A requirement the project's interpreter does not satisfy.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct UnsatisfiedRequirement {
+    pub dependency: ManifestDependency,
+    /// The installed version that misses the specifier; `None` when not installed.
+    pub installed: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PythonRequirements {
+    /// The interpreter checked, which installs go to.
+    pub python: ide_core::IpcPath,
+    pub unsatisfied: Vec<UnsatisfiedRequirement>,
 }

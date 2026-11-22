@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { BranchInfo, Commit, PushTags, RemoteOp } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 import { workflowSettings, type UpdateMethod } from "@/platform/workflowSettings";
 import { notifications } from "@/workbench/contributions";
 import { Button, Checkbox, Dialog, Input, List, Radio, Select, Spinner, T, Tree } from "@/ui";
@@ -773,7 +773,7 @@ function PushDialog({ target: pushTarget, onClose }: { target: PushTarget; onClo
   return (
     <Dialog
       open
-      title={head ? tx`Push Commits to ${upstream ?? "remote"}` : "Push"}
+      title={head ? tx`Push Commits to ${upstream ?? txPart("remote")}` : "Push"}
       onClose={onClose}
       width={commits?.length ? PUSH_DIALOG_WIDTH : 620}
       minWidth={PUSH_DIALOG_MIN_WIDTH}
