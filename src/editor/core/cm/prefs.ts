@@ -63,6 +63,7 @@ import {
   tabOut,
 } from "./smartKeys";
 import { linkedTags } from "./linkedTags";
+import { textDrag } from "./textDrag";
 import { stringClipboard } from "./stringClipboard";
 import { filterCopiedText } from "./clipboard";
 import { LINE_INSET } from "./lineInset";
@@ -697,7 +698,7 @@ export function prefsExtension(o: PrefsOptions): Extension {
       EditorView.editorAttributes.of({ class: hidden.map((grp) => `cm-openidea-hideGutter-${grp.id}`).join(" ") }),
     );
   if (g.wheelZoom) out.push(wheelZoom);
-  if (!g.dragAndDrop) out.push(noTextDrag);
+  out.push(g.dragAndDrop ? textDrag : noTextDrag);
   if (g.caretScroll === "center") out.push(centerCaret);
   if (g.richTextCopy) out.push(richCopy);
   if (k.escapeOnPaste) out.push(stringClipboard(o.language));

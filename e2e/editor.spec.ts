@@ -771,3 +771,62 @@ test("Markdown Preview only leaves the Project view clickable", async ({ workben
   await row.click();
   await expect(row).toHaveAttribute("aria-selected", "true");
 });
+
+test("drags selected text to move it, and copies it with Option held", async ({ workbench: page }) => {
+  const editor = await openFromTree(page, "build.gradle.kts");
+  const content = editor.locator(".cm-content");
+  /** Sets the document and selection, and returns the client point of each requested position. */
+  const prepare = (doc: string, from: number, to: number, points: number[]) =>
+    content.evaluate(
+      async (el, { doc, from, to, points }) => {
+        const viewModule = "/node_modules/.vite/deps/@codemirror_view.js";
+        const { EditorView } = await import(/* @vite-ignore */ viewModule);
+        const view = EditorView.findFromDOM(el as HTMLElement)!;
+        view.dispatch({
+          changes: { from: 0, to: view.state.doc.length, insert: doc },
+          selection: { anchor: from, head: to },
+        });
+        view.focus();
+        return points.map((p) => {
+          const c = view.coordsAtPos(p, 1)!;
+          return { x: c.left + 1, y: (c.top + c.bottom) / 2 };
+        });
+      },
+      { doc, from, to, points },
+    );
+  const docText = () =>
+    content.evaluate(async (el) => {
+      const viewModule = "/node_modules/.vite/deps/@codemirror_view.js";
+      const { EditorView } = await import(/* @vite-ignore */ viewModule);
+      return EditorView.findFromDOM(el as HTMLElement)!.state.doc.toString();
+    });
+  const drag = async (from: { x: number; y: number }, to: { x: number; y: number }, copy = false) => {
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(from.x + 10, from.y + 2, { steps: 2 });
+    // Option is pressed once the drag is under way: Option+press itself starts a column selection.
+    if (copy) await page.keyboard.down("Alt");
+    await page.mouse.move(to.x, to.y, { steps: 4 });
+    await expect(editor.locator(".cm-openidea-textDropLayer .cm-dropCursor")).toHaveCount(1);
+    await page.mouse.up();
+    if (copy) await page.keyboard.up("Alt");
+  };
+
+  // "alpha" (0–5) dragged to the start of the third line.
+  let [grab, target] = await prepare("alpha beta\ngamma\ndelta", 0, 5, [2, 17]);
+  await drag(grab!, target!);
+  await expect.poll(docText).toBe(" beta\ngamma\nalphadelta");
+  await expect(editor.locator(".cm-openidea-textDropLayer .cm-dropCursor")).toHaveCount(0);
+
+  // With Option held, the text is copied instead.
+  [grab, target] = await prepare("alpha beta\ngamma\ndelta", 0, 5, [2, 17]);
+  await drag(grab!, target!, true);
+  await expect.poll(docText).toBe("alpha beta\ngamma\nalphadelta");
+
+  // A click on the selection without dragging places the caret there.
+  [grab] = await prepare("alpha beta", 0, 5, [2]);
+  await page.mouse.click(grab!.x, grab!.y);
+  await expect.poll(docText).toBe("alpha beta");
+  await page.keyboard.type("X");
+  await expect.poll(docText).toBe("alXpha beta");
+});
