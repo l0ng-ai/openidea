@@ -40,13 +40,15 @@ import { tx } from "@/platform/i18n";
 import { showExpressionChooser } from "./expressionChooser";
 
 /** Why the language server could not do it (see `withFallback`). */
-export type FallbackReason = "notReady" | "error" | "empty";
+/** `otherKind`: the server offers another extraction there (gopls: only Extract constant), not this one. */
+export type FallbackReason = "notReady" | "error" | "empty" | "otherKind";
 export type IntroduceKind = "variable" | "constant";
 
 const NOTES: Record<FallbackReason, string> = {
   notReady: "Based on syntax (language server not ready)",
   error: "Based on syntax (language server failed)",
   empty: "Based on syntax (the code has errors)",
+  otherKind: "Based on syntax",
 };
 
 /** At most this many other occurrences are checked and offered. */

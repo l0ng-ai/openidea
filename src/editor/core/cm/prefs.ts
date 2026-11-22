@@ -48,10 +48,11 @@ import {
   selectHumpLeft,
   selectHumpRight,
 } from "./editing";
-import { enterInLineComment, lineCommentStyle, type LineCommentStyle } from "./comments";
+import { enterAfterDocLineComment, enterInLineComment, lineCommentStyle, type LineCommentStyle } from "./comments";
 import { enterInBlockComment, enterInDocComment, enterInDocstring } from "./docComment";
 import { renderDocComments } from "./renderedDocs";
 import {
+  rustLifetimeQuote,
   skipClosingBracket,
   enterInStringLiteral,
   semicolonAtStatementEnd,
@@ -712,6 +713,7 @@ export function prefsExtension(o: PrefsOptions): Extension {
   if (k.pairBrackets && !o.readOnly) out.push(smartAngleBrackets(o.language));
   if (!k.surroundSelection) out.push(Prec.highest(noSurround));
   if (k.pairQuotes) out.push(Prec.highest(skipClosingQuote));
+  if (k.pairQuotes && !o.readOnly && o.language === "rust") out.push(Prec.highest(rustLifetimeQuote));
   if (k.pairBrackets && !o.readOnly) out.push(Prec.highest(skipClosingBracket));
   if (k.tabOutOfPair) out.push(tabOut);
   if (!o.readOnly && k.semicolonAtStatementEnd) out.push(semicolonAtStatementEnd(o.language));
@@ -746,6 +748,7 @@ export function prefsExtension(o: PrefsOptions): Extension {
     keys.push(
       { key: "Enter", run: enterInBlockComment },
       { key: "Enter", run: enterInLineComment },
+      { key: "Enter", run: enterAfterDocLineComment(o.language ?? "") },
       { key: "Enter", run: enterInStringLiteral(o.language ?? "") },
     );
   if (!k.smartIndent) keys.push({ key: "Enter", run: insertNewlineKeepIndent });
