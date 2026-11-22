@@ -309,6 +309,30 @@ describe("Python indentation", async () => {
   });
 });
 
+describe("Enter after a case label", async () => {
+  const load = async (name: string) => (await loadSupport(languages.find((l) => l.name === name)!))!;
+  const [c, cpp, php] = await Promise.all([load("C"), load("C++"), load("PHP")]);
+
+  it("indents the branch body one level in C, C++ and PHP", () => {
+    for (const [support, head] of [
+      [c, "int f(int x) {\n    switch (x) {\n        case 1:|\n    }\n}"],
+      [cpp, "int f(int x) {\n    switch (x) {\n        default:|\n    }\n}"],
+      [php, "<?php\nfunction f($x) {\n    switch ($x) {\n        case 'a':|\n    }\n}"],
+    ] as const) {
+      const v = make(head, [support, indentUnit.of("    ")]);
+      insertNewlineAndIndent(v);
+      const lines = show(v).split("\n");
+      expect(lines.find((l) => l.includes("|"))).toBe("            |");
+    }
+  });
+
+  it("leaves other lines alone", () => {
+    const v = make("void f() {\n    std::|\n}", [cpp, indentUnit.of("    ")]);
+    insertNewlineAndIndent(v);
+    expect(show(v).split("\n")[2]).toBe("    |");
+  });
+});
+
 describe("fallback indentation for GDScript", () => {
   const gd = [
     EditorState.tabSize.of(4),

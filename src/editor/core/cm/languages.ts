@@ -541,7 +541,23 @@ function unbalanced(code: string): boolean {
 }
 
 /** Extensions the stock modes lack, by CodeMirror language name. */
-const EXTRA_SUPPORT: Record<string, Extension[]> = { Java: [annotationIndent], Python: pythonDedent };
+/** Enter after a `case 1:` / `default:` label with nothing after the caret: the branch body goes one level deeper. */
+const caseBodyIndent = indentService.of((cx, pos) => {
+  if (cx.simulatedBreak == null || cx.textAfterPos(pos).trim()) return undefined;
+  const line = cx.state.doc.lineAt(pos);
+  const before = line.text.slice(0, pos - line.from);
+  const code = indentationCode(before, "//").trimEnd();
+  if (!/^\s*(case\b[^;{}]*|default\s*):$/.test(code) || /::$/.test(code)) return undefined;
+  return cx.countColumn(before, before.search(/\S|$/)) + cx.unit;
+});
+
+const EXTRA_SUPPORT: Record<string, Extension[]> = {
+  Java: [annotationIndent],
+  Python: pythonDedent,
+  C: [caseBodyIndent],
+  "C++": [caseBodyIndent],
+  PHP: [caseBodyIndent],
+};
 
 function patchSupport(desc: LanguageDescription, support: LanguageSupport): LanguageSupport {
   const extra = EXTRA_TAGS[desc.name];
