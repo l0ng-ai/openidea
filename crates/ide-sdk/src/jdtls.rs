@@ -287,8 +287,8 @@ pub fn launch_directly(cfg: &mut LanguageServerConfig) {
         return;
     }
     let Some(script) = script_for(cfg) else { return };
-    let Some(install) =
-        jdtls_home(&script).and_then(|h| find_install(&h, std::env::consts::OS, std::env::consts::ARCH))
+    let home = jdtls_home(&script);
+    let Some(install) = home.as_deref().and_then(|h| find_install(h, std::env::consts::OS, std::env::consts::ARCH))
     else {
         return;
     };
@@ -307,13 +307,59 @@ pub fn launch_directly(cfg: &mut LanguageServerConfig) {
         cfg.launch_error = Some(error);
         return;
     }
+    let area = home.as_deref().and_then(|home| configuration_area(home, &cfg.args, dirs::cache_dir()));
     cfg.args = java_args(&install, jdk.major, &cfg.args);
+    if let Some(area) = area
+        && let Some(jar) = cfg.args.iter().position(|a| a == "-jar")
+    {
+        cfg.args.insert(jar, format!("-Dosgi.configuration.area={}", area.to_string_lossy()));
+    }
     cfg.command = java.to_string_lossy().into_owned();
+}
+
+/// Equinox extracts bundle files, jdtls's Gradle init scripts among them, into its writable
+/// configuration area, `<home>/configuration` unless the launch names one. jdtls passes those
+/// scripts to every Gradle import as `--init-script` arguments, and Buildship stores a build's
+/// arguments joined by spaces and splits them again. Under a home with spaces (macOS's
+/// `Application Support`) each import that sets a Gradle JDK, user home or argument then fails
+/// with "The specified initialization script '…/Application' does not exist". Such a home
+/// gets an area without spaces in the user's cache directory, one per install.
+fn configuration_area(home: &Path, args: &[String], cache: Option<PathBuf>) -> Option<PathBuf> {
+    let parsed = split_script_args(args);
+    let named = parsed.jvm.iter().any(|a| a.starts_with("-Dosgi.configuration.area="))
+        || parsed.rest.iter().any(|a| a == "-configuration");
+    if named || !home.join("configuration").to_string_lossy().contains(char::is_whitespace) {
+        return None;
+    }
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in home.to_string_lossy().bytes() {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+    }
+    Some(cache?.join("openidea").join("jdtls-configuration").join(format!("{hash:016x}")))
+        .filter(|area| !area.to_string_lossy().contains(char::is_whitespace))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_home_with_spaces_gets_a_configuration_area_without_them() {
+        let cache = Some(PathBuf::from("/cache"));
+        let spaced = Path::new("/Users/me/Library/Application Support/openidea/tools/jdtls");
+        let area = configuration_area(spaced, &[], cache.clone()).unwrap();
+        assert!(area.starts_with("/cache/openidea/jdtls-configuration"));
+        assert_eq!(configuration_area(spaced, &[], cache.clone()), Some(area), "one per install");
+        assert_ne!(
+            configuration_area(Path::new("/opt/My Tools/jdtls"), &[], cache.clone()),
+            configuration_area(spaced, &[], cache.clone())
+        );
+        assert_eq!(configuration_area(Path::new("/opt/jdtls"), &[], cache.clone()), None, "the default is fine");
+        let own = strings(&["--jvm-arg=-Dosgi.configuration.area=/mine"]);
+        assert_eq!(configuration_area(spaced, &own, cache.clone()), None, "the user's area stays");
+        assert_eq!(configuration_area(spaced, &strings(&["-configuration", "/mine"]), cache), None);
+        assert_eq!(configuration_area(spaced, &[], Some(PathBuf::from("/My Cache"))), None);
+    }
 
     fn strings(args: &[&str]) -> Vec<String> {
         args.iter().map(|s| s.to_string()).collect()
