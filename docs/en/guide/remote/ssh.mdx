@@ -134,6 +134,10 @@ needed. The status bar then shows **WSL: `<distribution>`**.
 Opening a folder under `\\wsl.localhost\<distribution>\` also opens it through the distribution.
 **Browse** is not available for WSL.
 
+The **Ports** tool window is available in a WSL window too. Because the distribution shares this machine's
+`localhost`, a forwarded port is reachable here on the same port; the window lists, opens and remembers ports as it
+does for SSH.
+
 ## Other uses of SSH configurations
 
 - **Run targets** (**Settings › Build, Execution, Deployment › Run Targets**) run a configuration on an SSH host. See

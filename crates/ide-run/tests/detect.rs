@@ -52,6 +52,31 @@ fn npm_scripts_with_lockfile_package_manager() {
 }
 
 #[test]
+fn playwright_scripts_and_configs() {
+    let dir = project(&[
+        ("package.json", r#"{"scripts":{"e2e":"cross-env CI=1 playwright test --project=chromium","test":"vitest"}}"#),
+        ("playwright.config.ts", ""),
+        ("site/package.json", r#"{"devDependencies":{"@playwright/test":"^1.56.0"}}"#),
+        ("site/playwright.config.ts", ""),
+    ]);
+    let c = detect(dir.path());
+    let e2e = find(&c, "npm:e2e");
+    assert!(e2e.is_test);
+    assert_eq!(e2e.extras.test_runner.as_deref(), Some("playwright"));
+    assert_eq!(find(&c, "npm:test").extras.test_runner, None);
+    // The root's script runs Playwright already; the nested package has none.
+    assert!(!ids(&c).contains(&"playwright"));
+    let site = find(&c, "playwright:site");
+    assert_eq!(cmdline(site), "npx playwright test");
+    assert_eq!(site.name, "site: playwright test");
+    assert!(site.is_test && site.detected);
+    assert_eq!(site.kind, "node");
+    assert_eq!(site.cwd.as_deref(), Some(Path::new("site")));
+    assert_eq!(site.extras.test_runner.as_deref(), Some("playwright"));
+    assert_eq!(site.debug_adapter.as_deref(), Some("js-debug"));
+}
+
+#[test]
 fn package_manager_selection() {
     for (lock, pm) in [("yarn.lock", "yarn"), ("bun.lockb", "bun"), ("bun.lock", "bun"), ("package-lock.json", "npm")] {
         let dir = project(&[("package.json", r#"{"scripts":{"start":"node ."}}"#), (lock, "")]);

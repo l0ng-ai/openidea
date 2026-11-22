@@ -19,11 +19,14 @@ import {
   removeAllWatches,
   removeWatch,
   revealFrame,
+  rootOf,
   sessionSupports,
   setVariableValue,
   useDebug,
 } from "../state";
 import { blurDebugView, focusDebugView } from "./focusedView";
+import { openTableView } from "./popoverStore";
+import { isTableType } from "../tableView";
 import { classifyValue, oneLine, shownValue, sortVariables } from "../values";
 import { stringText, valueText } from "../valueText";
 import { workflowSettings } from "@/platform/workflowSettings";
@@ -400,6 +403,9 @@ export function VariablesView({
         { kind: "separator" },
       );
     if (editable(node)) items.push({ label: "Set Value…", icon: "edit", shortcut: "F2", run: () => startEdit(node) });
+    const tableExpression = node.evaluateName;
+    if (tableExpression && session != null && isTableType(node.typeName) && pausedIn(session)?.adapter === "debugpy")
+      items.push({ label: "View as Table", run: () => openTableView(tableExpression, session) });
     items.push(
       { label: "Copy Value", icon: "copy", run: () => void copyValue(node) },
       { label: "Copy Name", run: () => void writeClipboardText(node.name) },
@@ -478,6 +484,12 @@ export function VariablesView({
       {valuePopup && <ValueDialog node={valuePopup} session={session} onClose={() => setValuePopup(null)} />}
     </div>
   );
+}
+
+/** The session with this id while it is paused, with the adapter its root session started. */
+function pausedIn(session: DebugSessionId | null) {
+  const s = session != null ? useDebug.getState().sessions[session] : undefined;
+  return s?.status === "paused" ? rootOf(s) : null;
 }
 
 /**

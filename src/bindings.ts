@@ -1348,6 +1348,15 @@ export const commands = {
 	 *  edited (not yet applied); the response status, or why there was none.
 	 */
 	proxyCheckConnection: (proxy: ProxySettings, url: string) => typedError<string, IdeError>(__TAURI_INVOKE("proxy_check_connection", { proxy, url })),
+	/**
+	 *  The requirements of a `requirements*.txt` / `pyproject.toml` the project's interpreter
+	 *  doesn't satisfy; `None` for other files, or with no local interpreter to ask.
+	 */
+	pythonRequirements: (doc: DocId, request: RequestId) => typedError<{
+	/**  The interpreter checked, which installs go to. */
+	python: IpcPath,
+	unsatisfied: UnsatisfiedRequirement[],
+} | null, IdeError>(__TAURI_INVOKE("python_requirements", { doc, request })),
 	/**  Recently opened files, most recent first (⌘E). */
 	recentFiles: () => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("recent_files")),
 	/**  The welcome screen's project groups. */
@@ -10641,6 +10650,12 @@ export type PythonPackage = {
 	version: string,
 };
 
+export type PythonRequirements = {
+	/**  The interpreter checked, which installs go to. */
+	python: IpcPath,
+	unsatisfied: UnsatisfiedRequirement[],
+};
+
 export type PythonSettings = {
 	/**
 	 *  Project interpreter executable; empty = auto-detect (project venv, else `python3`);
@@ -11148,6 +11163,12 @@ export type RunExtras_Deserialize = {
 	stopCommand?: string | null,
 	/**  Settings › Run Targets id the process runs on (over SSH); `None` = this machine. */
 	target?: string | null,
+	/**
+	 *  The test framework a test configuration runs when detection recognised one that the
+	 *  command line doesn't name (a `package.json` script running `playwright test`): picks the
+	 *  test output parser and how a single test is selected.
+	 */
+	testRunner?: string | null,
 };
 
 export type RunExtras_Serialize = {
@@ -11192,6 +11213,12 @@ export type RunExtras_Serialize = {
 	stopCommand?: string | null,
 	/**  Settings › Run Targets id the process runs on (over SSH); `None` = this machine. */
 	target?: string | null,
+	/**
+	 *  The test framework a test configuration runs when detection recognised one that the
+	 *  command line doesn't name (a `package.json` script running `playwright test`): picks the
+	 *  test output parser and how a single test is selected.
+	 */
+	testRunner?: string | null,
 };
 
 /**  A process started from a run configuration. */
@@ -12701,6 +12728,13 @@ export type UnityProjectInfo = {
 	/**  File names relative to the Unity root, in stable order. */
 	solutions: string[],
 	projects: string[],
+};
+
+/**  A requirement the project's interpreter does not satisfy. */
+export type UnsatisfiedRequirement = {
+	dependency: ManifestDependency,
+	/**  The installed version that misses the specifier; `None` when not installed. */
+	installed: string | null,
 };
 
 export type UpdateCheck = {
