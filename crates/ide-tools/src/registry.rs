@@ -445,6 +445,18 @@ pub static TOOLS: &[ToolSpec] = &[
         needs: &[],
     },
     ToolSpec {
+        name: "tailwindcss-language-server",
+        display: "Tailwind CSS Language Server",
+        kind: LanguageServer,
+        commands: &["tailwindcss-language-server"],
+        // Brings Tailwind CSS 3 and 4 for projects whose own `tailwindcss` isn't installed yet.
+        method: Method::Npm { packages: &["@tailwindcss/language-server"] },
+        fallback: None,
+        version: V,
+        homepage: "https://github.com/tailwindlabs/tailwindcss-intellisense",
+        needs: NODE,
+    },
+    ToolSpec {
         name: "graphql-lsp",
         display: "GraphQL Language Server",
         kind: LanguageServer,

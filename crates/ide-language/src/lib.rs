@@ -156,7 +156,8 @@ pub struct LanguageServerConfig {
     pub requires_env: Vec<String>,
     /// Files whose presence marks a workspace root, e.g. `Cargo.toml`;
     /// `file#table` requires the TOML file to contain that dotted table, e.g.
-    /// `pyproject.toml#tool.ruff`.
+    /// `pyproject.toml#tool.ruff`, or the JSON file that dotted key, e.g.
+    /// `package.json#devDependencies.tailwindcss`.
     #[serde(default)]
     pub root_markers: Vec<String>,
     /// Serve only files below a root marker, not the whole project: a framework's

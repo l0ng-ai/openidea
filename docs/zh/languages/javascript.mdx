@@ -7,16 +7,17 @@ OpenIDEA 打开 JavaScript（`.js`、`.mjs`、`.cjs`、`.jsx`）和 TypeScript�
 
 ## 语言服务器
 
-| 文件                        | 服务器                                    | 说明                                                                                                                                 |
-| --------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| JS、JSX、TS、TSX            | `vtsls`                                   | 默认的 TypeScript 服务器。                                                                                                           |
-| JS、JSX、TS、TSX            | `typescript-language-server`              | 备选：仅在未安装 `vtsls` 时使用。                                                                                                    |
-| `.vue`                      | `vue-language-server` + `vtsls`           | Vue 的 hybrid 模式：`.vue` 中的 TypeScript 由加载了 `@vue/typescript-plugin` 的 `vtsls` 处理。                                       |
-| `.svelte`                   | `svelte-language-server`                  |                                                                                                                                      |
-| `.astro`                    | `astro-ls`                                | 需要 Node.js 和 TypeScript 库。                                                                                                      |
-| Angular 项目中的 TS 和 HTML | `angular-language-server`（`ngserver`）   | 只在 `angular.json` 或 `node_modules/@angular/core` 所在目录之下启用。                                                               |
-| 以上全部                    | `oxlint`                                  | 只在存在 `.oxlintrc.json`、`.oxlintrc.jsonc`、`oxlint.config.ts` 或 `oxlint.config.mts` 的目录之下启用。                             |
-| 以上全部                    | `vscode-eslint-language-server`（ESLint） | 只在 ESLint 配置（`eslint.config.*`、`.eslintrc*` 或 `package.json` 中的 `eslintConfig`）所在目录之下启用，运行项目自己的 `eslint`。 |
+| 文件                        | 服务器                                        | 说明                                                                                                                                 |
+| --------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| JS、JSX、TS、TSX            | `vtsls`                                       | 默认的 TypeScript 服务器。                                                                                                           |
+| JS、JSX、TS、TSX            | `typescript-language-server`                  | 备选：仅在未安装 `vtsls` 时使用。                                                                                                    |
+| `.vue`                      | `vue-language-server` + `vtsls`               | Vue 的 hybrid 模式：`.vue` 中的 TypeScript 由加载了 `@vue/typescript-plugin` 的 `vtsls` 处理。                                       |
+| `.svelte`                   | `svelte-language-server`                      |                                                                                                                                      |
+| `.astro`                    | `astro-ls`                                    | 需要 Node.js 和 TypeScript 库。                                                                                                      |
+| Angular 项目中的 TS 和 HTML | `angular-language-server`（`ngserver`）       | 只在 `angular.json` 或 `node_modules/@angular/core` 所在目录之下启用。                                                               |
+| 以上全部                    | `oxlint`                                      | 只在存在 `.oxlintrc.json`、`.oxlintrc.jsonc`、`oxlint.config.ts` 或 `oxlint.config.mts` 的目录之下启用。                             |
+| 以上全部                    | `vscode-eslint-language-server`（ESLint）     | 只在 ESLint 配置（`eslint.config.*`、`.eslintrc*` 或 `package.json` 中的 `eslintConfig`）所在目录之下启用，运行项目自己的 `eslint`。 |
+| 以上全部及 HTML、CSS        | `tailwindcss-language-server`（Tailwind CSS） | 只在 `tailwind.config.*` 或依赖了 `tailwindcss` 的 `package.json` 所在目录之下启用：类名补全、悬停显示生成的 CSS、类名诊断。         |
 
 TypeScript 服务器以 `tsconfig.json`、`jsconfig.json` 或 `package.json` 所在目录为工作区根。不属于任何 `tsconfig.json` / `jsconfig.json` 的文件也会注册给 tsserver，零散脚本同样有代码智能。
 
@@ -47,6 +48,7 @@ Vue、Astro 和 Angular 服务器也会使用这里选择的版本。TypeScript 
 | `vtsls`、`typescript-language-server`                                                  | npm（`@vtsls/language-server`；`typescript-language-server` + `typescript@6`） |
 | `vue-language-server`、`svelte-language-server`、`astro-ls`、`angular-language-server` | npm                                                                            |
 | `oxlint`                                                                               | npm                                                                            |
+| `tailwindcss-language-server`                                                          | npm（`@tailwindcss/language-server`）                                          |
 | Prettier、oxfmt                                                                        | npm                                                                            |
 | JavaScript 调试器（vscode-js-debug）                                                   | GitHub release（`microsoft/vscode-js-debug`）                                  |
 

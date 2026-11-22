@@ -715,9 +715,19 @@ mod tests {
         // it); before the HTML server (hover, rename and symbols take the first).
         assert_eq!(
             names("typescript"),
-            ["vtsls", "typescript-language-server", "angular-language-server", "oxlint", "eslint"]
+            [
+                "vtsls",
+                "typescript-language-server",
+                "angular-language-server",
+                "oxlint",
+                "eslint",
+                "tailwindcss-language-server"
+            ]
         );
-        assert_eq!(names("html"), ["angular-language-server", "vscode-html-language-server"]);
+        assert_eq!(
+            names("html"),
+            ["angular-language-server", "vscode-html-language-server", "tailwindcss-language-server"]
+        );
         for lang in ["typescript", "html"] {
             let cfg = reg.get(&LanguageId::new(lang)).unwrap();
             let angular = cfg.language_servers.iter().find(|s| s.name == "angular-language-server").unwrap();
@@ -768,6 +778,33 @@ mod tests {
             assert_eq!(served("apps/web/src/main.ts"), Some(root.join("apps/web")), "{lang}");
             assert_eq!(served("apps/admin/src/main.ts"), Some(root.join("apps/admin")), "{lang}");
             assert_eq!(served("apps/api/main.ts"), None, "{lang}: package.json without eslintConfig");
+        }
+    }
+
+    #[test]
+    fn tailwind_serves_web_files_only_in_tailwind_projects() {
+        let reg = reg();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for dir in ["v3/src", "v4/src", "plain/src"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        std::fs::write(root.join("v3/tailwind.config.js"), "module.exports = {};").unwrap();
+        std::fs::write(root.join("v4/package.json"), r#"{"devDependencies": {"tailwindcss": "^4.1.0"}}"#).unwrap();
+        std::fs::write(root.join("plain/package.json"), r#"{"devDependencies": {"vite": "^7.0.0"}}"#).unwrap();
+        for lang in
+            ["html", "css", "javascript", "javascriptreact", "typescript", "typescriptreact", "vue", "svelte", "astro"]
+        {
+            let cfg = reg.get(&LanguageId::new(lang)).unwrap();
+            // Last: the language's own servers answer hover first.
+            let tailwind = cfg.language_servers.last().unwrap();
+            assert_eq!(tailwind.name, "tailwindcss-language-server", "{lang}");
+            assert_eq!(tailwind.args, ["--stdio"], "{lang}");
+            assert!(tailwind.require_root_marker && !tailwind.fallback, "{lang}");
+            let served = |file: &str| crate::marked_root(Some(root), &root.join(file), &tailwind.root_markers);
+            assert_eq!(served("v3/src/app.css"), Some(root.join("v3")), "{lang}");
+            assert_eq!(served("v4/src/app.css"), Some(root.join("v4")), "{lang}");
+            assert_eq!(served("plain/src/app.css"), None, "{lang}: package.json without tailwindcss");
         }
     }
 
