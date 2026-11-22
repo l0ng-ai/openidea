@@ -270,6 +270,23 @@ describe("completeStatementSpec (text rules)", () => {
   });
 });
 
+describe("completeStatementSpec: foreach and elseif", () => {
+  const ext = [comments("//"), indentUnit.of("    ")];
+  it("gives a PHP or C# foreach a body instead of ending it with `;`", () => {
+    for (const [head, language] of [
+      ["foreach ($xs as $x)", "php"],
+      ["foreach ($map as $k => $v)", "php"],
+      ["elseif ($x)", "php"],
+      ["foreach (var x in xs)", "csharp"],
+    ] as const) {
+      const s = state(`${head}|`, ext);
+      expect(withCaret(s, completeStatementSpec(s, language))).toBe(`${head} {\n    |\n}`);
+    }
+    const bare = state("foreach|", ext);
+    expect(withCaret(bare, completeStatementSpec(bare, "php"))).toBe("foreach (|) {\n}");
+  });
+});
+
 describe("completeStatementSpec: C and C++ type definitions", () => {
   const ext = [comments("//"), indentUnit.of("    ")];
   it("ends a struct, class, union or enum with `};`", () => {
