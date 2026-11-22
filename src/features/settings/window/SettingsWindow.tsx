@@ -5,7 +5,7 @@ import { OverlayHost } from "@/workbench/OverlayHost";
 import { usePlatform } from "@/platform/platformInfo";
 import { TitleBar } from "@/workbench/TitleBar";
 import { useApplyTheme } from "@/workbench/theme";
-import { SettingsFooter, SettingsLayout, useSettingsTitle } from "../dialog/SettingsDialog";
+import { SettingsFooter, SettingsLayout, SettingsTitle, useSettingsTitle } from "../dialog/SettingsDialog";
 import { useSettingsDialog } from "../model/staging";
 import styles from "../dialog/SettingsDialog.module.css";
 
@@ -27,7 +27,7 @@ export function SettingsWindow() {
   return (
     <div ref={ref} className={clsx(styles.window, os === "linux" && styles.windowEdge)}>
       {/* macOS overlays traffic lights on it; Windows and Linux are frameless (tauri.<os>.conf.json). */}
-      {ownTitleBar && <TitleBar minimal dialog title={title} />}
+      {ownTitleBar && <TitleBar minimal dialog title={<SettingsTitle title={title} />} />}
       {open && (
         <>
           <div className={styles.windowBody}>

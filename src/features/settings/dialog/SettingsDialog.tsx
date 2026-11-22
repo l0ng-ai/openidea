@@ -60,6 +60,7 @@ import {
 import { builtinSpec, pageLabels } from "../pages/registry";
 import { PageErrorBoundary } from "./PageErrorBoundary";
 import styles from "./SettingsDialog.module.css";
+import settingsLogo from "../../../../src-tauri/icons/source/openidea-mark.svg";
 import { tx } from "@/platform/i18n";
 
 /** Keys of the nodes above `key`, root first. */
@@ -237,12 +238,25 @@ export function useSettingsTitle(): string {
   return useSettingsDialog((s) => settingsTitle(s.newProjects));
 }
 
+export function SettingsTitle({ title }: { title: string }) {
+  return (
+    <span className={styles.settingsTitle}>
+      <img src={settingsLogo} alt="" draggable={false} />
+      <span>
+        <T>{title}</T>
+      </span>
+    </span>
+  );
+}
+
 function SettingsDialogInner() {
+  const title = useSettingsTitle();
   return (
     <Dialog
       open
       onClose={closeSettings}
-      title={useSettingsTitle()}
+      title={<SettingsTitle title={title} />}
+      aria-label={tx(title)}
       width={980}
       className={styles.dialog}
       footerStart={<SettingsStatus />}
