@@ -5561,6 +5561,7 @@
   "trigger": "触发器",
   "sequence": "序列",
   "data source": "数据源",
+  "database": "数据库",
   "{count} library frames hidden": "已隐藏 {count} 个库帧",
   "unverified": "未验证",
   "temp": "临时",
