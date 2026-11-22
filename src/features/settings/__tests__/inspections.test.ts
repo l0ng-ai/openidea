@@ -120,7 +120,8 @@ describe("inspections tree", () => {
     expect(python.children.map((n) => n.id)).toEqual([
       "lsp:basedpyright",
       "lsp:ruff",
-      // The Python built-ins the IDE decides itself (no server checks class rules).
+      // The Python built-ins the IDE decides itself (no server checks class rules or installs).
+      "builtin:python-requirements",
       "builtin:python-circular-bases",
       "builtin:python-override",
       "builtin:python-abstract-method",

@@ -129,8 +129,7 @@ impl Repos {
                 continue;
             }
             let repo = self.at_root(&root.0).expect("scope comes from registry");
-            let _scope =
-                crate::ExecutionScope::enter(repo.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+            let _scope = repo.execution_scope();
             let mut missing_revision = false;
             let mut compare = || -> IdeResult<(String, Vec<WorkingTreeChange>)> {
                 // Worktree comparisons must not run repository-defined clean/process filters

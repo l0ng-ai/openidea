@@ -7,7 +7,6 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsStr;
 use std::fs;
-use std::sync::atomic::Ordering;
 
 #[derive(Deserialize, Serialize, Type)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -110,7 +109,7 @@ impl Repo {
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
         }
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(Ordering::Acquire));
+        let _scope = self.execution_scope();
         if self.operation()?.as_deref() != Some("rebase") {
             return Err(IdeError::invalid("No rebase in progress"));
         }
@@ -140,7 +139,7 @@ impl Repo {
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
         }
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(Ordering::Acquire));
+        let _scope = self.execution_scope();
         let mut args = rebase_args(upstream, options)?;
         self.validate_rebase(options)?;
         args.insert(1, "--interactive".into());

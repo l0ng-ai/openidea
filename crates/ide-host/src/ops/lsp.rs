@@ -1176,6 +1176,22 @@ pub async fn lsp_prepare_rename(host: &Host, window: &str, doc: DocId, pos: Pos)
     host.project(window)?.lsp.prepare_rename(doc, pos).await
 }
 
+/// The Throwable class the caret at `pos` names, for the exception breakpoint intention.
+#[command(trust = trusted)]
+pub async fn lsp_exception_class_at(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+) -> IdeResult<Option<ExceptionClassRef>> {
+    let project = host.project(window)?;
+    let cancel = host.begin_request(request);
+    let result = project.lsp.exception_class_at(doc, pos, cancel).await;
+    host.end_request(request);
+    result
+}
+
 /// The class at `pos` and the members Pull Members Up / Push Members Down can move.
 #[command(trust = trusted)]
 pub async fn lsp_hierarchy_members(
@@ -2842,6 +2858,7 @@ ide_command::domain!(
     lsp_completion,
     lsp_document_highlights,
     lsp_document_links,
+    lsp_exception_class_at,
     lsp_execute_code_action,
     lsp_execute_command,
     lsp_extract_interface,

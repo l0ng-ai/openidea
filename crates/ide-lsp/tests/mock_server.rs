@@ -3771,6 +3771,36 @@ async fn exception_breakpoints_send_the_whole_list_and_decode_states() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn exception_class_at_asks_the_extension_and_is_none_without_it() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.exceptionType"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let (doc, path) = h.open("Main.java", "class Main {\n  void f() { throw new Failure(); }\n}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    s.respond("workspace/executeCommand", json!({"qualifiedName": "app.Main$Failure", "displayName": "Failure"}));
+    let found = h.mgr.exception_class_at(doc, Pos::new(1, 23), Default::default()).await.unwrap();
+    assert_eq!(
+        found,
+        Some(ide_lsp::types::ExceptionClassRef {
+            qualified_name: "app.Main$Failure".into(),
+            display_name: "Failure".into()
+        })
+    );
+    let asked = s.requested("workspace/executeCommand");
+    assert_eq!(asked[0]["command"], "openidea.java.exceptionType");
+    assert_eq!(asked[0]["arguments"], json!([uri_of(&path), 1, 23]));
+    s.respond("workspace/executeCommand", json!(null));
+    assert_eq!(h.mgr.exception_class_at(doc, Pos::new(0, 1), Default::default()).await.unwrap(), None);
+
+    let plain = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let (doc, _) = plain.open("Main.java", "class Main {}");
+    plain.wait_status("jdtls", ServerStatus::Ready).await;
+    assert_eq!(plain.mgr.exception_class_at(doc, Pos::new(0, 7), Default::default()).await.unwrap(), None);
+    assert!(plain.launcher.state("jdtls").requested("workspace/executeCommand").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn debug_server_port_maps_to_module() {
     let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
     let (_, path) = h.open("Sample.java", "class Sample {}");

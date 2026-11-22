@@ -78,12 +78,13 @@ import { EventBreakpointsSection } from "../js/EventBreakpointsSection";
 import { StreamChainChooser } from "../streams/StreamChainChooser";
 import { StreamAbortDialog } from "../streams/StreamAbortDialog";
 import { closeBreakpointPopover, useOverlays } from "./popoverStore";
+import { TableViewDialog } from "./TableViewDialog";
 import { VariablesView, type VarRoot } from "./VariablesView";
 import { useExpressionCompletion } from "./ExpressionCompletion";
 import { pushHistory, readHistory } from "./expressionHistory";
 import styles from "./Overlays.module.css";
 import { isImeKey } from "@/platform/ime";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 
 export function DebuggerOverlays() {
   return (
@@ -96,7 +97,26 @@ export function DebuggerOverlays() {
       <SmartStepChooser />
       <StreamChainChooser />
       <StreamAbortDialog />
+      <TableView />
     </>
+  );
+}
+
+function TableView() {
+  const view = useOverlays((s) => s.tableView);
+  // A finished session (Stop, or Restart, which starts another id) has nothing left to show.
+  const live = useDebug((s) => view != null && isLive(s.sessions[view.session]));
+  useEffect(() => {
+    if (view && !live) useOverlays.setState({ tableView: null });
+  }, [view, live]);
+  if (!view || !live) return null;
+  return (
+    <TableViewDialog
+      key={`${view.session}:${view.expression}`}
+      expression={view.expression}
+      session={view.session}
+      onClose={() => useOverlays.setState({ tableView: null })}
+    />
   );
 }
 
@@ -192,12 +212,14 @@ function BreakpointFields({
   focus,
   onEnter,
   commitRef,
+  showRemoveOnceHit = false,
 }: {
   path: string;
   bp: BreakpointEntry;
   focus?: "condition" | "log";
   onEnter?: () => void;
   commitRef?: MutableRefObject<(() => void) | null>;
+  showRemoveOnceHit?: boolean;
 }) {
   const [condition, setCondition] = useState(bp.condition ?? "");
   const [hitCondition, setHitCondition] = useState(bp.hitCondition ?? "");
@@ -288,32 +310,44 @@ function BreakpointFields({
           aria-label="Hit count condition"
         />
       </label>
-      <Checkbox
-        checked={!!bp.logHit}
-        onChange={(on) => updateBreakpoint(path, bp.id, { logHit: on || undefined })}
-        label={'"Breakpoint hit" message'}
-      />
-      <Checkbox
-        checked={logEval}
-        onChange={(on) => {
-          setLogEval(on);
-          draft.current = { ...draft.current, logEval: on };
-          commitText();
-        }}
-        label="Evaluate and log"
-      />
-      {logEval && (
-        <Input
-          mono
-          value={logMessage}
-          onChange={(e) => setLogMessage(e.target.value)}
-          onBlur={commitText}
-          onKeyDown={onKey}
-          placeholder="Value: {expression}"
-          data-autofocus={focus === "log" ? "" : undefined}
-          aria-label="Evaluate and log"
+      <fieldset className={styles.bpActions}>
+        <legend>
+          <T>Actions</T>
+        </legend>
+        <Checkbox
+          checked={!!bp.logHit}
+          onChange={(on) => updateBreakpoint(path, bp.id, { logHit: on || undefined })}
+          label={'"Breakpoint hit" message'}
         />
-      )}
+        <Checkbox
+          checked={logEval}
+          onChange={(on) => {
+            setLogEval(on);
+            draft.current = { ...draft.current, logEval: on };
+            commitText();
+          }}
+          label="Evaluate and log"
+        />
+        {logEval && (
+          <Input
+            mono
+            value={logMessage}
+            onChange={(e) => setLogMessage(e.target.value)}
+            onBlur={commitText}
+            onKeyDown={onKey}
+            placeholder="Value: {expression}"
+            data-autofocus={focus === "log" ? "" : undefined}
+            aria-label="Evaluate and log"
+          />
+        )}
+        {showRemoveOnceHit && (
+          <Checkbox
+            checked={!!bp.temporary}
+            onChange={(temporary) => updateBreakpoint(path, bp.id, { temporary })}
+            label="Remove once hit"
+          />
+        )}
+      </fieldset>
     </>
   );
 }
@@ -586,7 +620,7 @@ function BreakpointsDialog() {
                     <Checkbox
                       checked={r.bp.enabled}
                       onChange={(enabled) => updateExceptionClass(r.bp.id, { enabled })}
-                      aria-label={tx`Enable ${name}`}
+                      aria-label={tx`Enable ${r.bp.className || txPart("No class chosen")}`}
                     />
                     <Icon name="breakpoint-exception" size={14} />
                     <span className={styles.bpName} title={name}>
@@ -751,12 +785,7 @@ function BreakpointDetail({
         </Button>
       </div>
       {st && <div className={styles.statusLine}>{st.verified ? tx("Verified") : (st.message ?? "Not verified")}</div>}
-      <BreakpointFields path={path} bp={bp} commitRef={commitRef} />
-      <Checkbox
-        checked={!!bp.temporary}
-        onChange={(temporary) => updateBreakpoint(path, bp.id, { temporary })}
-        label="Remove once hit"
-      />
+      <BreakpointFields path={path} bp={bp} commitRef={commitRef} showRemoveOnceHit />
     </div>
   );
 }

@@ -55,7 +55,7 @@ impl Repo {
         source: SubmoduleRollbackSource,
         restore_checkout: bool,
     ) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         if !crate::execution_allowed() {
             return Err(IdeError::invalid("Submodule rollback requires a trusted project"));
         }
@@ -133,10 +133,9 @@ impl Repo {
         cancel: &CancellationToken,
         on_output: &dyn Fn(String),
     ) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(
-            self.execution_allowed.load(std::sync::atomic::Ordering::Acquire)
-                && parent.execution_allowed.load(std::sync::atomic::Ordering::Acquire),
-        );
+        // The superproject's git runs it; the submodule can only restrict what it may do.
+        let _parent = parent.execution_scope();
+        let _scope = self.execution_scope();
         if !crate::execution_allowed() {
             return Err(IdeError::invalid("Submodule update requires a trusted project"));
         }

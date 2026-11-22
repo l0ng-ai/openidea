@@ -1,4 +1,4 @@
-use crate::{Host, apply_git_executable};
+use crate::Host;
 use ide_command::command;
 use ide_core::IdeResult;
 use ide_vcs::FileStatus;
@@ -9,9 +9,6 @@ pub async fn vcs_status(host: &Host, window: &str) -> IdeResult<Vec<FileStatus>>
     let project = host.project(window)?;
     host.blocking(move || {
         let settings = project.settings.effective();
-        if project.is_trusted() {
-            apply_git_executable(&settings);
-        }
         let repos = project.repos();
         if repos.is_empty() {
             return Err(ide_core::IdeError::unavailable("project is not a git repository"));
@@ -30,9 +27,6 @@ pub async fn vcs_ignored_files(host: &Host, window: &str) -> IdeResult<Vec<FileS
     let project = host.project(window)?;
     host.blocking(move || {
         let settings = project.settings.effective();
-        if project.is_trusted() {
-            apply_git_executable(&settings);
-        }
         let repos = project.repos();
         let ignored = settings.ignored_names();
         for repo in repos.all() {
@@ -50,9 +44,6 @@ pub async fn vcs_status_paths(host: &Host, window: &str, paths: Vec<std::path::P
     let project = host.project(window)?;
     host.blocking(move || {
         let settings = project.settings.effective();
-        if project.is_trusted() {
-            apply_git_executable(&settings);
-        }
         let repos = project.repos();
         if repos.is_empty() {
             return Err(ide_core::IdeError::unavailable("project is not a git repository"));

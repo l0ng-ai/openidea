@@ -14,7 +14,7 @@ import type {
 } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands, IpcError, nextRequestId } from "@/platform/ipc";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { workflowSettings, type UpdateMethod } from "@/platform/workflowSettings";
 import { notifications } from "@/workbench/contributions";
@@ -1253,7 +1253,7 @@ function PushDialog({
       open
       title={
         source && remote && !waitingForCommit
-          ? tx`Push Commits to ${remote && target ? `${remote}/${target}` : (upstream ?? "remote")}`
+          ? tx`Push Commits to ${remote && target ? `${remote}/${target}` : (upstream ?? txPart("remote"))}`
           : "Push"
       }
       onClose={onClose}

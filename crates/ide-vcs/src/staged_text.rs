@@ -13,7 +13,7 @@ use crate::cli::TempIndex;
 use crate::diff::{normalize_eol, replace_text};
 use crate::repo::{blob_data, gx};
 use crate::text_encoding::{TextEncoding, decode, encode, has_bom, is_binary};
-use crate::{ApplyCommitReview, ExecutionScope, HunkKind, Repo, write};
+use crate::{ApplyCommitReview, HunkKind, Repo, write};
 
 #[derive(Debug, Serialize, Deserialize, Type)]
 pub struct StagedText {
@@ -146,7 +146,7 @@ impl Repo {
         max_bytes: usize,
         encoding: impl FnOnce(&[u8]) -> TextEncoding,
     ) -> IdeResult<Option<StagedText>> {
-        let _scope = ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         let repo = self.gix()?;
         let rel = self.rel_path(path)?;
         let Some(entry) = staged_entry(&repo, &rel)? else {
@@ -174,7 +174,7 @@ impl Repo {
         text: &str,
         encoding: impl FnOnce(&[u8]) -> TextEncoding,
     ) -> IdeResult<String> {
-        let _scope = ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         let repo = self.gix()?;
         let path_to_index = repo.index_path();
         let lock =
@@ -211,7 +211,7 @@ impl Repo {
         cancel: &CancellationToken,
         encoding: impl Fn(&Path, &[u8]) -> TextEncoding,
     ) -> IdeResult<ApplyCommitReview> {
-        let _scope = ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         let repo = self.gix()?;
         let index_path = repo.index_path();
         let lock =

@@ -1,4 +1,4 @@
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { isMacHost } from "@/platform/keymap";
 import { Icon, IconButton, SearchField, Spinner, type MenuItem } from "@/ui";
@@ -57,7 +57,13 @@ function FilterButton({ label, value, onOpen, onClear, hidden }: LogFilter & { h
       className={clsx(styles.filterButton, value && styles.filterActive, hidden && styles.filterHidden)}
       inert={hidden}
     >
-      <button type="button" className={styles.filterMain} onClick={(e) => onOpen(e.currentTarget)} aria-haspopup="menu">
+      <button
+        type="button"
+        className={styles.filterMain}
+        onClick={(e) => onOpen(e.currentTarget)}
+        aria-haspopup="menu"
+        title={value ?? undefined}
+      >
         {value ? (
           <>
             {tx(label)}: <span className={styles.filterValue}>{value}</span>
@@ -71,7 +77,7 @@ function FilterButton({ label, value, onOpen, onClear, hidden }: LogFilter & { h
         <IconButton
           type="button"
           className={styles.filterClear}
-          aria-label={tx`Clear ${tx(label)} filter`}
+          aria-label={tx`Clear ${txPart(label)} filter`}
           onClick={onClear}
           icon="close"
           size="small"

@@ -28,7 +28,7 @@ OpenIDEA 直接使用项目自己的测试工具（Cargo、Jest、pytest、Maven
 | 语言                        | 装订区图标位置                                                                                | 运行方式                                              |
 | --------------------------- | --------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
 | Rust                        | `#[test]` 函数、`mod tests`                                                                   | `cargo test`、`cargo nextest`                         |
-| JavaScript / TypeScript     | `test`、`it`、`describe`、`suite`、`context`（含 `.each`、`.only`、`.skip`）                  | 通过项目的测试脚本运行 Jest 或 Vitest；Deno、Bun      |
+| JavaScript / TypeScript     | `test`、`it`、`describe`、`suite`、`context`（含 `.each`、`.only`、`.skip`）                  | 用测试脚本运行 Jest 或 Vitest；Playwright；Deno、Bun  |
 | Python                      | pytest 的 `def test_*`、`class Test*`，unittest 的 `TestCase` 子类                            | pytest、Django `manage.py test`                       |
 | Go                          | `func TestX(t *testing.T)`、基准测试                                                          | `go test`                                             |
 | Java、Kotlin、Scala、Groovy | JUnit `@Test`、`@ParameterizedTest`、`@RepeatedTest`、`@TestFactory`、`@TestTemplate`；TestNG | Maven Surefire（`-Dtest=`）或 Gradle（`--tests`）     |
@@ -62,7 +62,7 @@ RSpec 有自己的配置类型（**RSpec 测试**）和检测到的 `rspec` 配�
 | **重新运行**（在“运行”工具窗口中） | `⌘R`  | `Ctrl+F5`       |
 | **重新运行失败的测试**             | —     | —               |
 
-**重新运行失败的测试**（在“运行”工具窗口工具栏和“查找操作”中）只运行上一次失败的测试，会按各个工具自己的过滤语法生成命令。支持 Cargo、Jest / Vitest、pytest、Django、PHPUnit、Go、Maven / Gradle 和 .NET，以及插件接入的测试框架。
+**重新运行失败的测试**（在“运行”工具窗口工具栏和“查找操作”中）只运行上一次失败的测试，会按各个工具自己的过滤语法生成命令。支持 Cargo、Jest / Vitest、Playwright、`node --test`、Mocha、pytest、Django、PHPUnit、Go、Maven / Gradle 和 .NET，以及插件接入的测试框架。
 
 ## 在代码和测试之间跳转
 

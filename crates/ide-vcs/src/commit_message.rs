@@ -1,4 +1,4 @@
-use crate::{ExecutionScope, Repo, cherry_pick_plan, cli, ops};
+use crate::{Repo, cherry_pick_plan, cli, ops};
 use ide_core::workflow_settings::EmptyCherryPickAction;
 use ide_core::{CancellationToken, IdeError, IdeResult, IpcPath};
 use notify::event::{MetadataKind, ModifyKind};
@@ -9,7 +9,6 @@ use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 const MESSAGE_LIMIT: usize = 1 << 20;
@@ -211,7 +210,7 @@ impl Repo {
         cancel: &CancellationToken,
         changed: impl Fn() + Send + 'static,
     ) -> IdeResult<CommitMessageWatch> {
-        let _scope = ExecutionScope::enter(self.execution_allowed.load(Ordering::Acquire));
+        let _scope = self.execution_scope();
         let [git_dir, common_dir] = self.metadata_dirs()?;
         let mut files =
             BTreeSet::from([git_dir.join("HEAD"), git_dir.join("config.worktree"), common_dir.join("config")]);
@@ -248,7 +247,7 @@ impl Repo {
     }
 
     fn pending_apply(&self, cancel: &CancellationToken) -> Option<PendingCommitApply> {
-        let _scope = ExecutionScope::enter(self.execution_allowed.load(Ordering::Acquire));
+        let _scope = self.execution_scope();
         let (kind, marker, revision) = self.apply_head()?;
         let commit = gix::ObjectId::from_hex(revision.as_bytes()).ok()?.to_string();
         let (_, base) = self.head().ok()?;
@@ -297,7 +296,7 @@ impl Repo {
 
     /// The staged changes Git would commit after a cherry-pick or revert stopped.
     pub fn review_apply_commit(&self, cancel: &CancellationToken) -> IdeResult<Option<ApplyCommitReview>> {
-        let _scope = ExecutionScope::enter(self.execution_allowed.load(Ordering::Acquire));
+        let _scope = self.execution_scope();
         self.review_apply_index(cancel, &[])
     }
 
@@ -371,7 +370,7 @@ impl Repo {
         cancel: &CancellationToken,
         out: &dyn Fn(String),
     ) -> IdeResult<u32> {
-        let _scope = ExecutionScope::enter(self.execution_allowed.load(Ordering::Acquire));
+        let _scope = self.execution_scope();
         if message.trim().is_empty() || message.contains('\0') || message.len() > MESSAGE_LIMIT {
             return Err(IdeError::invalid("Invalid commit message"));
         }
@@ -421,7 +420,7 @@ impl Repo {
     }
 
     fn commit_message_config(&self, cancel: &CancellationToken) -> IdeResult<(MessageConfig, Option<PathBuf>)> {
-        let _scope = ExecutionScope::enter(self.execution_allowed.load(Ordering::Acquire));
+        let _scope = self.execution_scope();
         let raw = cli::run_bounded(
             self.root(),
             &["config", "--includes", "--show-origin", "--null", "--list"],

@@ -10,7 +10,7 @@ import { createFromTemplate, packageFor, packageStyleFor } from "./create";
 import { planFile, withKind, type FileTemplate } from "./model";
 import { useFileTemplates } from "./store";
 import styles from "./NewFileDialog.module.css";
-import { tx, VerbatimTextContext } from "@/platform/i18n";
+import { tx, txPart, VerbatimTextContext } from "@/platform/i18n";
 
 interface Request {
   directory: string;
@@ -231,11 +231,11 @@ function NameStep({
     <Dialog
       open
       onClose={close}
-      title={tx`New ${tx(template.name)}`}
+      title={tx`New ${txPart(template.name)}`}
       width={hasVariables ? 380 : 320}
       position={hasVariables ? "top" : "center"}
       popup
-      aria-label={tx`New ${tx(template.name)}`}
+      aria-label={tx`New ${txPart(template.name)}`}
       className={hasVariables ? styles.variableDialog : styles.nameDialog}
       buttons={
         hasVariables

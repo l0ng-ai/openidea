@@ -8,7 +8,7 @@ import { call, commands } from "@/platform/ipc";
 import { toolWindowService } from "@/workbench/contributions";
 import { useCommit, type CommitTab } from "./commitStore";
 import type { FileStatus } from "@/bindings";
-import { groupOf, isPartiallyStaged, type CheckState } from "./changes";
+import { commitsStagedPart, groupOf, type CheckState } from "./changes";
 import { stashTabOf } from "./gitTabs";
 import { selectGitTab } from "./logStore";
 import { isProtectedBranch } from "./branches";
@@ -58,7 +58,7 @@ export function includeOnly(status: readonly FileStatus[], paths: readonly strin
   for (const fs of status) {
     const group = groupOf(fs);
     if (!group || group === "conflicts") continue;
-    checks.set(fs.path, !chosen.has(fs.path) ? "none" : isPartiallyStaged(fs) ? "staged" : "all");
+    checks.set(fs.path, !chosen.has(fs.path) ? "none" : commitsStagedPart(fs) ? "staged" : "all");
   }
   return checks;
 }

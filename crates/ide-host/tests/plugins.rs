@@ -7313,3 +7313,112 @@ fn a_freshly_installed_plugin_gets_the_post_install_settings_event() {
         "freshly installed plugin got no post-install event: {received}"
     );
 }
+
+#[test]
+fn contributes_skills_installs_discovers_and_tracks_plugin_lifecycle() {
+    let f = fixture(Limits::default());
+    let info = f.install(&sample("agent-skills"));
+    assert_eq!(info.status, PluginStatus::Static);
+    assert!(info.warnings.is_empty(), "{:?}", info.warnings);
+    assert!(info.contributions.iter().any(|c| c.point == "skills" && c.label == "/release-notes"));
+
+    let dirs = f.host.skill_dirs(Some(&f.project), true);
+    assert_eq!(dirs.len(), 1);
+    assert!(dirs[0].join("SKILL.md").is_file(), "SKILL.md copied to install dir");
+    assert!(
+        dirs[0].join("references/template.md").is_file(),
+        "bundled supporting files in the skill folder copied to install dir"
+    );
+
+    let discovered = ide_agent::skills::discover_skills_with_plugins(std::slice::from_ref(&f.project), None, &dirs);
+    assert_eq!(discovered.len(), 1);
+    assert_eq!(discovered[0].name, "release-notes");
+    assert_eq!(discovered[0].source, ide_agent::AgentSkillSource::Plugin);
+    assert_eq!(discovered[0].hint.as_deref(), Some("[tag]"));
+
+    // Workspace skill with the same name wins; the plugin skill is never silently renamed.
+    let ws_skill = f.project.join(".agents/skills/release-notes");
+    std::fs::create_dir_all(&ws_skill).unwrap();
+    std::fs::write(ws_skill.join("SKILL.md"), "---\nname: release-notes\ndescription: workspace override\n---\n")
+        .unwrap();
+    let clashed = ide_agent::skills::discover_skills_with_plugins(std::slice::from_ref(&f.project), None, &dirs);
+    assert_eq!(clashed.len(), 1);
+    assert_eq!(clashed[0].source, ide_agent::AgentSkillSource::Workspace);
+    assert_eq!(clashed[0].description, "workspace override");
+
+    // Disabling or uninstalling removes the plugin's skill directories immediately.
+    f.host.set_enabled("test.agent-skills", false).unwrap();
+    assert!(f.host.skill_dirs(Some(&f.project), true).is_empty());
+    f.host.set_enabled("test.agent-skills", true).unwrap();
+    assert_eq!(f.host.skill_dirs(Some(&f.project), true).len(), 1);
+    f.host.uninstall("test.agent-skills").unwrap();
+    assert!(f.host.skill_dirs(Some(&f.project), true).is_empty());
+}
+
+#[test]
+fn contributes_skills_needs_api_1_15_and_warns_without_failing_plugin_on_bad_entries() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+
+    // Older `engines.openidea` is refused at the manifest check.
+    let old_api = tmp.path().join("old-api");
+    copy_dir(&sample("agent-skills"), &old_api);
+    let manifest = std::fs::read_to_string(old_api.join("plugin.toml")).unwrap();
+    std::fs::write(old_api.join("plugin.toml"), manifest.replace("\"^1.15\"", "\"^1.14\"")).unwrap();
+    let err = f.host.install_from_dir(&old_api, &Consent::all()).unwrap_err();
+    assert!(err.message.contains("new in plugin API 1.15"), "{err:?}");
+
+    // Invalid skill entries emit load warnings while valid skills and the plugin itself still load.
+    let pkg = tmp.path().join("mixed-skills");
+    std::fs::create_dir_all(pkg.join("skills/good-skill")).unwrap();
+    std::fs::write(pkg.join("skills/good-skill/SKILL.md"), "---\nname: good-skill\ndescription: valid skill\n---\n")
+        .unwrap();
+    std::fs::create_dir_all(pkg.join("skills/wrong-name")).unwrap();
+    std::fs::write(
+        pkg.join("skills/wrong-name/SKILL.md"),
+        "---\nname: mismatched\ndescription: bad frontmatter name\n---\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(pkg.join("skills/not-skill-md")).unwrap();
+    std::fs::write(pkg.join("skills/not-skill-md/README.md"), "nope\n").unwrap();
+    std::fs::create_dir_all(pkg.join("skills/oversize")).unwrap();
+    std::fs::write(pkg.join("skills/oversize/SKILL.md"), "---\nname: oversize\ndescription: too big\n---\n").unwrap();
+    std::fs::write(pkg.join("skills/oversize/blob.bin"), vec![b'x'; (2 << 20) + 16]).unwrap();
+
+    #[allow(unused_mut)]
+    let mut manifest = String::from(
+        "id = \"acme.mixed-skills\"\n\
+         name = \"Mixed Skills\"\n\
+         version = \"1.0.0\"\n\
+         engines.openidea = \"^1.15\"\n\n\
+         [[contributes.skills]]\npath = \"skills/good-skill/SKILL.md\"\n\
+         [[contributes.skills]]\npath = \"../outside/SKILL.md\"\n\
+         [[contributes.skills]]\npath = \"skills/not-skill-md/README.md\"\n\
+         [[contributes.skills]]\npath = \"skills/wrong-name/SKILL.md\"\n\
+         [[contributes.skills]]\npath = \"skills/oversize/SKILL.md\"\n",
+    );
+    #[cfg(unix)]
+    {
+        let outside = tmp.path().join("outside.txt");
+        std::fs::write(&outside, "secret\n").unwrap();
+        std::fs::create_dir_all(pkg.join("skills/escape-link")).unwrap();
+        std::fs::write(
+            pkg.join("skills/escape-link/SKILL.md"),
+            "---\nname: escape-link\ndescription: has escaping symlink\n---\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&outside, pkg.join("skills/escape-link/leak.txt")).unwrap();
+        manifest.push_str("[[contributes.skills]]\npath = \"skills/escape-link/SKILL.md\"\n");
+    }
+    std::fs::write(pkg.join("plugin.toml"), manifest).unwrap();
+
+    let info = f.install(&pkg);
+    assert_eq!(info.status, PluginStatus::Static, "bad skill entries must not fail the plugin");
+    let expected_warnings = if cfg!(unix) { 5 } else { 4 };
+    assert_eq!(info.warnings.len(), expected_warnings, "{:?}", info.warnings);
+    assert!(info.warnings.iter().all(|w| w.starts_with("contributes.skills[")), "{:?}", info.warnings);
+
+    let dirs = f.host.skill_dirs(Some(&f.project), true);
+    assert_eq!(dirs.len(), 1);
+    assert!(dirs[0].ends_with("skills/good-skill"), "{dirs:?}");
+}

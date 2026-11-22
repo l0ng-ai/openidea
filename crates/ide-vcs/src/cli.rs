@@ -40,15 +40,15 @@ impl Drop for TempIndex {
     }
 }
 
-/// Explicit git executable from Settings › Version Control › Git (`None` = auto-detect).
-static CONFIGURED: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+/// Git executable of the user's global settings (`None` = auto-detect). Never a project's: a
+/// project's repositories carry their own ([`crate::Repo::set_git_executable`]).
+static DEFAULT: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
 
-/// Sets (or clears, with `None` / an empty path) the git executable to use.
-pub fn set_git_executable(path: Option<&Path>) {
+/// Sets (or clears, with `None` / an empty path) the git executable of repositories that have
+/// none of their own, from the global settings only.
+pub fn set_default_git_executable(path: Option<&Path>) {
     let path = path.filter(|p| !p.as_os_str().is_empty()).map(Path::to_path_buf);
-    if *CONFIGURED.read().unwrap_or_else(|e| e.into_inner()) != path {
-        *CONFIGURED.write().unwrap_or_else(|e| e.into_inner()) = path;
-    }
+    *DEFAULT.write().unwrap_or_else(|e| e.into_inner()) = path;
 }
 
 /// Environment that routes credential prompts (`ssh` passphrases and host keys,
@@ -129,16 +129,20 @@ pub fn detected_git_executable() -> Option<PathBuf> {
     detected_git().map(Path::to_path_buf)
 }
 
+/// The executable of the repository this thread works in, else the default, else the detected one.
 pub(crate) fn git_binary() -> IdeResult<PathBuf> {
-    if let Some(configured) = CONFIGURED.read().unwrap_or_else(|e| e.into_inner()).clone() {
-        return Ok(configured);
+    if let Some(own) = crate::scoped_git_executable() {
+        return Ok(own.to_path_buf());
+    }
+    if let Some(default) = DEFAULT.read().unwrap_or_else(|e| e.into_inner()).clone() {
+        return Ok(default);
     }
     detected_git()
         .map(Path::to_path_buf)
         .ok_or_else(|| IdeError::unavailable("git executable not found; install git and make sure it is on PATH"))
 }
 
-/// `git --version` of `executable` (or the configured / detected one), e.g. `git version 2.44.0`.
+/// `git --version` of `executable` (or the default / detected one), e.g. `git version 2.44.0`.
 pub fn git_version(executable: Option<&Path>) -> IdeResult<String> {
     let exe = match executable.filter(|p| !p.as_os_str().is_empty()) {
         Some(p) => p.to_path_buf(),

@@ -326,7 +326,7 @@ async fn restricted_vcs_commands_run_no_program_of_the_repository() {
             }),
         ),
         // Last: it rewrites nothing of an existing repository, but it does touch it.
-        call!("vcs_init", "", vcs::vcs_init(host, project.root.clone())),
+        call!("vcs_init", "", vcs::vcs_init(host, w, project.root.clone())),
     ];
 
     // The sweep covers every `vcs_*` command declared `trust = always`: a newly allowed one fails

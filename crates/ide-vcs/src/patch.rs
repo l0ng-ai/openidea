@@ -503,12 +503,12 @@ pub struct ProjectPatchGroup {
 
 impl ProjectPatchGroup {
     pub fn preview(&self, r: &Repo) -> IdeResult<Vec<PatchFile>> {
-        let _scope = crate::ExecutionScope::enter(r.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = r.execution_scope();
         preview_with_prefix(r, &self.patch, &self.prefix)
     }
 
     pub fn apply(&self, r: &Repo) -> IdeResult<ApplyOutcome> {
-        let _scope = crate::ExecutionScope::enter(r.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = r.execution_scope();
         let outcome = apply_for_review(r, &self.patch, &self.prefix)?;
         let based = |paths: Vec<String>| paths.into_iter().map(|path| format!("{}{path}", self.prefix)).collect();
         Ok(ApplyOutcome { applied: based(outcome.applied), conflicts: based(outcome.conflicts) })
@@ -520,7 +520,7 @@ impl ProjectPatchGroup {
         path: &str,
         encoding: &dyn Fn(&Path, &[u8]) -> crate::TextEncoding,
     ) -> IdeResult<crate::PatchFileDiff> {
-        let _scope = crate::ExecutionScope::enter(r.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = r.execution_scope();
         file_diff::generate(r, &self.patch, path, &self.prefix, encoding)
     }
 }

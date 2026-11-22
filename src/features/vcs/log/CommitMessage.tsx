@@ -1,11 +1,9 @@
 import type { Commit, LogDetails } from "@/bindings";
 import { writeClipboardText } from "@/platform/clipboard";
-import { fontWeightOf } from "@/platform/editorSettings";
-import { resolveMonoFont } from "@/platform/fonts";
 import { tx } from "@/platform/i18n";
-import { useProject } from "@/platform/project";
 import { Icon } from "@/ui";
 import clsx from "clsx";
+import { CommitMessageContent } from "../CommitMessageContent";
 import styles from "../GitLog.module.css";
 import { IssueText } from "../issueLinks";
 import { useCommitDetails } from "../logDetails";
@@ -38,7 +36,7 @@ export function RefLabels({
 }) {
   const labels = refLabels(refs, { compact, tagNames }, remoteNames);
   return (
-    <span className={clsx(styles.refs, left && styles.refsLeft)}>
+    <span className={clsx(styles.refs, compact && styles.refsCompact, left && styles.refsLeft)}>
       {labels.map((l) => (
         <span key={`${l.kind}:${l.title}`} className={clsx(styles.ref, REF_KIND_CLASS[l.kind])} title={l.title}>
           {l.text && <span className={styles.refText}>{l.text}</span>}
@@ -51,39 +49,25 @@ export function RefLabels({
 /** A commit's message and metadata; `compact` (one of several selected): without the body. */
 export function CommitMessage({ commit, compact = false }: { commit: Commit; compact?: boolean }) {
   const { details, error } = useCommitDetails(commit, !compact);
-  const editor = useProject((s) => s.settings?.editor);
-  const { family, size } = resolveMonoFont(undefined, editor);
   const repo = commitRepo(commit) ?? currentRepo();
-  const message = details?.message || commit.message;
-  const [subject, ...bodyLines] = message.replace(/\s+$/, "").split("\n");
-  const body = compact ? "" : bodyLines.join("\n").replace(/^\n+/, "");
   return (
     <div className={clsx(compact && styles.commitEntry)}>
-      <div
-        className={styles.messageText}
-        style={{ fontFamily: family, fontSize: size, fontWeight: fontWeightOf(editor?.fontWeight, 400) }}
-      >
-        <div className={styles.subjectLine} style={{ fontWeight: fontWeightOf(editor?.boldFontWeight, 700) }}>
-          <CommitMessageText text={subject ?? ""} repo={repo} />
-        </div>
-        {body && (
-          <div className={styles.fullMessage}>
-            <CommitMessageText text={body} repo={repo} />
-          </div>
-        )}
-      </div>
-      <div className={styles.meta}>
-        <button
-          type="button"
-          className={styles.linkButton}
-          title={tx("Copy revision number")}
-          onClick={() => void writeClipboardText(commit.id)}
-        >
-          {commit.shortId}
-        </button>{" "}
-        {commit.author} &lt;{commit.email}&gt;
-        {commit.timeMs ? " " + tx`on ${new Date(commit.timeMs).toLocaleString()}` : ""}
-      </div>
+      <CommitMessageContent
+        commit={commit}
+        message={details?.message || commit.message}
+        compact={compact}
+        renderText={(text) => <CommitMessageText text={text} repo={repo} />}
+        revision={
+          <button
+            type="button"
+            className={styles.linkButton}
+            title={tx("Copy revision number")}
+            onClick={() => void writeClipboardText(commit.id)}
+          >
+            {commit.shortId}
+          </button>
+        }
+      />
       {!compact &&
         commit.committer &&
         (commit.committer !== commit.author ||

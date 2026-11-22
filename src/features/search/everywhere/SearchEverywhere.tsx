@@ -872,11 +872,16 @@ function ResultRow({
         <span
           className={clsx(styles.actionRow, !row.enabled && styles.disabled)}
           aria-disabled={!row.enabled || undefined}
+          title={row.title}
         >
           <span className={styles.icon}>{row.icon ? <Icon name={row.icon} size={16} /> : null}</span>
           <span className={styles.main}>
             <HighlightedText className={styles.name} text={row.title} indices={row.indices} tone={tone} />
-            {shortcut && <span className={styles.shortcut}>{shortcut}</span>}
+            {shortcut && (
+              <kbd className={styles.shortcut} title={shortcut}>
+                {shortcut}
+              </kbd>
+            )}
           </span>
           {toggled !== undefined ? (
             <span
@@ -896,7 +901,11 @@ function ResultRow({
               />
             </span>
           ) : (
-            row.category && <span className={styles.right}>{row.category}</span>
+            row.category && (
+              <span className={styles.right} title={row.category}>
+                {row.category}
+              </span>
+            )
           )}
         </span>
       );

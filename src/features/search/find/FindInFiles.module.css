@@ -162,8 +162,8 @@
 }
 .outdated .rowText,
 .outdated .rowText *,
-.outdated .rowFile,
-.outdated .rowFile * {
+.outdated .rowLocation,
+.outdated .rowLocation * {
   color: var(--fg-faint);
 }
 .rowText {
@@ -174,18 +174,28 @@
   font-family: var(--font-mono);
   font-weight: var(--fw-code);
 }
-.rowFile {
+.rowLocation {
   flex: none;
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-1-5);
   max-width: 40%;
+  color: var(--fg-secondary);
+  font-size: var(--fs-ui);
+}
+.rowLocationActive {
+  color: var(--fg-emphasis);
+}
+.rowFile {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--fg-subtle);
 }
-.rowFileActive {
+.rowFileRepeated {
   color: var(--fg-muted);
 }
 .rowLine {
-  color: var(--fg-faint);
+  flex: none;
   font-variant-numeric: tabular-nums;
 }
 .previewHeader {
@@ -224,20 +234,40 @@
   gap: var(--space-2);
   min-height: 46px;
   padding: 8px 20px;
+  border-top: 1px solid var(--border-popup);
+  background: var(--bg-frame, var(--bg-app));
 }
-.footer > button,
-.footer > label {
+.footerOptions,
+.footerGroup {
+  display: flex;
   flex: none;
-  white-space: nowrap;
+  max-width: 100%;
+  align-items: center;
+  gap: var(--space-2);
+}
+.footerOptions {
+  flex-wrap: wrap;
+  margin-inline-end: auto;
+}
+.footerGroup > button {
+  flex-shrink: 1;
+  min-width: 0;
+  height: auto;
+  min-height: var(--h-button);
+  padding-block: var(--space-1);
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .hint {
-  flex: 1 1 0;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--fg-faint);
   font-size: var(--fs-small);
+}
+.footer > .hint {
+  flex: 1 1 0;
 }
 .rowDone {
   opacity: 0.55;
@@ -276,6 +306,8 @@
 .okHint {
   flex: none;
   color: var(--fg-faint);
+  font-family: var(--font-keys);
+  font-size: var(--fs-small);
   white-space: nowrap;
 }
 

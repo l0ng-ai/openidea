@@ -16,7 +16,7 @@ import {
   type MouseEvent,
   type PointerEvent,
 } from "react";
-import { tx, txTemplate } from "@/platform/i18n";
+import { tx, txPart, txTemplate } from "@/platform/i18n";
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
 import { fontWeightOf } from "@/platform/editorSettings";
@@ -63,7 +63,7 @@ import {
   filesOf,
   groupOf,
   ignoreTargets,
-  isPartiallyStaged,
+  commitsStagedPart,
   planCommit,
   stagingPatchEntries,
   toggledCheck,
@@ -1214,7 +1214,7 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
                   <CheckMark
                     checked={agg.checked}
                     indeterminate={agg.indeterminate}
-                    label={tx`Include ${n.label} in commit`}
+                    label={tx`Include ${n.type === "group" && (!n.changelist || n.label === DEFAULT_LIST_NAME) ? txPart(n.label) : n.label} in commit`}
                     onToggle={() => toggle(selected.has(n.key) && selected.size > 1 ? selectedNodes() : [n])}
                   />
                 )}
@@ -1261,7 +1261,7 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
                       : fileCount(n.historicalFileCount ?? n.files.length)}
                   </span>
                 )}
-                {!staging && n.type === "file" && n.files[0] && isPartiallyStaged(n.files[0]) && (
+                {!staging && n.type === "file" && n.files[0] && commitsStagedPart(n.files[0]) && (
                   <span className={styles.partial} title={tx("Partially staged: only staged hunks are committed")}>
                     <T>partial</T>
                   </span>

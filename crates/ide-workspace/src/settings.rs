@@ -355,6 +355,11 @@ impl SettingsStore {
         self.effective.read().clone()
     }
 
+    /// Reads part of the effective settings without copying all of them.
+    pub fn read_effective<T>(&self, read: impl FnOnce(&Settings) -> T) -> T {
+        read(&self.effective.read())
+    }
+
     /// Settings defined in `scope`'s file alone (without merging the other layer).
     pub fn layer(&self, scope: SettingsScope) -> Settings {
         let mut merged = defaults_json();

@@ -297,14 +297,14 @@ launching as before.
 
 ## Running programs
 
-| Function                                                                 | What it does                                                                                                             |
-| ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
-| `Project::run_process(program, &args, stdin)`                            | Runs the pinned program in the project root and waits: `{ status, stdout, stderr }`, 4 MiB each.                        |
-| `host::run_command(&Command, Some(&project), stdin)`                     | API 1.3: the same, with environment variables added by `Command::env`.                                                  |
-| `host::run_captured(&Command, Some(&project), stdin, options)`           | API 1.15: configurable output limit (up to 128 MiB per stream); errors explicitly if either stdout or stderr overflows. |
-| `host::start(&Command, Some(&project))`                                  | API 1.3: a `Child` left running: `poll`, `write`, `close_stdin`, `wait`, `kill`. At most 8.                             |
-| `host::start_stream(&Command, Some(&project), options)`                  | API 1.15: lossless streaming with backpressure and bounded buffer, terminating with an explicit error on total overflow.|
-| `host::open_terminal(title, program, &args)`                             | A Terminal tab running the program (see [Views](/en/plugins/guides/views)).                                             |
+| Function                                                       | What it does                                                                                                             |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `Project::run_process(program, &args, stdin)`                  | Runs the pinned program in the project root and waits: `{ status, stdout, stderr }`, 4 MiB each.                         |
+| `host::run_command(&Command, Some(&project), stdin)`           | API 1.3: the same, with environment variables added by `Command::env`.                                                   |
+| `host::run_captured(&Command, Some(&project), stdin, options)` | API 1.15: configurable output limit (up to 128 MiB per stream); errors explicitly if either stdout or stderr overflows.  |
+| `host::start(&Command, Some(&project))`                        | API 1.3: a `Child` left running: `poll`, `write`, `close_stdin`, `wait`, `kill`. At most 8.                              |
+| `host::start_stream(&Command, Some(&project), options)`        | API 1.15: lossless streaming with backpressure and bounded buffer, terminating with an explicit error on total overflow. |
+| `host::open_terminal(title, program, &args)`                   | A Terminal tab running the program (see [Views](/en/plugins/guides/views)).                                              |
 
 ```rust
 use openidea_plugin::host::{self, Command};

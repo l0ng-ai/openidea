@@ -7,7 +7,6 @@ use ide_core::{CancellationToken, IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::Ordering;
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -39,7 +38,7 @@ pub(crate) struct IncomingObservations {
 
 impl Repo {
     pub fn check_incoming_refs(&self, cancel: &CancellationToken) -> IdeResult<IncomingRefsReport> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(Ordering::Acquire));
+        let _scope = self.execution_scope();
         let generation = {
             let mut observations = self.incoming_observations.lock().unwrap_or_else(|p| p.into_inner());
             observations.generation += 1;

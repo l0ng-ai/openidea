@@ -111,6 +111,70 @@ test("a narrow diff keeps navigation, settings and the difference count visible"
   await expect(toolbar).toContainText("1 of 1 differences");
 });
 
+test("revision titles keep both filenames in view when the diff divider moves", async ({ workbench: page }) => {
+  const leftName = "OrderRoutes.ts";
+  const rightName = "OrdersRoutes.ts";
+  const directory = "services/customer-orders/fulfillment/warehouse-routing/primary";
+  await page.setViewportSize({ width: 800, height: 650 });
+  await stubDesktop(page);
+  await page.evaluate(
+    async ({ directory, leftName, rightName }) => {
+      const inputPath = "/src/features/vcs/diffInput.ts";
+      const layoutPath = "/src/workbench/toolwindows/store.ts";
+      const { openDiff } = await import(inputPath);
+      const { hideAllToolWindows } = await import(layoutPath);
+      const leftPath = `/dev/acme-api/${directory}/${leftName}`;
+      const rightPath = `/dev/acme-api/${directory}/${rightName}`;
+      window.__ipc.handlers.vcs_file_at = (args) =>
+        args.rev === "7b70e02c" ? "export const region = 'east';\r\n" : "export const region = 'west';\n";
+      window.__ipc.handlers.vcs_file_mode = () => "100644";
+      hideAllToolWindows();
+      localStorage.setItem("openidea.vcs.diffOptions", JSON.stringify({ mode: "split", alignChanges: false }));
+      await openDiff({
+        path: rightPath,
+        left: { type: "rev", rev: "7b70e02c", path: leftPath },
+        right: { type: "rev", rev: "a8c5f31d", path: rightPath },
+      });
+    },
+    { directory, leftName, rightName },
+  );
+  const left = page.getByTitle(/^7b70e02c .*OrderRoutes\.ts$/);
+  const right = page.getByTitle(/^a8c5f31d .*OrdersRoutes\.ts$/);
+  const filenamesFit = async () => {
+    for (const [title, filename] of [
+      [left, leftName],
+      [right, rightName],
+    ] as const) {
+      await expect(title).toBeVisible();
+      expect(await title.getAttribute("title")).toContain(`${directory}/${filename}`);
+      const text = title.locator("span").filter({ hasText: filename }).last();
+      expect(
+        await text.evaluate((el, filename) => {
+          const node = el.firstChild!;
+          const range = document.createRange();
+          range.setStart(node, (node.textContent ?? "").length - filename.length);
+          range.setEnd(node, (node.textContent ?? "").length);
+          const bounds = range.getBoundingClientRect();
+          const clip = el.getBoundingClientRect();
+          return bounds.left >= clip.left - 1 && bounds.right <= clip.right + 1;
+        }, filename),
+        `${filename} is visible within its revision label`,
+      ).toBe(true);
+    }
+  };
+  await filenamesFit();
+
+  const divider = page.getByRole("separator", { name: "Resize diff panes" });
+  const { x, y, width, height } = (await divider.boundingBox())!;
+  const leftWidth = (await left.boundingBox())!.width;
+  await page.mouse.move(x + width / 2, y + height / 2);
+  await page.mouse.down();
+  await page.mouse.move(x + width / 2 - 96, y + height / 2, { steps: 4 });
+  await page.mouse.up();
+  await expect.poll(async () => (await left.boundingBox())!.width).toBeLessThan(leftWidth - 60);
+  await filenamesFit();
+});
+
 test("a medium-width diff keeps its full status beside the viewer tools", async ({ workbench: page }) => {
   await page.setViewportSize({ width: 490, height: 650 });
   await page.evaluate(async () => {

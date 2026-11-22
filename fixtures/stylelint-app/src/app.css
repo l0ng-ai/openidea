@@ -1,0 +1,7 @@
+/* Intentional Stylelint problems: a long hex colour (color-hex-length, fixable)
+   and a misspelt property (property-no-unknown). */
+.card {
+  color: #ffffff;
+  colour: red;
+  padding: 4px 8px;
+}

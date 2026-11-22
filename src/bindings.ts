@@ -150,11 +150,17 @@ export const commands = {
 	 *  starting a turn; its output goes to the agent with the next message.
 	 */
 	agentShell: (task: string, command: string, request: RequestId) => typedError<null, IdeError>(__TAURI_INVOKE("agent_shell", { task, command, request })),
+	/**  Resolves a GitHub `owner/repo[/path][@ref]` source and lists the `SKILL.md` skills in it. */
+	agentSkillsBrowse: (source: string, request: RequestId) => typedError<RemoteSkillBrowseResult, IdeError>(__TAURI_INVOKE("agent_skills_browse", { source, request })),
+	/**  Installs the selected skill subtree into `~/.agents/skills` (User) or `<workspace>/.agents/skills` (Workspace). */
+	agentSkillsInstall: (input: InstallRemoteSkillRequest, request: RequestId) => typedError<AgentSkillState_Serialize[], IdeError>(__TAURI_INVOKE("agent_skills_install", { input, request })),
 	/**
-	 *  Every skill discovered in the project and the user's folders, with the mode a session
-	 *  of this project runs it with (without any session's own overrides).
+	 *  Every skill discovered in the project, the user's folders and enabled plugins, with
+	 *  the mode a session runs it with (without any session's own overrides).
 	 */
 	agentSkillsList: () => typedError<AgentSkillState_Serialize[], IdeError>(__TAURI_INVOKE("agent_skills_list")),
+	/**  Fetches one skill's `SKILL.md`, file list, and static security scan warnings before installation. */
+	agentSkillsPreview: (owner: string, repo: string, gitRef: string, subpath: string, request: RequestId) => typedError<RemoteSkillPreview, IdeError>(__TAURI_INVOKE("agent_skills_preview", { owner, repo, gitRef, subpath, request })),
 	/**
 	 *  Sets how `name` may run in `scope`, in the settings file of that scope, and returns the
 	 *  updated list. `SKILL.md` files are never touched; the default `auto` removes the entry.
@@ -840,6 +846,13 @@ export const commands = {
 	lspDocumentHighlights: (doc: DocId, pos: Pos) => typedError<Highlight[], IdeError>(__TAURI_INVOKE("lsp_document_highlights", { doc, pos })),
 	/**  Links in a document (`href`s, Markdown links, `#include`s…) from its language servers. */
 	lspDocumentLinks: (doc: DocId) => typedError<DocumentLink[], IdeError>(__TAURI_INVOKE("lsp_document_links", { doc })),
+	/**  The Throwable class the caret at `pos` names, for the exception breakpoint intention. */
+	lspExceptionClassAt: (request: RequestId, doc: DocId, pos: Pos) => typedError<{
+	/**  The binary name (`app.Outer$Failure`), as exception breakpoints take it. */
+	qualifiedName: string,
+	/**  The simple name (`Failure`). */
+	displayName: string,
+} | null, IdeError>(__TAURI_INVOKE("lsp_exception_class_at", { request, doc, pos })),
 	lspExecuteCodeAction: (request: RequestId, doc: DocId, action: CodeAction, answers: FormAnswer[]) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("lsp_execute_code_action", { request, doc, action, answers })),
 	/**
 	 *  Runs a server command (`workspace/executeCommand`), e.g. a completion item's
@@ -1351,6 +1364,15 @@ export const commands = {
 	 *  edited (not yet applied); the response status, or why there was none.
 	 */
 	proxyCheckConnection: (proxy: ProxySettings, url: string) => typedError<string, IdeError>(__TAURI_INVOKE("proxy_check_connection", { proxy, url })),
+	/**
+	 *  The requirements of a `requirements*.txt` / `pyproject.toml` the project's interpreter
+	 *  doesn't satisfy; `None` for other files, or with no local interpreter to ask.
+	 */
+	pythonRequirements: (doc: DocId, request: RequestId) => typedError<{
+	/**  The interpreter checked, which installs go to. */
+	python: IpcPath,
+	unsatisfied: UnsatisfiedRequirement[],
+} | null, IdeError>(__TAURI_INVOKE("python_requirements", { doc, request })),
 	/**  Recently opened files, most recent first (⌘E). */
 	recentFiles: () => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("recent_files")),
 	/**  The welcome screen's project groups. */
@@ -1909,7 +1931,10 @@ export const commands = {
 	vcsHasHook: (repo: string | null, name: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("vcs_has_hook", { repo, name })),
 	vcsIgnoreBlameRevision: (path: string, commit: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_ignore_blame_revision", { path, commit })),
 	vcsIgnoredFiles: () => typedError<FileStatus[], IdeError>(__TAURI_INVOKE("vcs_ignored_files")),
-	/**  `git init` in `dir` (File › New Project… "Create Git repository"). */
+	/**
+	 *  `git init` in `dir` (VCS › Create Git Repository…): with the git of the window's project when
+	 *  it is trusted, the default one in a window without a project.
+	 */
 	vcsInit: (dir: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_init", { dir })),
 	/**  Reads the selected push target without prompting for remote credentials. */
 	vcsInspectPush: (repo: string | null, request: RequestId, selection: PushSelection, live: boolean) => typedError<PushInspection, IdeError>(__TAURI_INVOKE("vcs_inspect_push", { repo, request, selection, live })),
@@ -2928,6 +2953,8 @@ export type AgentSkillSource =
 "workspace" | 
 /**  The user's `~/.agents/skills` (what `npx skills add` fills). */
 "user" | 
+/**  Contributed by an enabled OpenIDEA plugin (`[[contributes.skills]]`). */
+"plugin" | 
 /**  The project's `.claude/skills`. */
 "claudeWorkspace" | 
 /**  `~/.claude/skills`. */
@@ -2995,6 +3022,10 @@ export type AgentSkill_Deserialize = {
 	userInvocable?: boolean,
 	/**  True when frontmatter sets `disable-model-invocation: true` (defaults to `slashOnly`). */
 	disableModelInvocation?: boolean,
+	/**  True when frontmatter sets `context: fork` (passed through natively to supporting CLIs). */
+	contextFork?: boolean,
+	/**  Optional `paths` / `globs` patterns from frontmatter (passed through natively to supporting CLIs). */
+	paths?: string[],
 	/**  The `SKILL.md` passes validation (`name` matches its folder, `description` present). */
 	valid: boolean,
 	/**  What validation found (`name` mismatch, missing or over-long description…). */
@@ -3017,6 +3048,10 @@ export type AgentSkill_Serialize = {
 	userInvocable: boolean,
 	/**  True when frontmatter sets `disable-model-invocation: true` (defaults to `slashOnly`). */
 	disableModelInvocation: boolean,
+	/**  True when frontmatter sets `context: fork` (passed through natively to supporting CLIs). */
+	contextFork: boolean,
+	/**  Optional `paths` / `globs` patterns from frontmatter (passed through natively to supporting CLIs). */
+	paths?: string[],
 	/**  The `SKILL.md` passes validation (`name` matches its folder, `description` present). */
 	valid: boolean,
 	/**  What validation found (`name` mismatch, missing or over-long description…). */
@@ -6524,6 +6559,14 @@ export type ExceptionClassBreakpoint = {
 	classExclusionFilters: string[],
 };
 
+/**  The exception class a caret names: a reference to it, its declaration, or a throw of it. */
+export type ExceptionClassRef = {
+	/**  The binary name (`app.Outer$Failure`), as exception breakpoints take it. */
+	qualifiedName: string,
+	/**  The simple name (`Failure`). */
+	displayName: string,
+};
+
 /**  What a session's exception class breakpoints can do. */
 export type ExceptionClassSupport = {
 	/**  Whose class names the session takes: `java`. */
@@ -6611,11 +6654,11 @@ export type ExternalDiffSide = {
 };
 
 /**  A formatter that runs outside the language servers, with its own settings group. */
-export type ExternalFormatter = "prettier" | "oxfmt" | "ruff";
+export type ExternalFormatter = "prettier" | "oxfmt" | "biome" | "ruff";
 
-/**  An external formatter (Prettier, oxfmt, Ruff) and the languages it formats. */
+/**  An external formatter (Prettier, oxfmt, Biome, Ruff) and the languages it formats. */
 export type ExternalFormatterSettings = {
-	/**  Empty path: project node_modules (Prettier/oxfmt), managed installation, then PATH. */
+	/**  Empty path: project node_modules (Prettier/oxfmt/Biome), managed installation, then PATH. */
 	path?: string,
 	/**  Ruff only: directory containing its configuration, or a configuration file. */
 	configurationDirectory?: string,
@@ -8230,6 +8273,18 @@ export type InstallPreview = {
 	needsConsent: boolean,
 };
 
+export type InstallRemoteSkillRequest = {
+	owner: string,
+	repo: string,
+	gitRef: string,
+	subpath: string,
+	scope: McpScope,
+	/**  Must be `true` when the static security scan produces any warnings. */
+	confirmWarnings?: boolean,
+	/**  Must be `true` to replace an existing folder of the same name in `scope`. */
+	overwrite?: boolean,
+};
+
 /**  The settings folder of a JetBrains IDE (or Android Studio) of this user. */
 export type InstalledIdeSettings = {
 	/**  The IDE and its version: `IntelliJ IDEA 2025.2`. */
@@ -8762,6 +8817,7 @@ export type LanguagesSettings = {
 	typescript?: TypeScriptSettings,
 	prettier?: ExternalFormatterSettings,
 	oxfmt?: ExternalFormatterSettings,
+	biome?: ExternalFormatterSettings,
 	ruff?: ExternalFormatterSettings,
 	java?: JavaSettings,
 	ruby?: RubySettings,
@@ -11271,6 +11327,12 @@ export type PythonPackage = {
 	version: string,
 };
 
+export type PythonRequirements = {
+	/**  The interpreter checked, which installs go to. */
+	python: IpcPath,
+	unsatisfied: UnsatisfiedRequirement[],
+};
+
 export type PythonSettings = {
 	/**
 	 *  Project interpreter executable; empty = auto-detect (project venv, else `python3`);
@@ -11612,6 +11674,47 @@ export type RemoteSession = {
 	commands: string[],
 };
 
+export type RemoteSkillBrowseResult = {
+	owner: string,
+	repo: string,
+	gitRef: string,
+	treeSha: string,
+	truncated: boolean,
+	skills: RemoteSkillCandidate[],
+};
+
+export type RemoteSkillCandidate = {
+	/**  Target folder name (`<name>` under `.agents/skills/<name>`). */
+	folderName: string,
+	/**  Repository-relative directory holding `SKILL.md` (`""` when at repository root). */
+	subpath: string,
+	fileCount: number,
+	totalBytes: number,
+};
+
+export type RemoteSkillFile = {
+	/**  Path relative to the skill folder (e.g. `"SKILL.md"`, `"scripts/check.sh"`). */
+	path: string,
+	size: number,
+	executable: boolean,
+	symlink: boolean,
+};
+
+export type RemoteSkillPreview = {
+	owner: string,
+	repo: string,
+	gitRef: string,
+	treeSha: string,
+	subpath: string,
+	skillName: string,
+	description: string,
+	skillMarkdown: string,
+	files: RemoteSkillFile[],
+	scanWarnings: SkillScanWarning[],
+	alreadyInstalledUser: boolean,
+	alreadyInstalledWorkspace: boolean,
+};
+
 /**  Where [`remote_connect`] is (`fraction`: 0..1 of a download / upload). */
 export type RemoteStage = "connecting" | 
 /**  `devcontainer up`: building or starting the container. */
@@ -11841,6 +11944,12 @@ export type RunExtras_Deserialize = {
 	stopCommand?: string | null,
 	/**  Settings › Run Targets id the process runs on (over SSH); `None` = this machine. */
 	target?: string | null,
+	/**
+	 *  The test framework a test configuration runs when detection recognised one that the
+	 *  command line doesn't name (a `package.json` script running `playwright test`): picks the
+	 *  test output parser and how a single test is selected.
+	 */
+	testRunner?: string | null,
 };
 
 export type RunExtras_Serialize = {
@@ -11885,6 +11994,12 @@ export type RunExtras_Serialize = {
 	stopCommand?: string | null,
 	/**  Settings › Run Targets id the process runs on (over SSH); `None` = this machine. */
 	target?: string | null,
+	/**
+	 *  The test framework a test configuration runs when detection recognised one that the
+	 *  command line doesn't name (a `package.json` script running `playwright test`): picks the
+	 *  test output parser and how a single test is selected.
+	 */
+	testRunner?: string | null,
 };
 
 /**  A process started from a run configuration. */
@@ -12484,6 +12599,14 @@ export type SizeSource =
  *  capture.
  */
 "addressGaps" | "layout";
+
+export type SkillScanWarning = {
+	kind: SkillScanWarningKind,
+	file: string,
+	message: string,
+};
+
+export type SkillScanWarningKind = "hiddenUnicode" | "outOfRootSymlink" | "executableScript" | "allowedToolsShell";
 
 export type SkipReason = 
 /**  A configuration with this name already exists. */
@@ -13473,6 +13596,13 @@ export type UnityProjectInfo = {
 	/**  File names relative to the Unity root, in stable order. */
 	solutions: string[],
 	projects: string[],
+};
+
+/**  A requirement the project's interpreter does not satisfy. */
+export type UnsatisfiedRequirement = {
+	dependency: ManifestDependency,
+	/**  The installed version that misses the specifier; `None` when not installed. */
+	installed: string | null,
 };
 
 export type UpdateCheck = {

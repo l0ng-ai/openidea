@@ -4146,6 +4146,7 @@ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 name = "ide-agent"
 version = "0.1.50"
 dependencies = [
+ "base64 0.22.1",
  "blake3",
  "dunce",
  "encoding_rs",
@@ -4845,6 +4846,7 @@ dependencies = [
 name = "ide-sdk"
 version = "0.1.50"
 dependencies = [
+ "dirs 6.0.0",
  "dunce",
  "flate2",
  "ide-core",

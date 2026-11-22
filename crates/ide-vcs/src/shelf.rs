@@ -147,7 +147,7 @@ pub struct ShelfCapture {
 
 impl ShelfCapture {
     pub fn capture(r: &Repo, base: &Path, paths: &[PathBuf]) -> IdeResult<Self> {
-        let _scope = crate::ExecutionScope::enter(r.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = r.execution_scope();
         let repo = r.root().to_path_buf();
         let prefix = repository_prefix(&repo, base)?;
         let (patch, files) =
@@ -160,7 +160,7 @@ impl ShelfCapture {
     }
 
     pub fn revert(&self, r: &Repo) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(r.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = r.execution_scope();
         if r.root() != self.repo {
             return Err(IdeError::invalid("The shelf repository has changed"));
         }
@@ -230,7 +230,7 @@ pub struct ShelfSelection {
 
 impl ShelfSelection {
     pub fn apply(&self, r: &Repo) -> IdeResult<ApplyOutcome> {
-        let _scope = crate::ExecutionScope::enter(r.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = r.execution_scope();
         let mut outcome = crate::patch::apply_with_prefix(r, &self.patch, &self.prefix)?;
         for path in outcome.applied.iter_mut().chain(outcome.conflicts.iter_mut()) {
             *path = format!("{}{path}", self.prefix);
@@ -722,7 +722,7 @@ pub(crate) fn unshelve(r: &Repo, shelf: &Path, id: &str, remove: bool) -> IdeRes
 }
 
 pub fn unshelve_path(r: &Repo, shelf: &Path, id: &str, remove: bool, path: Option<&str>) -> IdeResult<ApplyOutcome> {
-    let _scope = crate::ExecutionScope::enter(r.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+    let _scope = r.execution_scope();
     let patch = selected_patch(shelf, id, path)?;
     let outcome = crate::patch::apply(r, &patch)?;
     if remove && outcome.conflicts.is_empty() {
@@ -800,7 +800,7 @@ pub fn diff_files(r: &Repo, shelf: &Path, id: &str) -> IdeResult<Vec<ShelfDiffFi
 }
 
 fn diff_from_patch(r: &Repo, patch: &str, prefix: &str) -> IdeResult<Vec<ShelfDiffFile>> {
-    let _scope = crate::ExecutionScope::enter(r.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+    let _scope = r.execution_scope();
     let strip = crate::patch::strip_option(prefix);
     let mut apply = vec!["apply"];
     apply.extend(strip.as_deref());

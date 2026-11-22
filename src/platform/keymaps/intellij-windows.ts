@@ -378,6 +378,7 @@ export const intellijWindows: Record<string, string[]> = {
   "db.openValueWindow": [],
   "db.findInValue": ["Ctrl+F"],
   "db.execute": ["Ctrl+Enter"],
+  "python.console.executeSelection": ["Alt+Shift+E"],
   "db.nextResultTab": ["Alt+Right"],
   "db.previousResultTab": ["Alt+Left"],
   // Table editor with pending changes (after `vcs.rollback`, so Ctrl+Alt+Z reverts the table's edits there).

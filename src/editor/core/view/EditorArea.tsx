@@ -219,15 +219,23 @@ function PaneView({ paneId }: { paneId: string }) {
       const pin = t.pinned ? <Icon name="pin" size={11} className={styles.pin} label="Pinned" /> : null;
       const file = t.input.kind === "file" && t.input.path ? files.get(t.input.path) : undefined;
       const title = markModified && dirty[i] ? `*${name}` : name;
+      const prefix = t.input.kind === "file" && dupe ? (dupe.endsWith("/") ? dupe : `${dupe}/`) : null;
       return {
         id: t.id,
-        label: (
+        label: prefix ? (
+          <span className={styles.tabPath}>
+            <span className={styles.tabDirectory}>
+              <span>{prefix}</span>
+            </span>
+            <span className={clsx(styles.tabFilename, file?.deprecated && styles.deprecated)}>{title}</span>
+          </span>
+        ) : (
           <>
             {file?.deprecated ? <span className={styles.deprecated}>{title}</span> : title}
             {dupe && <span className={styles.dupe}>{dupe}</span>}
           </>
         ),
-        text: dupe ? `${name} — ${dupe}` : name,
+        text: prefix ? `${prefix}${name}` : dupe ? `${name} — ${dupe}` : name,
         icon: showFileIcon
           ? t.input.kind === "file" && t.input.path
             ? (tabIcons[i] ?? file?.icon)

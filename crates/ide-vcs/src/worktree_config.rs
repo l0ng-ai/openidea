@@ -28,7 +28,7 @@ impl Repo {
             return Ok(());
         }
         let root = self.root();
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         let matches = run(
             root,
             &["ls-files", "-z", "--cached", "--others", "--ignored", "--exclude-from=.worktreeinclude"],

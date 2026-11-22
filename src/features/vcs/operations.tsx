@@ -61,7 +61,7 @@ import tagStyles from "./TagDialog.module.css";
 import { ComparisonTree } from "./ComparisonTree";
 import { showWorktreeComparison } from "./compareTool";
 import { buildFileTree, type FileTreeNode } from "./fileTree";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 import { displayPath } from "./compareData";
 import { repositoryPath } from "./repositoryPaths";
 import { RepoPicker } from "./RepoPicker";
@@ -216,7 +216,7 @@ function stoppedActions(repo: string, op: InProgress, message: string): Array<{ 
           {
             progress: "Continuing rebase",
             success: "Rebase continued",
-            failure: tx`${controlLabel(op, "continue")} failed`,
+            failure: tx`${txPart(controlLabel(op, "continue"))} failed`,
             errorActions: (m) => stoppedActions(repo, op, m),
           },
           repo,
@@ -459,7 +459,7 @@ export async function controlOperation(
   const options: GitOperationOptions = {
     progress,
     success,
-    failure: tx`${controlLabel(op, control)} failed`,
+    failure: tx`${txPart(controlLabel(op, control))} failed`,
     onError: control === "abort" ? undefined : () => conflictsInstead(repo),
     errorActions: control === "abort" ? undefined : (message) => stoppedActions(repo, op, message),
   };

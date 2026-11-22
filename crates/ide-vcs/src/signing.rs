@@ -1,4 +1,4 @@
-use crate::{ExecutionScope, Repo, cli, execution_allowed};
+use crate::{Repo, cli, execution_allowed};
 use gix::lock::{self, acquire::Fail};
 use ide_core::{CancellationToken, IdeError, IdeResult, error::ErrorKind};
 use serde::{Deserialize, Serialize};
@@ -6,7 +6,6 @@ use specta::Type;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::Ordering;
 
 #[derive(Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -40,7 +39,7 @@ impl Repo {
     }
 
     pub fn gpg_signing_keys(&self, cancel: &CancellationToken) -> IdeResult<Vec<GpgSigningKey>> {
-        let _scope = ExecutionScope::enter(self.execution_allowed.load(Ordering::Acquire));
+        let _scope = self.execution_scope();
         self.require_openpgp()?;
         let program = gpg_program(self.root(), cancel)?;
         let mut cmd = Command::new(&program);
@@ -58,7 +57,7 @@ impl Repo {
     }
 
     pub fn edit_signing(&self, edit: GitSigningEdit) -> IdeResult<()> {
-        let _scope = ExecutionScope::enter(self.execution_allowed.load(Ordering::Acquire));
+        let _scope = self.execution_scope();
         self.require_openpgp()?;
         if edit.enabled.is_none() && edit.key.is_none() {
             return Ok(());
@@ -199,6 +198,7 @@ fn decode_user_id(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ExecutionScope;
 
     const FINGERPRINT: &str = "1234567890123456789012345678901234567890";
     const SUBKEY: &str = "ABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD";

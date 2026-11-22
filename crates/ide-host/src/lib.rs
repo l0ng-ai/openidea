@@ -25,7 +25,7 @@ pub mod rpc;
 pub mod shell_env;
 pub mod trust;
 
-pub use project::{Project, apply_git_executable, history_retention};
+pub use project::{Project, history_retention};
 
 use ide_core::{CancellationToken, IdeError, IdeResult, RequestId, SharedSink};
 use ide_language::{LanguageRegistry, Syntax};
@@ -34,7 +34,7 @@ use ide_terminal::TerminalManager;
 use ide_workspace::SettingsStore;
 use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 /// Event sink for one window (by label).
@@ -209,6 +209,7 @@ impl Host {
         };
         host.apply_proxy();
         host.apply_added_jdks();
+        host.apply_git_executable();
         // Before any project starts jdtls; the deleting itself can take a while.
         let unused =
             ide_sdk::jdtls_workspaces::take_unused(&host.local_data_dir, ide_sdk::jdtls_workspaces::UNUSED_FOR);
@@ -599,6 +600,14 @@ impl Host {
     pub fn apply_added_jdks(&self) {
         let homes = self.global_settings.effective().languages.java.added_jdks;
         ide_sdk::java::set_added_jdks(homes.into_iter().map(PathBuf::from));
+    }
+
+    /// Global Settings › Version Control › Git › Path to Git executable, for git started outside
+    /// a project's repositories (clone, init, agents, gh, plugins). A project's own value stays
+    /// with its repositories ([`Project::repos`]).
+    pub fn apply_git_executable(&self) {
+        let exe = self.global_settings.read_effective(|s| s.vcs.git.executable.trim().to_owned());
+        ide_vcs::set_default_git_executable((!exe.is_empty()).then(|| Path::new(&exe)));
     }
 }
 

@@ -311,7 +311,7 @@ impl Repo {
         live: bool,
         cancel: &CancellationToken,
     ) -> IdeResult<PushInspection> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         let (source, target, local_tip) = selection.refs(self, cancel)?;
         let urls = remote_push_urls(self, &selection.remote, cancel)?;
         let mut result = PushInspection {
@@ -406,7 +406,7 @@ impl Repo {
         cancel: &CancellationToken,
         out: &dyn Fn(String),
     ) -> IdeResult<()> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         let target = selection.target_ref(self, cancel)?;
         let urls = remote_push_urls(self, &selection.remote, cancel)?;
         let [url] = urls.as_slice() else {
