@@ -585,6 +585,12 @@ const KEYWORD_HEAD =
   /\b(do(\s*\|[^|]*\|)?|then|where|of)$|^\s*(def|defp|defmodule|class|module|function|local function|if|unless|elsif|elseif|else|while|until|for|case|begin)\b/;
 const BLOCK_HEAD =
   /^\s*(if|else|for|while|do|switch|try|catch|finally|fn|fun|func|function|class|struct|enum|impl|trait|interface|object|match|when|loop|unsafe|mod|namespace)\b/;
+/** Languages whose `struct` / `class` / `union` / `enum` definitions end with `};`. */
+const C_TYPE_LANGS = new Set(["c", "cpp", "objective-c", "objective-cpp"]);
+/** `struct S`, `class A : public B`, `enum class E : int`, `template <typename T> class A`. */
+const C_TYPE_HEAD =
+  /^\s*(template\s*<[^>]*>\s*)?(typedef\s+)?(struct|class|union|enum(\s+(class|struct))?)(\s+[\w:]+)?(\s+final)?(\s*:\s*[^{};()]+)?\s*$/;
+
 /** Languages whose `if` / `for` / `while`… take their condition in parentheses. */
 const PAREN_CONDITION_LANGS = new Set([
   "java",
@@ -623,6 +629,7 @@ const METHOD_HEAD_LANGS = new Set(["java", "csharp", "groovy"]);
 export function isBlockHead(code: string, language: string): boolean {
   if (KEYWORD_BLOCK_LANGS.has(language) || /[{;,]$/.test(code)) return false;
   if (BLOCK_HEAD.test(code) || DECLARATION_HEAD.test(code)) return true;
+  if (C_TYPE_LANGS.has(language) && C_TYPE_HEAD.test(code)) return true;
   return (
     METHOD_HEAD_LANGS.has(language) &&
     !STATEMENT_WORDS.test(code) &&
@@ -752,7 +759,9 @@ export function completeStatementSpec(state: EditorState, language: string): Tra
     };
   }
   if (braces && !comment && isBlockHead(text, language)) {
-    const insert = ` {${br}${baseIndent}${unit}${br}${baseIndent}}`;
+    // A C / C++ type definition ends with `};`.
+    const close = C_TYPE_LANGS.has(language) && C_TYPE_HEAD.test(text) ? "};" : "}";
+    const insert = ` {${br}${baseIndent}${unit}${br}${baseIndent}${close}`;
     const from = line.from + text.length;
     return {
       // A trailing comment moves to the end of the header line.

@@ -259,6 +259,32 @@ describe("completeStatementSpec (text rules)", () => {
   });
 });
 
+describe("completeStatementSpec: C and C++ type definitions", () => {
+  const ext = [comments("//"), indentUnit.of("    ")];
+  it("ends a struct, class, union or enum with `};`", () => {
+    for (const [head, language] of [
+      ["struct S", "c"],
+      ["typedef struct Node", "c"],
+      ["union U", "c"],
+      ["enum Color", "c"],
+      ["class A", "cpp"],
+      ["class B : public A", "cpp"],
+      ["enum class E : int", "cpp"],
+      ["template <typename T> class Box", "cpp"],
+    ] as const) {
+      const s = state(`${head}|`, ext);
+      expect(withCaret(s, completeStatementSpec(s, language))).toBe(`${head} {\n    |\n};`);
+    }
+  });
+
+  it("keeps a plain `}` for namespaces and control flow", () => {
+    for (const head of ["if (x)", "namespace n"]) {
+      const s = state(`${head}|`, ext);
+      expect(withCaret(s, completeStatementSpec(s, "cpp"))).toBe(`${head} {\n    |\n}`);
+    }
+  });
+});
+
 describe("completeStatementSpec: TypeScript and Python", () => {
   const ts = [comments("//", ["/*", "*/"]), indentUnit.of("  ")];
   const py = [comments("#"), indentUnit.of("    ")];
