@@ -428,6 +428,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "agents.cycleEffort": ["Alt+T"],
   "agents.showToolWindow": [],
   "agents.sendToAgent": [],
+  // Python Console: VS Code's Shift+Enter would shadow typing in Python files, so unbound.
+  "python.console.executeSelection": [],
   // Search fields (find bar, Find in Files): last, so they win over editor keys while one is focused.
   "find.openInWindow": ["Alt+F7"],
   "find.field.newLine": ["Meta+Shift+Enter"],

@@ -118,6 +118,8 @@ struct FileConfig {
     #[serde(alias = "stopCommand")]
     stop_command: Option<String>,
     target: Option<String>,
+    #[serde(alias = "testRunner")]
+    test_runner: Option<String>,
 }
 
 pub(crate) fn slug(s: &str) -> String {
@@ -183,6 +185,7 @@ fn convert(configs: Vec<FileConfig>, local: bool) -> Vec<RunConfig> {
                 emulate_terminal: c.emulate_terminal,
                 stop_command: non_empty(c.stop_command),
                 target: non_empty(c.target),
+                test_runner: non_empty(c.test_runner),
             },
         });
     }
@@ -297,6 +300,9 @@ fn to_table(c: &RunConfig) -> Table {
     }
     if let Some(target) = &x.target {
         t.insert("target", value(target));
+    }
+    if let Some(runner) = &x.test_runner {
+        t.insert("test-runner", value(runner));
     }
     t
 }

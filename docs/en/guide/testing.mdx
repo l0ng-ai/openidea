@@ -32,7 +32,7 @@ Running a single test creates a temporary run configuration based on the project
 | Language                    | Gutter icons on                                                                               | Runs with                                                      |
 | --------------------------- | --------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
 | Rust                        | `#[test]` functions, `mod tests`                                                              | `cargo test`, `cargo nextest`                                  |
-| JavaScript / TypeScript     | `test`, `it`, `describe`, `suite`, `context` (also `.each`, `.only`, `.skip`)                 | Jest or Vitest through the project's test script; Deno and Bun |
+| JavaScript / TypeScript     | `test`, `it`, `describe`, `suite`, `context` (also `.each`, `.only`, `.skip`)                 | Jest or Vitest via the test script; Playwright Test; Deno, Bun |
 | Python                      | pytest `def test_*` and `class Test*`, unittest `TestCase` subclasses                         | pytest, Django `manage.py test`                                |
 | Go                          | `func TestX(t *testing.T)`, benchmarks                                                        | `go test`                                                      |
 | Java, Kotlin, Scala, Groovy | JUnit `@Test`, `@ParameterizedTest`, `@RepeatedTest`, `@TestFactory`, `@TestTemplate`; TestNG | Maven Surefire (`-Dtest=`) or Gradle (`--tests`)               |
@@ -66,7 +66,7 @@ Detected test configurations show results in the tree automatically. For your ow
 | **Rerun** (in the Run tool window) | `⌘R`  | `Ctrl+F5`       |
 | **Rerun Failed Tests**             | —     | —               |
 
-**Rerun Failed Tests** (in the Run tool window toolbar and Find Action) runs only the tests that failed in the last run, using each tool's filter syntax. It works for Cargo, Jest / Vitest, pytest, Django, PHPUnit, Go, Maven / Gradle and .NET runs, and for plugin test frameworks.
+**Rerun Failed Tests** (in the Run tool window toolbar and Find Action) runs only the tests that failed in the last run, using each tool's filter syntax. It works for Cargo, Jest / Vitest, Playwright, `node --test`, Mocha, pytest, Django, PHPUnit, Go, Maven / Gradle and .NET runs, and for plugin test frameworks.
 
 ## Navigate between code and tests
 

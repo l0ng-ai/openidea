@@ -12,7 +12,7 @@ import clsx from "clsx";
 import { openEditorPaths, useEditorRegistry } from "@/editor/api";
 import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
-import { t, useTxTemplate, tx } from "@/platform/i18n";
+import { t, useTxTemplate, tx, txPart } from "@/platform/i18n";
 import { formatBinding, hostBinding, shortcutLabel } from "@/platform/keymap";
 import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
@@ -611,6 +611,7 @@ function FindInFilesDialog() {
         }
         renderItem={(r, st) => {
           const state = s.replace ? groupState(r, marks) : "pending";
+          const repeatedFile = !st.active && rows[st.index - 1]?.path === r.path;
           return (
             <>
               <span
@@ -626,13 +627,20 @@ function FindInFilesDialog() {
                   source={{ path: r.path, line: r.line, col: r.textCol }}
                 />
               </span>
-              <span className={clsx(styles.rowFile, st.active && styles.rowFileActive)}>
-                {state === "done" && (
-                  <span className={styles.rowLine}>
-                    <T>replaced ·</T>{" "}
-                  </span>
-                )}
-                {workspace ? r.relPath : basename(r.relPath)} <span className={styles.rowLine}>{r.line + 1}</span>
+              <span className={clsx(styles.rowLocation, st.active && styles.rowLocationActive)}>
+                <span
+                  className={clsx(styles.rowFile, repeatedFile && styles.rowFileRepeated)}
+                  title={r.relPath}
+                  dir="auto"
+                >
+                  {state === "done" && (
+                    <>
+                      <T>replaced ·</T>{" "}
+                    </>
+                  )}
+                  {workspace ? r.relPath : basename(r.relPath)}
+                </span>{" "}
+                <span className={styles.rowLine}>{r.line + 1}</span>
               </span>
             </>
           );
@@ -1032,7 +1040,7 @@ function EmptyResults({
       ) : used.length ? (
         <div className={styles.emptyOptions}>
           {used.length === 1 ? (
-            <div>{tx`Search option used: ${tx(used[0]!.label)}`}</div>
+            <div>{tx`Search option used: ${txPart(used[0]!.label)}`}</div>
           ) : (
             <>
               <div>

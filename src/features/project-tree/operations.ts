@@ -45,7 +45,7 @@ import {
   startEditing,
   useProjectTree,
 } from "./store";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 import { hostOs, isRemoteWindow } from "@/platform/remote";
 import { usePlatform } from "@/platform/platformInfo";
 import { pathToCopy, type PathKind } from "@/platform/copyPath";
@@ -890,7 +890,7 @@ export function revealablePath(path: string): string {
 
 /** For a reveal invoked where the menus hide it (shortcut, Search Everywhere) in an SSH or dev-container window. */
 export function notifyRevealUnavailable() {
-  const fileManager = tx(fileManagerName());
+  const fileManager = txPart(fileManagerName());
   notifications().notify({ level: "warning", title: tx`Remote project files cannot be shown in ${fileManager}` });
 }
 
@@ -899,7 +899,7 @@ export async function revealInFinder(nodes: ProjectNode[] = selectedNodes()) {
   try {
     await revealInFileManager(nodes.map((n) => n.path));
   } catch (e) {
-    const fileManager = tx(fileManagerName());
+    const fileManager = txPart(fileManagerName());
     fail(tx`Cannot reveal in ${fileManager}`, e);
   }
 }

@@ -537,6 +537,42 @@ pub fn configure_gradle_runtime(cfg: &mut LanguageServerConfig, root: &Path, bui
     merge(cfg.settings.get_or_insert_with(|| json!({})), json!({"java": {"import": {"gradle": gradle}}}));
 }
 
+/// Gradle's Eclipse model, which jdtls imports the build through, leaves out project dependencies
+/// a source set only compiles against (`compileOnly(project(":a"))`) and marks some as test-only,
+/// so their classes don't resolve in the editor although Gradle compiles. jdtls's Gradle import
+/// runs an init script that adds them, written to the first of `dirs` whose path has no
+/// whitespace: Buildship stores the import's arguments joined by spaces and splits them again,
+/// so `Application Support` would break the path. The name carries the script's hash, so
+/// releases running side by side never overwrite each other's script.
+pub fn configure_gradle_classpath(cfg: &mut LanguageServerConfig, dirs: &[PathBuf]) {
+    const SCRIPT: &str = include_str!("gradle-classpath.init.gradle");
+    if cfg.name != "jdtls" {
+        return;
+    }
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in SCRIPT.bytes() {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+    }
+    let name = format!("openidea-classpath-{hash:016x}.init.gradle");
+    let Some(script) = dirs
+        .iter()
+        .map(|dir| dir.join(&name))
+        .filter(|script| !script.to_string_lossy().contains(char::is_whitespace))
+        .find(|script| {
+            std::fs::read(script).ok().as_deref() == Some(SCRIPT.as_bytes())
+                || script.parent().is_some_and(|dir| std::fs::create_dir_all(dir).is_ok())
+                    && std::fs::write(script, SCRIPT).is_ok()
+        })
+    else {
+        tracing::warn!("no directory without spaces for the Gradle classpath init script: {dirs:?}");
+        return;
+    };
+    merge(
+        cfg.settings.get_or_insert_with(|| json!({})),
+        json!({"java": {"import": {"gradle": {"arguments": ["--init-script", script.to_string_lossy()]}}}}),
+    );
+}
+
 /// Settings › Build Tools › Maven › Automatically download sources and Always update
 /// snapshots → jdtls `java.maven.downloadSources` / `java.maven.updateSnapshots`.
 pub fn configure_maven_sources(cfg: &mut LanguageServerConfig, s: &Settings) {
@@ -1423,6 +1459,14 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     }
     if name == astro::SERVER {
         astro::configure(cfg, root, server_root, s);
+    }
+    // Biome lints with the project's own version (its configuration follows that version's
+    // schema); an explicit executable setting still wins.
+    if name == "biome"
+        && cfg.command == "biome"
+        && let Some(bin) = crate::npm::project_bin("biome", root, server_root)
+    {
+        cfg.command = bin.to_string_lossy().into_owned();
     }
     if name == crate::arduino::SERVER {
         crate::arduino::configure(cfg, root, server_root, s);
@@ -2522,6 +2566,33 @@ mod maven_linkage_tests {
     }
 
     #[test]
+    fn gradle_import_adds_the_projects_a_source_set_compiles_against() {
+        let temp = tempfile::tempdir().unwrap();
+        let spaced = temp.path().join("Application Support").join("gradle");
+        let plain = temp.path().join("cache").join("gradle");
+        let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+        cfg.settings = Some(json!({"java": {"import": {"gradle": {"enabled": true}}}}));
+        configure_gradle_classpath(&mut cfg, &[spaced.clone(), plain.clone()]);
+        let gradle = &cfg.settings.as_ref().unwrap()["java"]["import"]["gradle"];
+        assert_eq!(gradle["enabled"], json!(true), "merged, not replaced");
+        let args = gradle["arguments"].as_array().unwrap();
+        assert_eq!(args[0], json!("--init-script"));
+        let script = PathBuf::from(args[1].as_str().unwrap());
+        assert_eq!(script.parent(), Some(plain.as_path()), "Buildship splits arguments at spaces");
+        assert!(!spaced.exists());
+        let text = std::fs::read_to_string(&script).unwrap();
+        assert!(text.contains("compileClasspath") && text.contains("whenMerged"));
+
+        let mut other = custom_server("pyright", &LanguageServerSettings::default());
+        configure_gradle_classpath(&mut other, &[plain]);
+        assert!(other.settings.is_none(), "only jdtls imports Gradle builds");
+
+        let mut nowhere = custom_server("jdtls", &LanguageServerSettings::default());
+        configure_gradle_classpath(&mut nowhere, &[spaced]);
+        assert!(nowhere.settings.is_none(), "no usable directory: the import runs without it");
+    }
+
+    #[test]
     fn gradle_import_of_a_gradle_build_runs_on_the_project_jdk_like_the_ides_builds() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
@@ -2741,5 +2812,44 @@ mod conda_activation_tests {
         let plain = tmp.path().join("python");
         touch(&plain.join("bin").join("python"));
         assert_eq!(conda_activation(&plain.join("bin").join("python"), "bash", Some(conda), None), None);
+    }
+}
+
+#[cfg(test)]
+mod biome_tests {
+    use super::*;
+
+    fn binary(dir: &Path) -> PathBuf {
+        let bin = dir.join(if cfg!(windows) { "biome.cmd" } else { "biome" });
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(&bin, "").unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        bin
+    }
+
+    #[test]
+    fn biome_runs_the_projects_own_biome_unless_an_executable_is_set() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        let web = root.join("apps/web");
+        let configured = |s: &Settings, server_root: &Path| {
+            let mut cfg = custom_server("biome", &LanguageServerSettings::default());
+            cfg.command = "biome".into();
+            configure_server(&mut cfg, &root, server_root, s);
+            PathBuf::from(cfg.command)
+        };
+        let workspace = binary(&root.join("node_modules/.bin"));
+        assert_eq!(configured(&Settings::default(), &web), workspace);
+        let member = binary(&web.join("node_modules/.bin"));
+        assert_eq!(configured(&Settings::default(), &web), member);
+        // Outside the project: not the project's installation.
+        binary(&tmp.path().join("node_modules/.bin"));
+        assert_eq!(configured(&Settings::default(), &tmp.path().join("other")), PathBuf::from("biome"));
+        let custom = binary(&tmp.path().join("custom"));
+        let mut s = Settings::default();
+        s.tools
+            .insert("biome".into(), ide_core::settings::ToolSettings { path: custom.to_string_lossy().into_owned() });
+        assert_eq!(configured(&s, &web), custom);
     }
 }

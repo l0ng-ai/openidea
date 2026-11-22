@@ -122,6 +122,45 @@ test("a long Run tab fits its side panel with room for the pin and close buttons
   await expect(run).toBeHidden();
 });
 
+test("the Run toolbar keeps primary actions in one row in a side dock", async ({ workbench: page }) => {
+  const output = "Waiting for orders. ".repeat(8).trim();
+  await stubRun(page, [{ kind: "stdout", text: `${output}\n` }], null);
+  const dock = async (width: number) => {
+    await page.evaluate(async (width) => {
+      const path = "/src/workbench/toolwindows/store.ts";
+      const { moveToolWindow, setToolWindowSize } = await import(/* @vite-ignore */ path);
+      moveToolWindow("run", "right");
+      setToolWindowSize("right", width);
+    }, width);
+  };
+  await dock(200);
+  await page.keyboard.press("Control+r");
+  const run = page.getByRole("region", { name: "Run", exact: true });
+  const toolbar = run.getByRole("toolbar", { name: "Run actions" });
+  const console = run.getByRole("log");
+  await expect(console).toContainText(output);
+  await expect
+    .poll(() => toolbar.evaluate((el) => new Set([...el.querySelectorAll("button")].map((b) => b.offsetTop)).size))
+    .toBe(1);
+  const more = toolbar.getByRole("button", { name: "More Actions" });
+  const menu = page.getByRole("menu", { name: "More Actions" });
+  await more.press("Enter");
+  const wrap = menu.getByRole("menuitemcheckbox", { name: "Soft-Wrap" });
+  await expect(wrap).toHaveAttribute("aria-checked", "false");
+  await expect(menu.getByRole("menuitemcheckbox", { name: "Scroll to End" })).toHaveAttribute("aria-checked", "true");
+  await wrap.click();
+  await expect(menu).toBeHidden();
+  await expect.poll(() => console.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+
+  await dock(340);
+  await expect(toolbar.getByRole("button", { name: "Soft-Wrap" })).toHaveAttribute("aria-pressed", "true");
+  await expect(toolbar.getByRole("button", { name: "Scroll to End" })).toBeVisible();
+  await more.click();
+  await expect(menu.getByRole("menuitemcheckbox")).toHaveCount(0);
+  await menu.getByRole("menuitem", { name: "Edit Configurations…" }).click();
+  await expect(page.getByRole("dialog", { name: "Run/Debug Configurations" })).toBeVisible();
+});
+
 test("a short Run pane has room for the full toolbar above the output", async ({ workbench: page }) => {
   await page.setViewportSize({ width: 400, height: 500 });
   const output = "Watching for changes…";

@@ -125,10 +125,9 @@ fn file_name(path: &Path) -> Option<String> {
     path.file_name()?.to_str().map(str::to_owned)
 }
 
-/// The `key: value` lines between the leading `---` fences (folded `>` / `|` values joined).
 struct Frontmatter {
     fields: Vec<(String, String)>,
-    /// Where the body starts.
+    lists: Vec<(String, Vec<String>)>,
     body: usize,
 }
 
@@ -138,22 +137,42 @@ impl Frontmatter {
         let mut lines = text.split_inclusive('\n');
         let mut offset = 0;
         let mut fields: Vec<(String, String)> = Vec::new();
+        let mut lists: Vec<(String, Vec<String>)> = Vec::new();
         match lines.next() {
             Some(first) if first.trim_end() == "---" => offset += first.len(),
-            _ => return Self { fields, body: 0 },
+            _ => return Self { fields, lists, body: 0 },
         }
         for line in lines {
             offset += line.len();
             let line = line.trim_end();
             if line == "---" {
-                return Self { fields, body: offset };
+                return Self { fields, lists, body: offset };
             }
-            if line.starts_with([' ', '\t']) {
+            let unindented_list_item = (line == "-" || line.starts_with("- ") || line.starts_with("-\t"))
+                && fields.last().is_some_and(|(_, v)| v.is_empty());
+            if line.starts_with([' ', '\t']) || unindented_list_item {
+                let trimmed = line.trim();
+                if let Some(rest) = trimmed.strip_prefix('-')
+                    && (rest.is_empty() || rest.starts_with([' ', '\t']))
+                    && let Some((key, _)) = fields.last()
+                {
+                    let item = unquote(rest.trim());
+                    if !item.is_empty() {
+                        if let Some((_, existing)) = lists.iter_mut().find(|(k, _)| k == key) {
+                            existing.push(item.to_owned());
+                        } else {
+                            lists.push((key.clone(), vec![item.to_owned()]));
+                        }
+                    }
+                    if unindented_list_item {
+                        continue;
+                    }
+                }
                 if let Some((_, value)) = fields.last_mut() {
                     if !value.is_empty() {
                         value.push(' ');
                     }
-                    value.push_str(line.trim());
+                    value.push_str(trimmed);
                 }
                 continue;
             }
@@ -164,11 +183,15 @@ impl Frontmatter {
             }
         }
         // No closing fence: not frontmatter.
-        Self { fields: Vec::new(), body: 0 }
+        Self { fields: Vec::new(), lists: Vec::new(), body: 0 }
     }
 
     fn get(&self, key: &str) -> Option<&str> {
-        self.fields.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+        self.fields.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_str())
+    }
+
+    fn list(&self, key: &str) -> Option<&[String]> {
+        self.lists.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_slice())
     }
 
     /// `description`, else the body's first line.
@@ -247,6 +270,17 @@ pub fn discover_skills(workspace: &Path, home: Option<&Path>) -> Vec<AgentSkill>
 /// folders) and `home`, in source precedence order, symlinked duplicates collapsed by
 /// canonical path while recording secondary sources in [`AgentSkill::also_in`].
 pub fn discover_skills_in(workspaces: &[PathBuf], home: Option<&Path>) -> Vec<AgentSkill> {
+    discover_skills_with_plugins(workspaces, home, &[])
+}
+
+/// [`discover_skills_in`] plus the `<dir>` skill folders contributed by enabled OpenIDEA
+/// plugins (`[[contributes.skills]]`). Workspace and user skills take precedence on a name
+/// clash; a plugin skill is never silently renamed.
+pub fn discover_skills_with_plugins(
+    workspaces: &[PathBuf],
+    home: Option<&Path>,
+    plugin_skill_dirs: &[PathBuf],
+) -> Vec<AgentSkill> {
     let mut out: Vec<AgentSkill> = Vec::new();
     let mut seen_paths: HashSet<PathBuf> = HashSet::new();
     let mut seen_names: HashSet<String> = HashSet::new();
@@ -273,27 +307,57 @@ pub fn discover_skills_in(workspaces: &[PathBuf], home: Option<&Path>) -> Vec<Ag
     }
     if let Some(home) = home {
         roots.extend(HOME_ROOTS.iter().map(|(rel, source)| (home.join(rel), *source)));
-        roots.extend(copilot_installed_plugin_roots(&home.join(".copilot")));
     }
+    let mut push_skill = |skill: AgentSkill| {
+        let path = dunce::canonicalize(&skill.path.0).unwrap_or_else(|_| skill.path.0.clone());
+        if !seen_paths.insert(path.clone()) {
+            if let Some(existing) = out.iter_mut().find(|s| s.path.0 == path)
+                && existing.source != skill.source
+                && !existing.also_in.contains(&skill.source)
+            {
+                existing.also_in.push(skill.source);
+            }
+            return;
+        }
+        if !seen_names.insert(skill.name.to_ascii_lowercase()) {
+            return;
+        }
+        out.push(AgentSkill { path: path.into(), ..skill });
+    };
     for (root, source) in roots {
         for skill in skills_of(&root, source) {
-            let path = dunce::canonicalize(&skill.path.0).unwrap_or_else(|_| skill.path.0.clone());
-            if !seen_paths.insert(path.clone()) {
-                if let Some(existing) = out.iter_mut().find(|s| s.path.0 == path)
-                    && existing.source != source
-                    && !existing.also_in.contains(&source)
-                {
-                    existing.also_in.push(source);
-                }
-                continue;
+            push_skill(skill);
+        }
+    }
+    for dir in plugin_skill_dirs {
+        let Some(folder) = file_name(dir) else { continue };
+        if !dir.is_dir() {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(dir.join("SKILL.md")) else { continue };
+        push_skill(parse_skill_file(dir, &folder, &text, AgentSkillSource::Plugin));
+    }
+    if let Some(home) = home {
+        for (root, source) in copilot_installed_plugin_roots(&home.join(".copilot")) {
+            for skill in skills_of(&root, source) {
+                push_skill(skill);
             }
-            if !seen_names.insert(skill.name.to_ascii_lowercase()) {
-                continue;
-            }
-            out.push(AgentSkill { path: path.into(), ..skill });
         }
     }
     out
+}
+
+/// Validates a plugin-contributed `<folder>/SKILL.md` against the hub's folder-name and
+/// frontmatter rules (`name` 1–64 `[a-z0-9-]`, matching `folder`, non-empty `description` ≤ 1024 chars).
+pub fn validate_plugin_skill(dir: &Path, folder: &str, text: &str) -> Result<AgentSkill, String> {
+    if !valid_name(folder) {
+        return Err(format!("skill folder `{folder}` must be 1-64 lowercase letters, digits or hyphens"));
+    }
+    let skill = parse_skill_file(dir, folder, text, AgentSkillSource::Plugin);
+    if !skill.valid {
+        return Err(skill.warnings.join("; "));
+    }
+    Ok(skill)
 }
 
 const SKIP_MONOREPO_DIRS: &[&str] =
@@ -464,6 +528,8 @@ fn parse_skill_file(dir: &Path, folder: &str, text: &str, source: AgentSkillSour
     let hint = meta.get("argument-hint").map(|h| strip_ansi(h).trim().to_owned()).filter(|h| !h.is_empty());
     let user_invocable = !meta.get("user-invocable").is_some_and(|v| v.eq_ignore_ascii_case("false"));
     let disable_model_invocation = meta.get("disable-model-invocation").is_some_and(|v| v.eq_ignore_ascii_case("true"));
+    let context_fork = meta.get("context").is_some_and(|v| strip_ansi(v).trim().eq_ignore_ascii_case("fork"));
+    let paths = parse_skill_paths(&meta);
     AgentSkill {
         name,
         description: truncate(&description),
@@ -473,9 +539,33 @@ fn parse_skill_file(dir: &Path, folder: &str, text: &str, source: AgentSkillSour
         also_in: Vec::new(),
         user_invocable,
         disable_model_invocation,
+        context_fork,
+        paths,
         valid: warnings.is_empty(),
         warnings,
     }
+}
+
+fn parse_skill_paths(meta: &Frontmatter) -> Vec<String> {
+    for key in ["paths", "globs"] {
+        if let Some(items) = meta.list(key) {
+            let cleaned: Vec<String> =
+                items.iter().map(|s| strip_ansi(s).trim().to_owned()).filter(|s| !s.is_empty()).collect();
+            if !cleaned.is_empty() {
+                return cleaned;
+            }
+        }
+        if let Some(raw) = meta.get(key) {
+            let trimmed = strip_ansi(raw);
+            let inner = trimmed.trim().strip_prefix('[').and_then(|s| s.strip_suffix(']')).unwrap_or(trimmed.trim());
+            let cleaned: Vec<String> =
+                inner.split(',').map(|p| unquote(p.trim()).trim().to_owned()).filter(|p| !p.is_empty()).collect();
+            if !cleaned.is_empty() {
+                return cleaned;
+            }
+        }
+    }
+    Vec::new()
 }
 
 /// A skill's mode, as one policy layer of the settings has it.
@@ -662,11 +752,12 @@ pub fn stage(
 /// Codex `[[skills.config]]` matches `path` against the canonical `SKILL.md` document path.
 fn codex_skill_md_path(skill_dir: &Path) -> String {
     let md = skill_dir.join("SKILL.md");
-    dunce::canonicalize(&md)
+    let md = dunce::canonicalize(&md)
         .or_else(|_| dunce::canonicalize(skill_dir).map(|dir| dir.join("SKILL.md")))
-        .unwrap_or(md)
-        .to_string_lossy()
-        .into_owned()
+        .unwrap_or(md);
+    // Skill roots are joined as `.agents/skills`; rebuilding from components gives Windows
+    // one separator when the path could not be canonicalized.
+    md.components().collect::<PathBuf>().to_string_lossy().into_owned()
 }
 
 fn direct_link_matches(root: &Path, name: &str, target: &Path) -> bool {
@@ -992,6 +1083,8 @@ mod tests {
             also_in: Vec::new(),
             user_invocable: true,
             disable_model_invocation: false,
+            context_fork: false,
+            paths: Vec::new(),
             valid: true,
             warnings: Vec::new(),
         }
@@ -1329,5 +1422,104 @@ mod tests {
                 "symlinked `.claude/skills/coverage` not duplicated"
             );
         }
+    }
+
+    #[test]
+    fn plugin_skills_yield_to_workspace_and_user_and_stage_to_all_clis() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let ws = root.join("ws");
+        let home = root.join("home");
+        let plugin_pkg = root.join("plugins/acme.tools/1.0.0");
+
+        write(&ws.join(".agents/skills/clash-ws/SKILL.md"), "---\nname: clash-ws\ndescription: workspace copy\n---\n");
+        write(&home.join(".agents/skills/clash-user/SKILL.md"), "---\nname: clash-user\ndescription: user copy\n---\n");
+        write(&plugin_pkg.join("skills/clash-ws/SKILL.md"), "---\nname: clash-ws\ndescription: plugin copy\n---\n");
+        write(&plugin_pkg.join("skills/clash-user/SKILL.md"), "---\nname: clash-user\ndescription: plugin copy\n---\n");
+        write(
+            &plugin_pkg.join("skills/release-notes/SKILL.md"),
+            "---\nname: release-notes\ndescription: draft release notes\n---\n",
+        );
+
+        let plugin_dirs = vec![
+            plugin_pkg.join("skills/clash-ws"),
+            plugin_pkg.join("skills/clash-user"),
+            plugin_pkg.join("skills/release-notes"),
+        ];
+        let found = discover_skills_with_plugins(std::slice::from_ref(&ws), Some(&home), &plugin_dirs);
+        let summary: Vec<(&str, AgentSkillSource, &str)> =
+            found.iter().map(|s| (s.name.as_str(), s.source, s.description.as_str())).collect();
+        assert_eq!(
+            summary,
+            [
+                ("clash-ws", AgentSkillSource::Workspace, "workspace copy"),
+                ("clash-user", AgentSkillSource::User, "user copy"),
+                ("release-notes", AgentSkillSource::Plugin, "draft release notes"),
+            ],
+            "workspace and user skills win on name clash without renaming plugin skills"
+        );
+        assert!(!AgentSkillSource::Plugin.discovered());
+
+        let states = resolve(found.clone(), None, &BTreeMap::new(), &BTreeMap::new(), true);
+        for provider in ["claude", "copilot", "codex"] {
+            let farm = farm_dir(&root.join("store"), &format!("plugin-{provider}"));
+            let _ = stage(&farm, provider, &states, &ws, Some(&home)).unwrap();
+        }
+        assert!(
+            listed(&farm_dir(&root.join("store"), "plugin-claude").join(".claude/skills"))
+                .contains(&"release-notes".into())
+        );
+        assert!(
+            listed(&farm_dir(&root.join("store"), "plugin-copilot").join("copilot")).contains(&"release-notes".into())
+        );
+        assert!(listed(&farm_dir(&root.join("store"), "plugin-codex").join("codex")).contains(&"release-notes".into()));
+
+        // Turning a plugin skill off omits it from every CLI's staged farm.
+        let off_states = resolve(
+            found,
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::from([("release-notes".to_owned(), policy(AgentSkillMode::Off).unwrap())]),
+            true,
+        );
+        let farm = farm_dir(&root.join("store"), "plugin-off");
+        let _ = stage(&farm, "claude", &off_states, &ws, Some(&home)).unwrap();
+        assert!(!farm.join(".claude/skills/release-notes").exists());
+    }
+
+    #[test]
+    fn parses_context_fork_and_paths_frontmatter_and_preserves_file_on_stage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let ws = root.join("ws");
+        let raw_md = "---\n\
+            name: verify-ux\n\
+            description: Verify UX layouts in an isolated subagent\n\
+            context: fork\n\
+            paths:\n\
+              - \"src/**/*.tsx\"\n\
+              - crates/ide-agent/**/*.rs\n\
+            ---\n\nRun visual checks.\n";
+        write(&ws.join(".openidea/skills/verify-ux/SKILL.md"), raw_md);
+        write(
+            &ws.join(".agents/skills/inline-globs/SKILL.md"),
+            "---\nname: inline-globs\ndescription: Scoped by globs\nglobs: [\"e2e/*.spec.ts\", \"src/ui/*.tsx\"]\n---\n",
+        );
+
+        let found = discover_skills(&ws, None);
+        let verify = found.iter().find(|s| s.name == "verify-ux").unwrap();
+        assert!(verify.context_fork);
+        assert_eq!(verify.paths, ["src/**/*.tsx", "crates/ide-agent/**/*.rs"]);
+
+        let inline = found.iter().find(|s| s.name == "inline-globs").unwrap();
+        assert!(!inline.context_fork);
+        assert_eq!(inline.paths, ["e2e/*.spec.ts", "src/ui/*.tsx"]);
+
+        // Staging passes `SKILL.md` through untouched so native CLIs execute `context: fork` / `paths`.
+        let states = resolve(found, None, &BTreeMap::new(), &BTreeMap::new(), true);
+        let farm = farm_dir(&root.join("store"), "fork-passthrough");
+        let _ = stage(&farm, "copilot", &states, &ws, None).unwrap();
+        let staged_md = std::fs::read_to_string(farm.join("copilot/verify-ux/SKILL.md")).unwrap();
+        assert_eq!(staged_md, raw_md);
     }
 }

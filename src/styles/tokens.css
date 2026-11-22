@@ -328,6 +328,12 @@ html {
   --radius-row: 4px;
   --radius-selection: 5px;
   --radius-control: 4px;
+  /* Combo boxes follow Component.arc 8 (radius 4); ComboBox.padding 1,9,1,6 (left 9, right 6). */
+  --radius-combo: 4px;
+  --combo-pad-start: 9px;
+  --combo-pad-end: 6px;
+  /* EditorTabs.tabInsets -6,8,-6,8: the tab pill's inline padding (8px each side). */
+  --tab-pad-x: 8px;
   --radius-tab: 6px;
   --radius-toolbar-button: 6px;
   /* main toolbar dropdowns (MainToolbar.Dropdown.arc 12): unchanged in compact mode */
@@ -1534,7 +1540,14 @@ html {
   --island-radius: 8px;
   /* Compact Tree.border is "2,8,2,8": island gap 4 + tree inset 4 = 8 horizontally. */
   --tree-inset: 4px;
+  /* ComboBox.arc.compact "4,4,4,4" (radius 2) and padding.compact 1,6,1,6. */
+  --radius-combo: 2px;
+  --combo-pad-start: 6px;
+  --combo-pad-end: 6px;
+  /* EditorTabs.tabInsets.compact -2,6,-2,4: the pill's inline padding shrinks 8→6/4. */
+  --tab-pad-x: 6px;
   --radius-control: 3px;
+  /* MainToolbar.Button.arc 12 → 8 and Button.ToolWindow.arc 12 → 8 (stripe buttons). */
   --radius-toolbar-button: 4px;
 }
 /* Use contrast scrollbars. */

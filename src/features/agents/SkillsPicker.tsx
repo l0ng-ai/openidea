@@ -154,7 +154,8 @@ function GroupRows({
 
 function SessionSkillRow({ item, onToggle }: { item: SessionSkillItem; onToggle: (enabled: boolean) => void }) {
   const tx = useTx();
-  const description = item.state.skill.description;
+  const { skill } = item.state;
+  const description = skill.description;
   return (
     <PickerRow
       name={item.name}
@@ -162,10 +163,12 @@ function SessionSkillRow({ item, onToggle }: { item: SessionSkillItem; onToggle:
         <>
           <ModePill mode={item.mode} />
           {item.overridden && <PickerSessionPill />}
+          {skill.contextFork && <PickerPill>fork</PickerPill>}
+          {(skill.paths?.length ?? 0) > 0 && <PickerPill>paths</PickerPill>}
         </>
       }
       sub={description || undefined}
-      subTitle={description}
+      subTitle={skill.paths?.length ? `${description} · ${skill.paths.join(", ")}` : description}
       controls={
         item.locked ? (
           <PickerPill>

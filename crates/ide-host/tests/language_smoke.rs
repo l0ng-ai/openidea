@@ -742,8 +742,8 @@ const PYTHON: Checks = Checks {
         typed("src/tasks/models.py", "from enum import IntEnum", "import abc"),
         Imports::Before("import os"),
     )),
-    // basedpyright has no `workspace/willRenameFiles`.
-    file_move: None,
+    // basedpyright has no `workspace/willRenameFiles`: the IDE rewrites the imports.
+    file_move: Some(("src/tasks/models.py", "src/tasks/domain.py", "src/tasks/cli.py", "from .domain import")),
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

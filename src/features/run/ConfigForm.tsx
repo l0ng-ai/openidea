@@ -12,7 +12,7 @@ import { isTauri, type BeforeLaunchTask, type BuildPolicy, type RunConfig } from
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { relativePath, useProject } from "@/platform/project";
 import { isRemoteWindow } from "@/platform/remote";
-import { useTx, useTxTemplate } from "@/platform/i18n";
+import { txPart, useTx, useTxTemplate } from "@/platform/i18n";
 import {
   Button,
   Checkbox,
@@ -832,7 +832,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
                     icon="close"
                     size="small"
                     iconSize={10}
-                    title={tx`Remove '${OPTION_LABELS[id]}'`}
+                    title={tx`Remove '${txPart(OPTION_LABELS[id])}'`}
                     onClick={() => update(optionPatch(id, false))}
                   />
                 </span>

@@ -5,7 +5,7 @@
 import { useCallback, useId, useLayoutEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { FILE_COLOR_NAMES, fileColorCss, validateFileColors, type FileColorEntry } from "@/platform/fileColors";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 import { BUILTIN_SCOPES, scopeError, validateScopes, type NamedScope } from "@/platform/scopes";
 import { IconButton, Input, List, T, type SelectOption } from "@/ui";
 import { ColorSwatches, Row, Section, Select, SettingToggle } from "../components/Form";
@@ -66,7 +66,7 @@ function freshName(taken: readonly string[]): string {
 const PATTERN_EXAMPLE = "file:src//*";
 
 function errorText(error: { message: string; at: number }): string {
-  const message = tx(error.message);
+  const message = txPart(error.message);
   const column = error.at + 1;
   return tx`${message} at column ${column}`;
 }

@@ -26,7 +26,7 @@ import { confirmChecked } from "@/workbench/messages";
 import { openPopup, type PreviewOccurrence } from "@/editor/lsp/popupStore";
 import { cannotPerform } from "./catalog";
 import { cancelled, languageName } from "./query";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 import { askUsagesDetected } from "./SafeDeleteUsages";
 
 // ---------------------------------------------------------------------------
@@ -364,7 +364,7 @@ function previewTextOccurrences(
   });
   openPopup({
     kind: "preview",
-    title: tx`Safe Delete ${target.kind} '${target.name}'`,
+    title: tx`Safe Delete ${txPart(target.kind)} '${target.name}'`,
     summary: {
       files: 1,
       occurrences: occurrences.length,
@@ -409,7 +409,7 @@ export async function safeDelete(view: EditorView): Promise<void> {
     // IDEA always confirms first; usages are searched after OK.
     const confirmed = await confirmChecked({
       title: "Safe Delete",
-      message: tx`Delete ${target.kind} '${target.name}'?`,
+      message: tx`Delete ${txPart(target.kind)} '${target.name}'?`,
       presentation: "form",
       ok: "OK",
       checkbox: "Search in comments and strings",
@@ -427,7 +427,7 @@ export async function safeDelete(view: EditorView): Promise<void> {
     ]);
     if (view.state.doc !== docBefore) return;
     if (usages.length) {
-      const answer = await askUsagesDetected(tx`${target.kind} '${target.name}'`, usages);
+      const answer = await askUsagesDetected(tx`${txPart(target.kind)} '${target.name}'`, usages);
       if (answer === "view") viewUsages(target.name, usages);
       else if (answer === "delete") applyDeletion(view, docBefore, target, comments);
       else view.focus();
