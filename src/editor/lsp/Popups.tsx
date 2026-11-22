@@ -22,7 +22,7 @@ import {
   selectableText,
   T,
 } from "@/ui";
-import { basename, relativePath, useProject } from "@/platform/project";
+import { basename, relativeDir, relativePath, useProject } from "@/platform/project";
 import {
   closePopup,
   updatePopup,
@@ -762,25 +762,34 @@ function PreviewDialog({ popup }: { popup: Extract<LspPopup, { kind: "preview" }
         </ul>
       ) : (
         <ul data-testid="refactor-preview" className={styles.previewList} aria-label={tx("Changes")}>
-          {summary.entries.map((e) => (
-            <li key={e.path} className={styles.previewRow}>
-              <Icon name={fileIconName(basename(e.path), e.path)} size={14} className={styles.itemIcon} />
-              <span className={styles.previewName} title={relativePath(root, e.path)}>
-                {basename(e.path)}
-              </span>
-              <span className={styles.previewPath} title={relativePath(root, e.path)}>
-                {relativePath(root, e.path)}
-              </span>
-              <span className={styles.spacer} />
-              {e.operation === "rename" && e.to && <span className={styles.previewOp}>→ {basename(e.to)}</span>}
-              {e.operation && e.operation !== "rename" && <span className={styles.previewOp}>{e.operation}</span>}
-              {e.edits > 0 && (
-                <span className={styles.previewCount}>
-                  {e.edits} {e.edits === 1 ? "occurrence" : "occurrences"}
+          {summary.entries.map((e) => {
+            const name = basename(e.path);
+            const directory = relativeDir(root, e.path);
+            return (
+              <li key={e.path} className={styles.previewRow}>
+                <Icon name={fileIconName(name, e.path)} size={14} className={styles.itemIcon} />
+                <span className={styles.previewFile} title={relativePath(root, e.path)}>
+                  <span className={styles.previewName}>{name}</span>
+                  {directory && (
+                    <span className={styles.previewDirectory}>
+                      <bdi>{directory}</bdi>
+                    </span>
+                  )}
                 </span>
-              )}
-            </li>
-          ))}
+                {e.operation === "rename" && e.to && (
+                  <span className={styles.previewOp} title={relativePath(root, e.to)}>
+                    → {basename(e.to)}
+                  </span>
+                )}
+                {e.operation && e.operation !== "rename" && <span className={styles.previewOp}>{e.operation}</span>}
+                {e.edits > 0 && (
+                  <span className={styles.previewCount}>
+                    {e.edits} {e.edits === 1 ? "occurrence" : "occurrences"}
+                  </span>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
     </Dialog>
