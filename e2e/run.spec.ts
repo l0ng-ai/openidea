@@ -323,6 +323,64 @@ test("test results keep counts, actions and selected output visible as the pane 
   await expect(output).toContainText(message);
 });
 
+test("test results keep elapsed time beside the counts", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 1060, height: 740 });
+  const lines = [
+    "test_tax (test_ledger.CheckoutTests.test_tax) ... ok",
+    "test_refund (test_ledger.CheckoutTests.test_refund) ... FAIL",
+    "test_callback (test_ledger.CheckoutTests.test_callback) ... skipped 'Requires a callback'",
+    "Ran 3 tests in 0.170s",
+    "FAILED (failures=1, skipped=1)",
+  ];
+  await stubRun(page, [{ kind: "stderr", text: lines.join("\n") + "\n" }], 1, {
+    id: "django:checkout-tests",
+    name: "Checkout tests",
+    kind: "django-test",
+    command: "python",
+    args: ["manage.py", "test", "-v", "2"],
+    isTest: true,
+  });
+  await page.keyboard.press("Control+r");
+  const run = page.getByRole("region", { name: "Run", exact: true });
+  const summary = run.getByRole("status").filter({ hasText: "1 failing" });
+  const ignored = summary.getByText("1 ignored", { exact: true });
+  const elapsed = summary.getByText("170 ms", { exact: true });
+  await expect(elapsed).toBeVisible();
+  for (const width of [1060, 540]) {
+    await page.setViewportSize({ width, height: 740 });
+    await expect
+      .poll(async () => {
+        const [count, duration] = await Promise.all([ignored.boundingBox(), elapsed.boundingBox()]);
+        return count && duration && Math.abs(count.y - duration.y) <= 1 ? duration.x - count.x - count.width : Infinity;
+      })
+      .toBeLessThanOrEqual(12);
+  }
+  await expect(summary).toHaveCSS("border-bottom-width", "2px");
+});
+
+test("test results retain a running label after the first test starts", async ({ workbench: page }) => {
+  const name = "TestCheckoutTotals";
+  await stubRun(
+    page,
+    [{ kind: "stdout", text: JSON.stringify({ Package: "example.com/checkout", Action: "run", Test: name }) + "\n" }],
+    null,
+    {
+      id: "go:checkout-tests",
+      name: "Checkout tests",
+      kind: "go",
+      command: "go",
+      args: ["test", "-json"],
+      isTest: true,
+    },
+  );
+  await page.keyboard.press("Control+r");
+  const run = page.getByRole("region", { name: "Run", exact: true });
+  await expect(run.getByRole("treeitem", { name: new RegExp(name) })).toBeVisible();
+  const summary = run.getByRole("status").filter({ hasText: "Running…" });
+  await expect(summary).toBeVisible();
+  await expect(summary).toHaveCSS("border-bottom-width", "2px");
+});
+
 test("test results group failure navigation and let users hide row durations", async ({ workbench: page }) => {
   await page.setViewportSize({ width: 540, height: 740 });
   const first = "TestCheckoutTotalsWithTaxRoundingAndPendingRefunds";

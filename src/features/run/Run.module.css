@@ -258,12 +258,12 @@
 .testStatusBar {
   flex: none;
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   min-height: 28px;
   border-bottom: 1px solid var(--border);
 }
 .testToolbar {
+  flex-wrap: wrap;
   gap: var(--space-1);
   padding: var(--space-0-5) var(--space-1);
 }
@@ -275,27 +275,36 @@
   border-inline-end: 1px solid var(--border);
 }
 .testStatusBar {
-  gap: var(--space-0-5) var(--space-2);
+  gap: var(--space-2);
   padding: var(--space-0-5) var(--space-2);
+  border-block-end-width: var(--space-0-5);
   font-size: var(--fs-ui);
   color: var(--fg-secondary);
 }
+.testStatusBar[data-outcome="passed"] {
+  border-block-end-color: var(--success);
+}
+.testStatusBar[data-outcome="skipped"] {
+  border-block-end-color: var(--warning);
+}
+.testStatusBar[data-running] {
+  border-block-end-color: var(--accent);
+}
+.testStatusBar[data-outcome="failed"] {
+  border-block-end-color: var(--danger);
+}
 .testCounts {
-  flex: 1 1 auto;
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-0-5) var(--space-2);
   min-width: 0;
   white-space: nowrap;
 }
-.testStatus,
-.testTotalDuration {
+.testStatus {
   flex: none;
 }
 .testTotalDuration {
-  margin-left: auto;
   color: var(--fg-subtle);
-  font-size: var(--fs-small);
   font-variant-numeric: tabular-nums;
 }
 .testTree {
