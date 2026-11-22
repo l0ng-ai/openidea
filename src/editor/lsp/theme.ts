@@ -200,7 +200,6 @@ export const lspTheme = EditorView.theme({
     flex: "0 1 auto",
     minWidth: "0",
     marginLeft: "auto",
-    paddingLeft: "16px",
     textAlign: "right",
     color: "var(--fg-subtle)",
     overflow: "hidden",
