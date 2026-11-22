@@ -1139,7 +1139,7 @@ export const commands = {
 	pluginCancelTask: (taskId: string) => __TAURI_INVOKE<boolean>("plugin_cancel_task", { taskId }),
 	/**
 	 *  Plugin packages available locally for installation: `<resources>/plugins`
-	 *  when bundled, plus the repository's official plugins in debug builds.
+	 *  when bundled, plus the repository's official plugins in development mode.
 	 */
 	pluginCatalog: () => typedError<CatalogPlugin[], IdeError>(__TAURI_INVOKE("plugin_catalog")),
 	/**  Re-approves a plugin's executable, globally or for this window's project. */
