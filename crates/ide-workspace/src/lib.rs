@@ -13,11 +13,13 @@ pub mod history;
 pub mod memory;
 pub mod process;
 pub mod project_discovery;
+pub mod project_kind;
 pub mod recent;
 pub mod roots;
 pub mod settings;
 pub mod text_refs;
 pub mod unity;
+pub mod unreal;
 pub mod window_groups;
 pub mod workspace;
 

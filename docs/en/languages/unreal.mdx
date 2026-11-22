@@ -1,0 +1,72 @@
+---
+title: "Unreal Engine"
+description: "Open an Unreal project by its .uproject file, run the editor, the game or a dedicated server, and debug it with LLDB."
+---
+
+OpenIDEA recognizes a folder as an Unreal project when its top level holds a `.uproject` file. It also recognizes an Unreal Engine source checkout, whose top level holds `Engine/Build/Build.version` instead. Both are classified by that one marker, never by scanning the tree. No editor plugin or generated `.sln` is needed.
+
+## What is recognized
+
+| Folder                 | Recognized as | Because                                      |
+| ---------------------- | ------------- | -------------------------------------------- |
+| Game or plugin host    | **Unreal**    | a `.uproject` at the top level               |
+| Engine source checkout | **Unreal**    | `Engine/Build/Build.version`, no `.uproject` |
+
+The Project tool window shows the engine the project names next to the repo name, for example `Unreal 5.8` for a launcher install or `Unreal UE_5.8_Source` for a registered source build. When the project names no engine — it sits inside its own engine tree — the label is just `Unreal`.
+
+`.uproject` and `.uplugin` files open with JSON highlighting and JSON language-server support.
+
+## The Unreal project view
+
+The **Source** folder is a source root and **Config** a resources root. These folders are excluded from indexing, search and file watching, even before Unreal creates them:
+
+- `Binaries`
+- `Intermediate`
+- `Saved`
+- `DerivedDataCache`
+
+`Content` holds binary `.uasset` packages. It stays visible in the Project pane but is not treated as source, so its assets do not enter symbol indexing.
+
+## Locating the engine
+
+Run configurations need the editor executable, which lives in an engine install, not in the project. OpenIDEA resolves it in this order:
+
+1. The project's `EngineAssociation` looked up in the engine registry:
+   - `HKLM\SOFTWARE\EpicGames\Unreal Engine\<version>\InstalledDirectory` for launcher installs, keyed by version such as `5.8`;
+   - `HKCU\SOFTWARE\Epic Games\Unreal Engine\Builds` for source builds, keyed by a GUID or by a name you choose.
+2. With no usable association, the nearest ancestor holding `Engine/Build/Build.version` — a project parked inside its engine tree.
+3. Otherwise the newest registered install whose `Engine/Binaries/Win64/UnrealEditor.exe` exists.
+
+A registered directory that no longer exists is ignored, so an uninstalled engine does not produce a broken configuration. **When no engine resolves at all, no Unreal run configuration is offered** — register the engine or point `EngineAssociation` at a registered one. Engine lookup reads the Windows registry, so this is Windows only.
+
+That same lookup also finds `Engine/Build/BatchFiles/Build.bat`, which is what a build configuration runs.
+
+## Run configurations
+
+Every Unreal project offers three configurations. All three start `UnrealEditor.exe` with the `.uproject` as the first argument; the mode is a flag:
+
+| Configuration | Arguments                    | What it starts                           |
+| ------------- | ---------------------------- | ---------------------------------------- |
+| Unreal Editor | `<project>.uproject`         | The editor with the project loaded.      |
+| Unreal Game   | `<project>.uproject -game`   | The project as a standalone game client. |
+| Unreal Server | `<project>.uproject -server` | The project as a dedicated server.       |
+
+The working directory is the project folder, so relative paths inside the project resolve normally. Blueprint-only projects — no `Source` folder, no targets — still get all three, because the engine decides the modes, not the project's target files.
+
+There is no separate client configuration: a client is a packaging artifact (`<Game>Client-Win64-Shipping.exe`), not something the editor runs.
+
+## Debugging
+
+Unreal configurations debug through **lldb-dap**. Set breakpoints in C++ sources, choose a configuration and start it; the editor launches under the debugger and breakpoints hit once the process reaches your code.
+
+To debug a session you already started, Attach to the running `UnrealEditor.exe` from the **Native (LLDB)** group. Editor code is stripped unless the engine was installed with **Editor symbols for debugging**, so expect to step through your own game module rather than engine internals.
+
+Blueprint debugging (a Blueprint stack frame in the call stack) is not supported.
+
+## Limitations
+
+- **No compile database.** OpenIDEA does not run UnrealBuildTool to produce `compile_commands.json`, so clangd has no per-file include paths for engine code and may report missing headers or unknown macros. Pass a compilation database of your own through a `.clangd` file if you need accurate engine-wide code intelligence.
+- **No UnrealHeaderTool checks.** Reflection-macro diagnostics (`UPROPERTY` with no effect, missing `GENERATED_BODY`, invalid specifiers) come from UnrealHeaderTool at build time, not from the editor.
+- **No Unreal-specific inspections** — no naming-convention checks, no Blueprint-usage analysis, no RPC validation.
+- **No Live Coding.** Recompilation goes through your build configuration; there is no in-editor hot reload button.
+- **Engine lookup is Windows only**, because it reads the engine registry.

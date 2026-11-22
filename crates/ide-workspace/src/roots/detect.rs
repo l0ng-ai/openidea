@@ -73,16 +73,32 @@ const ROOT_NAMES: &[&str] = &[
     ".gradle",
 ];
 
+/// Folders below `Engine` in a source build: the module trees are sources, the build output is not.
+const ENGINE_ROOTS: &[(&str, RootKind)] = &[
+    ("Source/Runtime", RootKind::Source),
+    ("Source/Editor", RootKind::Source),
+    ("Source/Developer", RootKind::Source),
+    ("Source/Programs", RootKind::Source),
+    ("Intermediate", RootKind::Excluded),
+    ("Binaries", RootKind::Excluded),
+    ("Saved", RootKind::Excluded),
+    ("DerivedDataCache", RootKind::Excluded),
+];
+
 /// Whether a created / changed / removed project-relative path can change the detected roots.
 pub fn affects_roots(rel: &Path) -> bool {
     let mut names = rel.iter().rev().filter_map(|c| c.to_str());
     let Some(name) = names.next() else { return false };
     BUILD_FILES.contains(&name)
         || ROOT_NAMES.contains(&name)
+        || name.ends_with(".uproject")
+        || name == "Build.version"
         || matches!(
             name,
             "Assets" | "Packages" | "ProjectSettings" | "ProjectVersion.txt" | "pyvenv.cfg" | "conda-meta"
         )
+        // Unreal Engine's two conventional folders, which are case-sensitive there.
+        || matches!(name, "Source" | "Config")
         || names.next() == Some("src")
 }
 
@@ -98,6 +114,40 @@ pub fn detect(root: &Path) -> Vec<SourceFolder> {
             break;
         }
         let dir = if rel.is_empty() { root.to_path_buf() } else { root.join(&rel) };
+        // A source build of the engine: each folder below `Engine/Source` is a module tree, and
+        // everything the build writes next to it is generated output. `Engine` itself is not
+        // walked - `Samples` and `Templates` are, so the games shipped inside the tree are still
+        // found as nested projects.
+        let engine = crate::unreal::is_engine_root(&dir);
+        if engine {
+            let from = join(&rel, crate::unreal::ENGINE_VERSION_FILE);
+            for &(name, kind) in ENGINE_ROOTS {
+                if dir.join("Engine").join(name).is_dir() {
+                    out.push(SourceFolder {
+                        path: join(&rel, &format!("Engine/{name}")),
+                        kind,
+                        detected_from: Some(from.clone()),
+                    });
+                }
+            }
+        } else if let Some(project) = crate::unreal::project_file(&dir) {
+            let from = join(&rel, &project.file_name().unwrap_or_default().to_string_lossy());
+            for (name, kind) in [("Source", RootKind::Source), ("Config", RootKind::Resources)] {
+                if dir.join(name).is_dir() {
+                    out.push(SourceFolder { path: join(&rel, name), kind, detected_from: Some(from.clone()) });
+                }
+            }
+            // Generated output stays out of the index, the search and the watchers from the start.
+            for name in crate::unreal::GENERATED_DIRS {
+                out.push(SourceFolder {
+                    path: join(&rel, name),
+                    kind: RootKind::Excluded,
+                    detected_from: Some(from.clone()),
+                });
+            }
+            // `Content` is binary assets and `Plugins` are vendored code: neither is a module.
+            continue;
+        }
         if crate::unity::is_project(&dir) {
             for (name, kind) in
                 [("Assets", RootKind::Source), ("Packages", RootKind::Source), ("ProjectSettings", RootKind::Resources)]
@@ -141,6 +191,10 @@ pub fn detect(root: &Path) -> Vec<SourceFolder> {
         let found: Vec<String> = out[before..].iter().map(|r| r.path.clone()).collect();
         for name in dirs {
             let child = join(&rel, &name);
+            // The engine's own tree is thousands of directories; the roots above already cover it.
+            if engine && name == "Engine" {
+                continue;
+            }
             // Roots are not searched for nested modules (`src/main/java` can be huge).
             if found.iter().any(|f| *f == child || f.is_empty() && name == "src") {
                 continue;
@@ -386,6 +440,89 @@ mod tests {
         assert!(roots.excluded_globs().contains(&"/game/Library".to_owned()));
         assert!(!roots.excluded_globs().contains(&"/Library".to_owned()));
         assert!(roots.roots.iter().any(|r| r.path == "server/src" && r.kind == RootKind::Source));
+    }
+
+    #[test]
+    fn unreal_roots_exclude_generated_output_and_do_not_scan_content_as_modules() {
+        let dir = tree(&[
+            "Game.uproject",
+            "Source/Game/Game.Build.cs",
+            "Source/Game/Private/Game.cpp",
+            "Config/DefaultEngine.ini",
+            "Content/Maps/Level.umap",
+            "Intermediate/Build/tool/Cargo.toml",
+            "Binaries/Win64/UnrealEditor-Game.dll",
+            "Saved/Logs/Game.log",
+            "DerivedDataCache/DDC.ddp",
+        ]);
+        let roots = detect(dir.path());
+        assert!(roots.iter().any(|r| r.path == "Source" && r.kind == RootKind::Source));
+        assert!(roots.iter().any(|r| r.path == "Config" && r.kind == RootKind::Resources));
+        assert!(!roots.iter().any(|r| r.path.starts_with("Source/") || r.path.starts_with("Content/")));
+        let effective = super::super::ProjectRoots::compute(roots, &Default::default());
+        for name in crate::unreal::GENERATED_DIRS {
+            assert!(effective.excluded_globs().contains(&format!("/{name}")), "{name} not excluded");
+        }
+        for path in ["Game.uproject", "Source"] {
+            assert!(affects_roots(Path::new(path)));
+        }
+    }
+
+    #[test]
+    fn nested_unreal_roots_are_anchored_without_excluding_other_projects() {
+        let dir = tree(&["game/Game.uproject", "game/Source/Game/Game.Build.cs", "Binaries/tool/Cargo.toml"]);
+        let roots = super::super::ProjectRoots::compute(detect(dir.path()), &Default::default());
+        assert!(roots.excluded_globs().contains(&"/game/Binaries".to_owned()));
+        assert!(!roots.excluded_globs().contains(&"/Binaries".to_owned()));
+    }
+
+    #[test]
+    fn an_engine_checkout_marks_its_module_trees_as_sources_and_its_output_as_generated() {
+        let dir = tree(&[
+            "Engine/Build/Build.version",
+            "Engine/Source/Runtime/Core/Core.Build.cs",
+            "Engine/Source/Editor/UnrealEd/UnrealEd.Build.cs",
+            "Engine/Source/Developer/ToolWidgets/ToolWidgets.Build.cs",
+            "Engine/Source/Programs/UnrealBuildTool/UnrealBuildTool.csproj",
+            "Engine/Source/ThirdParty/zlib/zlib.Build.cs",
+            "Engine/Intermediate/Build/tool/Cargo.toml",
+            "Engine/Binaries/Win64/UnrealEditor.exe",
+            "Engine/Saved/Logs/Engine.log",
+            "Engine/DerivedDataCache/DDC.ddp",
+        ]);
+        let roots = detect(dir.path());
+        for name in ["Source/Runtime", "Source/Editor", "Source/Developer", "Source/Programs"] {
+            assert!(
+                roots.iter().any(|r| r.path == format!("Engine/{name}") && r.kind == RootKind::Source),
+                "{name} is not a source root"
+            );
+        }
+        // `ThirdParty` is vendored code, and neither `Engine` nor `Engine/Source` is a root itself.
+        assert!(
+            !roots.iter().any(|r| r.path == "Engine" || r.path == "Engine/Source" || r.path.contains("ThirdParty")),
+            "unexpected root: {:?}",
+            summary(&roots)
+        );
+        let effective = super::super::ProjectRoots::compute(roots, &Default::default());
+        for (name, _) in ENGINE_ROOTS.iter().filter(|(_, kind)| *kind == RootKind::Excluded) {
+            assert!(effective.excluded_globs().contains(&format!("/Engine/{name}")), "{name} is not excluded");
+        }
+        assert!(affects_roots(Path::new("Engine/Build/Build.version")));
+    }
+
+    #[test]
+    fn a_game_shipped_inside_the_engine_tree_is_still_found() {
+        let dir = tree(&[
+            "Engine/Build/Build.version",
+            "Engine/Source/Runtime/Core/Core.Build.cs",
+            "Samples/Games/Lyra/Lyra.uproject",
+            "Samples/Games/Lyra/Source/LyraGame/LyraGame.Build.cs",
+        ]);
+        let roots = detect(dir.path());
+        assert!(roots.iter().any(|r| r.path == "Engine/Source/Runtime" && r.kind == RootKind::Source));
+        assert!(roots.iter().any(|r| r.path == "Samples/Games/Lyra/Source" && r.kind == RootKind::Source));
+        // The engine subtree is not walked: nothing inside it is reported past the four roots.
+        assert!(!roots.iter().any(|r| r.path.starts_with("Engine/Source/Runtime/")), "{:?}", summary(&roots));
     }
 
     #[test]

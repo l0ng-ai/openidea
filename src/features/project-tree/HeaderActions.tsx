@@ -7,9 +7,12 @@ import type { SortKey } from "./model";
 export function useProjectTitleMenu(): { label: string; items: MenuItem[] } {
   const mode = useProjectTree((s) => s.mode);
   const unity = useProjectTree((s) => s.unity);
+  const unreal = useProjectTree((s) => s.unreal);
+  // The engine panes only exist in a project of that engine.
+  const available = (id: string) => (id !== "unity" || Boolean(unity)) && (id !== "unreal" || Boolean(unreal));
   return {
     label: VIEW_MODES.find(([id]) => id === mode)?.[1] ?? "Project",
-    items: VIEW_MODES.filter(([id]) => id !== "unity" || unity).map(([id, label]) => ({
+    items: VIEW_MODES.filter(([id]) => available(id)).map(([id, label]) => ({
       id,
       label,
       checked: id === mode,

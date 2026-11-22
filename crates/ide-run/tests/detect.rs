@@ -1275,3 +1275,40 @@ fn sbt_projects() {
         assert_eq!(cmdline(&detect(dir.path())[1]), "./sbt test");
     }
 }
+
+/// UE writes a `.sln` listing the engine's own tool projects; expanding it buries the run menu.
+#[test]
+fn a_solution_in_a_unreal_project_is_not_expanded_into_dotnet_configurations() {
+    let dir = project(&[
+        ("Game.uproject", r#"{"FileVersion":3,"EngineAssociation":"5.8"}"#),
+        (
+            "Game.sln",
+            r#"Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Game", "Source\Game\Game.csproj", "{00000000-0000-0000-0000-000000000000}"
+EndProject
+"#,
+        ),
+        (
+            "Source/Game/Game.csproj",
+            r#"<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType></PropertyGroup></Project>"#,
+        ),
+    ]);
+    let c = detect(dir.path());
+    assert!(c.iter().all(|c| !c.kind.starts_with("dotnet")), "{:?}", ids(&c));
+}
+
+/// The engine keeps copies of its tool projects under the generated trees, which hold no code
+/// anyone runs from here — and on a real project they are deep enough to slow detection down.
+#[test]
+fn csproj_under_unreal_generated_directories_is_not_detected() {
+    let exe =
+        r#"<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType></PropertyGroup></Project>"#;
+    let dir = project(&[
+        ("Intermediate/ProjectFiles/UnrealBuildTool/UnrealBuildTool.csproj", exe),
+        ("Binaries/Win64/ShaderCopy/ShaderCopy.csproj", exe),
+        ("Saved/Tools/Helper/Helper.csproj", exe),
+        ("DerivedDataCache/Worker/Worker.csproj", exe),
+    ]);
+    let c = detect(dir.path());
+    assert!(c.is_empty(), "{:?}", ids(&c));
+}

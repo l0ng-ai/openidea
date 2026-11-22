@@ -138,7 +138,7 @@
               },
               {
                 "group": "Game engines",
-                "pages": ["en/languages/unity", "en/languages/godot"]
+                "pages": ["en/languages/unity", "en/languages/godot", "en/languages/unreal"]
               },
               {
                 "group": "Extend",
@@ -362,7 +362,7 @@
               },
               {
                 "group": "游戏引擎",
-                "pages": ["zh/languages/unity", "zh/languages/godot"]
+                "pages": ["zh/languages/unity", "zh/languages/godot", "zh/languages/unreal"]
               },
               {
                 "group": "扩展",

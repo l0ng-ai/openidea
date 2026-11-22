@@ -7,7 +7,7 @@ pub(crate) mod cmake;
 mod dotnet;
 mod zig;
 
-use crate::RunConfig;
+use crate::{BeforeLaunchTask, RunConfig};
 use ide_core::project_roots::expand_members;
 use serde_json::Value as Json;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -84,10 +84,16 @@ pub(crate) fn detect_with_profiles(
         }
     }
     detect_projects(root, &["build.zig"], zig::detect, &mut out);
-    dotnet::detect(root, &mut out);
+    // A UE project's `.sln` lists the engine's own tool projects; expanding it would bury the
+    // run menu under dozens of `.NET Project` entries that cannot run from here. An engine tree
+    // is the same story one level up: its `Engine/Source` is full of `.csproj` build tools.
+    if !ide_workspace::unreal::is_project(root) && !ide_workspace::unreal::is_engine_root(root) {
+        dotnet::detect(root, &mut out);
+    }
     detect_projects(root, &["Makefile", "makefile", "GNUmakefile"], detect_make, &mut out);
     detect_projects(root, &["justfile", "Justfile", ".justfile"], detect_just, &mut out);
     detect_godot(root, &mut out);
+    detect_unreal(root, &mut out);
     crate::external::detect(root, &mut out);
 
     let mut seen = HashSet::new();
@@ -1487,6 +1493,74 @@ pub(crate) fn just_recipes(src: &str) -> Vec<String> {
 
 // ---------------------------------------------------------------- godot
 
+// ---------------------------------------------------------------- unreal
+
+/// Unreal Engine projects (`.uproject`) run through the engine's editor executable, which reads
+/// its start-up mode from the command line: no flag is the editor, `-game` the game and `-server`
+/// a dedicated server. All three exist for every project, blueprint-only ones included, because
+/// the mode is decided at start-up rather than built.
+fn detect_unreal(root: &Path, out: &mut Vec<RunConfig>) {
+    let Some(info) = ide_workspace::unreal::detect(root) else { return };
+    // Detection already resolved the engine; a project without one offers nothing to run.
+    let Some(found) = info.engine.as_ref() else {
+        tracing::debug!("no Unreal Engine installation for {}", root.display());
+        return;
+    };
+    let engine =
+        ide_workspace::unreal::engine::EngineInstall { id: found.id.clone(), root: PathBuf::from(&found.root) };
+    let Some(project) = ide_workspace::unreal::project_file(root) else { return };
+    let editor = engine.editor(root).to_string_lossy().into_owned();
+    // The editor target compiles the game modules too (`ExtraModuleNames`), and every start-up
+    // mode loads those same modules, so one build covers all three configurations. A
+    // blueprint-only project has no target and nothing to compile.
+    let editor_target = ide_workspace::unreal::targets(root)
+        .into_iter()
+        .find(|target| target.kind == ide_workspace::unreal::TargetType::Editor);
+    let build_batch = engine.build_batch().to_string_lossy().into_owned();
+    let build = editor_target.map(|target| (build_batch.as_str(), target.name));
+    out.extend(unreal_configs(&project, &editor, build.as_ref().map(|(batch, name)| (*batch, name.as_str()))));
+}
+
+/// The editor, the game and a dedicated server: the three start-up modes the engine documents,
+/// all run by `UnrealEditor.exe` and differing only in the flag. With an editor target, the
+/// configuration that builds it comes first and every mode launches it as a before-launch step.
+fn unreal_configs(project: &Path, editor: &str, build: Option<(&str, &str)>) -> Vec<RunConfig> {
+    let project = project.to_string_lossy().into_owned();
+    let mut configs: Vec<RunConfig> = [
+        ("unreal:editor", "Unreal Editor", None),
+        ("unreal:game", "Unreal Game", Some("-game")),
+        ("unreal:server", "Unreal Server", Some("-server")),
+    ]
+    .into_iter()
+    .map(|(id, name, flag)| {
+        let args: Vec<&str> = std::iter::once(project.as_str()).chain(flag).collect();
+        config(id.to_owned(), name, "unreal", editor, &args).debug("lldb-dap")
+    })
+    .collect();
+    let Some((build_batch, target)) = build else { return configs };
+    let builder = unreal_build_config(&project, build_batch, target);
+    for config in &mut configs {
+        config.extras.before_launch.push(BeforeLaunchTask { kind: "run".into(), target: builder.id.clone() });
+    }
+    let mut out = vec![builder];
+    out.append(&mut configs);
+    out
+}
+
+/// The editor target built the way the engine's own tooling builds it: `Build.bat <target> Win64
+/// Development -Project=<uproject> -WaitMutex`. A game project never compiles the engine, and
+/// `-WaitMutex` waits for a build already running instead of failing.
+fn unreal_build_config(project: &str, build_batch: &str, target: &str) -> RunConfig {
+    let project_arg = format!("-Project={project}");
+    config(
+        "unreal:build",
+        format!("Build {target}"),
+        "unreal",
+        build_batch,
+        &[target, "Win64", "Development", &project_arg, "-WaitMutex"],
+    )
+}
+
 // ---------------------------------------------------------------- rebar3 / mix
 
 /// rebar3 (Erlang): the shell with the applications started, the EUnit tests and, with
@@ -1554,5 +1628,44 @@ fn detect_just(root: &Path, out: &mut Vec<RunConfig>) {
             c = c.test();
         }
         out.push(c);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_unreal_project_offers_the_editor_the_game_and_a_dedicated_server() {
+        let configs = unreal_configs(Path::new("/p/Game.uproject"), "UE/UnrealEditor.exe", None);
+        let listed: Vec<(&str, &str)> = configs.iter().map(|c| (c.id.as_str(), c.name.as_str())).collect();
+        assert_eq!(
+            listed,
+            [("unreal:editor", "Unreal Editor"), ("unreal:game", "Unreal Game"), ("unreal:server", "Unreal Server"),]
+        );
+        assert_eq!(configs[0].args, ["/p/Game.uproject"]);
+        assert_eq!(configs[1].args, ["/p/Game.uproject", "-game"]);
+        assert_eq!(configs[2].args, ["/p/Game.uproject", "-server"]);
+        assert!(configs.iter().all(|c| c.command == "UE/UnrealEditor.exe" && c.cwd.is_none()));
+        assert!(configs.iter().all(|c| c.debug_adapter.as_deref() == Some("lldb-dap") && c.kind == "unreal"));
+    }
+
+    #[test]
+    fn the_editor_target_is_built_before_any_mode_starts() {
+        let configs =
+            unreal_configs(Path::new("/p/Game.uproject"), "UE/UnrealEditor.exe", Some(("UE/Build.bat", "GameEditor")));
+        assert_eq!(configs.len(), 4);
+        let build = &configs[0];
+        assert_eq!(build.id, "unreal:build");
+        assert_eq!(build.name, "Build GameEditor");
+        assert_eq!(build.command, "UE/Build.bat");
+        assert_eq!(build.args, ["GameEditor", "Win64", "Development", "-Project=/p/Game.uproject", "-WaitMutex"]);
+        // The build itself is the only one that is not debugged.
+        assert!(build.debug_adapter.is_none() && build.extras.before_launch.is_empty());
+        for config in &configs[1..] {
+            assert_eq!(config.extras.before_launch.len(), 1);
+            assert_eq!(config.extras.before_launch[0].kind, "run");
+            assert_eq!(config.extras.before_launch[0].target, "unreal:build");
+        }
     }
 }

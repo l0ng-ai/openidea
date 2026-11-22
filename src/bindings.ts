@@ -1213,6 +1213,9 @@ export const commands = {
 	settings: Settings_Serialize,
 	workspace?: Workspace_Serialize | null,
 	unity?: UnityProjectInfo | null,
+	unreal?: UnrealProjectInfo | null,
+	/**  What the root directory is, decided once when the project opens. */
+	kind: ProjectKind,
 } | null>("project_current"),
 	/**
 	 *  File › Rename Project…: the project's display name (title bar, recent
@@ -9519,6 +9522,9 @@ export type ProjectInfo_Deserialize = {
 	settings: Settings_Deserialize,
 	workspace?: Workspace_Deserialize | null,
 	unity?: UnityProjectInfo | null,
+	unreal?: UnrealProjectInfo | null,
+	/**  What the root directory is, decided once when the project opens. */
+	kind?: ProjectKind,
 };
 
 export type ProjectInfo_Serialize = {
@@ -9530,6 +9536,9 @@ export type ProjectInfo_Serialize = {
 	settings: Settings_Serialize,
 	workspace?: Workspace_Serialize | null,
 	unity?: UnityProjectInfo | null,
+	unreal?: UnrealProjectInfo | null,
+	/**  What the root directory is, decided once when the project opens. */
+	kind: ProjectKind,
 };
 
 /**  An interpreter another project uses: the project root and the SDK itself. */
@@ -9537,6 +9546,14 @@ export type ProjectInterpreter = {
 	project: IpcPath,
 	sdk: Sdk,
 };
+
+export type ProjectKind = 
+/**  A game (or plugin host) driven by a `.uproject`. */
+"unrealGame" | 
+/**  Unreal Engine source checkout: `Engine/Build/Build.version`, no `.uproject`. */
+"unrealEngine" | "unity" | 
+/**  A .NET solution or project at the root. */
+"dotnet" | "other";
 
 /**  A project-level library (Project Structure › Libraries). */
 export type ProjectLibrary = {
@@ -11678,6 +11695,28 @@ export type UnityProjectInfo = {
 	/**  File names relative to the Unity root, in stable order. */
 	solutions: string[],
 	projects: string[],
+};
+
+/**  A located engine, shown so a project without run configurations says why. */
+export type UnrealEngine = {
+	/**  `5.8` for a launcher install, or the registry key a source build registered under. */
+	id: string,
+	/**  Absolute engine root. */
+	root: string,
+};
+
+export type UnrealProjectInfo = {
+	/**  `EngineAssociation`: a launcher version like `5.8`, a build GUID, or empty for a source build. */
+	engineAssociation: string | null,
+	/**
+	 *  The engine the project builds against. `None` means none could be located, which is the
+	 *  only reason such a project offers no run configuration at all.
+	 */
+	engine: UnrealEngine | null,
+	/**  `Source/*.Target.cs` without the suffix; empty for a blueprint-only project. */
+	targets: string[],
+	/**  `Source/<Module>/<Module>.Build.cs` without the suffix. */
+	modules: string[],
 };
 
 export type UpdateCheck = {

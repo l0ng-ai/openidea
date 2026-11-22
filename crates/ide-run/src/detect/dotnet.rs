@@ -10,22 +10,41 @@ use std::{
     path::Path,
 };
 
+/// How far below the root a `.csproj` is still picked up. Deep enough for a real solution
+/// layout, short enough that pointing the IDE at an engine tree does not walk all of it.
+const MAX_DEPTH: usize = 5;
+
 pub(crate) fn detect(root: &Path, out: &mut Vec<RunConfig>) {
-    let mut dirs = vec![root.to_path_buf()];
+    let mut dirs = vec![(root.to_path_buf(), 0usize)];
     let mut projects = BTreeSet::new();
-    while let Some(dir) = dirs.pop() {
+    while let Some((dir, depth)) = dirs.pop() {
         let Ok(entries) = fs::read_dir(&dir) else { continue };
         for entry in entries.flatten() {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().into_owned();
             if entry.file_type().is_ok_and(|t| t.is_dir()) {
-                if !name.starts_with('.')
+                // Case-insensitive: Unreal's generated trees (`Binaries`, `Intermediate`, …) hold
+                // tens of thousands of files and copies of the engine's own tool projects.
+                let lower = name.to_ascii_lowercase();
+                if depth < MAX_DEPTH
+                    && !lower.starts_with('.')
                     && !matches!(
-                        name.as_str(),
-                        "bin" | "obj" | "node_modules" | "target" | "build" | "dist" | "vendor" | "packages"
+                        lower.as_str(),
+                        "bin"
+                            | "obj"
+                            | "node_modules"
+                            | "target"
+                            | "build"
+                            | "dist"
+                            | "vendor"
+                            | "packages"
+                            | "binaries"
+                            | "intermediate"
+                            | "saved"
+                            | "deriveddatacache"
                     )
                 {
-                    dirs.push(path);
+                    dirs.push((path, depth + 1));
                 }
             } else if entry.file_type().is_ok_and(|t| t.is_file()) {
                 match path.extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase().as_str() {

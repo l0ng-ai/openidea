@@ -14,11 +14,25 @@ pub fn children(dir: &Path) -> Vec<PathBuf> {
                 return false;
             }
             let name = entry.file_name();
-            let name = name.to_string_lossy();
+            // Case-insensitive: Unreal's generated trees are `Binaries`/`Intermediate`/`Saved`/
+            // `DerivedDataCache`, and walking them costs seconds and finds nothing to build.
+            let name = name.to_string_lossy().to_ascii_lowercase();
             !name.starts_with('.')
                 && !matches!(
-                    name.as_ref(),
-                    "node_modules" | "target" | "build" | "dist" | "vendor" | "out" | "bin" | "obj" | "venv"
+                    name.as_str(),
+                    "node_modules"
+                        | "target"
+                        | "build"
+                        | "dist"
+                        | "vendor"
+                        | "out"
+                        | "bin"
+                        | "obj"
+                        | "venv"
+                        | "binaries"
+                        | "intermediate"
+                        | "saved"
+                        | "deriveddatacache"
                 )
         })
         .map(|entry| entry.path())

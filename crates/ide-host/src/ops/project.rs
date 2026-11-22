@@ -22,6 +22,11 @@ pub struct ProjectInfo {
     pub workspace: Option<ide_workspace::workspace::Workspace>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unity: Option<ide_workspace::unity::UnityProjectInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unreal: Option<ide_workspace::unreal::UnrealProjectInfo>,
+    /// What the root directory is, decided once when the project opens.
+    #[serde(default)]
+    pub kind: ide_workspace::project_kind::ProjectKind,
 }
 
 pub fn info(project: &Project) -> ProjectInfo {
@@ -45,6 +50,8 @@ pub fn info(project: &Project) -> ProjectInfo {
         root: project.root.clone().into(),
         workspace,
         unity: ide_workspace::unity::detect(&project.root),
+        unreal: ide_workspace::unreal::detect(&project.root),
+        kind: ide_workspace::project_kind::detect(&project.root),
     }
 }
 

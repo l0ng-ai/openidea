@@ -125,14 +125,18 @@ export async function openFiles(files: readonly string[]): Promise<void> {
 
 const pathIsDir = (path: string) => call(commands.fsReadDir(path)).then(() => true);
 
+/** A file that stands for its folder: dropping one opens the folder as a project. */
+const PROJECT_MARKER = /\.(uproject|sln|slnx)$/i;
+
 /** Opens dropped paths: files as loose files ({@link openFiles}), the first folder as a project. */
 export async function openPaths(
   paths: readonly string[],
   isDir: (path: string) => Promise<boolean> = pathIsDir,
 ): Promise<void> {
   const kinds = await Promise.all(paths.map((p) => isDir(p).catch(() => false)));
-  const files = paths.filter((_, i) => !kinds[i]);
-  const dir = paths.find((_, i) => kinds[i]);
+  const marker = paths.find((p, i) => !kinds[i] && PROJECT_MARKER.test(p));
+  const files = paths.filter((p, i) => !kinds[i] && p !== marker);
+  const dir = paths.find((_, i) => kinds[i]) ?? (marker ? dirname(marker) : undefined);
   await openFiles(files);
   if (dir) await openProjectWithPolicy(dir);
 }
