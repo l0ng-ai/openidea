@@ -1031,6 +1031,8 @@
   "Resolving reference…": "Resolving reference…",
   "Insert imports on paste": "Insert imports on paste",
   "Path with line number": "Path with line number",
+  "Absolute Path with line number": "Absolute Path with line number",
+  "Copy Absolute Path with Line Number": "Copy Absolute Path with Line Number",
   "Clipboard history": "Clipboard history",
   "From Clipboard": "From Clipboard",
   "Selection from {file}": "Selection from {file}",
