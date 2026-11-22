@@ -9,7 +9,7 @@ test("Copy Path/Reference keeps its preview and shortcut visible and can be resi
   await editor.locator(".cm-content").press("Meta+Shift+C");
 
   const popup = page.getByRole("dialog", { name: "Copy Path/Reference…" });
-  const absolute = popup.getByRole("option", { name: /^Absolute Path/ });
+  const absolute = popup.getByRole("option", { name: /^Absolute Path(?! with)/ });
   const preview = absolute.locator('[title$="/build.gradle.kts"]');
   const shortcut = absolute.getByText(/⌘/);
   await expect(preview).toBeVisible();

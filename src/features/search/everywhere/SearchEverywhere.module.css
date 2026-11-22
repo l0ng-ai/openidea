@@ -76,20 +76,18 @@
 }
 .queryRow {
   flex: none;
-  padding: 6px 8px;
+  margin-inline: var(--space-3);
 }
 .field {
   display: flex;
   align-items: center;
   gap: var(--space-1-5);
-  height: 32px;
-  padding: 0 10px 0 8px;
-  background: var(--bg-input);
-  border: 2px solid var(--border);
-  border-radius: var(--radius-small);
+  height: 30px;
+  padding-inline: var(--space-0-5);
+  border-bottom: 1px solid var(--border-popup);
 }
 .field:focus-within {
-  border-color: var(--border-strong);
+  border-bottom-color: var(--focus-ring, var(--accent));
 }
 .magnifier {
   flex: none;

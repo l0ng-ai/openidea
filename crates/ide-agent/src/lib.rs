@@ -138,11 +138,19 @@ pub type McpExecutableFn = dyn Fn() -> Option<PathBuf> + Send + Sync;
 /// The `[agents.skills.<name>]` policies a session resolves against: the user's (global
 /// `settings.toml`), the workspace's (`.openidea/settings.toml`), and whether the workspace
 /// is trusted (an untrusted one can only turn skills off).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct SkillsPolicy {
     pub user: BTreeMap<String, AgentSkillPolicy>,
     pub workspace: BTreeMap<String, AgentSkillPolicy>,
     pub workspace_trusted: bool,
+    /// All workspace folders (the project root plus any multi-repo workspace members).
+    pub workspace_roots: Vec<PathBuf>,
+}
+
+impl Default for SkillsPolicy {
+    fn default() -> Self {
+        Self { user: BTreeMap::new(), workspace: BTreeMap::new(), workspace_trusted: true, workspace_roots: Vec::new() }
+    }
 }
 
 /// Returns the skill policies for this project.
@@ -784,20 +792,22 @@ impl AgentManager {
         }
         let home = self.shared.paths.home_dir.clone();
         if provider == "hermes" || provider.starts_with("hermes-") {
+            let hermes_home = home.clone();
+            let hermes_provider = provider.clone();
             let found = blocking(move || {
-                let profile = hermes::root(home.as_deref()).and_then(|root| hermes::profile_home(&root, &provider));
+                let profile =
+                    hermes::root(hermes_home.as_deref()).and_then(|root| hermes::profile_home(&root, &hermes_provider));
                 Ok(profile.map(|p| skills::hermes(&p)).unwrap_or_default())
             })
             .await?;
-            return Ok(skills::merge(offered, found));
-        }
-        if provider == "claude" || provider == "claude-acp" {
+            offered = skills::merge(offered, found);
+        } else if provider == "claude" || provider == "claude-acp" {
             let claude_cwd = cwd.clone();
             let found = blocking(move || Ok(skills::discover(&claude_cwd, home.as_deref()))).await?;
             offered = skills::merge(offered, found);
         }
-        // The hub's active skills complete on every agent; its `off` ones drop out here,
-        // which is all the enforcement an ACP agent gets.
+        // The hub's active skills complete on every agent; its `off` ones drop out here
+        // (including entries `offered` already held), which is all the enforcement an ACP agent gets.
         let holder = self.task_for_commands(&provider, task);
         let states = match holder {
             Some(holder) => holder.skill_states().await,
@@ -807,10 +817,11 @@ impl AgentManager {
                     let policy = shared.skills_policy_hook.read().as_ref().map(|hook| hook()).unwrap_or_default();
                     (policy, shared.paths.project_root.clone())
                 };
+                let roots = if policy.workspace_roots.is_empty() { vec![root] } else { policy.workspace_roots };
                 let home = self.shared.paths.home_dir.clone();
                 blocking(move || {
                     Ok(skills::resolve(
-                        skills::discover_skills(&root, home.as_deref()),
+                        skills::discover_skills_in(&roots, home.as_deref()),
                         None,
                         &policy.workspace,
                         &policy.user,
@@ -2114,15 +2125,24 @@ impl Task {
     /// The skills offered in this project: every discovery resolved against the policies
     /// and the task's overrides.
     async fn skill_states(&self) -> Vec<AgentSkillState> {
-        let (policy, overrides, home, root) = {
+        let (policy, overrides, home, roots) = {
             let shared = &self.shared;
             let policy = shared.skills_policy_hook.read().as_ref().map(|hook| hook()).unwrap_or_default();
-            let overrides = self.state.lock().task.skill_overrides.clone();
-            (policy, overrides, shared.paths.home_dir.clone(), shared.paths.project_root.clone())
+            let (overrides, task_root) = {
+                let s = self.state.lock();
+                (s.task.skill_overrides.clone(), s.task.project_root.as_ref().map(|p| p.0.clone()))
+            };
+            let mut roots = Vec::new();
+            if let Some(tr) = task_root {
+                roots.push(tr);
+            }
+            roots.extend(policy.workspace_roots.iter().cloned());
+            roots.push(shared.paths.project_root.clone());
+            (policy, overrides, shared.paths.home_dir.clone(), roots)
         };
         blocking(move || {
             Ok(skills::resolve(
-                skills::discover_skills(&root, home.as_deref()),
+                skills::discover_skills_in(&roots, home.as_deref()),
                 Some(&overrides),
                 &policy.workspace,
                 &policy.user,

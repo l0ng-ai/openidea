@@ -110,10 +110,16 @@ pub fn plugin_answer_commit(plugins: &Arc<PluginHost>, request_id: String, answe
     plugins.answer_commit(&request_id, answer)
 }
 
-/// The UI reports the focused editor's file (`editor-focused` events).
+/// The UI reports the focused editor's file (`editor-focused` events), with its
+/// caret so plugins can scope line labels without re-reading the document.
 #[command(trust = always)]
-pub fn plugin_set_active_file(plugins: &Arc<PluginHost>, window: &str, path: Option<String>) {
-    plugins.set_active_file(window, path);
+pub fn plugin_set_active_file(
+    plugins: &Arc<PluginHost>,
+    window: &str,
+    path: Option<String>,
+    #[default] editor: Option<PluginEditor>,
+) {
+    plugins.set_active_file(window, path, editor);
 }
 
 /// The invoking window's reply to a plugin command request.
