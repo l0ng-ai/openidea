@@ -356,7 +356,8 @@ pub enum EventKind {
     FilesChanged,
     EditorFocused,
     /// The caret moved in the focused editor (`Event::Other`, JSON
-    /// `{path, line, col}` with 0-based UTF-16 positions).
+    /// `{path, line, col, settled}` with 0-based UTF-16 positions; `settled`
+    /// marks the final position once the caret rests).
     CaretMoved,
     /// Needs `events.input`.
     ActionPerformed,
