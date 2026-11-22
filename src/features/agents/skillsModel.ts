@@ -23,6 +23,7 @@ export const defaultSkillsBackend: SkillsBackend = {
 export const SKILL_SOURCE_GROUPS: Record<AgentSkillSource, { label: string; paths: string; agent: string | null }> = {
   workspace: { label: "Workspace", paths: ".agents/skills · .openidea/skills", agent: null },
   user: { label: "User", paths: "~/.agents/skills", agent: null },
+  plugin: { label: "Plugins", paths: "[[contributes.skills]]", agent: null },
   claudeWorkspace: { label: "Claude Code", paths: ".claude/skills", agent: "claude" },
   claudeUser: { label: "Claude Code", paths: "~/.claude/skills", agent: "claude" },
   githubWorkspace: { label: "GitHub Copilot", paths: ".github/skills", agent: "copilot" },
@@ -35,7 +36,7 @@ export const SKILL_SOURCE_GROUPS: Record<AgentSkillSource, { label: string; path
 
 /** Skill folders the CLI discovers itself: OpenIDEA only reads them, and its "off" holds only where the CLI supports it. */
 export function isDiscoveredSource(source: AgentSkillSource): boolean {
-  return source !== "workspace" && source !== "user";
+  return source !== "workspace" && source !== "user" && source !== "plugin";
 }
 
 export interface SessionSkillItem {

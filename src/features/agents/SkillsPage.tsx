@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AgentSkillMode, AgentSkillState, McpScope } from "@/bindings";
 import { revealInFileManager, revealInFileManagerLabel } from "@/platform/fileManager";
 import { formatMessage, useTx } from "@/platform/i18n";
+import { isTauri, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { Button, Icon, IconButton, SearchField, Select, Tabs, T } from "@/ui";
 import { editorService } from "@/workbench/contributions";
@@ -25,7 +26,7 @@ import styles from "./SkillsPage.module.css";
 
 export { defaultSkillsBackend, type SkillsBackend };
 
-type SourceTab = "all" | "workspace" | "user" | "cli";
+type SourceTab = "all" | "workspace" | "user" | "plugin" | "cli";
 
 /** A key of the source-group table (and so, a skill source). */
 type SkillSource = keyof typeof SKILL_SOURCE_GROUPS;
@@ -42,6 +43,7 @@ function groupsForTab(tab: SourceTab): readonly SkillSource[] {
   if (tab === "all") return order;
   if (tab === "workspace") return order.filter((s) => s === "workspace" || s.endsWith("Workspace"));
   if (tab === "user") return order.filter((s) => s === "user" || s.endsWith("User"));
+  if (tab === "plugin") return ["plugin"];
   return order.filter(isDiscoveredSource);
 }
 
@@ -80,7 +82,13 @@ export function SkillsPage({ backend = defaultSkillsBackend }: { backend?: Skill
 
   useEffect(() => {
     load();
-  }, [load]);
+    if (backend !== defaultSkillsBackend || !isTauri() || typeof onIdeEvent !== "function") return;
+    return onIdeEvent("settingsChanged", (e) => {
+      if (!e.key || e.key.startsWith("agents.skills")) {
+        load();
+      }
+    });
+  }, [load, backend]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -172,6 +180,12 @@ export function SkillsPage({ backend = defaultSkillsBackend }: { backend?: Skill
                 label: tx("User"),
                 text: tx("User"),
                 trailing: <span className={page.badge}>{tabCount("user")}</span>,
+              },
+              {
+                id: "plugin",
+                label: tx("Plugins"),
+                text: tx("Plugins"),
+                trailing: <span className={page.badge}>{tabCount("plugin")}</span>,
               },
               {
                 id: "cli",

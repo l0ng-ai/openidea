@@ -151,8 +151,8 @@ export const commands = {
 	 */
 	agentShell: (task: string, command: string, request: RequestId) => typedError<null, IdeError>(__TAURI_INVOKE("agent_shell", { task, command, request })),
 	/**
-	 *  Every skill discovered in the project and the user's folders, with the mode a session
-	 *  of this project runs it with (without any session's own overrides).
+	 *  Every skill discovered in the project, the user's folders and enabled plugins, with
+	 *  the mode a session runs it with (without any session's own overrides).
 	 */
 	agentSkillsList: () => typedError<AgentSkillState_Serialize[], IdeError>(__TAURI_INVOKE("agent_skills_list")),
 	/**
@@ -2829,6 +2829,8 @@ export type AgentSkillSource =
 "workspace" | 
 /**  The user's `~/.agents/skills` (what `npx skills add` fills). */
 "user" | 
+/**  Contributed by an enabled OpenIDEA plugin (`[[contributes.skills]]`). */
+"plugin" | 
 /**  The project's `.claude/skills`. */
 "claudeWorkspace" | 
 /**  `~/.claude/skills`. */

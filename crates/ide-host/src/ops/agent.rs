@@ -1040,15 +1040,20 @@ pub fn agent_set_skill_overrides(
     host.project(window)?.agents.set_skill_overrides(&task, overrides)
 }
 
-/// Every skill discovered in the project and the user's folders, with the mode a session
-/// of this project runs it with (without any session's own overrides).
+/// Every skill discovered in the project, the user's folders and enabled plugins, with
+/// the mode a session runs it with (without any session's own overrides).
 #[command(trust = always)]
 pub async fn agent_skills_list(host: &Host, window: &str) -> IdeResult<Vec<AgentSkillState>> {
-    let project = host.project(window)?;
-    let (policy, home) = (skills_policy(&project), dirs::home_dir());
+    let project = host.project(window).ok().filter(|p| !p.light);
+    let policy = host_skills_policy(host, project.as_deref());
+    let home = dirs::home_dir();
     tokio::task::spawn_blocking(move || {
         Ok(ide_agent::skills::resolve(
-            ide_agent::skills::discover_skills_in(&policy.workspace_roots, home.as_deref()),
+            ide_agent::skills::discover_skills_with_plugins(
+                &policy.workspace_roots,
+                home.as_deref(),
+                &policy.plugin_dirs,
+            ),
             None,
             &policy.workspace,
             &policy.user,
@@ -1100,20 +1105,15 @@ pub fn agent_skills_set_mode(
             }
         }
     }
-    match project {
-        Some(project) => {
-            let policy = skills_policy(&project);
-            let home = dirs::home_dir();
-            Ok(ide_agent::skills::resolve(
-                ide_agent::skills::discover_skills_in(&policy.workspace_roots, home.as_deref()),
-                None,
-                &policy.workspace,
-                &policy.user,
-                policy.workspace_trusted,
-            ))
-        }
-        None => Ok(Vec::new()),
-    }
+    let policy = host_skills_policy(host, project.as_deref());
+    let home = dirs::home_dir();
+    Ok(ide_agent::skills::resolve(
+        ide_agent::skills::discover_skills_with_plugins(&policy.workspace_roots, home.as_deref(), &policy.plugin_dirs),
+        None,
+        &policy.workspace,
+        &policy.user,
+        policy.workspace_trusted,
+    ))
 }
 
 /// The user's and the workspace's skill policies (`[agents.skills.<name>]`).
@@ -1173,13 +1173,38 @@ pub(crate) fn workspace_skill_roots(root: &std::path::Path) -> Vec<std::path::Pa
     roots
 }
 
-/// The skill policies a session of `project` resolves against.
-fn skills_policy(project: &crate::Project) -> SkillsPolicy {
-    SkillsPolicy {
-        user: project.settings.layer(ide_workspace::settings::SettingsScope::Global).agents.skills.clone(),
-        workspace: project.settings.layer(ide_workspace::settings::SettingsScope::Project).agents.skills.clone(),
-        workspace_trusted: project.trusted.load(std::sync::atomic::Ordering::Acquire),
-        workspace_roots: workspace_skill_roots(&project.root),
+/// The skill policies a session of `project` (or global Settings without a project) resolves against.
+fn host_skills_policy(host: &Host, project: Option<&crate::Project>) -> SkillsPolicy {
+    match project {
+        Some(project) => {
+            let workspace_trusted = project.trusted.load(std::sync::atomic::Ordering::Acquire);
+            let plugin_dirs = host
+                .plugin_host()
+                .map(|plugins| plugins.skill_dirs(Some(&project.root), workspace_trusted))
+                .unwrap_or_default();
+            SkillsPolicy {
+                user: project.settings.layer(ide_workspace::settings::SettingsScope::Global).agents.skills.clone(),
+                workspace: project
+                    .settings
+                    .layer(ide_workspace::settings::SettingsScope::Project)
+                    .agents
+                    .skills
+                    .clone(),
+                workspace_trusted,
+                workspace_roots: workspace_skill_roots(&project.root),
+                plugin_dirs,
+            }
+        }
+        None => {
+            let plugin_dirs = host.plugin_host().map(|plugins| plugins.skill_dirs(None, true)).unwrap_or_default();
+            SkillsPolicy {
+                user: host.global_settings.effective().agents.skills.clone(),
+                workspace: Default::default(),
+                workspace_trusted: true,
+                workspace_roots: Vec::new(),
+                plugin_dirs,
+            }
+        }
     }
 }
 

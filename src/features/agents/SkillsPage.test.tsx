@@ -26,6 +26,7 @@ const state = (
 const SKILLS: AgentSkillState[] = [
   state("tdd", "workspace"),
   state("impeccable", "user", "off"),
+  state("release-notes", "plugin"),
   state("ux-flow", "claudeWorkspace", "slashOnly"),
   state("playwright", "copilotUser"),
 ];
@@ -58,6 +59,9 @@ describe("SkillsPage", () => {
     const workspace = screen.getByRole("region", { name: "Workspace" });
     expect(within(workspace).getByText("tdd")).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "User" })).toBeInTheDocument();
+    const plugins = screen.getByRole("region", { name: "Plugins" });
+    expect(within(plugins).getByText("release-notes")).toBeInTheDocument();
+    expect(within(plugins).queryByText("CLI-discovered")).not.toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Claude Code" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "GitHub Copilot" })).toBeInTheDocument();
     expect(screen.getAllByText("Slash only").length).toBeGreaterThan(0);
@@ -80,10 +84,16 @@ describe("SkillsPage", () => {
     render(<SkillsPage backend={backend()} />);
 
     await waitFor(() => expect(screen.getByText("tdd")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("tab", { name: /Plugins/ }));
+    expect(screen.getByText("release-notes")).toBeInTheDocument();
+    expect(screen.queryByText("tdd")).not.toBeInTheDocument();
+    expect(screen.queryByText("playwright")).not.toBeInTheDocument();
+
     fireEvent.click(screen.getByRole("tab", { name: /Agent Folders/ }));
     expect(screen.getByText("playwright")).toBeInTheDocument();
     expect(screen.queryByText("tdd")).not.toBeInTheDocument();
     expect(screen.queryByText("impeccable")).not.toBeInTheDocument();
+    expect(screen.queryByText("release-notes")).not.toBeInTheDocument();
   });
 
   it("sets a skill's mode in Global from its row", async () => {
