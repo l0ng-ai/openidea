@@ -72,7 +72,7 @@ pub(crate) fn discover(path: &Path) -> IdeResult<Option<Repo>> {
     let cache = Cache { stamp: stamp(&files), files, repo: ts, pack_stamp: pack_stamp(&pack_dir), pack_dir };
     Ok(Some(Repo {
         execution_allowed: std::sync::atomic::AtomicBool::new(false),
-        git_executable: Default::default(),
+        git_executable: std::sync::RwLock::new(crate::opening_git_executable()),
         root,
         git_dir,
         inner: std::sync::Mutex::new(cache),

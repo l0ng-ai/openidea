@@ -249,7 +249,7 @@ async fn restricted_vcs_commands_run_no_program_of_the_repository() {
         call!("vcs_revision_files", "external", vcs::vcs_revision_files(host, w, log(), external.head.clone())),
         call!("vcs_commit_files", "external", vcs::vcs_commit_files(host, w, log(), external.head.clone())),
         // Last: it rewrites nothing of an existing repository, but it does touch it.
-        call!("vcs_init", "", vcs::vcs_init(project.root.clone())),
+        call!("vcs_init", "", vcs::vcs_init(host, w, project.root.clone())),
     ];
 
     // The sweep covers every `vcs_*` command declared `trust = always`: a newly allowed one fails

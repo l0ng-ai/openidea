@@ -692,6 +692,10 @@ impl Host {
                 roots
             }));
         }
+        {
+            let weak = Arc::downgrade(&project);
+            project.agents.set_git_executable_hook(Arc::new(move || weak.upgrade()?.git_executable()));
+        }
         self.insert_project(window, project.clone());
         for (key, text, dirty) in &carried {
             let _ = project.documents.restore_untitled_buffer(key, text, *dirty);
@@ -1069,14 +1073,21 @@ impl Project {
         );
     }
 
+    /// Settings › Version Control › Git › Path to Git executable, this project's value (its own
+    /// layer over the global one); `None` when it is empty or the project is not trusted.
+    /// Every git started for the project runs it: the project's repositories carry it, and work
+    /// that opens repositories of its own (agent worktrees, gh, plugins) passes it to
+    /// [`ide_vcs::with_git_executable`].
+    pub fn git_executable(&self) -> Option<PathBuf> {
+        let git = self.settings.read_effective(|s| s.vcs.git.executable.trim().to_owned());
+        (self.is_trusted() && !git.is_empty()).then(|| PathBuf::from(git))
+    }
+
     /// The project's git repositories.
     pub fn repos(&self) -> Repos {
         let repos = self.repos.read().clone();
         let trusted = self.is_trusted();
-        // Settings › Version Control › Git › Path to Git executable, this project's value (its
-        // own layer over the global one).
-        let git = self.settings.read_effective(|s| s.vcs.git.executable.trim().to_owned());
-        let git = (trusted && !git.is_empty()).then(|| PathBuf::from(git));
+        let git = self.git_executable();
         for repo in repos.all() {
             repo.set_execution_allowed(trusted);
             repo.set_git_executable(git.as_deref());

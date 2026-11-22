@@ -63,6 +63,9 @@ pub type NewTaskApprovalsHook = Arc<dyn Fn() -> ide_core::settings::NewTaskAppro
 /// attached projects the user trusts.
 pub type WorkspaceRootsHook = Arc<dyn Fn() -> Vec<PathBuf> + Send + Sync>;
 
+/// Returns the project's git executable (`None`: the default), which the tasks' git runs.
+pub type GitExecutableHook = Arc<dyn Fn() -> Option<PathBuf> + Send + Sync>;
+
 /// Entry changes are batched for this long before they are sent.
 const FLUSH_DELAY: Duration = Duration::from_millis(40);
 /// Updates that arrive this late after `session/load` returns are still replayed history.
@@ -185,6 +188,7 @@ struct Shared {
     security: RwLock<Option<SecurityHook>>,
     new_task_approvals: RwLock<Option<NewTaskApprovalsHook>>,
     workspace_roots: RwLock<Option<WorkspaceRootsHook>>,
+    git_executable: RwLock<Option<GitExecutableHook>>,
     known: Arc<Mutex<HashMap<String, Known>>>,
     providers: RwLock<Vec<provider::ProviderSpec>>,
     /// Last probe of each provider.
@@ -599,6 +603,7 @@ impl AgentManager {
             security: RwLock::new(None),
             new_task_approvals: RwLock::new(None),
             workspace_roots: RwLock::new(None),
+            git_executable: RwLock::new(None),
             known,
             providers,
             probes: Mutex::new(HashMap::new()),
@@ -669,6 +674,11 @@ impl AgentManager {
     /// Sets the callback that lists the workspace roots offered to agents besides a task's own.
     pub fn set_workspace_roots_hook(&self, hook: WorkspaceRootsHook) {
         *self.shared.workspace_roots.write() = Some(hook);
+    }
+
+    /// Sets the callback that reads the project's git executable.
+    pub fn set_git_executable_hook(&self, hook: GitExecutableHook) {
+        *self.shared.git_executable.write() = Some(hook);
     }
 
     /// The agents (custom ones re-read), whether each is installed, and what they offered last time.
@@ -983,14 +993,15 @@ impl AgentManager {
                 }
                 let dir = self.shared.paths.worktrees_dir.clone();
                 let (t, b) = (title.clone(), req.base.clone());
-                let c = blocking(move || worktree::create(&root, &dir, &t, b.as_deref())).await?;
+                let c = vcs(&self.shared, move || worktree::create(&root, &dir, &t, b.as_deref())).await?;
                 (c.path, Some(c.branch), Some(c.base), Some(c.base_commit), BTreeMap::new())
             }
             Isolation::Local => {
                 let r = root.clone();
-                let (head, before) =
-                    blocking(move || Ok((worktree::head_of(&r).ok(), worktree::snapshot(&r).unwrap_or_default())))
-                        .await?;
+                let (head, before) = vcs(&self.shared, move || {
+                    Ok((worktree::head_of(&r).ok(), worktree::snapshot(&r).unwrap_or_default()))
+                })
+                .await?;
                 let (base, commit) = head.unzip();
                 (root, None, base, commit, before)
             }
@@ -1024,7 +1035,7 @@ impl AgentManager {
         } else {
             let name = format!("{id}.before");
             let (dir, at, files) = (self.shared.paths.store_dir.join(&name), cwd.clone(), before.clone());
-            match blocking(move || worktree::save_before(&at, &files, &dir)).await {
+            match vcs(&self.shared, move || worktree::save_before(&at, &files, &dir)).await {
                 Ok(saved) => saved.then_some(name),
                 Err(e) => {
                     tracing::warn!("saving the changed files of agent task {id}: {e}");
@@ -1826,7 +1837,7 @@ impl AgentManager {
                 let _ = tokio::time::timeout(EXIT_WAIT, peer.exited()).await;
             }
             let worktrees = self.shared.paths.worktrees_dir.clone();
-            blocking(move || worktree::remove(&root, &worktrees, &cwd)).await?;
+            vcs(&self.shared, move || worktree::remove(&root, &worktrees, &cwd)).await?;
         }
         Ok(())
     }
@@ -1836,7 +1847,7 @@ impl AgentManager {
         let task = self.task(id)?;
         let at = task.base();
         let (before, touched) = task.attribution();
-        blocking(move || Ok(worktree::made_by_task(at.changes(&before)?, touched.as_deref()))).await
+        vcs(&self.shared, move || Ok(worktree::made_by_task(at.changes(&before)?, touched.as_deref()))).await
     }
 
     /// The task's uncommitted changes and, for a worktree task, the commits made since it
@@ -1845,7 +1856,7 @@ impl AgentManager {
         let task = self.task(id)?;
         let at = task.base();
         let (before, touched) = task.attribution();
-        blocking(move || {
+        vcs(&self.shared, move || {
             let mut grouped = at.grouped_changes(&before)?;
             grouped.uncommitted = worktree::made_by_task(grouped.uncommitted, touched.as_deref());
             Ok(grouped)
@@ -1858,7 +1869,7 @@ impl AgentManager {
     pub async fn turn_changes(&self, id: &str) -> IdeResult<Vec<AgentChange>> {
         let (cwd, turn, dir) = self.task(id)?.last_turn();
         let Some(turn) = turn else { return Ok(Vec::new()) };
-        blocking(move || {
+        vcs(&self.shared, move || {
             let changed = match &turn.changed {
                 Some(changed) => changed.clone(),
                 None => worktree::changed_in_turn(&cwd, &turn)?.1,
@@ -1875,10 +1886,10 @@ impl AgentManager {
         if view == AgentChangesView::LastTurn {
             let (cwd, turn, dir) = task.last_turn();
             let Some(turn) = turn else { return Ok(None) };
-            return blocking(move || worktree::turn_text(&cwd, &path, &turn, &dir)).await;
+            return vcs(&self.shared, move || worktree::turn_text(&cwd, &path, &turn, &dir)).await;
         }
         let at = task.base();
-        blocking(move || {
+        vcs(&self.shared, move || {
             let rev = match view {
                 AgentChangesView::Group => worktree::head_commit(at.cwd())?,
                 _ => at.rev()?,
@@ -1912,7 +1923,7 @@ impl AgentManager {
             let s = task.state.lock();
             (s.before.clone(), s.saved.as_ref().map(|name| self.shared.paths.store_dir.join(name)), s.touched.clone())
         };
-        let (restamped, restored) = blocking(move || {
+        let (restamped, restored) = vcs(&self.shared, move || {
             let (changes, rev) = match view {
                 AgentChangesView::Group => (at.grouped_changes(&before)?.uncommitted, worktree::head_commit(at.cwd())?),
                 AgentChangesView::SinceStart | AgentChangesView::LastTurn => (at.changes(&before)?, at.rev()?),
@@ -1968,7 +1979,7 @@ impl AgentManager {
             let s = task.state.lock();
             (s.before.clone(), s.saved.as_ref().map(|name| self.shared.paths.store_dir.join(name)))
         };
-        let restamped = blocking(move || {
+        let restamped = vcs(&self.shared, move || {
             let changed = match &turn.changed {
                 Some(changed) => changed.clone(),
                 None => worktree::changed_in_turn(&cwd, &turn)?.1,
@@ -2025,7 +2036,7 @@ impl AgentManager {
         let Some(base) = base else {
             return Err(IdeError::invalid("the task has no base revision to accept from"));
         };
-        blocking(move || {
+        vcs(&self.shared, move || {
             let wanted: Vec<AgentChange> = worktree::without_untouched(worktree::changes(&cwd, &base)?, &before)
                 .into_iter()
                 .filter(|c| rel_paths.as_ref().is_none_or(|p| p.contains(&c.rel_path)))
@@ -2280,7 +2291,7 @@ impl Task {
     /// Records the checkout as a turn starts: what the turn's changes are compared with.
     async fn checkout_before_turn(&self) {
         let (cwd, previous, dir) = self.last_turn();
-        let turn = match blocking(move || worktree::start_turn(&cwd, &dir, previous.as_deref())).await {
+        let turn = match vcs(&self.shared, move || worktree::start_turn(&cwd, &dir, previous.as_deref())).await {
             Ok(turn) => Some(Arc::new(turn)),
             Err(e) => {
                 tracing::warn!("recording the checkout as a turn of agent task {} starts: {e}", self.id);
@@ -2297,7 +2308,9 @@ impl Task {
         let (cwd, turn, _) = self.last_turn();
         let Some(turn) = turn else { return };
         let start = turn.clone();
-        let Ok((in_worktree, all)) = blocking(move || worktree::changed_in_turn(&cwd, &start)).await else { return };
+        let Ok((in_worktree, all)) = vcs(&self.shared, move || worktree::changed_in_turn(&cwd, &start)).await else {
+            return;
+        };
         {
             let mut s = self.state.lock();
             if !in_worktree.is_empty()
@@ -4249,6 +4262,12 @@ fn write_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + 'static) -> IdeResult<T> {
     tokio::task::spawn_blocking(f).await.map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+/// [`blocking`] for work that runs git: the repositories it opens run the project's git.
+async fn vcs<T: Send + 'static>(shared: &Shared, f: impl FnOnce() -> IdeResult<T> + Send + 'static) -> IdeResult<T> {
+    let git = shared.git_executable.read().as_ref().and_then(|hook| hook());
+    blocking(move || ide_vcs::with_git_executable(git.as_deref(), f)).await
 }
 
 #[cfg(test)]

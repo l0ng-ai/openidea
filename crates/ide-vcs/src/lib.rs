@@ -774,7 +774,7 @@ mod clone_tests {
 /// Creates an empty repository in `dir` (`git init`).
 pub fn init(dir: &Path) -> IdeResult<()> {
     // `git init` runs nothing a repository config names, so the configured git runs as it is.
-    let _scope = ExecutionScope::enter(true);
+    let _scope = ExecutionScope::enter_with(true, opening_git_executable());
     cli::run(dir, &["init", "-q"], None).map(|_| ())
 }
 
@@ -1737,6 +1737,26 @@ pub(crate) fn execution_allowed() -> bool {
 pub(crate) fn scoped_git_executable() -> Option<std::sync::Arc<Path>> {
     EXECUTION
         .with(|current| current.borrow().as_ref().filter(|grant| grant.allowed).and_then(|grant| grant.git.clone()))
+}
+
+thread_local! { static OPENING_GIT: std::cell::RefCell<Option<std::sync::Arc<Path>>> = const { std::cell::RefCell::new(None) }; }
+
+/// Runs `f` with `git` (a project's Path to Git executable; `None` for the default) as the git
+/// executable of every [`Repo`] opened in it on this thread, and of [`init`]: for work on behalf
+/// of a project that opens its own repositories. It grants no execution.
+pub fn with_git_executable<T>(git: Option<&Path>, f: impl FnOnce() -> T) -> T {
+    struct Restore(Option<std::sync::Arc<Path>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            OPENING_GIT.with(|opening| *opening.borrow_mut() = self.0.take());
+        }
+    }
+    let git = git.filter(|p| !p.as_os_str().is_empty()).map(std::sync::Arc::from);
+    let _restore = Restore(OPENING_GIT.with(|opening| opening.replace(git)));
+    f()
+}
+pub(crate) fn opening_git_executable() -> Option<std::sync::Arc<Path>> {
+    OPENING_GIT.with(|opening| opening.borrow().clone())
 }
 impl Repo {
     /// Whether git may run what the repository's config names (hooks, filters, the fsmonitor,

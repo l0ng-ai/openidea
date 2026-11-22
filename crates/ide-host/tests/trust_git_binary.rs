@@ -87,6 +87,52 @@ async fn a_project_git_executable_stays_with_its_project_while_another_window_ru
     host.shutdown().await;
 }
 
+/// An agent task opens repositories of its own (the project's, then its worktree): their git is
+/// the project's too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_agent_task_worktree_runs_the_project_git() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(tmp.path()).unwrap();
+    let host = host(&base);
+    let root = base.join("a");
+    let marker = base.join("a.marker");
+    repo_with_wrapper(&root, &marker, &base.join("no-gate"));
+    let real = ide_vcs::detected_git_executable().unwrap();
+    let commit = std::process::Command::new(&real)
+        .arg("-C")
+        .arg(&root)
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false"])
+        .args(["commit", "-q", "--allow-empty", "-m", "init"])
+        .output()
+        .unwrap();
+    assert!(commit.status.success(), "{}", String::from_utf8_lossy(&commit.stderr));
+    let wrapper = root.join("tools/git");
+    std::fs::write(root.join(".openidea/settings.toml"), format!("[vcs.git]\nexecutable = {wrapper:?}\n")).unwrap();
+    host.open_project("a", &root).unwrap();
+    host.set_project_trust(&root, true, false).await.unwrap();
+
+    let task = ops::agent::agent_create(
+        &host,
+        "a",
+        ide_agent::NewAgentTask {
+            prompt: ide_agent::AgentPrompt { text: "Say hi".into(), ..Default::default() },
+            provider: "codex".into(),
+            isolation: ide_agent::Isolation::Worktree,
+            idle: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(task.cwd.0.join(".git").exists(), "the task has its worktree");
+    let created = runs(&marker);
+    assert!(created > 0, "creating the task's worktree ran another git than the project's");
+
+    ops::agent::agent_delete(&host, "a", task.id, true).await.unwrap();
+    assert!(runs(&marker) > created, "removing the task's worktree ran another git than the project's");
+    host.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn restricted_status_does_not_select_the_project_git_for_other_windows() {
     let tmp = tempfile::tempdir().unwrap();

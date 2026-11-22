@@ -1880,7 +1880,10 @@ export const commands = {
 	/**  Whether the repository has the executable Git hook `name` (Push dialog › Run Git hooks). */
 	vcsHasHook: (repo: string | null, name: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("vcs_has_hook", { repo, name })),
 	vcsIgnoreBlameRevision: (path: string, commit: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_ignore_blame_revision", { path, commit })),
-	/**  `git init` in `dir` (File › New Project… "Create Git repository"). */
+	/**
+	 *  `git init` in `dir` (VCS › Create Git Repository…): with the git of the window's project when
+	 *  it is trusted, the default one in a window without a project.
+	 */
 	vcsInit: (dir: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_init", { dir })),
 	/**  Gutter change markers for a file, computed against its current (unsaved) text. */
 	vcsLineHunks: (path: string) => typedError<LineHunk[], IdeError>(__TAURI_INVOKE("vcs_line_hunks", { path })),

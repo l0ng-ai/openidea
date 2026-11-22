@@ -1065,10 +1065,12 @@ pub async fn vcs_clone(
     result
 }
 
-/// `git init` in `dir` (File › New Project… "Create Git repository").
+/// `git init` in `dir` (VCS › Create Git Repository…): with the git of the window's project when
+/// it is trusted, the default one in a window without a project.
 #[command(trust = always)]
-pub async fn vcs_init(dir: PathBuf) -> IdeResult<()> {
-    blocking(move || ide_vcs::init(&dir)).await
+pub async fn vcs_init(host: &Host, window: &str, dir: PathBuf) -> IdeResult<()> {
+    let git = host.project(window).ok().and_then(|p| p.git_executable());
+    blocking(move || ide_vcs::with_git_executable(git.as_deref(), || ide_vcs::init(&dir))).await
 }
 
 /// Settings › Git › Test: runs `git --version` on `path`, or on the auto-detected
