@@ -4,18 +4,10 @@ import { registerActions } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import { lazyComponent } from "@/ui";
 import { registerMenuGroup, registerToolWindow, toolWindowService } from "@/workbench/contributions";
+import { selectionCode } from "./selection";
 import { execute, installConsole } from "./store";
 
 const ID = "pythonConsole";
-
-/** The selection, or the caret's line when nothing is selected. */
-function editorCode(): string | null {
-  const handle = activeEditor();
-  if (!handle) return null;
-  const { state } = handle.view;
-  const sel = state.selection.main;
-  return sel.empty ? state.doc.lineAt(sel.head).text : state.sliceDoc(sel.from, sel.to);
-}
 
 export function activate(): () => void {
   const disposers = [
@@ -45,7 +37,8 @@ export function activate(): () => void {
         when: "editorLangId == python",
         keyWhen: "editorTextFocus",
         run: () => {
-          const code = editorCode();
+          const state = activeEditor()?.view.state;
+          const code = state && selectionCode(state);
           if (!code?.trim()) return;
           toolWindowService().show(ID, false);
           execute(code);

@@ -3,9 +3,10 @@ import { Channel } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { call, commands, onIdeEvent, type OutputChunk, type RunConfig, type RunId } from "@/platform/ipc";
 import { windowLabel } from "@/platform/auxWindow";
-import { useProject } from "@/platform/project";
+import { dirname, useProject } from "@/platform/project";
 import { tx } from "@/platform/i18n";
 import { AnsiStream, appendSpans, type Span } from "@/ui/ansi";
+import { editorService } from "@/workbench/contributions";
 import DRIVER from "./console.py?raw";
 import { request, stdoutParser, type ConsoleMessage, type ConsoleVariable } from "./protocol";
 
@@ -38,6 +39,8 @@ const MAX_CHARS = 1_000_000;
 let runId: RunId | null = null;
 let generation = 0;
 const queue: string[] = [];
+/** Exits that arrived before their start call returned (an interpreter that fails at once). */
+const earlyExits = new Map<RunId, number | null>();
 
 /** The last `max` characters of `spans`. */
 export function tail(spans: Span[], max = MAX_CHARS): Span[] {
@@ -61,8 +64,10 @@ function echo(code: string) {
 }
 
 function next() {
+  // Before the start call returns there is no run to write to yet: the code waits.
+  if (runId === null) return;
   const code = queue.shift();
-  if (code === undefined || runId === null) return;
+  if (code === undefined) return;
   useConsole.setState({ status: "busy" });
   echo(code);
   void call(commands.runStdin(runId, request(code))).catch((e) => note(`${String(e)}\n`));
@@ -104,8 +109,11 @@ export async function startConsole() {
   if (!root) return;
   const mine = ++generation;
   useConsole.setState({ status: "starting", noInterpreter: false, header: null, variables: [] });
+  earlyExits.clear();
   try {
-    const python = await call(commands.sdkPythonEffective(null));
+    // The interpreter the status bar shows: in a workspace, the one of the member the active file is in.
+    const active = editorService().activePath();
+    const python = await call(commands.sdkPythonEffective(active ? dirname(active) : null));
     if (mine !== generation) return;
     if (!python) {
       queue.length = 0;
@@ -131,9 +139,11 @@ export async function startConsole() {
     if (mine !== generation) void call(commands.runStop(info.id)).catch(() => {});
     else {
       runId = info.id;
+      if (earlyExits.has(info.id)) onExit(info.id, earlyExits.get(info.id)!);
       // The driver may be ready before the start call returns.
-      if (useConsole.getState().status === "idle") next();
+      else if (useConsole.getState().status === "idle") next();
     }
+    earlyExits.clear();
   } catch (e) {
     if (mine !== generation) return;
     queue.length = 0;
@@ -177,6 +187,14 @@ export function restartConsole() {
 
 export const clearOutput = () => useConsole.setState({ output: [] });
 
+function onExit(id: RunId, code: number | null) {
+  if (id !== runId) return;
+  runId = null;
+  queue.length = 0;
+  useConsole.setState({ status: "stopped" });
+  note(`${tx`\n[Process finished with exit code ${String(code ?? "?")}]`}\n`);
+}
+
 /** Exit reporting, and a fresh console for each project. */
 export function installConsole(): () => void {
   void commands
@@ -187,11 +205,8 @@ export function installConsole(): () => void {
     })
     .catch(() => {});
   const offExit = onIdeEvent("runExited", (e) => {
-    if (e.run !== runId) return;
-    runId = null;
-    queue.length = 0;
-    useConsole.setState({ status: "stopped" });
-    note(`${tx`\n[Process finished with exit code ${String(e.code ?? "?")}]`}\n`);
+    if (e.run === runId) onExit(e.run, e.code);
+    else if (runId === null && useConsole.getState().status === "starting") earlyExits.set(e.run, e.code);
   });
   const offProject = useProject.subscribe((s, prev) => {
     if (s.project?.root === prev.project?.root) return;

@@ -17,19 +17,21 @@ export function stdoutParser() {
     let text = "";
     const messages: ConsoleMessage[] = [];
     for (;;) {
-      const start = rest.indexOf(RS);
-      if (start < 0) break;
-      const end = rest.indexOf("\n", start);
+      const first = rest.indexOf(RS);
+      if (first < 0) break;
+      const end = rest.indexOf("\n", first);
       if (end < 0) {
-        pending = rest.slice(start);
-        rest = rest.slice(0, start);
+        pending = rest.slice(first);
+        rest = rest.slice(0, first);
         break;
       }
+      // A message starts a line's last \x1e: an earlier one there is output that didn't end its line.
+      const start = rest.lastIndexOf(RS, end);
       text += rest.slice(0, start);
       try {
         messages.push(JSON.parse(rest.slice(start + 1, end)) as ConsoleMessage);
       } catch {
-        // ponytail: a stray \x1e in user output is dropped with its line.
+        text += rest.slice(start, end + 1);
       }
       rest = rest.slice(end + 1);
     }

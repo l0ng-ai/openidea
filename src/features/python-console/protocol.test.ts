@@ -19,8 +19,17 @@ describe("stdoutParser", () => {
     });
   });
 
-  it("drops a malformed message line", () => {
-    expect(stdoutParser()("a\x1enot json\nb")).toEqual({ text: "ab", messages: [] });
+  it("keeps a line that only looks like a message as output", () => {
+    expect(stdoutParser()("a\x1enot json\nb")).toEqual({ text: "a\x1enot json\nb", messages: [] });
+  });
+
+  it("reads the message after output that printed \\x1e without ending its line", () => {
+    const parse = stdoutParser();
+    expect(parse("x\x1ey")).toEqual({ text: "x", messages: [] });
+    expect(parse('\x1e{"done":{"variables":[]}}\n')).toEqual({
+      text: "\x1ey",
+      messages: [{ done: { variables: [] } }],
+    });
   });
 });
 

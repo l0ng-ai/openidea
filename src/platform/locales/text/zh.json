@@ -9367,5 +9367,7 @@
   "Restart Console": "重启控制台",
   "Stop Console": "停止控制台",
   "Input for the running code": "正在运行的代码的输入",
-  "Python Console input": "Python 控制台输入"
+  "Python Console input": "Python 控制台输入",
+  "Python Console output": "Python 控制台输出",
+  "Console variables": "控制台变量"
 }

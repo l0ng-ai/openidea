@@ -3048,5 +3048,7 @@
   "Restart Console": "Restart Console",
   "Stop Console": "Stop Console",
   "Input for the running code": "Input for the running code",
-  "Python Console input": "Python Console input"
+  "Python Console input": "Python Console input",
+  "Python Console output": "Python Console output",
+  "Console variables": "Console variables"
 }

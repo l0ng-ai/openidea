@@ -43,15 +43,21 @@ try:
     namespace = _shell.user_ns
     _hidden = set(_shell.user_ns_hidden)  # what IPython put there itself (%who hides it too)
     flavour = "IPython " + IPython.__version__
+    # exit() / quit() ask the shell to end, which only the terminal shell implements.
+    _shell.ask_exit = lambda: setattr(_shell, "exit_now", True)
 
     def run(code):
         _shell.run_cell(code, store_history=True)
+        return _shell.exit_now
 
 except ImportError:
     import ast
     import code as _code
 
-    namespace = {"__name__": "__main__", "__builtins__": __builtins__}
+    # The console's own __main__, so its classes pickle and `import __main__` sees its names.
+    _main = types.ModuleType("__main__")
+    sys.modules["__main__"] = _main
+    namespace = _main.__dict__
     _console = _code.InteractiveInterpreter(namespace)
     flavour = None
 
@@ -83,12 +89,13 @@ while True:
         request = json.loads(line)
     except ValueError:
         request = None
-    if not isinstance(request, dict):
+    if not isinstance(request, dict) or not isinstance(request.get("code"), str):
         continue  # input typed while code ran that nothing read
     try:
-        run(textwrap.dedent(request.get("code", "")))
+        if run(textwrap.dedent(request["code"])):
+            break
     except SystemExit:
-        break
+        raise  # the console ends with the code's exit status
     except BaseException:
         import traceback
 

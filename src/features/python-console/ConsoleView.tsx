@@ -11,6 +11,7 @@ import styles from "./PythonConsole.module.css";
 export function ConsoleView() {
   const { status, header, output, variables, noInterpreter } = useConsole();
   const font = useConsoleFont();
+  const t = useTx();
   const outputRef = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
 
@@ -62,7 +63,7 @@ export function ConsoleView() {
             className={styles.output}
             style={fontStyle}
             role="log"
-            aria-label="Python Console output"
+            aria-label={t("Python Console output")}
             tabIndex={0}
             onScroll={(e) => {
               const el = e.currentTarget;
@@ -80,7 +81,7 @@ export function ConsoleView() {
         <SplitHandle />
         <SplitPanel id="variables" minSize={140} defaultSize="30%" className={styles.variables}>
           {variables.length ? (
-            <div role="list" aria-label="Console variables" className={styles.varList}>
+            <div role="list" aria-label={t("Console variables")} className={styles.varList}>
               {variables.map((v) => (
                 <div role="listitem" key={v.name} className={styles.varRow} title={v.value}>
                   <span className={styles.varName}>{v.name}</span>
