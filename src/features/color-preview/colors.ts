@@ -1,3 +1,6 @@
+import { hex2, toHex6, type Rgba } from "@/ui/colorPickerValues";
+export { fromHex, toHex6, toHex8, type Rgba } from "@/ui/colorPickerValues";
+
 /**
  * Color literals of a line for the gutter's color preview: `#rgb` / `#rrggbb` (with alpha),
  * `rgb()` / `rgba()` / `hsl()` / `hsla()`, and CSS named colors in style sheets. Pure; the
@@ -13,9 +16,6 @@ export interface ColorMatch {
   text: string;
   format: ColorFormat;
 }
-
-/** Red, green, blue 0–255 and alpha 0–1. */
-export type Rgba = [number, number, number, number];
 
 /** Style sheet languages: named colors and unquoted hex values are colors there. */
 const STYLE_SHEETS = new Set(["css", "scss", "sass", "less", "stylus", "postcss"]);
@@ -72,33 +72,7 @@ export function findColors(line: string, language: string, isColorName: (word: s
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
-const hex2 = (v: number) =>
-  Math.round(clamp(v, 0, 255))
-    .toString(16)
-    .padStart(2, "0");
 const round = (v: number, digits = 2) => String(Number(v.toFixed(digits)));
-
-/** `#rrggbb` of `rgba`, as `<input type=color>` takes it. */
-export function toHex6([r, g, b]: Rgba): string {
-  return `#${hex2(r)}${hex2(g)}${hex2(b)}`;
-}
-
-export function toHex8(rgba: Rgba): string {
-  return `${toHex6(rgba)}${hex2(rgba[3] * 255)}`;
-}
-
-/** Six-digit hex is opaque; eight-digit hex carries its own alpha. */
-export function fromHex(hex: string): Rgba | null {
-  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})?$/i.exec(hex);
-  return m
-    ? [
-        Number.parseInt(m[1]!, 16),
-        Number.parseInt(m[2]!, 16),
-        Number.parseInt(m[3]!, 16),
-        m[4] ? Number.parseInt(m[4], 16) / 255 : 1,
-      ]
-    : null;
-}
 
 /** Components of the browser's computed color (`rgb(1, 2, 3)` / `rgba(1, 2, 3, 0.5)`), null for other spaces. */
 export function parseComputed(color: string): Rgba | null {

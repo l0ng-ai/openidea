@@ -21,6 +21,7 @@ something to show.
 | `django-app/`    | Python 3.10+, Django 5.2+                                       | `python manage.py runserver`        | `python manage.py test` | `OPENIDEA_FAIL=1 python manage.py test` | unused import in `shop/views.py`                         |
 | `tailwind-app/`  | Node 22+, pnpm/npm, Tailwind CSS 4, React                       | `pnpm dev`                          | —                    | —                                     | `flex` conflicting with `block` in `src/App.tsx`         |
 | `zig-app/`       | Zig 0.17                                                        | `zig build run`                     | `zig build test`     | —                                     | —                                                        |
+| `biome-app/`     | Node 22+, `@biomejs/biome` (`npm install`)                      | `npm start`                         | —                    | —                                     | `let` never reassigned, `==` and a duplicate CSS `color` (Biome) |
 | `polyglot/`      | Go, TS, Python, C, shell, SQL, TOML/YAML/JSON, proto, Terraform | `make`                              | `make test`          | —                                     | unused variable in `native/hash.c`                       |
 
 The fixtures are standalone: `rust-app` declares its own `[workspace]` and
@@ -43,7 +44,7 @@ git init -q && git add -A && git commit -qm "initial"   # for the VCS checks
 ```
 
 Then open the folder with **File › Open…** (`⌘⇧⌥O`) or from the Welcome screen.
-For `ts-app` / `playwright-app` / `mocha-app` / `polyglot/web` run `pnpm install` first; for `python-app` create a
+For `ts-app` / `playwright-app` / `mocha-app` / `polyglot/web` run `pnpm install` first (`npm install` for `biome-app`); for `python-app` create a
 venv (`python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'`); for
 `php-app` run `composer install` (debugging it needs Xdebug in the PHP on `PATH`).
 

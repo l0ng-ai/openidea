@@ -17,6 +17,7 @@ OpenIDEA edits JavaScript (`.js`, `.mjs`, `.cjs`, `.jsx`) and TypeScript (`.ts`,
 | TS and HTML in Angular projects | `angular-language-server` (`ngserver`)       | Only below `angular.json` or `node_modules/@angular/core`.                                                                                                 |
 | All of the above                | `oxlint`                                     | Only below an `.oxlintrc.json`, `.oxlintrc.jsonc`, `oxlint.config.ts` or `oxlint.config.mts`.                                                              |
 | All of the above                | `vscode-eslint-language-server` (ESLint)     | Only below an ESLint configuration (`eslint.config.*`, `.eslintrc*` or `eslintConfig` in `package.json`); runs the project's own `eslint`.                 |
+| JS, JSX, TS, TSX, JSON, CSS     | `biome lsp-proxy` (Biome)                    | Only below a `biome.json` / `biome.jsonc` or an installed `@biomejs/biome`; runs the project's own `biome`.                                                |
 | All of the above, HTML and CSS  | `tailwindcss-language-server` (Tailwind CSS) | Only below a `tailwind.config.*` or a `package.json` that depends on `tailwindcss`: class completion, hover with the generated CSS, and class diagnostics. |
 
 The TypeScript servers start for a workspace marked by `tsconfig.json`, `jsconfig.json` or `package.json`. Files outside any `tsconfig.json` / `jsconfig.json` are still registered with tsserver, so loose scripts get code insight too.
@@ -49,7 +50,7 @@ All servers, debuggers and formatters are listed in **Settings › Languages & F
 | `vue-language-server`, `svelte-language-server`, `astro-ls`, `angular-language-server` | npm                                                                           |
 | `oxlint`                                                                               | npm                                                                           |
 | `tailwindcss-language-server`                                                          | npm (`@tailwindcss/language-server`)                                          |
-| Prettier, oxfmt                                                                        | npm                                                                           |
+| Prettier, oxfmt, Biome                                                                 | npm                                                                           |
 | JavaScript Debugger (vscode-js-debug)                                                  | GitHub release (`microsoft/vscode-js-debug`)                                  |
 
 The Astro and Angular servers also run from the project's own `node_modules/.bin` when it has them.
@@ -69,8 +70,13 @@ The Astro and Angular servers also run from the project's own `node_modules/.bin
 
 - **Prettier** (**Settings › Languages & Frameworks › Prettier**) formats JavaScript, JSX, TypeScript, TSX, JSON, Vue, HTML, CSS, SCSS, Less, GraphQL, YAML and Markdown by default. The executable is found in the project's `node_modules`, then the managed installation, then `PATH`, unless you set **Prettier path**.
 - **oxfmt** (**Settings › Languages & Frameworks › oxfmt**) replaces Prettier for an enabled language in files below an oxfmt configuration (`.oxfmtrc.json`, `oxfmt.config.ts`), or when it is the selected provider.
+- **Biome** (**Settings › Languages & Frameworks › Biome**) replaces Prettier and oxfmt for JavaScript, JSX, TypeScript, TSX, JSON, CSS and GraphQL in files below a `biome.json` / `biome.jsonc` or an installed `@biomejs/biome` (unless the configuration sets `formatter.enabled` to `false`), or when it is the selected provider. It formats whole files and reads its own configuration.
 
-On both pages, **Formatting provider** chooses between **Automatic (language server first)** and the tool itself, **Run on save** formats on save, and **Enabled languages** limits which languages the tool handles.
+On these pages, **Formatting provider** chooses between **Automatic (language server first)** and the tool itself, **Run on save** formats on save, and **Enabled languages** limits which languages the tool handles.
+
+### Biome lint
+
+In a Biome project, Biome's diagnostics show in the editor and the Problems tool window, and `⌥⏎` / `Alt+Enter` offers its quick fixes and suppressions. Biome's safe fixes (`source.fixAll.biome`) run with **Code › Code Cleanup** and, when **Settings › Tools › Actions on Save › Run code cleanup** is on, on save. When Biome's formatter is enabled, its fix-all formats the file too.
 
 ## Run and test
 
