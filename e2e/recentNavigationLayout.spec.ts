@@ -93,3 +93,42 @@ test("Recent Locations keeps all snippet lines visible when the editor font grow
   await expect(row.getByText("changed", { exact: true })).toBeInViewport({ ratio: 1 });
   await expect(filter).toBeFocused();
 });
+
+test("Recent Locations shows each file name once with its parent directory", async ({ workbench: page }) => {
+  await stubDesktop(page);
+  await page.evaluate(async () => {
+    const tracking = "/src/features/search/common/tracking.ts";
+    const { useTracking } = await import(/* @vite-ignore */ tracking);
+    const now = Date.now();
+    useTracking.setState({
+      locations: [
+        ["README.md", "# Shop API"],
+        ["packages/billing/Routes.ts", "registerBillingRoutes();"],
+        ["packages/checkout/Routes.ts", "registerCheckoutRoutes();"],
+      ].map(([path, snippet], index) => ({
+        path: `/dev/acme-api/${path}`,
+        line: 0,
+        col: 0,
+        changed: false,
+        time: now - index * 60000,
+        snippet: [snippet],
+        snippetStart: 0,
+      })),
+    });
+  });
+  await openRecent(page, "recentLocations");
+  const dialog = page.getByRole("dialog", { name: "Recent Locations", exact: true });
+  const rows = dialog.getByRole("option");
+  await expect(rows).toHaveCount(3);
+  await expect(rows.filter({ hasText: "# Shop API" }).getByText("README.md", { exact: true })).toHaveCount(1);
+
+  const billing = rows.filter({ hasText: "registerBillingRoutes();" });
+  const checkout = rows.filter({ hasText: "registerCheckoutRoutes();" });
+  await expect(billing.getByText("packages/billing", { exact: true })).toBeVisible();
+  await expect(checkout.getByText("packages/checkout", { exact: true })).toBeVisible();
+  await expect(checkout.getByTitle("packages/checkout/Routes.ts", { exact: true })).toBeVisible();
+
+  await dialog.getByRole("textbox", { name: "Filter recent locations" }).fill("packages/checkout");
+  await expect(rows).toHaveCount(1);
+  await expect(rows.first()).toContainText("registerCheckoutRoutes();");
+});
