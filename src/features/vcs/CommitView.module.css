@@ -403,9 +403,14 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: var(--space-1);
+  min-height: var(--h-control-small);
 }
 .checkFeedback > .checkProblems {
+  align-self: stretch;
   flex: 1;
+}
+.checkFeedback .checkProblemsList {
+  align-self: stretch;
 }
 .checkFeedback > button {
   flex: none;
@@ -413,14 +418,13 @@
 .checkProblems {
   flex: none;
   display: flex;
+  align-items: flex-start;
   gap: var(--space-1-5);
   min-width: 0;
-  max-height: 120px;
-  overflow: auto;
-  padding: 4px 10px 0;
+  padding: var(--space-1) 10px 0;
   color: var(--fg-secondary);
   overflow-wrap: anywhere;
-  font-size: var(--fs-small);
+  font-size: var(--fs-ui);
   line-height: 1.4;
 }
 .checkProblemsIcon {
@@ -434,13 +438,21 @@
   color: var(--success);
 }
 .checkProblemsList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
   min-width: 0;
+  max-height: 150px;
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 .checkProblemTitle {
   color: var(--fg);
 }
 .checkProblemLink {
+  max-width: 100%;
   padding: 0;
+  text-align: start;
   border: 0;
   background: none;
   color: var(--accent);
