@@ -47,6 +47,8 @@ export interface SessionSkillItem {
   mode: AgentSkillMode;
   /** True when `overrides` explicitly diverges from the resolved policy. */
   overridden: boolean;
+  /** True when Workspace Trust locks this workspace skill off. */
+  locked: boolean;
 }
 
 export interface ResolvedSessionSkills {
@@ -62,13 +64,16 @@ export function resolveSessionSkills(
   overrides: Readonly<Record<string, AgentSkillMode>> = {},
 ): ResolvedSessionSkills {
   const items = skills.map<SessionSkillItem>((state) => {
+    const locked = state.origin === "trust";
     const explicit = overrides[state.skill.name];
+    const mode = locked ? "off" : (explicit ?? state.mode);
     return {
       name: state.skill.name,
       state,
       defaultMode: state.mode,
-      mode: explicit ?? state.mode,
-      overridden: explicit !== undefined && explicit !== state.mode,
+      mode,
+      overridden: !locked && explicit !== undefined && explicit !== state.mode,
+      locked,
     };
   });
   const groups: ResolvedSessionSkills["groups"] = [];
@@ -86,17 +91,22 @@ export function resolveSessionSkills(
   return { groups, activeCount, totalCount: items.length, overrideCount };
 }
 
-/** Computes the minimal `skillOverrides` map after toggling `name`: off pins `off`, on returns to the policy. */
+/**
+ * Computes the minimal `skillOverrides` map after toggling `name` for this session:
+ * returning to the default policy deletes the override; turning a default-off skill on
+ * overrides to `"auto"`, and turning an active skill off overrides to `"off"`.
+ */
 export function nextSkillOverrides(
   current: Readonly<Record<string, AgentSkillMode>> | undefined,
   item: Pick<SessionSkillItem, "name" | "defaultMode">,
   nextEnabled: boolean,
 ): Record<string, AgentSkillMode> {
   const next = { ...(current ?? {}) };
-  if (nextEnabled) {
+  const defaultEnabled = item.defaultMode !== "off";
+  if (nextEnabled === defaultEnabled) {
     delete next[item.name];
   } else {
-    next[item.name] = "off";
+    next[item.name] = nextEnabled ? "auto" : "off";
   }
   return next;
 }
