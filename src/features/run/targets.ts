@@ -352,10 +352,6 @@ function jvmTargets(lines: string[], relPath: string): RunTarget[] {
   return out;
 }
 
-/**
- * Run targets of a file (relative path picks the language). `django`: a Django project, where
- * `tests.py` (Django's default test module) holds tests too.
- */
 /** Zig: a top-level `pub fn main` and `test "name" {` / `test name {` blocks, nested ones too. */
 export function zigTargets(content: string): RunTarget[] {
   if (content.length > MAX_SCAN) return [];
@@ -372,7 +368,17 @@ export function zigTargets(content: string): RunTarget[] {
   return out;
 }
 
-export function detectRunTargets(text: string, relPath: string, django = false): RunTarget[] {
+/** Whether the project tests with Mocha or `node --test`, which look in `test/` by default, whatever a file's name. */
+export function testsInTestDirectory(configs: readonly RunConfig[]): boolean {
+  return configs.some((c) => c.isTest && ["mocha", "node-test"].includes(frameworkFor(c)));
+}
+
+/**
+ * Run targets of a file (relative path picks the language). `django`: a Django project, where
+ * `tests.py` (Django's default test module) holds tests too. `testDirectory`: JS files in `test/`
+ * hold tests whatever their name (`testsInTestDirectory`).
+ */
+export function detectRunTargets(text: string, relPath: string, django = false, testDirectory = false): RunTarget[] {
   if (text.length > MAX_SCAN) return [];
   const lines = text.split("\n");
   switch (targetLanguage(relPath)) {
@@ -381,8 +387,10 @@ export function detectRunTargets(text: string, relPath: string, django = false):
     case "rust":
       return rustTargets(lines, relPath);
     case "js":
-      // `test/`: where Mocha (and `node --test`) look for tests by default, whatever the file's name.
-      return /\.(test|spec)\.[cm]?[jt]sx?$|(^|\/)(__tests__|test)\//.test(relPath) ? jsTargets(lines) : [];
+      return /\.(test|spec)\.[cm]?[jt]sx?$|(^|\/)__tests__\//.test(relPath) ||
+        (testDirectory && /(^|\/)test\//.test(relPath))
+        ? jsTargets(lines)
+        : [];
     case "python":
       return pythonTargets(lines).filter(
         (t) =>
