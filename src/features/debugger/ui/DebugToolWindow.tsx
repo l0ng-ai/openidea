@@ -3,6 +3,10 @@ import { writeClipboardText } from "@/platform/clipboard";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
+import { editorPrefs } from "@/platform/editorSettings";
+import { monoFontFamily } from "@/platform/fonts";
+import { isImeKey } from "@/platform/ime";
+import { formatBinding, hostBinding } from "@/platform/keymap";
 import { basename, useProject } from "@/platform/project";
 import { call, commands, isTauri, type Scope, type Variable } from "@/platform/ipc";
 import {
@@ -11,6 +15,8 @@ import {
   IconButton,
   Kbd,
   Menu,
+  MenuList,
+  Popup,
   Select,
   SplitGroup,
   SplitHandle,
@@ -54,6 +60,7 @@ import { MemoryView } from "../memory/MemoryView";
 import { DebugConsole } from "./DebugConsole";
 import { VariablesView, type VarRoot } from "./VariablesView";
 import { useExpressionCompletion } from "./ExpressionCompletion";
+import { pushHistory, readHistory } from "./expressionHistory";
 import { sortVariables } from "../values";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { useToolWindowShown } from "@/workbench/contributions";
@@ -555,9 +562,12 @@ function VariablesPane({ session }: { session: DebugSession }) {
   const watches = useDebug((s) => s.watches);
   const stopSeq = useDebug((s) => s.stopSeq);
   const variablesEpoch = useDebug((s) => s.variablesEpoch);
+  const settings = useProject((s) => s.settings);
   const [expression, setExpression] = useState("");
   const evalField = useRef<HTMLInputElement>(null);
+  const evalRow = useRef<HTMLDivElement>(null);
   const completion = useExpressionCompletion(evalField, expression, setExpression, session);
+  const [history, setHistory] = useState<{ sessionId: number; stopSeq: number; entries: string[] } | null>(null);
   const [lastEval, setLastEval] = useState<EvalRow | null>(null);
   const [scopeData, setScopeData] = useState<{ frame: number | null; scopes: Scope[]; locals: Variable[] }>({
     frame: null,
@@ -570,6 +580,8 @@ function VariablesPane({ session }: { session: DebugSession }) {
     rows: [],
   });
   const frame = session.status === "paused" ? session.selectedFrame : null;
+  const historyOpen = frame != null && history?.sessionId === session.id && history.stopSeq === stopSeq;
+  const editor = settings?.editor;
   const live = liveWatchesApply(session);
   // A hidden tool window stays mounted: its watches must not go on running in the page.
   const liveWatches = useLiveWatches(session, watches, useToolWindowShown());
@@ -676,6 +688,7 @@ function VariablesPane({ session }: { session: DebugSession }) {
   const run = async () => {
     const e = expression.trim();
     if (!e) return;
+    pushHistory("evaluate", e);
     try {
       setLastEval({
         expression: e,
@@ -687,12 +700,32 @@ function VariablesPane({ session }: { session: DebugSession }) {
     }
   };
 
+  const addExpressionWatch = () => {
+    const e = expression.trim();
+    if (!e) return;
+    pushHistory("evaluate", e);
+    addWatch(e);
+    setExpression("");
+  };
+
+  const recall = (text: string) => {
+    setExpression(text);
+    requestAnimationFrame(() => {
+      evalField.current?.focus();
+      evalField.current?.setSelectionRange(text.length, text.length);
+    });
+  };
+
   return (
     <div className={styles.variables}>
-      <div className={styles.evalField}>
+      <div ref={evalRow} className={styles.evalField}>
         <input
           ref={evalField}
           className={styles.evalInput}
+          style={{
+            fontFamily: monoFontFamily(editor?.fontFamily, editorPrefs(settings).fallbackFont, "var(--font-mono)"),
+            fontSize: editor?.fontSize ? `min(var(--fs-ui), ${editor.fontSize}px)` : undefined,
+          }}
           value={expression}
           onChange={(e) => {
             setExpression(e.target.value);
@@ -700,17 +733,16 @@ function VariablesPane({ session }: { session: DebugSession }) {
           }}
           onBlur={completion.close}
           onKeyDown={(e) => {
-            if (completion.onKeyDown(e)) return;
+            if (isImeKey(e.nativeEvent) || completion.onKeyDown(e)) return;
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && e.shiftKey) {
               e.preventDefault();
-              addWatch(expression);
-              setExpression("");
+              addExpressionWatch();
             } else if (e.key === "Enter") {
               e.preventDefault();
               void run();
             }
           }}
-          placeholder={frame != null ? "Evaluate expression (↩) or add a watch (⇧⌘↩)" : "Evaluate expression"}
+          placeholder={tx("Evaluate expression")}
           aria-label={tx("Evaluate expression")}
           spellCheck={false}
           autoComplete="off"
@@ -720,16 +752,55 @@ function VariablesPane({ session }: { session: DebugSession }) {
         <IconButton
           icon="plus"
           title="Add to Watches"
-          shortcut="⇧⌘↩"
+          shortcut={formatBinding(hostBinding("Meta+Shift+Enter"))}
           size="small"
           iconSize={16}
           disabled={!expression.trim()}
-          onClick={() => {
-            addWatch(expression);
-            setExpression("");
-          }}
+          onClick={addExpressionWatch}
+        />
+        <IconButton
+          icon="chevron-down"
+          title="History"
+          size="small"
+          aria-haspopup="menu"
+          aria-expanded={historyOpen}
+          disabled={frame == null}
+          onClick={() =>
+            setHistory(
+              historyOpen
+                ? null
+                : {
+                    sessionId: session.id,
+                    stopSeq,
+                    entries: readHistory("evaluate")
+                      .filter((entry) => !/[\r\n]/.test(entry))
+                      .slice(0, 20),
+                  },
+            )
+          }
         />
       </div>
+      <Popup
+        open={historyOpen}
+        onClose={() => setHistory(null)}
+        anchor={evalRow}
+        placement="bottom-start"
+        matchWidth
+        role="presentation"
+        autoFocus={false}
+        className={styles.evalHistory}
+      >
+        <MenuList
+          aria-label={tx("Expression history")}
+          iconColumn={false}
+          onDone={() => setHistory(null)}
+          items={
+            history?.entries.length
+              ? history.entries.map((entry) => ({ label: entry, verbatim: true, run: () => recall(entry) }))
+              : [{ label: "No history", disabled: true }]
+          }
+        />
+      </Popup>
       {frame == null && !watches.length && !lastEval ? (
         <div className={styles.note}>
           {session.status === "terminated"

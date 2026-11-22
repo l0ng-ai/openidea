@@ -502,6 +502,7 @@
   "Unknown error": "Unknown error",
   "Retry Loading Conversation": "Retry Loading Conversation",
   "No conversation history": "No conversation history",
+  "No history": "No history",
   "Loading the conversation timed out. Try again.": "Loading the conversation timed out. Try again.",
   "Couldn't load the conversation: {0}": "Couldn't load the conversation: {0}",
   "Astro Language Server": "Astro Language Server",
