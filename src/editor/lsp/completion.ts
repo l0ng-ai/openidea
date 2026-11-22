@@ -1045,6 +1045,7 @@ const completionPopup = ViewPlugin.fromClass(
             footer.className = "cm-lsp-completion-footer";
             const tip = document.createElement("span");
             tip.textContent = tx("Press ↵ to insert, ⇥ to replace");
+            tip.title = tip.textContent;
             footer.append(tip, sortToggle(this.view));
           }
           // CodeMirror appends a fresh list when the candidates change.
