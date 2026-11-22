@@ -4,7 +4,7 @@
   min-width: 180px;
   overflow-x: hidden;
 }
-.popup .menu {
+.popup:not(.anchorWidthPopup) .menu {
   max-width: 420px;
 }
 .titledPopup {
