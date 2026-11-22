@@ -344,21 +344,25 @@ export function SessionPanel({
 }
 
 function sessionItems(sessions: readonly RunSession[], targets: readonly RunTargetValid[]): TabItem[] {
-  return sessions.map((s) => ({
-    id: s.id,
-    label: remoteLabel(s.config, targets),
-    text: remoteLabel(s.config, targets),
-    icon: sessionIcon(s),
-    color: failed(s) ? "var(--danger)" : undefined,
-    // An agent's command that ended, however it ended.
-    dimmed: agentName(s.config) !== null && !isLive(s),
-    closable: true,
-    pinned: s.pinned,
-    tooltip:
+  return sessions.map((s) => {
+    const label = remoteLabel(s.config, targets);
+    const outcome =
       s.status === "finished"
         ? tx`Finished in ${formatDuration((s.endedAt ?? s.startedAt) - s.startedAt)}, exit code ${s.exitCode ?? "?"}`
-        : undefined,
-  }));
+        : undefined;
+    return {
+      id: s.id,
+      label,
+      text: label,
+      icon: sessionIcon(s),
+      color: failed(s) ? "var(--danger)" : undefined,
+      // An agent's command that ended, however it ended.
+      dimmed: agentName(s.config) !== null && !isLive(s),
+      closable: true,
+      pinned: s.pinned,
+      tooltip: outcome ? `${label} · ${outcome}` : label,
+    };
+  });
 }
 
 /** The selected tab: a run session or an analyzed stack trace (IDEA shows both in Run). */
@@ -388,12 +392,13 @@ export function RunTabs() {
   const shown = archived.length ? sessions.filter((s) => !archived.includes(s)) : sessions;
   const items: TabItem[] = [
     ...sessionItems(shown, runTargets),
-    ...traces.map((t) => ({ id: t.id, label: t.title, text: t.title, closable: true })),
+    ...traces.map((t) => ({ id: t.id, label: t.title, text: t.title, closable: true, tooltip: t.title })),
   ];
   const activeId = "session" in current ? current.session.id : current.trace.id;
   return (
     <Tabs
       variant="compact"
+      layout="fit"
       className={styles.tabs}
       aria-label="Run sessions"
       items={items}
