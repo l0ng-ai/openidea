@@ -165,6 +165,31 @@ describe("SkillsPicker", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Skills" })).toHaveTextContent("Skills3/5"));
   });
 
+  it("shows fork and paths pills on skills with context: fork and paths frontmatter", async () => {
+    const richSkills: AgentSkillState[] = [
+      {
+        skill: {
+          name: "verify-ux",
+          description: "Verify UX layouts",
+          path: "/ws/.agents/skills/verify-ux",
+          source: "workspace",
+          contextFork: true,
+          paths: ["src/**/*.tsx", "e2e/*.spec.ts"],
+          valid: true,
+          warnings: [],
+        },
+        mode: "auto",
+        origin: "none",
+      },
+    ];
+    render(<Harness skills={richSkills} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Skills" }));
+    expect(await screen.findByText("fork")).toBeInTheDocument();
+    expect(screen.getByText("paths")).toBeInTheDocument();
+    expect(screen.getByTitle("Verify UX layouts · src/**/*.tsx, e2e/*.spec.ts")).toBeInTheDocument();
+  });
+
   it("shows an empty state without skills", async () => {
     render(<Harness skills={[]} />);
 

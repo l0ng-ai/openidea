@@ -125,10 +125,9 @@ fn file_name(path: &Path) -> Option<String> {
     path.file_name()?.to_str().map(str::to_owned)
 }
 
-/// The `key: value` lines between the leading `---` fences (folded `>` / `|` values joined).
 struct Frontmatter {
     fields: Vec<(String, String)>,
-    /// Where the body starts.
+    lists: Vec<(String, Vec<String>)>,
     body: usize,
 }
 
@@ -138,22 +137,42 @@ impl Frontmatter {
         let mut lines = text.split_inclusive('\n');
         let mut offset = 0;
         let mut fields: Vec<(String, String)> = Vec::new();
+        let mut lists: Vec<(String, Vec<String>)> = Vec::new();
         match lines.next() {
             Some(first) if first.trim_end() == "---" => offset += first.len(),
-            _ => return Self { fields, body: 0 },
+            _ => return Self { fields, lists, body: 0 },
         }
         for line in lines {
             offset += line.len();
             let line = line.trim_end();
             if line == "---" {
-                return Self { fields, body: offset };
+                return Self { fields, lists, body: offset };
             }
-            if line.starts_with([' ', '\t']) {
+            let unindented_list_item = (line == "-" || line.starts_with("- ") || line.starts_with("-\t"))
+                && fields.last().is_some_and(|(_, v)| v.is_empty());
+            if line.starts_with([' ', '\t']) || unindented_list_item {
+                let trimmed = line.trim();
+                if let Some(rest) = trimmed.strip_prefix('-')
+                    && (rest.is_empty() || rest.starts_with([' ', '\t']))
+                    && let Some((key, _)) = fields.last()
+                {
+                    let item = unquote(rest.trim());
+                    if !item.is_empty() {
+                        if let Some((_, existing)) = lists.iter_mut().find(|(k, _)| k == key) {
+                            existing.push(item.to_owned());
+                        } else {
+                            lists.push((key.clone(), vec![item.to_owned()]));
+                        }
+                    }
+                    if unindented_list_item {
+                        continue;
+                    }
+                }
                 if let Some((_, value)) = fields.last_mut() {
                     if !value.is_empty() {
                         value.push(' ');
                     }
-                    value.push_str(line.trim());
+                    value.push_str(trimmed);
                 }
                 continue;
             }
@@ -164,11 +183,15 @@ impl Frontmatter {
             }
         }
         // No closing fence: not frontmatter.
-        Self { fields: Vec::new(), body: 0 }
+        Self { fields: Vec::new(), lists: Vec::new(), body: 0 }
     }
 
     fn get(&self, key: &str) -> Option<&str> {
-        self.fields.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+        self.fields.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_str())
+    }
+
+    fn list(&self, key: &str) -> Option<&[String]> {
+        self.lists.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_slice())
     }
 
     /// `description`, else the body's first line.
@@ -505,6 +528,8 @@ fn parse_skill_file(dir: &Path, folder: &str, text: &str, source: AgentSkillSour
     let hint = meta.get("argument-hint").map(|h| strip_ansi(h).trim().to_owned()).filter(|h| !h.is_empty());
     let user_invocable = !meta.get("user-invocable").is_some_and(|v| v.eq_ignore_ascii_case("false"));
     let disable_model_invocation = meta.get("disable-model-invocation").is_some_and(|v| v.eq_ignore_ascii_case("true"));
+    let context_fork = meta.get("context").is_some_and(|v| strip_ansi(v).trim().eq_ignore_ascii_case("fork"));
+    let paths = parse_skill_paths(&meta);
     AgentSkill {
         name,
         description: truncate(&description),
@@ -514,9 +539,33 @@ fn parse_skill_file(dir: &Path, folder: &str, text: &str, source: AgentSkillSour
         also_in: Vec::new(),
         user_invocable,
         disable_model_invocation,
+        context_fork,
+        paths,
         valid: warnings.is_empty(),
         warnings,
     }
+}
+
+fn parse_skill_paths(meta: &Frontmatter) -> Vec<String> {
+    for key in ["paths", "globs"] {
+        if let Some(items) = meta.list(key) {
+            let cleaned: Vec<String> =
+                items.iter().map(|s| strip_ansi(s).trim().to_owned()).filter(|s| !s.is_empty()).collect();
+            if !cleaned.is_empty() {
+                return cleaned;
+            }
+        }
+        if let Some(raw) = meta.get(key) {
+            let trimmed = strip_ansi(raw);
+            let inner = trimmed.trim().strip_prefix('[').and_then(|s| s.strip_suffix(']')).unwrap_or(trimmed.trim());
+            let cleaned: Vec<String> =
+                inner.split(',').map(|p| unquote(p.trim()).trim().to_owned()).filter(|p| !p.is_empty()).collect();
+            if !cleaned.is_empty() {
+                return cleaned;
+            }
+        }
+    }
+    Vec::new()
 }
 
 /// A skill's mode, as one policy layer of the settings has it.
@@ -1034,6 +1083,8 @@ mod tests {
             also_in: Vec::new(),
             user_invocable: true,
             disable_model_invocation: false,
+            context_fork: false,
+            paths: Vec::new(),
             valid: true,
             warnings: Vec::new(),
         }
@@ -1434,5 +1485,41 @@ mod tests {
         let farm = farm_dir(&root.join("store"), "plugin-off");
         let _ = stage(&farm, "claude", &off_states, &ws, Some(&home)).unwrap();
         assert!(!farm.join(".claude/skills/release-notes").exists());
+    }
+
+    #[test]
+    fn parses_context_fork_and_paths_frontmatter_and_preserves_file_on_stage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let ws = root.join("ws");
+        let raw_md = "---\n\
+            name: verify-ux\n\
+            description: Verify UX layouts in an isolated subagent\n\
+            context: fork\n\
+            paths:\n\
+              - \"src/**/*.tsx\"\n\
+              - crates/ide-agent/**/*.rs\n\
+            ---\n\nRun visual checks.\n";
+        write(&ws.join(".openidea/skills/verify-ux/SKILL.md"), raw_md);
+        write(
+            &ws.join(".agents/skills/inline-globs/SKILL.md"),
+            "---\nname: inline-globs\ndescription: Scoped by globs\nglobs: [\"e2e/*.spec.ts\", \"src/ui/*.tsx\"]\n---\n",
+        );
+
+        let found = discover_skills(&ws, None);
+        let verify = found.iter().find(|s| s.name == "verify-ux").unwrap();
+        assert!(verify.context_fork);
+        assert_eq!(verify.paths, ["src/**/*.tsx", "crates/ide-agent/**/*.rs"]);
+
+        let inline = found.iter().find(|s| s.name == "inline-globs").unwrap();
+        assert!(!inline.context_fork);
+        assert_eq!(inline.paths, ["e2e/*.spec.ts", "src/ui/*.tsx"]);
+
+        // Staging passes `SKILL.md` through untouched so native CLIs execute `context: fork` / `paths`.
+        let states = resolve(found, None, &BTreeMap::new(), &BTreeMap::new(), true);
+        let farm = farm_dir(&root.join("store"), "fork-passthrough");
+        let _ = stage(&farm, "copilot", &states, &ws, None).unwrap();
+        let staged_md = std::fs::read_to_string(farm.join("copilot/verify-ux/SKILL.md")).unwrap();
+        assert_eq!(staged_md, raw_md);
     }
 }

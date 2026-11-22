@@ -2904,6 +2904,10 @@ export type AgentSkill_Deserialize = {
 	userInvocable?: boolean,
 	/**  True when frontmatter sets `disable-model-invocation: true` (defaults to `slashOnly`). */
 	disableModelInvocation?: boolean,
+	/**  True when frontmatter sets `context: fork` (passed through natively to supporting CLIs). */
+	contextFork?: boolean,
+	/**  Optional `paths` / `globs` patterns from frontmatter (passed through natively to supporting CLIs). */
+	paths?: string[],
 	/**  The `SKILL.md` passes validation (`name` matches its folder, `description` present). */
 	valid: boolean,
 	/**  What validation found (`name` mismatch, missing or over-long description…). */
@@ -2926,6 +2930,10 @@ export type AgentSkill_Serialize = {
 	userInvocable: boolean,
 	/**  True when frontmatter sets `disable-model-invocation: true` (defaults to `slashOnly`). */
 	disableModelInvocation: boolean,
+	/**  True when frontmatter sets `context: fork` (passed through natively to supporting CLIs). */
+	contextFork: boolean,
+	/**  Optional `paths` / `globs` patterns from frontmatter (passed through natively to supporting CLIs). */
+	paths?: string[],
 	/**  The `SKILL.md` passes validation (`name` matches its folder, `description` present). */
 	valid: boolean,
 	/**  What validation found (`name` mismatch, missing or over-long description…). */

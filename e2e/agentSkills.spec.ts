@@ -73,6 +73,8 @@ const initialSkills: AgentSkillState[] = [
       alsoIn: ["claudeWorkspace"],
       userInvocable: true,
       disableModelInvocation: false,
+      contextFork: true,
+      paths: ["src/**/*.tsx", "e2e/*.spec.ts"],
       valid: true,
       warnings: [],
     },
@@ -326,6 +328,8 @@ test("manages multi-level skills in Settings and per-session overrides via Compo
   const sessionPopup = page.getByRole("dialog", { name: "Session Skills" });
   await expect(sessionPopup).toBeVisible();
   await expect(sessionPopup).toContainText("verify");
+  await expect(sessionPopup).toContainText("fork");
+  await expect(sessionPopup).toContainText("paths");
   await expect(sessionPopup).toContainText("impeccable");
   await expect(sessionPopup).toContainText("Plugins");
   await expect(sessionPopup).toContainText("release-notes");
@@ -352,9 +356,12 @@ test("manages multi-level skills in Settings and per-session overrides via Compo
   await expect(settingsDialog).toBeVisible();
   await expect(settingsDialog.getByRole("heading", { name: "Skills" })).toBeVisible();
   await expect(settingsDialog.getByTitle(".claude/skills").first()).toHaveText("Claude Code");
+  await expect(settingsDialog.getByText("context: fork")).toBeVisible();
+  await expect(settingsDialog.getByText("paths (2)")).toBeVisible();
 
   await settingsDialog.getByRole("button", { name: /^verify/ }).click();
   await expect(settingsDialog.getByText("Claude Code (.claude/skills)")).toBeVisible();
+  await expect(settingsDialog.getByText("src/**/*.tsx, e2e/*.spec.ts")).toBeVisible();
   await expect(settingsDialog.getByText("SKILL.md is valid")).toBeVisible();
 
   await settingsDialog.getByRole("tab", { name: /Plugins/ }).click();
