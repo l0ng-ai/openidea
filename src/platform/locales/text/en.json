@@ -3040,5 +3040,17 @@
   "Mail:": "Mail:",
   "A folder with this name already exists and is not empty": "A folder with this name already exists and is not empty",
   "Show Only Affected Changes": "Show Only Affected Changes",
-  "Layout": "Layout"
+  "Layout": "Layout",
+  "Values are available while the program is paused": "Values are available while the program is paused",
+  "Not a pandas DataFrame or Series, or a numpy array": "Not a pandas DataFrame or Series, or a numpy array",
+  "A {n}-dimensional array can't be shown as a table: view a 2-D slice, e.g. a[0]": "A {n}-dimensional array can't be shown as a table: view a 2-D slice, e.g. a[0]",
+  "Table view of {label}": "Table view of {label}",
+  "Shape ({shape})": "Shape ({shape})",
+  "Rows {from}–{to} of {total}": "Rows {from}–{to} of {total}",
+  "Columns {from}–{to} of {total}": "Columns {from}–{to} of {total}",
+  "View as Table": "View as Table",
+  "Previous Rows": "Previous Rows",
+  "Next Rows": "Next Rows",
+  "Previous Columns": "Previous Columns",
+  "Next Columns": "Next Columns"
 }

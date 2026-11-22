@@ -78,6 +78,7 @@ import { EventBreakpointsSection } from "../js/EventBreakpointsSection";
 import { StreamChainChooser } from "../streams/StreamChainChooser";
 import { StreamAbortDialog } from "../streams/StreamAbortDialog";
 import { closeBreakpointPopover, useOverlays } from "./popoverStore";
+import { TableViewDialog } from "./TableViewDialog";
 import { VariablesView, type VarRoot } from "./VariablesView";
 import { useExpressionCompletion } from "./ExpressionCompletion";
 import { pushHistory, readHistory } from "./expressionHistory";
@@ -96,7 +97,21 @@ export function DebuggerOverlays() {
       <SmartStepChooser />
       <StreamChainChooser />
       <StreamAbortDialog />
+      <TableView />
     </>
+  );
+}
+
+function TableView() {
+  const view = useOverlays((s) => s.tableView);
+  if (!view) return null;
+  return (
+    <TableViewDialog
+      key={`${view.session}:${view.expression}`}
+      expression={view.expression}
+      session={view.session}
+      onClose={() => useOverlays.setState({ tableView: null })}
+    />
   );
 }
 
