@@ -61,8 +61,25 @@ test("the floating navigation list stays beside the visible segment and scrolls 
   const folderRow = list.getByRole("option", { name: "archive" });
   await expect(folderRow).toHaveAttribute("aria-selected", "true");
   await expect(folderRow).toBeInViewport({ ratio: 1 });
+  await expect(folderRow).toHaveCSS("height", "18px");
+  await expect(folderRow).toHaveCSS("font-size", "13px");
   await expect(list.getByRole("option", { name: long, exact: true }).getByTitle(long)).toBeVisible();
   expect(await list.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+
+  await page.setViewportSize({ width: 1120, height: 820 });
+  await expect
+    .poll(() =>
+      list.evaluate((el) => {
+        const bounds = el.getBoundingClientRect();
+        return [...el.querySelectorAll('[role="option"]')].filter((row) => {
+          const box = row.getBoundingClientRect();
+          return box.top >= bounds.top && box.bottom <= bounds.bottom;
+        }).length;
+      }),
+    )
+    .toBe(20);
+  await page.setViewportSize({ width: 600, height: 560 });
+
   await page.keyboard.press("End");
   const lastRow = list.getByRole("option", { name: last, exact: true });
   await expect(lastRow).toHaveAttribute("aria-selected", "true");
@@ -119,6 +136,8 @@ for (const position of ["top", "statusBar"] as const) {
     const archive = list.getByRole("option", { name: "archive" });
     await expect(archive).toHaveAttribute("aria-selected", "true");
     await expect(list).toBeFocused();
+    expect((await list.boundingBox())!.width).toBeLessThan(140);
+    await expect(archive).toHaveCSS("height", "18px");
     await expect
       .poll(async () => {
         const bounds = (await anchor.boundingBox())!;

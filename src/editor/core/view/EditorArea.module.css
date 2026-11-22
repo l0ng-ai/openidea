@@ -227,16 +227,14 @@
 }
 .find {
   display: grid;
-  grid-template-columns: [mode] auto [field] minmax(0, 420px) [actions] fit-content(50%) [close] minmax(
-      min-content,
-      1fr
-    );
+  grid-template-columns: [mode] auto [field] minmax(0, max(240px, 33%)) [actions] fit-content(50%) minmax(0, 1fr);
   align-items: start;
   row-gap: var(--space-1);
   padding: var(--space-1-5) var(--space-2);
 }
 .findExpand {
   grid-area: 1 / mode;
+  margin-block-start: var(--space-1);
   margin-inline-end: var(--space-1);
 }
 .findField {
@@ -248,15 +246,6 @@
 .findField,
 .replaceField {
   min-width: 0;
-}
-.findClose {
-  grid-area: 1 / close;
-  justify-self: end;
-  margin-inline-start: var(--space-1);
-}
-.findExpand,
-.findClose {
-  margin-block-start: var(--space-1);
 }
 .findButtons,
 .replaceButtons {
@@ -289,7 +278,7 @@
 
 @container editor-find (width < 500px) {
   .find {
-    grid-template-columns: [mode] auto [field] minmax(0, 1fr) [close] auto;
+    grid-template-columns: [mode] auto [field] minmax(0, 1fr);
   }
   .findButtons,
   .replaceButtons {
@@ -321,8 +310,7 @@
   .replaceButtons {
     grid-column: mode / -1;
   }
-  .findExpand,
-  .findClose {
+  .findExpand {
     grid-row: 2;
     margin-block-start: 0;
   }

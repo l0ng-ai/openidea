@@ -110,12 +110,15 @@ describe("SkillsPage", () => {
     );
   });
 
-  it("expands a row to its canonical path, validation result, and open action", async () => {
-    render(<SkillsPage backend={backend()} />);
+  it("expands a row to its canonical path, collapsed symlink sources, validation result, and open action", async () => {
+    const withSymlink = [state("tdd", "workspace", "auto", { alsoIn: ["claudeWorkspace"] }), ...SKILLS.slice(1)];
+    render(<SkillsPage backend={{ list: vi.fn(async () => withSymlink), setMode: vi.fn(async () => withSymlink) }} />);
 
     await waitFor(() => expect(screen.getByText("tdd")).toBeInTheDocument());
+    expect(screen.getByTitle(".claude/skills")).toHaveTextContent("Claude Code");
     fireEvent.click(screen.getByRole("button", { name: /^tdd/ }));
     expect(await screen.findByText("/skills/tdd")).toBeInTheDocument();
+    expect(screen.getByText("Claude Code (.claude/skills)")).toBeInTheDocument();
     expect(screen.getByText("SKILL.md is valid")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Open SKILL.md" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Copy the path of tdd" })).toBeInTheDocument();
