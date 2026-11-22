@@ -24,6 +24,7 @@ const PrettierPage = lazyPage("languages.prettier", () =>
   import("../languages/FormatterPage").then((m) => m.PrettierPage),
 );
 const OxfmtPage = lazyPage("languages.oxfmt", () => import("../languages/FormatterPage").then((m) => m.OxfmtPage));
+const BiomePage = lazyPage("languages.biome", () => import("../languages/FormatterPage").then((m) => m.BiomePage));
 const DocstringsPage = lazyPage("python.docstrings", () =>
   import("../languages/DocstringsPage").then((m) => m.DocstringsPage),
 );
@@ -200,6 +201,16 @@ export const LANGUAGE_PAGES: PageSpec[] = [
     order: 403.6,
     keywords: ["formatter", "oxfmt", "oxc", ".oxfmtrc.json", "format on save", "node_modules"],
     component: OxfmtPage,
+  },
+  {
+    id: "languages.biome",
+    projectScope: true,
+    defaultScope: "project",
+    title: "Biome",
+    group: LANGUAGES_GROUP,
+    order: 403.7,
+    keywords: ["formatter", "linter", "biome", "biome.json", "format on save", "node_modules"],
+    component: BiomePage,
   },
   {
     id: "python.docstrings",
