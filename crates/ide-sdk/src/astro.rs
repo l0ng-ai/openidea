@@ -1,7 +1,7 @@
 //! Astro (Volar) requires a TypeScript language-service library at initialize.
 
 use crate::apply::{merge_init_options, setting_path, tsdk};
-use crate::npm::{has_ts_api, own_typescript, package_dir};
+use crate::npm::{has_ts_api, own_typescript, package_dir, project_bin};
 use ide_core::settings::Settings;
 use ide_core::tool_path::{find_command, search_path};
 use ide_language::LanguageServerConfig;
@@ -20,10 +20,7 @@ pub(crate) fn configure(cfg: &mut LanguageServerConfig, root: &Path, server_root
     // A project's installation wins over managed / global tools. Explicit
     // executable settings still win, as they do for other language servers.
     if cfg.command == SERVER
-        && let Some(bin) = server_root
-            .ancestors()
-            .take_while(|dir| dir.starts_with(root))
-            .find_map(|dir| find_command(SERVER, dir.join("node_modules/.bin").as_os_str(), server_root))
+        && let Some(bin) = project_bin(SERVER, root, server_root)
     {
         cfg.command = bin.to_string_lossy().into_owned();
     }

@@ -32,7 +32,15 @@ import { firstTopLevelType, scanJvmTargets, simpleClassName } from "./jvmTargets
 import { isWindows } from "./jvmTypes";
 import { inheritedRunTargets } from "./inheritedMain";
 import { withMavenTests } from "./mavenTests";
-import { detectRunTargets, goFuzzConfig, targetConfig, targetLanguage, zigTargets, type RunTarget } from "./targets";
+import {
+  detectRunTargets,
+  goFuzzConfig,
+  targetConfig,
+  targetLanguage,
+  testsInTestDirectory,
+  zigTargets,
+  type RunTarget,
+} from "./targets";
 import { tx } from "@/platform/i18n";
 
 export interface LocatedTool {
@@ -1137,7 +1145,7 @@ export function fileTargets(
       (t) => t.kind === "main" && (!t.className || /\.(java|kt)$/.test(input.path)),
     );
   }
-  const targets = detectRunTargets(content, s.rel, hasDjangoTests(input.configs));
+  const targets = detectRunTargets(content, s.rel, hasDjangoTests(input.configs), testsInTestDirectory(input.configs));
   return /\.java$/.test(input.path) ? [...targets, ...inheritedRunTargets(input.path, content)] : targets;
 }
 

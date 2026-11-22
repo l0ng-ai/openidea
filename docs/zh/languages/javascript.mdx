@@ -7,16 +7,18 @@ OpenIDEA 打开 JavaScript（`.js`、`.mjs`、`.cjs`、`.jsx`）和 TypeScript�
 
 ## 语言服务器
 
-| 文件                        | 服务器                                    | 说明                                                                                                                                 |
-| --------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| JS、JSX、TS、TSX            | `vtsls`                                   | 默认的 TypeScript 服务器。                                                                                                           |
-| JS、JSX、TS、TSX            | `typescript-language-server`              | 备选：仅在未安装 `vtsls` 时使用。                                                                                                    |
-| `.vue`                      | `vue-language-server` + `vtsls`           | Vue 的 hybrid 模式：`.vue` 中的 TypeScript 由加载了 `@vue/typescript-plugin` 的 `vtsls` 处理。                                       |
-| `.svelte`                   | `svelte-language-server`                  |                                                                                                                                      |
-| `.astro`                    | `astro-ls`                                | 需要 Node.js 和 TypeScript 库。                                                                                                      |
-| Angular 项目中的 TS 和 HTML | `angular-language-server`（`ngserver`）   | 只在 `angular.json` 或 `node_modules/@angular/core` 所在目录之下启用。                                                               |
-| 以上全部                    | `oxlint`                                  | 只在存在 `.oxlintrc.json`、`.oxlintrc.jsonc`、`oxlint.config.ts` 或 `oxlint.config.mts` 的目录之下启用。                             |
-| 以上全部                    | `vscode-eslint-language-server`（ESLint） | 只在 ESLint 配置（`eslint.config.*`、`.eslintrc*` 或 `package.json` 中的 `eslintConfig`）所在目录之下启用，运行项目自己的 `eslint`。 |
+| 文件                        | 服务器                                        | 说明                                                                                                                                 |
+| --------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| JS、JSX、TS、TSX            | `vtsls`                                       | 默认的 TypeScript 服务器。                                                                                                           |
+| JS、JSX、TS、TSX            | `typescript-language-server`                  | 备选：仅在未安装 `vtsls` 时使用。                                                                                                    |
+| `.vue`                      | `vue-language-server` + `vtsls`               | Vue 的 hybrid 模式：`.vue` 中的 TypeScript 由加载了 `@vue/typescript-plugin` 的 `vtsls` 处理。                                       |
+| `.svelte`                   | `svelte-language-server`                      |                                                                                                                                      |
+| `.astro`                    | `astro-ls`                                    | 需要 Node.js 和 TypeScript 库。                                                                                                      |
+| Angular 项目中的 TS 和 HTML | `angular-language-server`（`ngserver`）       | 只在 `angular.json` 或 `node_modules/@angular/core` 所在目录之下启用。                                                               |
+| 以上全部                    | `oxlint`                                      | 只在存在 `.oxlintrc.json`、`.oxlintrc.jsonc`、`oxlint.config.ts` 或 `oxlint.config.mts` 的目录之下启用。                             |
+| 以上全部                    | `vscode-eslint-language-server`（ESLint）     | 只在 ESLint 配置（`eslint.config.*`、`.eslintrc*` 或 `package.json` 中的 `eslintConfig`）所在目录之下启用，运行项目自己的 `eslint`。 |
+| JS、JSX、TS、TSX、JSON、CSS | `biome lsp-proxy`（Biome）                    | 只在 `biome.json` / `biome.jsonc` 所在目录或安装了 `@biomejs/biome` 的项目之下启用，运行项目自己的 `biome`。                         |
+| 以上全部及 HTML、CSS        | `tailwindcss-language-server`（Tailwind CSS） | 只在 `tailwind.config.*` 或依赖了 `tailwindcss` 的 `package.json` 所在目录之下启用：类名补全、悬停显示生成的 CSS、类名诊断。         |
 
 TypeScript 服务器以 `tsconfig.json`、`jsconfig.json` 或 `package.json` 所在目录为工作区根。不属于任何 `tsconfig.json` / `jsconfig.json` 的文件也会注册给 tsserver，零散脚本同样有代码智能。
 
@@ -47,7 +49,9 @@ Vue、Astro 和 Angular 服务器也会使用这里选择的版本。TypeScript 
 | `vtsls`、`typescript-language-server`                                                  | npm（`@vtsls/language-server`；`typescript-language-server` + `typescript@6`） |
 | `vue-language-server`、`svelte-language-server`、`astro-ls`、`angular-language-server` | npm                                                                            |
 | `oxlint`                                                                               | npm                                                                            |
+| `tailwindcss-language-server`                                                          | npm（`@tailwindcss/language-server`）                                          |
 | Prettier、oxfmt                                                                        | npm                                                                            |
+| Prettier、oxfmt、Biome                                                                 | npm                                                                            |
 | JavaScript 调试器（vscode-js-debug）                                                   | GitHub release（`microsoft/vscode-js-debug`）                                  |
 
 如果项目自己的 `node_modules/.bin` 里有 Astro 或 Angular 服务器，会优先使用项目里的。
@@ -67,8 +71,13 @@ Vue、Astro 和 Angular 服务器也会使用这里选择的版本。TypeScript 
 
 - **Prettier**（**设置 › 语言和框架 › Prettier**）默认处理 JavaScript、JSX、TypeScript、TSX、JSON、Vue、HTML、CSS、SCSS、Less、GraphQL、YAML 和 Markdown。未设置 **Prettier 路径** 时，依次查找项目 `node_modules`、IDE 管理的安装、`PATH`。
 - **oxfmt**（**设置 › 语言和框架 › oxfmt**）在 oxfmt 配置文件（`.oxfmtrc.json`、`oxfmt.config.ts`）所在目录之下，或被选为格式化工具时，替代 Prettier 处理已启用的语言。
+- **Biome**（**设置 › 语言和框架 › Biome**）在 `biome.json` / `biome.jsonc` 所在目录或安装了 `@biomejs/biome` 的项目之下（配置里 `formatter.enabled` 为 `false` 时除外），或被选为格式化工具时，替代 Prettier 和 oxfmt 处理 JavaScript、JSX、TypeScript、TSX、JSON、CSS 和 GraphQL。它总是格式化整个文件，并读取自己的配置。
 
-两个页面上，**格式化工具** 可选 **自动（优先语言服务器）** 或工具本身，**保存时运行** 控制保存时格式化，**启用的语言** 限定工具处理哪些语言。
+这些页面上，**格式化工具** 可选 **自动（优先语言服务器）** 或工具本身，**保存时运行** 控制保存时格式化，**启用的语言** 限定工具处理哪些语言。
+
+### Biome 检查
+
+在 Biome 项目中，Biome 的诊断显示在编辑器和“问题”工具窗口里，`⌥⏎` / `Alt+Enter` 提供它的快速修复和抑制。Biome 的安全修复（`source.fixAll.biome`）随 **代码 › 代码清理** 运行；开启 **设置 › 工具 › 保存时操作 › 运行代码清理** 后，保存时也会运行。Biome 的格式化器开启时，它的全部修复也会格式化文件。
 
 ## 运行与测试
 
@@ -86,7 +95,7 @@ Vue、Astro 和 Angular 服务器也会使用这里选择的版本。TypeScript 
 - 其他 `.js` 文件用 `node` 运行（项目含 `deno.json` 或 `bun.lock` 时改用 `deno run` 或 `bun run`）。
 - `.ts` 文件在 Node.js 22.18+ / 23.6+ 上直接运行，在 22.6–22.17 和 23.0–23.5 上加 `--experimental-strip-types`，更早的版本则通过 `tsx` 或 `ts-node` 运行。
 
-Jest、Vitest、Playwright Test、`node --test` 和 Mocha 的输出会解析成测试树，支持 **重新运行失败的测试**。Playwright 运行时使用它的 `list` 报告器（配置里指定了其他报告器时除外）；从行号栏运行单个测试时按行号选择（`file:line`），有多个 project 的运行会在文件下按 project 分组。`node --test` 运行时，IDE 通过 `NODE_OPTIONS` 在 `spec` 旁加上自己的报告器（脚本自己指定了 `--test-reporter` 时不显示测试树）；单个测试和重新运行按完整名称选择（`--test-name-pattern`）。Mocha 运行保留它自己的报告器，并通过 `NODE_OPTIONS` 加载 IDE 的钩子，逐个报告测试及其所在行；单个测试和重新运行使用 `--grep`，`test/` 目录下的测试不论文件名都有行号栏图标。**使用覆盖率运行** 支持调用 `vitest` 或 `jest` 的脚本（Vitest 需要 `@vitest/coverage-v8` 之类的覆盖率 provider，缺失时 IDE 会提示添加），以及通过 `c8` 运行的 `node` / `tsx` / `ts-node`。详见[测试](/zh/guide/testing)和[覆盖率](/zh/guide/coverage)。
+Jest、Vitest、Playwright Test、`node --test` 和 Mocha 的输出会解析成测试树，支持 **重新运行失败的测试**。Playwright 运行时使用它的 `list` 报告器（配置里指定了其他报告器时除外）；从行号栏运行单个测试时按行号选择（`file:line`），有多个 project 的运行会在文件下按 project 分组。`node --test` 运行时，IDE 通过 `NODE_OPTIONS` 在 `spec` 旁加上自己的报告器（脚本自己指定了 `--test-reporter` 时不显示测试树）；单个测试和重新运行按完整名称选择（`--test-name-pattern`）。Mocha 运行保留它自己的报告器，并通过 `NODE_OPTIONS` 加载 IDE 的钩子，逐个报告测试及其所在行；单个测试和重新运行使用 `--grep`，在用 Mocha 或 `node --test` 测试的项目里，`test/` 目录下的测试不论文件名都有行号栏图标。**使用覆盖率运行** 支持调用 `vitest` 或 `jest` 的脚本（Vitest 需要 `@vitest/coverage-v8` 之类的覆盖率 provider，缺失时 IDE 会提示添加），以及通过 `c8` 运行的 `node` / `tsx` / `ts-node`。详见[测试](/zh/guide/testing)和[覆盖率](/zh/guide/coverage)。
 
 ## 调试
 

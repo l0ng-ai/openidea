@@ -41,6 +41,17 @@ args = ["--stdio"]
 initialization-options = { provideFormatter = true, embeddedLanguages = { css = true, javascript = true } }
 install-hint = "npm i -g vscode-langservers-extracted"
 
+# Tailwind CSS: class completion, hover and diagnostics, only in a project that uses Tailwind
+# (`tailwind.config.*` or `tailwindcss` in package.json). After the language's own servers,
+# which answer hover first.
+[[language-servers]]
+name = "tailwindcss-language-server"
+command = "tailwindcss-language-server"
+args = ["--stdio"]
+root-markers = ["tailwind.config.*", "package.json#dependencies.tailwindcss", "package.json#devDependencies.tailwindcss"]
+require-root-marker = true
+install-hint = "npm i -g @tailwindcss/language-server"
+
 # Scripts in a page run in the browser: breakpoints in them are hit by a JavaScript Debug configuration.
 [debugger]
 adapter = "js-debug"

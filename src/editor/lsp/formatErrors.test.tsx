@@ -44,9 +44,9 @@ afterEach(() => {
   _resetI18nForTests();
 });
 
-describe.each(["prettier", "oxfmt", "ruff"])("%s formatter errors", (name) => {
+describe.each(["prettier", "oxfmt", "biome", "ruff"])("%s formatter errors", (name) => {
   const tool = { type: "tool", tool: name, missing: false } as const;
-  const display = name === "prettier" ? "Prettier" : name === "ruff" ? "Ruff" : name;
+  const display = ({ prettier: "Prettier", biome: "Biome", ruff: "Ruff" } as Record<string, string>)[name] ?? name;
   it("uses structured missing-tool information to request the shared install prompt", async () => {
     const prompt = vi.fn();
     const dispose = registerAction({
@@ -130,6 +130,7 @@ describe("Reformat with an external formatter", () => {
   it.each([
     ["code.reformatWithPrettier", "prettier"],
     ["code.reformatWithOxfmt", "oxfmt"],
+    ["code.reformatWithBiome", "biome"],
     ["code.reformatWithRuff", "ruff"],
   ])("%s asks the backend for %s whatever the settings select", async (id, tool) => {
     vi.spyOn(lsp, "lspRequest").mockImplementation(async (request) => {

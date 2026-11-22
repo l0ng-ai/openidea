@@ -203,6 +203,12 @@ describe("Playwright gutter targets", () => {
     ]);
   });
 
+  it("take node test configurations as bases only when they run Playwright", () => {
+    // Jest as imported from JetBrains (`npx jest`): not a base for gutter runs, as before.
+    const jest = cfg({ id: "jest", kind: "node", command: "npx", args: ["jest"] });
+    expect(testBasesFor("src/cart.test.ts", [jest], "test('adds', () => {});")).toEqual([]);
+    expect(testBasesFor("e2e/cart.spec.ts", [jest, npx], spec).map((c) => c.id)).toEqual(["playwright"]);
+  });
   it("send specs to Playwright and other tests to the project's other runner", () => {
     const vitest = cfg({ id: "npm:test", kind: "npm", command: "npm", args: ["run", "test"] });
     const configs = [vitest, npx];

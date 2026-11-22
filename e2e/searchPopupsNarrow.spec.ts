@@ -5,6 +5,8 @@
 import type { Page } from "@playwright/test";
 import { expect, openFromTree, stubDesktop, test } from "./fixtures";
 
+const LONG_RESULT_PATH = "config/RegionalOrderReconciliationEndpointsForSandboxEnvironments.txt";
+
 async function run(page: Page, id: string) {
   await page.evaluate(async (id) => {
     const actionsModule = "/src/platform/actions.ts";
@@ -15,15 +17,16 @@ async function run(page: Page, id: string) {
 
 async function stubFindMatches(page: Page) {
   await stubDesktop(page);
-  await page.evaluate(() => {
+  await page.evaluate((longPath) => {
     window.__ipc.handlers.search_validate = () => null;
     window.__ipc.handlers.search_start = (args) => {
       const send = (event: unknown) => window.__ipc.send(args.onEvent, event);
       const text = "base=http://localhost:8080";
       setTimeout(() => {
         for (let i = 0; i < 12; i++) {
-          const relPath = `config/endpoint-${i}.txt`;
-          const matches = [{ line: 0, text, ranges: [[5, text.length]], textOffset: 0 }];
+          const relPath = i === 0 ? longPath : `config/endpoint-${i}.txt`;
+          const lines = i === 0 ? [12344, 12345] : [0];
+          const matches = lines.map((line) => ({ line, text, ranges: [[5, text.length]], textOffset: 0 }));
           send({
             type: "file",
             file: { path: `/dev/acme-api/${relPath}`, relPath, matches },
@@ -31,12 +34,12 @@ async function stubFindMatches(page: Page) {
         }
         send({
           type: "done",
-          summary: { files: 12, matches: 12, limitHit: false, cancelled: false, elapsedMs: 4 },
+          summary: { files: 12, matches: 13, limitHit: false, cancelled: false, elapsedMs: 4 },
         });
       }, 20);
       return null;
     };
-  });
+  }, LONG_RESULT_PATH);
 }
 
 async function expectControlsFit(page: Page) {
@@ -74,7 +77,8 @@ test.describe("search popups at the minimum window width", () => {
       await expect(page.getByRole("dialog").locator("header [aria-live]")).toContainText(/match/);
       const dialog = page.getByRole("dialog");
       const title = dialog.getByText(id === "find.inPath" ? "Find in Files" : "Replace in Files", { exact: true });
-      const count = dialog.getByText("12 matches in 12 files", { exact: true });
+      const count = dialog.getByText("13 matches in 12 files", { exact: true });
+      const line = dialog.getByText("12345", { exact: true });
       for (const [width, height] of [
         [400, 500],
         [600, 700],
@@ -87,6 +91,14 @@ test.describe("search popups at the minimum window width", () => {
           expect(
             await text.evaluate((el) => el.getClientRects().length === 1 && el.scrollWidth <= el.clientWidth),
           ).toBe(true);
+        await expect(line).toBeVisible();
+        expect(
+          await line.evaluate(
+            (el) => el.getBoundingClientRect().right <= el.parentElement!.getBoundingClientRect().right + 0.5,
+          ),
+          "the line number fits even when the long filename is elided",
+        ).toBe(true);
+        await expect(line.locator("..").getByTitle(LONG_RESULT_PATH)).toBeVisible();
         for (const name of ["Search Context", "Pin Window"])
           await dialog.getByRole("button", { name, exact: true }).click({ trial: true });
       }

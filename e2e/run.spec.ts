@@ -76,6 +76,73 @@ test("⌃R runs the selected configuration and shows its output and exit", async
   expect(started).toMatchObject({ config: { id: "npm:dev", command: "npm", args: ["run", "dev"] } });
 });
 
+test("expanded console folds stay reachable at the start of their rows", async ({ workbench: page }) => {
+  const heading = "Reconciling orders for the overnight settlement and inventory reporting pipeline";
+  await stubRun(
+    page,
+    [
+      {
+        kind: "stdout",
+        text: [
+          "TRACE Reused inventory connection",
+          "TRACE Loaded warehouse configuration",
+          heading,
+          "TRACE Checked warehouse audit result",
+          "TRACE Updated inventory snapshot",
+          "Processed 24 orders",
+          "",
+        ].join("\n"),
+      },
+    ],
+    null,
+  );
+  await page.evaluate(async () => {
+    const projectModule = "/src/platform/project.ts";
+    const layoutModule = "/src/workbench/toolwindows/store.ts";
+    const { useProject } = await import(/* @vite-ignore */ projectModule);
+    const { moveToolWindow, setToolWindowSize } = await import(/* @vite-ignore */ layoutModule);
+    const { settings } = useProject.getState();
+    useProject.setState({
+      settings: { ...settings, console: { ...settings?.console, foldPatterns: ["TRACE "] } },
+    });
+    moveToolWindow("run", "right");
+    setToolWindowSize("right", 320);
+  });
+  await page.keyboard.press("Control+r");
+  const log = page.getByRole("region", { name: "Run", exact: true }).getByRole("log");
+  const expand = log.getByTitle("Expand folded lines", { exact: true });
+  const collapse = log.getByRole("button", { name: "Collapse folded lines", exact: true });
+  await expect(expand).toHaveCount(2);
+
+  await expand.first().click();
+  await expect(log.getByText("TRACE Reused inventory connection", { exact: true })).toBeVisible();
+  await expect(collapse).toHaveCount(1);
+  await collapse.press("Space");
+  await expect(expand).toHaveCount(2);
+
+  await expand.first().press("Enter");
+  await expect(collapse).toBeFocused();
+  await expand.last().click();
+  await expect(collapse).toHaveCount(2);
+  for (const scrollLeft of [0, 120]) {
+    await log.evaluate((element, x) => (element.scrollLeft = x), scrollLeft);
+    expect(await log.evaluate((element) => element.scrollLeft)).toBe(scrollLeft);
+    for (const control of await collapse.all()) {
+      const aligned = await control.evaluate((button) => {
+        const log = button.closest('[role="log"]')!.getBoundingClientRect();
+        const row = button.closest("[data-index]")!.getBoundingClientRect();
+        const box = button.getBoundingClientRect();
+        return Math.abs(box.left - log.left) <= 1 && box.top >= row.top && box.bottom <= row.bottom + 1;
+      });
+      expect(aligned).toBe(true);
+    }
+  }
+  await collapse.first().click();
+  await collapse.first().click();
+  await expect(expand).toHaveCount(2);
+  expect(await ipcCalls(page, "run_stdin")).toEqual([]);
+});
+
 test("⌘F2 stops a running process", async ({ workbench: page }) => {
   await stubRun(page, [{ kind: "stdout", text: "Watching for changes…\n" }], null);
   await page.keyboard.press("Control+r");
@@ -120,6 +187,45 @@ test("a long Run tab fits its side panel with room for the pin and close buttons
   await strip.getByRole("button", { name: "Unpin Tab", exact: true }).click();
   await strip.getByRole("button", { name: "Close Tab", exact: true }).click();
   await expect(run).toBeHidden();
+});
+
+test("the Run toolbar keeps primary actions in one row in a side dock", async ({ workbench: page }) => {
+  const output = "Waiting for orders. ".repeat(8).trim();
+  await stubRun(page, [{ kind: "stdout", text: `${output}\n` }], null);
+  const dock = async (width: number) => {
+    await page.evaluate(async (width) => {
+      const path = "/src/workbench/toolwindows/store.ts";
+      const { moveToolWindow, setToolWindowSize } = await import(/* @vite-ignore */ path);
+      moveToolWindow("run", "right");
+      setToolWindowSize("right", width);
+    }, width);
+  };
+  await dock(200);
+  await page.keyboard.press("Control+r");
+  const run = page.getByRole("region", { name: "Run", exact: true });
+  const toolbar = run.getByRole("toolbar", { name: "Run actions" });
+  const console = run.getByRole("log");
+  await expect(console).toContainText(output);
+  await expect
+    .poll(() => toolbar.evaluate((el) => new Set([...el.querySelectorAll("button")].map((b) => b.offsetTop)).size))
+    .toBe(1);
+  const more = toolbar.getByRole("button", { name: "More Actions" });
+  const menu = page.getByRole("menu", { name: "More Actions" });
+  await more.press("Enter");
+  const wrap = menu.getByRole("menuitemcheckbox", { name: "Soft-Wrap" });
+  await expect(wrap).toHaveAttribute("aria-checked", "false");
+  await expect(menu.getByRole("menuitemcheckbox", { name: "Scroll to End" })).toHaveAttribute("aria-checked", "true");
+  await wrap.click();
+  await expect(menu).toBeHidden();
+  await expect.poll(() => console.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+
+  await dock(340);
+  await expect(toolbar.getByRole("button", { name: "Soft-Wrap" })).toHaveAttribute("aria-pressed", "true");
+  await expect(toolbar.getByRole("button", { name: "Scroll to End" })).toBeVisible();
+  await more.click();
+  await expect(menu.getByRole("menuitemcheckbox")).toHaveCount(0);
+  await menu.getByRole("menuitem", { name: "Edit Configurations…" }).click();
+  await expect(page.getByRole("dialog", { name: "Run/Debug Configurations" })).toBeVisible();
 });
 
 test("a short Run pane has room for the full toolbar above the output", async ({ workbench: page }) => {
@@ -282,6 +388,64 @@ test("test results keep counts, actions and selected output visible as the pane 
   await page.setViewportSize({ width: 540, height: 740 });
   await expect.poll(async () => Math.abs((await treeHeight()) - customizedHeight)).toBeLessThan(2);
   await expect(output).toContainText(message);
+});
+
+test("test results keep elapsed time beside the counts", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 1060, height: 740 });
+  const lines = [
+    "test_tax (test_ledger.CheckoutTests.test_tax) ... ok",
+    "test_refund (test_ledger.CheckoutTests.test_refund) ... FAIL",
+    "test_callback (test_ledger.CheckoutTests.test_callback) ... skipped 'Requires a callback'",
+    "Ran 3 tests in 0.170s",
+    "FAILED (failures=1, skipped=1)",
+  ];
+  await stubRun(page, [{ kind: "stderr", text: lines.join("\n") + "\n" }], 1, {
+    id: "django:checkout-tests",
+    name: "Checkout tests",
+    kind: "django-test",
+    command: "python",
+    args: ["manage.py", "test", "-v", "2"],
+    isTest: true,
+  });
+  await page.keyboard.press("Control+r");
+  const run = page.getByRole("region", { name: "Run", exact: true });
+  const summary = run.getByRole("status").filter({ hasText: "1 failing" });
+  const ignored = summary.getByText("1 ignored", { exact: true });
+  const elapsed = summary.getByText("170 ms", { exact: true });
+  await expect(elapsed).toBeVisible();
+  for (const width of [1060, 540]) {
+    await page.setViewportSize({ width, height: 740 });
+    await expect
+      .poll(async () => {
+        const [count, duration] = await Promise.all([ignored.boundingBox(), elapsed.boundingBox()]);
+        return count && duration && Math.abs(count.y - duration.y) <= 1 ? duration.x - count.x - count.width : Infinity;
+      })
+      .toBeLessThanOrEqual(12);
+  }
+  await expect(summary).toHaveCSS("border-bottom-width", "2px");
+});
+
+test("test results retain a running label after the first test starts", async ({ workbench: page }) => {
+  const name = "TestCheckoutTotals";
+  await stubRun(
+    page,
+    [{ kind: "stdout", text: JSON.stringify({ Package: "example.com/checkout", Action: "run", Test: name }) + "\n" }],
+    null,
+    {
+      id: "go:checkout-tests",
+      name: "Checkout tests",
+      kind: "go",
+      command: "go",
+      args: ["test", "-json"],
+      isTest: true,
+    },
+  );
+  await page.keyboard.press("Control+r");
+  const run = page.getByRole("region", { name: "Run", exact: true });
+  await expect(run.getByRole("treeitem", { name: new RegExp(name) })).toBeVisible();
+  const summary = run.getByRole("status").filter({ hasText: "Running…" });
+  await expect(summary).toBeVisible();
+  await expect(summary).toHaveCSS("border-bottom-width", "2px");
 });
 
 test("test results group failure navigation and let users hide row durations", async ({ workbench: page }) => {

@@ -75,12 +75,21 @@ export function isPartiallyStaged(fs: FileStatus): boolean {
   );
 }
 
+/**
+ * A partially staged file the commit takes only the staged part of by default. A new file
+ * edited after Add to Git (which staged it as it was on creation) is committed whole: its
+ * staged side is just that first snapshot, not a selection of changes.
+ */
+export function commitsStagedPart(fs: FileStatus): boolean {
+  return isPartiallyStaged(fs) && fs.staged !== "added";
+}
+
 export function initialCheck(fs: FileStatus, includeByDefault = true): CheckState {
   if (!includeByDefault) return "none";
   const g = groupOf(fs);
   // Unversioned files and unresolved conflicts are opt-in, as in IDEA.
   if (g !== "changes") return "none";
-  return isPartiallyStaged(fs) ? "staged" : "all";
+  return commitsStagedPart(fs) ? "staged" : "all";
 }
 
 export function checkOf(fs: FileStatus, checks: ReadonlyMap<string, CheckState>, includeByDefault = true): CheckState {

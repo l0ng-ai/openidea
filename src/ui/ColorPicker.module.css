@@ -2,7 +2,20 @@
   width: 340px;
   max-width: calc(100vw - 12px);
   padding: 0 0 12px;
-  overflow: hidden;
+  max-height: calc(100vh - 12px);
+  overflow: auto;
+}
+
+.opaque .control:global(.react-colorful) {
+  grid-template-rows: minmax(0, 1fr) 54px;
+}
+
+.opaque .control :global(.react-colorful__hue) {
+  align-self: center;
+}
+
+.opaque .fields {
+  grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(78px, 1.65fr);
 }
 
 .pickerArea {
