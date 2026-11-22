@@ -95,6 +95,13 @@ export async function loadNpmScripts(): Promise<void> {
       if (moduleDir && !/^[A-Za-z]:[\\/]|^\//.test(moduleDir)) dirs.add(moduleDir);
     }
   }
+  // Any other package.json the index knows, outside node_modules.
+  const indexed = await call(commands.findFilesNamed("package.json")).catch(() => []);
+  for (const file of indexed.slice(0, 500)) {
+    const path = String(file).replace(/\\/g, "/");
+    if (!path.startsWith(`${root}/`) || path.includes("/node_modules/")) continue;
+    dirs.add(path.slice(root.length + 1).replace(/\/?package\.json$/, ""));
+  }
   const packages: NpmNode[] = [];
   await Promise.all(
     [...dirs].map(async (dir) => {
@@ -138,6 +145,7 @@ export async function runScriptNode(node: NpmScript, debug: boolean): Promise<vo
 /** Keeps the scripts current and shows the npm tool window while the project has any. */
 export function startNpmScriptsWatch(): () => void {
   let unregister: (() => void) | null = null;
+  let indexing = true;
   const syncToolWindow = (has: boolean) => {
     if (has && !unregister)
       unregister = registerToolWindow({
@@ -160,6 +168,10 @@ export function startNpmScriptsWatch(): () => void {
     }),
     useProjectRoots.subscribe((s, prev) => {
       if (s.detected !== prev.detected || s.root !== prev.root) void loadNpmScripts();
+    }),
+    onIdeEvent("indexState", (e) => {
+      if (indexing && !e.indexing) void loadNpmScripts();
+      indexing = e.indexing;
     }),
     onIdeEvent("fsChanged", (e) => {
       const changed = [...e.created, ...e.modified, ...e.removed];
