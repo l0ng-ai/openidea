@@ -1,5 +1,45 @@
 import { expect, test } from "./fixtures";
 
+test("terminal output menu groups session, clipboard and split actions and opens Find", async ({ workbench: page }) => {
+  await page.evaluate(async () => {
+    const path = "/src/workbench/toolwindows/store.ts";
+    const layout = await import(path);
+    layout.moveToolWindow("terminal", "right");
+    layout.showToolWindow("terminal", true);
+    layout.setToolWindowSize("right", 220);
+  });
+  const terminal = page.getByRole("region", { name: "Terminal", exact: true });
+  const output = terminal.getByRole("tabpanel").locator(".xterm");
+  await expect(terminal.locator(".xterm-helper-textarea")).toBeFocused();
+  await output.click({ button: "right", position: { x: 25, y: 50 } });
+  const menu = page.getByRole("menu", { name: "Context menu" });
+  const find = menu.getByRole("menuitem", { name: /^Find in Terminal/ });
+  await expect(find).toBeEnabled();
+  const rows = menu.locator(':scope > [role="separator"], :scope > [role="menuitem"]');
+  await expect(rows).toHaveText([
+    /^Find in Terminal/,
+    /^New Terminal Tab/,
+    "Restart Session",
+    "Close Session",
+    "",
+    /^Copy/,
+    /^Paste/,
+    "Select All",
+    "",
+    /^Clear Buffer/,
+    "",
+    "Split Right",
+    "Split Down",
+  ]);
+  await expect(menu.getByRole("menuitem", { name: /^Copy/ })).toBeDisabled();
+  await find.press("Enter");
+  const field = terminal.getByRole("textbox", { name: "Find in terminal" });
+  await expect(menu).toBeHidden();
+  await expect(field).toBeFocused();
+  await field.press("Escape");
+  await expect(terminal.locator(".xterm-helper-textarea")).toBeFocused();
+});
+
 for (const { width, split } of [{ width: 220 }, { width: 280 }, { width: 520 }, { width: 520, split: true }]) {
   test(`terminal search fits a ${width}px ${split ? "split" : "panel"} and its buttons work from the keyboard`, async ({
     workbench: page,
