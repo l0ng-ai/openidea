@@ -159,11 +159,17 @@
   font-size: var(--fs-ui);
 }
 
+.editRow,
+.editRow > .valueGroup {
+  height: 100%;
+}
+
 .editInput {
-  flex: 1;
-  min-width: min(80px, 40%);
-  height: 18px;
-  padding: 0 4px;
+  box-sizing: border-box;
+  flex: 1 1 0;
+  min-width: 0;
+  height: calc(100% - var(--space-1));
+  padding: 0 var(--space-1);
   font: inherit;
   font-family: var(--font-mono);
   color: var(--fg-strong);
@@ -174,6 +180,10 @@
 }
 .editInvalid {
   border-color: var(--danger);
+}
+
+.editError {
+  max-width: 33%;
 }
 
 /* Changed since the previous stop. */
