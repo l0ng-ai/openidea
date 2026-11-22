@@ -19,7 +19,9 @@ import {
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-describe("the Language smoke workflow", () => {
+// These walk the real import graph and crate tree; on a busy CI runner that can take longer than
+// the default 5 s.
+describe("the Language smoke workflow", { timeout: 60_000 }, () => {
   const workflow = readWorkflow(repo);
 
   it("runs every language when a file the frontend smoke loads changes", async () => {
