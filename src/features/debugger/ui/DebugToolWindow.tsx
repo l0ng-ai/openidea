@@ -57,6 +57,7 @@ import { useExpressionCompletion } from "./ExpressionCompletion";
 import { sortVariables } from "../values";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { useToolWindowShown } from "@/workbench/contributions";
+import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import styles from "./DebugToolWindow.module.css";
 import { tx, useTx } from "@/platform/i18n";
 
@@ -200,10 +201,11 @@ export function DebugServiceView({ sessionId, console: consolePane }: { sessionI
 }
 
 export function DebugToolWindow() {
-  return <DebugView />;
+  const sideDocked = useToolWindowLayout((s) => (s.placements.debug?.anchor ?? "bottom") !== "bottom");
+  return <DebugView sideDocked={sideDocked} />;
 }
 
-function DebugView({ consolePane }: { consolePane?: ReactNode }) {
+function DebugView({ consolePane, sideDocked = false }: { consolePane?: ReactNode; sideDocked?: boolean }) {
   const tx = useTx();
   const active = useDebug((s) => (s.active != null ? s.sessions[s.active] : undefined));
   const muted = useBreakpoints((s) => s.muted);
@@ -330,7 +332,7 @@ function DebugView({ consolePane }: { consolePane?: ReactNode }) {
       </div>
       <div role="tabpanel" id={`debug-panel-${tab}`} aria-labelledby={`debug-tab-${tab}`} className={styles.panel}>
         {tab === "variables" ? (
-          <ThreadsAndVariables session={active} />
+          <ThreadsAndVariables session={active} sideDocked={sideDocked} />
         ) : tab === "memory" ? (
           memoryPending ? (
             <div className={styles.emptyWrap}>
@@ -356,19 +358,26 @@ const JVM_ADAPTERS = new Set(["java-debug", "kotlin-debug-adapter", "kotlin-lsp"
 
 // --- threads & frames ----------------------------------------------------------
 
-function ThreadsAndVariables({ session }: { session: DebugSession }) {
+const DEFAULT_THREADS_VARIABLES_LAYOUT = { frames: 34, variables: 66 };
+
+function ThreadsAndVariables({ session, sideDocked }: { session: DebugSession; sideDocked: boolean }) {
   return (
     <SplitGroup
-      orientation="horizontal"
+      orientation={sideDocked ? "vertical" : "horizontal"}
       id="debug-threads-variables"
-      storageKey="openidea.debug.threadsVariables"
+      storageKey={sideDocked ? "openidea.debug.threadsVariables.vertical" : "openidea.debug.threadsVariables"}
+      defaultLayout={DEFAULT_THREADS_VARIABLES_LAYOUT}
       className={styles.split}
     >
-      <SplitPanel id="frames" defaultSize="34%" minSize="160px">
+      <SplitPanel
+        id="frames"
+        defaultSize={`${DEFAULT_THREADS_VARIABLES_LAYOUT.frames}%`}
+        minSize={sideDocked ? "25%" : "160px"}
+      >
         <FramesPane session={session} />
       </SplitPanel>
       <SplitHandle />
-      <SplitPanel id="variables" minSize="200px">
+      <SplitPanel id="variables" minSize={sideDocked ? "25%" : "200px"}>
         <VariablesPane session={session} />
       </SplitPanel>
     </SplitGroup>
