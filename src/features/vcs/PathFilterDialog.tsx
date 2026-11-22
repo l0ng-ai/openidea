@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Checkbox, Dialog, SearchField, Tree } from "@/ui";
+import { Checkbox, Dialog, Icon, SearchField, Tree, fileIconName } from "@/ui";
 import { projectFs } from "@/features/project-tree/fs";
 import { openDialog } from "./dialogs";
 import { dirName, relTo, stripSlash } from "./model";
@@ -7,6 +7,7 @@ import { repoName, repoOf } from "./store";
 import { call, commands } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { ipcPath, isSameOrInside } from "@/platform/paths";
+import styles from "./PathFilterDialog.module.css";
 
 interface PathNode {
   path: string;
@@ -167,15 +168,21 @@ function PathFilterDialog({
     <Dialog
       open
       title="Filter by Paths"
-      width={560}
+      className={styles.chooser}
+      width={432}
+      initialSize={{ w: 432, h: 392 }}
+      resizable="both"
+      minWidth={300}
+      minHeight={220}
       onClose={() => onDone(null)}
       buttons={[
         { label: "OK", role: "default", onClick: () => onDone([...checked]) },
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div style={{ height: 320 }}>
+      <div className={styles.content}>
         <Tree<PathNode>
+          className={styles.tree}
           roots={nodes}
           getKey={(n) => n.path}
           getLabel={(n) => n.name}
@@ -183,21 +190,49 @@ function PathFilterDialog({
           isExpandable={(n) => n.directory}
           loadChildren={load}
           renderNode={(n) => (
-            <Checkbox label={n.name} checked={checked.has(n.path)} onChange={(on) => toggle(n.path, on)} />
+            <Checkbox
+              className={styles.choice}
+              label={
+                <span className={styles.entry}>
+                  <Icon name={n.directory ? "folder" : fileIconName(n.name, n.path)} size={16} />
+                  <span className={styles.path} title={n.name}>
+                    {n.name}
+                  </span>
+                </span>
+              }
+              checked={checked.has(n.path)}
+              onChange={(on) => toggle(n.path, on)}
+            />
           )}
           aria-label="Files and folders"
         />
+        {checked.size > 0 && (
+          <div className={styles.selected} role="group" aria-label={tx("Selected paths")}>
+            {[...checked].map((path) => {
+              const root = roots.includes(path) ? path : repoOf(path, roots);
+              const label = root ? (path === root ? repoName(root) : `${repoName(root)}/${relTo(root, path)}`) : path;
+              return (
+                <Checkbox
+                  key={path}
+                  className={styles.choice}
+                  label={
+                    <span className={styles.path} title={label}>
+                      {label}
+                    </span>
+                  }
+                  checked
+                  onChange={(on) => toggle(path, on)}
+                />
+              );
+            })}
+          </div>
+        )}
+        {error && (
+          <div className={styles.error} role="alert">
+            {error}
+          </div>
+        )}
       </div>
-      {checked.size > 0 && (
-        <div style={{ maxHeight: 100, overflow: "auto" }} aria-label="Selected paths">
-          {[...checked].map((path) => {
-            const root = roots.includes(path) ? path : repoOf(path, roots);
-            const label = root ? (path === root ? repoName(root) : `${repoName(root)}/${relTo(root, path)}`) : path;
-            return <Checkbox key={path} label={label} checked onChange={(on) => toggle(path, on)} />;
-          })}
-        </div>
-      )}
-      {error && <div role="alert">{error}</div>}
     </Dialog>
   );
 }
