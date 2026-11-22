@@ -134,7 +134,9 @@ function CommitRowView({
             setTooltip(false);
           }}
         >
-          <IssueText text={c.summary} />
+          <span className={styles.subjectText}>
+            <IssueText text={c.summary} />
+          </span>
         </span>
         {!opts.refsOnLeft && refs}
       </span>
