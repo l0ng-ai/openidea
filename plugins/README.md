@@ -155,7 +155,7 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `statusBar`         | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                                                                                                                                                            | no            |
 | `settings`          | `schema` (JSON file) or `pages` (API 1.3), `title?` — see _Settings_                                                                                                                                                                   | no            |
 | `views`             | `id`, `title`, `icon?` (an icon name or a package SVG), `location` (`left`, `right`, `bottom`, `services`), `web?` (_Web views_), `frames?` (API 1.16), `group?`, `when?` (API 1.3)                                                    | without `web` |
-| `customEditors`     | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`, `frames?` (API 1.16)                                                                                                                      | without `web` |
+| `customEditors`     | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`, `frames?`, `binary?` (API 1.16)                                                                                                           | without `web` |
 | `editorPanels`      | `id`, `web`, `width` (pixels, 40–400), `when?`, `frames?` (API 1.16) — needs `editor.read` (API 1.9; _Editor panels_)                                                                                                                  | no            |
 | `fileIcons`         | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                                                                                                                               | no            |
 | `fileTemplates`     | `id`, `name`, `extension`, `path`; API 1.3: `fileName`, `variables = [{ name, prompt }]` — New menu                                                                                                                                    | no            |
@@ -431,6 +431,10 @@ are always available. Calling a gated function without its capability returns
 
 API 1.16.0 is in development on `main`. Use `engines.openidea = "^1.16"` and the
 matching SDK. Plugins for 1.15 and earlier keep working. New in 1.16:
+
+- A tab-layout web custom editor can declare `binary = true` to open a file without loading it
+  into a text document. Its page can call `document.size()` and `document.readRange(offset, length)`
+  to read up to 1 MiB at a time. Messages to the plugin carry the open file as their editor context.
 
 - **Incomplete completion lists.** The optional `completion-list-provider`
   export (world `plugin-completion-list`, SDK
