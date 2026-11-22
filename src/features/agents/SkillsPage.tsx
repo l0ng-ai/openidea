@@ -324,7 +324,8 @@ function SkillCard({
               )}
               {(skill.alsoIn?.length ?? 0) > 0 && (
                 <span className={page.tag} title={skill.alsoIn?.map((s) => SKILL_SOURCE_GROUPS[s].paths).join(", ")}>
-                  ⇄ {skill.alsoIn?.map((s) => tx(SKILL_SOURCE_GROUPS[s].label)).join(", ")}
+                  <Icon name="symlink-mark" size={12} />
+                  {skill.alsoIn?.map((s) => tx(SKILL_SOURCE_GROUPS[s].label)).join(", ")}
                 </span>
               )}
               {!skill.valid && (

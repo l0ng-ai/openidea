@@ -115,7 +115,7 @@ describe("SkillsPage", () => {
     render(<SkillsPage backend={{ list: vi.fn(async () => withSymlink), setMode: vi.fn(async () => withSymlink) }} />);
 
     await waitFor(() => expect(screen.getByText("tdd")).toBeInTheDocument());
-    expect(screen.getByText("⇄ Claude Code")).toBeInTheDocument();
+    expect(screen.getByTitle(".claude/skills")).toHaveTextContent("Claude Code");
     fireEvent.click(screen.getByRole("button", { name: /^tdd/ }));
     expect(await screen.findByText("/skills/tdd")).toBeInTheDocument();
     expect(screen.getByText("Claude Code (.claude/skills)")).toBeInTheDocument();

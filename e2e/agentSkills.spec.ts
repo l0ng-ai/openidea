@@ -249,7 +249,7 @@ test("manages multi-level skills in Settings and per-session overrides via Compo
   const settingsDialog = page.getByRole("dialog", { name: "Settings", exact: true });
   await expect(settingsDialog).toBeVisible();
   await expect(settingsDialog.getByRole("heading", { name: "Skills" })).toBeVisible();
-  await expect(settingsDialog.getByText("⇄ Claude Code").first()).toBeVisible();
+  await expect(settingsDialog.getByTitle(".claude/skills").first()).toHaveText("Claude Code");
 
   await settingsDialog.getByRole("button", { name: /^verify/ }).click();
   await expect(settingsDialog.getByText("Claude Code (.claude/skills)")).toBeVisible();
