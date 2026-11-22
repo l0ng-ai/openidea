@@ -60,6 +60,7 @@ import {
   smartBackspace,
   smartBackspaceApplies,
   tabOut,
+  templateBrace,
 } from "./smartKeys";
 import { linkedTags } from "./linkedTags";
 import { stringClipboard } from "./stringClipboard";
@@ -710,6 +711,7 @@ export function prefsExtension(o: PrefsOptions): Extension {
   out.push(Prec.highest(EditorState.languageData.of(() => [{ closeBrackets: pairing }])));
   // `<` pairs where the syntax says a generic type list starts, as in IDEA — no separate option.
   if (k.pairBrackets && !o.readOnly) out.push(smartAngleBrackets(o.language));
+  if (k.pairBrackets && !o.readOnly) out.push(Prec.highest(templateBrace(o.language ?? "")));
   if (!k.surroundSelection) out.push(Prec.highest(noSurround));
   if (k.pairQuotes) out.push(Prec.highest(skipClosingQuote));
   if (k.pairBrackets && !o.readOnly) out.push(Prec.highest(skipClosingBracket));
