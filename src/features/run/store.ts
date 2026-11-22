@@ -67,7 +67,7 @@ import { startedPort } from "@/platform/serverPort";
 import { tomcatBrowserUrl } from "./tomcat";
 import { gradleBootLaunch, gradleDelegation, gradleTestLaunch } from "./gradleRun";
 import { openUrl } from "./navigate";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 import { UNITY_CONFIG_KIND } from "./unity";
 
 /** The permanent "Current File" pseudo-configuration of the chooser (runs the active file's context). */
@@ -1620,7 +1620,7 @@ export async function sendStdin(sessionId: string, text: string): Promise<void> 
   } catch (e) {
     enqueue(sessionId, {
       kind: "system",
-      text: tx`Cannot write to stdin: ${e instanceof Error ? tx(e.message) : String(e)}\n`,
+      text: tx`Cannot write to stdin: ${e instanceof Error ? txPart(e.message) : String(e)}\n`,
     });
   }
 }
@@ -1632,7 +1632,7 @@ export function writeTerminal(sessionId: string, data: string) {
   void call(commands.runStdin(session.runId, data)).catch((e) => {
     enqueue(sessionId, {
       kind: "system",
-      text: tx`Cannot write to stdin: ${e instanceof Error ? tx(e.message) : String(e)}\n`,
+      text: tx`Cannot write to stdin: ${e instanceof Error ? txPart(e.message) : String(e)}\n`,
     });
   });
 }

@@ -23,7 +23,7 @@ import { syncTemplatesFromStorage } from "./sync";
 import { tagAtCaret, updateTag } from "./emmet/editor";
 import { loadEmmet } from "./emmet/model";
 import { promptAbbreviation, UpdateTagDialogHost } from "./emmet/UpdateTagDialog";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 import type { ProjectType } from "@/ui/projectType";
 
 const EDITOR_WHEN = "textEditorActive && !editorReadOnly && (editorFocus || !toolWindowFocus)";
@@ -79,7 +79,7 @@ function directoryOf(arg: unknown): string | null {
 function newFileAction(t: FileTemplate): Action {
   return {
     id: `templates.new.${t.id}`,
-    title: t.id === "file" ? "New Empty File…" : tx`New ${tx(t.name)}…`,
+    title: t.id === "file" ? "New Empty File…" : tx`New ${txPart(t.name)}…`,
     category: "File",
     icon: t.icon,
     when: "projectOpen",

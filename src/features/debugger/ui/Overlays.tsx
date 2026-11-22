@@ -84,7 +84,7 @@ import { useExpressionCompletion } from "./ExpressionCompletion";
 import { pushHistory, readHistory } from "./expressionHistory";
 import styles from "./Overlays.module.css";
 import { isImeKey } from "@/platform/ime";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 
 export function DebuggerOverlays() {
   return (
@@ -606,7 +606,7 @@ function BreakpointsDialog() {
                     <Checkbox
                       checked={r.bp.enabled}
                       onChange={(enabled) => updateExceptionClass(r.bp.id, { enabled })}
-                      aria-label={tx`Enable ${name}`}
+                      aria-label={tx`Enable ${r.bp.className || txPart("No class chosen")}`}
                     />
                     <Icon name="breakpoint-exception" size={14} />
                     <span className={styles.bpName} title={name}>

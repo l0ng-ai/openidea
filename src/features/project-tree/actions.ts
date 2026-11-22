@@ -51,7 +51,7 @@ import {
   setViewOption,
   useProjectTree,
 } from "./store";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 
 const FOCUS = "projectViewFocus";
 const OPEN = "projectOpen";
@@ -187,7 +187,7 @@ export function registerProjectActions(): () => void {
 
   const toggles: Action[] = OPTION_LABELS.map(([key, label]) => ({
     id: `project.option.${key}`,
-    title: tx`Project View: ${label}`,
+    title: tx`Project View: ${txPart(label)}`,
     category: "View",
     // IDEA's former name of Always Select Opened File.
     keywords: ["project", "tree", "toggle", ...(key === "autoscrollFromSource" ? ["autoscroll from source"] : [])],
@@ -197,7 +197,7 @@ export function registerProjectActions(): () => void {
 
   const modes: Action[] = VIEW_MODES.map(([mode, label]) => ({
     id: `project.viewMode.${mode}`,
-    title: tx`Project View: Show ${label}`,
+    title: tx`Project View: Show ${txPart(label)}`,
     category: "View",
     when: OPEN,
     keywords: ["project", "pane", "scope", "view as"],
@@ -209,7 +209,7 @@ export function registerProjectActions(): () => void {
 
   const sorts: Action[] = SORT_LABELS.map(([sortBy, label]) => ({
     id: `project.sortBy.${sortBy}`,
-    title: tx`Project View: ${label}`,
+    title: tx`Project View: ${txPart(label)}`,
     category: "View",
     keywords: ["project", "tree", "sort", "order"],
     toggled: () => useProjectTree.getState().options.sortBy === sortBy,

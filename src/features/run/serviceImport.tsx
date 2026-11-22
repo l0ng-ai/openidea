@@ -8,7 +8,7 @@ import { create } from "zustand";
 import type { RunConfig } from "@/platform/ipc";
 import { Checkbox, Dialog } from "@/ui";
 import { kindLabel } from "./configs";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 import styles from "./RunServices.module.css";
 
 interface Entry {
@@ -78,7 +78,7 @@ function ImportDialog(props: {
   return (
     <Dialog
       open
-      title={tx`Add Service (${kindLabel(props.kind)})`}
+      title={tx`Add Service (${txPart(kindLabel(props.kind))})`}
       onClose={() => props.onDone(null)}
       width={420}
       buttons={[

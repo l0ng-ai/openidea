@@ -60,7 +60,7 @@ import { parseIdeaKeymap } from "@/platform/ideaKeymap";
 import { RecordShortcutDialog } from "./RecordShortcutDialog";
 import { StrokeRecorder } from "./StrokeRecorder";
 import styles from "./Keymap.module.css";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 
 type KNode =
   | { kind: "group"; key: string; name: string; path: string[]; children: KNode[] }
@@ -230,7 +230,11 @@ export function KeymapPage() {
     ...Object.keys(PRESETS).map((id) => ({ value: id, label: PRESET_TITLES[id] ?? id })),
     ...Object.entries(customs)
       .sort(([, a], [, b]) => a.name.localeCompare(b.name))
-      .map(([id, k]) => ({ value: id, label: k.name, detail: tx`based on ${PRESET_TITLES[k.parent] ?? k.parent}` })),
+      .map(([id, k]) => ({
+        value: id,
+        label: k.name,
+        detail: tx`based on ${txPart(PRESET_TITLES[k.parent] ?? k.parent)}`,
+      })),
   ];
 
   const confirmDelete = async () => {
@@ -268,7 +272,7 @@ export function KeymapPage() {
       body: (
         <>
           <div>
-            {tx`Imported '${name}' (based on ${PRESET_TITLES[parsed.parent] ?? parsed.parent}): ${parsed.applied} actions.`}
+            {tx`Imported '${name}' (based on ${txPart(PRESET_TITLES[parsed.parent] ?? parsed.parent)}): ${parsed.applied} actions.`}
           </div>
           {unknown.length > 0 && <div>{tx`Not available in OpenIDEA (${unknown.length}): ${unknown.join(", ")}.`}</div>}
           {parsed.skippedShortcuts > 0 && <div>{tx`Skipped ${parsed.skippedShortcuts} unsupported shortcuts.`}</div>}
