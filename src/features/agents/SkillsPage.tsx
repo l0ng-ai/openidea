@@ -13,6 +13,7 @@ import { isTauri, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { Button, Icon, IconButton, SearchField, Select, Tabs, T } from "@/ui";
 import { editorService } from "@/workbench/contributions";
+import { InstallSkillDialog } from "./InstallSkillDialog";
 import { providerIcon } from "./model";
 import {
   SKILL_SOURCE_GROUPS,
@@ -50,11 +51,13 @@ function groupsForTab(tab: SourceTab): readonly SkillSource[] {
 export function SkillsPage({ backend = defaultSkillsBackend }: { backend?: SkillsBackend }) {
   const tx = useTx();
   const hasProject = useProject((s) => !!s.project?.root);
+  const hasTrustedProject = useProject((s) => !!s.project?.root && !!s.project?.trusted);
   const [tab, setTab] = useState<SourceTab>("all");
   const [skills, setSkills] = useState<AgentSkillState[]>([]);
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busyName, setBusyName] = useState<string | null>(null);
+  const [installOpen, setInstallOpen] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   // The scope the row's mode selector writes to; defaults follow where the mode came from.
@@ -141,6 +144,11 @@ export function SkillsPage({ backend = defaultSkillsBackend }: { backend?: Skill
           <T>Skills</T>
         </h2>
         <div className={page.headerActions}>
+          {backend.browse && backend.preview && backend.install && (
+            <Button variant="primary" onClick={() => setInstallOpen(true)}>
+              <Icon name="plus" size={14} /> <T>Install Skill…</T>
+            </Button>
+          )}
           <Button variant="secondary" onClick={load}>
             <Icon name="refresh" size={14} /> <T>Rescan</T>
           </Button>
@@ -269,6 +277,18 @@ export function SkillsPage({ backend = defaultSkillsBackend }: { backend?: Skill
           </div>
         )}
       </div>
+
+      {installOpen && (
+        <InstallSkillDialog
+          backend={backend}
+          hasTrustedProject={hasTrustedProject}
+          onInstalled={(next) => {
+            syncCatalog(next);
+            setInstallOpen(false);
+          }}
+          onClose={() => setInstallOpen(false)}
+        />
+      )}
     </div>
   );
 }

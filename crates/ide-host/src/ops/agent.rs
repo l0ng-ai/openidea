@@ -8,8 +8,9 @@ use ide_agent::{
     AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentChanges, AgentChangesView, AgentCliOffer,
     AgentCliUpdateResult, AgentCommand, AgentContextUsage, AgentEntry, AgentEvent, AgentModelCatalog, AgentProbe,
     AgentPrompt, AgentProvider, AgentQueued, AgentSkillMode, AgentSkillPolicy, AgentSkillState, AgentTask,
-    CustomAgentInput, ExternalSession, McpExternalSource, McpImportSelection, McpProbeResult, McpScope, McpServer,
-    McpServerInput, McpTransport, NewAgentTask, SkillsPolicy,
+    CustomAgentInput, ExternalSession, InstallRemoteSkillRequest, McpExternalSource, McpImportSelection,
+    McpProbeResult, McpScope, McpServer, McpServerInput, McpTransport, NewAgentTask, RemoteSkillBrowseResult,
+    RemoteSkillPreview, SkillsPolicy,
 };
 use ide_command::command;
 use ide_core::error::ErrorKind;
@@ -1116,6 +1117,114 @@ pub fn agent_skills_set_mode(
     ))
 }
 
+/// Resolves a GitHub `owner/repo[/path][@ref]` source and lists the `SKILL.md` skills in it.
+#[command(trust = always)]
+pub async fn agent_skills_browse(
+    host: &Host,
+    source: String,
+    request: RequestId,
+) -> IdeResult<RemoteSkillBrowseResult> {
+    let cancel = host.begin_request(request);
+    let search_path = ide_core::tool_path::search_path();
+    let res = tokio::task::spawn_blocking(move || {
+        let fetcher = ide_agent::skill_installer::GitHubHttpFetcher::new(&search_path)?;
+        ide_agent::skill_installer::browse_skills(&fetcher, &source, &cancel)
+    })
+    .await
+    .map_err(join_err);
+    host.end_request(request);
+    res?
+}
+
+/// Fetches one skill's `SKILL.md`, file list, and static security scan warnings before installation.
+#[command(trust = always)]
+pub async fn agent_skills_preview(
+    host: &Host,
+    window: &str,
+    owner: String,
+    repo: String,
+    git_ref: String,
+    subpath: String,
+    request: RequestId,
+) -> IdeResult<RemoteSkillPreview> {
+    let cancel = host.begin_request(request);
+    let ws_root = host.project(window).ok().filter(|p| !p.light).map(|p| p.root.clone());
+    let home = dirs::home_dir();
+    let search_path = ide_core::tool_path::search_path();
+    let res = tokio::task::spawn_blocking(move || {
+        let fetcher = ide_agent::skill_installer::GitHubHttpFetcher::new(&search_path)?;
+        ide_agent::skill_installer::preview_skill(
+            &fetcher,
+            ide_agent::skill_installer::RepoRef { owner: &owner, repo: &repo, git_ref: &git_ref },
+            &subpath,
+            home.as_deref(),
+            ws_root.as_deref(),
+            &cancel,
+        )
+    })
+    .await
+    .map_err(join_err);
+    host.end_request(request);
+    res?
+}
+
+/// Installs the selected skill subtree into `~/.agents/skills` (User) or `<workspace>/.agents/skills` (Workspace).
+#[command(trust = always)]
+pub async fn agent_skills_install(
+    host: &Host,
+    window: &str,
+    input: InstallRemoteSkillRequest,
+    request: RequestId,
+) -> IdeResult<Vec<AgentSkillState>> {
+    let project = host.project(window).ok().filter(|p| !p.light);
+    if input.scope == McpScope::Workspace {
+        host.require_trust(window)?;
+    }
+    let ws_root = project.as_ref().map(|p| p.root.clone());
+    let home = dirs::home_dir();
+    let cancel = host.begin_request(request);
+    let search_path = ide_core::tool_path::search_path();
+    let install_home = home.clone();
+    let install_ws = ws_root.clone();
+    let res = tokio::task::spawn_blocking(move || {
+        let fetcher = ide_agent::skill_installer::GitHubHttpFetcher::new(&search_path)?;
+        ide_agent::skill_installer::install_skill(
+            &fetcher,
+            &input,
+            install_home.as_deref(),
+            install_ws.as_deref(),
+            &cancel,
+        )
+    })
+    .await
+    .map_err(join_err);
+    host.end_request(request);
+    res??;
+
+    let event = IdeEvent::SettingsChanged { key: "agents.skills".into() };
+    for p in host.projects() {
+        p.agents.notify_mcp_servers_changed();
+        p.sink.emit(event.clone());
+    }
+
+    let policy = host_skills_policy(host, project.as_deref());
+    tokio::task::spawn_blocking(move || {
+        Ok(ide_agent::skills::resolve(
+            ide_agent::skills::discover_skills_with_plugins(
+                &policy.workspace_roots,
+                home.as_deref(),
+                &policy.plugin_dirs,
+            ),
+            None,
+            &policy.workspace,
+            &policy.user,
+            policy.workspace_trusted,
+        ))
+    })
+    .await
+    .map_err(join_err)?
+}
+
 /// The user's and the workspace's skill policies (`[agents.skills.<name>]`).
 fn skills_maps(
     host: &Host,
@@ -1364,7 +1473,10 @@ ide_command::domain!(
     agent_set_env,
     agent_set_mcp_overrides,
     agent_set_skill_overrides,
+    agent_skills_browse,
+    agent_skills_install,
     agent_skills_list,
+    agent_skills_preview,
     agent_skills_set_mode,
     agent_stop_background,
     agent_subscribe,

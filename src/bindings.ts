@@ -150,11 +150,17 @@ export const commands = {
 	 *  starting a turn; its output goes to the agent with the next message.
 	 */
 	agentShell: (task: string, command: string, request: RequestId) => typedError<null, IdeError>(__TAURI_INVOKE("agent_shell", { task, command, request })),
+	/**  Resolves a GitHub `owner/repo[/path][@ref]` source and lists the `SKILL.md` skills in it. */
+	agentSkillsBrowse: (source: string, request: RequestId) => typedError<RemoteSkillBrowseResult, IdeError>(__TAURI_INVOKE("agent_skills_browse", { source, request })),
+	/**  Installs the selected skill subtree into `~/.agents/skills` (User) or `<workspace>/.agents/skills` (Workspace). */
+	agentSkillsInstall: (input: InstallRemoteSkillRequest, request: RequestId) => typedError<AgentSkillState_Serialize[], IdeError>(__TAURI_INVOKE("agent_skills_install", { input, request })),
 	/**
 	 *  Every skill discovered in the project, the user's folders and enabled plugins, with
 	 *  the mode a session runs it with (without any session's own overrides).
 	 */
 	agentSkillsList: () => typedError<AgentSkillState_Serialize[], IdeError>(__TAURI_INVOKE("agent_skills_list")),
+	/**  Fetches one skill's `SKILL.md`, file list, and static security scan warnings before installation. */
+	agentSkillsPreview: (owner: string, repo: string, gitRef: string, subpath: string, request: RequestId) => typedError<RemoteSkillPreview, IdeError>(__TAURI_INVOKE("agent_skills_preview", { owner, repo, gitRef, subpath, request })),
 	/**
 	 *  Sets how `name` may run in `scope`, in the settings file of that scope, and returns the
 	 *  updated list. `SKILL.md` files are never touched; the default `auto` removes the entry.
@@ -7791,6 +7797,18 @@ export type InstallPreview = {
 	needsConsent: boolean,
 };
 
+export type InstallRemoteSkillRequest = {
+	owner: string,
+	repo: string,
+	gitRef: string,
+	subpath: string,
+	scope: McpScope,
+	/**  Must be `true` when the static security scan produces any warnings. */
+	confirmWarnings?: boolean,
+	/**  Must be `true` to replace an existing folder of the same name in `scope`. */
+	overwrite?: boolean,
+};
+
 /**  The settings folder of a JetBrains IDE (or Android Studio) of this user. */
 export type InstalledIdeSettings = {
 	/**  The IDE and its version: `IntelliJ IDEA 2025.2`. */
@@ -10939,6 +10957,47 @@ export type RemoteSession = {
 	commands: string[],
 };
 
+export type RemoteSkillBrowseResult = {
+	owner: string,
+	repo: string,
+	gitRef: string,
+	treeSha: string,
+	truncated: boolean,
+	skills: RemoteSkillCandidate[],
+};
+
+export type RemoteSkillCandidate = {
+	/**  Target folder name (`<name>` under `.agents/skills/<name>`). */
+	folderName: string,
+	/**  Repository-relative directory holding `SKILL.md` (`""` when at repository root). */
+	subpath: string,
+	fileCount: number,
+	totalBytes: number,
+};
+
+export type RemoteSkillFile = {
+	/**  Path relative to the skill folder (e.g. `"SKILL.md"`, `"scripts/check.sh"`). */
+	path: string,
+	size: number,
+	executable: boolean,
+	symlink: boolean,
+};
+
+export type RemoteSkillPreview = {
+	owner: string,
+	repo: string,
+	gitRef: string,
+	treeSha: string,
+	subpath: string,
+	skillName: string,
+	description: string,
+	skillMarkdown: string,
+	files: RemoteSkillFile[],
+	scanWarnings: SkillScanWarning[],
+	alreadyInstalledUser: boolean,
+	alreadyInstalledWorkspace: boolean,
+};
+
 /**  Where [`remote_connect`] is (`fraction`: 0..1 of a download / upload). */
 export type RemoteStage = "connecting" | 
 /**  `devcontainer up`: building or starting the container. */
@@ -11818,6 +11877,14 @@ export type SizeSource =
  *  capture.
  */
 "addressGaps" | "layout";
+
+export type SkillScanWarning = {
+	kind: SkillScanWarningKind,
+	file: string,
+	message: string,
+};
+
+export type SkillScanWarningKind = "hiddenUnicode" | "outOfRootSymlink" | "executableScript" | "allowedToolsShell";
 
 export type SkipReason = 
 /**  A configuration with this name already exists. */
