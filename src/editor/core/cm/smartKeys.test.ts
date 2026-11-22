@@ -314,8 +314,27 @@ describe("smart angle brackets", () => {
   const KOTLIN = StreamLanguage.define(interpolationParser(kotlin, "Kotlin"));
   const CSHARP = StreamLanguage.define(interpolationParser(csharp, "C#"));
   let RUST: LanguageSupport;
+  let CPP: LanguageSupport;
   beforeAll(async () => {
     RUST = (await cmLanguages.find((l) => l.name === "Rust")!.load()) as LanguageSupport;
+    CPP = (await cmLanguages.find((l) => l.name === "C++")!.load()) as LanguageSupport;
+  });
+
+  it("pairs include brackets in C and C++, and template arguments in C++", () => {
+    pair("c", CPP, "#include |", "#include <|>");
+    pair("cpp", CPP, "#include |", "#include <|>");
+    pair("cpp", CPP, "std::vector|", "std::vector<|>");
+    pair("cpp", CPP, "auto p = std::make_unique|", "auto p = std::make_unique<|>");
+    pair("cpp", CPP, "auto n = static_cast|", "auto n = static_cast<|>");
+    pair("cpp", CPP, "template |", "template <|>");
+    pair("cpp", CPP, "Box|", "Box<|>");
+  });
+
+  it("does not pair comparisons, shifts or macros in C and C++", () => {
+    pair("c", CPP, "int f() { return a |", "int f() { return a <|");
+    pair("cpp", CPP, "for (int i = 0; i|", "for (int i = 0; i<|");
+    pair("cpp", CPP, "std::cout |", "std::cout <|");
+    pair("cpp", CPP, "if (x < MAX|", "if (x < MAX<|");
   });
 
   it("pairs after a type name in Java: fields, type arguments and class declarations", () => {

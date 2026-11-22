@@ -273,13 +273,16 @@ function wordBefore(state: EditorState, pos: number): string {
 }
 
 /** The caret is inside a literal: never pair there, whatever the language rule says. */
+/** C++ template syntax, not a template literal. */
+const CPP_TEMPLATE_NODE = /^Template(Function|Type|Method|ArgumentList|ParameterList|Declaration|Instantiation)$/;
+
 function inLiteral(state: EditorState, pos: number): boolean {
   for (
     let n: ReturnType<ReturnType<typeof syntaxTree>["resolveInner"]> | null = syntaxTree(state).resolveInner(pos, -1);
     n;
     n = n.parent
   )
-    if (/string|comment|template|rune/i.test(n.name)) return true;
+    if (/string|comment|template|rune/i.test(n.name) && !CPP_TEMPLATE_NODE.test(n.name)) return true;
   return false;
 }
 
@@ -354,6 +357,85 @@ function cLikeTypePosition(state: EditorState, pos: number): boolean {
   return /^(?:typeName|variableName)/.test(token.name) && /^[A-Z]/.test(state.sliceDoc(token.from, token.to));
 }
 
+/** Standard C++ templates (and casts) written against their `<`. */
+const CPP_TEMPLATES = new Set([
+  "vector",
+  "array",
+  "deque",
+  "list",
+  "forward_list",
+  "map",
+  "multimap",
+  "set",
+  "multiset",
+  "unordered_map",
+  "unordered_multimap",
+  "unordered_set",
+  "unordered_multiset",
+  "stack",
+  "queue",
+  "priority_queue",
+  "pair",
+  "tuple",
+  "optional",
+  "variant",
+  "any",
+  "function",
+  "span",
+  "basic_string",
+  "unique_ptr",
+  "shared_ptr",
+  "weak_ptr",
+  "make_unique",
+  "make_shared",
+  "atomic",
+  "future",
+  "promise",
+  "initializer_list",
+  "numeric_limits",
+  "is_same",
+  "enable_if",
+  "conditional",
+  "decay",
+  "remove_reference",
+  "static_cast",
+  "dynamic_cast",
+  "const_cast",
+  "reinterpret_cast",
+  "duration_cast",
+  "get",
+  "hash",
+  "less",
+  "greater",
+  "allocator",
+  "reference_wrapper",
+  "string_view",
+  "bitset",
+  "complex",
+  "valarray",
+]);
+
+/** `#include <` in C and C++. */
+function includePosition(state: EditorState, pos: number): boolean {
+  const line = state.doc.lineAt(pos);
+  return /^\s*#\s*(include|include_next|import)\s*$/.test(line.text.slice(0, pos - line.from));
+}
+
+/**
+ * C++: `#include <`, `template <`, and a template name written against its `<`: a standard one
+ * (`std::vector<`, `static_cast<`) or a capitalized one (`Box<`), never a value (`a < b`, `i<n`)
+ * or an all-caps macro.
+ */
+function cppTypePosition(state: EditorState, pos: number): boolean {
+  if (includePosition(state, pos)) return true;
+  const line = state.doc.lineAt(pos);
+  const before = line.text.slice(0, pos - line.from);
+  if (/\btemplate\s*$/.test(before)) return true;
+  const name = /(?:^|[^\w])(\w+)$/.exec(before)?.[1];
+  if (!name || /\boperator$/.test(before)) return false;
+  return CPP_TEMPLATES.has(name) || (/^[A-Z]/.test(name) && /[a-z]/.test(name));
+}
+
 const ANGLE_PAIR_RULES: Record<string, (state: EditorState, pos: number) => boolean> = {
   java: javaTypePosition,
   typescript: tsTypePosition,
@@ -361,6 +443,10 @@ const ANGLE_PAIR_RULES: Record<string, (state: EditorState, pos: number) => bool
   kotlin: cLikeTypePosition,
   csharp: cLikeTypePosition,
   rust: rustTypePosition,
+  c: includePosition,
+  cpp: cppTypePosition,
+  "objective-c": includePosition,
+  "objective-cpp": cppTypePosition,
 };
 
 /** The `<>` pairs the smart angle brackets inserted; `>` steps over their closing half. */
