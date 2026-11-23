@@ -307,6 +307,25 @@
   color: var(--fg-strong);
   background: var(--bg-hover);
 }
+.host :global(.cm-diffNumbers) {
+  position: relative;
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+.host :global(.cm-diffNumbers .cm-gutterElement),
+.host :global(.cm-diffWidgetNumber) {
+  min-inline-size: calc(var(--space-4) + var(--space-2));
+  padding-inline: var(--space-1) var(--space-2);
+}
+.host :global(.cm-diffWidgetNumbers) {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.host :global(.cm-diffWidgetNumber) {
+  position: absolute;
+  inset-inline: 0;
+}
 .noHighlight :global(.cm-changedLine),
 .noHighlight :global(.cm-insertedLine),
 .noHighlight :global(.cm-changedText),
