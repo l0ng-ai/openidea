@@ -2359,6 +2359,7 @@
   "No breakpoints. Click a line number to add one.": "没有断点。点击行号即可添加。",
   "No build output": "没有构建输出",
   "No changes": "没有更改",
+  "Select a stash to view its changes.": "请选择一条储藏以查看其中的更改。",
   "No changes selected for commit": "未选择要提交的更改",
   "No changes to create a patch from": "没有可用于创建补丁的更改",
   "No changes to roll back": "没有要回滚的更改",
