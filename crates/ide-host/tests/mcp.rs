@@ -114,7 +114,16 @@ impl Harness {
         let discovery = ide_mcp::discovery_path(self.tmp.path());
         let registry = Arc::new(Registry::new(self.host.clone()));
         let runtime = tokio::runtime::Handle::current();
-        (ide_mcp::McpServer::start(registry, Some(discovery.clone()), &runtime).unwrap(), discovery)
+        (
+            ide_mcp::McpServer::start_with(
+                registry,
+                Some(discovery.clone()),
+                &runtime,
+                ide_mcp::ServerOptions::default(),
+            )
+            .unwrap(),
+            discovery,
+        )
     }
 }
 impl Drop for Harness {
@@ -265,10 +274,11 @@ async fn project_path_argument_routes_to_another_open_project() {
     std::fs::write(second.join("unique.txt"), "second project").unwrap();
     h.host.open_project("second", &second).unwrap();
     let discovery = ide_mcp::discovery_path(h.tmp.path());
-    let _server = ide_mcp::McpServer::start(
+    let _server = ide_mcp::McpServer::start_with(
         Arc::new(Registry::new(h.host.clone())),
         Some(discovery.clone()),
         &tokio::runtime::Handle::current(),
+        ide_mcp::ServerOptions::default(),
     )
     .unwrap();
     let request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","arguments":{

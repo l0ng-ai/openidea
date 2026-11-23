@@ -76,17 +76,9 @@ pub struct ServerOptions {
 }
 
 impl McpServer {
-    /// Starts listening on `127.0.0.1:<random port>` with a new token, on
-    /// `runtime`, and writes the discovery file at `discovery` if given.
-    pub fn start(
-        registry: Arc<dyn ToolRegistry>,
-        discovery: Option<PathBuf>,
-        runtime: &tokio::runtime::Handle,
-    ) -> std::io::Result<Self> {
-        Self::start_with(registry, discovery, runtime, ServerOptions::default())
-    }
-
-    /// [`Self::start`] on the port and with the token of `options`.
+    /// Starts listening on `runtime`, and writes the discovery file at `discovery` if
+    /// given. `options` choose the address, the port and the token; by default
+    /// `127.0.0.1:<random port>` with a new token.
     pub fn start_with(
         registry: Arc<dyn ToolRegistry>,
         discovery: Option<PathBuf>,
@@ -474,7 +466,11 @@ mod tests {
     fn start() -> (McpServer, Arc<AtomicBool>) {
         let cancelled = Arc::new(AtomicBool::new(false));
         let registry = Arc::new(Slow(cancelled.clone()));
-        (McpServer::start(registry, None, &tokio::runtime::Handle::current()).unwrap(), cancelled)
+        (
+            McpServer::start_with(registry, None, &tokio::runtime::Handle::current(), ServerOptions::default())
+                .unwrap(),
+            cancelled,
+        )
     }
 
     fn call(name: &str, ms: u64, token: Option<&str>) -> Value {

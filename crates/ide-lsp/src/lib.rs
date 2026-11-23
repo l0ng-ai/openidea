@@ -2073,21 +2073,10 @@ impl LspManager {
     /// References of the symbol at `pos`. With `project_wide`, files outside
     /// the servers' analysis scope that mention the name are opened for the
     /// search (see [`scope`]); without, only what the servers analyse counts
-    /// (cheap, for bulk scans over many symbols).
-    pub async fn references(
-        &self,
-        doc: DocId,
-        pos: Pos,
-        include_declaration: bool,
-        project_wide: bool,
-        cancel: CancellationToken,
-    ) -> IdeResult<References> {
-        self.references_streaming(doc, pos, include_declaration, project_wide, true, cancel, None).await
-    }
-
-    /// [`Self::references`]. Java: without `libraries`, only the workspace's sources
-    /// are searched (`libraries_skipped`); with it and `project_wide`, those found
-    /// there arrive on `partial` before the dependencies and the JDK are searched.
+    /// (cheap, for bulk scans over many symbols). Java: without `libraries`,
+    /// only the workspace's sources are searched (`libraries_skipped`); with
+    /// it and `project_wide`, those found there arrive on `partial` before
+    /// the dependencies and the JDK are searched.
     #[allow(clippy::too_many_arguments)]
     pub async fn references_streaming(
         &self,
@@ -2796,7 +2785,7 @@ impl LspManager {
         })
     }
 
-    /// Renames across the project: like [`Self::references`], files outside the
+    /// Renames across the project: like [`Self::references_streaming`], files outside the
     /// server's analysis scope that mention the name are opened for the request.
     /// Every server that can rename there does: the Angular server adds the
     /// templates to vtsls's edit, whose own edits win where both change the same text.
