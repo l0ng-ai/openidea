@@ -31,8 +31,8 @@ const TRUNCATED_DEPTH = 4;
 /** The element whose text is cut off with an ellipsis around `node`, up to `stop`, if any. */
 function truncatedText(node: Element | null, stop: Element | null): HTMLElement | null {
   for (let el = node, depth = 0; el instanceof HTMLElement && depth < TRUNCATED_DEPTH; el = el.parentElement, depth++) {
-    // A native tooltip shows instead.
-    if (el.hasAttribute("title")) return null;
+    // A native tooltip shows instead, or the element opts out of auto-ellipsis tooltips.
+    if (el.hasAttribute("title") || el.hasAttribute("data-no-tooltip")) return null;
     if (isTruncated(el)) return el;
     if (el === stop) break;
   }

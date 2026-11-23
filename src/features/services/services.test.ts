@@ -46,6 +46,7 @@ import {
 import {
   bytesToUnits,
   formatCreatedDetailed,
+  formatDockerCommand,
   parseContainerInspect,
   parseImageInspect,
   parseNetworkInspect,
@@ -722,5 +723,69 @@ describe("docker compose detection and targets", () => {
     const svcDecl = resolveComposeReferenceAt(state, svcRefOffset);
     expect(svcDecl?.name).toBe("starrocks");
     expect(svcDecl?.line).toBe(8);
+  });
+});
+
+describe("formatDockerCommand", () => {
+  it("returns null when entrypoint, cmd, and fallback are empty", () => {
+    expect(formatDockerCommand([], [])).toBeNull();
+    expect(formatDockerCommand([], [], "   \n  ")).toBeNull();
+  });
+
+  it("keeps simple single-line entrypoint and cmd compact on one line", () => {
+    const formatted = formatDockerCommand(["docker-entrypoint.sh"], ["postgres", "-c", "max_connections=200"]);
+    expect(formatted).toEqual({
+      preview: "docker-entrypoint.sh postgres -c max_connections=200",
+      entrypoint: "docker-entrypoint.sh",
+      args: "postgres -c max_connections=200",
+      fullText: "docker-entrypoint.sh postgres -c max_connections=200",
+      copyText: "docker-entrypoint.sh postgres -c max_connections=200",
+      lineCount: 1,
+    });
+  });
+
+  it("separates multi-line shell entrypoints from command arguments and builds a single-line preview", () => {
+    const script = [
+      "mkdir -p /persist/slots",
+      "while true; do",
+      "  if flock -n 99; then break; fi",
+      "done",
+      'exec /entrypoint.sh "$@"',
+      "",
+    ].join("\n");
+    const formatted = formatDockerCommand(
+      ["/bin/bash", "-ec", script, "--"],
+      ["./bin/Runner.Listener", "run", "--startuptype", "service"],
+    )!;
+
+    expect(formatted.preview).toBe(
+      "/bin/bash -ec 'mkdir -p /persist/slots ↵ while true; do ↵ if flock -n 99; then break; fi ↵ done ↵ exec /entrypoint.sh \"$@\"' -- ./bin/Runner.Listener run --startuptype service",
+    );
+    expect(formatted.entrypoint).toBe(
+      [
+        "/bin/bash -ec '",
+        "mkdir -p /persist/slots",
+        "while true; do",
+        "  if flock -n 99; then break; fi",
+        "done",
+        'exec /entrypoint.sh "$@"',
+        "' --",
+      ].join("\n"),
+    );
+    expect(formatted.args).toBe("./bin/Runner.Listener run --startuptype service");
+    expect(formatted.lineCount).toBe(7);
+    expect(formatted.copyText).toBe(`${formatted.entrypoint} ${formatted.args}`);
+  });
+
+  it("quotes empty tokens and embedded single quotes and handles multi-line fallback strings", () => {
+    const quoted = formatDockerCommand(["sh", "-c", "echo 'hi'", ""], [])!;
+    expect(quoted.entrypoint).toBe("sh -c 'echo '\\''hi'\\''' ''");
+    expect(quoted.args).toBe("");
+    expect(quoted.lineCount).toBe(1);
+
+    const fallback = formatDockerCommand([], [], "set -e\r\n  npm start\r\n")!;
+    expect(fallback.preview).toBe("set -e ↵ npm start");
+    expect(fallback.fullText).toBe("set -e\n  npm start");
+    expect(fallback.lineCount).toBe(2);
   });
 });
