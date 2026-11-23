@@ -143,8 +143,12 @@
   text-overflow: ellipsis;
 }
 .amendPicker {
-  width: min(360px, calc(100vw - var(--space-4)));
+  width: max-content;
+  min-width: min(280px, calc(100vw - var(--space-4)));
   padding-block: var(--space-1);
+}
+.amendPicker > * {
+  max-width: 520px;
 }
 .amendPickerRows {
   max-height: calc(5 * var(--h-list-row));
