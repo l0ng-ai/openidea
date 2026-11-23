@@ -1652,12 +1652,14 @@ export const commands = {
 	 */
 	sdkProjectLibraries: (request: RequestId, onGroups: Channel<LibraryGroup[]>) => typedError<LibraryGroup[], IdeError>(__TAURI_INVOKE("sdk_project_libraries", { request, onGroups })),
 	/**
-	 *  Creates a Python environment with `tool` (`venv` / `uv` / `poetry` / `pipenv`); output streams through
-	 *  `on_output`. `install_packages` also installs what the project's `Pipfile` declares (pipenv).
+	 *  Creates a Python environment and streams its output through `on_output`.
+	 *  With Pipenv, `install_packages` also installs the packages declared in the project's `Pipfile`.
 	 */
 	sdkPythonCreateVenv: (tool: VenvTool, base: string, location: string, installPackages: boolean, request: RequestId, onOutput: Channel<string>) => typedError<Sdk, IdeError>(__TAURI_INVOKE("sdk_python_create_venv", { tool, base, location, installPackages, request, onOutput })),
 	/**  The interpreter the project uses: the configured one, else its virtualenv. */
 	sdkPythonEffective: (near: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_effective", { near })),
+	/**  The environments the window's project defines for Hatch, `default` first (hatch must be on PATH). */
+	sdkPythonHatchEnvs: (request: RequestId) => typedError<string[], IdeError>(__TAURI_INVOKE("sdk_python_hatch_envs", { request })),
 	/**  An existing Python executable or virtualenv folder as an SDK; `None` if Python cannot run. */
 	sdkPythonInterpreter: (path: string) => typedError<{
 	/**
@@ -6783,8 +6785,11 @@ export type Field = {
 };
 
 export type FieldKind = { type: "text"; pattern: string | null; placeholder: string } | { type: "choice"; options: ChoiceOption[]; segmented: boolean } | { type: "checkbox" } | 
-/**  An installed SDK of this kind (`jdk`); the value is its home, empty = automatic. */
-{ type: "sdk"; sdk: string } | 
+/**
+ *  An installed SDK of this kind (`jdk`); the value is its home (its version when
+ *  `version`), empty = automatic. SDKs older than `min` are not offered.
+ */
+{ type: "sdk"; sdk: string; version: boolean; min: string | null } | 
 /**  Several ids out of grouped items; the value is comma-separated. */
 { type: "dependencies"; groups: DependencyGroup[] };
 
@@ -12246,7 +12251,9 @@ export type SdkKind = "python" | "node" |
 /**  Maven homes. */
 "maven" | "ruby" | 
 /**  Zig toolchain directories. */
-"zig";
+"zig" | 
+/**  .NET SDKs of the `dotnet` on the search path; `version` is what `global.json` pins. */
+"dotnet";
 
 /**
  *  IDEA's search context: matches anywhere, only in, or outside comments and
@@ -13803,7 +13810,9 @@ export type VenvTool =
 /**  `conda create -n <name> -y` for a bare name, else `-p <location>` (conda must be on PATH). */
 "conda" | 
 /**  `pipenv --python <base>` in the project (pipenv must be on PATH). */
-"pipenv";
+"pipenv" | 
+/**  `hatch env create <env>` in the project (hatch must be on PATH). */
+"hatch";
 
 /**  What a view or custom editor shows. */
 export type View = {
