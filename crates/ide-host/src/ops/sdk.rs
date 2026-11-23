@@ -120,6 +120,39 @@ pub async fn sdk_python_interpreter(host: &Host, window: &str, path: PathBuf) ->
         .map_err(join_err)?
 }
 
+/// What All Interpreters › Show Paths lists for an interpreter.
+#[derive(Clone, Debug, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PythonSysPath {
+    /// The interpreter's own `sys.path`.
+    pub paths: Vec<ide_core::IpcPath>,
+    /// The entries of `user_paths` that are not existing folders.
+    pub missing: Vec<String>,
+}
+
+/// `sys.path` of the interpreter `python`, and which of `user_paths` (the folders added to it
+/// in the settings, saved or not yet) are missing.
+#[command(trust = outside_restricted)]
+pub async fn sdk_python_sys_path(
+    host: &Host,
+    window: &str,
+    python: PathBuf,
+    user_paths: Vec<String>,
+) -> IdeResult<PythonSysPath> {
+    host.require_trust_if_project(window)?;
+    tokio::task::spawn_blocking(move || {
+        let paths = ide_sdk::libraries::python_sys_path(&python)
+            .ok_or_else(|| IdeError::invalid(format!("cannot run {}", python.display())))?;
+        let missing = user_paths
+            .into_iter()
+            .filter(|p| !ide_sdk::apply::absolute_setting_path(p).is_some_and(|p| p.is_dir()))
+            .collect();
+        Ok(PythonSysPath { paths: paths.iter().map(|p| p.as_path().into()).collect(), missing })
+    })
+    .await
+    .map_err(join_err)?
+}
+
 /// The interpreter of the workspace member `near` belongs to, else the project's.
 pub(crate) fn effective_python(
     config_dir: &std::path::Path,
@@ -549,4 +582,5 @@ ide_command::domain!(
     sdk_python_packages,
     sdk_python_pip,
     sdk_python_project_interpreters,
+    sdk_python_sys_path,
 );

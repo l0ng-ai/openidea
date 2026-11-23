@@ -51,6 +51,10 @@ The selected interpreter is passed to basedpyright and Pyright (`python.pythonPa
 
 The **Python Interpreter** item in the status bar shows the current interpreter. Click it to switch, or to open **Add New Interpreter…** and **Interpreter Settings…**.
 
+### Interpreter paths
+
+**Settings › Languages & Frameworks › Python › All Interpreters › Show Paths for Selected Interpreter** lists the interpreter's `sys.path` and lets you add folders outside the project to it, such as a checkout of a shared library. The added folders are saved per interpreter in the IDE settings, so they apply to every project that uses it. basedpyright and Pyright get them as `extraPaths`, runs, debug sessions, tests and the Python Console get them on `PYTHONPATH`, and they are listed under **External Libraries**. A folder that no longer exists is marked as missing and skipped. The interpreter's own entries cannot be removed, and a Docker or Compose run target has no paths of its own to edit.
+
 ### A Docker or Compose run target as the interpreter
 
 When the project's dependencies are installed only in an image, choose a Docker or Docker Compose [run target](/en/guide/remote/containers#docker-and-docker-compose-run-targets) as the interpreter: the interpreter list and the status bar item show those targets next to the local interpreters.

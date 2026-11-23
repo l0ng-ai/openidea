@@ -149,6 +149,7 @@ const sdkKey = (s: ReturnType<typeof useProject.getState>) => {
     s.project?.root ?? null,
     s.project?.trusted,
     l?.python?.interpreter,
+    l?.python?.interpreterPaths,
     l?.ruby?.interpreter,
     l?.java?.jdk,
     l?.node?.interpreter,

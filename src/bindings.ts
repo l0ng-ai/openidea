@@ -1671,6 +1671,11 @@ export const commands = {
 	/**  The Python interpreters of the recently opened projects, each with its project. */
 	sdkPythonProjectInterpreters: () => typedError<ProjectInterpreter[], IdeError>(__TAURI_INVOKE("sdk_python_project_interpreters")),
 	/**
+	 *  `sys.path` of the interpreter `python`, and which of `user_paths` (the folders added to it
+	 *  in the settings, saved or not yet) are missing.
+	 */
+	sdkPythonSysPath: (python: string, userPaths: string[]) => typedError<PythonSysPath, IdeError>(__TAURI_INVOKE("sdk_python_sys_path", { python, userPaths })),
+	/**
 	 *  Find in Files. Results stream through `on_event`; ends with `Done`.
 	 *  Cancel with `cancel_request(request)`.
 	 */
@@ -11371,6 +11376,19 @@ export type PythonSettings = {
 	hideOtherProjectInterpreters?: boolean,
 	/**  Show each interpreter's path under its name on the interpreters page. */
 	showInterpreterPaths?: boolean,
+	/**
+	 *  Folders the user added to an interpreter's `sys.path` (All Interpreters › Show Paths),
+	 *  by interpreter executable; absolute or `~/`.
+	 */
+	interpreterPaths?: { [key in string]: string[] },
+};
+
+/**  What All Interpreters › Show Paths lists for an interpreter. */
+export type PythonSysPath = {
+	/**  The interpreter's own `sys.path`. */
+	paths: IpcPath[],
+	/**  The entries of `user_paths` that are not existing folders. */
+	missing: string[],
 };
 
 /**  Color Scheme › Language Defaults › Rainbow brackets: which delimiters are coloured. */

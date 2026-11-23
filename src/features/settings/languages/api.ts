@@ -15,12 +15,13 @@ import {
   nextRequestId,
   type PhpLanguageLevels,
   type ProjectInterpreter,
+  type PythonSysPath,
   type PythonPackage,
   type Sdk,
   type SdkKind,
 } from "@/platform/ipc";
 
-export type { ContainerPython, ProjectInterpreter, PythonPackage, Sdk, SdkKind };
+export type { ContainerPython, ProjectInterpreter, PythonPackage, PythonSysPath, Sdk, SdkKind };
 
 interface SdkCache {
   byKind: Partial<Record<SdkKind, Sdk[]>>;
@@ -136,6 +137,11 @@ export function createVenv(
 /** Resolves an interpreter picked by hand ("Existing environment") into an SDK like the detected ones. */
 export function pythonInterpreter(path: string): Promise<Sdk | null> {
   return isTauri() ? call(commands.sdkPythonInterpreter(path)) : Promise.resolve(null);
+}
+
+/** `sys.path` of an interpreter, and which of the folders added to it are missing. */
+export function pythonSysPath(python: string, userPaths: string[]): Promise<PythonSysPath> {
+  return isTauri() ? call(commands.sdkPythonSysPath(python, userPaths)) : Promise.resolve({ paths: [], missing: [] });
 }
 
 /** Interpreters of the other recently opened projects, each with the project it belongs to. */

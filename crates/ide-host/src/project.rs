@@ -202,7 +202,9 @@ impl Host {
                 // resolve imports into them. A container target already supplies its own
                 // `extraPaths` (the site-packages snapshot); don't mix local sources into it.
                 if !container_python {
-                    ide_sdk::apply::configure_python_extra_paths(cfg, &python_dependency_roots(&effective, root));
+                    let mut paths = python_dependency_roots(&effective, root);
+                    paths.extend(ide_sdk::apply::python_user_paths(root, &effective));
+                    ide_sdk::apply::configure_python_extra_paths(cfg, &paths);
                 }
                 if cfg.name == "jdtls" {
                     // A workspace member keeps its build model under its own key (Build Project).

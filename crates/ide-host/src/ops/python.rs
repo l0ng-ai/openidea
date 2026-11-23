@@ -16,6 +16,12 @@ pub(super) fn paths(project: &Project) -> Vec<PathBuf> {
             }
         }
     }
+    // The folders added to the project interpreter's paths, whichever Python the configuration names.
+    for path in ide_sdk::apply::python_user_paths(&project.root, &project.settings.effective()) {
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
     paths
 }
 

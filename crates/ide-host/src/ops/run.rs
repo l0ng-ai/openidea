@@ -515,10 +515,15 @@ async fn start_inner(
             })
             .await?;
     }
+    let python_paths = if *root != project.root {
+        std::iter::once(root.clone()).chain(ide_sdk::apply::python_user_paths(root, &settings)).collect()
+    } else {
+        super::python::paths(&project)
+    };
     let encoding = settings.console.encoding;
     let options = StartOptions {
         encoding: Some(encoding).filter(|e| !e.trim().is_empty()),
-        python_paths: if *root != project.root { vec![root.clone()] } else { super::python::paths(&project) },
+        python_paths,
         ruby_reporter: ruby_reporter_dir(host, &config),
     };
     project.require_trust()?;

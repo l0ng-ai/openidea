@@ -80,6 +80,33 @@ pub fn python_interpreter(root: &Path, s: &Settings) -> Option<PathBuf> {
         .or_else(|| pinned::pinned_python(root))
 }
 
+/// An absolute or `~/` path from the settings; `None` for anything else.
+pub fn absolute_setting_path(s: &str) -> Option<PathBuf> {
+    setting_path(Path::new(""), s).filter(|p| p.is_absolute())
+}
+
+/// The folders the user added to `python`'s paths (All Interpreters › Show Paths) that exist.
+pub fn interpreter_user_paths(python: &Path, s: &Settings) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for (interpreter, paths) in &s.languages.python.interpreter_paths {
+        if absolute_setting_path(interpreter).as_deref() != Some(python) {
+            continue;
+        }
+        for path in paths.iter().filter_map(|p| absolute_setting_path(p)).filter(|p| p.is_dir()) {
+            if !out.contains(&path) {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
+/// [`interpreter_user_paths`] of the project interpreter: what its language server, runs,
+/// debug sessions and tests add to the import path.
+pub fn python_user_paths(root: &Path, s: &Settings) -> Vec<PathBuf> {
+    python_interpreter(root, s).map(|python| interpreter_user_paths(&python, s)).unwrap_or_default()
+}
+
 /// An explicit project interpreter wins; otherwise use the closest virtualenv to the file.
 pub fn python_interpreter_near(root: &Path, near: Option<&Path>, s: &Settings) -> Option<PathBuf> {
     if s.languages.python.run_target().is_some() {
@@ -2246,6 +2273,39 @@ fn conda_activation(python: &Path, name: &str, conda_exe: Option<PathBuf>, on_pa
             )
         }),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod python_user_path_tests {
+    use super::*;
+
+    #[test]
+    fn user_paths_follow_the_interpreter_and_skip_what_cannot_be_imported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let (lib, other) = (root.join("shared"), root.join("other"));
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let python = root.join(".venv").join(crate::bin_dir()).join(crate::exe("python"));
+        std::fs::create_dir_all(python.parent().unwrap()).unwrap();
+        std::fs::write(&python, "").unwrap();
+        std::fs::write(root.join(".venv/pyvenv.cfg"), "").unwrap();
+        let text = |p: &Path| p.to_string_lossy().into_owned();
+
+        let mut s = Settings::default();
+        s.languages.python.interpreter_paths = [
+            // Gone, duplicated, relative and a file: none of them reach the import path.
+            (text(&python), vec![text(&lib), text(&root.join("gone")), text(&lib), "relative".into(), text(&python)]),
+            ("/usr/bin/some-other-python".into(), vec![text(&other)]),
+        ]
+        .into();
+        assert_eq!(interpreter_user_paths(&python, &s), std::slice::from_ref(&lib));
+        assert_eq!(interpreter_user_paths(Path::new("/usr/bin/some-other-python"), &s), [other]);
+        // The project's virtualenv is its interpreter when none is configured.
+        assert_eq!(python_user_paths(&root, &s), [lib]);
+        s.languages.python.interpreter = "target:docker".into();
+        assert!(python_user_paths(&root, &s).is_empty());
     }
 }
 

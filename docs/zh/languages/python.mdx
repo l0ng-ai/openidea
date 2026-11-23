@@ -51,6 +51,10 @@ Ruff 只为位于 Ruff 配置之下的文件启动：`ruff.toml`、`.ruff.toml`�
 
 状态栏上的 **Python 解释器** 显示当前解释器，点击可以切换，也可以打开 **添加新的解释器…** 和 **解释器设置…**。
 
+### 解释器路径
+
+**设置 › 语言和框架 › Python › 所有解释器 › 显示所选解释器的路径** 列出该解释器的 `sys.path`，并可以把项目之外的文件夹（例如共享库的检出目录）添加进去。添加的文件夹按解释器保存在 IDE 设置中，因此对使用该解释器的每个项目生效。basedpyright 和 Pyright 通过 `extraPaths` 获得这些文件夹，运行、调试、测试和 Python 控制台通过 `PYTHONPATH` 获得，它们也会显示在 **External Libraries** 下。已不存在的文件夹会标记为缺失并被跳过。解释器自带的条目不能删除，Docker 或 Compose 运行目标没有可编辑的路径。
+
 ### 以 Docker 或 Compose 运行目标作为解释器
 
 如果项目的依赖只安装在镜像里，可以把 Docker 或 Docker Compose [运行目标](/zh/guide/remote/containers#docker-和-docker-compose-运行目标)选为解释器：解释器列表和状态栏项会把这些目标列在本地解释器旁边。

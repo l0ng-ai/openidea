@@ -388,8 +388,14 @@ fn python_groups(root: &Path, _project: &Path, s: &Settings, cancel: &Cancellati
     let Some(python) = crate::apply::python_interpreter(root, s) else { return Vec::new() };
     let mut files = vec![python.clone()];
     files.extend(crate::venv_of(&python).map(|v| v.join("pyvenv.cfg")));
-    cached_cancellable(root, "python", python.display().to_string(), &files, cancel, || {
-        python_libraries(&python, Some(root)).into_iter().collect()
+    let user = crate::apply::interpreter_user_paths(&python, s);
+    let key = std::iter::once(&python).chain(&user).map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n");
+    cached_cancellable(root, "python", key, &files, cancel, || {
+        let mut group = python_libraries(&python, Some(root));
+        if let Some(group) = &mut group {
+            group.roots.extend(library_roots(user));
+        }
+        group.into_iter().collect()
     })
 }
 
@@ -400,6 +406,15 @@ pub fn python_libraries(python: &Path, root: Option<&Path>) -> Option<LibraryGro
     let out = query_in(python, &["-c", PYTHON_PATHS], dir.as_ref().map(|d| d.path()), &[], QUERY_TIMEOUT)?;
     let name = crate::discover::python_sdk(python, "system", root).map(|s| s.name).unwrap_or_else(|| "Python".into());
     group(name, "python", library_roots(parse_python_paths(&out)))
+}
+
+/// `sys.path` of `python` started on its own; `None` when it cannot run.
+pub fn python_sys_path(python: &Path) -> Option<Vec<PathBuf>> {
+    // In a neutral directory, and without the `''` entry `-c` puts first for it.
+    let dir = crate::python::neutral_dir();
+    let script = "import json,sys;print(json.dumps(sys.path))";
+    let out = query_in(python, &["-c", script], dir.as_ref().map(|d| d.path()), &[], QUERY_TIMEOUT)?;
+    Some(parse_python_paths(&out).into_iter().filter(|p| !p.as_os_str().is_empty()).collect())
 }
 
 pub(crate) fn parse_python_paths(out: &str) -> Vec<PathBuf> {

@@ -17,6 +17,7 @@ import { IconButton, Input, Spinner, T, showContextMenu } from "@/ui";
 import { useSetting } from "../components/context";
 import { useSettingsDialog } from "../model/staging";
 import { AddInterpreterDialog } from "./AddInterpreterDialog";
+import { InterpreterPathsDialog } from "./InterpreterPathsDialog";
 import { tildify } from "./components";
 import {
   filterInterpreters,
@@ -44,6 +45,7 @@ export function PythonInterpretersPage() {
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [showingPaths, setShowingPaths] = useState<InterpreterRow | null>(null);
 
   const shown = useMemo(
     () => filterInterpreters(rows, { query, hideOther: !!hideOther, currentProject: root }),
@@ -86,6 +88,12 @@ export function PythonInterpretersPage() {
         disabled: !canAssign || row.invalid || isCurrent(row),
         run: () => selectForProject(row),
       },
+      {
+        label: "Show Paths for Selected Interpreter",
+        icon: "library",
+        disabled: row.invalid,
+        run: () => setShowingPaths(row),
+      },
       { kind: "separator" },
       { label: "Remove Interpreter", icon: "minus", danger: true, run: () => void remove(row) },
     ]);
@@ -122,6 +130,13 @@ export function PythonInterpretersPage() {
             onClick={() => selectedRow && void remove(selectedRow)}
           />
           <IconButton icon="refresh" size="small" title="Refresh Interpreters" onClick={refresh} />
+          <IconButton
+            icon="library"
+            size="small"
+            title="Show Paths for Selected Interpreter"
+            disabled={!selectedRow || selectedRow.invalid}
+            onClick={() => setShowingPaths(selectedRow)}
+          />
           <span className={styles.spacer} />
           <IconButton
             icon="filter"
@@ -210,6 +225,13 @@ export function PythonInterpretersPage() {
         {canAssign && <T>Double-click an interpreter to use it for this project.</T>}
       </div>
 
+      {showingPaths && (
+        <InterpreterPathsDialog
+          interpreter={showingPaths.path}
+          name={showingPaths.name}
+          onClose={() => setShowingPaths(null)}
+        />
+      )}
       {adding && canAssign && root && (
         <AddInterpreterDialog
           root={root}
