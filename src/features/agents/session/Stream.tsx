@@ -147,7 +147,7 @@ function useOffscreenRows(
   }, [ref, visible, enabled, fitWindowWidth, fontZoom]);
   // Keep independent of `visible`: when a kept-alive tab hides, `data-selection` must stay until
   // the selection leaves and WebKit clears off-screen rows' highlights before skipping again.
-  useSelectionVisibility(ref, enabled);
+  useSelectionVisibility(ref, enabled, `.${styles.conversationRow}`);
 }
 
 interface StreamProps {
