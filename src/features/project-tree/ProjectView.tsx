@@ -585,13 +585,10 @@ export function ProjectView() {
     setSelection(next, lead?.key ?? null);
     const { options: o } = useProjectTree.getState();
     if (revealing.current || !o.autoscrollToSource || !lead || lead.dir || lead.placeholder || next.size !== 1) return;
+    const opts = { preview: previewTabEnabled(), focus: false, external: false };
     if (lead.member) {
-      void revealRange(
-        lead.path,
-        { start: lead.member.selection_range.start },
-        { preview: true, focus: false, external: false },
-      );
-    } else void openFile(lead.path, { preview: true, focus: false, external: false });
+      void revealRange(lead.path, { start: lead.member.selection_range.start }, opts);
+    } else void openFile(lead.path, opts);
   }, []);
 
   const onActivate = useCallback((node: ProjectNode) => {

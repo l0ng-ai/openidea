@@ -738,8 +738,9 @@ describe("Show Members", () => {
     },
   );
 
-  it("autoscrolls to source without handing files to another application", async () => {
+  it.each([true, false])("autoscrolls to source with preview tabs set to %s", async (preview) => {
     const { rows, row } = setup();
+    setPreviewTabSetting(preview);
     act(() => {
       setViewOption("autoscrollToSource", true);
       setViewOption("singleClickOpen", false);
@@ -747,7 +748,7 @@ describe("Show Members", () => {
     await waitFor(() => expect(rows()).toContain("README.md"));
     fireEvent.mouseDown(row("README.md"));
     await waitFor(() =>
-      expect(openFile).toHaveBeenLastCalledWith("/w/acme/README.md", expect.objectContaining({ external: false })),
+      expect(openFile).toHaveBeenLastCalledWith("/w/acme/README.md", { preview, focus: false, external: false }),
     );
   });
 
