@@ -3517,15 +3517,15 @@ async fn discovery_times_out_when_session_new_hangs() {
 async fn a_growing_tool_output_is_not_sent_whole_on_every_flush() {
     let tmp = tempfile::tempdir().unwrap();
     let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
-    // What a window receives of the conversation: the bytes of every event about the tool's entry.
-    let sent = Arc::new(Mutex::new((0usize, 0usize)));
+    // What a window receives of the tool's entry: events, and the bytes they take.
+    let sent = Arc::new(Mutex::new((0usize, Vec::<AgentEvent>::new())));
     let sink = sent.clone();
     mgr.subscribe(Arc::new(move |e| {
         let json = serde_json::to_value(&e).unwrap();
         if json["entry"]["type"] == "tool" || json["type"] == "toolOutput" {
             let mut sent = sink.lock();
             sent.0 += json.to_string().len();
-            sent.1 += 1;
+            sent.1.push(e);
         }
     }));
     let task = mgr
@@ -3555,47 +3555,164 @@ async fn a_growing_tool_output_is_not_sent_whole_on_every_flush() {
 
     let output = finished(&mgr).expect("the command's output was kept");
     assert!(output.len() > 60_000, "a long output that the timeline keeps whole: {}", output.len());
-    let (bytes, events) = *sent.lock();
+    let (bytes, events) = {
+        let sent = sent.lock();
+        (sent.0, sent.1.len())
+    };
     assert!(events >= 30, "the output reached the window in many flushes: {events}");
     assert!(bytes < 3 * output.len(), "{bytes} bytes sent for {} bytes of output over {events} events", output.len());
+
+    // The window's copy, built as the UI does, ends as the conversation holds it.
+    let mut shown: Option<String> = None;
+    for e in &sent.lock().1 {
+        match e {
+            AgentEvent::Entry { entry: AgentEntry::Tool { output, .. }, .. } => shown = output.clone(),
+            AgentEvent::ToolOutput { from, text, .. } => {
+                let have = shown.get_or_insert_default();
+                assert_eq!(*from as usize, have.encode_utf16().count(), "a delta goes on where the last one ended");
+                have.push_str(text);
+            }
+            _ => unreachable!("{e:?}"),
+        }
+    }
+    assert_eq!(shown, Some(output));
 }
 
 #[test]
 fn streamed_text_is_sent_as_appends() {
-    let mut streamed = HashMap::new();
+    let mut streamed = Streamed::default();
     let agent = |t: &str| AgentEntry::Agent { text: t.into() };
-    let first = entry_event("t", &mut streamed, None, 3, &agent("Hé"));
+    let first = entry_event("t", &mut streamed, None, 3, &agent("Hé")).unwrap();
     assert!(matches!(first, AgentEvent::Entry { index: 3, .. }), "the first sight of a message is whole");
-    let next = entry_event("t", &mut streamed, None, 3, &agent("Hé 👋 there"));
+    let next = entry_event("t", &mut streamed, None, 3, &agent("Hé 👋 there")).unwrap();
     assert!(
         matches!(&next, AgentEvent::Append { subagent: None, index: 3, from: 2, text, .. } if text == " 👋 there"),
         "{next:?}"
     );
-    let sub = entry_event("t", &mut streamed, Some("s".into()), 3, &agent("Hé 👋 there!"));
+    let sub = entry_event("t", &mut streamed, Some("s".into()), 3, &agent("Hé 👋 there!")).unwrap();
     assert!(matches!(sub, AgentEvent::Entry { .. }), "each session streams on its own");
-    let after = entry_event("t", &mut streamed, None, 3, &agent("Hé 👋 there."));
+    let after = entry_event("t", &mut streamed, None, 3, &agent("Hé 👋 there.")).unwrap();
     assert!(
         matches!(&after, AgentEvent::Append { from: 11, text, .. } if text == "."),
         "from counts UTF-16 units: {after:?}"
     );
-    let replaced = entry_event("t", &mut streamed, None, 3, &agent("Other"));
+    let replaced = entry_event("t", &mut streamed, None, 3, &agent("Other")).unwrap();
     assert!(matches!(replaced, AgentEvent::Entry { .. }), "text that doesn't extend the sent text is sent whole");
     let thought = AgentEntry::Thought { text: "hmm…".into(), started_ms: None };
-    let thought = entry_event("t", &mut streamed, None, 4, &thought);
+    let thought = entry_event("t", &mut streamed, None, 4, &thought).unwrap();
     assert!(matches!(thought, AgentEvent::Entry { index: 4, .. }), "a new message starts whole");
     let tool = AgentEntry::Error { message: "x".into() };
-    entry_event("t", &mut streamed, None, 4, &tool);
+    entry_event("t", &mut streamed, None, 4, &tool).unwrap();
     let again = AgentEntry::Thought { text: "hmm… ok".into(), started_ms: None };
-    let again = entry_event("t", &mut streamed, None, 4, &again);
+    let again = entry_event("t", &mut streamed, None, 4, &again).unwrap();
     assert!(matches!(again, AgentEvent::Entry { .. }), "an entry replaced by another kind forgets its text");
 
     let long = "é".repeat(5000);
-    entry_event("t", &mut streamed, None, 5, &agent(&long));
-    assert!(streamed[&None].tail.len() <= 64, "only the end of what was sent is kept");
-    let on = entry_event("t", &mut streamed, None, 5, &agent(&format!("{long}!")));
+    entry_event("t", &mut streamed, None, 5, &agent(&long)).unwrap();
+    assert!(streamed.messages[&None].tail.len() <= 64, "only the end of what was sent is kept");
+    let on = entry_event("t", &mut streamed, None, 5, &agent(&format!("{long}!"))).unwrap();
     assert!(matches!(&on, AgentEvent::Append { from: 5000, text, .. } if text == "!"), "{on:?}");
-    let rewritten = entry_event("t", &mut streamed, None, 5, &agent(&format!("{}x!??", "é".repeat(4999))));
+    let rewritten = entry_event("t", &mut streamed, None, 5, &agent(&format!("{}x!??", "é".repeat(4999)))).unwrap();
     assert!(matches!(rewritten, AgentEvent::Entry { .. }), "a rewritten end is sent whole");
+}
+
+#[test]
+fn a_running_tools_output_is_sent_as_appends() {
+    let mut streamed = Streamed::default();
+    let call = |status, output: Option<&str>| AgentEntry::Tool {
+        id: "t1".into(),
+        title: "cargo build".into(),
+        kind: "execute".into(),
+        status,
+        locations: Vec::new(),
+        output: output.map(str::to_owned),
+        diffs: Vec::new(),
+        started_ms: Some(1.0),
+        ended_ms: None,
+    };
+    let running = |output| call(AgentToolStatus::Running, output);
+    let event = |streamed: &mut Streamed, session: Session, i, entry: &AgentEntry| {
+        entry_event("t", streamed, session, i, entry)
+    };
+
+    let first = event(&mut streamed, None, 2, &running(None)).unwrap();
+    assert!(matches!(first, AgentEvent::Entry { index: 2, .. }), "the first sight of a call is whole");
+    let output = event(&mut streamed, None, 2, &running(Some("$ make"))).unwrap();
+    assert!(
+        matches!(&output, AgentEvent::ToolOutput { subagent: None, index: 2, from: 0, text, .. } if text == "$ make"),
+        "{output:?}"
+    );
+    let next = event(&mut streamed, None, 2, &running(Some("$ make\ncc é.c 👋"))).unwrap();
+    assert!(
+        matches!(&next, AgentEvent::ToolOutput { from: 6, text, .. } if text == "\ncc é.c 👋"),
+        "from counts UTF-16 units: {next:?}"
+    );
+    let after = event(&mut streamed, None, 2, &running(Some("$ make\ncc é.c 👋\nok"))).unwrap();
+    assert!(matches!(&after, AgentEvent::ToolOutput { from: 16, text, .. } if text == "\nok"), "{after:?}");
+    assert!(
+        event(&mut streamed, None, 2, &running(Some("$ make\ncc é.c 👋\nok"))).is_none(),
+        "what the window has is not sent again"
+    );
+
+    // Anything else about the call goes whole, output included.
+    let mut titled = running(Some("$ make\ncc é.c 👋\nok\n"));
+    if let AgentEntry::Tool { title, .. } = &mut titled {
+        *title = "make".into();
+    }
+    let renamed = event(&mut streamed, None, 2, &titled).unwrap();
+    assert!(
+        matches!(&renamed, AgentEvent::Entry { entry: AgentEntry::Tool { output: Some(o), .. }, .. } if o.ends_with("ok\n")),
+        "{renamed:?}"
+    );
+    let on = event(&mut streamed, None, 2, &titled);
+    assert!(on.is_none(), "the entry the window holds now is this one");
+    if let AgentEntry::Tool { output, .. } = &mut titled {
+        output.as_mut().unwrap().push_str("more");
+    }
+    let on = event(&mut streamed, None, 2, &titled).unwrap();
+    assert!(matches!(&on, AgentEvent::ToolOutput { from: 20, text, .. } if text == "more"), "{on:?}");
+
+    // Output the call replaced rather than extended goes whole.
+    let make = |output: &str| {
+        let mut entry = titled.clone();
+        if let AgentEntry::Tool { output: o, .. } = &mut entry {
+            *o = Some(output.to_owned());
+        }
+        entry
+    };
+    let replaced = event(&mut streamed, None, 2, &make("$ make\nother")).unwrap();
+    assert!(matches!(replaced, AgentEvent::Entry { .. }), "a rewritten output is sent whole");
+    let on = event(&mut streamed, None, 2, &make("$ make\nother, but longer")).unwrap();
+    assert!(matches!(on, AgentEvent::ToolOutput { from: 12, .. }), "and the next growth is appended to it: {on:?}");
+
+    // Calls run side by side, each in its own session.
+    let whole = |e: &AgentEvent| matches!(e, AgentEvent::Entry { .. });
+    let (a, b) = (
+        event(&mut streamed, None, 3, &running(Some("a"))),
+        event(&mut streamed, Some("s".into()), 3, &running(Some("b"))),
+    );
+    let c = event(&mut streamed, None, 4, &running(Some("c")));
+    assert!([&a, &b, &c].into_iter().all(|e| whole(e.as_ref().unwrap())), "each call starts whole");
+    let a = event(&mut streamed, None, 3, &running(Some("ab"))).unwrap();
+    let c = event(&mut streamed, None, 4, &running(Some("cd"))).unwrap();
+    let b = event(&mut streamed, Some("s".into()), 3, &running(Some("bc"))).unwrap();
+    assert!(
+        [&a, &b, &c].into_iter().all(|e| matches!(e, AgentEvent::ToolOutput { from: 1, .. })),
+        "one call's flush does not end another's: {a:?} {b:?} {c:?}"
+    );
+
+    // A call that ended is sent whole, and forgotten.
+    let done = call(AgentToolStatus::Completed, Some("ab\ndone"));
+    let done_event = event(&mut streamed, None, 3, &done).unwrap();
+    assert!(matches!(done_event, AgentEvent::Entry { .. }));
+    assert!(!streamed.tools.contains_key(&(None, 3)));
+    let late = event(&mut streamed, None, 3, &call(AgentToolStatus::Completed, Some("ab\ndone\nlate"))).unwrap();
+    assert!(matches!(late, AgentEvent::Entry { .. }), "an ended call's output is not appended to");
+
+    // A rollback forgets what was sent.
+    streamed.clear();
+    let again = event(&mut streamed, None, 4, &running(Some("cdef"))).unwrap();
+    assert!(matches!(again, AgentEvent::Entry { .. }), "after the conversation was cut, calls start whole");
 }
 
 #[test]

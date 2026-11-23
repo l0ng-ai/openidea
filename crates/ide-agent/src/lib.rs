@@ -568,8 +568,8 @@ struct Task {
     /// Settings already sent this session (`(option, value)`), so a refusal is not retried.
     config_sent: Mutex<HashSet<(String, String)>>,
     dirty: Mutex<BTreeSet<(Session, usize)>>,
-    /// How much of each session's streaming message was last sent, so the next flush sends the rest.
-    streamed: Mutex<HashMap<Session, Sent>>,
+    /// What was last sent of the entries that stream, so the next flush sends the rest.
+    streamed: Mutex<Streamed>,
     flush_scheduled: AtomicBool,
     stderr: Mutex<VecDeque<String>>,
     /// Set by `delete`; held while saving.
@@ -2247,7 +2247,7 @@ impl Task {
             skills_reload_pending: AtomicBool::new(false),
             config_sent: Mutex::new(HashSet::new()),
             dirty: Mutex::new(BTreeSet::new()),
-            streamed: Mutex::new(HashMap::new()),
+            streamed: Mutex::new(Streamed::default()),
             flush_scheduled: AtomicBool::new(false),
             stderr: Mutex::new(VecDeque::new()),
             deleted: Mutex::new(false),
@@ -2472,7 +2472,7 @@ impl Task {
                 .into_iter()
                 .filter_map(|(subagent, i)| {
                     let entry = s.conversation.timeline(&subagent)?.entries.get(i)?;
-                    Some(entry_event(&self.id, &mut streamed, subagent, i, entry))
+                    entry_event(&self.id, &mut streamed, subagent, i, entry)
                 })
                 .collect()
         };
@@ -4342,42 +4342,115 @@ impl Sent {
     }
 }
 
+/// A running tool call as last sent: the entry without its output, and what was sent of that.
+struct SentTool {
+    call: AgentEntry,
+    output: Sent,
+}
+
+/// What each window was last sent of the entries that stream, so the next flush sends the rest.
+#[derive(Default)]
+struct Streamed {
+    /// The message each session streams now.
+    messages: HashMap<Session, Sent>,
+    /// The tool calls still running, by session and entry index.
+    tools: HashMap<(Session, usize), SentTool>,
+}
+
+impl Streamed {
+    fn clear(&mut self) {
+        self.messages.clear();
+        self.tools.clear();
+    }
+}
+
 /// The event that brings the UI's copy of entry `i` up to date: only the new text when
-/// it extends the message last sent for the session, else the whole entry.
+/// it extends the message (or the tool output) last sent, else the whole entry; `None`
+/// when the UI's copy of a tool already is the entry.
 fn entry_event(
     task: &str,
-    streamed: &mut HashMap<Session, Sent>,
+    streamed: &mut Streamed,
     subagent: Session,
     i: usize,
     entry: &AgentEntry,
-) -> AgentEvent {
+) -> Option<AgentEvent> {
+    let whole = |subagent| AgentEvent::Entry { task: task.to_owned(), subagent, index: i as u32, entry: entry.clone() };
     let text = match entry {
         AgentEntry::Agent { text } | AgentEntry::Thought { text, .. } => Some(text),
+        AgentEntry::Tool { .. } => return tool_event(task, streamed, subagent, i, entry),
         _ => None,
     };
     let Some(text) = text else {
-        if streamed.get(&subagent).is_some_and(|sent| sent.index == i) {
-            streamed.remove(&subagent);
+        if streamed.messages.get(&subagent).is_some_and(|sent| sent.index == i) {
+            streamed.messages.remove(&subagent);
         }
-        return AgentEvent::Entry { task: task.to_owned(), subagent, index: i as u32, entry: entry.clone() };
+        return Some(whole(subagent));
     };
-    match streamed.get(&subagent).filter(|sent| sent.extended_by(i, text)) {
+    match streamed.messages.get(&subagent).filter(|sent| sent.extended_by(i, text)) {
         Some(sent) => {
             let (bytes, from) = (sent.bytes, sent.utf16);
-            streamed.insert(subagent.clone(), Sent::after(i, text, bytes, from));
-            AgentEvent::Append {
+            streamed.messages.insert(subagent.clone(), Sent::after(i, text, bytes, from));
+            Some(AgentEvent::Append {
                 task: task.to_owned(),
                 subagent,
                 index: i as u32,
                 from: from as u32,
                 text: text[bytes..].to_owned(),
-            }
+            })
         }
         None => {
-            streamed.insert(subagent.clone(), Sent::new(i, text));
-            AgentEvent::Entry { task: task.to_owned(), subagent, index: i as u32, entry: entry.clone() }
+            streamed.messages.insert(subagent.clone(), Sent::new(i, text));
+            Some(whole(subagent))
         }
     }
+}
+
+/// [`entry_event`] for a tool call: the output it grew by while the rest of it is unchanged.
+fn tool_event(
+    task: &str,
+    streamed: &mut Streamed,
+    subagent: Session,
+    i: usize,
+    entry: &AgentEntry,
+) -> Option<AgentEvent> {
+    let AgentEntry::Tool { id, title, kind, status, locations, output, diffs, started_ms, ended_ms } = entry else {
+        return None;
+    };
+    let call = AgentEntry::Tool {
+        id: id.clone(),
+        title: title.clone(),
+        kind: kind.clone(),
+        status: *status,
+        locations: locations.clone(),
+        output: None,
+        diffs: diffs.clone(),
+        started_ms: *started_ms,
+        ended_ms: *ended_ms,
+    };
+    let text = output.as_deref().unwrap_or_default();
+    let key = (subagent, i);
+    if let Some(sent) = streamed.tools.get_mut(&key).filter(|sent| sent.call == call) {
+        if sent.output.extended_by(i, text) {
+            let (bytes, from) = (sent.output.bytes, sent.output.utf16);
+            sent.output = Sent::after(i, text, bytes, from);
+            return Some(AgentEvent::ToolOutput {
+                task: task.to_owned(),
+                subagent: key.0,
+                index: i as u32,
+                from: from as u32,
+                text: text[bytes..].to_owned(),
+            });
+        }
+        if text.len() == sent.output.bytes && text.ends_with(&sent.output.tail) {
+            return None;
+        }
+    }
+    if matches!(status, AgentToolStatus::Pending | AgentToolStatus::Running) {
+        streamed.tools.insert(key.clone(), SentTool { call, output: Sent::new(i, text) });
+    } else {
+        streamed.tools.remove(&key);
+    }
+    Some(AgentEvent::Entry { task: task.to_owned(), subagent: key.0, index: i as u32, entry: entry.clone() })
 }
 
 struct SessionOpenError {

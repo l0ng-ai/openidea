@@ -578,7 +578,7 @@ export async function connect(): Promise<void> {
   }
 }
 
-type EntryEvent = Extract<AgentEvent, { type: "entry" | "append" }>;
+type EntryEvent = Extract<AgentEvent, { type: "entry" | "append" | "toolOutput" }>;
 
 /** Entry events that arrived while their conversation loaded, applied on top of the copy it loads. */
 const arrivedWhileLoading = new Map<string, EntryEvent[]>();
@@ -587,7 +587,7 @@ const streamingReply = new Map<string, { index: number; reply: boolean }>();
 
 /** `entries` with the event applied; `null` when the copy can't take it. */
 function applyEntryEvent(entries: AgentEntry[], e: EntryEvent): AgentEntry[] | null {
-  if (e.type === "append") return appendEntry(entries, e.index, e.from, e.text);
+  if (e.type === "append" || e.type === "toolOutput") return appendEntry(entries, e.index, e.from, e.text);
   const have = entries[e.index];
   // Sent before the loaded copy was read: that copy already holds more of the message.
   if (
@@ -842,6 +842,10 @@ function onEvent(e: AgentEvent) {
         const streaming = streamingReply.get(e.task);
         if (shown ? shown.type === "agent" : streaming?.index === e.index && streaming.reply) markUnread(e.task);
       }
+      onEntryEvent(s, e);
+      break;
+    }
+    case "toolOutput": {
       onEntryEvent(s, e);
       break;
     }

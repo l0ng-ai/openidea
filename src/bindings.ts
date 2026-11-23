@@ -2585,6 +2585,12 @@ export type AgentEvent_Deserialize =
  *  `from` UTF-16 units of its text when the previous event for it was sent.
  */
 ({ type: "append"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
+/**
+ *  Text was appended to the output of tool entry `index`: it read the first `from` UTF-16
+ *  units of its output when the previous event for it was sent. Any other change of the
+ *  tool (status, title, diffs…) arrives as an `Entry`.
+ */
+({ type: "toolOutput"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
 /**  An agent reported the usage limits of its account (shared by every task of `provider`). */
 ({ type: "limits"; provider: string; limits: AgentLimit[] }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
 /**  A model lookup started or completed, including unsuccessful lookups. */
@@ -2607,6 +2613,12 @@ export type AgentEvent_Serialize =
  *  `from` UTF-16 units of its text when the previous event for it was sent.
  */
 ({ type: "append"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
+/**
+ *  Text was appended to the output of tool entry `index`: it read the first `from` UTF-16
+ *  units of its output when the previous event for it was sent. Any other change of the
+ *  tool (status, title, diffs…) arrives as an `Entry`.
+ */
+({ type: "toolOutput"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
 /**  An agent reported the usage limits of its account (shared by every task of `provider`). */
 ({ type: "limits"; provider: string; limits: AgentLimit[] }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
 /**  A model lookup started or completed, including unsuccessful lookups. */
