@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   confirm: vi.fn(),
   globalSettings: vi.fn(),
   sysPath: vi.fn(),
+  pathProblems: vi.fn(),
+  cancelRequest: vi.fn(),
   choosePath: vi.fn(),
 }));
 vi.mock("@/platform/ipc", async (importOriginal) => {
@@ -25,8 +27,9 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       sdkPythonInterpreter: mocks.interpreter,
       sdkPythonCreateVenv: mocks.createVenv,
       sdkPythonSysPath: mocks.sysPath,
+      sdkPythonUserPathProblems: mocks.pathProblems,
       settingsGetGlobal: mocks.globalSettings,
-      cancelRequest: vi.fn(),
+      cancelRequest: mocks.cancelRequest,
     },
   };
 });
@@ -90,8 +93,9 @@ beforeEach(() => {
     ok(path === PROJECT.path ? PROJECT : path === EXTRA.path ? EXTRA : null),
   );
   mocks.confirm.mockResolvedValue(true);
-  mocks.sysPath.mockImplementation((_python: string, user: string[]) =>
-    ok({ paths: ["/usr/lib/python3.12"], missing: user.filter((path) => path.includes("gone")) }),
+  mocks.sysPath.mockImplementation(() => ok(["/usr/lib/python3.12", "/usr/lib/python3.12/site-packages"]));
+  mocks.pathProblems.mockImplementation((paths: string[]) =>
+    ok(paths.map((path) => (path.includes("gone") ? "missing" : path.includes(":") ? "invalid" : null))),
   );
   mocks.globalSettings.mockResolvedValue(settings());
   useSdks.setState({ byKind: {}, loading: {}, errors: {} });
@@ -182,17 +186,25 @@ describe("Python interpreters page", () => {
     expect(screen.getByText("No interpreters match the search")).toBeInTheDocument();
   });
 
-  it("shows an interpreter's sys.path and edits the folders added to it", async () => {
-    page({ interpreterPaths: { [OTHER.path]: ["/shared/gone"], [SYSTEM.path]: ["/kept"] } });
-    expect(screen.getByRole("button", { name: "Show Paths for Selected Interpreter" })).toBeDisabled();
-    fireEvent.mouseDown(await screen.findByRole("option", { name: /Python 3\.11 \(shop\)/ }));
+  const openPaths = async (row: RegExp) => {
+    fireEvent.mouseDown(await screen.findByRole("option", { name: row }));
     fireEvent.click(screen.getByRole("button", { name: "Show Paths for Selected Interpreter" }));
     const paths = await screen.findByRole("listbox", { name: "Interpreter Paths" });
-    const own = await within(paths).findByRole("option", { name: "/usr/lib/python3.12" });
-    expect(mocks.sysPath).toHaveBeenCalledWith(OTHER.path, ["/shared/gone"]);
+    await within(paths).findByRole("option", { name: "/usr/lib/python3.12" });
+    return paths;
+  };
+
+  it("shows an interpreter's sys.path and edits the folders added to it", async () => {
+    page({ interpreterPaths: { [OTHER.path]: ["/shared/gone", "/data/libs:v2"], [SYSTEM.path]: ["/kept"] } });
+    expect(screen.getByRole("button", { name: "Show Paths for Selected Interpreter" })).toBeDisabled();
+    const paths = await openPaths(/Python 3\.11 \(shop\)/);
+    const own = within(paths).getByRole("option", { name: "/usr/lib/python3.12" });
+    expect(mocks.sysPath).toHaveBeenCalledWith(OTHER.path, expect.anything());
     const gone = within(paths).getByRole("option", { name: /\/shared\/gone/ });
     expect(gone).toHaveTextContent("added by user");
     await waitFor(() => expect(gone).toHaveTextContent("Missing"));
+    // A folder `PYTHONPATH` cannot hold is flagged too: it would break every launch.
+    expect(within(paths).getByRole("option", { name: /libs:v2/ })).toHaveTextContent("Invalid");
 
     // Only the folders the user added can be removed.
     fireEvent.mouseDown(own);
@@ -208,14 +220,62 @@ describe("Python interpreters page", () => {
       await waitFor(() => expect(mocks.choosePath).toHaveReturnedTimes(mocks.choosePath.mock.calls.length));
       await within(paths).findByRole("option", { name: /\/shared\/lib/ });
     }
-    expect(within(paths).getAllByRole("option")).toHaveLength(2);
+    expect(within(paths).getAllByRole("option")).toHaveLength(4);
+    // The folder that was already there is shown instead.
+    await waitFor(() => expect(own).toHaveAttribute("aria-selected", "true"));
+    // Adding and removing folders does not start the interpreter again.
+    expect(mocks.sysPath).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Reload Paths" }));
+    await waitFor(() => expect(mocks.sysPath).toHaveBeenCalledTimes(2));
 
     // Nothing is staged before OK, and other interpreters keep their folders.
     expect(stageOf("global|languages.python.interpreterPaths")).toBeUndefined();
     fireEvent.click(screen.getByRole("button", { name: "OK" }));
     expect(stageOf("global|languages.python.interpreterPaths")).toEqual({
-      [OTHER.path]: ["/shared/lib"],
+      [OTHER.path]: ["/data/libs:v2", "/shared/lib"],
       [SYSTEM.path]: ["/kept"],
     });
+  });
+
+  it("moves through the paths with the arrow keys and keeps the focus after Delete", async () => {
+    page({ interpreterPaths: { [OTHER.path]: ["/shared/a", "/shared/b"] } });
+    const paths = await openPaths(/Python 3\.11 \(shop\)/);
+    const rows = () => within(paths).getAllByRole("option");
+    // One tab stop for the whole list.
+    expect(rows().map((row) => row.tabIndex)).toEqual([0, -1, -1, -1]);
+    rows()[0]!.focus();
+    fireEvent.keyDown(rows()[0]!, { key: "End" });
+    await waitFor(() => expect(rows()[3]).toHaveFocus());
+    fireEvent.keyDown(rows()[3]!, { key: "ArrowUp" });
+    await waitFor(() => expect(rows()[2]).toHaveFocus());
+    expect(rows().map((row) => row.tabIndex)).toEqual([-1, -1, 0, -1]);
+    // Delete removes the folder and the next row takes the focus; an own entry stays.
+    fireEvent.keyDown(rows()[2]!, { key: "Delete" });
+    await waitFor(() => expect(rows()).toHaveLength(3));
+    expect(rows()[2]).toHaveTextContent("/shared/b");
+    await waitFor(() => expect(rows()[2]).toHaveFocus());
+    fireEvent.keyDown(rows()[2]!, { key: "Home" });
+    await waitFor(() => expect(rows()[0]).toHaveFocus());
+    fireEvent.keyDown(rows()[0]!, { key: "Delete" });
+    expect(rows()).toHaveLength(3);
+  });
+
+  it("stops a sys.path query that is still running when the dialog closes", async () => {
+    mocks.sysPath.mockReturnValue(new Promise(() => {}));
+    page();
+    fireEvent.mouseDown(await screen.findByRole("option", { name: /Python 3\.11 \(shop\)/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Show Paths for Selected Interpreter" }));
+    await screen.findByRole("listbox", { name: "Interpreter Paths" });
+    expect(mocks.cancelRequest).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(mocks.cancelRequest).toHaveBeenCalledTimes(1));
+  });
+
+  it("drops the folders added to an interpreter when it is removed", async () => {
+    page({ interpreterPaths: { [OTHER.path]: ["/shared/lib"], [SYSTEM.path]: ["/kept"] } });
+    fireEvent.mouseDown(await screen.findByRole("option", { name: /Python 3\.11 \(shop\)/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove Interpreter" }));
+    await waitFor(() => expect(screen.queryByText("Python 3.11 (shop)")).not.toBeInTheDocument());
+    expect(stageOf("global|languages.python.interpreterPaths")).toEqual({ [SYSTEM.path]: ["/kept"] });
   });
 });

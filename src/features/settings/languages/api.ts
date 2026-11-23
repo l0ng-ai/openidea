@@ -15,13 +15,13 @@ import {
   nextRequestId,
   type PhpLanguageLevels,
   type ProjectInterpreter,
-  type PythonSysPath,
   type PythonPackage,
   type Sdk,
   type SdkKind,
+  type UserPathProblem,
 } from "@/platform/ipc";
 
-export type { ContainerPython, ProjectInterpreter, PythonPackage, PythonSysPath, Sdk, SdkKind };
+export type { ContainerPython, ProjectInterpreter, PythonPackage, Sdk, SdkKind, UserPathProblem };
 
 interface SdkCache {
   byKind: Partial<Record<SdkKind, Sdk[]>>;
@@ -139,9 +139,21 @@ export function pythonInterpreter(path: string): Promise<Sdk | null> {
   return isTauri() ? call(commands.sdkPythonInterpreter(path)) : Promise.resolve(null);
 }
 
-/** `sys.path` of an interpreter, and which of the folders added to it are missing. */
-export function pythonSysPath(python: string, userPaths: string[]): Promise<PythonSysPath> {
-  return isTauri() ? call(commands.sdkPythonSysPath(python, userPaths)) : Promise.resolve({ paths: [], missing: [] });
+/** `sys.path` of an interpreter; `cancel` stops the query when its answer is no longer wanted. */
+export function pythonSysPath(python: string): { promise: Promise<string[]>; cancel: () => void } {
+  if (!isTauri()) return { promise: Promise.resolve([]), cancel: () => {} };
+  const request = nextRequestId();
+  return {
+    promise: call(commands.sdkPythonSysPath(python, request)),
+    cancel: () => void commands.cancelRequest(request),
+  };
+}
+
+/** Why each folder added to an interpreter's paths stays off the import path (`null`: it is used). */
+export function pythonUserPathProblems(paths: string[]): Promise<(UserPathProblem | null)[]> {
+  return isTauri() && paths.length
+    ? call(commands.sdkPythonUserPathProblems(paths))
+    : Promise.resolve(paths.map(() => null));
 }
 
 /** Interpreters of the other recently opened projects, each with the project it belongs to. */

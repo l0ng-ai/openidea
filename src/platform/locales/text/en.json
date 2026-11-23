@@ -2317,6 +2317,8 @@
   "added by user": "added by user",
   "Missing": "Missing",
   "Added folders are on the import path of every project that uses this interpreter.": "Added folders are on the import path of every project that uses this interpreter.",
+  "Runs search them before the interpreter's own paths.": "Runs search them before the interpreter's own paths.",
+  "Not an absolute path, or it contains the separator of PYTHONPATH": "Not an absolute path, or it contains the separator of PYTHONPATH",
   "Search interpreters": "Search interpreters",
   "Set as Project Interpreter": "Set as Project Interpreter",
   "Project interpreter": "Project interpreter",

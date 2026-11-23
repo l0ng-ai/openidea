@@ -8712,6 +8712,8 @@
   "Reload Paths": "重新加载路径",
   "added by user": "由用户添加",
   "Added folders are on the import path of every project that uses this interpreter.": "添加的文件夹会加入使用此解释器的每个项目的导入路径。",
+  "Runs search them before the interpreter's own paths.": "运行时会先于解释器自带的路径搜索它们。",
+  "Not an absolute path, or it contains the separator of PYTHONPATH": "不是绝对路径，或包含 PYTHONPATH 的分隔符",
   "Search interpreters": "搜索解释器",
   "Set as Project Interpreter": "设为项目解释器",
   "Remove {name} from the list? It is the project interpreter: the project falls back to its virtualenv.": "从列表中删除 {name}？它是项目解释器：项目将回退到其 virtualenv。",

@@ -39,6 +39,7 @@ export function PythonInterpretersPage() {
   const [hidden, setHidden] = useSetting<string[]>("languages.python.hiddenInterpreters");
   const [hideOther, setHideOther] = useSetting<boolean>("languages.python.hideOtherProjectInterpreters");
   const [showPaths, setShowPaths] = useSetting<boolean>("languages.python.showInterpreterPaths");
+  const [userPaths, setUserPaths] = useSetting<Record<string, string[]>>("languages.python.interpreterPaths");
   const [interpreter, setInterpreter] = useSetting<string>("languages.python.interpreter", "project");
   const current = interpreter || null;
 
@@ -76,6 +77,9 @@ export function PythonInterpretersPage() {
     const same = (path: string) => sameInterpreterPath(path, row.path, null);
     setHidden([...(hidden ?? []).filter((path) => !same(path)), row.path]);
     setAdded((added ?? []).filter((path) => !same(path)));
+    // The folders added to its paths go with it: a hidden interpreter has no dialog to remove them in.
+    const kept = Object.entries(userPaths ?? {}).filter(([path]) => !same(path));
+    if (kept.length !== Object.keys(userPaths ?? {}).length) setUserPaths(Object.fromEntries(kept));
     if (used && canAssign) setInterpreter("");
     setSelected(null);
   };

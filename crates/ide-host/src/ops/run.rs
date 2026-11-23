@@ -518,11 +518,17 @@ async fn start_inner(
             })
             .await?;
     }
-    let python_paths = if *root != project.root {
-        std::iter::once(root.clone()).chain(ide_sdk::apply::python_user_paths(root, &settings)).collect()
-    } else {
-        super::python::paths(&project)
-    };
+    let mut python_paths = if *root != project.root { vec![root.clone()] } else { super::python::paths(&project) };
+    if matches!(config.kind.as_str(), "python" | "pytest" | "django-test") {
+        let near = ide_run::scope::owner(&project.root, &config);
+        python_paths = super::python::with_user_paths(
+            python_paths,
+            &host.config_dir,
+            &project,
+            Some(&config.command),
+            Some(&near),
+        );
+    }
     let encoding = settings.console.encoding;
     let options = StartOptions {
         encoding: Some(encoding).filter(|e| !e.trim().is_empty()),

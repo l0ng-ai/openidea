@@ -1675,11 +1675,13 @@ export const commands = {
 	sdkPythonPip: (python: string, requirement: string, uninstall: boolean, upgrade: boolean, request: RequestId, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("sdk_python_pip", { python, requirement, uninstall, upgrade, request, onOutput })),
 	/**  The Python interpreters of the recently opened projects, each with its project. */
 	sdkPythonProjectInterpreters: () => typedError<ProjectInterpreter[], IdeError>(__TAURI_INVOKE("sdk_python_project_interpreters")),
+	/**  `sys.path` of the interpreter `python`, for All Interpreters › Show Paths. */
+	sdkPythonSysPath: (python: string, request: RequestId) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("sdk_python_sys_path", { python, request })),
 	/**
-	 *  `sys.path` of the interpreter `python`, and which of `user_paths` (the folders added to it
-	 *  in the settings, saved or not yet) are missing.
+	 *  For each folder added to an interpreter's paths, why it stays off the import path
+	 *  (`None`: it is used). The folders may not be saved yet.
 	 */
-	sdkPythonSysPath: (python: string, userPaths: string[]) => typedError<PythonSysPath, IdeError>(__TAURI_INVOKE("sdk_python_sys_path", { python, userPaths })),
+	sdkPythonUserPathProblems: (paths: string[]) => typedError<(UserPathProblem | null)[], IdeError>(__TAURI_INVOKE("sdk_python_user_path_problems", { paths })),
 	/**
 	 *  Find in Files. Results stream through `on_event`; ends with `Done`.
 	 *  Cancel with `cancel_request(request)`.
@@ -11395,14 +11397,6 @@ export type PythonSettings = {
 	interpreterPaths?: { [key in string]: string[] },
 };
 
-/**  What All Interpreters › Show Paths lists for an interpreter. */
-export type PythonSysPath = {
-	/**  The interpreter's own `sys.path`. */
-	paths: IpcPath[],
-	/**  The entries of `user_paths` that are not existing folders. */
-	missing: string[],
-};
-
 /**  Color Scheme › Language Defaults › Rainbow brackets: which delimiters are coloured. */
 export type RainbowBracketKinds = {
 	round?: boolean,
@@ -13682,6 +13676,13 @@ export type UpstreamTracking = {
 	remote: string,
 	branch: string,
 };
+
+/**  Why a folder added to an interpreter's paths stays off the import path. */
+export type UserPathProblem = 
+/**  Not an existing folder. */
+"missing" | 
+/**  Not absolute or `~/`, or it holds the separator of `PYTHONPATH`. */
+"invalid";
 
 export type Variable = Variable_Serialize | Variable_Deserialize;
 
