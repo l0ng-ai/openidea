@@ -231,7 +231,7 @@
   content-visibility: auto;
 }
 /* WebKit leaves a stale selection highlight on rows that skipped rendering (`useOffscreenRows`). */
-.stream[data-selection] > .conversationRow[data-measured] {
+.conversationRow[data-measured][data-selection] {
   content-visibility: visible;
 }
 /* Keep turns distinct and the work within a turn close to its author. Not `* + *`: a
