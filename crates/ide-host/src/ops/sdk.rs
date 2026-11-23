@@ -120,37 +120,47 @@ pub async fn sdk_python_interpreter(host: &Host, window: &str, path: PathBuf) ->
         .map_err(join_err)?
 }
 
-/// What All Interpreters › Show Paths lists for an interpreter.
-#[derive(Clone, Debug, serde::Serialize, specta::Type)]
-#[serde(rename_all = "camelCase")]
-pub struct PythonSysPath {
-    /// The interpreter's own `sys.path`.
-    pub paths: Vec<ide_core::IpcPath>,
-    /// The entries of `user_paths` that are not existing folders.
-    pub missing: Vec<String>,
-}
-
-/// `sys.path` of the interpreter `python`, and which of `user_paths` (the folders added to it
-/// in the settings, saved or not yet) are missing.
+/// `sys.path` of the interpreter `python`, for All Interpreters › Show Paths.
 #[command(trust = outside_restricted)]
 pub async fn sdk_python_sys_path(
     host: &Host,
     window: &str,
     python: PathBuf,
-    user_paths: Vec<String>,
-) -> IdeResult<PythonSysPath> {
+    request: RequestId,
+) -> IdeResult<Vec<ide_core::IpcPath>> {
     host.require_trust_if_project(window)?;
-    tokio::task::spawn_blocking(move || {
-        let paths = ide_sdk::libraries::python_sys_path(&python)
-            .ok_or_else(|| IdeError::invalid(format!("cannot run {}", python.display())))?;
-        let missing = user_paths
-            .into_iter()
-            .filter(|p| !ide_sdk::apply::absolute_setting_path(p).is_some_and(|p| p.is_dir()))
-            .collect();
-        Ok(PythonSysPath { paths: paths.iter().map(|p| p.as_path().into()).collect(), missing })
+    let cancel = host.begin_project_request(window, request);
+    let result = tokio::task::spawn_blocking(move || {
+        let paths = ide_sdk::libraries::python_sys_path(&python, &cancel);
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        let paths = paths.ok_or_else(|| {
+            IdeError::invalid(format!(
+                "Cannot read sys.path of {}: the interpreter failed or did not answer in time",
+                python.display()
+            ))
+        })?;
+        Ok(paths.iter().map(|p| p.as_path().into()).collect())
     })
     .await
-    .map_err(join_err)?
+    .map_err(join_err);
+    host.end_request(request);
+    result?
+}
+
+/// For each folder added to an interpreter's paths, why it stays off the import path
+/// (`None`: it is used). The folders may not be saved yet.
+#[command(trust = outside_restricted)]
+pub async fn sdk_python_user_path_problems(
+    host: &Host,
+    window: &str,
+    paths: Vec<String>,
+) -> IdeResult<Vec<Option<ide_sdk::apply::UserPathProblem>>> {
+    host.require_trust_if_project(window)?;
+    tokio::task::spawn_blocking(move || paths.iter().map(|p| ide_sdk::apply::user_path(p).err()).collect())
+        .await
+        .map_err(join_err)
 }
 
 /// The interpreter of the workspace member `near` belongs to, else the project's.
@@ -470,6 +480,76 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_launch_takes_the_user_paths_of_the_interpreter_it_uses() {
+        use crate::ops::python::{debug_python, with_user_paths};
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let (root, bare, own) = (base.join("project"), base.join("bare"), base.join("own"));
+        let (for_main, for_own) = (base.join("for-main"), base.join("for-own"));
+        for dir in [&root, &bare, &own, &for_main, &for_own] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        let (main_python, own_python) = (fake_venv(&root, ".venv"), fake_venv(&own, ".venv"));
+        ide_workspace::workspace::Workspace::attach(&root, "ws", vec![root.clone(), bare.clone(), own.clone()])
+            .unwrap();
+        let host = Host::new(HostConfig {
+            config_dir: base.join("config"),
+            data_dir: base.join("data"),
+            local_data_dir: base.join("local"),
+            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+            syntax: Arc::default(),
+            sink_for: Box::new(|_| Arc::new(|_| {})),
+            owner: |w| w,
+            runtime: tokio::runtime::Handle::current(),
+            project_environment: false,
+        });
+        host.trust.decide(&root, true, false).unwrap();
+        host.open_project("main", &root).unwrap();
+        let project = host.project("main").unwrap();
+        let text = |p: &Path| p.to_string_lossy().into_owned();
+        project
+            .settings
+            .set(
+                ide_workspace::SettingsScope::Global,
+                "languages.python.interpreterPaths",
+                serde_json::json!({ text(&main_python): [text(&for_main)], text(&own_python): [text(&for_own)] }),
+            )
+            .unwrap();
+        let paths = |command: Option<&str>, near: &Path| {
+            with_user_paths(Vec::new(), &host.config_dir, &project, command, Some(near))
+        };
+
+        // A member without a Python of its own runs on the primary project's interpreter;
+        // a member with its own virtualenv on that one.
+        assert_eq!(paths(None, &root), std::slice::from_ref(&for_main));
+        assert_eq!(paths(None, &bare), std::slice::from_ref(&for_main));
+        assert_eq!(paths(None, &own), std::slice::from_ref(&for_own));
+        // The interpreter a launch names wins over where it runs; a manager's command does not name one.
+        assert_eq!(paths(Some(&text(&own_python)), &bare), std::slice::from_ref(&for_own));
+        assert_eq!(paths(Some("uv"), &own), std::slice::from_ref(&for_own));
+        assert_eq!(paths(Some("python3"), &bare), std::slice::from_ref(&for_main));
+        // What is already on the path is neither repeated nor dropped.
+        let kept = with_user_paths(vec![root.clone(), for_main.clone()], &host.config_dir, &project, None, Some(&root));
+        assert_eq!(kept, [root.clone(), for_main]);
+
+        // Debug reads the interpreter its launch configuration names, so it agrees with Run.
+        let mut launch = ide_dap::LaunchConfig {
+            name: "Python".into(),
+            adapter: "debugpy".into(),
+            request: "launch".into(),
+            program: None,
+            args: vec![],
+            cwd: Some(bare.as_path().into()),
+            env: Default::default(),
+            extra_json: Some(serde_json::json!({ "python": text(&own_python) }).to_string()),
+        };
+        assert_eq!(debug_python(&launch), Some(text(&own_python)));
+        assert_eq!(paths(debug_python(&launch).as_deref(), &bare), [for_own]);
+        launch.extra_json = Some(serde_json::json!({ "python": ["uv", "run", "python"] }).to_string());
+        assert_eq!(debug_python(&launch), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_hand_picked_venv_is_resolved_like_a_detected_interpreter() {
         let temp = tempfile::tempdir().unwrap();
         let base = dunce::canonicalize(temp.path()).unwrap();
@@ -583,4 +663,5 @@ ide_command::domain!(
     sdk_python_pip,
     sdk_python_project_interpreters,
     sdk_python_sys_path,
+    sdk_python_user_path_problems,
 );

@@ -602,6 +602,7 @@ sdk_python_packages                          outside_restricted project_host bin
 sdk_python_pip                               outside_restricted project_host bindings async
 sdk_python_project_interpreters              outside_restricted project_host bindings async
 sdk_python_sys_path                          outside_restricted project_host bindings async
+sdk_python_user_path_problems                outside_restricted project_host bindings async
 search_start                                 always             project_host bindings async
 search_validate                              always             project_host bindings sync
 set_recent_project_groups                    always             desktop      bindings sync

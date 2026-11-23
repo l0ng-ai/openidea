@@ -203,7 +203,10 @@ impl Host {
                 // `extraPaths` (the site-packages snapshot); don't mix local sources into it.
                 if !container_python {
                     let mut paths = python_dependency_roots(&effective, root);
-                    paths.extend(ide_sdk::apply::python_user_paths(root, &effective));
+                    // The folders added to the paths of the interpreter this server analyses with.
+                    if let Some(python) = ide_sdk::apply::python_server_interpreter(root, server_root, &effective) {
+                        paths.extend(ide_sdk::apply::interpreter_user_paths(&python, &effective));
+                    }
                     ide_sdk::apply::configure_python_extra_paths(cfg, &paths);
                 }
                 if cfg.name == "jdtls" {
