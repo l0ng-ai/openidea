@@ -3,7 +3,9 @@
 use crate::Host;
 use ide_core::event::NotifyLevel;
 use ide_core::settings::{BIOME_LANGUAGES, ExternalFormatter, LanguagesSettings, Settings};
-use ide_core::{ChangeSet, DocId, IdeError, IdeEvent, IdeResult, IpcPath, LanguageId, Pos, Range, TextEdit};
+use ide_core::{
+    CancellationToken, ChangeSet, DocId, IdeError, IdeEvent, IdeResult, IpcPath, LanguageId, Pos, Range, TextEdit,
+};
 use ide_language::{LanguageConfig, PhpAlignment, Syntax};
 use ide_lsp::types::FormatOptions;
 use ide_tools::{Tools, formatter};
@@ -126,13 +128,13 @@ fn python_style_for(
     }
 }
 
-/// Black in the environment of the interpreter for `near` (`svc/.venv/bin/black`), next to its
-/// Python, or in `Scripts` for conda and pixi environments on Windows.
-fn interpreter_black(root: &Path, near: Option<&Path>, settings: &Settings) -> Option<PathBuf> {
+/// `tool` installed in the environment of the interpreter nearest to `near` (`svc/.venv/bin/ruff` or
+/// `svc/.venv/bin/black`), or in `Scripts` for conda and pixi environments on Windows.
+fn interpreter_tool(root: &Path, near: Option<&Path>, settings: &Settings, tool: &str) -> Option<PathBuf> {
     let python = ide_sdk::apply::python_interpreter_near(root, near, settings)?;
     let dir = python.parent()?;
-    let exe = if cfg!(windows) { "black.exe" } else { "black" };
-    [dir.join(exe), dir.join("Scripts").join(exe)].into_iter().find(|p| p.is_file())
+    let exe = if cfg!(windows) { format!("{tool}.exe") } else { tool.to_owned() };
+    [dir.join(&exe), dir.join("Scripts").join(&exe)].into_iter().find(|p| p.is_file())
 }
 
 /// Formatters print nothing for a file their configuration excludes (Black's `force-exclude`):
@@ -531,10 +533,10 @@ async fn provider_edits(
     let tool = selected.name();
     let name = formatter::display_name(tool);
     let mut custom = ide_sdk::apply::setting_path(&project.root, &tool_settings.path);
-    if custom.is_none() && selected == ExternalFormatter::Black {
+    if custom.is_none() && matches!(selected, ExternalFormatter::Ruff | ExternalFormatter::Black) {
         let (root, near, settings) =
             (project.root.clone(), snap.path.parent().map(Path::to_path_buf), settings.clone());
-        custom = tokio::task::spawn_blocking(move || interpreter_black(&root, near.as_deref(), &settings))
+        custom = tokio::task::spawn_blocking(move || interpreter_tool(&root, near.as_deref(), &settings, tool))
             .await
             .map_err(|e| IdeError::internal(e.to_string()))?;
     }
@@ -598,15 +600,7 @@ async fn provider_edits(
         if excluded_output(&snap.text, &formatted) {
             return Ok((Vec::new(), false, true));
         }
-        let edits = text
-            .diff(&formatted)
-            .changes
-            .into_iter()
-            .map(|c| TextEdit {
-                range: Range::new(text.offset_to_pos(c.from), text.offset_to_pos(c.to)),
-                new_text: c.insert,
-            })
-            .collect();
+        let edits = diff_edits(&text, &formatted);
         Ok((edits, old_black, false))
     })
     .await
@@ -635,6 +629,52 @@ async fn provider_edits(
         project.sink.emit(IdeEvent::Notify { level: NotifyLevel::Info, title: title.into(), body: Some(body) });
     }
     edits.map(Some).map_err(|e| e.with_tool(tool))
+}
+
+/// The edits that turn `text` into `formatted`, one per changed region.
+fn diff_edits(text: &ide_text::Document, formatted: &str) -> Vec<TextEdit> {
+    text.diff(formatted)
+        .changes
+        .into_iter()
+        .map(|c| TextEdit {
+            range: Range::new(text.offset_to_pos(c.from), text.offset_to_pos(c.to)),
+            new_text: c.insert,
+        })
+        .collect()
+}
+
+/// Optimize Imports for a Python document no language server organizes (the Ruff server starts
+/// only below a Ruff configuration): Ruff's CLI removes the unused imports and sorts the rest, with
+/// the project's Ruff settings when there are any. `None` for other documents and untrusted projects.
+pub async fn python_import_edits(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    cancel: CancellationToken,
+) -> IdeResult<Option<(ide_core::IpcPath, Vec<TextEdit>)>> {
+    let project = host.project(window)?;
+    let snap = project.documents.snapshot(doc)?;
+    if snap.language.as_str() != "python" || snap.read_only || project.require_trust().is_err() {
+        return Ok(None);
+    }
+    let settings = project.settings.effective();
+    let custom = ide_sdk::apply::setting_path(&project.root, &settings.languages.ruff.path);
+    let configured = settings.languages.ruff.configuration_directory.clone();
+    let root = project.root.clone();
+    let tools = Tools::new(&host.local_data_dir);
+    tokio::task::spawn_blocking(move || {
+        let config_file = ide_sdk::apply::ruff_configuration(&root, &configured)?;
+        let custom = custom.or_else(|| interpreter_tool(&root, snap.path.parent(), &settings, "ruff"));
+        let mut command = tools.formatter_command("ruff", &snap.path, custom.as_deref())?;
+        if let Some(dir) = snap.path.parent() {
+            command.current_dir(dir);
+        }
+        command.args(formatter::ruff_organize_imports_arguments(&snap.path, config_file.as_deref()));
+        let fixed = formatter::run("ruff", command, &snap.text, &cancel)?;
+        Ok(Some((snap.path, diff_edits(&ide_text::Document::new(&snap.text), &fixed))))
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
 #[cfg(test)]
@@ -783,6 +823,22 @@ mod tests {
     }
 
     #[test]
+    fn ruff_comes_from_the_environment_of_the_files_own_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let bin = root.join(if cfg!(windows) { "svc/.venv/Scripts" } else { "svc/.venv/bin" });
+        std::fs::create_dir_all(&bin).unwrap();
+        let exe = |name: &str| if cfg!(windows) { format!("{name}.exe") } else { name.to_owned() };
+        std::fs::write(bin.join(exe("python")), "").unwrap();
+        std::fs::write(root.join("svc/.venv/pyvenv.cfg"), "").unwrap();
+        let settings = Settings::default();
+        let near = root.join("svc/src");
+        assert_eq!(interpreter_tool(root, Some(&near), &settings, "ruff"), None);
+        std::fs::write(bin.join(exe("ruff")), "").unwrap();
+        assert_eq!(interpreter_tool(root, Some(&near), &settings, "ruff"), Some(bin.join(exe("ruff"))));
+    }
+
+    #[test]
     fn black_comes_from_the_environment_of_the_files_own_project() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -793,9 +849,12 @@ mod tests {
         std::fs::write(root.join("svc/.venv/pyvenv.cfg"), "").unwrap();
         std::fs::write(root.join("svc/pyproject.toml"), "[tool.black]\n").unwrap();
         let settings = Settings::default();
-        assert_eq!(interpreter_black(root, Some(&root.join("svc/src")), &settings), None);
+        assert_eq!(interpreter_tool(root, Some(&root.join("svc/src")), &settings, "black"), None);
         std::fs::write(bin.join(exe("black")), "").unwrap();
-        assert_eq!(interpreter_black(root, Some(&root.join("svc/src")), &settings), Some(bin.join(exe("black"))));
+        assert_eq!(
+            interpreter_tool(root, Some(&root.join("svc/src")), &settings, "black"),
+            Some(bin.join(exe("black")))
+        );
     }
 
     #[test]
