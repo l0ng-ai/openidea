@@ -3,7 +3,7 @@
 
 services:
   github-runner:
-    image: myoung34/github-runner:2.338.2@sha256:7cc183492366138ace1c9c74296fd2c6240916d98178696c38bc78e6d5810ee8
+    image: myoung34/github-runner:2.338.2-ubuntu-jammy@sha256:9944eb7fe15cff8f31ce6389a1cd39f5fb32627f56bdfa8a21fb27e56e99fa1a
     restart: unless-stopped
     deploy:
       replicas: ${RUNNER_COUNT:-4}

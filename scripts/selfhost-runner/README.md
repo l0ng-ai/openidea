@@ -2,9 +2,9 @@
 
 Runs _N_ persistent, isolated GitHub Actions runners via Docker Compose on a single Docker named volume (`runner-persist`) without requiring repository admin Personal Access Tokens.
 
-In `.github/workflows/ci.yml`, the Linux leg of `Rust (${{ matrix.os }})` routes to `["self-hosted", "openidea-selfhosted"]` on trusted events (`push`, `merge_group`, `workflow_dispatch`, and same-repo pull requests), while fork pull requests run on GitHub-hosted runners.
+In `.github/workflows/ci.yml`, the Linux leg of `Rust (${{ matrix.os }})` routes to `["self-hosted", "openidea-selfhosted"]` on trusted events (`push`, `merge_group`, `workflow_dispatch`, and same-repo pull requests) while the `SELFHOSTED_RUNNERS` repository variable is `true`. Fork pull requests, and every run while the variable is unset, use GitHub-hosted runners.
 
-> **Availability requirement:** GitHub Actions `runs-on` cannot automatically fall back to GitHub-hosted runners when no matching self-hosted runner is online. At least one `openidea-selfhosted` runner must be up, otherwise trusted Linux `Rust` jobs will stay queued until a runner connects.
+> **Availability requirement:** GitHub Actions `runs-on` cannot fall back to GitHub-hosted runners when no matching self-hosted runner is online; jobs stay queued until one connects. Set `SELFHOSTED_RUNNERS=true` (**Settings → Secrets and variables → Actions → Variables**) only once the runners are up, and delete it before taking the host down.
 
 ## Security Constraints
 
@@ -14,7 +14,8 @@ Because this repository is public and these runners retain persistent build cach
 - **Read-only `GITHUB_TOKEN`:** Jobs targeting `openidea-selfhosted` must set `permissions: { contents: read }` (least privilege).
 - **No secret-bearing jobs:** Never pass repository or organization `secrets.*` to jobs running on `openidea-selfhosted`.
 - **Never feed releases:** Artifacts or outputs from `openidea-selfhosted` runners must never be uploaded for consumption by release or nightly workflows.
-- **Container isolation:** Runners execute as the non-root `runner` user (`RUN_AS_ROOT=false`) with a pinned image tag and digest. Never mount `/var/run/docker.sock` or host directories into the runner containers.
+- **Container isolation:** Jobs run as the `runner` user (`RUN_AS_ROOT=false`) from a pinned image tag and digest, but the image grants that user passwordless `sudo` (CI needs it for `apt-get`), so a job can become root inside its container. The container is the isolation boundary: never mount `/var/run/docker.sock` or host directories into it, and never run it `--privileged`.
+- **Shared build state:** Same-repo pull requests and `main` share each slot's Cargo target directory, so only collaborators you trust with `main`'s build should push branches to this repository.
 - **Network isolation:** Run the Docker host on an isolated network segment away from sensitive devices or internal services.
 
 ## How It Works
@@ -109,4 +110,4 @@ You can pass variables on the command line or place them in a local `.env` file 
   docker compose down -v
   ```
 
-- **Workflow caching tips:** `CARGO_TARGET_DIR` persists automatically across runs. To also preserve in-repo `node_modules/` across runs without re-linking, pass `clean: false` to `actions/checkout` (otherwise `pnpm install` quickly re-hardlinks packages from `pnpm-store/`).
+- **Workflow caching tips:** `CARGO_TARGET_DIR` persists automatically across runs; CI enables incremental compilation on these runners and clears a slot's target directory once it exceeds 40 GB. To also preserve in-repo `node_modules/` across runs without re-linking, pass `clean: false` to `actions/checkout` (otherwise `pnpm install` quickly re-hardlinks packages from `pnpm-store/`).
