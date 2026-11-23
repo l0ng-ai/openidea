@@ -51,6 +51,7 @@ import {
   targetBusy,
 } from "./ops";
 import { openContainerLogInEditor } from "./logEditor";
+import { hasComposeSource, jumpToContainerComposeSource, openComposeFile } from "./composeSource";
 import { containerOp, endpointOf, errorMessage, useServices } from "./store";
 import { useServicesTree } from "./tree";
 import styles from "./Services.module.css";
@@ -611,7 +612,7 @@ export function formatDockerCommand(
   };
 }
 
-function CommandField({ command }: { command: FormattedDockerCommand }) {
+function CommandField({ command, actions }: { command: FormattedDockerCommand; actions?: ReactNode }) {
   const tx = useTx();
   const [expanded, setExpanded] = useState(false);
   const [overflowing, setOverflowing] = useState(false);
@@ -657,6 +658,7 @@ function CommandField({ command }: { command: FormattedDockerCommand }) {
         )}
         {expanded && multiLine && <span className={styles.mutedMeta}>{tx`${count} lines`}</span>}
         <IconButton icon="copy" size="small" title="Copy Command" onClick={() => copyText(command.copyText)} />
+        {actions}
       </div>
       {expanded && (
         <div className={styles.commandBody}>
@@ -984,7 +986,21 @@ export function ContainerDashboard({
           {formatCreatedDetailed(inspect?.startedAt)}
         </PropRow>
         <PropRow label={<T>Command</T>} hidden={!command}>
-          {command && <CommandField command={command} />}
+          {command && (
+            <CommandField
+              command={command}
+              actions={
+                hasComposeSource(container) && (
+                  <IconButton
+                    icon="autoscroll-to-source"
+                    size="small"
+                    title="Jump to Source"
+                    onClick={() => void jumpToContainerComposeSource(container, "command")}
+                  />
+                )
+              }
+            />
+          )}
         </PropRow>
         <PropRow label={<T>Working directory</T>} hidden={!inspect?.workingDir}>
           <span className={styles.mono}>{inspect?.workingDir}</span>
@@ -1766,7 +1782,18 @@ export function ComposeProjectDashboard({
           <span className={styles.mono}>{first?.composeWorkingDir}</span>
         </PropRow>
         <PropRow label={<T>Compose files</T>} hidden={!first?.composeFiles.length}>
-          <span className={styles.mono}>{first?.composeFiles.join(", ")}</span>
+          <span className={styles.inlineRow}>
+            {first?.composeFiles.map((file) => (
+              <button
+                key={file}
+                type="button"
+                className={styles.link}
+                onClick={() => void openComposeFile(file, first.composeWorkingDir)}
+              >
+                <span className={styles.mono}>{file}</span>
+              </button>
+            ))}
+          </span>
         </PropRow>
       </div>
 
