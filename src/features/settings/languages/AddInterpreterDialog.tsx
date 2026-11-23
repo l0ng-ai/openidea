@@ -99,7 +99,9 @@ export function AddInterpreterDialog({
       });
   };
 
-  const target = (kind === "conda" ? envName : location).trim();
+  // Poetry and pipenv work on the project itself; the location is only shown, as a hint.
+  const shownLocation = OWN_LOCATION.has(kind) ? `${root}/.venv` : location;
+  const target = (kind === "conda" ? envName : shownLocation).trim();
   const ok = () => {
     if (busy) return;
     setError(null);
@@ -137,7 +139,7 @@ export function AddInterpreterDialog({
       "Runs “poetry env use <base>” in the project; poetry keeps the environment under its own cache directory.",
     ),
     pipenv: tx(
-      "Runs “pipenv --python <base>” in the project; pipenv keeps the environment under its own virtualenvs directory.",
+      "Runs “pipenv --python <base>” in the project, which writes a Pipfile (from requirements.txt if there is one) when the project has none; pipenv keeps the environment under its own virtualenvs directory and reuses one that exists.",
     ),
   }[kind];
 
@@ -220,7 +222,7 @@ export function AddInterpreterDialog({
                     <Input
                       id={ids.location}
                       className={styles.pathInput}
-                      value={location}
+                      value={shownLocation}
                       onChange={(e) => setLocation(e.target.value)}
                       disabled={OWN_LOCATION.has(kind)}
                     />

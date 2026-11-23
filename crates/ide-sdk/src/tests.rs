@@ -1620,23 +1620,26 @@ fn a_named_conda_environment_is_found_where_conda_put_it() {
 
 #[test]
 #[cfg(unix)]
-fn pipenv_creates_the_projects_environment_and_installs_its_pipfile() {
+fn pipenv_creates_the_projects_environment_and_never_replaces_one() {
     use std::os::unix::fs::PermissionsExt;
     let tmp = tempfile::tempdir().unwrap();
-    let (project, home) = (tmp.path().join("shop"), tmp.path().join("workon/shop-Kpos5yRM"));
+    let tmp = dunce::canonicalize(tmp.path()).unwrap();
+    let project = tmp.join("shop");
+    let home = tmp.join("workon").join(crate::discover::pipenv_env_name(&project));
     std::fs::create_dir_all(&project).unwrap();
-    let python = tmp.path().join("python");
+    let python = tmp.join("python");
     std::fs::write(&python, "#!/bin/sh\necho 'Python 3.12.1'\n").unwrap();
     std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
-    // The environment lives outside the project and records it in `.project`; a Pipfile is written if missing.
-    let pipenv = tmp.path().join("pipenv");
+    // `--venv` fails until the environment exists; `--python` creates it outside the project,
+    // records the project in `.project` and writes a Pipfile.
+    let pipenv = tmp.join("pipenv");
     std::fs::write(
         &pipenv,
         format!(
-            "#!/bin/sh\nhome='{home}'\nif [ \"$1\" = --venv ]; then echo \"$home\"; exit 0; fi\n\
-             [ \"$PIPENV_YES\" = 1 ] || exit 3\necho \"$@\" >> \"$PWD/calls\"\nmkdir -p \"$home/bin\"\n\
-             cp '{python}' \"$home/bin/python\"\n: > \"$home/pyvenv.cfg\"\ntouch Pipfile\n\
-             [ \"$1\" = install ] || printf %s \"$PWD\" > \"$home/.project\"\n",
+            "#!/bin/sh\nhome='{home}'\nif [ \"$1\" = --venv ]; then [ -f \"$home/pyvenv.cfg\" ] || exit 1; echo \"$home\"; exit 0; fi\n\
+             [ \"$PIPENV_YES\" = 1 ] || exit 3\necho \"$@\" >> calls\n[ \"$1\" = --python ] || exit 0\n\
+             mkdir -p \"$home/bin\"\ncp '{python}' \"$home/bin/python\"\necho 'version = 3.12.1' > \"$home/pyvenv.cfg\"\n\
+             touch Pipfile\npwd -P > \"$home/.project\"\n",
             home = home.display(),
             python = python.display()
         ),
@@ -1654,21 +1657,24 @@ fn pipenv_creates_the_projects_environment_and_installs_its_pipfile() {
             &Default::default(),
             &|_| {},
         )
-        .unwrap()
     };
-    // Nothing to install before the project has a Pipfile.
-    let sdk = create(true);
+    let calls = || std::fs::read_to_string(project.join("calls")).unwrap_or_default();
+    // The project had no Pipfile: the one pipenv writes is installed from, as asked.
+    let sdk = create(true).unwrap();
     assert_eq!(&*sdk.path, home.join("bin/python").as_path());
     assert_eq!((sdk.name.as_str(), sdk.source.as_str()), ("Python 3.12 (Pipenv: shop)", "pipenv"));
-    // An environment pipenv reuses without recording the project is still the project's.
+    assert_eq!(calls(), format!("--python {}\ninstall --dev\n", python.display()));
+    // An existing environment is reused, never created again with `--python` (which replaces one
+    // of another version); one pipenv left without `.project` is still the project's.
     std::fs::remove_file(home.join(".project")).unwrap();
-    assert_eq!(create(true).source, "pipenv");
-    create(false);
-    let base = python.display();
-    assert_eq!(
-        std::fs::read_to_string(project.join("calls")).unwrap(),
-        format!("--python {base}\ninstall --dev --python {base}\n--python {base}\n")
-    );
+    assert_eq!(create(false).unwrap().source, "pipenv");
+    assert_eq!(calls().lines().count(), 2);
+    // On another Python than the base, nothing runs and the error says what to do.
+    std::fs::write(home.join("pyvenv.cfg"), "version = 3.11.4\n").unwrap();
+    let err = create(true).unwrap_err();
+    assert!(err.message.contains("Python 3.11 environment, not Python 3.12"), "{}", err.message);
+    assert!(err.message.contains("pipenv --rm"), "{}", err.message);
+    assert_eq!(calls().lines().count(), 2);
 }
 
 #[test]

@@ -142,8 +142,12 @@ describe("Add Python Interpreter", () => {
     );
     await act(async () => finish(ok(VENV)));
     // Pipenv keeps its own location too, and installs the Pipfile's packages unless told not to.
+    // A location typed for another tool does not move it out of the project.
+    fireEvent.click(screen.getByRole("button", { name: "Virtualenv Environment" }));
+    fireEvent.change(screen.getByLabelText("Location:"), { target: { value: "/elsewhere/env" } });
     fireEvent.click(screen.getByRole("button", { name: "Pipenv Environment" }));
     await waitFor(() => expect(screen.getByLabelText("Location:")).toBeDisabled());
+    expect(screen.getByLabelText("Location:")).toHaveValue("/project/.venv");
     for (const install of [true, false]) {
       fireEvent.click(screen.getByRole("button", { name: "OK" }));
       expect(mocks.createVenv).toHaveBeenLastCalledWith(

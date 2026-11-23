@@ -106,31 +106,64 @@ fn workon_homes(home: &Path, env: impl Fn(&str) -> Option<OsString>) -> Vec<Path
     var("WORKON_HOME").into_iter().chain([home.join(".virtualenvs"), data.join("virtualenvs")]).collect()
 }
 
-/// The project a Pipenv virtualenv belongs to. Pipenv records the project directory in
-/// `<venv>/.project` (as virtualenvwrapper does); a `Pipfile` there makes the environment Pipenv's.
+/// How many folders pipenv searches for a `Pipfile`, the project's own and those above it
+/// (`PIPENV_MAX_DEPTH`, 10 by default).
+const PIPFILE_MAX_DEPTH: usize = 10;
+
+/// The folder of the `Pipfile` pipenv uses for a project opened at `root`: the nearest one in
+/// `root` or the folders above it, searched as pipenv does.
+pub(crate) fn pipfile_dir(root: &Path) -> Option<PathBuf> {
+    root.ancestors().take(PIPFILE_MAX_DEPTH).find(|dir| dir.join("Pipfile").is_file()).map(Path::to_path_buf)
+}
+
+/// The folder name pipenv gives the environment of the project whose `Pipfile` is in `dir`
+/// (`venv_locator._get_virtualenv_hash`): the folder's name with shell-special characters
+/// replaced and cut to 42 characters, `-`, and the URL-safe base64 of the first 6 bytes of
+/// the SHA-256 of the `Pipfile` path.
+pub(crate) fn pipenv_env_name(dir: &Path) -> String {
+    use base64::Engine;
+    use sha2::Digest;
+    let name: String = (dir.file_name().unwrap_or_default().to_string_lossy().chars())
+        .map(|c| if " &$`!*@\"()[]\\\r\n\t".contains(c) { '_' } else { c })
+        .take(42)
+        .collect();
+    let digest = sha2::Sha256::digest(dir.join("Pipfile").to_string_lossy().as_bytes());
+    format!("{name}-{}", base64::engine::general_purpose::URL_SAFE.encode(&digest[..6]))
+}
+
+/// The project a Pipenv virtualenv belongs to. Pipenv records the project folder in
+/// `<venv>/.project`; virtualenvwrapper does too, so the environment must also carry the
+/// name pipenv derives from that project's `Pipfile`, or be the project's own `.venv`.
 fn pipenv_project(venv: &Path) -> Option<PathBuf> {
     let project = PathBuf::from(std::fs::read_to_string(venv.join(".project")).ok()?.trim());
-    (project.is_absolute() && project.join("Pipfile").is_file()).then_some(project)
+    let named = venv.file_name().is_some_and(|name| *name.to_string_lossy() == pipenv_env_name(&project));
+    (project.is_absolute() && project.join("Pipfile").is_file() && (named || venv == project.join(".venv")))
+        .then_some(project)
 }
 
 /// The interpreter of the Pipenv environment `pipenv --venv` names for the project at `root`,
-/// found through the environments' `.project` files: starting pipenv takes about a second.
-/// (`<root>/.venv`, Pipenv's with `PIPENV_VENV_IN_PROJECT`, is a project virtualenv already.)
+/// found without starting pipenv, which takes about a second.
 fn pipenv_env_python(root: &Path) -> Option<PathBuf> {
-    if !root.join("Pipfile").is_file() {
-        return None;
-    }
-    pipenv_env_in(root, &workon_homes(&home_dir()?, |key| host_var_os(key)))
+    let dir = pipfile_dir(root)?;
+    pipenv_env_in(&dir, &workon_homes(&home_dir()?, |key| host_var_os(key)))
 }
 
-fn pipenv_env_in(root: &Path, homes: &[PathBuf]) -> Option<PathBuf> {
-    let root = root.canonicalize().ok()?;
-    homes
-        .iter()
-        .flat_map(|dir| subdirs(dir))
-        .filter(|env| pipenv_project(env).and_then(|p| p.canonicalize().ok()).is_some_and(|p| p == root))
+/// `<dir>/.venv` when there is one (pipenv uses it then), else the environment named after
+/// `dir` in the first of `homes` that has it. `ponytail:` `PIPENV_CUSTOM_VENV_NAME`, the
+/// `PIPENV_PYTHON` name suffix and a `.venv` file pointing elsewhere are not followed.
+fn pipenv_env_in(dir: &Path, homes: &[PathBuf]) -> Option<PathBuf> {
+    // Pipenv hashes the path it was started in, which may or may not have its symlinks resolved.
+    let mut names: Vec<String> = [Some(dir.to_path_buf()), dunce::canonicalize(dir).ok()]
+        .into_iter()
+        .flatten()
+        .map(|d| pipenv_env_name(&d))
+        .collect();
+    names.dedup();
+    std::iter::once(dir.join(".venv"))
+        .filter(|venv| venv.join("pyvenv.cfg").is_file())
+        .chain(homes.iter().flat_map(|home| names.iter().map(move |name| home.join(name))))
         .map(|env| env.join(bin_dir()).join(exe("python")))
-        .find(|p| p.is_file())
+        .find(|python| python.is_file())
 }
 
 /// `/usr/bin/python3` on macOS is a stub that opens an installer dialog when
@@ -476,7 +509,7 @@ fn pixi_env_name(python: &Path) -> Option<String> {
     pixi_env_home(python)?.file_name().map(|n| n.to_string_lossy().into_owned())
 }
 
-fn pyvenv_version(python: &Path) -> Option<String> {
+pub(crate) fn pyvenv_version(python: &Path) -> Option<String> {
     let cfg = std::fs::read_to_string(venv_of(python)?.join("pyvenv.cfg")).ok()?;
     cfg.lines().find_map(|l| {
         let (k, v) = l.split_once('=')?;
@@ -1176,23 +1209,32 @@ mod pipenv_tests {
     }
 
     #[test]
-    fn the_environment_recording_the_project_is_its_pipenv_environment() {
+    fn environments_are_named_as_pipenv_names_them() {
+        // `sanitize(folder)[:42] + "-" + urlsafe_b64encode(sha256(Pipfile path).digest()[:6])`, from pipenv.
+        assert_eq!(pipenv_env_name(Path::new("/home/me/My Shop (2)")), "My_Shop__2_-6rNTtAUD");
+    }
+
+    #[test]
+    fn the_environment_named_for_the_pipfile_is_the_projects() {
         let tmp = tempfile::tempdir().unwrap();
-        let (shop, blog, plain) = (tmp.path().join("shop"), tmp.path().join("blog"), tmp.path().join("plain"));
-        for project in [&shop, &blog, &plain] {
-            std::fs::create_dir_all(project).unwrap();
+        let tmp = dunce::canonicalize(tmp.path()).unwrap();
+        let (shop, blog) = (tmp.join("shop"), tmp.join("blog"));
+        for project in [&shop, &blog] {
+            std::fs::create_dir_all(project.join("src/pkg")).unwrap();
+            std::fs::write(project.join("Pipfile"), "").unwrap();
         }
-        std::fs::write(shop.join("Pipfile"), "").unwrap();
-        std::fs::write(blog.join("Pipfile"), "").unwrap();
-        let homes = [tmp.path().join("missing"), tmp.path().join("workon")];
-        let blog_python = venv(&homes[1].join("blog-aaaaaaaa"), &blog);
-        let shop_python = venv(&homes[1].join("shop-Kpos5yRM"), &shop);
-        // virtualenvwrapper writes `.project` too: without a Pipfile it is no Pipenv environment.
-        let plain_python = venv(&homes[1].join("plain"), &plain);
+        let homes = [tmp.join("missing"), tmp.join(".virtualenvs"), tmp.join("workon")];
+        // virtualenvwrapper's `mkproject` writes `.project` too: its environment is not pipenv's,
+        // though it comes first and its project has a Pipfile.
+        let wrapper = venv(&homes[1].join("shop"), &shop);
+        let shop_python = venv(&homes[2].join(pipenv_env_name(&shop)), &shop);
+        let blog_python = venv(&homes[2].join(pipenv_env_name(&blog)), &blog);
 
         assert_eq!(pipenv_env_in(&shop, &homes), Some(shop_python.clone()));
         assert_eq!(pipenv_env_in(&blog, &homes), Some(blog_python));
-        assert_eq!(pipenv_env_in(&plain, &homes), None);
+        // Opened in a sub-folder, the project is the one pipenv finds above it.
+        assert_eq!(pipfile_dir(&shop.join("src/pkg")), Some(shop.clone()));
+        assert_eq!(pipfile_dir(&tmp), None);
 
         let sdk = python_sdk(&shop_python, "venv", Some(&blog)).unwrap();
         assert_eq!((sdk.name.as_str(), sdk.source.as_str()), ("Python 3.12 (Pipenv: shop)", "pipenv"));
@@ -1200,8 +1242,8 @@ mod pipenv_tests {
             sdk.home.as_deref().map(|h| h.to_path_buf()),
             shop_python.parent().unwrap().parent().map(Into::into)
         );
-        let sdk = python_sdk(&plain_python, "venv", None).unwrap();
-        assert_eq!((sdk.name.as_str(), sdk.source.as_str()), ("Python 3.12 (plain)", "venv"));
+        let sdk = python_sdk(&wrapper, "venv", None).unwrap();
+        assert_eq!((sdk.name.as_str(), sdk.source.as_str()), ("Python 3.12 (shop)", "venv"));
     }
 
     #[test]
@@ -1212,6 +1254,7 @@ mod pipenv_tests {
         std::fs::write(shop.join("Pipfile"), "").unwrap();
         let python = venv(&shop.join(".venv"), &shop);
         assert_eq!(project_venv_python(&shop), Some(python.clone()));
+        assert_eq!(pipenv_env_in(&shop, &[]), Some(python.clone()));
         assert_eq!(python_sdk(&python, "venv", Some(&shop)).unwrap().name, "Python 3.12 (Pipenv: shop)");
     }
 }
