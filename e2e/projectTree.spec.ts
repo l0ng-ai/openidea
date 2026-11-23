@@ -90,6 +90,7 @@ test("Git ignore submenu offers shared and local destinations for files and fold
 });
 
 test("keeps New open on a slow diagonal path across sibling items", async ({ workbench: page }) => {
+  await page.clock.install();
   await page.getByRole("treeitem", { name: "README.md", exact: true }).click({ button: "right" });
   const parent = page.getByRole("menuitem", { name: "New", exact: true });
   const box = (await parent.boundingBox())!;
@@ -101,13 +102,16 @@ test("keeps New open on a slow diagonal path across sibling items", async ({ wor
     .filter({ has: page.getByRole("menuitem", { name: "Directory", exact: true }) });
   const target = (await submenu.getByRole("menuitem").last().boundingBox())!;
   const end = { x: target.x + 20, y: target.y + target.height / 2 };
+  // Keep the gesture cadence independent of the runner's input and assertion round trips.
+  await page.clock.pauseAt(new Date(Date.now() + 1000));
   for (let step = 1; step <= 10; step++) {
     await page.mouse.move(start.x + ((end.x - start.x) * step) / 10, start.y + ((end.y - start.y) * step) / 10);
-    await page.waitForTimeout(75);
+    await page.clock.runFor(75);
     await expect(parent).toHaveAttribute("aria-expanded", "true");
   }
-  await page.waitForTimeout(350);
+  await page.clock.runFor(350);
   await expect(parent).toHaveAttribute("aria-expanded", "true");
+  await page.clock.resume();
   await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");
 });
