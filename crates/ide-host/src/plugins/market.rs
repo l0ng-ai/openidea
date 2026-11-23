@@ -371,14 +371,35 @@ impl PluginHost {
             if index > 0 {
                 let _ = std::fs::remove_file(&archive);
             }
+            // Which source a package comes from is the first thing to look at when an install
+            // is slow or fails (a mirror is one of several candidates), so it goes in the log.
+            tracing::info!(
+                "plugins: {} {} from {} ({}){}",
+                entry.id,
+                entry.version,
+                candidate.url,
+                candidate.describe(),
+                if candidates.len() > 1 {
+                    format!(", source {} of {}", index + 1, candidates.len())
+                } else {
+                    String::new()
+                }
+            );
             match self.fetch_market_package(&candidate.url, &entry, &archive) {
-                Ok(dir) => return Ok(dir),
+                Ok(dir) => {
+                    tracing::info!("plugins: {} {} installed from {}", entry.id, entry.version, candidate.describe());
+                    return Ok(dir);
+                }
                 // A package the mirror served that fails its checks is that mirror's failure:
                 // the official host below still gets its chance.
                 Err(e) if candidate.mirror.is_some() => {
+                    tracing::warn!("plugins: {} from {} failed: {}", entry.id, candidate.describe(), e.message);
                     failures.push(format!("{}: {}", candidate.describe(), e.message))
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    tracing::warn!("plugins: {} from {} failed: {}", entry.id, candidate.url, e.message);
+                    return Err(e);
+                }
             }
         }
         Err(IdeError::unavailable(format!("could not download {} ({})", entry.id, failures.join("; "))))
