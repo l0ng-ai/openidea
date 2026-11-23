@@ -453,6 +453,57 @@ fn manager(dir: &Path, agent: Arc<FakeAgent>) -> AgentManager {
 }
 
 #[tokio::test]
+async fn change_reads_share_a_budget_until_the_blocking_work_finishes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::default());
+    let submitted = Arc::new(AtomicU32::new(0));
+    mgr.set_git_executable_hook(Arc::new({
+        let submitted = submitted.clone();
+        move || {
+            submitted.fetch_add(1, Ordering::SeqCst);
+            None
+        }
+    }));
+    let (started, mut starts) = tokio::sync::mpsc::unbounded_channel();
+    let (finished, mut finishes) = tokio::sync::mpsc::unbounded_channel();
+    let mut releases = Vec::new();
+    let mut reads = Vec::new();
+    for job in 0..12 {
+        let (release, gate) = tokio::sync::oneshot::channel::<()>();
+        releases.push(release);
+        let (started, finished) = (started.clone(), finished.clone());
+        let mut read = Box::pin(read_changes(&mgr.shared, move || {
+            started.send(()).unwrap();
+            gate.blocking_recv().unwrap();
+            finished.send(()).unwrap();
+            Ok(())
+        }));
+        tokio::select! { biased; _ = &mut read => panic!("read finished before release"), _ = std::future::ready(()) => {} }
+        reads.push(read);
+        if job == 0 {
+            // Cancelling the requester cannot stop the blocking job or free its slot.
+            starts.recv().await.unwrap();
+            drop(reads.pop());
+        }
+    }
+    let admitted = submitted.load(Ordering::SeqCst);
+    for _ in 1..admitted {
+        starts.recv().await.unwrap();
+    }
+    for release in releases {
+        release.send(()).unwrap();
+    }
+    for read in reads {
+        read.await.unwrap();
+    }
+    for _ in 0..12 {
+        finishes.recv().await.unwrap();
+    }
+    eprintln!("change-read fixture: peak active {admitted}; completed 12/12");
+    assert_eq!(admitted, 4);
+}
+
+#[tokio::test]
 async fn subscribers_do_not_replace_or_close_each_other() {
     let tmp = tempfile::tempdir().unwrap();
     let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
