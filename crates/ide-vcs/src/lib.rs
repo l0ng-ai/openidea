@@ -939,6 +939,7 @@ mod preserve;
 mod push_preview;
 mod push_report;
 mod rebase_editor;
+mod ref_decorations;
 mod worktree_config;
 pub use ops::UNSTAGED_CHANGES_PREVENT_REBASE;
 mod incoming;
@@ -1078,6 +1079,7 @@ pub struct Repo {
     cli_status: std::sync::atomic::AtomicBool,
     automatic_shelf: std::sync::RwLock<Option<shelf::AutomaticShelf>>,
     log_index: std::sync::Mutex<log_index::LogIndex>,
+    ref_decorations: std::sync::Mutex<ref_decorations::RefDecorations>,
     log_signatures: std::sync::Mutex<history::LogSignatureCache>,
     conflict_mutation: std::sync::Mutex<()>,
     amend_recovery: std::sync::Mutex<Option<commit_rewrite::PendingAmend>>,

@@ -1197,6 +1197,15 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-small);
 }
+.toolImages,
+.toolImages .imageItem,
+.toolImages .imageButton {
+  max-width: 100%;
+}
+.toolImages .image {
+  max-width: min(100%, 640px);
+  max-height: 320px;
+}
 .removeImage {
   position: absolute;
   top: 4px;

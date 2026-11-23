@@ -24,6 +24,7 @@ import { installSelectionHighlights, type SelectionHighlightController } from ".
 import { installLinkHighlights, xtermLink, type LinkHighlightController } from "./linkHighlights";
 import { installTerminalPaste, pasteIntoTerminal, pasteTerminalClipboard } from "./paste";
 import { ImeCommitGate } from "./imeCommit";
+import { installImeAnchor } from "./imeAnchor";
 import { ownTerminalInput } from "./imeInput";
 import { findTerminalLinks, resolvePath, type TerminalLink } from "./links";
 import { parseShellCommand } from "@/platform/commandLine";
@@ -681,6 +682,7 @@ export class TerminalSession {
       this.opts.onFocus(this.key);
     });
     this.watchImeCommit();
+    this.disposables.push({ dispose: installImeAnchor({ host: this.host, term: this.term }) });
     if (this.pendingFocus) {
       this.pendingFocus = false;
       if (this.focusStayedHere()) this.focus();

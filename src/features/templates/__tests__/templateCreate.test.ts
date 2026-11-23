@@ -27,9 +27,9 @@ vi.mock("@/platform/ipc", async (original) => ({
   isTauri: () => true,
   call: (result: unknown) => result,
   commands: {
-    fsCreateFileBytes: (path: string, data: number[]) => {
+    fsCreateFileBytes: (path: string, data: string) => {
       calls.bytes(path);
-      files.set(path, new TextDecoder().decode(new Uint8Array(data)));
+      files.set(path, new TextDecoder().decode(Uint8Array.from(atob(data), (c) => c.charCodeAt(0))));
       return Promise.resolve(null);
     },
     fsCreateFile: (path: string) => {
