@@ -1,8 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { useEditorRegistry, type TextEditorHandle } from "@/editor/api";
 import { useProject } from "@/platform/project";
+import { registerAction } from "@/platform/actions";
+import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
 import { fontZoom, resetAllEditorsFontZoom, setFontZoom, stepAllEditorsFontZoom, wheelZoom } from "./cm/prefs";
 import { resetWheelZoomGesture } from "@/platform/wheelZoom";
 
@@ -55,6 +57,42 @@ describe("editor font zoom (active editor by default, all editors when configure
     view.contentDOM.dispatchEvent(coasting);
     expect(coasting.defaultPrevented).toBe(false);
     expect(zoomOf(view)).toBe(0);
+  });
+
+  it("zooms when no enabled keymap action claims the gesture", () => {
+    const original = useKeymap.getState();
+    const view = makeView();
+    const run = vi.fn();
+    let enabled = true;
+    const unregister = registerAction({ id: "test.wheel", title: "Test", enabled: () => enabled, run });
+    const uninstall = installKeyboardDispatcher(window);
+    useKeymap.setState({ overrides: { "test.wheel": ["Ctrl+WheelUp"] } });
+    const scroll = (deltaY: number) => {
+      const event = new WheelEvent("wheel", {
+        bubbles: true,
+        cancelable: true,
+        ctrlKey: true,
+        deltaY,
+        deltaMode: WheelEvent.DOM_DELTA_LINE,
+      });
+      view.contentDOM.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+    };
+    try {
+      scroll(-1);
+      expect(run).toHaveBeenCalledOnce();
+      expect(zoomOf(view)).toBe(0);
+      scroll(1);
+      expect(zoomOf(view)).toBe(-1);
+      enabled = false;
+      scroll(-1);
+      expect(run).toHaveBeenCalledOnce();
+      expect(zoomOf(view)).toBe(0);
+    } finally {
+      uninstall();
+      unregister();
+      useKeymap.setState(original);
+    }
   });
 
   it("zooms every open editor from ⌘/Ctrl+wheel when wheelZoomScope is 'all' (#2480)", () => {
