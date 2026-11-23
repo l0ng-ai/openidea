@@ -1021,6 +1021,40 @@ pub fn build_for_launches(
     Ok(modules.iter().map(|m| LaunchBuild { class_dirs: class_dirs(m), failure: failure.clone() }).collect())
 }
 
+/// The class directories of a Maven launch that must hold classes after its build: those of
+/// the launch projects with sources in a conventional JVM source root. One that is missing
+/// or holds no class was caught mid-rewrite, e.g. cleaned by a concurrent `mvn` (#5404).
+pub fn launch_required_class_dirs(root: &Path, model: &BuildModel, module: &Path, test: bool) -> Vec<PathBuf> {
+    fn has_sources(dir: &Path, depth: u32) -> bool {
+        let Ok(entries) = std::fs::read_dir(dir) else { return false };
+        entries.flatten().any(|e| {
+            let p = e.path();
+            if p.is_dir() {
+                depth > 0 && has_sources(&p, depth - 1)
+            } else {
+                // A package-info.java without annotations compiles to nothing.
+                p.file_name() != Some("package-info.java".as_ref())
+                    && p.extension().is_some_and(|x| x == "java" || x == "kt" || x == "groovy" || x == "scala")
+            }
+        })
+    }
+    let compiles = |dir: &Path, set: &str| {
+        ["java", "kotlin", "groovy", "scala"].iter().any(|lang| has_sources(&dir.join("src").join(set).join(lang), 32))
+    };
+    let Some(m) = &model.maven else { return Vec::new() };
+    let mut dirs = Vec::new();
+    for p in maven_launch_projects(root, m, module, test) {
+        let dir = subdir(root, &p.dir);
+        if test && dir == module && compiles(&dir, "test") {
+            dirs.push(subdir(&dir, "target/test-classes"));
+        }
+        if compiles(&dir, "main") {
+            dirs.push(subdir(&dir, "target/classes"));
+        }
+    }
+    dirs
+}
+
 fn launch_class_dirs(system: BuildSystem, module: &Path, test: bool) -> Vec<PathBuf> {
     let sets: &[&str] = if test { &["test", "main"] } else { &["main"] };
     let dirs: Vec<PathBuf> = match system {

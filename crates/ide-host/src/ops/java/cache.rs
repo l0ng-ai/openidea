@@ -14,6 +14,10 @@ pub(super) struct Outputs {
     fingerprint: Option<LaunchFingerprint>,
     pub snapshot: PathBuf,
     pub originals: Vec<PathBuf>,
+    /// What each snapshot directory held when it was recorded. Records written before it
+    /// existed lack it and are rebuilt once: they may hold an incomplete copy (#5404).
+    #[serde(default)]
+    contents: Option<Vec<Contents>>,
     #[serde(skip)]
     pub failure: Option<String>,
     /// Whether this result replaces jdtls diagnostics with a clean Maven build or a
@@ -28,7 +32,50 @@ impl Outputs {
             && self.fingerprint == *fingerprint
             && self.snapshot.parent() == Some(snapshots)
             && !self.originals.is_empty()
-            && (0..self.originals.len()).all(|i| self.snapshot.join(i.to_string()).is_dir())
+            && self.contents.as_ref().is_some_and(|contents| {
+                contents.len() == self.originals.len()
+                    && contents.iter().enumerate().all(|(i, recorded)| {
+                        Contents::scan(&self.snapshot.join(i.to_string())).is_some_and(|(c, _)| c == *recorded)
+                    })
+            })
+    }
+}
+
+/// The files of an output directory, to tell a complete copy from one taken while another
+/// build was rewriting it. The originals are also compared by their newest mtime before and
+/// after the copy; the copy itself does not preserve mtimes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct Contents {
+    files: u64,
+    bytes: u64,
+    classes: u64,
+}
+
+impl Contents {
+    /// The contents of `dir` and its newest mtime; `None` when it is missing or changes
+    /// under the scan.
+    fn scan(dir: &Path) -> Option<(Contents, Option<std::time::SystemTime>)> {
+        let mut contents = Contents { files: 0, bytes: 0, classes: 0 };
+        let mut newest = None;
+        if !fs::metadata(dir).ok()?.is_dir() {
+            return None;
+        }
+        let mut pending = vec![dir.to_path_buf()];
+        while let Some(dir) = pending.pop() {
+            for entry in fs::read_dir(dir).ok()? {
+                let entry = entry.ok()?;
+                let meta = entry.metadata().ok()?;
+                if meta.is_dir() {
+                    pending.push(entry.path());
+                    continue;
+                }
+                contents.files += 1;
+                contents.bytes += meta.len();
+                contents.classes += u64::from(entry.path().extension().is_some_and(|ext| ext == "class"));
+                newest = newest.max(meta.modified().ok());
+            }
+        }
+        Some((contents, newest))
     }
 }
 
@@ -293,6 +340,7 @@ impl Session {
         let snapshot = tempfile::Builder::new().prefix("launch-").tempdir_in(&snapshots)?.keep();
         // Retain every new snapshot even if copying or publishing its record fails.
         self.unreferenced.push(snapshot.clone());
+        let scanned: Vec<_> = originals.iter().map(|dir| Contents::scan(dir)).collect();
         for (i, source) in originals.iter().enumerate() {
             if cancel.is_cancelled() {
                 return Err(IdeError::cancelled());
@@ -303,8 +351,31 @@ impl Session {
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
         }
-        let mut outputs = Outputs { fingerprint: None, snapshot, originals, failure, authoritative };
-        if outputs.failure.is_none() && pending.before.is_some() && pending.before == after {
+        // The fingerprint covers build inputs only. Another build (an external `mvn`) can
+        // rewrite the outputs meanwhile without changing them (#5404): record the snapshot
+        // only if the outputs held still through the copy and hold every module's classes.
+        let copied: Option<Vec<Contents>> =
+            (0..originals.len()).map(|i| Contents::scan(&snapshot.join(i.to_string())).map(|(c, _)| c)).collect();
+        let consistent = copied.as_ref().is_some_and(|copied| {
+            originals.iter().zip(&scanned).zip(copied).all(|((dir, before), copied)| {
+                before.is_some_and(|(contents, _)| contents == *copied) && Contents::scan(dir) == *before
+            })
+        });
+        let complete = copied.as_ref().is_some_and(|copied| {
+            compile::launch_required_class_dirs(root, model, &pending.module, test)
+                .iter()
+                .all(|dir| originals.iter().position(|o| o == dir).is_some_and(|i| copied[i].classes > 0))
+        });
+        if failure.is_none() && !(consistent && complete) {
+            tracing::warn!(
+                module = %pending.module.display(),
+                consistent,
+                complete,
+                "Maven outputs changed or lacked classes while copying the launch snapshot; it will not be reused"
+            );
+        }
+        let mut outputs = Outputs { fingerprint: None, snapshot, originals, contents: copied, failure, authoritative };
+        if outputs.failure.is_none() && pending.before.is_some() && pending.before == after && consistent && complete {
             outputs.fingerprint = pending.before;
             write_record(&pending.record, &outputs)?;
             self.unreferenced.retain(|path| path != &outputs.snapshot);
@@ -869,6 +940,7 @@ mod tests {
             fingerprint: None,
             snapshot: retained.clone(),
             originals: Vec::new(),
+            contents: None,
             failure: None,
             authoritative: false,
         };
@@ -929,6 +1001,90 @@ mod tests {
         drop(session);
         assert!(!outputs.snapshot.exists());
     }
+
+    /// An external `mvn` removes a dependency module's classes (`clean`) while this launch
+    /// builds and copies the outputs, and compiles them again only after the copy (#5404).
+    /// The sources never change, so only the copied outputs can tell the snapshot is broken.
+    fn assert_outputs_cleaned_by_an_external_build_are_not_reused(clean: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let model = reactor_fixture(root);
+        let script = root.join("mvnw");
+        let mut text = fs::read_to_string(&script).unwrap();
+        text.push_str("echo resource > lib/target/classes/app.yml\n");
+        text.push_str(&format!("if [ -f external-build ]; then {clean}; fi\n"));
+        fs::write(&script, text).unwrap();
+        let cancel = CancellationToken::new();
+        let mut session = Session::new(root.join("cache"));
+        let a = root.join("a");
+        fs::write(root.join("external-build"), "").unwrap();
+        let first = session.build(root, &model, &a, BuildOptions::default(), None, &cancel).unwrap();
+        assert!(!first.snapshot.join("1/Main.class").exists());
+        // The external build finished: the classes are complete again, sources unchanged.
+        fs::remove_file(root.join("external-build")).unwrap();
+        fs::create_dir_all(root.join("lib/target/classes")).unwrap();
+        fs::write(root.join("lib/target/classes/Main.class"), "lib").unwrap();
+        let second = session.build(root, &model, &a, BuildOptions::default(), None, &cancel).unwrap();
+        assert_ne!(second.snapshot, first.snapshot, "the incomplete snapshot must not be reused");
+        assert_eq!(fs::read_to_string(second.snapshot.join("1/Main.class")).unwrap(), "lib");
+        assert_eq!(calls(root).len(), 2);
+        let third = session.build(root, &model, &a, BuildOptions::default(), None, &cancel).unwrap();
+        assert_eq!(third.snapshot, second.snapshot, "a complete snapshot is reused");
+        assert_eq!(calls(root).len(), 2);
+    }
+
+    #[test]
+    fn a_snapshot_of_classes_cleaned_by_an_external_build_is_not_reused() {
+        assert_outputs_cleaned_by_an_external_build_are_not_reused("rm lib/target/classes/Main.class");
+    }
+
+    #[test]
+    fn a_snapshot_missing_an_output_directory_removed_by_an_external_build_is_not_reused() {
+        assert_outputs_cleaned_by_an_external_build_are_not_reused("rm -r lib/target/classes");
+    }
+
+    #[test]
+    fn a_record_without_snapshot_contents_is_rebuilt_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let model = fixture(root);
+        let cancel = CancellationToken::new();
+        let mut session = Session::new(root.join("cache"));
+        let first = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
+        // A record written before snapshots recorded their contents may hold an empty copy.
+        let record = root.join("cache/java-launch/records/main.json");
+        let mut json: serde_json::Value = serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+        json.as_object_mut().unwrap().remove("contents").unwrap();
+        fs::write(&record, serde_json::to_vec(&json).unwrap()).unwrap();
+        let rebuilt = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
+        assert_ne!(rebuilt.snapshot, first.snapshot);
+        let reused = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
+        assert_eq!(reused.snapshot, rebuilt.snapshot);
+        // A snapshot that lost a class since it was recorded is rebuilt too.
+        fs::remove_file(reused.snapshot.join("0/Main.class")).unwrap();
+        let again = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
+        assert_ne!(again.snapshot, reused.snapshot);
+        assert_eq!(calls(root).len(), 3);
+    }
+
+    #[test]
+    fn contents_tell_a_rewritten_output_from_its_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let classes = dir.path().join("classes");
+        fs::create_dir_all(classes.join("pkg")).unwrap();
+        fs::write(classes.join("pkg/A.class"), "a").unwrap();
+        fs::write(classes.join("app.yml"), "yml").unwrap();
+        let (contents, newest) = Contents::scan(&classes).unwrap();
+        assert_eq!(contents, Contents { files: 2, bytes: 4, classes: 1 });
+        ide_vfs::copy(&classes, &dir.path().join("copy")).unwrap();
+        assert_eq!(Contents::scan(&dir.path().join("copy")).unwrap().0, contents);
+        // Recompiled to the same size: only the mtime shows the output changed.
+        let file = fs::File::options().write(true).open(classes.join("pkg/A.class")).unwrap();
+        file.set_modified(newest.unwrap() + std::time::Duration::from_secs(1)).unwrap();
+        assert_ne!(Contents::scan(&classes), Some((contents, newest)));
+        assert!(Contents::scan(&dir.path().join("missing")).is_none());
+    }
+
     #[test]
     fn deleting_the_last_mixed_source_keeps_maven_delegation_after_failure() {
         let dir = tempfile::tempdir().unwrap();
