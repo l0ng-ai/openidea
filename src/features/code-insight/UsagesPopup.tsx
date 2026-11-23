@@ -176,6 +176,7 @@ function UsagesPopupInner() {
             </span>
           </span>
           <div className={styles.actions}>
+            <UsageAccessFilter items={all} />
             {scope && (
               <Select<UsageScope>
                 variant="ghost"
@@ -213,7 +214,6 @@ function UsagesPopupInner() {
             </button>
           </div>
         </div>
-        <UsageAccessFilter items={all} />
         {note && (
           <div className={styles.note} data-testid="usages-note">
             {note}

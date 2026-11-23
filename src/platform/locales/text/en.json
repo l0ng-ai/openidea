@@ -1583,6 +1583,7 @@
   "Read the project's resolved Maven and Gradle dependencies": "Read the project's resolved Maven and Gradle dependencies",
   "Resolved Dependencies": "Resolved Dependencies",
   "Usages of {symbol}": "Usages of {symbol}",
+  "Usage access filters": "Usage access filters",
   "Read the clipboard's text and images when you run one of its commands": "Read the clipboard's text and images when you run one of its commands",
   "Output: {channel}": "Output: {channel}",
   "You can close this tab.": "You can close this tab.",
