@@ -7,8 +7,9 @@ import { showHint } from "../../hint";
 import { chooseMembers } from "../../memberChooser";
 import type { GenerateEntry } from "../languages";
 import {
-  bodyEnd,
+  ID,
   classMembers,
+  codeLines,
   enclosingClass,
   implementPythonAbstractMethods,
   indentOf,
@@ -16,6 +17,7 @@ import {
   isPython,
   overridePythonMethods,
   signatureParams,
+  skipString,
 } from "./members";
 
 export interface PythonField {
@@ -25,23 +27,35 @@ export interface PythonField {
   value: string | null;
 }
 
-const FIELD = /^(\w+)\s*(?::\s*([^=]+?))?\s*(?:=(?!=)\s*(.+?))?\s*(?:#.*)?$/;
-const SELF_ATTR = /^\s*self\.(\w+)\s*(?::\s*([^=]+?))?\s*=(?!=)/;
+const NAME = new RegExp(`^(${ID})\\s*`, "u");
+const SELF_ATTR = new RegExp(`^\\s*self\\.(${ID})\\s*(?::\\s*([^=]+?))?\\s*=(?!=)`, "u");
+const OWN_INIT_BASE = /(^|\.)(Enum|IntEnum|StrEnum|Flag|IntFlag|NamedTuple|TypedDict|BaseModel|BaseSettings|Struct)$/;
+const OWN_INIT_DECORATOR = /^@(\w+\.)*(dataclass|define|frozen|mutable|s|attrs|dataclass_json)\b/;
 
-/** Body lines of the class headed at `header` (1-based) outside triple-quoted strings, with their numbers. */
-function codeLines(lines: readonly string[], header: number): Array<{ n: number; text: string }> {
-  const out: Array<{ n: number; text: string }> = [];
-  let quote: string | null = null;
-  for (let n = header + 1; n <= bodyEnd(lines, header); n++) {
-    const text = lines[n - 1]!;
-    const inString = quote !== null;
-    for (const q of text.match(/"""|'''/g) ?? []) {
-      if (quote === null) quote = q;
-      else if (q === quote) quote = null;
-    }
-    if (!inString && text.trim()) out.push({ n, text });
+/**
+ * `text` (a statement after its name) split at its top-level `=`, with a trailing comment left out;
+ * null when a bracket or string stays open at the end of the line (a value spanning lines).
+ */
+function splitAssignment(text: string): { annotation: string; value: string | null } | null {
+  let depth = 0;
+  let eq = -1;
+  let end = text.length;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!;
+    if (c === '"' || c === "'") {
+      i = skipString(text, i);
+      if (i >= text.length) return null;
+    } else if (c === "#") {
+      end = i;
+      break;
+    } else if ("([{".includes(c)) depth++;
+    else if (")]}".includes(c)) depth--;
+    else if (c === "=" && depth === 0 && eq < 0 && !"=<>!:".includes(text[i - 1] ?? " ") && text[i + 1] !== "=") eq = i;
   }
-  return out;
+  if (depth > 0 || text.slice(0, end).trimEnd().endsWith("\\")) return null;
+  return eq < 0
+    ? { annotation: text.slice(0, end).trim(), value: null }
+    : { annotation: text.slice(0, eq).trim(), value: text.slice(eq + 1, end).trim() };
 }
 
 /** Fields declared in the body of the class headed at `header` (`x: int`, `x: int = 0`, `x = 0`). */
@@ -51,12 +65,28 @@ export function classFields(lines: readonly string[], header: number): PythonFie
   const out: PythonField[] = [];
   for (const { text } of body) {
     if (indentOf(text) !== indent) continue;
-    const m = FIELD.exec(text.trim());
-    if (!m || (!m[2] && !m[3]) || m[1]!.startsWith("__")) continue;
-    if (m[2] && /^(typing\.)?ClassVar\b/.test(m[2])) continue;
-    out.push({ name: m[1]!, annotation: m[2]?.trim() ?? null, value: m[3]?.trim() ?? null });
+    const trimmed = text.trim();
+    const name = NAME.exec(trimmed);
+    if (!name || name[1]!.startsWith("__") || !/^[:=](?!=)/.test(trimmed.slice(name[0].length))) continue;
+    const parts = splitAssignment(trimmed.slice(name[0].length));
+    if (!parts) continue;
+    const annotation = parts.annotation.replace(/^:\s*/, "") || null;
+    if (annotation && /^(typing\.)?ClassVar\b/.test(annotation)) continue;
+    out.push({ name: name[1]!, annotation, value: parts.value });
   }
   return out;
+}
+
+/**
+ * Whether the class headed at `header` gets `__init__` from elsewhere: an enum, named tuple, typed
+ * dict or pydantic model base, or a dataclass / attrs decorator.
+ */
+export function generatesOwnInit(lines: readonly string[], header: number): boolean {
+  const bases = /\((.*)\)/.exec(lines[header - 1]!)?.[1] ?? "";
+  if (bases.split(",").some((b) => OWN_INIT_BASE.test(b.replace(/\[.*$/, "").trim()))) return true;
+  for (let n = header - 1; n >= 1 && lines[n - 1]!.trim().startsWith("@"); n--)
+    if (OWN_INIT_DECORATOR.test(lines[n - 1]!.trim())) return true;
+  return false;
 }
 
 /**
@@ -67,14 +97,14 @@ export function instanceAttributes(lines: readonly string[], header: number): Py
   const init = classMembers(lines, header).find((m) => m.name === "__init__");
   const params = new Map<string, string>();
   for (const p of (init && signatureParams(init.lines.filter((l) => !l.startsWith("@")).join(" "))) ?? []) {
-    const m = /^(\w+)\s*:\s*([^=]+?)\s*(?:=.*)?$/.exec(p);
+    const m = new RegExp(`^(${ID})\\s*:\\s*([^=]+?)\\s*(?:=.*)?$`, "u").exec(p);
     if (m) params.set(m[1]!, m[2]!);
   }
   const out = new Map<string, PythonField>();
   for (const { text } of codeLines(lines, header)) {
     const m = SELF_ATTR.exec(text);
     if (!m) continue;
-    const source = /=\s*(\w+)\s*(?:#.*)?$/.exec(text)?.[1];
+    const source = new RegExp(`=\\s*(${ID})\\s*(?:#.*)?$`, "u").exec(text)?.[1];
     const annotation = m[2]?.trim() ?? (source ? params.get(source) : undefined) ?? null;
     const known = out.get(m[1]!);
     if (!known) out.set(m[1]!, { name: m[1]!, annotation, value: null });
@@ -98,10 +128,13 @@ export function initText(fields: readonly PythonField[], indent: string, unit: s
   ].join("\n");
 }
 
-/** The property for `attr`: a getter returning `self._name` and its setter. */
+/**
+ * The property for `attr`: a getter and setter over `self._name`, or over the attribute itself when
+ * it is already private (`_x`, or name-mangled `__x`, which the class reads as written).
+ */
 export function propertyText(attr: PythonField, indent: string, unit: string): string {
   const name = attr.name.replace(/^_+/, "") || attr.name;
-  const field = `_${name}`;
+  const field = attr.name.startsWith("_") ? attr.name : `_${name}`;
   const type = attr.annotation;
   return [
     `${indent}@property`,
@@ -127,6 +160,10 @@ export async function generatePythonInit(view: EditorView): Promise<void> {
   const { lines, header } = cls;
   if (classMembers(lines, header).some((m) => m.name === "__init__")) {
     showHint(view, "The class already defines __init__");
+    return;
+  }
+  if (generatesOwnInit(lines, header)) {
+    showHint(view, "Dataclasses, enums, named tuples, typed dicts and models get __init__ on their own");
     return;
   }
   const fields = classFields(lines, header);

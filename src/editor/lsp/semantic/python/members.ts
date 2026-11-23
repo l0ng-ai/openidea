@@ -15,7 +15,7 @@ import { chooseMembers } from "../../memberChooser";
 import { importLine, importedFrom, neededImports, placeImports, topLevelBindings } from "./imports";
 
 /** A Python identifier (letters of any script). */
-const ID = "[\\p{L}_][\\p{L}\\p{N}_]*";
+export const ID = "[\\p{L}_][\\p{L}\\p{N}_]*";
 const CLASS_HEADER = new RegExp(`^(\\s*)class\\s+${ID}\\s*\\(([\\s\\S]*)\\)\\s*:$`, "u");
 const CLASS = /^\s*class\s/;
 const CLASS_NAME = new RegExp(`class\\s+(${ID})`, "u");
@@ -59,6 +59,22 @@ export function classHeader(lines: readonly string[], header: number): { text: s
       return { text: joined.slice(0, colon + 1), end: n, colon: colon - (joined.length - lines[n - 1]!.length) };
   }
   return { text: lines[header - 1]!, end: header, colon: -1 };
+}
+
+/** Body lines of the class headed at `header` (1-based) outside triple-quoted strings, with their numbers. */
+export function codeLines(lines: readonly string[], header: number): Array<{ n: number; text: string }> {
+  const out: Array<{ n: number; text: string }> = [];
+  let quote: string | null = null;
+  for (let n = classHeader(lines, header).end + 1; n <= bodyEnd(lines, header); n++) {
+    const text = lines[n - 1]!;
+    const inString = quote !== null;
+    for (const q of text.match(/"""|'''/g) ?? []) {
+      if (quote === null) quote = q;
+      else if (q === quote) quote = null;
+    }
+    if (!inString && text.trim()) out.push({ n, text });
+  }
+  return out;
 }
 
 /** Last 1-based line of the body of the class headed at `header`. */
@@ -246,11 +262,11 @@ export function insertMembers(
   const inlineBody = inline && !inline.startsWith("#") && !/^(pass|\.\.\.)\s*(#.*)?$/.test(inline) ? inline : "";
   // A body that is only `pass` / `...` is replaced.
   const placeholder = bodyLines.length === 1 && /^\s*(pass|\.\.\.)\s*$/.test(first!);
-  const method = beforeMethods
-    ? bodyLines.find(
-        (n) => indentOf(lines[n - 1]!) === indentOf(first!) && /^\s*(@|(async\s+)?def\s)/.test(lines[n - 1]!),
-      )
-    : undefined;
+  // The first method outside the docstring (whose Epytext `@ivar` lines look like decorators).
+  const code = beforeMethods ? codeLines(lines, header) : [];
+  const method = code.find(
+    ({ text }) => indentOf(text) === indentOf(code[0]!.text) && /^\s*(@|(async\s+)?def\s)/.test(text),
+  )?.n;
   const changes = method
     ? { from: state.doc.line(method).from, insert: `${stubs}\n\n` }
     : !bodyLines.length
@@ -377,7 +393,7 @@ async function ancestors(view: EditorView, header: number): Promise<PythonBase[]
 }
 
 /** Index of the quote closing the string literal that opens at `i` of `text`, or `text.length`. */
-function skipString(text: string, i: number): number {
+export function skipString(text: string, i: number): number {
   const quote = text[i]!;
   for (let j = i + 1; j < text.length; j++) {
     if (text[j] === "\\") j++;
