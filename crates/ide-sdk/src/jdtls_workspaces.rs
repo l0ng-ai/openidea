@@ -28,20 +28,56 @@ fn workspace(cfg: &LanguageServerConfig) -> Option<&Path> {
     cfg.args.iter().position(|a| a == "-data").and_then(|i| cfg.args.get(i + 1)).map(Path::new)
 }
 
-fn temp_arg(workspace: &Path) -> String {
-    format!("-Djava.io.tmpdir={}", workspace.join(TEMP_DIR).to_string_lossy())
+/// Where jdtls keeps its temporary files for `workspace`: inside the workspace, unless that path
+/// has spaces — then in the user's cache directory, one folder per workspace.
+///
+/// Buildship stores a Gradle import's arguments joined by spaces and splits them again, and jdtls
+/// passes `<temporary folder>/<hash>.gradle` to every import as an init script. Under a home with
+/// spaces — macOS keeps the data in `~/Library/Application Support` — that import fails with "The
+/// specified initialization script '…/Application' does not exist", and with it the classpath of
+/// the build: every dependency outside the JDK stays unresolved in the editor. The cache
+/// directory gives such a workspace a folder whose path an import can be split at.
+fn temp_dir(workspace: &Path) -> PathBuf {
+    temp_dir_in(workspace, dirs::cache_dir().as_deref())
 }
 
-/// Gives jdtls a temporary folder inside a workspace of ours (`<workspace>/.tmp`) unless the
-/// user's JVM arguments choose one. JDT APT copies a project's annotation processor jars into a
-/// new `jdt-apt-*` folder for each processor class loader and deletes it only when the JVM exits
-/// normally — never on Windows, where the jars are still open then — so in the system temp
-/// folder they pile up with every start; [`mark_used`] empties this one before each start.
+fn temp_dir_in(workspace: &Path, cache: Option<&Path>) -> PathBuf {
+    let own = workspace.join(TEMP_DIR);
+    if !own.to_string_lossy().contains(char::is_whitespace) {
+        return own;
+    }
+    cache
+        .map(|cache| cache.join("openidea").join("jdtls-tmp").join(path_key(workspace)))
+        // A cache directory with spaces too is no better than the workspace.
+        .filter(|dir| !dir.to_string_lossy().contains(char::is_whitespace))
+        .unwrap_or(own)
+}
+
+/// FNV-1a of a path: one folder per workspace, shared by nothing else.
+fn path_key(path: &Path) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in path.to_string_lossy().bytes() {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn temp_arg(temp: &Path) -> String {
+    format!("-Djava.io.tmpdir={}", temp.to_string_lossy())
+}
+
+/// Gives jdtls a temporary folder of ours (`<workspace>/.tmp`, or one in the cache directory when
+/// that path has spaces — see [`temp_dir`]) unless the user's JVM arguments choose one. JDT APT
+/// copies a project's annotation processor jars into a new `jdt-apt-*` folder for each processor
+/// class loader and deletes it only when the JVM exits normally — never on Windows, where the jars
+/// are still open then — so in the system temp folder they pile up with every start;
+/// [`mark_used`] empties this one before each start.
 pub fn use_own_temp(cfg: &mut LanguageServerConfig, data_dir: &Path) {
     if cfg.name != "jdtls" || cfg.args.iter().any(|a| a.contains("-Djava.io.tmpdir=")) {
         return;
     }
-    let Some(arg) = workspace(cfg).filter(|w| w.starts_with(root(data_dir))).map(temp_arg) else { return };
+    let Some(temp) = workspace(cfg).filter(|w| w.starts_with(root(data_dir))).map(temp_dir) else { return };
+    let arg = temp_arg(&temp);
     // Launched directly, JVM options go before `-jar`; through the script, as `--jvm-arg=`.
     match cfg.args.iter().position(|a| a == "-jar") {
         Some(jar) => cfg.args.insert(jar, arg),
@@ -52,11 +88,11 @@ pub fn use_own_temp(cfg: &mut LanguageServerConfig, data_dir: &Path) {
 /// Empties the temporary folder [`use_own_temp`] gave the workspace. Best effort: files a server
 /// still has open on Windows stay until a later start.
 fn clear_temp(cfg: &LanguageServerConfig, workspace: &Path) {
-    let arg = temp_arg(workspace);
+    let temp = temp_dir(workspace);
+    let arg = temp_arg(&temp);
     if !cfg.args.iter().any(|a| a.strip_prefix("--jvm-arg=").unwrap_or(a) == arg) {
         return;
     }
-    let temp = workspace.join(TEMP_DIR);
     for entry in std::fs::read_dir(&temp).into_iter().flatten().flatten() {
         let path = entry.path();
         let removed = if entry.file_type().is_ok_and(|t| t.is_dir()) {
@@ -230,6 +266,43 @@ mod tests {
         std::fs::create_dir_all(ws.join(TEMP_DIR).join("kept")).unwrap();
         mark_used(&cfg(&ws));
         assert!(ws.join(TEMP_DIR).join("kept").exists());
+    }
+
+    /// macOS keeps its data under `~/Library/Application Support`. Buildship splits a Gradle
+    /// import's arguments at spaces, so a temporary folder there breaks the import — jdtls passes
+    /// its init script from it — and with it the classpath of the whole build.
+    #[test]
+    fn a_workspace_under_a_home_with_spaces_gets_a_temporary_folder_without_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("Application Support");
+        let (ws, other) = (root(&data).join("p"), root(&data).join("q"));
+        let cache = tmp.path().join("cache");
+
+        let temp = temp_dir_in(&ws, Some(&cache));
+        assert!(!temp.to_string_lossy().contains(char::is_whitespace), "{temp:?}");
+        assert!(temp.starts_with(&cache), "{temp:?}");
+        assert_ne!(temp, temp_dir_in(&other, Some(&cache)), "one per workspace");
+        // A cache directory with spaces too, or none at all, leaves the folder where it was.
+        assert_eq!(temp_dir_in(&ws, Some(&data)), ws.join(TEMP_DIR));
+        assert_eq!(temp_dir_in(&ws, None), ws.join(TEMP_DIR));
+        // A workspace under no spaced folder keeps its own temporary folder.
+        let plain = root(tmp.path()).join("plain");
+        assert_eq!(temp_dir_in(&plain, Some(&cache)), plain.join(TEMP_DIR));
+
+        // The option the server is launched with names that folder — through the script, and
+        // before `-jar` when launched directly.
+        let own_cache = dirs::cache_dir().filter(|dir| !dir.to_string_lossy().contains(char::is_whitespace));
+        let Some(own_cache) = own_cache else { return };
+        let mut script = cfg(&ws);
+        use_own_temp(&mut script, &data);
+        let arg = script.args.last().expect("the temporary folder is the last argument");
+        let named = Path::new(arg.strip_prefix("--jvm-arg=-Djava.io.tmpdir=").expect(arg));
+        assert!(!named.to_string_lossy().contains(char::is_whitespace), "{named:?}");
+        assert!(named.starts_with(&own_cache), "{named:?}");
+        let mut direct = cfg(&ws);
+        direct.args.splice(0..0, ["-Xmx2G".to_owned(), "-jar".to_owned(), "launcher.jar".to_owned()]);
+        use_own_temp(&mut direct, &data);
+        assert_eq!(direct.args[1], temp_arg(named), "a JVM option before -jar");
     }
 
     #[cfg(unix)]
