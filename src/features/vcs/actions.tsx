@@ -13,6 +13,7 @@ import {
   editorService,
   maybeEditorService,
   notifications,
+  projectViewContextLead,
   projectViewSelection,
   toolWindowService,
   type WorktreeReview,
@@ -282,9 +283,9 @@ function selectedPaths(arg: unknown): string[] {
   return project.length ? project : contextPaths(arg);
 }
 
-/** Paths a file action targets: the Project view's selection while it has focus, else the open file. */
+/** Uses the Project view's selection while the tree has focus or owns the context. */
 function focusedPaths(arg: unknown, ctx: { projectViewFocus?: unknown }): string[] {
-  return ctx.projectViewFocus ? selectedPaths(arg) : contextPaths(arg);
+  return ctx.projectViewFocus || projectViewContextLead() ? selectedPaths(arg) : contextPaths(arg);
 }
 
 /**
