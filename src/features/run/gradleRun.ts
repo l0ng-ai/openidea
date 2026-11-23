@@ -20,7 +20,20 @@ export const DELEGATED_MAIN = "-Dopenidea.run.main=";
 export const DELEGATED_DEBUG = "-Dopenidea.run.debug=true";
 /** Lets the init script start the debugged JVM's attach listener (the memory view needs it; not on Windows). */
 export const DELEGATED_ATTACH_LISTENER = "-Dopenidea.run.attachListener=true";
+/**
+ * Names the application JVM for the thread dump, which finds it by this argument. A Gradle run forks
+ * it under the daemon, outside the run's process tree; the init scripts pass it on.
+ */
+export const DELEGATED_TOKEN = "-Dopenidea.run.token=";
 const TASK = "openideaRun";
+
+/**
+ * Stable per configuration: a per-launch value would change the Gradle command line and miss
+ * its configuration cache on every launch.
+ */
+export function runJvmToken(config: Pick<RunConfig, "id">): string {
+  return config.id.replace(/[^A-Za-z0-9._-]/g, "_");
+}
 
 const isAbsolute = (p: string) => p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p);
 const absolute = (root: string, p: string) => (isAbsolute(p) ? p : p ? `${root}/${p}` : root);
@@ -74,6 +87,7 @@ export function delegatedGradleConfig(config: RunConfig, module: string, ctx: De
     `-Dopenidea.run.args=${JSON.stringify(parsed.programArgs)}`,
     `-Dopenidea.run.jvmArgs=${JSON.stringify(parsed.vmArgs)}`,
     `-Dopenidea.run.workingDir=${config.cwd ? absolute(ctx.root, config.cwd) : dir}`,
+    `${DELEGATED_TOKEN}${runJvmToken(config)}`,
     ...(ctx.offline ? ["--offline"] : []),
     // Problems only warn: a build with incompatible plugins still runs, uncached.
     ...(ctx.configurationCache ? ["--configuration-cache", "--configuration-cache-problems=warn"] : []),
