@@ -9,7 +9,7 @@ import { useEffect, useId, useState } from "react";
 import clsx from "clsx";
 import { commands, isTauri } from "@/platform/ipc";
 import { Checkbox, Icon, Radio, type IconName } from "@/ui";
-import { SearchLabel, Select } from "../../components/Form";
+import { Row, SearchLabel, Select } from "../../components/Form";
 import { useLabelMatch, useSearchQuery, useSetting } from "../../components/context";
 import { labelMatches } from "../../model/pages";
 import { editorPage } from "./kit";
@@ -581,6 +581,7 @@ const TABS = editorPage({
           t: "radio",
           key: `${P}.tabs.closingPolicy`,
           label: "When the tab limit is reached",
+          layout: "stacked",
           options: [
             { value: "unchanged", label: "Close non-modified files first" },
             { value: "lru", label: "Close least recently used files" },
@@ -590,6 +591,7 @@ const TABS = editorPage({
           t: "radio",
           key: `${P}.tabs.activateOnClose`,
           label: "When the current tab is closed, activate",
+          layout: "stacked",
           options: [
             { value: "left", label: "The tab on the left" },
             { value: "right", label: "The tab on the right" },
@@ -607,10 +609,11 @@ function TabRows() {
   const [overflow, setOverflow] = useSetting<string>(`${P}.tabs.oneRowOverflow`);
   const [placement] = useSetting<string>(`${P}.tabs.placement`);
   const matched = useLabelMatch("Show tabs in:");
-  const name = useId();
+  const rowsName = useId();
+  const overflowName = useId();
   // Vertical (left / right) tabs always scroll in one column.
   const disabled = placement === "none" || placement === "left" || placement === "right";
-  const radio = (label: string, checked: boolean, onChange: () => void, off = disabled) => (
+  const radio = (name: string, label: string, checked: boolean, onChange: () => void, off = disabled) => (
     <label className={clsx(styles.radio, off && styles.dim)}>
       <input type="radio" name={name} checked={checked} disabled={off} onChange={onChange} />
       <SearchLabel text={label} />
@@ -618,30 +621,36 @@ function TabRows() {
   );
   return (
     <div
-      className={clsx(styles.radioBlock, matched && styles.matched)}
+      className={clsx(styles.radioBlock, styles.stackedRadioBlock, matched && styles.matched)}
       role="radiogroup"
       aria-label={tx("Show tabs in")}
     >
       <div className={clsx(styles.radioLabel, disabled && styles.dim)}>
         <SearchLabel text="Show tabs in" />:
       </div>
-      <div className={styles.radios}>
-        {radio("One row, and if tabs don't fit:", !multiple, () => setMultiple(false))}
-        <div className={styles.children} role="radiogroup" aria-label={tx("If tabs don't fit")}>
+      <div className={clsx(styles.radios, styles.stackedRadios)}>
+        {radio(rowsName, "One row, and if tabs don't fit:", !multiple, () => setMultiple(false))}
+        <div
+          className={clsx(styles.children, styles.tabOverflowChoices)}
+          role="radiogroup"
+          aria-label={tx("If tabs don't fit")}
+        >
           {radio(
+            overflowName,
             "Scroll the tabs panel",
-            !multiple && overflow !== "squeeze",
+            overflow !== "squeeze",
             () => setOverflow("scroll"),
             disabled || multiple,
           )}
           {radio(
+            overflowName,
             "Squeeze tabs",
-            !multiple && overflow === "squeeze",
+            overflow === "squeeze",
             () => setOverflow("squeeze"),
             disabled || multiple,
           )}
         </div>
-        {radio("Multiple rows", multiple, () => setMultiple(true))}
+        {radio(rowsName, "Multiple rows", multiple, () => setMultiple(true))}
       </div>
     </div>
   );
@@ -657,12 +666,8 @@ const CLOSE_POSITIONS = [
 function CloseButtonPosition() {
   const [show, setShow] = useSetting<boolean>(`${P}.tabs.showCloseButton`);
   const [position, setPosition] = useSetting<string>(`${P}.tabs.closeButtonPosition`);
-  const matched = useLabelMatch("Close button position:");
   return (
-    <div className={clsx(styles.check, matched && styles.matched)}>
-      <span>
-        <SearchLabel text="Close button position:" />
-      </span>
+    <Row label="Close button position">
       <Select
         value={show ? (position === "left" ? "left" : "right") : "none"}
         options={CLOSE_POSITIONS}
@@ -672,7 +677,7 @@ function CloseButtonPosition() {
           if (v !== "none") setPosition(v);
         }}
       />
-    </div>
+    </Row>
   );
 }
 
