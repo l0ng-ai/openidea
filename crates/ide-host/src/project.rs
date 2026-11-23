@@ -1199,11 +1199,6 @@ impl Project {
         self.with_log_repo_of(path, |r| f(r as &dyn Backend))
     }
 
-    /// `with_repo` through the backend-agnostic Changes-view surface.
-    pub fn with_backend<T>(&self, f: impl FnOnce(&dyn Backend) -> IdeResult<T>) -> IdeResult<T> {
-        self.with_backend_at(None, f)
-    }
-
     /// `with_repo_recorded` through the backend-agnostic Changes-view surface.
     pub fn with_backend_recorded<T>(
         &self,

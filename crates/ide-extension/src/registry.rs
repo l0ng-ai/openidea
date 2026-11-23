@@ -116,10 +116,6 @@ impl ExtensionRegistry {
         Ok(())
     }
 
-    pub fn point_ids(&self) -> Vec<&'static str> {
-        self.points.read().keys().copied().collect()
-    }
-
     pub fn placement(&self, point: &str) -> Option<Placement> {
         self.points.read().get(point).map(|p| p.placement())
     }
