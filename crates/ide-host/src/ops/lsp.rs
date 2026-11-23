@@ -908,15 +908,8 @@ pub async fn lsp_code_actions(
     let version = blocking(move || documents.version(doc)).await?;
     let target = position_document(host, window, doc, range.start).await?;
     let range = project.lsp.injected_request_range(target, range);
-    let mut result = project.lsp.code_actions(target, range, only.clone()).await;
-    if only.iter().any(|k| k == ORGANIZE_IMPORTS)
-        && !result.as_ref().is_ok_and(|actions| actions.iter().any(organizes_imports))
-        && let Some(action) = ruff_organize_imports(host, window, doc).await?
-    {
-        let mut actions = result.unwrap_or_default();
-        actions.push(action);
-        result = Ok(actions);
-    }
+    let result = project.lsp.code_actions(target, range, only.clone()).await;
+    let result = with_ruff_organize_imports(host, window, doc, &only, result).await;
     let plugin_actions = match plugin_providers(host, window, doc, ProviderKind::CodeActions) {
         Some((plugins, d)) => plugin_call(move || plugins.provide_code_actions(&d, range)).await.unwrap_or_default(),
         None => Vec::new(),
@@ -940,6 +933,28 @@ pub async fn lsp_code_actions(
 }
 
 const ORGANIZE_IMPORTS: &str = "source.organizeImports";
+
+/// `result` and, when organize imports is asked for and no server offers it, Ruff's Optimize
+/// Imports for a Python file: for the editor and for the MCP tools alike.
+async fn with_ruff_organize_imports(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    only: &[String],
+    result: IdeResult<Vec<CodeAction>>,
+) -> IdeResult<Vec<CodeAction>> {
+    if !only.iter().any(|k| k == ORGANIZE_IMPORTS) || result.as_ref().is_ok_and(|a| a.iter().any(organizes_imports)) {
+        return result;
+    }
+    match ruff_organize_imports(host, window, doc).await? {
+        Some(action) => {
+            let mut actions = result.unwrap_or_default();
+            actions.push(action);
+            Ok(actions)
+        }
+        None => result,
+    }
+}
 
 fn organizes_imports(action: &CodeAction) -> bool {
     action.kind.as_deref().is_some_and(|k| k == ORGANIZE_IMPORTS || k.starts_with("source.organizeImports."))
@@ -1105,11 +1120,15 @@ pub async fn lsp_code_action_query(
     let version = blocking(move || documents.version(doc)).await?;
     let (target, cancel) = begin_position_request(host, window, request, doc, range.start).await?;
     let range = project.lsp.injected_request_range(target, range);
-    let result = project.lsp.code_action_query(target, range, only, cancel).await;
+    let result = project.lsp.code_action_query(target, range, only.clone(), cancel).await;
     host.end_request(request);
-    let mut result = result?;
-    result.actions = prepare_actions(project, doc, version, result.actions).await?;
-    Ok(result)
+    let (actions, advertised_kinds) = match result {
+        Ok(query) => (Ok(query.actions), query.advertised_kinds),
+        Err(e) => (Err(e), None),
+    };
+    let actions = with_ruff_organize_imports(host, window, doc, &only, actions).await?;
+    let actions = prepare_actions(project, doc, version, actions).await?;
+    Ok(CodeActionQuery { actions, advertised_kinds })
 }
 
 /// Resolves a code action's edit without applying it (intention preview).
@@ -2183,7 +2202,7 @@ mod tests {
         let ruff = base.join("ruff");
         std::fs::write(
             &ruff,
-            "#!/bin/sh\n[ \"$1 $2 $3 $4\" = \"check --select I,F401 --fix\" ] || exit 2\ntail -n 1\n",
+            "#!/bin/sh\n[ \"$1 $2 $3 $4 $5\" = \"check --extend-select I --fixable I,F401\" ] || exit 2\ntail -n 1\n",
         )
         .unwrap();
         std::fs::set_permissions(&ruff, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -2209,7 +2228,17 @@ mod tests {
             )
             .unwrap();
         let doc = project.documents.open(&root.join("main.py")).unwrap().id;
-        let action = ruff_organize_imports(&host, "main", doc).await.unwrap().unwrap();
+        let only = [ORGANIZE_IMPORTS.to_owned()];
+        // A server that offers organize imports keeps the request to itself.
+        let server = CodeAction { kind: Some(ORGANIZE_IMPORTS.into()), ..action_stub() };
+        let kept = with_ruff_organize_imports(&host, "main", doc, &only, Ok(vec![server])).await.unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].server, ServerId(7));
+        // No server (or one that failed): the Ruff action, for the editor and the MCP tools alike.
+        let no_server = Err(ide_core::IdeError::unavailable("no server"));
+        let mut actions = with_ruff_organize_imports(&host, "main", doc, &only, no_server).await.unwrap();
+        assert_eq!(actions.len(), 1);
+        let action = actions.remove(0);
         assert_eq!(action.kind.as_deref(), Some("source.organizeImports.ruff"));
         assert!(organizes_imports(&action) && action.disabled_reason.is_none());
         let Some(ide_core::FileEdit::Edit { edits, .. }) = action.edit.unwrap().files.into_iter().next() else {
@@ -2219,6 +2248,22 @@ mod tests {
         assert_eq!(edits, [TextEdit { range: Range::new(Pos::new(0, 7), Pos::new(1, 7)), new_text: String::new() }]);
         let text = project.documents.open(&root.join("notes.txt")).unwrap().id;
         assert!(ruff_organize_imports(&host, "main", text).await.unwrap().is_none());
+        assert!(with_ruff_organize_imports(&host, "main", doc, &[], Ok(Vec::new())).await.unwrap().is_empty());
+    }
+
+    fn action_stub() -> CodeAction {
+        CodeAction {
+            title: String::new(),
+            diagnostics: Vec::new(),
+            original_diagnostics: None,
+            kind: None,
+            is_preferred: false,
+            disabled_reason: None,
+            edit: None,
+            command: None,
+            data: None,
+            server: ServerId(7),
+        }
     }
 
     #[test]

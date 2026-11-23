@@ -86,7 +86,7 @@ Other options on the page:
 
 **Reformat Code** (`⌘⌥L` / `Ctrl+Alt+L`) uses Ruff. In **Settings › Languages & Frameworks › Ruff** you can set the Ruff path, a configuration directory, the **Formatting provider** (**Automatic (language server first)** or Ruff), and **Run on save**. Without a configuration directory, Ruff reads the nearest `pyproject.toml` (`[tool.ruff]`), `ruff.toml` or `.ruff.toml`.
 
-**Optimize Imports** (`⌃⌥O` / `Ctrl+Alt+O`) removes unused imports and sorts the rest. Below a Ruff configuration the Ruff server does it; elsewhere the IDE runs `ruff check --select I,F401 --fix` on the file, so Ruff must be installed. The same goes for Optimize imports on save, before commit and in Code Cleanup.
+**Optimize Imports** (`⌃⌥O` / `Ctrl+Alt+O`) sorts the imports. Below a Ruff configuration the Ruff server does it and leaves unused imports alone (Ruff's fix-all removes them). Elsewhere the IDE runs `ruff check --extend-select I --fixable I,F401 --fix` on the file, which also removes unused imports unless your Ruff rules leave out F401; Ruff must be installed. The same goes for Optimize imports on save, before commit and in Code Cleanup.
 
 ## Run and test
 

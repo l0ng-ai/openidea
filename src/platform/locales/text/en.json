@@ -3709,5 +3709,7 @@
   "Previous Columns": "Previous Columns",
   "Next Columns": "Next Columns",
   "View Options": "View Options",
-  "Visible columns": "Visible columns"
+  "Visible columns": "Visible columns",
+  "Install Ruff to optimize imports in Python files": "Install Ruff to optimize imports in Python files",
+  "Optimize Imports (Ruff)": "Optimize Imports (Ruff)"
 }

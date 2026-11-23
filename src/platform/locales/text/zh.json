@@ -9945,5 +9945,7 @@
   "Previous Rows": "上一组行",
   "Next Rows": "下一组行",
   "Previous Columns": "上一组列",
-  "Next Columns": "下一组列"
+  "Next Columns": "下一组列",
+  "Install Ruff to optimize imports in Python files": "安装 Ruff 以优化 Python 文件的导入",
+  "Optimize Imports (Ruff)": "优化导入（Ruff）"
 }

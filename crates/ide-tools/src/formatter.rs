@@ -201,12 +201,16 @@ pub fn arguments(
     args
 }
 
-/// `ruff check` that removes unused imports (F401) and sorts them (I) in the text on stdin and
-/// prints the result, for Optimize Imports where the Ruff server isn't running. Fixes that remain
-/// (unsafe ones, such as re-exports in `__init__.py`) are not errors.
+/// `ruff check` that sorts the imports (I) of the text on stdin and removes the unused ones (F401)
+/// and prints the result, for Optimize Imports where the Ruff server isn't running. Only those two
+/// are fixed, and F401 only where the project's rules check it (it is in Ruff's defaults; an
+/// `ignore` or `select` without it keeps the imports). Fixes that remain (unsafe ones, such as
+/// re-exports in `__init__.py`) are not errors.
 pub fn ruff_organize_imports_arguments(file: &Path, config_file: Option<&Path>) -> Vec<OsString> {
     let mut args: Vec<OsString> =
-        ["check", "--select", "I,F401", "--fix", "--exit-zero", "--quiet"].map(OsString::from).into();
+        ["check", "--extend-select", "I", "--fixable", "I,F401", "--fix", "--exit-zero", "--quiet"]
+            .map(OsString::from)
+            .into();
     if let Some(config_file) = config_file {
         args.extend(["--config".into(), config_file.as_os_str().to_owned()]);
     }
@@ -453,7 +457,9 @@ mod tests {
             args(None),
             [
                 "check",
-                "--select",
+                "--extend-select",
+                "I",
+                "--fixable",
                 "I,F401",
                 "--fix",
                 "--exit-zero",
@@ -463,6 +469,6 @@ mod tests {
                 "-"
             ]
         );
-        assert_eq!(args(Some(Path::new("/shared/ruff.toml")))[6..8], ["--config", "/shared/ruff.toml"]);
+        assert_eq!(args(Some(Path::new("/shared/ruff.toml")))[8..10], ["--config", "/shared/ruff.toml"]);
     }
 }

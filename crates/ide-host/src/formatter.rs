@@ -499,12 +499,17 @@ pub async fn python_import_edits(
     let tools = Tools::new(&host.local_data_dir);
     tokio::task::spawn_blocking(move || {
         let config_file = ide_sdk::apply::ruff_configuration(&root, &configured)?;
+        let custom = custom.or_else(|| interpreter_tool(&root, snap.path.parent(), &settings, "ruff"));
         let mut command = tools.formatter_command("ruff", &snap.path, custom.as_deref())?;
         if let Some(dir) = snap.path.parent() {
             command.current_dir(dir);
         }
         command.args(formatter::ruff_organize_imports_arguments(&snap.path, config_file.as_deref()));
         let fixed = formatter::run("ruff", command, &snap.text, &Default::default())?;
+        // Nothing printed for a file with code: Ruff's configuration excludes it.
+        if fixed.is_empty() && !snap.text.trim().is_empty() {
+            return Ok(Some((snap.path, Vec::new())));
+        }
         Ok(Some((snap.path, diff_edits(&ide_text::Document::new(&snap.text), &fixed))))
     })
     .await
