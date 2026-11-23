@@ -140,6 +140,7 @@ describe("Python Packages", () => {
     await screen.findByText("urllib3");
     search("flask");
     expect(await screen.findByText("Could not load package information from PyPI.")).toBeInTheDocument();
+    expect(screen.queryByText("No packages match")).not.toBeInTheDocument();
     mocks.pypi.mockResolvedValue(ok({ ...SIX, name: "flask" }));
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByText("flask")).toBeInTheDocument();
@@ -200,6 +201,16 @@ describe("Python Packages", () => {
     open();
     expect(await screen.findByText("No Python interpreter")).toBeInTheDocument();
     expect(mocks.packages).not.toHaveBeenCalled();
+  });
+
+  it("refreshes a container snapshot that is still being taken", async () => {
+    mocks.container
+      .mockResolvedValueOnce(ok({ packages: [], updating: true }))
+      .mockResolvedValue(ok({ packages: [{ name: "Django", version: "5.1.3" }], updating: false }));
+    open("target:web");
+    expect(await screen.findByText("Loading packages…")).toBeInTheDocument();
+    expect(await screen.findByText("Django", {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(mocks.container).toHaveBeenCalledTimes(2);
   });
 
   it("lists a container interpreter's packages read-only", async () => {

@@ -737,10 +737,9 @@ pub fn configured_index(
     project_root: Option<&Path>,
     cancel: &CancellationToken,
 ) -> IdeResult<Option<String>> {
-    let env = |key: &str| std::env::var(key).ok().filter(|v| !v.trim().is_empty());
-    let custom = |url: &str| !url.contains("://pypi.org/") && !url.contains("://pypi.python.org/");
+    let env = |key: &str| std::env::var(key).ok().and_then(|v| custom_index_url(&v).map(str::to_owned));
     for key in ["PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL"] {
-        if let Some(url) = env(key).filter(|u| custom(u)) {
+        if let Some(url) = env(key) {
             return Ok(Some(url));
         }
     }
@@ -749,11 +748,11 @@ pub fn configured_index(
             let (program, args) = pip_command(python, &Installer::Pip, &["config", "list"]);
             let dir = neutral_dir();
             let out = stream(&program, &args, dir.as_ref().map(|d| d.path()), &pip_env(python), cancel, &|_| {})?;
-            Ok(pip_config_index(&out).filter(|u| custom(u)))
+            Ok(pip_config_index(&out))
         }
         Installer::Uv(_) => {
             for key in ["UV_INDEX_URL", "UV_EXTRA_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX"] {
-                if let Some(url) = env(key).filter(|u| custom(u)) {
+                if let Some(url) = env(key) {
                     return Ok(Some(url));
                 }
             }
@@ -777,14 +776,22 @@ pub fn configured_index(
     }
 }
 
-/// The first `index-url` / `extra-index-url` in `pip config list` output
+fn custom_index_url(value: &str) -> Option<&str> {
+    value.split_whitespace().find(|value| {
+        !url::Url::parse(value)
+            .is_ok_and(|url| url.scheme() == "https" && matches!(url.host_str(), Some("pypi.org" | "pypi.python.org")))
+    })
+}
+
+/// The first non-PyPI `index-url` / `extra-index-url` in `pip config list` output
 /// (`global.index-url='https://…'`, `:env:.extra-index-url='…'`).
 pub(crate) fn pip_config_index(out: &str) -> Option<String> {
     out.lines().find_map(|line| {
         let (key, value) = line.split_once('=')?;
-        (key.ends_with(".index-url") || key.ends_with(".extra-index-url"))
-            .then(|| value.trim().trim_matches(['\'', '"']).split_whitespace().next().unwrap_or_default().to_owned())
-            .filter(|v| !v.is_empty())
+        if !key.ends_with(".index-url") && !key.ends_with(".extra-index-url") {
+            return None;
+        }
+        custom_index_url(value.trim().trim_matches(['\'', '"'])).map(str::to_owned)
     })
 }
 
@@ -793,10 +800,13 @@ pub(crate) fn pip_config_index(out: &str) -> Option<String> {
 pub(crate) fn uv_config_index(file_name: &str, text: &str) -> Option<String> {
     let doc: toml::Table = text.parse().ok()?;
     let uv = if file_name == "pyproject.toml" { doc.get("tool")?.get("uv")?.as_table()? } else { &doc };
-    let url = |v: &toml::Value| v.as_str().map(str::to_owned);
+    let extras = uv.get("extra-index-url").and_then(toml::Value::as_array);
+    let indexes = uv.get("index").and_then(toml::Value::as_array);
     uv.get("index-url")
-        .and_then(url)
-        .or_else(|| uv.get("extra-index-url")?.as_array()?.first().and_then(url))
-        .or_else(|| uv.get("index")?.as_array()?.first()?.get("url").and_then(url))
-        .filter(|u| !u.contains("://pypi.org/"))
+        .into_iter()
+        .chain(extras.into_iter().flatten())
+        .chain(indexes.into_iter().flatten().filter_map(|index| index.get("url")))
+        .filter_map(toml::Value::as_str)
+        .find_map(custom_index_url)
+        .map(str::to_owned)
 }

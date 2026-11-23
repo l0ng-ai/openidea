@@ -11,9 +11,7 @@ export function usePythonPackages(python: string | null) {
     error: string | null;
   } | null>(null);
   // Newer releases by package name; `null` when the check failed.
-  const [newer, setNewer] = useState<{ key: string; python: string; versions: Map<string, string> | null } | null>(
-    null,
-  );
+  const [newer, setNewer] = useState<{ key: string; versions: Map<string, string> | null } | null>(null);
   useEffect(() => {
     if (!python) return;
     let live = true;
@@ -29,9 +27,8 @@ export function usePythonPackages(python: string | null) {
         call(commands.sdkPythonPackages(python, true, request))
           .then(
             (outdated) =>
-              live &&
-              setNewer({ key, python, versions: new Map(outdated.map((p) => [p.name, p.latestVersion ?? p.version])) }),
-            () => live && setNewer({ key, python, versions: null }),
+              live && setNewer({ key, versions: new Map(outdated.map((p) => [p.name, p.latestVersion ?? p.version])) }),
+            () => live && setNewer({ key, versions: null }),
           )
           .finally(() => (check = undefined));
       })
@@ -52,7 +49,7 @@ export function usePythonPackages(python: string | null) {
     packages: same ? result.packages : null,
     error: same ? result.error : null,
     loading: !!python && result?.key !== key,
-    newer: same && newer?.python === python ? newer.versions : null,
+    newer: listed && newer?.key === key ? newer.versions : null,
     checking: listed && newer?.key !== key,
     checkFailed: listed && newer?.key === key && !newer.versions,
     reload,

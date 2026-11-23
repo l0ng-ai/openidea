@@ -3780,6 +3780,8 @@
   "Python packages": "Python packages",
   "Select an interpreter for this project to manage its packages.": "Select an interpreter for this project to manage its packages.",
   "Search installed packages or type a PyPI package name": "Search installed packages or type a PyPI package name",
+  "Loading packages": "Loading packages",
+  "Working": "Working",
   "Searching PyPI": "Searching PyPI",
   "Searching PyPI…": "Searching PyPI…",
   "Select a package to see its versions.": "Select a package to see its versions.",

@@ -5,7 +5,7 @@
 import { Channel } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useState } from "react";
 import { executeAction } from "@/platform/actions";
-import { tx } from "@/platform/i18n";
+import { useTx } from "@/platform/i18n";
 import { call, commands, isCancelled, nextRequestId, type PypiPackage, type PythonPackage } from "@/platform/ipc";
 import { dirname, useProject } from "@/platform/project";
 import { usePythonPackages } from "@/platform/pythonPackages";
@@ -59,16 +59,28 @@ function useInterpreter() {
   const container = setting.trim().startsWith("target:");
   const key = `${root}\n${setting}\n${near}`;
   const [local, setLocal] = useState<{ key: string; python: string | null } | null>(null);
-  const [snapshot, setSnapshot] = useState<{ key: string; packages: PythonPackage[] } | null>(null);
+  const [snapshot, setSnapshot] = useState<{
+    key: string;
+    packages: PythonPackage[];
+    updating: boolean;
+    error: string | null;
+  } | null>(null);
   const [tick, setTick] = useState(0);
   useEffect(() => {
     if (!root) return;
     let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     if (container) {
-      call(commands.sdkContainerPython()).then(
-        (info) => live && setSnapshot({ key, packages: info?.packages ?? [] }),
-        () => live && setSnapshot({ key, packages: [] }),
-      );
+      const load = () =>
+        call(commands.sdkContainerPython()).then(
+          (info) => {
+            if (!live) return;
+            setSnapshot({ key, packages: info?.packages ?? [], updating: !!info?.updating, error: null });
+            if (info?.updating) timer = setTimeout(load, 2000);
+          },
+          (e: unknown) => live && setSnapshot({ key, packages: [], updating: false, error: message(e) }),
+        );
+      void load();
     } else {
       call(commands.sdkPythonEffective(near)).then(
         (python) => live && setLocal({ key, python }),
@@ -77,13 +89,14 @@ function useInterpreter() {
     }
     return () => {
       live = false;
+      clearTimeout(timer);
     };
   }, [root, container, near, key, tick]);
   return {
     root,
     container,
     python: !container && local?.key === key ? local.python : null,
-    snapshot: container && snapshot?.key === key ? snapshot.packages : null,
+    snapshot: container && snapshot?.key === key ? snapshot : null,
     resolved: container ? snapshot?.key === key : local?.key === key,
     retry: () => setTick((t) => t + 1),
   };
@@ -154,6 +167,7 @@ function usePypi(name: string | null, delay: number) {
 }
 
 export function PackagesView() {
+  const tx = useTx();
   const { root, container, python, snapshot, resolved, retry } = useInterpreter();
   const local = usePythonPackages(python);
   const customIndex = useCustomIndex(python);
@@ -161,7 +175,8 @@ export function PackagesView() {
   const auto = customIndex === null;
   const [asked, setAsked] = useState<string | null>(null);
   const [detailsOf, setDetailsOf] = useState<string | null>(null);
-  const packages = container ? snapshot : local.packages;
+  const packages = container ? snapshot?.packages : local.packages;
+  const error = container ? snapshot?.error : local.error;
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
   const [job, setJob] = useState<Job | null>(null);
@@ -223,7 +238,7 @@ export function PackagesView() {
     );
   }
 
-  const loading = !resolved || local.loading;
+  const loading = !resolved || local.loading || !!snapshot?.updating;
   return (
     <SplitGroup orientation="horizontal" id="python-packages-split" storageKey="openidea.pythonPackages.split">
       <SplitPanel id="list" minSize={220} defaultSize="35%" className={styles.listPane}>
@@ -250,13 +265,15 @@ export function PackagesView() {
           {(loading || local.checking || search.loading) && (
             <Spinner
               size={14}
-              label={loading ? "Loading packages" : search.loading ? "Searching PyPI" : "Checking for newer versions"}
+              label={tx(
+                loading ? "Loading packages" : search.loading ? "Searching PyPI" : "Checking for newer versions",
+              )}
             />
           )}
         </div>
-        {local.error ? (
+        {error ? (
           <div className={styles.error} role="alert">
-            {local.error}
+            {error}
           </div>
         ) : (
           <List<Row>
@@ -268,20 +285,22 @@ export function PackagesView() {
               const r = rows[i];
               setSelected(r && r.kind !== "section" ? normalize(r.name) : null);
             }}
-            aria-label="Python packages"
+            aria-label={tx("Python packages")}
             className={styles.list}
             empty={
-              <span>
-                {loading ? (
-                  <T>Loading packages…</T>
-                ) : search.loading ? (
-                  <T>Searching PyPI…</T>
-                ) : name ? (
-                  <T>No packages match</T>
-                ) : (
-                  <T>No packages installed</T>
-                )}
-              </span>
+              !search.error && (
+                <span>
+                  {loading ? (
+                    <T>Loading packages…</T>
+                  ) : search.loading ? (
+                    <T>Searching PyPI…</T>
+                  ) : name ? (
+                    <T>No packages match</T>
+                  ) : (
+                    <T>No packages installed</T>
+                  )}
+                </span>
+              )
             }
             renderSection={(r) => (r.kind === "section" && r.id === "installed" ? <T>Installed</T> : "PyPI")}
             renderItem={(r) =>
@@ -339,7 +358,7 @@ export function PackagesView() {
             asked={wanted || fromSearch}
             onAsk={() => setDetailsOf(normalize(picked.name))}
             readOnly={container}
-            busy={!!job}
+            busy={!!job || loading}
             run={run}
           />
         ) : (
@@ -354,7 +373,7 @@ export function PackagesView() {
         )}
         {job && (
           <div className={styles.status}>
-            <Spinner size={14} label="Working" />
+            <Spinner size={14} label={tx("Working")} />
             <span>
               {job.op === "install" ? tx("Installing") : job.op === "upgrade" ? tx("Upgrading") : tx("Uninstalling")}{" "}
               {job.target}…
@@ -403,6 +422,7 @@ function Details({
   busy: boolean;
   run: (op: Op, requirement: string) => void;
 }) {
+  const tx = useTx();
   const installed = row.kind === "installed" ? row.version : null;
   const versions = info.found?.versions;
   const [choice, setChoice] = useState<string | null>(null);
