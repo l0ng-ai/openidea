@@ -36,12 +36,15 @@ describe("Scrollbar", () => {
     const thumb = track.firstElementChild as HTMLElement;
     track.setPointerCapture = () => {};
     thumb.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, clientY: 10 }));
+    expect(document.querySelector("[data-scrollbar-drag-surface]")).not.toBeNull();
     track.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientY: 46 }));
 
     // A 32px thumb travels 68px of the track for 900px of content: 36px ≈ 476px.
     expect(top).toBeCloseTo((36 / 68) * 900);
     expect(onScroll).toHaveBeenCalledTimes(1);
     expect(onScroll).toHaveBeenLastCalledWith(top);
+    track.dispatchEvent(new PointerEvent("lostpointercapture", { bubbles: true }));
+    expect(document.querySelector("[data-scrollbar-drag-surface]")).toBeNull();
   });
 
   it.each([
