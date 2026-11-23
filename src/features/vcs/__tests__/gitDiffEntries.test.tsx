@@ -83,6 +83,28 @@ describe("useGitDiffEntries", () => {
     await waitFor(() => expect(vcsDiffEntries).toHaveBeenCalledTimes(3));
   });
 
+  it("does not replace newer cached entries when an older request finishes late", async () => {
+    const data = diff();
+    const cache: DiffEntriesCache = new Map();
+    let finishOldRequest!: () => void;
+    vcsDiffEntries.mockImplementationOnce(
+      (entries) =>
+        new Promise((resolve) => {
+          finishOldRequest = () =>
+            resolve({ status: "ok", data: entries.map(() => ({ mode: "160000", gitlink: "stale" })) });
+        }),
+    );
+    const view = renderHook(() => useGitDiffEntries(data, cache));
+    act(() => useVcs.setState((s) => ({ version: s.version + 1 })));
+    await waitFor(() => expect(view.result.current.data.right).toMatchObject({ type: "text", text: "abc123" }));
+    await act(async () => finishOldRequest());
+    view.unmount();
+
+    const reopened = renderHook(() => useGitDiffEntries(data, cache));
+    expect(reopened.result.current.data.right).toMatchObject({ type: "text", text: "abc123" });
+    expect(vcsDiffEntries).toHaveBeenCalledTimes(2);
+  });
+
   it("without a cache (a diff tab), asks Git on every mount", async () => {
     const data = diff();
     for (let i = 1; i <= 2; i++) {

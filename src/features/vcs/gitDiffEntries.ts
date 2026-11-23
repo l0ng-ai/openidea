@@ -70,7 +70,7 @@ export function useGitDiffEntries(data: DiffData, cache?: DiffEntriesCache) {
     let alive = true;
     const requests = JSON.parse(query) as (DiffEntryRequest | null)[];
     void entriesFor(requests).then((entries) => {
-      if (entries) cache?.set(query, { version, entries });
+      if (entries && cache && useVcs.getState().version === version) cache.set(query, { version, entries });
       if (alive) setLoaded({ query, entries });
     });
     return () => {
