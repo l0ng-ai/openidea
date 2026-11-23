@@ -507,7 +507,13 @@ function PaneContent({ paneId, tab, tabsVisible }: { paneId: string; tab: Tab; t
         )}
         <FindBar paneId={paneId} />
         {crumbs && (
-          <PaneBreadcrumbs key={wrapper?.id} wrapper={wrapper} path={tab.input.path!} tabId={tab.id} position="top" />
+          <PaneBreadcrumbs
+            key={`top:${wrapper?.id}`}
+            wrapper={wrapper}
+            path={tab.input.path!}
+            tabId={tab.id}
+            position="top"
+          />
         )}
         {wrapper ? (
           <wrapper.component
@@ -523,7 +529,7 @@ function PaneContent({ paneId, tab, tabsVisible }: { paneId: string; tab: Tab; t
         )}
         {crumbs && (
           <PaneBreadcrumbs
-            key={wrapper?.id}
+            key={`bottom:${wrapper?.id}`}
             wrapper={wrapper}
             path={tab.input.path!}
             tabId={tab.id}

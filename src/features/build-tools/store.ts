@@ -10,6 +10,7 @@ import { tx } from "@/platform/i18n";
 import { create } from "zustand";
 import { Channel } from "@tauri-apps/api/core";
 import { executeAction } from "@/platform/actions";
+import { choosePath, choosePaths } from "@/platform/choosePath";
 import {
   call,
   commands,
@@ -427,15 +428,12 @@ export function classifyPickedPoms(root: string, picked: readonly string[]): { l
 export async function addProjects(dialogTitle?: string) {
   const root = useProject.getState().project?.root;
   if (!root || useProject.getState().project?.workspace || !isTauri()) return;
-  const { open } = await import("@/platform/dialog");
-  const picked = await open({
+  const paths = await choosePaths({
     title: dialogTitle ?? tx`Add Maven Projects`,
     directory: false,
-    multiple: true,
     defaultPath: root,
     filters: [{ name: "pom.xml", extensions: ["xml"] }],
   });
-  const paths = typeof picked === "string" ? [picked] : (picked ?? []);
   if (!paths.length) return;
   const { link, rejected } = classifyPickedPoms(root, paths);
   if (link.length) await setLinked(root, link, true);
@@ -470,14 +468,11 @@ export async function importModuleFromExistingSources() {
   } catch {
     /* Tests and hosts without the tool-window service still link the POM. */
   }
-  const { open } = await import("@/platform/dialog");
-  const picked = await open({
+  const path = await choosePath({
     title: tx`Import Module from Existing Sources`,
     directory: true,
-    multiple: false,
     defaultPath: root,
   });
-  const path = typeof picked === "string" ? picked : picked?.[0];
   if (!path) return;
   const pom = mavenPomForImport(path);
   if (!(await directoryListsPom(pom))) {
@@ -532,16 +527,13 @@ export async function linkGradleProjects() {
     !isTauri()
   )
     return;
-  const { open } = await import("@/platform/dialog");
-  const picked = await open({
+  const paths = await choosePaths({
     title: tx`Link Gradle Projects`,
     directory: false,
-    multiple: true,
     defaultPath: root,
     filters: [{ name: "Gradle build files", extensions: ["gradle", "kts"] }],
   });
-  const paths = typeof picked === "string" ? [picked] : picked;
-  if (!paths?.length || useProject.getState().project?.root !== root || gen !== generation) return;
+  if (!paths.length || useProject.getState().project?.root !== root || gen !== generation) return;
   const model = await call(commands.gradleLinkProjects(paths));
   if (useProject.getState().project?.root !== root || gen !== generation) return;
   const configs = await call(commands.runConfigs()).catch(() => useBuild.getState().configs);

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Branch, RequestId, Worktree, WorktreeCreation, WorktreeInclude } from "@/bindings";
+import { toBase64 } from "@/platform/base64";
 import { choosePath } from "@/platform/choosePath";
 import { cleanUpBranchNameOnTyping } from "@/platform/gitRefName";
 import { tx } from "@/platform/i18n";
@@ -260,7 +261,9 @@ function WorktreeForm({
       }
       if (!file.exists) {
         try {
-          await call(commands.fsCreateFileBytes(file.path, [...new TextEncoder().encode(worktreeIncludeTemplate())]));
+          await call(
+            commands.fsCreateFileBytes(file.path, toBase64(new TextEncoder().encode(worktreeIncludeTemplate()))),
+          );
         } catch (e) {
           if (!isErrorKind(e, "alreadyExists")) throw e;
         }

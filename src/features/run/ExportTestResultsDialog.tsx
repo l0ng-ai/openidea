@@ -4,8 +4,11 @@
  */
 import { useId, useState } from "react";
 import { executeAction } from "@/platform/actions";
+import { toBase64 } from "@/platform/base64";
+import { choosePath } from "@/platform/choosePath";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
+import { isRemoteWindow } from "@/platform/remote";
 import { Checkbox, Dialog, IconButton, Input, Radio, T } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { confirm } from "@/workbench/messages";
@@ -96,7 +99,7 @@ export async function writeTestReport(path: string, text: string, confirmed: boo
         return false;
       await call(commands.fsDelete(path));
     }
-    await call(commands.fsCreateFileBytes(path, Array.from(new TextEncoder().encode(text))));
+    await call(commands.fsCreateFileBytes(path, toBase64(new TextEncoder().encode(text))));
     return true;
   } catch (e) {
     notifications().notify({
@@ -158,6 +161,21 @@ export function ExportTestResultsDialog({
 
   const browse = async () => {
     try {
+      if (isRemoteWindow()) {
+        const current = isAbsolutePath(fileName.trim()) ? destinationFromPicker(fileName.trim()) : destination;
+        const initial = current.folder.trim();
+        const chosen = await choosePath({
+          directory: true,
+          title: "Choose Directory…",
+          defaultPath: !initial
+            ? cwd
+            : isAbsolutePath(initial)
+              ? initial
+              : resolveDestination({ folder: cwd, fileName: initial }, cwd),
+        });
+        if (chosen) setDestination({ folder: chosen, fileName: current.fileName });
+        return;
+      }
       const { save } = await import("@/platform/dialog");
       const chosen = await save({
         defaultPath: target || folder || cwd,

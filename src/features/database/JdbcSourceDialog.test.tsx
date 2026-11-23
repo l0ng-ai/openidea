@@ -16,6 +16,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     (...args: unknown[]) => [name, ...args];
   return {
     ...real,
+    isTauri: () => true,
     call: backend.call,
     commands: {
       ...real.commands,
