@@ -7380,6 +7380,8 @@
   "This clears the entire conversation and starts a fresh agent session with this message. Files the agent changed stay as they are.": "這會清空整個對話，並使用此訊息啟動全新的代理對話。代理已修改的檔案保持不變。",
   "Path From Source Root": "相對於源根的路徑",
   "Path From Repository Root": "相對於存放庫根的路徑",
+  "Agent Reference": "智能體引用",
+  "Copy Agent Reference": "複製智能體引用",
   "Paste preview": "貼上預覽",
   "Filter clipboard history": "篩選剪貼簿歷史",
   "Add Imports": "新增匯入",
