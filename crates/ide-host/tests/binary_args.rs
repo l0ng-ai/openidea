@@ -1,8 +1,10 @@
 //! Binary command arguments over the remote protocol: base64 strings, not arrays of numbers.
 
-use ide_core::{IpcBytes, NullSink};
+mod common;
+
+use ide_core::IpcBytes;
+use ide_host::Host;
 use ide_host::rpc::{self, Dispatcher, Invoke};
-use ide_host::{Host, HostConfig};
 use ide_jsonrpc::{Handler, Peer};
 use serde_json::{Value, json};
 use std::sync::{Arc, OnceLock};
@@ -17,17 +19,7 @@ impl Handler for Client {
 }
 
 async fn connect(base: &std::path::Path) -> Peer {
-    let host = Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |window| window,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    }));
+    let host = Arc::new(Host::new(common::host_config(base)));
     let (client_io, server_io) = tokio::io::duplex(1 << 20);
     let (sr, sw) = tokio::io::split(server_io);
     tokio::spawn(rpc::serve(host, Dispatcher::standard(), Arc::new(OnceLock::new()), sr, sw));

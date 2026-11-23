@@ -1,8 +1,9 @@
 //! Separate project windows share discovery and its backend-enforced cooldown.
 #![cfg(unix)]
 
+mod common;
+
 use ide_agent::AgentEvent;
-use ide_core::NullSink;
 use ide_host::{Host, HostConfig, ops};
 use std::sync::Arc;
 use std::time::Duration;
@@ -43,17 +44,7 @@ done
         ),
     )
     .unwrap();
-    let host = Host::new(HostConfig {
-        config_dir: config,
-        data_dir: tmp.path().join("data"),
-        local_data_dir: tmp.path().join("local"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |window| window,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    });
+    let host = Host::new(HostConfig { local_data_dir: tmp.path().join("local"), ..common::host_config(tmp.path()) });
     host.trust.decide(&root, true, false).unwrap();
     host.open_project("first", &root).unwrap();
     host.open_project("second", &root).unwrap();

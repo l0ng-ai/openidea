@@ -334,7 +334,6 @@ pub async fn pypi_package(
 mod tests {
     use super::*;
     use crate::HostConfig;
-    use std::sync::Arc;
 
     struct Source;
     impl DependencyVersionSource for Source {
@@ -355,17 +354,7 @@ mod tests {
         let text = "# 中文 😀\n[dependencies]\ntokio = { version = \"0.2\", features = [\"full\"] }\nserde = \"1.0.100\"\nlocal = { path = \"../x\", version = \"0.2\" }\n";
         let path = root.join("Cargo.toml");
         std::fs::write(&path, text).unwrap();
-        let host = Host::new(HostConfig {
-            config_dir: base.join("config"),
-            data_dir: base.join("data"),
-            local_data_dir: base.join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(|_| {})),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(HostConfig { local_data_dir: base.join("local"), ..HostConfig::for_test(&base) });
         let project = host.open_project("main", &root).unwrap();
         let info = project.documents.open(&path).unwrap();
         for package in ["tokio", "serde"] {
@@ -411,17 +400,7 @@ mod tests {
         let text = "# 中文\nopenidea-missing-xyz>=1\n-r other.txt\n";
         let path = root.join("requirements.txt");
         std::fs::write(&path, text).unwrap();
-        let host = Host::new(HostConfig {
-            config_dir: base_dir.join("config"),
-            data_dir: base_dir.join("data"),
-            local_data_dir: base_dir.join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(|_| {})),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(HostConfig { local_data_dir: base_dir.join("local"), ..HostConfig::for_test(&base_dir) });
         let project = host.open_project("main", &root).unwrap();
         let info = project.documents.open(&path).unwrap();
         // Restricted Mode never runs the interpreter.
@@ -461,17 +440,7 @@ mod tests {
         let text = "{\n  \"devDependencies\": { \"@types/node\": \"^20\" }\n}\n";
         let path = root.join("package.json");
         std::fs::write(&path, text).unwrap();
-        let host = Host::new(HostConfig {
-            config_dir: base.join("config"),
-            data_dir: base.join("data"),
-            local_data_dir: base.join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(|_| {})),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(HostConfig { local_data_dir: base.join("local"), ..HostConfig::for_test(&base) });
         let project = host.open_project("main", &root).unwrap();
         let info = project.documents.open(&path).unwrap();
         host.dependency_versions.versions(&CachedNpm, "@types/node", &CancellationToken::new()).unwrap();

@@ -1,5 +1,7 @@
-use ide_core::{ChangeSet, NullSink, RequestId, TextChange};
-use ide_host::{Host, HostConfig, ops};
+mod common;
+
+use ide_core::{ChangeSet, RequestId, TextChange};
+use ide_host::{Host, ops};
 use ide_workspace::workspace::Workspace;
 use std::{
     sync::{Arc, Mutex},
@@ -72,17 +74,7 @@ done
             .set(SettingsScope::Global, &format!("languageServers.{server}.enabled"), serde_json::json!(false))
             .unwrap();
     }
-    let host = Host::new(HostConfig {
-        config_dir,
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    });
+    let host = Host::new(common::host_config(&base));
     for root in roots {
         host.trust.decide(root, true, false).unwrap();
     }
@@ -120,17 +112,7 @@ async fn linked_projects_share_navigation_but_keep_files_repositories_and_run_di
     }
     let root = base.join("workspace");
     Workspace::save(&root, "Full stack", vec![roots[0].clone()], true).unwrap();
-    let host = Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    });
+    let host = Host::new(common::host_config(&base));
     std::fs::write(root.join("internal-needle.txt"), "needle").unwrap();
     host.trust.decide(&root, true, false).unwrap();
     for member in &roots {
@@ -224,17 +206,7 @@ async fn a_project_attached_inside_the_root_is_searched_and_indexed_once() {
     std::fs::write(root.join("main.txt"), "needle\n").unwrap();
     std::fs::write(ignored.join("feature.txt"), "needle\n").unwrap();
     std::fs::write(covered.join("lib.txt"), "needle\n").unwrap();
-    let host = Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    });
+    let host = Host::new(common::host_config(&base));
     for dir in [&root, &ignored, &covered] {
         host.trust.decide(dir, true, false).unwrap();
     }
@@ -285,17 +257,7 @@ async fn python_effective_interpreter_falls_back_to_the_primary_project() {
     std::fs::create_dir_all(member.join("src")).unwrap();
     // The primary project with an attached folder (the "attach" flow, not a container workspace).
     Workspace::attach(&primary, "Primary", vec![primary.clone(), member.clone()]).unwrap();
-    let host = Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    });
+    let host = Host::new(common::host_config(&base));
     host.trust.decide(&primary, true, false).unwrap();
     host.trust.decide(&member, true, false).unwrap();
     host.open_project("main", &primary).unwrap();
@@ -350,17 +312,7 @@ async fn php_language_level_follows_the_member_of_the_file() {
     ide_workspace::SettingsStore::load(&config_dir, Some(&legacy))
         .set(ide_workspace::SettingsScope::Project, "languages.php.languageLevel", "8.3".into())
         .unwrap();
-    let host = Host::new(HostConfig {
-        config_dir,
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    });
+    let host = Host::new(common::host_config(&base));
     host.trust.decide(&root, true, false).unwrap();
     host.open_project("main", &root).unwrap();
     let found = |version: &str, source| Some(PhpLanguageLevel { version: version.into(), source });
@@ -393,17 +345,7 @@ async fn build_tool_availability_follows_workspace_members_and_trust() {
     }
     let root = base.join("workspace");
     Workspace::save(&root, "Build tools", members.clone(), true).unwrap();
-    let host = Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    });
+    let host = Host::new(common::host_config(&base));
     for member in &members {
         host.trust.decide(member, true, false).unwrap();
     }
@@ -432,17 +374,7 @@ async fn attach_and_detach_preserve_the_primary_project_session() {
         std::fs::write(root.join("same.txt"), "needle").unwrap();
         std::fs::write(root.join("package.json"), r#"{"scripts":{"test":"echo test"}}"#).unwrap();
     }
-    let host = Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    });
+    let host = Host::new(common::host_config(&base));
     host.trust.decide(&roots[0], true, false).unwrap();
     let project = host.open_project("main", &roots[0]).unwrap();
     assert!(project.index.wait_idle(Duration::from_secs(10)));

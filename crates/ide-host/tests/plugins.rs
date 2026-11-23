@@ -5,6 +5,8 @@
 //! `misbehave`) so tests need no wasm toolchain. Rebuild them with
 //! `plugins/build.sh <dir>` after changing their source or `wit/`.
 
+mod common;
+
 use ide_core::error::ErrorKind;
 use ide_core::ipc_path::to_ipc;
 use ide_host::plugins::*;
@@ -5703,15 +5705,8 @@ async fn web_ptys_are_capped_across_windows_and_end_with_the_plugin() {
     f.install(&sample("web-pty"));
     let root = tempfile::tempdir().unwrap();
     let host = Arc::new(Host::new(HostConfig {
-        config_dir: root.path().join("config"),
-        data_dir: root.path().join("data"),
         local_data_dir: root.path().join("local"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
+        ..common::host_config(root.path())
     }));
     let spawn = |window: &str| {
         f.host.spawn_web_pty(
