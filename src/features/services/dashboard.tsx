@@ -1628,7 +1628,8 @@ export function ImageLayersView({ conn, id }: { conn: string; id: string }) {
               const bytes = unitsToBytes(layer.size);
               const pct = bytes > 0 ? (bytes / maxBytes) * 100 : 0;
               return (
-                <tr key={layer.id}>
+                // oxlint-disable-next-line react/no-array-index-key -- multiple image layers can report the same missing ID
+                <tr key={`${layer.id}:${idx}`}>
                   <td className={styles.mutedMeta}>{idx + 1}</td>
                   <td>
                     <span className={clsx(styles.statusBadge, styles.badgeMuted)}>{instruction}</span>

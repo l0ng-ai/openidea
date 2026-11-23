@@ -674,7 +674,8 @@ export function Grid(props: GridProps) {
             const s = sort?.find((k) => k.column === c.name);
             return (
               <div
-                key={c.name}
+                // oxlint-disable-next-line react/no-array-index-key -- SQL aliases can repeat; cells and selection use column positions
+                key={ci}
                 role="columnheader"
                 className={clsx(styles.headerCell, onSort && styles.sortable)}
                 title={`${c.name}: ${c.type}${onSort ? "\nClick to sort, ⇧-click to add to the sort" : ""}`}
@@ -752,7 +753,8 @@ export function Grid(props: GridProps) {
                     if (col.nullable !== false) options.push({ value: NULL_INPUT, label: "NULL" });
                     return (
                       <CellSelect
-                        key={`${v.key}:${col.name}`}
+                        // oxlint-disable-next-line react/no-array-index-key -- SQL aliases can repeat; the editor belongs to this column position
+                        key={c}
                         label={tx`Edit ${col.name}`}
                         value={cell === null ? NULL_INPUT : cell}
                         options={options}
@@ -766,7 +768,8 @@ export function Grid(props: GridProps) {
                   }
                   return (
                     <input
-                      key={`${v.key}:${col.name}`}
+                      // oxlint-disable-next-line react/no-array-index-key -- SQL aliases can repeat; the editor belongs to this column position
+                      key={c}
                       className={styles.cellEditor}
                       data-cell-editor=""
                       autoFocus
@@ -808,7 +811,8 @@ export function Grid(props: GridProps) {
                   editable && onEdit && bools[c] && state !== "deleted" ? booleanLiterals(props.driver) : null;
                 return (
                   <div
-                    key={`${v.key}:${col.name}`}
+                    // oxlint-disable-next-line react/no-array-index-key -- SQL aliases can repeat; cells and selection use column positions
+                    key={c}
                     role="gridcell"
                     aria-selected={selected(r, c)}
                     className={clsx(

@@ -343,8 +343,9 @@ function UserMessage({
         <ImageStrip images={images} />
         {files.length > 0 && (
           <div className={styles.attachments}>
-            {files.map((a) => (
-              <span key={a} className={styles.attachment}>
+            {files.map((a, i) => (
+              // oxlint-disable-next-line react/no-array-index-key -- attachments from different directories can share a basename
+              <span key={i} className={styles.attachment}>
                 <Icon name={fileIconName(a)} size={12} />
                 {a}
               </span>
