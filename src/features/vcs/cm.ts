@@ -37,6 +37,7 @@ import { defaultKeymap } from "@codemirror/commands";
 import { search, searchKeymap } from "@codemirror/search";
 import { scrollbarMarks, type ScrollbarMark } from "@/editor/api";
 import { openideaHighlightStyle } from "@/editor/core/cm/highlight";
+import { inlineBackground } from "@/editor/core/cm/inlineBg";
 import { languageDescriptionFor, loadSupport } from "@/editor/core/cm/languages";
 import { occurrenceSearch } from "@/editor/core/cm/editing";
 import { findExtension } from "@/editor/core/cm/find";
@@ -549,7 +550,7 @@ export const viewerTheme = EditorView.theme(
       color: "var(--fg-secondary)",
     },
     ".cm-panels": { backgroundColor: "var(--bg-elev)", color: "var(--fg)" },
-    ".cm-searchMatch": { backgroundColor: "color-mix(in srgb, var(--accent) 22%, transparent)" },
+    ".cm-searchMatch": inlineBackground("color-mix(in srgb, var(--accent) 22%, transparent)"),
     ...findStyles,
     ...markWidgetStyles,
   },
