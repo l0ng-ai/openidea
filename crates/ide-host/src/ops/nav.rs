@@ -1,4 +1,4 @@
-use super::doc::blocking;
+use super::blocking;
 use crate::Host;
 use crate::Project;
 use ide_command::command;

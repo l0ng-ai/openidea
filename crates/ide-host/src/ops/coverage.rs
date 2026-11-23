@@ -2,16 +2,13 @@
 use crate::Host;
 use ide_command::command;
 
-use ide_core::{IdeError, IdeResult, IpcPath};
+use super::blocking;
+use ide_core::{IdeResult, IpcPath};
 use ide_coverage::{CoveragePrepared, CoverageReportSpec, CoverageSuite};
 use ide_run::RunConfig;
 
 /// Output directories kept per kind (older runs' data is deleted).
 pub const KEEP_RUNS: usize = 10;
-
-pub async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + 'static) -> IdeResult<T> {
-    tokio::task::spawn_blocking(f).await.map_err(|e| IdeError::internal(e.to_string()))?
-}
 
 /// How to run `config` with coverage: the command to launch and where its report will be,
 /// or which tool is missing.

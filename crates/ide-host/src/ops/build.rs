@@ -3,6 +3,7 @@
 pub(super) mod workspace;
 
 use super::dependencies::{MavenCentralArtifacts, MavenCentralGroups, MavenCentralVersions};
+use super::{blocking, blocking_value};
 use crate::ops::Channel;
 use crate::{Host, Project};
 use ide_command::command;
@@ -21,10 +22,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
-
-fn join_err(e: tokio::task::JoinError) -> IdeError {
-    IdeError::internal(e.to_string())
-}
 
 /// POM gutters in several editors refresh together. A very short cache lets those
 /// requests share one reactor scan without serving a stale module list after edits settle.
@@ -200,7 +197,7 @@ pub async fn build_model(host: &Host, window: &str) -> IdeResult<BuildModel> {
     host.require_trust(window)?;
     let project = host.project(window)?;
     let config = host.config_dir.clone();
-    tokio::task::spawn_blocking(move || workspace::load_project(&project, &config)).await.map_err(join_err)?
+    blocking(move || workspace::load_project(&project, &config)).await
 }
 
 fn linked_gradle_paths(
@@ -253,7 +250,7 @@ fn linked_gradle_paths(
 async fn set_gradle_projects(host: &Host, window: &str, paths: Vec<String>, link: bool) -> IdeResult<BuildModel> {
     host.require_trust(window)?;
     let project = host.project(window)?;
-    tokio::task::spawn_blocking(move || {
+    blocking(move || {
         if ide_workspace::workspace::Workspace::load(&project.root)?.is_some() {
             return Err(IdeError::invalid("Open a workspace member as a project to link Gradle builds"));
         }
@@ -269,7 +266,6 @@ async fn set_gradle_projects(host: &Host, window: &str, paths: Vec<String>, link
         Ok::<BuildModel, IdeError>(load(&project.root, &project.build_cache_dir(), &settings))
     })
     .await
-    .map_err(join_err)?
 }
 
 #[command(trust = trusted)]
@@ -335,7 +331,7 @@ pub async fn build_sync(
     let bridge_profiles = profiles.clone();
     let p = project.clone();
     let config = host.config_dir.clone();
-    let result = tokio::task::spawn_blocking(move || {
+    let result = blocking(move || {
         let scopes = workspace::scopes(&p, &config)?;
         let selected: Vec<_> =
             scopes.iter().filter(|scope| workspace::selected(scope, &p.root, tool, build_dir.as_deref())).collect();
@@ -416,10 +412,9 @@ pub async fn build_sync(
         };
         Ok::<_, IdeError>((model, profiles_changed || offline_changed, updates, snapshots))
     })
-    .await
-    .map_err(join_err);
+    .await;
     let result = async {
-        let (mut model, reconfigure, updates, snapshots) = result??;
+        let (mut model, reconfigure, updates, snapshots) = result?;
         if completion_token.is_cancelled() {
             return Err(IdeError::cancelled());
         }
@@ -445,7 +440,7 @@ pub async fn build_sync(
             // JDT LS resolves the binary jars while importing Maven projects.
             update_java_projects(&lsp, &updates, reconfigure, Some(&completion_token)).await;
             let cancel = completion_token.clone();
-            let (updated, refreshed) = tokio::task::spawn_blocking(move || {
+            let (updated, refreshed) = blocking_value(move || {
                 let mut refreshed = Vec::new();
                 if let Some(maven) = &model.maven {
                     for batch in snapshots {
@@ -464,8 +459,7 @@ pub async fn build_sync(
                 }
                 (model, refreshed)
             })
-            .await
-            .map_err(join_err)?;
+            .await?;
             model = updated;
             tokio::spawn(async move {
                 refresh_library_archives(&lsp, &documents, &updates, refreshed).await;
@@ -584,12 +578,11 @@ pub async fn gradle_published_catalog(
     coordinates: String,
 ) -> IdeResult<Option<ide_core::IpcPath>> {
     let project = host.project(window)?;
-    tokio::task::spawn_blocking(move || {
+    blocking_value(move || {
         ide_sdk::libraries::published_version_catalog(&project.root, &project.settings.effective(), &coordinates)
             .map(Into::into)
     })
     .await
-    .map_err(join_err)
 }
 
 /// The resolved dependency tree of a Gradle project for one configuration (Dependency Analyzer).
@@ -608,7 +601,7 @@ pub async fn gradle_dependencies(
     let project = host.project(window)?;
     let config = host.config_dir.clone();
     let token = host.begin_project_request(window, request);
-    let result = tokio::task::spawn_blocking(move || {
+    let result = blocking(move || {
         let scopes = workspace::scopes(&project, &config)?;
         let scope = scopes
             .iter()
@@ -636,10 +629,9 @@ pub async fn gradle_dependencies(
         }
         Ok(report.dependencies)
     })
-    .await
-    .map_err(join_err);
+    .await;
     host.end_request(request);
-    result?
+    result
 }
 
 /// What the Dependency Analyzer has of the builds of `project` at `root` (the project, or one
@@ -686,12 +678,11 @@ pub async fn maven_dependency_declaration(
 ) -> IdeResult<Location> {
     let project = host.project(window)?;
     let config = host.config_dir.clone();
-    tokio::task::spawn_blocking(move || {
+    blocking(move || {
         let (path, _, range) = declaring_pom(&project, &config, &pom, &dependency)?;
         Ok(Location::file(path, range))
     })
     .await
-    .map_err(join_err)?
 }
 
 /// The go-to-declaration target at `pos` of a Maven POM: the definition of the
@@ -705,7 +696,7 @@ pub async fn maven_goto_declaration(host: &Host, window: &str, pom: String, pos:
     // without a managed version the target is the artifact's own POM (a project module's, or the
     // local repository's). `None` when nothing resolvable is under the caret.
     let project = host.project(window)?;
-    tokio::task::spawn_blocking(move || {
+    blocking(move || {
         let given = Path::new(&pom);
         let path = if given.is_absolute() { given.to_path_buf() } else { project.root.join(given) };
         let text = project.text_of(&path)?;
@@ -716,7 +707,6 @@ pub async fn maven_goto_declaration(host: &Host, window: &str, pom: String, pos:
         Ok(ide_build::maven::goto_declaration_with(&text, &path, pos, options, modules))
     })
     .await
-    .map_err(join_err)?
 }
 
 /// Gutter targets of the unversioned dependencies and plugins in a Maven POM:
@@ -731,7 +721,7 @@ pub async fn maven_managed_declarations(
 ) -> IdeResult<Vec<PomManagedDeclaration>> {
     let project = host.project(window)?;
     let cancel = host.begin_project_read_request(window, request);
-    let result = tokio::task::spawn_blocking(move || {
+    let result = blocking(move || {
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
         }
@@ -753,10 +743,7 @@ pub async fn maven_managed_declarations(
     })
     .await;
     host.end_request(request);
-    match result {
-        Ok(result) => result,
-        Err(error) => Err(join_err(error)),
-    }
+    result
 }
 
 /// How long completion waits for Maven Central before answering from the local repository.
@@ -855,7 +842,7 @@ pub async fn maven_exclude_dependency(
 ) -> IdeResult<Location> {
     let project = host.project(window)?;
     let config = host.config_dir.clone();
-    tokio::task::spawn_blocking(move || {
+    blocking(move || {
         let (path, text, range) = declaring_pom(&project, &config, &pom, &dependency)?;
         match ide_build::pom_edit::add_exclusion(&text, &dependency, &exclusion) {
             Some(Exclusion::Edit(edit)) => {
@@ -871,7 +858,6 @@ pub async fn maven_exclude_dependency(
         Ok(Location::file(path, range))
     })
     .await
-    .map_err(join_err)?
 }
 
 /// Build / Rebuild / Build Artifacts of a Java project without a build tool, from its
@@ -989,7 +975,7 @@ pub async fn build_run(
     let config_dir = host.config_dir.clone();
     let token = host.begin_project_request(window, request);
     let launch_project = project.clone();
-    let result = tokio::task::spawn_blocking(move || {
+    let result = blocking(move || {
         // Fast path (#2476): an unchanged single-project Maven build skips
         // Maven entirely. Previous diagnostics stay: nothing changed, so they
         // are still accurate.
@@ -1111,10 +1097,9 @@ pub async fn build_run(
         }
         Ok::<_, IdeError>(result)
     })
-    .await
-    .map_err(join_err);
+    .await;
     host.end_request(request);
-    let outcome = result??;
+    let outcome = result?;
     // Maven generated sources (protobuf, gRPC) stay invisible to jdtls until the
     // folders the build wrote are attached. An up-to-date build skips Maven and
     // still needs this: the classes can already be on disk.
@@ -1143,7 +1128,7 @@ pub async fn build_compile_file(
     let (root, cache, sink) = (project.root.clone(), project.build_cache_dir(), project.sink.clone());
     let settings = project.settings.effective();
     let token = host.begin_project_request(window, request);
-    let result = tokio::task::spawn_blocking(move || {
+    let result = blocking(move || {
         for path in clear {
             sink.emit(IdeEvent::Diagnostics {
                 path: path.into(),
@@ -1160,10 +1145,9 @@ pub async fn build_compile_file(
         }
         Ok::<_, IdeError>(result)
     })
-    .await
-    .map_err(join_err);
+    .await;
     host.end_request(request);
-    let outcome = result??;
+    let outcome = result?;
     if outcome.system == ide_build::compile::BuildSystem::Maven {
         project.lsp.sync_maven_generated_sources(&project.root).await;
     }
