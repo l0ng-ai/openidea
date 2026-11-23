@@ -43,6 +43,16 @@ import { useIconRowHeight } from "./iconAppearance";
 
 export type { TreeReorder } from "./treeReorder";
 
+/** ⌘V / Ctrl+V: whether this stroke is the host's Paste, which the search takes over. */
+const isPasteStroke = (e: { key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey: boolean }) =>
+  e.key.toLowerCase() === "v" &&
+  !e.altKey &&
+  !e.shiftKey &&
+  (isMacHost() ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey);
+
+/** Pasted text as one query line: a speed search has no caret and no newlines. */
+const queryLine = (text: string) => text.replace(/\s+/g, " ").trim();
+
 export interface TreeRowState {
   depth: number;
   expanded: boolean;
@@ -398,19 +408,23 @@ export function Tree<T>(props: TreeProps<T>) {
     pendingScrollToLead.current = null;
   }, [lead, indexOfKey, virtualizer]);
 
-  // Speed search owns Escape while active, and ⌫ with any modifier: the query is edited like a
-  // text field instead of the view's shortcuts running (⌘⌫ is Drop… in the Database view).
+  // Speed search owns Escape while active, and ⌫ / ⌘V with any modifier: the query is edited like
+  // a text field instead of the view's shortcuts running (⌘⌫ is Drop… in the Database view, ⌘V is
+  // Paste in the Project view, which would paste files under a file name that the user is typing).
   useEffect(() => {
     if (!searching) return;
     const release = acquirePopup();
     const unclaim = registerKeyClaim(
-      (e) => e.key === "Backspace" && e.target instanceof Node && !!scrollRef.current?.contains(e.target),
+      (e) =>
+        e.target instanceof Node &&
+        !!scrollRef.current?.contains(e.target) &&
+        (e.key === "Backspace" || (speedSearch && isPasteStroke(e))),
     );
     return () => {
       release();
       unclaim();
     };
-  }, [searching]);
+  }, [searching, speedSearch]);
 
   const setExpanded = (row: Row<T>, open: boolean) => {
     if (!row.expandable || row.expanded === open) return;
@@ -543,6 +557,21 @@ export function Tree<T>(props: TreeProps<T>) {
   const step = (i: number, dir: 1 | -1) => {
     for (let j = i + dir; j >= 0 && j < rows.length; j += dir) if (!rows[j]!.loading) return j;
     return i;
+  };
+
+  /** The active speed search takes pasted text: its query is edited like a text field. */
+  const onPaste = (e: React.ClipboardEvent) => {
+    if (!speedSearch || !searching) return;
+    // An inline editor (rename, new value) inside a row keeps the native paste.
+    if ((e.target as HTMLElement | null)?.closest?.("input, textarea, [contenteditable]")) return;
+    const text = queryLine(e.clipboardData?.getData("text/plain") ?? "");
+    if (!text) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const q = query + text;
+    setQuery(q);
+    const hit = findMatch(leadIndex, 1, true, q);
+    if (hit >= 0) selectIndex(hit);
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
@@ -728,6 +757,7 @@ export function Tree<T>(props: TreeProps<T>) {
         tabIndex={0}
         className={styles.tree}
         onKeyDown={onKeyDown}
+        onPaste={onPaste}
         onBlur={(e) => {
           if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
           endSearch();
