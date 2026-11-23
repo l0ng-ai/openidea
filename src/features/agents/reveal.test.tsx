@@ -69,6 +69,16 @@ describe("useRevealedText", () => {
     expect(result.current.length).toBe(102);
   });
 
+  it("starts pacing appended text when smooth reveal becomes live in a shown tab", () => {
+    const { result, rerender } = renderHook(({ text, live }) => useRevealedText(text, live), {
+      initialProps: { text: "Hi", live: false },
+    });
+    rerender({ text: "Hi there", live: true });
+    expect(result.current).toBe("Hi");
+    frame(200);
+    expect(result.current).toBe("Hi there");
+  });
+
   it("never paints part of a grapheme", () => {
     const family = "👨‍👩‍👧";
     const { result, rerender } = renderHook(({ text }) => useRevealedText(text, true), {

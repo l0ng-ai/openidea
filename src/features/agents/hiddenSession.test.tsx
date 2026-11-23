@@ -122,11 +122,14 @@ beforeEach(async () => {
 });
 afterEach(() => {
   disconnect();
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
 describe("a kept-alive session hidden behind another tab", () => {
   it("does no render work while its reply streams", async () => {
+    // Freeze the working indicator's clock while counting streamed renders.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const view = render(session(true));
     expect(await screen.findByText("Answer 29")).toBeInTheDocument();
     view.rerender(session(false));

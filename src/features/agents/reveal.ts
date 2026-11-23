@@ -67,13 +67,13 @@ export function withoutBrokenTail(text: string): string {
 export function useRevealedText(text: string, streaming: boolean): string {
   const shown = useEditorShown();
   const live = streaming && shown;
-  const [state, setState] = useState({ text, count: text.length, live });
+  const [state, setState] = useState({ text, count: text.length, shown });
   let count = state.count;
-  if (state.text !== text || state.live !== live || (!live && count !== text.length)) {
-    // Text that arrived while not live (a tab hidden meanwhile) is not a stream to pace.
+  if (state.text !== text || state.shown !== shown || (!live && count !== text.length)) {
+    // Catch up immediately when showing a hidden tab.
     count =
-      live && state.live && text.startsWith(state.text.slice(0, count)) ? Math.min(count, text.length) : text.length;
-    setState({ text, count, live });
+      live && state.shown && text.startsWith(state.text.slice(0, count)) ? Math.min(count, text.length) : text.length;
+    setState({ text, count, shown });
   }
   const behind = count < text.length;
   useEffect(() => {
