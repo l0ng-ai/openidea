@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerAction, registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
-import { menuGroupItems, provideNotificationService } from "@/workbench/contributions";
+import * as contributions from "@/workbench/contributions";
 import type { MenuItem } from "@/ui";
 import { agentReferences, copyAgentReferenceActions, registerCopyAgentReference } from "./copyReference";
 import { useAgents } from "./store";
@@ -13,15 +13,16 @@ const disposers: Array<() => void> = [];
 
 type Item = Extract<MenuItem, { kind?: "item" }>;
 const items = (ctx: { paths: string[]; dirs?: boolean[]; line?: number; endLine?: number }) =>
-  menuGroupItems("copyPath", ctx).filter(
-    (i): i is Item => i.kind !== "separator" && "run" in i && i.id === "agents.copyAgentReference",
-  );
+  contributions
+    .menuGroupItems("copyPath", ctx)
+    .filter((i): i is Item => i.kind !== "separator" && "run" in i && i.id === "agents.copyAgentReference");
 const preview = (ctx: { paths: string[]; dirs?: boolean[]; line?: number; endLine?: number }) => items(ctx)[0]?.preview;
 
 beforeEach(() => {
   vi.clearAllMocks();
   vi.stubGlobal("navigator", { clipboard: { writeText }, userAgent: navigator.userAgent });
-  provideNotificationService({ notify });
+  contributions.provideNotificationService({ notify });
+  vi.spyOn(contributions, "editorService").mockReturnValue({} as contributions.EditorService);
   useProject.setState({ project: { root: "/w/api", workspace: { projects: ["/w/api", "/w/web"] } } as never });
   useAgents.setState({ draft: { ...useAgents.getState().draft, projectRoot: "/w/api" } });
   disposers.push(
@@ -37,6 +38,7 @@ afterEach(() => {
     .reverse()
     .forEach((dispose) => dispose());
   useProject.setState({ project: null });
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -68,6 +70,16 @@ describe("Copy Path/Reference… › Agent Reference", () => {
 
   it("names another workspace project's files after that project", () => {
     expect(agentReferences([{ path: "/w/web/src/app.ts" }])).toBe("@web/src/app.ts");
+  });
+
+  it("qualifies paths from the primary project when the composer works in another workspace member", () => {
+    useAgents.setState(({ draft }) => ({ draft: { ...draft, projectRoot: "/w/web" } }));
+    expect(preview({ paths: ["/w/api/main.go", "/w/web/src/app.ts"] })).toBe("@api/main.go @src/app.ts");
+  });
+
+  it("omits virtual documents from the copy chooser", () => {
+    expect(items({ paths: ["untitled:Untitled-1"], line: 0 })).toEqual([]);
+    expect(agentReferences([{ path: "jdt://contents/java.jar/Main.class" }])).toBeNull();
   });
 
   it("points outside the projects with the path as written", () => {

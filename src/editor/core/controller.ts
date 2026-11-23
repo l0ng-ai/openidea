@@ -888,9 +888,7 @@ export class EditorController implements SlotHost {
       view.dispatch({ selection: EditorSelection.cursor(pos) });
     const hasSel = !view.state.selection.main.empty;
     const caretLine = view.state.doc.lineAt(view.state.selection.main.head).number - 1;
-    // The selection's 1-based lines, for the `@path:12-18` reference an agent reads.
-    const lines = hasSel ? selectedLines(view.state) : null;
-    const selection = lines ? { from: lines.first, to: lines.last } : undefined;
+    const { first, last } = selectedLines(view.state);
     const hoverItems: MenuItem[] = hoverActionsAt(slot.model.doc, caretLine).map(({ plugin, action }) => ({
       label: action.label,
       verbatim: true,
@@ -945,14 +943,14 @@ export class EditorController implements SlotHost {
           { kind: "action", action: "editor.copyPathReference" },
           { kind: "action", action: "editor.copyReference" },
           // A virtual document's `path` is not a file to point an agent at.
-          ...(slot.model.virtual
+          ...(slot.model.virtual || isVirtualUri(slot.model.path)
             ? []
             : ([
                 {
                   kind: "action",
                   action: "agents.copyAgentReference",
                   label: "Copy Agent Reference",
-                  arg: [{ path: slot.model.path, lines: selection }],
+                  arg: [{ path: slot.model.path, lines: { from: first, to: last } }],
                 },
               ] as MenuItem[])),
           { kind: "action", action: "code.pasteAsPlainText" },

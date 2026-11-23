@@ -6,29 +6,22 @@
 import { executeAction, type Action } from "@/platform/actions";
 import { writeClipboardText } from "@/platform/clipboard";
 import { tx } from "@/platform/i18n";
-import { useProject } from "@/platform/project";
+import { isVirtualUri } from "@/platform/virtualDocs";
 import { notifications, registerMenuGroup } from "@/workbench/contributions";
-import { mentionOf, referenceOf, type ReferenceRoots } from "./composerModel";
-import { homeProjectRoot, type ReferenceTarget } from "./store";
-
-/** The folders `@` mentions are relative to: the agent's folder and the workspace's projects. */
-function referenceRoots(): ReferenceRoots {
-  const project = useProject.getState().project;
-  const root = homeProjectRoot() ?? "";
-  return { root, projectRoot: project?.root ?? root, members: project?.workspace?.projects };
-}
+import { mentionOf, referenceOf } from "./composerModel";
+import { composerReferenceContext, type ReferenceTarget } from "./store";
 
 /** The `@` mentions of `targets`, space-separated as the composer writes them; null for none. */
 export function agentReferences(targets: readonly ReferenceTarget[]): string | null {
-  const roots = referenceRoots();
-  const mentions = targets.map(({ path, lines }) => {
-    const folder = /[\\/]$/.test(path);
-    const ref = referenceOf(roots, path);
-    // A folder keeps its trailing slash, so its reference reads as a folder.
-    if (ref) return mentionOf(folder && ref.rel !== "." ? `${ref.rel}/` : ref.rel, lines);
-    // Outside every project (Scratches): the path as written still points the agent at it.
-    return mentionOf(folder ? path : path.replace(/[\\/]+$/, ""), lines);
-  });
+  const { roots } = composerReferenceContext();
+  const mentions = targets
+    .filter(({ path }) => !isVirtualUri(path))
+    .map(({ path, lines }) => {
+      const ref = referenceOf(roots, path);
+      if (!ref) return mentionOf(path, lines);
+      const folder = /[\\/]$/.test(path);
+      return mentionOf(folder && ref.rel !== "." ? `${ref.rel}/` : ref.rel, lines);
+    });
   return mentions.length ? mentions.join(" ") : null;
 }
 
