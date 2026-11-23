@@ -81,7 +81,7 @@ You can also select an existing interpreter or environment folder. The new inter
 
 ### Packages
 
-The same page lists the installed packages of the selected interpreter. You can search them, **Install** a package by name, **Upgrade** and **Uninstall**. The IDE uses the interpreter's pip, or `uv pip` for environments without pip (uv creates them that way).
+The same page lists the installed packages of the selected interpreter. You can search them, **Install** a package by name, **Upgrade** and **Uninstall**. The IDE uses the interpreter's pip, or `uv pip` for environments without pip (uv creates them that way). The **Latest** column marks the packages that have a newer release: after the list loads, the IDE asks the same tool (`pip list --outdated`, or `uv pip list --outdated`), so the answer comes from the index that tool is configured to use (pip's configuration for pip, uv's for uv) and is the newest release that the interpreter can install. When the index cannot be reached for every package, or the check takes more than two minutes, the page says the check failed rather than show a list that may be missing upgrades.
 
 Other options on the page:
 
@@ -91,6 +91,8 @@ Other options on the page:
 ### Formatting
 
 **Reformat Code** (`⌘⌥L` / `Ctrl+Alt+L`) uses Ruff. In **Settings › Languages & Frameworks › Ruff** you can set the Ruff path, a configuration directory, the **Formatting provider** (**Automatic (language server first)** or Ruff), and **Run on save**. Without a configuration directory, Ruff reads the nearest `pyproject.toml` (`[tool.ruff]`), `ruff.toml` or `.ruff.toml`.
+
+**Rearrange Code** (Find Action, or the Code menu) orders the methods of every class in the file: `__new__`, `__init__` and `__post_init__`, other dunder methods, public methods, `_protected`, then `__private` ones, each group in its original order. The docstring and class attributes before the first method stay put; a method moves with its decorators and the comment lines directly above it, and definitions sharing a name (a property and its setter, `@overload` stubs) move together. A class is left as it is when moving could change it: other statements, standalone comments or `# region` / `# fmt: off` markers among its methods, or a decorator, default value or annotation that names another of its methods. Files with syntax errors are not rearranged.
 
 ## Run and test
 

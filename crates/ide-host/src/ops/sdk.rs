@@ -411,12 +411,14 @@ pub async fn sdk_python_packages(
     host: &Host,
     window: &str,
     python: PathBuf,
+    outdated: bool,
     request: RequestId,
 ) -> IdeResult<Vec<PythonPackage>> {
     host.require_trust_if_project(window)?;
     let cancel = host.begin_project_request(window, request);
-    let result =
-        tokio::task::spawn_blocking(move || ide_sdk::python::list_packages(&python, &cancel)).await.map_err(join_err);
+    let result = tokio::task::spawn_blocking(move || ide_sdk::python::list_packages(&python, outdated, &cancel))
+        .await
+        .map_err(join_err);
     host.end_request(request);
     result?
 }
