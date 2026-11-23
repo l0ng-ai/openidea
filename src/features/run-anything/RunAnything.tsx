@@ -195,7 +195,7 @@ function RunAnythingPopup({ root }: { root: string }) {
               }
             />
             <div className={styles.footer}>
-              <span className={styles.navigationHint}>
+              <span className={styles.navigationHint} data-keyboard-hints="">
                 <Kbd>↑</Kbd>
                 <Kbd>↓</Kbd>
                 <T>Navigate</T>

@@ -2,6 +2,7 @@
  * Shell services and built-in contributions. Call before `activateFeatures()`
  * so features can rely on the tool window and notification services.
  */
+import { installToolWindowAvailability } from "./toolwindows/availability";
 import { openPolicy } from "./projectWindow";
 import { setContext } from "@/platform/context";
 import { isRemoteWindow, useRemote } from "@/platform/remote";
@@ -69,6 +70,7 @@ export function activateWorkbench(): () => void {
     registerShellActions(),
     installToolWindowActions(),
     installToolWindowLayoutSync(),
+    installToolWindowAvailability(),
     installDistractionFree(),
     installNarrowWindow(),
     installFocusTracking(setFocusedToolWindow),

@@ -526,6 +526,10 @@
 .headerActions:has([aria-expanded="true"]) {
   opacity: 1;
 }
+/* No hover on a touch screen: the header actions stay visible. */
+:global(:root[data-touch]) .headerActions {
+  opacity: 1;
+}
 .body {
   flex: 1;
   display: flex;

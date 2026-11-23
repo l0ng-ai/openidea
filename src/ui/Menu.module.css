@@ -137,3 +137,8 @@
 :global(:root[data-menu-icons="off"]) .icon[data-menu-icon] > * {
   display: none;
 }
+
+/* No keyboard, no shortcuts to show. */
+:global(:root[data-touch]) .shortcut {
+  display: none;
+}

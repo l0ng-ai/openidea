@@ -38,6 +38,8 @@ pub enum IdeEvent {
     WindowGroupsChanged,
     /// A project was loaded or unloaded for the MCP server without a window of its own.
     McpBackgroundProjectsChanged,
+    /// A phone paired with this desktop, connected, disconnected or was removed.
+    MobileDevicesChanged,
     /// A window entered or left full screen, itself or as a member of a full-screen window group.
     WindowFullscreenChanged,
     /// This remote window's connection to its host ended on its own (network loss, the host or

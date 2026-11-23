@@ -3,6 +3,7 @@
  * status, navigation history, autosave. The React views and actions talk to
  * this singleton; other features use the EditorService and editor/api.
  */
+import { useFormFactor } from "@/platform/formFactor";
 import { writeClipboardText } from "@/platform/clipboard";
 import { pasteEditorClipboard } from "./cm/clipboard";
 import { saveOnBlur } from "./saveOnBlur";
@@ -1030,7 +1031,8 @@ export class EditorController implements SlotHost {
             },
           ] as MenuItem[])),
     ];
-    showContextMenu(e, items);
+    const phone = useFormFactor.getState().formFactor === "phone";
+    showContextMenu(e, phone ? phoneEditorMenu(slot, view, hoverItems, caretLine) : items);
   }
 
   // --- status / context ------------------------------------------------------------
@@ -2509,4 +2511,45 @@ let controller: EditorController | null = null;
 
 export function editorController(): EditorController {
   return (controller ??= new EditorController());
+}
+
+/**
+ * The editor's long-press menu on a phone: reading and finding your way (navigation, usages,
+ * documentation, context actions, running, Git), plus Cut / Paste while editing. What needs a
+ * keyboard, a mouse or a wide window (column selection, folding, splits, refactorings beyond
+ * Rename, comparing, opening elsewhere) is left to the desktop.
+ */
+function phoneEditorMenu(
+  slot: EditorSlot,
+  view: NonNullable<EditorSlot["view"]>,
+  hoverItems: MenuItem[],
+  caretLine: number,
+): MenuItem[] {
+  const hasSel = !view.state.selection.main.empty;
+  const editing = !view.state.readOnly;
+  return [
+    { kind: "action", action: "code.showIntentions", label: "Show Context Actions", icon: "bulb" },
+    { kind: "action", action: "code.quickDocumentation" },
+    ...(hoverItems.length ? ([{ kind: "separator" }, ...hoverItems] as MenuItem[]) : []),
+    { kind: "separator" },
+    { kind: "action", action: "navigate.declaration", label: "Go to Declaration or Usages" },
+    { kind: "action", action: "navigate.implementation", label: "Go to Implementation(s)" },
+    { kind: "action", action: "navigate.typeDeclaration", label: "Go to Type Declaration" },
+    { kind: "action", action: "find.usages", label: "Find Usages" },
+    { kind: "separator" },
+    ...((hasSel
+      ? [
+          ...(editing ? [{ label: "Cut", icon: "cut", run: () => (view.focus(), document.execCommand("cut")) }] : []),
+          { label: "Copy", icon: "copy", run: () => (view.focus(), document.execCommand("copy")) },
+        ]
+      : []) as MenuItem[]),
+    ...(editing ? ([{ label: "Paste", icon: "paste", run: () => void pasteEditorClipboard(view) }] as MenuItem[]) : []),
+    slot.model.virtual
+      ? { label: "Copy Reference", run: () => void writeClipboardText(slot.model.path) }
+      : { kind: "action", action: "editor.copyReference" },
+    { kind: "separator" },
+    { kind: "action", action: "refactor.rename", label: "Rename…" },
+    ...menuGroupItems("editor", { paths: [slot.model.path], text: view.state.doc.toString(), line: caretLine }),
+    ...(slot.model.virtual ? [] : ([{ kind: "separator" }, gitMenu(slot.model.path)] as MenuItem[])),
+  ];
 }

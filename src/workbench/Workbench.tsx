@@ -13,6 +13,8 @@ import { useT } from "@/platform/i18n";
 import { ProgressBar } from "@/ui";
 import projectMark from "../../src-tauri/icons/source/openidea-mark.svg";
 import { useDistractionFree } from "./distractionFree";
+import { useFormFactor } from "@/platform/formFactor";
+import { MobileShell } from "./mobile/MobileShell";
 import { EditorArea } from "./EditorArea";
 import { OverlayHost } from "./OverlayHost";
 import { subscribeTabColors, tabColorOverride, tabColorVars, tabColorsVersion } from "./tabColors";
@@ -92,6 +94,7 @@ export function Workbench() {
   const mainToolbar = useAppearanceFlag("showMainToolbar");
   const statusBar = useAppearanceFlag("showStatusBar");
   const navBarPosition = useNavigationBarPosition();
+  const phone = useFormFactor((s) => s.formFactor === "phone");
   const frame = project ? styles.framed : lightEdit || standaloneTitle ? styles.lightEditFrame : undefined;
 
   return (
@@ -100,7 +103,9 @@ export function Workbench() {
       style={project ? tabColorVars(project.name, root ? tabColorOverride(root) : null) : undefined}
     >
       <div className={styles.content} inert={openingPath !== null} aria-hidden={openingPath ? true : undefined}>
-        {project ? (
+        {project && phone ? (
+          <MobileShell />
+        ) : project ? (
           <>
             <TitleBar compact={distractionFree || !mainToolbar} />
             {!distractionFree && navBarPosition === "top" && <Breadcrumbs className={styles.navigationBar} />}

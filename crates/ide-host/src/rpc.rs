@@ -129,6 +129,23 @@ impl Dispatcher {
         self
     }
 
+    /// Also runs `then` (with the host and the call's window) after each successful call of
+    /// `name`, when it is registered.
+    pub fn after(&mut self, name: &str, then: impl Fn(&Arc<Host>, &str) + Send + Sync + 'static) -> &mut Self {
+        let Some((_, slot)) = self.handlers.get_mut(name) else { return self };
+        let (inner, then) = (slot.clone(), Arc::new(then));
+        *slot = Arc::new(move |call: Call| {
+            let (host, window) = (call.host.clone(), call.window.clone());
+            let (fut, then) = (inner(call), then.clone());
+            Box::pin(async move {
+                let value = fut.await?;
+                then(&host, &window);
+                Ok(value)
+            })
+        });
+        self
+    }
+
     pub fn commands(&self) -> Vec<&'static str> {
         let mut out: Vec<_> = self.handlers.keys().copied().collect();
         out.sort_unstable();
@@ -155,13 +172,32 @@ where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let handler = Arc::new(ServerHandler { host: host.clone(), dispatcher, peer: peer.clone() });
+    serve_scoped(host, dispatcher, peer, reader, writer, None).await;
+}
+
+/// Like [`serve`], for a client that shares `host` with others (a phone paired with the
+/// desktop): it may only name windows starting with `scope`, and on disconnect only
+/// those windows' reports are forgotten. Without a scope the client owns the host.
+pub async fn serve_scoped<R, W>(
+    host: Arc<Host>,
+    dispatcher: Dispatcher,
+    peer: Arc<OnceLock<Peer>>,
+    reader: R,
+    writer: W,
+    scope: Option<String>,
+) where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let handler = Arc::new(ServerHandler { host: host.clone(), dispatcher, peer: peer.clone(), scope: scope.clone() });
     let p = Peer::connect(reader, writer, handler);
     let _ = peer.set(p.clone());
     p.closed().await;
-    // Reports belong to the disconnected desktop, even while the host shuts down.
+    // Reports belong to the disconnected client, even while the host shuts down.
     for window in host.projects.read().keys() {
-        host.mcp_reports.forget_window(window);
+        if scope.as_deref().is_none_or(|s| window.starts_with(s)) {
+            host.mcp_reports.forget_window(window);
+        }
     }
 }
 
@@ -178,6 +214,7 @@ pub fn client_accepts(event: &IdeEvent, trusted: bool) -> bool {
     match event {
         IdeEvent::WindowGroupsChanged
         | IdeEvent::McpBackgroundProjectsChanged
+        | IdeEvent::MobileDevicesChanged
         | IdeEvent::WindowFullscreenChanged
         | IdeEvent::RemoteConnectionLost { .. }
         | IdeEvent::UpdateStatusChanged { .. }
@@ -233,6 +270,8 @@ struct ServerHandler {
     host: Arc<Host>,
     dispatcher: Dispatcher,
     peer: Arc<OnceLock<Peer>>,
+    /// The prefix of the windows this client may name (see [`serve_scoped`]).
+    scope: Option<String>,
 }
 
 pub fn server_info() -> ServerInfo {
@@ -256,6 +295,12 @@ impl Handler for ServerHandler {
             "invoke" => {
                 let call: Invoke =
                     serde_json::from_value(params).map_err(|e| (codes::INVALID_PARAMS, e.to_string()))?;
+                if self.scope.as_deref().is_some_and(|s| !call.window.starts_with(s)) {
+                    return Err(error_reply(IdeError::new(
+                        ide_core::error::ErrorKind::PermissionDenied,
+                        format!("window {} belongs to another client", call.window),
+                    )));
+                }
                 let Some((trust, handler)) = self.dispatcher.handlers.get(call.cmd.as_str()).cloned() else {
                     return Err((codes::METHOD_NOT_FOUND, format!("command {} is not available remotely", call.cmd)));
                 };
@@ -326,6 +371,7 @@ mod tests {
             IdeEvent::WindowGroupsChanged,
             IdeEvent::WindowFullscreenChanged,
             IdeEvent::McpBackgroundProjectsChanged,
+            IdeEvent::MobileDevicesChanged,
         ] {
             assert!(!client_accepts(&event, true), "{event:?}");
         }

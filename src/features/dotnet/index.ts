@@ -1,6 +1,7 @@
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { registerToolWindow, toolWindowService } from "@/workbench/contributions";
+import { projectHasFiles } from "@/workbench/toolwindows/availability";
 import { DotnetView } from "./DotnetView";
 import {
   buildDotnet,
@@ -23,6 +24,7 @@ export function activate() {
     icon: "file-csharp",
     anchor: "right",
     stripe: "onUse",
+    appliesToProject: () => projectHasFiles({ extensions: ["csproj", "fsproj", "vbproj", "sln", "slnx"] }),
     component: DotnetView,
   });
   const show = () => toolWindowService().show("dotnet", true);

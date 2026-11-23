@@ -6,6 +6,7 @@
  * PageUp/PageDown close it and act as usual); `speedSearchMode="filter"` hides
  * rows that neither match nor contain a match.
  */
+import { useFormFactor } from "@/platform/formFactor";
 import {
   useCallback,
   useEffect,
@@ -533,6 +534,7 @@ export function Tree<T>(props: TreeProps<T>) {
     return -1;
   };
 
+  const touch = useFormFactor((s) => s.touch);
   const activate = (row: Row<T>, e: KeyboardEvent | MouseEvent) => {
     if (row.loading) return;
     const activates = typeof activateExpandable === "function" ? activateExpandable(row.node) : activateExpandable;
@@ -832,6 +834,15 @@ export function Tree<T>(props: TreeProps<T>) {
                 onDoubleClick={(e) => {
                   if (!props.reorder || !reordering.suppressActivation.current) activate(row, e);
                 }}
+                // A finger opens with one tap (a folder opens or closes); the chevron toggles on its own.
+                onClick={
+                  touch
+                    ? (e) => {
+                        if ((e.target as Element).closest("[data-tree-toggle]")) return;
+                        activate(row, e);
+                      }
+                    : undefined
+                }
               >
                 <span
                   className={styles.chevron}

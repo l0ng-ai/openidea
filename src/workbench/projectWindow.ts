@@ -3,6 +3,7 @@ import { t, tx } from "@/platform/i18n";
 import { call, commands, type RemoteTarget } from "@/platform/ipc";
 import { confirmLeaveProject, useProject } from "@/platform/project";
 import { connectRemote, isRemoteWindow } from "@/platform/remote";
+import { useFormFactor } from "@/platform/formFactor";
 import { ask } from "./messages";
 import { maybeEditorService } from "./contributions";
 
@@ -23,6 +24,8 @@ export async function chooseProjectWindow(
 ): Promise<"new" | "same" | "attach" | "tab" | null> {
   const { project, lightEdit } = useProject.getState();
   if (!project && !lightEdit) return "same";
+  // A phone shows one project at a time: no other window or tab to open it in.
+  if (useFormFactor.getState().formFactor === "phone") return "same";
   // Both ways of keeping this window's project: a workspace folder, or a project tab of this window.
   const canAdd = allowAttach && !!project && !isRemoteWindow();
   const mode = openPolicy();

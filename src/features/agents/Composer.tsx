@@ -1213,7 +1213,7 @@ export function Composer(props: ComposerProps) {
               );
             }}
           />
-          <div className={styles.popupFooter} aria-hidden="true">
+          <div className={styles.popupFooter} aria-hidden="true" data-keyboard-hints="">
             <span>
               <kbd>↑</kbd>
               <kbd>↓</kbd> {tx("Navigate")}

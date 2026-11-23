@@ -14,6 +14,7 @@ import {
 } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
+import { toolWindowApplies, useToolWindowAvailability } from "./availability";
 import { call, commands } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
@@ -526,7 +527,9 @@ export function ToolWindowStripe({
   const split = inSlot(`${side}-split`);
   const lower = inSlot(lowerSlot(side));
   const moreSide = useStripes((s) => s.moreSide);
-  const moreWindows = windows.filter((w) => !onStripe.includes(w));
+  const unavailable = useToolWindowAvailability((s) => s.unavailable);
+  // Windows the project doesn't use (.NET elsewhere) aren't offered; a button the user kept stays.
+  const moreWindows = windows.filter((w) => !onStripe.includes(w) && toolWindowApplies(w, unavailable));
   const focused = useToolWindowLayout((s) => s.focused);
   const drop = useStripeDrag((s) => s.drop);
   // The separator between primary and split windows only shows while a button is dragged, as a drop target.
@@ -642,6 +645,41 @@ export function ToolWindowContentTabs({ children }: { children: ReactNode }) {
   );
 }
 
+/** A sub-page a tool window shows as a phone page: the shell's top bar leads back from it. */
+export interface ToolWindowPageNav {
+  title: ReactNode;
+  /** Under the title: the sub-page's state. */
+  detail?: ReactNode;
+  back: () => void;
+  /** Right of the title (a "⋮" menu). */
+  actions?: ReactNode;
+}
+
+/** The sub-pages tool windows show now, by tool window id (`useToolWindowPageNav`). */
+export const useToolWindowPageNavs = create<{ navs: ReadonlyMap<string, ToolWindowPageNav> }>(() => ({
+  navs: new Map(),
+}));
+
+/**
+ * Shows the content at a sub-page while `nav` is set: on a phone the shell's top bar turns into
+ * its navigation bar (back, title, actions). Elsewhere it has no effect.
+ */
+export function useToolWindowPageNav(nav: ToolWindowPageNav | null) {
+  const id = useContext(ToolWindowFrame)?.tw.id;
+  useLayoutEffect(() => {
+    if (!id) return;
+    const set = (value: ToolWindowPageNav | null) =>
+      useToolWindowPageNavs.setState((s) => {
+        const navs = new Map(s.navs);
+        if (value) navs.set(id, value);
+        else navs.delete(id);
+        return { navs };
+      });
+    set(nav);
+    return () => set(null);
+  }, [id, nav]);
+}
+
 /**
  * The Options (`⋮` Move To / Maximize / Hide) and Hide (`—`) buttons of a tool
  * window that uses `useOwnToolWindowHeader` without a full `ToolWindowHeader`.
@@ -652,7 +690,14 @@ export function ToolWindowCornerActions({ className }: { className?: string }) {
   return <ToolWindowActionsBar tw={tw} className={className} />;
 }
 
+/**
+ * The window is a whole page (the phone shell), not docked in the layout: its
+ * header leaves out Hide and the layout entries (view mode, Move to, Maximize).
+ */
+export const ToolWindowAsPage = createContext(false);
+
 function ToolWindowActionsBar({ tw, className }: { tw: ToolWindowContribution; className?: string }) {
+  const asPage = useContext(ToolWindowAsPage);
   const maximized = useToolWindowLayout((s) => s.maximized === tw.anchor);
   const viewMode = useToolWindowLayout((s) => viewModeOf(tw.id, s.viewModes));
   const [moreOpen, setMoreOpen] = useState(false);
@@ -661,8 +706,7 @@ function ToolWindowActionsBar({ tw, className }: { tw: ToolWindowContribution; c
 
   const useHeaderMenu = typeof tw.headerMenu === "function" ? tw.headerMenu : staticHeaderMenu(tw.headerMenu);
   const own = useHeaderMenu(tw.id);
-  const more: MenuItem[] = [
-    ...own,
+  const layout: MenuItem[] = [
     ...(own.length ? [{ kind: "separator" } as MenuItem] : []),
     viewModeMenu(tw.id, viewMode),
     moveToMenu(tw),
@@ -674,6 +718,7 @@ function ToolWindowActionsBar({ tw, className }: { tw: ToolWindowContribution; c
     { kind: "separator" },
     { label: "Hide", icon: "hide", shortcut: shortcutLabel("toolwindow.hideActive"), run: () => hideToolWindow(tw.id) },
   ];
+  const more = asPage ? own : [...own, ...layout];
 
   return (
     <>
@@ -683,24 +728,28 @@ function ToolWindowActionsBar({ tw, className }: { tw: ToolWindowContribution; c
             <Actions id={tw.id} />
           </div>
         )}
-        <IconButton
-          ref={moreRef}
-          icon="more"
-          title="Options"
-          size="small"
-          iconSize={16}
-          aria-haspopup="menu"
-          aria-expanded={moreOpen}
-          onClick={() => setMoreOpen((v) => !v)}
-        />
-        <IconButton
-          icon="minus"
-          title="Hide"
-          shortcut={shortcutLabel("toolwindow.hideActive")}
-          size="small"
-          iconSize={16}
-          onClick={() => hideToolWindow(tw.id)}
-        />
+        {more.length > 0 && (
+          <IconButton
+            ref={moreRef}
+            icon="more"
+            title="Options"
+            size="small"
+            iconSize={16}
+            aria-haspopup="menu"
+            aria-expanded={moreOpen}
+            onClick={() => setMoreOpen((v) => !v)}
+          />
+        )}
+        {!asPage && (
+          <IconButton
+            icon="minus"
+            title="Hide"
+            shortcut={shortcutLabel("toolwindow.hideActive")}
+            size="small"
+            iconSize={16}
+            onClick={() => hideToolWindow(tw.id)}
+          />
+        )}
       </div>
       <Menu
         open={moreOpen}
@@ -791,7 +840,8 @@ function HeaderRow({
 /** How long an activated tool window waits for lazily loaded content to focus. */
 const LATE_FOCUS_MS = 5000;
 
-function ToolWindowView({ tw, hidden }: { tw: ToolWindowContribution; hidden: boolean }) {
+/** One tool window: header and content. The phone shell shows it as a page. */
+export function ToolWindowView({ tw, hidden }: { tw: ToolWindowContribution; hidden: boolean }) {
   const ref = useRef<HTMLElement>(null);
   const focusRequest = useToolWindowLayout((s) => s.focusRequest);
   const [ownHeader, setOwnHeader] = useState(false);

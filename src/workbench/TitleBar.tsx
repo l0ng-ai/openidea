@@ -43,7 +43,7 @@ export function orderTitleItems(items: Iterable<TitleItemContribution>) {
   };
 }
 
-function TitleItem({ item }: { item: TitleItemContribution }) {
+export function TitleItem({ item }: { item: TitleItemContribution }) {
   const C = item.component;
   return (
     <div className={styles.item} data-title-item={item.id}>
@@ -54,7 +54,7 @@ function TitleItem({ item }: { item: TitleItemContribution }) {
   );
 }
 
-function ProjectButton() {
+export function ProjectButton() {
   const name = useProject((s) => s.project?.displayName || s.project?.name);
   const root = useProject((s) => s.project?.root);
   const [open, setOpen] = useState(false);
@@ -103,7 +103,7 @@ function ProjectButton() {
 const VCS_FALLBACK_ACTIONS = ["vcs.createRepository", "vcs.clone", "vcs.localHistory", "vcs.showLog"];
 
 /** "Version Control ▾" shown while no VCS widget is contributed (project without a repository). */
-function VcsFallback() {
+export function VcsFallback() {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLButtonElement>(null);
   const actions = useActions((s) => s.actions);

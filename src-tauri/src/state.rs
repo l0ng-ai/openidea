@@ -23,6 +23,8 @@ pub struct AppState {
     pub askpass: Option<ide_ssh::askpass::AskpassServer>,
     /// Remote development connections, by window label.
     pub remote_dev: crate::remote_dev::Connections,
+    /// Phones paired with this desktop, and their connections.
+    pub mobile: Arc<crate::mobile::Mobile>,
     /// Broadcasts to every window.
     pub sink: SharedSink,
 }
@@ -91,6 +93,8 @@ impl AppState {
         let languages = Arc::new(LanguageRegistry::load(Some(&config_dir.join("languages")))?);
         let sink_app = app.clone();
         let sink_runtime = runtime.clone();
+        let mobile = Arc::new(crate::mobile::Mobile::new(&config_dir, &data_dir));
+        let sink_mobile = mobile.clone();
         let host = Arc::new(Host::new(ide_host::HostConfig {
             config_dir: config_dir.clone(),
             data_dir: data_dir.clone(),
@@ -98,6 +102,10 @@ impl AppState {
             languages: languages.clone(),
             syntax,
             sink_for: Box::new(move |window| {
+                // A paired phone's window: its events go to the phone.
+                if let Some(sink) = sink_mobile.sink(window) {
+                    return sink;
+                }
                 coalescing_sink(
                     Arc::new(TauriSink { app: sink_app.clone(), window: Some(window.to_owned()) }),
                     sink_runtime.clone(),
@@ -117,6 +125,7 @@ impl AppState {
             sink: global_sink,
             plugins: crate::commands::plugin::create_host(&app, &data_dir, &host)?,
             remote_dev: crate::remote_dev::Connections::default(),
+            mobile,
             host,
             startup: Startup {
                 process_to_main,

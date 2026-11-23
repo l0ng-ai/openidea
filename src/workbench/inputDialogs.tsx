@@ -7,6 +7,7 @@
  *
  * Rendered by `InputDialogsHost` (in `OverlayHost`).
  */
+import { useFormFactor } from "@/platform/formFactor";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { create } from "zustand";
 import { registerHostPathChooser, type ChoosePathOptions } from "@/platform/choosePath";
@@ -423,6 +424,7 @@ function PathDialog({ options, done }: { options: ChoosePathOptions; done: (v: s
     done(path);
   };
   const up = dir === null ? null : parentPath(dir);
+  const touch = useFormFactor((s) => s.touch);
 
   return (
     <Dialog
@@ -471,8 +473,9 @@ function PathDialog({ options, done }: { options: ChoosePathOptions; done: (v: s
             const entry = entries[i];
             if (entry) setValue(entry.path);
           }}
-          // A click selects; a double click or Enter opens the folder or chooses the file.
-          onActivate={(entry, _i, e) => (e.type !== "click" || e.detail > 1) && choose(entry)}
+          // A click selects; a double click or Enter opens the folder or chooses the file. A tap
+          // opens it: there is no double click to a finger (✓ chooses the folder shown).
+          onActivate={(entry, _i, e) => (e.type !== "click" || e.detail > 1 || touch) && choose(entry)}
           className={styles.pathList}
           aria-label={dir ?? options.title}
           empty={

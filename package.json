@@ -7,7 +7,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:phone": "VITE_OPENIDEA_PHONE=1 vite --config vite.phone.config.ts --port 1430 --strictPort",
     "build": "node --max-old-space-size=4096 node_modules/typescript/bin/tsc --noEmit && vite build && node scripts/check-webkit.ts",
+    "build:phone": "VITE_OPENIDEA_PHONE=1 vite build --config vite.phone.config.ts --outDir dist-phone",
     "preview": "vite preview",
     "tauri": "node scripts/tauri.ts",
     "test": "vitest run",

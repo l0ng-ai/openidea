@@ -280,3 +280,8 @@ a:hover {
 :root[data-aa-editor="none"] .cm-editor {
   -webkit-font-smoothing: none;
 }
+
+/* Hints for keys (↑ ↓ Navigate, ↵ Insert, Esc Close) mean nothing without a keyboard. */
+:root[data-touch] [data-keyboard-hints] {
+  display: none;
+}

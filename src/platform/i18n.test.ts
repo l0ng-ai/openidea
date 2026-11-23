@@ -278,6 +278,7 @@ describe("catalogs", () => {
   /** Product names intentionally kept as written in every locale. */
   const SAME_AS_ENGLISH = new Set([
     "Flutter DevTools",
+    "openidea-pair:…",
     "4096 MB",
     "6144 MB",
     "8192 MB",

@@ -37,6 +37,7 @@ pub mod window_group;
 pub mod workspace;
 pub mod wsl;
 
+use crate::mobile;
 use crate::remote_dev;
 use ide_host::catalogue::{Command, Placement, TrustClass};
 use std::sync::LazyLock;
@@ -206,6 +207,7 @@ fn catalogue() -> (tauri_specta::Commands<tauri::Wry>, Vec<Command>) {
         desktop hotkeys;
         desktop http;
         desktop lsp;
+        desktop mobile;
         desktop nav;
         desktop notification;
         desktop perf;

@@ -44,6 +44,7 @@ import {
   releaseClosedTaskCache,
   trackPromptHistory,
   useAgents,
+  sessionLocation,
 } from "./store";
 import { TaskStatusMark } from "./TaskStatusMark";
 import { taskActions, useAgentsHeaderMenu } from "./taskActions";
@@ -276,8 +277,12 @@ export function activate(): () => void {
         run: ({ arg }) => {
           if (typeof arg === "string") return refreshTaskModels(arg);
           if (arg === null) return refreshModels(); // Explicitly invoked by the New Task picker.
-          const { sessionLocation, docked, homeOpen } = useAgents.getState();
-          if (sessionLocation === "toolWindow" && (homeOpen || docked) && toolWindowService().isVisible(TOOL_WINDOW)) {
+          const { docked, homeOpen } = useAgents.getState();
+          if (
+            sessionLocation() === "toolWindow" &&
+            (homeOpen || docked) &&
+            toolWindowService().isVisible(TOOL_WINDOW)
+          ) {
             return !homeOpen && docked ? refreshTaskModels(docked) : refreshModels();
           }
           const active = maybeEditorService()?.activeInput?.();

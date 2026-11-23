@@ -1,0 +1,482 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		2744EE2804F53E6D881BBF63 /* main.mm in Sources */ = {isa = PBXBuildFile; fileRef = CB2F9850B5B2E58F8850F60C /* main.mm */; };
+		439CE87E75F5AD3D7C2BB846 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7C4C118DEB9045B80D2E2F33 /* Metal.framework */; };
+		50A2CEA4BFAE82C5417AF211 /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F0335D6DAA4A236FA00ABDDE /* UIKit.framework */; };
+		558FF4DEC743B4C4A4E1394A /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = F6A2CA6A9929991FAE262E92 /* MetalKit.framework */; };
+		67FF332B4F390BA7238EC4AD /* libapp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 51CF154506119E3532192BDB /* libapp.a */; };
+		7427A0592E7B97C8138D6D77 /* SystemConfiguration.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B0916BE90883D96E76F981E4 /* SystemConfiguration.framework */; };
+		761D09B9E2A025076C7B5BB7 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 61DCE72B6C0408FC68D678A9 /* Assets.xcassets */; };
+		8A3D17B05D91E14C58E16E7C /* libresolv.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = EBA16B20F8C1BD770CE41317 /* libresolv.tbd */; };
+		9B750D464D1F6CC949D0A296 /* assets in Resources */ = {isa = PBXBuildFile; fileRef = 757B8928C4FFC96B8E547556 /* assets */; };
+		A0D84801569B5C8D81344B35 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A9C4E9850A60BC849577163F /* CoreGraphics.framework */; };
+		A64C2C85D1B23CCAD0ECEF4A /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2E4ABD78F29F9B6F20AD5F99 /* Security.framework */; };
+		B3A80B9591727EFEA3A4FF5A /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 023842344E3E19138412F2BB /* WebKit.framework */; };
+		EB560C0C028CA3980BAAAB14 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = FEBCCAD47D16E3FE348AA8D9 /* LaunchScreen.storyboard */; };
+		F10CE1D0D0B023C65E70039C /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BB417B443C7D99CBCA63EC83 /* QuartzCore.framework */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		023842344E3E19138412F2BB /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
+		031ADDAE46B9939F945B3608 /* main.rs */ = {isa = PBXFileReference; path = main.rs; sourceTree = "<group>"; };
+		17D55C8B634D7F3CA145C29D /* openidea-mobile_iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "openidea-mobile_iOS.entitlements"; sourceTree = "<group>"; };
+		2E4ABD78F29F9B6F20AD5F99 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		51CF154506119E3532192BDB /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
+		61DCE72B6C0408FC68D678A9 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		70A325B1D770533BD52889F7 /* lib.rs */ = {isa = PBXFileReference; path = lib.rs; sourceTree = "<group>"; };
+		735E9C39344322F0BAB0586A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		757B8928C4FFC96B8E547556 /* assets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = assets; sourceTree = SOURCE_ROOT; };
+		7C4C118DEB9045B80D2E2F33 /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
+		847192858CD7077DE5B78EAC /* openidea-mobile_iOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = "openidea-mobile_iOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		896863188D37FC615176FB77 /* bindings.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bindings.h; sourceTree = "<group>"; };
+		A9C4E9850A60BC849577163F /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
+		B0916BE90883D96E76F981E4 /* SystemConfiguration.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SystemConfiguration.framework; path = System/Library/Frameworks/SystemConfiguration.framework; sourceTree = SDKROOT; };
+		BB417B443C7D99CBCA63EC83 /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
+		CB2F9850B5B2E58F8850F60C /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
+		EBA16B20F8C1BD770CE41317 /* libresolv.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libresolv.tbd; path = usr/lib/libresolv.tbd; sourceTree = SDKROOT; };
+		F0335D6DAA4A236FA00ABDDE /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
+		F6A2CA6A9929991FAE262E92 /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
+		FEBCCAD47D16E3FE348AA8D9 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		4C0BD3FEE4255BFF3BA6569E /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				67FF332B4F390BA7238EC4AD /* libapp.a in Frameworks */,
+				A0D84801569B5C8D81344B35 /* CoreGraphics.framework in Frameworks */,
+				439CE87E75F5AD3D7C2BB846 /* Metal.framework in Frameworks */,
+				558FF4DEC743B4C4A4E1394A /* MetalKit.framework in Frameworks */,
+				F10CE1D0D0B023C65E70039C /* QuartzCore.framework in Frameworks */,
+				A64C2C85D1B23CCAD0ECEF4A /* Security.framework in Frameworks */,
+				7427A0592E7B97C8138D6D77 /* SystemConfiguration.framework in Frameworks */,
+				8A3D17B05D91E14C58E16E7C /* libresolv.tbd in Frameworks */,
+				50A2CEA4BFAE82C5417AF211 /* UIKit.framework in Frameworks */,
+				B3A80B9591727EFEA3A4FF5A /* WebKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		172B4D6F3AD687EF6BC4AC13 = {
+			isa = PBXGroup;
+			children = (
+				757B8928C4FFC96B8E547556 /* assets */,
+				61DCE72B6C0408FC68D678A9 /* Assets.xcassets */,
+				FEBCCAD47D16E3FE348AA8D9 /* LaunchScreen.storyboard */,
+				B26E6A55FCF5686AD3906FFF /* Externals */,
+				F551C95FA1868AE5DA51D100 /* openidea-mobile_iOS */,
+				55CB6D093DCFABB98F780B17 /* Sources */,
+				CA107C281B8B1F5BB49E41D7 /* src */,
+				638EE276B309A4ED7C13784B /* Frameworks */,
+				D8049152DD2DE1ECECBD14CF /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		55CB6D093DCFABB98F780B17 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				DCC0C46EC2E539EF574DFA67 /* openidea-mobile */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		638EE276B309A4ED7C13784B /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				A9C4E9850A60BC849577163F /* CoreGraphics.framework */,
+				51CF154506119E3532192BDB /* libapp.a */,
+				EBA16B20F8C1BD770CE41317 /* libresolv.tbd */,
+				7C4C118DEB9045B80D2E2F33 /* Metal.framework */,
+				F6A2CA6A9929991FAE262E92 /* MetalKit.framework */,
+				BB417B443C7D99CBCA63EC83 /* QuartzCore.framework */,
+				2E4ABD78F29F9B6F20AD5F99 /* Security.framework */,
+				B0916BE90883D96E76F981E4 /* SystemConfiguration.framework */,
+				F0335D6DAA4A236FA00ABDDE /* UIKit.framework */,
+				023842344E3E19138412F2BB /* WebKit.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		B26E6A55FCF5686AD3906FFF /* Externals */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = Externals;
+			sourceTree = "<group>";
+		};
+		C621872E9E0D2C765CE79B42 /* bindings */ = {
+			isa = PBXGroup;
+			children = (
+				896863188D37FC615176FB77 /* bindings.h */,
+			);
+			path = bindings;
+			sourceTree = "<group>";
+		};
+		CA107C281B8B1F5BB49E41D7 /* src */ = {
+			isa = PBXGroup;
+			children = (
+				70A325B1D770533BD52889F7 /* lib.rs */,
+				031ADDAE46B9939F945B3608 /* main.rs */,
+			);
+			name = src;
+			path = ../../src;
+			sourceTree = "<group>";
+		};
+		D8049152DD2DE1ECECBD14CF /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				847192858CD7077DE5B78EAC /* openidea-mobile_iOS.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		DCC0C46EC2E539EF574DFA67 /* openidea-mobile */ = {
+			isa = PBXGroup;
+			children = (
+				CB2F9850B5B2E58F8850F60C /* main.mm */,
+				C621872E9E0D2C765CE79B42 /* bindings */,
+			);
+			path = "openidea-mobile";
+			sourceTree = "<group>";
+		};
+		F551C95FA1868AE5DA51D100 /* openidea-mobile_iOS */ = {
+			isa = PBXGroup;
+			children = (
+				735E9C39344322F0BAB0586A /* Info.plist */,
+				17D55C8B634D7F3CA145C29D /* openidea-mobile_iOS.entitlements */,
+			);
+			path = "openidea-mobile_iOS";
+			sourceTree = "<group>";
+		};
+		"TEMP_6FE66B9E-FD05-477E-9B43-E0D023270A34" /* arm64 */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = arm64;
+			sourceTree = "<group>";
+		};
+		"TEMP_D69FF00B-4A56-4E76-B751-168968D4AF6A" /* x86_64 */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = x86_64;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		8CFF48BAA56B4120D8BA712B /* openidea-mobile_iOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1F9E7E2EDE92674BB8D0C67A /* Build configuration list for PBXNativeTarget "openidea-mobile_iOS" */;
+			buildPhases = (
+				3DEE39C0B2E9A26D8DFE0116 /* Build Rust Code */,
+				BA18F72BCCD0E4F1DF3F6687 /* Sources */,
+				4B64842C21CCD4FD9313BC6B /* Resources */,
+				4C0BD3FEE4255BFF3BA6569E /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "openidea-mobile_iOS";
+			packageProductDependencies = (
+			);
+			productName = "openidea-mobile_iOS";
+			productReference = 847192858CD7077DE5B78EAC /* openidea-mobile_iOS.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		E186C563A0B9A8C675E62D27 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+				};
+			};
+			buildConfigurationList = 3A54F638E765215F8035A58F /* Build configuration list for PBXProject "openidea-mobile" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 172B4D6F3AD687EF6BC4AC13;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = D8049152DD2DE1ECECBD14CF /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				8CFF48BAA56B4120D8BA712B /* openidea-mobile_iOS */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		4B64842C21CCD4FD9313BC6B /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				761D09B9E2A025076C7B5BB7 /* Assets.xcassets in Resources */,
+				EB560C0C028CA3980BAAAB14 /* LaunchScreen.storyboard in Resources */,
+				9B750D464D1F6CC949D0A296 /* assets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		3DEE39C0B2E9A26D8DFE0116 /* Build Rust Code */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build Rust Code";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/Externals/x86_64/${CONFIGURATION}/libapp.a",
+				"$(SRCROOT)/Externals/arm64/${CONFIGURATION}/libapp.a",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "pnpm tauri ios xcode-script -v --platform \"${PLATFORM_DISPLAY_NAME:?}\" --sdk-root \"${SDKROOT:?}\" --framework-search-paths \"${FRAMEWORK_SEARCH_PATHS:?}\" --header-search-paths \"${HEADER_SEARCH_PATHS:?}\" --gcc-preprocessor-definitions \"${GCC_PREPROCESSOR_DEFINITIONS:-}\" --configuration \"${CONFIGURATION:?}\" ${FORCE_COLOR} ${ARCHS:?}\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		BA18F72BCCD0E4F1DF3F6687 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2744EE2804F53E6D881BBF63 /* main.mm in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		38DDA77512FF41759C083562 /* debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				ARCHS = (
+					arm64,
+				);
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "openidea-mobile_iOS/openidea-mobile_iOS.entitlements";
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_BITCODE = NO;
+				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\".\"",
+				);
+				INFOPLIST_FILE = "openidea-mobile_iOS/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = ai.l0ng.openidea.mobile;
+				PRODUCT_NAME = "OpenIDEA Mobile";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALID_ARCHS = arm64;
+			};
+			name = debug;
+		};
+		900382D9B8AEDB1E9722F8D6 /* release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = release;
+		};
+		E2545040F8CCC1D43776F5BA /* release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				ARCHS = (
+					arm64,
+				);
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "openidea-mobile_iOS/openidea-mobile_iOS.entitlements";
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_BITCODE = NO;
+				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\".\"",
+				);
+				INFOPLIST_FILE = "openidea-mobile_iOS/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = ai.l0ng.openidea.mobile;
+				PRODUCT_NAME = "OpenIDEA Mobile";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALID_ARCHS = arm64;
+			};
+			name = release;
+		};
+		ED212AB5CA50F2EC04BBD81B /* debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1F9E7E2EDE92674BB8D0C67A /* Build configuration list for PBXNativeTarget "openidea-mobile_iOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				38DDA77512FF41759C083562 /* debug */,
+				E2545040F8CCC1D43776F5BA /* release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = debug;
+		};
+		3A54F638E765215F8035A58F /* Build configuration list for PBXProject "openidea-mobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				ED212AB5CA50F2EC04BBD81B /* debug */,
+				900382D9B8AEDB1E9722F8D6 /* release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = E186C563A0B9A8C675E62D27 /* Project object */;
+}

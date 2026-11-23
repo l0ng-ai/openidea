@@ -9,6 +9,7 @@
 import { useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { useProject } from "@/platform/project";
+import { useFormFactor } from "@/platform/formFactor";
 import {
   SettingsFormContext,
   SettingsPageFocusContext,
@@ -21,6 +22,7 @@ import {
   DialogButtons,
   EmptyState,
   Icon,
+  useSheetNav,
   IconButton,
   SearchField,
   Spinner,
@@ -266,6 +268,8 @@ export function SettingsLayout() {
   const pages = useSettingsPages((s) => s.pages);
   const { pageId, query, staged, stagedSecrets, stagedExternal, saving, pagesLoading } = useSettingsDialog();
   const treeRef = useRef<TreeHandle>(null);
+  const phone = useFormFactor((s) => s.formFactor === "phone");
+  const [showPage, setShowPage] = useState(false);
 
   const tree = useMemo(() => buildPageTree(pages.values()), [pages]);
   const filtered = useMemo(() => filterPageTree(tree, query, pageLabels), [tree, query]);
@@ -276,6 +280,15 @@ export function SettingsLayout() {
 
   const current = all.find((n) => n.key === pageId) ?? all.find((n) => n.page);
   const crumbs = current ? breadcrumb(tree, current.key) : [];
+  const pageTitle = current?.page ? current.title : undefined;
+  const sheetNav = useMemo(
+    () =>
+      phone && showPage && pageTitle
+        ? { back: () => setShowPage(false), backLabel: "Settings", title: tx(pageTitle) }
+        : null,
+    [phone, showPage, pageTitle],
+  );
+  useSheetNav(sheetNav);
   const dirtyPages = useMemo(() => {
     const pages = new Set(Object.values(staged).map((c) => c.page));
     if (Object.keys(stagedSecrets).length) pages.add(SSH_SETTINGS_PAGE);
@@ -327,74 +340,96 @@ export function SettingsLayout() {
     );
   }
 
+  const navigation = (
+    <>
+      <SearchField
+        data-autofocus
+        className={styles.search}
+        value={query}
+        onChange={onQuery}
+        placeholder=""
+        aria-label="Search settings"
+        onKeyDown={(e) => {
+          // IDEA: Esc clears the filter before it closes the dialog; ↑/↓ move through the pages, focus stays here.
+          if (e.key === "Escape" && query) {
+            e.preventDefault();
+            e.stopPropagation();
+            onQuery("");
+          } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && !e.altKey && !e.metaKey && !e.ctrlKey) {
+            e.preventDefault();
+            treeRef.current?.moveSelection(e.key === "ArrowDown" ? 1 : -1);
+          }
+        }}
+      />
+      <div className={styles.tree}>
+        <Tree<PageNode>
+          handleRef={treeRef}
+          aria-label="Settings pages"
+          roots={filtered}
+          getKey={(n) => n.key}
+          getLabel={(n) => tx(n.title)}
+          getChildren={(n) => (n.children.length ? n.children : undefined)}
+          isExpandable={(n) => n.children.length > 0}
+          defaultExpanded={current ? ancestorKeys(tree, current.key) : []}
+          expanded={query ? expanded : undefined}
+          indent={16}
+          selected={current ? new Set([current.key]) : new Set()}
+          onSelectionChange={(_sel, node) => {
+            if (!node) return;
+            selectPage(node.key);
+            if (phone && node.page) setShowPage(true);
+          }}
+          multiSelect={false}
+          speedSearch={false}
+          empty={
+            <div className={styles.noMatch}>
+              <T>No matches</T>
+            </div>
+          }
+          renderNode={(n) => (
+            <span
+              className={clsx(
+                styles.node,
+                rootKeys.has(n.key) && styles.topLevel,
+                dirtyPages.has(n.key) && styles.dirty,
+              )}
+            >
+              <SearchLabel text={n.title} />
+            </span>
+          )}
+        />
+      </div>
+    </>
+  );
+  const page = (
+    <PageHost
+      node={current}
+      page={current?.page}
+      crumbs={crumbs}
+      dirty={pageDirty && !saving}
+      onReset={() => current && resetPage(current.key)}
+      history={history}
+      key={current?.key ?? groupKey("")}
+    />
+  );
+
+  // A phone shows the page list, then one page; the dialog's header leads back to the list.
+  if (phone) {
+    return showPage && current?.page ? (
+      <div className={styles.phonePage}>{page}</div>
+    ) : (
+      <div className={styles.phoneList}>{navigation}</div>
+    );
+  }
+
   return (
     <SplitGroup id="settings" orientation="horizontal" storageKey="openidea.settings.layout" className={styles.layout}>
       <SplitPanel id="navigation" defaultSize="22.5%" minSize="160px" maxSize="40%" className={styles.sidebar}>
-        <SearchField
-          data-autofocus
-          className={styles.search}
-          value={query}
-          onChange={onQuery}
-          placeholder=""
-          aria-label="Search settings"
-          onKeyDown={(e) => {
-            // IDEA: Esc clears the filter before it closes the dialog; ↑/↓ move through the pages, focus stays here.
-            if (e.key === "Escape" && query) {
-              e.preventDefault();
-              e.stopPropagation();
-              onQuery("");
-            } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && !e.altKey && !e.metaKey && !e.ctrlKey) {
-              e.preventDefault();
-              treeRef.current?.moveSelection(e.key === "ArrowDown" ? 1 : -1);
-            }
-          }}
-        />
-        <div className={styles.tree}>
-          <Tree<PageNode>
-            handleRef={treeRef}
-            aria-label="Settings pages"
-            roots={filtered}
-            getKey={(n) => n.key}
-            getLabel={(n) => tx(n.title)}
-            getChildren={(n) => (n.children.length ? n.children : undefined)}
-            isExpandable={(n) => n.children.length > 0}
-            defaultExpanded={current ? ancestorKeys(tree, current.key) : []}
-            expanded={query ? expanded : undefined}
-            indent={16}
-            selected={current ? new Set([current.key]) : new Set()}
-            onSelectionChange={(_sel, node) => node && selectPage(node.key)}
-            multiSelect={false}
-            speedSearch={false}
-            empty={
-              <div className={styles.noMatch}>
-                <T>No matches</T>
-              </div>
-            }
-            renderNode={(n) => (
-              <span
-                className={clsx(
-                  styles.node,
-                  rootKeys.has(n.key) && styles.topLevel,
-                  dirtyPages.has(n.key) && styles.dirty,
-                )}
-              >
-                <SearchLabel text={n.title} />
-              </span>
-            )}
-          />
-        </div>
+        {navigation}
       </SplitPanel>
       <SplitHandle aria-label={tx("Settings pages")} />
       <SplitPanel id="content" minSize="60%" className={styles.main}>
-        <PageHost
-          node={current}
-          page={current?.page}
-          crumbs={crumbs}
-          dirty={pageDirty && !saving}
-          onReset={() => current && resetPage(current.key)}
-          history={history}
-          key={current?.key ?? groupKey("")}
-        />
+        {page}
       </SplitPanel>
     </SplitGroup>
   );
@@ -407,14 +442,20 @@ function useSettingsButtons(): DialogButton[] {
   const ok = async () => {
     if (await applySettings()) closeSettings();
   };
+  // On a phone ✓ applies and closes: no separate Apply.
+  const phone = useFormFactor((s) => s.formFactor === "phone");
   return [
     { label: "OK", role: "default", disabled: saving, onClick: () => void ok() },
     { label: "Cancel", role: "cancel", onClick: closeSettings },
-    {
-      label: "Apply",
-      disabled: (!pending && !Object.keys(stagedSecrets).length && !Object.keys(stagedExternal).length) || saving,
-      onClick: () => void applySettings(),
-    },
+    ...(phone
+      ? []
+      : [
+          {
+            label: "Apply",
+            disabled: (!pending && !Object.keys(stagedSecrets).length && !Object.keys(stagedExternal).length) || saving,
+            onClick: () => void applySettings(),
+          },
+        ]),
   ];
 }
 

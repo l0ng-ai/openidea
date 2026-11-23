@@ -255,6 +255,11 @@ impl Host {
     }
 
     /// The project of `window` (or of the window owning it).
+    /// The windows that have a project open.
+    pub fn windows(&self) -> Vec<String> {
+        self.projects.read().keys().cloned().collect()
+    }
+
     pub fn project(&self, window: &str) -> IdeResult<Arc<Project>> {
         self.projects
             .read()

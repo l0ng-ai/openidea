@@ -687,3 +687,42 @@ async fn serves_builtin_mcp_over_remote_dispatch_and_routes_ui_requests() {
     invoke(&peer, "close_project", json!({})).await.unwrap();
     peer.kill();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_scoped_client_only_reaches_its_own_windows() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("demo");
+    std::fs::create_dir_all(&project).unwrap();
+    let base = tmp.path().join("host");
+    let peer_slot = Arc::new(OnceLock::new());
+    let sink_peer = peer_slot.clone();
+    let host = Arc::new(Host::new(HostConfig {
+        config_dir: base.join("config"),
+        data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(move |w| rpc::event_sink(sink_peer.clone(), Some(w.to_owned()))),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    }));
+    // A window of the desktop itself.
+    host.open_project("main", &project).unwrap();
+    let (client_io, server_io) = tokio::io::duplex(1 << 16);
+    let (sr, sw) = tokio::io::split(server_io);
+    let scope = Some("mobile-abc-".to_owned());
+    tokio::spawn(rpc::serve_scoped(host.clone(), Dispatcher::standard(), peer_slot, sr, sw, scope));
+    let (cr, cw) = tokio::io::split(client_io);
+    let peer = Peer::connect(cr, cw, Arc::new(Client::default()));
+
+    let call = |window: &str, cmd: &str, args: Value| Invoke { window: window.into(), cmd: cmd.into(), args };
+    let denied = peer.request::<_, Value>("invoke", call("main", "index_status", json!({})), None).await;
+    let denied = rpc::error_from_reply(denied.unwrap_err());
+    assert_eq!(denied.kind, ide_core::error::ErrorKind::PermissionDenied, "{denied:?}");
+
+    let own = call("mobile-abc-1", "open_project", json!({ "path": project }));
+    let opened: Value = peer.request("invoke", own, None).await.unwrap();
+    assert_eq!(opened["name"], "demo");
+    assert!(host.project("main").is_ok(), "the desktop's window is untouched");
+}

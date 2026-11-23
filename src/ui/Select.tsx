@@ -15,6 +15,7 @@ import { Popup } from "./Popup";
 import { List, listNavigate } from "./List";
 import { tx, useGivenTx } from "@/platform/i18n";
 import { SearchField } from "./Input";
+import { useFormFactor } from "@/platform/formFactor";
 import { HighlightedText } from "./HighlightedText";
 import { fuzzyMatch } from "./match";
 import styles from "./Select.module.css";
@@ -116,6 +117,7 @@ export function SelectListbox<V extends string = string>({
   listClassName,
   ...aria
 }: SelectListboxProps<V>) {
+  const touch = useFormFactor((s) => s.touch);
   const given = useGivenTx();
   const labelOf = (o: SelectOption<V>) => (o.verbatim ? o.label : given(o.label));
   const detailOf = (o: SelectOption<V>) => (o.verbatimDetail ? o.detail : given(o.detail));
@@ -252,7 +254,8 @@ export function SelectListbox<V extends string = string>({
         <div className={styles.searchWrap}>
           <SearchField
             value={query}
-            autoFocus
+            // A touch screen keeps the keyboard down until the field is tapped.
+            autoFocus={!touch}
             data-autofocus
             onFocus={(e) => {
               // Keep typing after the text that opened the list instead of before it.

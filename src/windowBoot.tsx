@@ -3,7 +3,9 @@ import ReactDOM from "react-dom/client";
 import "./styles/global.css";
 import { installRepeatedDoubleClick } from "./platform/doubleClick";
 import { installErrorLogging, logError } from "./platform/errorLog";
+import { installFormFactor } from "./platform/formFactor";
 import { installImeKeyGuard } from "./platform/ime";
+import { installLongPressContextMenu } from "./platform/longPress";
 import { installMiddleClickLinks } from "./platform/openUrl";
 import { call, commands, isTauri } from "./platform/ipc";
 import { installPageSwipeTracking } from "./platform/pageSwipe";
@@ -35,7 +37,10 @@ export async function installCommonWindowBoot(): Promise<void> {
     // The Tauri MCP bridge returns eval results via `window.__TAURI__` on Windows/Linux
     // (macOS evaluates natively). Dev only, so release builds keep withGlobalTauri off.
     const [{ invoke }, { emit }] = await Promise.all([import("@tauri-apps/api/core"), import("@tauri-apps/api/event")]);
-    (window as unknown as { __TAURI__?: unknown }).__TAURI__ ??= { core: { invoke }, event: { emit } };
+    (window as unknown as { __TAURI__?: unknown }).__TAURI__ ??= {
+      core: { invoke },
+      event: { emit },
+    };
   }
 
   installRepeatedDoubleClick();
@@ -52,6 +57,8 @@ export async function installCommonWindowBoot(): Promise<void> {
   installWindowDrag({
     toggleMaximize: () => call(commands.windowToggleZoom()).catch((e) => console.warn("cannot zoom the window", e)),
   });
+  installFormFactor();
+  installLongPressContextMenu();
   installPointerFocus();
   installMiddleClickLinks();
   installImeKeyGuard();

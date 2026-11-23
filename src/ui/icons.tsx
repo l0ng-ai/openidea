@@ -424,6 +424,7 @@ const ICONS = {
   artifact: "openidea/general/artifact",
   web: "openidea/general/web",
   remote: "openidea/general/remote",
+  mobile: "openidea/general/mobile",
   "file-new": "openidea/general/newFile",
   "browser-chrome": "openidea/browsers/chrome",
   "browser-chromium": "openidea/browsers/chromium",
