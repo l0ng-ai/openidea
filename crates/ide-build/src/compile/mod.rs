@@ -1008,17 +1008,23 @@ pub fn build_for_launches(
         if plan.system == BuildSystem::Maven
             && let Some(m) = &model.maven
         {
-            maven_launch_projects(root, m, module, test)
-                .iter()
-                .flat_map(|p| {
-                    launch_class_dirs(plan.system, &subdir(root, &p.dir), test && subdir(root, &p.dir) == module)
-                })
-                .collect()
+            maven_launch_output_dirs(root, m, module, test).into_iter().filter(|dir| dir.is_dir()).collect()
         } else {
             launch_class_dirs(plan.system, module, test)
         }
     };
     Ok(modules.iter().map(|m| LaunchBuild { class_dirs: class_dirs(m), failure: failure.clone() }).collect())
+}
+
+/// Maven output directories for a launch, including directories that have yet to be created.
+pub fn maven_launch_output_dirs(root: &Path, model: &maven::MavenModel, module: &Path, test: bool) -> Vec<PathBuf> {
+    maven_launch_projects(root, model, module, test)
+        .into_iter()
+        .flat_map(|p| {
+            let dir = subdir(root, &p.dir);
+            maven_output_dirs(&dir, test && dir == module)
+        })
+        .collect()
 }
 
 /// The class directories of a Maven launch that must hold classes after its build: those of
@@ -1055,6 +1061,15 @@ pub fn launch_required_class_dirs(root: &Path, model: &BuildModel, module: &Path
     dirs
 }
 
+fn maven_output_dirs(module: &Path, test: bool) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if test {
+        dirs.push(subdir(module, "target/test-classes"));
+    }
+    dirs.push(subdir(module, "target/classes"));
+    dirs
+}
+
 fn launch_class_dirs(system: BuildSystem, module: &Path, test: bool) -> Vec<PathBuf> {
     let sets: &[&str] = if test { &["test", "main"] } else { &["main"] };
     let dirs: Vec<PathBuf> = match system {
@@ -1065,8 +1080,7 @@ fn launch_class_dirs(system: BuildSystem, module: &Path, test: bool) -> Vec<Path
                     .map(|d| subdir(module, &format!("build/{d}/{s}")))
             })
             .collect(),
-        BuildSystem::Maven if test => vec![subdir(module, "target/test-classes"), subdir(module, "target/classes")],
-        BuildSystem::Maven => vec![subdir(module, "target/classes")],
+        BuildSystem::Maven => maven_output_dirs(module, test),
         _ => Vec::new(),
     };
     dirs.into_iter().filter(|d| d.is_dir()).collect()
