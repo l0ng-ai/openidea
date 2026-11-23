@@ -13,9 +13,11 @@ afterEach(() => useRemote.setState({ session: null }));
 
 it("asks the host again once the window attaches to or leaves a remote server", async () => {
   fsScratchesDir.mockResolvedValue("C:/Users/me/AppData/Roaming/ai.l0ng.openidea/scratches/");
+  const pending = scratchesDir();
+  expect(scratchesDir()).toBe(pending);
+  expect(await pending).toBe("C:/Users/me/AppData/Roaming/ai.l0ng.openidea/scratches");
   expect(await scratchesDir()).toBe("C:/Users/me/AppData/Roaming/ai.l0ng.openidea/scratches");
-  expect(await scratchesDir()).toBe("C:/Users/me/AppData/Roaming/ai.l0ng.openidea/scratches");
-  expect(fsScratchesDir).toHaveBeenCalledTimes(1);
+  expect(fsScratchesDir).toHaveBeenCalledTimes(2);
 
   fsScratchesDir.mockResolvedValue("/home/me/.openidea/data/scratches");
   useRemote.setState({ session: { root: "/home/me/project" } as never });
@@ -24,7 +26,7 @@ it("asks the host again once the window attaches to or leaves a remote server", 
   fsScratchesDir.mockResolvedValue("C:/Users/me/AppData/Roaming/ai.l0ng.openidea/scratches");
   useRemote.setState({ session: null });
   expect(await scratchesDir()).toBe("C:/Users/me/AppData/Roaming/ai.l0ng.openidea/scratches");
-  expect(fsScratchesDir).toHaveBeenCalledTimes(3);
+  expect(fsScratchesDir).toHaveBeenCalledTimes(4);
 });
 
 it("asks again after a failure", async () => {

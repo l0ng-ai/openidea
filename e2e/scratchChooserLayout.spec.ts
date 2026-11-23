@@ -12,9 +12,8 @@ test("the scratch language chooser fits short windows and keeps recents separate
     const { setScratchBackend } = await import(/* @vite-ignore */ scratch);
     const { rememberLanguage } = await import(/* @vite-ignore */ store);
     setScratchBackend({
-      dataDir: async () => "/test-app-data",
+      scratchesDir: async () => "/test-app-data/scratches",
       listNames: async () => [],
-      createDir: async () => {},
       createFile: async () => {},
       languages: async () => [
         ...Array.from({ length: 24 }, (_, i) => {

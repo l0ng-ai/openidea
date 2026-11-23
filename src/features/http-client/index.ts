@@ -117,10 +117,12 @@ function directoryArg(arg: unknown): string | null {
 async function newRequest(directory?: string) {
   try {
     const dir = directory ?? (await scratchesDir());
-    try {
-      await call(commands.fsCreateDir(dir));
-    } catch (e) {
-      if (!(e instanceof IpcError && e.kind === "alreadyExists")) throw e;
+    if (directory) {
+      try {
+        await call(commands.fsCreateDir(dir));
+      } catch (e) {
+        if (!(e instanceof IpcError && e.kind === "alreadyExists")) throw e;
+      }
     }
     const names = new Set((await call(commands.fsReadDir(dir))).map((e) => e.name.toLowerCase()));
     let name = "requests.http";

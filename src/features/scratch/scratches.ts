@@ -38,7 +38,7 @@ export function setScratchBackend(b: ScratchBackend) {
 
 export const scratchBackend = () => backend;
 
-/** The scratches folder, created on first use. */
+/** The scratches folder, created if needed. */
 export async function scratchesDir(): Promise<string> {
   return (await backend.scratchesDir()).replace(/\/+$/, "");
 }
