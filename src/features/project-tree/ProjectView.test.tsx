@@ -242,8 +242,11 @@ describe("ProjectView", () => {
         clipboardData: { getData: () => "Read" },
       } as unknown as ClipboardEventInit);
       expect(within(tree.parentElement!).getByRole("status")).toHaveTextContent("Read");
-      // The file Paste never ran: nothing was copied into the project.
-      expect([...fs.nodes.keys()].filter((p) => p.endsWith("Photo.png"))).toEqual(["/elsewhere/Photo.png"]);
+      // The file Paste never ran: give a wrong one the time to land, then check the project.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      });
+      expect([...fs.nodes.keys()].filter((p) => p.startsWith("/w/acme/") && p.endsWith("Photo.png"))).toEqual([]);
       // Closed, ⌘V is the view's file Paste again.
       fireEvent.keyDown(tree, { key: "Escape", code: "Escape" });
       fireEvent.keyDown(tree, { key: "v", code: "KeyV", metaKey: true });
