@@ -655,8 +655,7 @@ pub(crate) fn capture_command(
         }
         _ => None,
     };
-    // Dropping its sender is how a reader says it saw EOF, which is how the wait below learns that
-    // the child is exiting without sleeping for a fixed quantum first.
+    // When both readers finish, their senders disconnect the channel and wake the child wait.
     let (closed_tx, closed) = mpsc::channel::<()>();
     let capture = |mut pipe: Box<dyn Read + Send>| {
         let overflow = overflow.clone();
@@ -699,7 +698,7 @@ pub(crate) fn capture_command(
             // `POLL` for them; the pipes closing ends the wait at once.
             pipes_open = !matches!(closed.recv_timeout(POLL), Err(mpsc::RecvTimeoutError::Disconnected));
         } else {
-            // The pipes are closed and the process is only just reaping: milliseconds at most.
+            // Reap promptly after EOF, but back off if the child keeps running without its pipes.
             std::thread::sleep(backoff);
             backoff = (backoff * 2).min(POLL);
         }
@@ -1295,8 +1294,9 @@ mod capture_tests {
         cancel.cancel();
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("ran");
-        let script = format!("touch {}", marker.display());
-        assert!(capture_command(sh(&script), None, &cancel, usize::MAX, "sh").is_err());
+        let mut cmd = sh(r#"touch "$1""#);
+        cmd.arg("sh").arg(&marker);
+        assert!(capture_command(cmd, None, &cancel, usize::MAX, "sh").is_err());
         assert!(!marker.exists());
     }
 
