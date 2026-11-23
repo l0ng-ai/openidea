@@ -8,6 +8,7 @@
 use crate::LspManager;
 use crate::server::{Running, Server};
 use ide_core::error::ErrorKind;
+use ide_core::event::LspRefreshKind;
 use ide_core::{CancellationToken, IdeError, IdeResult, LanguageId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -646,10 +647,8 @@ impl LspManager {
     /// jdtls reports `ProjectStatus` when an import or project update ends (a POM
     /// change, a Maven sync, other Maven profiles), but does not check open documents
     /// again against the new classpath: their errors would stay until the next edit.
-    /// Nor does it ask for a semantic tokens refresh: a file outside any project (its
-    /// import failed, say on an unresolvable parent POM) gets no tokens, and would stay
-    /// uncoloured after the import is fixed. Generated Maven sources are attached
-    /// first, so the recheck and the new tokens see them.
+    /// Open editors may have cached empty tokens or inheritance results during the import.
+    /// Attach generated Maven sources before refreshing either, so both see the new classpath.
     pub(crate) fn java_projects_updated(self: &Arc<Self>, server: Arc<Server>, generation: u64) {
         let uris: Vec<String> = self
             .docs
@@ -666,10 +665,9 @@ impl LspManager {
         self.runtime.spawn(async move {
             let Some(run) = server.running_gen(generation) else { return };
             mgr.sync_generated_sources(&server, &run).await;
-            mgr.sink().emit(ide_core::IdeEvent::LspRefresh {
-                server: server.id,
-                kind: ide_core::event::LspRefreshKind::SemanticTokens,
-            });
+            for kind in [LspRefreshKind::SemanticTokens, LspRefreshKind::Inheritance] {
+                mgr.sink().emit(ide_core::IdeEvent::LspRefresh { server: server.id, kind });
+            }
             for uri in uris {
                 let params =
                     json!({ "command": "java.project.refreshDiagnostics", "arguments": [uri, "thisFile", false] });
