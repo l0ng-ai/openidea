@@ -58,7 +58,7 @@ pub use message_requests::answer as answer_message_request;
 pub use notebook::{NotebookCell, NotebookCellDoc, cell_uri};
 pub use plugin_requests::plugin_method_allowed;
 pub use scope::{CandidateFiles, CandidateFn, CandidateQuery, MAX_CANDIDATES};
-pub use uri::{is_virtual_uri, path_to_uri_string, uri_target, uri_to_path};
+pub use uri::{path_to_uri_string, uri_target, uri_to_path};
 
 use caps::{ServerCaps, SyncKind};
 use convert::{Conv, lsp_range};
@@ -1232,7 +1232,7 @@ impl LspManager {
         {
             return Some(text);
         }
-        let key = path.to_str().filter(|s| is_virtual_uri(s))?;
+        let key = path.to_str().filter(|s| ide_core::is_virtual_uri(s))?;
         self.virtual_docs.lock().get(key).map(|d| Arc::new(DocText::new(&d.text)))
     }
 

@@ -128,7 +128,7 @@ fn async_profiler_lib(config: &RunConfig) -> Option<PathBuf> {
     {
         homes.push(h.into());
     }
-    if let Some(asprof) = ide_run::which::find_executable("asprof", &wrap::search_path(config)) {
+    if let Some(asprof) = ide_core::process::find_executable("asprof", &wrap::search_path(config)) {
         let real = std::fs::canonicalize(&asprof).unwrap_or(asprof);
         if let Some(home) = real.parent().and_then(Path::parent) {
             homes.push(home.to_path_buf());
@@ -204,7 +204,7 @@ fn perf(config: &RunConfig) -> Result<PathBuf, Box<ProfilePrepared>> {
             "Native programs are profiled with Linux perf; on this system there is no sampling profiler OpenIDEA can drive without root.",
         )));
     }
-    ide_run::which::find_executable("perf", &wrap::search_path(config)).ok_or_else(|| {
+    ide_core::process::find_executable("perf", &wrap::search_path(config)).ok_or_else(|| {
         Box::new(ProfilePrepared::MissingTool {
             tool: s("perf"),
             message: s("Profiling native programs needs perf (linux-tools / linux-perf package)."),
