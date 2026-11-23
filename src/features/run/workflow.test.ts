@@ -1,7 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { useEditorRegistry } from "@/editor/api";
+import { useProject } from "@/platform/project";
+import { useProjectViewLead } from "@/workbench/contributions";
 import { ConsoleModel } from "./console";
 import { foldRows } from "./ConsoleView";
-import { expandMacros, toolRunConfig } from "./externalTools";
+import { expandMacros, externalToolConfig, toolRunConfig } from "./externalTools";
 import { DEFAULT_EXTERNAL_TOOL } from "@/platform/workflowSettings";
 
 const ctx = {
@@ -56,6 +59,12 @@ describe("console settings", () => {
 });
 
 describe("external tools", () => {
+  afterEach(() => {
+    useProject.setState({ project: null });
+    useProjectViewLead.setState({ lead: null });
+    useEditorRegistry.setState({ active: null });
+  });
+
   it("expands IDEA macros", () => {
     expect(expandMacros("$FileName$ $FileNameWithoutExtension$ $FileExt$ $FileRelativePath$", ctx)).toBe(
       "main.rs main rs src/main.rs",
@@ -79,5 +88,31 @@ describe("external tools", () => {
       args: ["--edition", "2021", "/p/my dir/a.rs"],
       cwd: "/p",
     });
+  });
+
+  it("uses the Project view's file while it is the active context", async () => {
+    useProject.setState({ project: { root: "/p", name: "demo" } as never });
+    useProjectViewLead.setState({ lead: { path: "/p/src/from-tree.ts", dir: false } });
+    useEditorRegistry.setState({
+      active: {
+        ctx: { path: "/p/src/from-editor.ts" },
+        view: {
+          state: {
+            selection: { main: { head: 0, from: 0, to: 0 } },
+            doc: { lineAt: () => ({ number: 1, from: 0 }) },
+            sliceDoc: () => "",
+          },
+        },
+      } as never,
+    });
+    const tool = {
+      ...DEFAULT_EXTERNAL_TOOL,
+      id: "t",
+      name: "Echo",
+      program: "echo",
+      arguments: "$FilePath$",
+    };
+
+    expect((await externalToolConfig(tool))?.args).toEqual(["/p/src/from-tree.ts"]);
   });
 });

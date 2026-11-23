@@ -9,7 +9,7 @@ import { splitCommandLine } from "@/platform/commandLine";
 import type { RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { onWorkflowSettingsChange, workflowSettings, type ExternalToolValid } from "@/platform/workflowSettings";
-import { notifications } from "@/workbench/contributions";
+import { notifications, useProjectViewLead } from "@/workbench/contributions";
 import { promptValue } from "./dialogs";
 import { startRun, useRun } from "./store";
 
@@ -76,7 +76,9 @@ export function expandMacros(text: string, ctx: MacroContext, prompt = ""): stri
 function currentContext(): MacroContext | null {
   const project = useProject.getState().project;
   if (!project) return null;
-  const ed = activeEditor();
+  const lead = useProjectViewLead.getState().lead;
+  const treeFile = lead && !lead.dir ? lead.path : null;
+  const ed = treeFile ? null : activeEditor();
   let line: number | null = null;
   let column: number | null = null;
   let selectedText = "";
@@ -91,7 +93,7 @@ function currentContext(): MacroContext | null {
   return {
     projectRoot: project.root,
     projectName: project.name,
-    filePath: ed?.ctx.path ?? null,
+    filePath: treeFile ?? ed?.ctx.path ?? null,
     line,
     column,
     selectedText,
