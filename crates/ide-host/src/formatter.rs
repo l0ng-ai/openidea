@@ -3,7 +3,9 @@
 use crate::Host;
 use ide_core::event::NotifyLevel;
 use ide_core::settings::{BIOME_LANGUAGES, ExternalFormatter, LanguagesSettings, Settings};
-use ide_core::{ChangeSet, DocId, IdeError, IdeEvent, IdeResult, IpcPath, LanguageId, Pos, Range, TextEdit};
+use ide_core::{
+    CancellationToken, ChangeSet, DocId, IdeError, IdeEvent, IdeResult, IpcPath, LanguageId, Pos, Range, TextEdit,
+};
 use ide_language::{LanguageConfig, PhpAlignment, Syntax};
 use ide_lsp::types::FormatOptions;
 use ide_tools::{Tools, formatter};
@@ -486,6 +488,7 @@ pub async fn python_import_edits(
     host: &Host,
     window: &str,
     doc: DocId,
+    cancel: CancellationToken,
 ) -> IdeResult<Option<(ide_core::IpcPath, Vec<TextEdit>)>> {
     let project = host.project(window)?;
     let snap = project.documents.snapshot(doc)?;
@@ -505,11 +508,7 @@ pub async fn python_import_edits(
             command.current_dir(dir);
         }
         command.args(formatter::ruff_organize_imports_arguments(&snap.path, config_file.as_deref()));
-        let fixed = formatter::run("ruff", command, &snap.text, &Default::default())?;
-        // Nothing printed for a file with code: Ruff's configuration excludes it.
-        if fixed.is_empty() && !snap.text.trim().is_empty() {
-            return Ok(Some((snap.path, Vec::new())));
-        }
+        let fixed = formatter::run("ruff", command, &snap.text, &cancel)?;
         Ok(Some((snap.path, diff_edits(&ide_text::Document::new(&snap.text), &fixed))))
     })
     .await

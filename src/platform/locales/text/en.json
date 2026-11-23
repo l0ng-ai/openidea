@@ -3729,5 +3729,6 @@
   "View Options": "View Options",
   "Visible columns": "Visible columns",
   "Install Ruff to optimize imports in Python files": "Install Ruff to optimize imports in Python files",
-  "Optimize Imports (Ruff)": "Optimize Imports (Ruff)"
+  "Optimize Imports (Ruff)": "Optimize Imports (Ruff)",
+  "Uses the language server or a tool such as Ruff to organize imports.": "Uses the language server or a tool such as Ruff to organize imports."
 }

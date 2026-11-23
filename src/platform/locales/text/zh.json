@@ -3106,7 +3106,6 @@
   "Runs Optimize Imports when the file has no errors, unless it would change the caret line.": "文件没有错误时运行“优化导入”，除非这会更改光标所在行。",
   "Runs npm scripts and Node-based language servers (vtsls, eslint, pyright…).": "运行 npm 脚本和基于 Node 的语言服务器（vtsls、eslint、pyright…）。",
   "Runs sync, builds and Maven run configurations. A chosen home is used instead of the project's mvnw. Bypassed while the Maven daemon is enabled.": "用于同步、构建和 Maven 运行配置。选定后将代替项目的 mvnw。启用 Maven daemon 时将被绕过。",
-  "Runs the language server's Organize Imports action.": "运行语言服务器的“整理导入”操作。",
   "Runs the language server's formatter before an explicit save (Actions on Save).": "在显式保存前运行语言服务器的格式化程序（保存时操作）。",
   "Search history": "搜索历史",
   "Search history ({previous} / {next})": "搜索历史（{previous} / {next}）",
@@ -9966,5 +9965,6 @@
   "Previous Columns": "上一组列",
   "Next Columns": "下一组列",
   "Install Ruff to optimize imports in Python files": "安装 Ruff 以优化 Python 文件的导入",
-  "Optimize Imports (Ruff)": "优化导入（Ruff）"
+  "Optimize Imports (Ruff)": "优化导入（Ruff）",
+  "Uses the language server or a tool such as Ruff to organize imports.": "使用语言服务器或 Ruff 等工具优化导入。"
 }
