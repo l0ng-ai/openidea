@@ -2821,6 +2821,7 @@
   "Accepts mcpServers, servers, or a single server JSON object.": "Accepts mcpServers, servers, or a single server JSON object.",
   "Leave empty to enable for all agents, or pick specific coding agents.": "Leave empty to enable for all agents, or pick specific coding agents.",
   "Related Symbol…": "Related Symbol…",
+  "Choose Inheritance Target ({count} found)": "Choose Inheritance Target ({count} found)",
   "Choose Target": "Choose Target",
   "No related symbols": "No related symbols",
   "Header": "Header",
