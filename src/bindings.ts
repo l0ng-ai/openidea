@@ -1380,6 +1380,16 @@ export const commands = {
 	 *  edited (not yet applied); the response status, or why there was none.
 	 */
 	proxyCheckConnection: (proxy: ProxySettings, url: string) => typedError<string, IdeError>(__TAURI_INVOKE("proxy_check_connection", { proxy, url })),
+	/**  A project on pypi.org by its exact name; `None` when PyPI has no such project. */
+	pypiPackage: (name: string, request: RequestId) => typedError<{
+	/**  The name as PyPI spells it. */
+	name: string,
+	summary: string,
+	/**  The newest release that is not a pre-release; empty when every release is yanked. */
+	latest: string,
+	/**  Releases with files to install, most recently uploaded first; yanked ones left out. */
+	versions: string[],
+} | null, IdeError>(__TAURI_INVOKE("pypi_package", { name, request })),
 	/**
 	 *  The requirements of a `requirements*.txt` / `pyproject.toml` the project's interpreter
 	 *  doesn't satisfy; `None` for other files, or with no local interpreter to ask.
@@ -11299,6 +11309,16 @@ export type PushTargetChoices = {
 };
 
 export type PushTargetState = "ready" | "diverged" | "fetchRequired";
+
+export type PypiPackage = {
+	/**  The name as PyPI spells it. */
+	name: string,
+	summary: string,
+	/**  The newest release that is not a pre-release; empty when every release is yanked. */
+	latest: string,
+	/**  Releases with files to install, most recently uploaded first; yanked ones left out. */
+	versions: string[],
+};
 
 /**  A class definition and the methods it declares. */
 export type PythonClassFacts = {

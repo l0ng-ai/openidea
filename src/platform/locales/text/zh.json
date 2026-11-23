@@ -9957,5 +9957,18 @@
   "Latest": "最新版本",
   "Checking for newer versions": "正在检查新版本",
   "Could not check for newer versions of the packages.": "无法检查软件包的新版本。",
-  "Upgrade available: {latest}": "可升级到 {latest}"
+  "Upgrade available: {latest}": "可升级到 {latest}",
+  "Python Packages": "Python 软件包",
+  "Python packages": "Python 软件包",
+  "Select an interpreter for this project to manage its packages.": "请为此项目选择解释器，以便管理其软件包。",
+  "Search installed packages or type a PyPI package name": "搜索已安装的软件包，或输入 PyPI 软件包名称",
+  "Searching PyPI": "正在搜索 PyPI",
+  "Searching PyPI…": "正在搜索 PyPI…",
+  "Select a package to see its versions.": "选择一个软件包以查看其版本。",
+  "Packages come from the container image and are read-only here.": "软件包来自容器镜像，在此处只读。",
+  "Loading package information from PyPI…": "正在从 PyPI 加载软件包信息…",
+  "Could not load package information from PyPI.": "无法从 PyPI 加载软件包信息。",
+  "This package is not on PyPI.": "PyPI 上没有此软件包。",
+  "Install Version": "安装此版本",
+  "Upgrade to {latest}": "升级到 {latest}"
 }

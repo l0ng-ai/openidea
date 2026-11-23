@@ -3720,5 +3720,18 @@
   "Latest": "Latest",
   "Checking for newer versions": "Checking for newer versions",
   "Could not check for newer versions of the packages.": "Could not check for newer versions of the packages.",
-  "Upgrade available: {latest}": "Upgrade available: {latest}"
+  "Upgrade available: {latest}": "Upgrade available: {latest}",
+  "Python Packages": "Python Packages",
+  "Python packages": "Python packages",
+  "Select an interpreter for this project to manage its packages.": "Select an interpreter for this project to manage its packages.",
+  "Search installed packages or type a PyPI package name": "Search installed packages or type a PyPI package name",
+  "Searching PyPI": "Searching PyPI",
+  "Searching PyPI…": "Searching PyPI…",
+  "Select a package to see its versions.": "Select a package to see its versions.",
+  "Packages come from the container image and are read-only here.": "Packages come from the container image and are read-only here.",
+  "Loading package information from PyPI…": "Loading package information from PyPI…",
+  "Could not load package information from PyPI.": "Could not load package information from PyPI.",
+  "This package is not on PyPI.": "This package is not on PyPI.",
+  "Install Version": "Install Version",
+  "Upgrade to {latest}": "Upgrade to {latest}"
 }

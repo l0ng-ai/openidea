@@ -143,19 +143,6 @@ export function pythonProjectInterpreters(): Promise<ProjectInterpreter[]> {
   return isTauri() ? call(commands.sdkPythonProjectInterpreters()) : Promise.resolve([]);
 }
 
-export function listPackages(python: string): Promise<PythonPackage[]> {
-  return call(commands.sdkPythonPackages(python, false, nextRequestId()));
-}
-
-/** The packages with a newer release (`latestVersion`). Asks the package index, so it can take a while. */
-export function outdatedPackages(python: string): { promise: Promise<PythonPackage[]>; cancel: () => void } {
-  const request = nextRequestId();
-  return {
-    promise: call(commands.sdkPythonPackages(python, true, request)),
-    cancel: () => void commands.cancelRequest(request),
-  };
-}
-
 export function pip(
   python: string,
   requirement: string,
