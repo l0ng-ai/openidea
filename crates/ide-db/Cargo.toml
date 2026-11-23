@@ -27,7 +27,6 @@ tiberius.workspace = true
 oracledb.workspace = true
 bb8.workspace = true
 tokio-util = { workspace = true, features = ["compat"] }
-dirs.workspace = true
 ide-ssh.workspace = true
 ide-http.workspace = true
 reqwest = { workspace = true, features = ["query"] }

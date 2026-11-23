@@ -115,6 +115,7 @@ describe("Python interpreter list", () => {
     expect(interpreterIcon("uv")).toBe("python-uv");
     expect(interpreterIcon("poetry")).toBe("python-poetry");
     expect(interpreterIcon("pipenv")).toBe("file-pipenv");
+    expect(interpreterIcon("hatch")).toBe("python-hatch");
     expect(interpreterIcon("pyenv")).toBe("python-versions");
     expect(interpreterIcon("mise")).toBe("python-versions");
     expect(interpreterIcon("asdf")).toBe("python-versions");
