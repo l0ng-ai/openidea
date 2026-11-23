@@ -4438,6 +4438,7 @@ version = "0.1.50"
 dependencies = [
  "criterion",
  "ide-core",
+ "ide-heap",
  "libc",
  "memmap2",
  "proptest",
@@ -4554,6 +4555,7 @@ dependencies = [
  "dunce",
  "globset",
  "ide-core",
+ "ide-index",
  "ide-language",
  "ignore",
  "nucleo-matcher",
