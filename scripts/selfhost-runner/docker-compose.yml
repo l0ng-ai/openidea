@@ -1,9 +1,9 @@
 # Self-hosted GitHub Actions runners (persistent & scalable).
-# See README.md in this directory for setup, scaling, and troubleshooting.
+# See README.md in this directory for setup, security constraints, scaling, and troubleshooting.
 
 services:
   github-runner:
-    image: myoung34/github-runner:latest
+    image: myoung34/github-runner:2.338.2@sha256:7cc183492366138ace1c9c74296fd2c6240916d98178696c38bc78e6d5810ee8
     restart: unless-stopped
     deploy:
       replicas: ${RUNNER_COUNT:-4}
@@ -13,9 +13,10 @@ services:
       REPO_URL: ${REPO_URL:-https://github.com/l0ng-ai/openidea}
       # Only needed the first time a new slot registers; registered slots reuse saved credentials.
       RUNNER_TOKEN: ${RUNNER_TOKEN:-}
-      RUNNER_NAME_PREFIX: ${RUNNER_NAME_PREFIX:-myrunner-mac}
-      LABELS: ${RUNNER_LABELS:-local}
+      RUNNER_NAME_PREFIX: ${RUNNER_NAME_PREFIX:-openidea-runner}
+      LABELS: ${RUNNER_LABELS:-openidea-selfhosted}
       DISABLE_AUTOMATIC_DEREGISTRATION: "true"
+      RUN_AS_ROOT: "false"
 
     # Claim an exclusive numeric slot (1..N) via flock so each replica gets its own
     # persistent runner credentials, workspace, Cargo target/home, rustup, pnpm store, and toolcache.
@@ -23,7 +24,7 @@ services:
       - /bin/bash
       - -ec
       - |
-        mkdir -p /persist/slots /persist/shared/npm-cache
+        mkdir -p /persist/slots /persist/shared/npm-cache /home/runner
         SLOT=1
         while true; do
           exec 99>"/persist/slots/slot-$${SLOT}.lock"
@@ -33,14 +34,24 @@ services:
         SLOT_DIR="/persist/slot-$${SLOT}"
         mkdir -p "$${SLOT_DIR}"/{runner-data,work,cargo,cargo-target,rustup,pnpm-store,cache,toolcache}
         if [[ ! -f "$${SLOT_DIR}/runner-data/.runner" && -z "$${RUNNER_TOKEN:-}" ]]; then
-          echo "ERROR: Slot $${SLOT} ($${RUNNER_NAME_PREFIX:-myrunner-mac}-$${SLOT}) is not registered yet; set RUNNER_TOKEN to register it." >&2
+          echo "ERROR: Slot $${SLOT} ($${RUNNER_NAME_PREFIX:-openidea-runner}-$${SLOT}) is not registered yet; set RUNNER_TOKEN to register it." >&2
           exit 1
         fi
-        rm -rf /opt/hostedtoolcache /root/.cache
+        RUNNER_UID="$$(id -u runner)"
+        RUNNER_GID="$$(id -g runner)"
+        if [[ "$$(stat -c '%u' /persist/shared/npm-cache)" != "$${RUNNER_UID}" ]]; then
+          chown -R "$${RUNNER_UID}:$${RUNNER_GID}" /persist/shared/npm-cache
+        fi
+        if [[ "$$(stat -c '%u' "$${SLOT_DIR}")" != "$${RUNNER_UID}" ]]; then
+          chown -R "$${RUNNER_UID}:$${RUNNER_GID}" "$${SLOT_DIR}"
+        fi
+        chown "$${RUNNER_UID}:$${RUNNER_GID}" /persist/shared "$${SLOT_DIR}" "$${SLOT_DIR}"/{runner-data,work,cargo,cargo-target,rustup,pnpm-store,cache,toolcache}
+        rm -rf /opt/hostedtoolcache /home/runner/.cache
         ln -s "$${SLOT_DIR}/toolcache" /opt/hostedtoolcache
-        ln -s "$${SLOT_DIR}/cache" /root/.cache
+        ln -s "$${SLOT_DIR}/cache" /home/runner/.cache
+        chown -h "$${RUNNER_UID}:$${RUNNER_GID}" /opt/hostedtoolcache /home/runner/.cache
         export CONFIGURED_ACTIONS_RUNNER_FILES_DIR="$${SLOT_DIR}/runner-data"
-        export RUNNER_NAME="$${RUNNER_NAME_PREFIX:-myrunner-mac}-$${SLOT}"
+        export RUNNER_NAME="$${RUNNER_NAME_PREFIX:-openidea-runner}-$${SLOT}"
         export RUNNER_WORKDIR="$${SLOT_DIR}/work"
         export CARGO_HOME="$${SLOT_DIR}/cargo"
         export RUSTUP_HOME="$${SLOT_DIR}/rustup"
