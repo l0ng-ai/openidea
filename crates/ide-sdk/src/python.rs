@@ -123,7 +123,7 @@ fn create_poetry_env(
         .map(PathBuf::from)
         .ok_or_else(|| IdeError::internal("poetry created no environment".to_owned()))?;
     let python = home.join(bin_dir()).join(exe("python"));
-    crate::discover::python_sdk(&python, "venv", Some(project))
+    crate::discover::python_sdk(&python, "pipenv", Some(project))
         .ok_or_else(|| IdeError::internal(format!("{} was not created", python.display())))
 }
 

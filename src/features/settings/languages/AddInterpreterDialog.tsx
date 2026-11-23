@@ -139,7 +139,7 @@ export function AddInterpreterDialog({
       "Runs “poetry env use <base>” in the project; poetry keeps the environment under its own cache directory.",
     ),
     pipenv: tx(
-      "Runs “pipenv --python <base>” in the project, which writes a Pipfile (from requirements.txt if there is one) when the project has none; pipenv keeps the environment under its own virtualenvs directory and reuses one that exists.",
+      "Runs “pipenv --python <base>” in the project, which writes a Pipfile (from requirements.txt if there is one) when the project has none. Pipenv chooses where to store the environment and reuses an existing one.",
     ),
   }[kind];
 
@@ -176,7 +176,7 @@ export function AddInterpreterDialog({
                 }}
               >
                 <Icon name={k.icon} size={16} />
-                {k.label}
+                <T>{k.label}</T>
               </button>
             </li>
           ))}

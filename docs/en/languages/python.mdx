@@ -43,7 +43,7 @@ The project interpreter is chosen in this order:
 
 1. The interpreter set in **Settings › Languages & Frameworks › Python Interpreter**.
 2. A virtualenv in the project: `.venv`, `venv`, `env` or `.env` (a folder with `pyvenv.cfg`), or a pixi environment in `.pixi/envs/`.
-3. The project's Pipenv environment, once `pipenv` has created it for the `Pipfile` in the project folder or a folder above it.
+3. The Pipenv environment for the nearest `Pipfile`, including one selected by a `.venv` file or `PIPENV_CUSTOM_VENV_NAME`.
 4. The Python version the project pins for mise or asdf (`mise.toml`, `.tool-versions` and the other mise config files).
 
 The interpreter list on that page also shows what the IDE detects on the machine: the active `VIRTUAL_ENV`, virtualenvs made by virtualenvwrapper, pipenv and Poetry, pyenv versions, Pythons installed by uv, mise and asdf installs, conda environments (Miniconda, Anaconda, Miniforge, Mambaforge, micromamba, and every env that `conda env list` shows), and the `python` executables on `PATH`.

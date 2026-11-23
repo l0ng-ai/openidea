@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, cleanup } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Sdk } from "@/bindings";
+import { setLocale } from "@/platform/i18n";
 
 const mocks = vi.hoisted(() => ({
   detect: vi.fn(),
@@ -64,6 +65,16 @@ const open = (onAdded = vi.fn()) => {
 };
 
 describe("Add Python Interpreter", () => {
+  it("translates the Pipenv environment type", async () => {
+    await setLocale("zh");
+    try {
+      open();
+      expect(screen.getByRole("button", { name: "Pipenv 环境" })).toBeInTheDocument();
+    } finally {
+      await act(() => setLocale("en"));
+    }
+  });
+
   it("lists the environment types PyCharm offers", async () => {
     open();
     await waitFor(() => expect(mocks.detect).toHaveBeenCalled());
