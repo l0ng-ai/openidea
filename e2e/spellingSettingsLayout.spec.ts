@@ -47,6 +47,7 @@ test("Spelling puts dictionary files first and keeps accepted words in separate 
   await expect(defaultBox).toHaveText("Project dictionary");
   await defaultBox.click();
   const defaultList = page.getByRole("listbox", { name: "Default dictionary" });
+  await expect(defaultList.getByRole("option", { name: "dictionaries/team.dic" })).toBeVisible();
   await defaultList.getByRole("option", { name: "Application dictionary" }).click();
   await expect(defaultBox).toHaveText("Application dictionary");
 

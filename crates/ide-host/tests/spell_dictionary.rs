@@ -2,6 +2,7 @@
 use ide_core::NullSink;
 use ide_host::ops;
 use ide_host::{Host, HostConfig};
+use ide_workspace::SettingsScope;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -20,13 +21,18 @@ fn host(base: &Path) -> Arc<Host> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn saves_words_to_project_relative_and_home_dictionaries() {
+async fn saves_words_to_configured_project_dictionaries() {
     let tmp = tempfile::tempdir().unwrap();
     let root = dunce::canonicalize(tmp.path()).unwrap().join("project");
     std::fs::create_dir_all(&root).unwrap();
     let host = host(&tmp.path().join("app"));
     host.trust.decide(&root, true, false).unwrap();
     host.open_project("main", &root).unwrap();
+    host.project("main")
+        .unwrap()
+        .settings
+        .set(SettingsScope::Global, "spelling.customDictionaries", serde_json::json!([" docs/team.dic "]))
+        .unwrap();
 
     // A missing file is created as a plain word list.
     let file =
@@ -40,7 +46,7 @@ async fn saves_words_to_project_relative_and_home_dictionaries() {
 
     // The same word again changes nothing and reports no file.
     let file =
-        ops::spell::spell_save_to_dictionary(&host, "main", "docs/team.dic".into(), "mesage".into()).await.unwrap();
+        ops::spell::spell_save_to_dictionary(&host, "main", "docs/team.dic".into(), "MESAGE".into()).await.unwrap();
     assert_eq!(file, "");
     assert_eq!(std::fs::read_to_string(root.join("docs/team.dic")).unwrap(), "Pyorm\nmesage\n");
 
@@ -49,31 +55,18 @@ async fn saves_words_to_project_relative_and_home_dictionaries() {
     ops::spell::spell_save_to_dictionary(&host, "main", "docs/team.dic".into(), "wrng".into()).await.unwrap();
     assert_eq!(std::fs::read_to_string(root.join("docs/team.dic")).unwrap(), "Pyorm\nmesage\nwrng\n");
 
-    // A `~/…` entry resolves against the home folder (`dirs` reads the real
-    // profile directory on Windows, so this case runs on Unix only).
-    #[cfg(unix)]
-    {
-        let home = dunce::canonicalize(tmp.path().join("home")).unwrap();
-        std::fs::create_dir_all(&home).unwrap();
-        // SAFETY: the runtime's worker threads may be parked; no test reads
-        // these variables concurrently.
-        unsafe {
-            std::env::set_var("HOME", &home);
-            let file =
-                ops::spell::spell_save_to_dictionary(&host, "main", "~/words/personal.txt".into(), "kurz".into())
-                    .await
-                    .unwrap();
-            assert_eq!(file, home.join("words/personal.txt").to_string_lossy());
-            assert_eq!(std::fs::read_to_string(home.join("words/personal.txt")).unwrap(), "kurz\n");
-            std::env::remove_var("HOME");
-        }
-    }
+    assert!(ops::spell::spell_save_to_dictionary(&host, "main", "arbitrary.txt".into(), "kurz".into()).await.is_err());
+    assert!(!root.join("arbitrary.txt").exists());
 
     // Not a word: no file is written.
     assert!(
         ops::spell::spell_save_to_dictionary(&host, "main", "docs/team.dic".into(), "two words".into()).await.is_err()
     );
     assert!(ops::spell::spell_save_to_dictionary(&host, "main", "docs/team.dic".into(), "123".into()).await.is_err());
+    let dictionary = root.join("docs/team.dic");
+    std::fs::write(&dictionary, [0xff, b'\n']).unwrap();
+    assert!(ops::spell::spell_save_to_dictionary(&host, "main", "docs/team.dic".into(), "kurz".into()).await.is_err());
+    assert_eq!(std::fs::read(&dictionary).unwrap(), [0xff, b'\n']);
     host.shutdown().await;
 }
 
@@ -85,15 +78,29 @@ async fn a_hunspell_dictionary_keeps_its_word_count_line() {
     let host = host(&tmp.path().join("app"));
     host.trust.decide(&root, true, false).unwrap();
     host.open_project("main", &root).unwrap();
+    host.project("main")
+        .unwrap()
+        .settings
+        .set(SettingsScope::Global, "spelling.customDictionaries", serde_json::json!(["de_TEST.dic"]))
+        .unwrap();
 
-    std::fs::write(root.join("de_TEST.dic"), "2\npyorm\nmesage\n").unwrap();
+    std::fs::write(root.join("de_TEST.dic"), "\u{feff}# Test\r\n2\r\npyorm\r\nmesage").unwrap();
     std::fs::write(root.join("de_TEST.aff"), "SET UTF-8\n").unwrap();
     ops::spell::spell_save_to_dictionary(&host, "main", "de_TEST.dic".into(), "kurz".into()).await.unwrap();
     // The count line tracks the words, the entries keep their order.
-    assert_eq!(std::fs::read_to_string(root.join("de_TEST.dic")).unwrap(), "3\npyorm\nmesage\nkurz\n");
+    assert_eq!(
+        std::fs::read_to_string(root.join("de_TEST.dic")).unwrap(),
+        "\u{feff}# Test\r\n3\r\npyorm\r\nmesage\r\nkurz\r\n"
+    );
+
+    let dictionary = root.join("de_TEST.dic");
+    let speller = ide_spell::Speller::new(std::iter::empty::<&str>(), std::slice::from_ref(&dictionary));
+    assert!(speller.is_correct("mesage"));
+    assert!(speller.is_correct("kurz"));
 
     // Without an .aff beside it, the same file is a word list: no count line.
     std::fs::remove_file(root.join("de_TEST.aff")).unwrap();
+    std::fs::write(&dictionary, "3\npyorm\nmesage\nkurz\n").unwrap();
     ops::spell::spell_save_to_dictionary(&host, "main", "de_TEST.dic".into(), "wrng".into()).await.unwrap();
     assert_eq!(std::fs::read_to_string(root.join("de_TEST.dic")).unwrap(), "3\npyorm\nmesage\nkurz\nwrng\n");
     host.shutdown().await;

@@ -135,40 +135,64 @@ pub async fn spell_save_to_dictionary(
 ) -> IdeResult<String> {
     let project = host.project(window)?;
     blocking(move || {
-        let root = project.root.clone();
         let entry = dictionary.trim();
-        if entry.is_empty() {
-            return Err(IdeError::invalid("No custom dictionary selected"));
+        if entry.is_empty()
+            || !project.settings.read_effective(|s| s.spelling.custom_dictionaries.iter().any(|p| p.trim() == entry))
+        {
+            return Err(IdeError::invalid("Select a configured custom dictionary"));
         }
         let w = word.trim();
         // One word per line: no whitespace, no line breaks; digits and hyphens
         // may appear, but at least one letter (a number list checks nothing).
-        if w.is_empty() || w.chars().any(|c| c.is_whitespace()) || !w.chars().any(|c| c.is_alphabetic()) {
+        if w.starts_with('#')
+            || w.contains('/')
+            || w.chars().any(|c| c.is_whitespace() || c.is_control())
+            || !w.chars().any(|c| c.is_alphabetic())
+        {
             return Err(IdeError::invalid(format!("'{word}' is not a word a dictionary can list")));
         }
-        let path = resolve_dictionary(entry, &root);
-        let existing = std::fs::read(&path).ok();
-        if let Some(bytes) = &existing {
-            let text = String::from_utf8_lossy(bytes);
-            if text.lines().any(|l| l.trim() == w) {
-                return Ok(String::new());
+        let path = resolve_dictionary(entry, &project.root);
+        // Serialize the read/modify/write across projects that share a dictionary.
+        static SAVES: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+        let _save = SAVES.lock();
+        let mut text = match std::fs::metadata(&path) {
+            Ok(m) if !m.is_file() || m.permissions().readonly() => {
+                return Err(IdeError::invalid(format!("{} is not a writable dictionary file", path.display())));
+            }
+            Ok(_) => std::fs::read_to_string(&path)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(e.into()),
+        };
+        let hunspell = ide_spell::affix_file(&path).is_some();
+        let already_listed = if hunspell {
+            text.lines().any(|line| line.trim() == w)
+        } else {
+            ide_spell::parse_word_list(&text).contains(&w.to_lowercase())
+        };
+        if already_listed {
+            return Ok(String::new());
+        }
+        let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
+        if hunspell {
+            let body = text.strip_prefix('\u{feff}').unwrap_or(&text);
+            let start = text.len() - body.len()
+                + body
+                    .split_inclusive('\n')
+                    .take_while(|line| line.trim_start().starts_with('#'))
+                    .map(str::len)
+                    .sum::<usize>();
+            let header = text[start..].lines().next().unwrap_or_default();
+            if let Some(count) = header.trim().parse::<usize>().ok().and_then(|n| n.checked_add(1)) {
+                text.replace_range(start..start + header.len(), &count.to_string());
+            } else if text.is_empty() {
+                text.push_str("1\n");
             }
         }
-        let aff = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("dic"))
-            && ["aff", "AFF"].into_iter().any(|ext| path.with_extension(ext).is_file());
-        let updated = match existing.as_deref().map(String::from_utf8_lossy) {
-            None => format!("{w}\n"),
-            Some(text) if aff && text.starts_with(|c: char| c.is_ascii_digit()) => {
-                // A Hunspell dictionary: its first line counts the words.
-                let (count, rest) = text.split_once('\n').unwrap_or((text.trim(), ""));
-                match count.trim().parse::<usize>() {
-                    Ok(n) => format!("{}\n{rest}{w}\n", n + 1),
-                    Err(_) => format!("{w}\n{text}"),
-                }
-            }
-            Some(text) if !text.is_empty() && !text.ends_with('\n') => format!("{text}\n{w}\n"),
-            Some(text) => format!("{text}{w}\n"),
-        };
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push_str(newline);
+        }
+        text.push_str(w);
+        text.push_str(newline);
         // A dictionary file may name folders that do not exist yet (a fresh
         // project layout): create them, then write.
         if let Some(dir) = path.parent()
@@ -176,10 +200,25 @@ pub async fn spell_save_to_dictionary(
         {
             std::fs::create_dir_all(dir)?;
         }
-        ide_vfs::write_atomic_strict(&path, updated.as_bytes())?;
+        ide_vfs::write_atomic_strict(&path, text.as_bytes())?;
         Ok(path.to_string_lossy().into_owned())
     })
     .await
 }
 
 ide_command::domain!(spell: spell_check, spell_suggest, spell_save_to_dictionary);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolves_home_dictionaries() {
+        if let Some(home) = dirs::home_dir() {
+            assert_eq!(
+                resolve_dictionary("~/words/personal.txt", Path::new("project")),
+                home.join("words/personal.txt")
+            );
+        }
+    }
+}

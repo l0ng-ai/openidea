@@ -117,13 +117,16 @@ async function saveToCustomDictionary(view: EditorView, dictionary: string, word
 function defaultSaveTarget(view: EditorView, word: string): () => void {
   const hasProject = !!useProject.getState().project;
   const setting = spellingOf(useProject.getState().settings)?.defaultDictionary;
-  const custom = setting ? customDictionaries().includes(setting) : false;
-  if (setting === "application" || (setting === "project" && hasProject) || custom) {
-    return custom
-      ? () => void saveToCustomDictionary(view, setting!, word)
-      : () => void saveToDictionary(word, setting === "project" ? "project" : "ide");
+  if (
+    hasProject &&
+    setting &&
+    setting !== "project" &&
+    setting !== "application" &&
+    customDictionaries().includes(setting)
+  ) {
+    return () => saveToCustomDictionary(view, setting, word);
   }
-  return () => void saveToDictionary(word, hasProject ? "project" : "ide");
+  return () => saveToDictionary(word, hasProject && setting !== "application" ? "project" : "ide");
 }
 
 function typoAt(state: EditorState, pos: number): PlacedTypo | undefined {
@@ -189,11 +192,8 @@ export function spellingIntentions(view: EditorView): ListPopupItem[] {
   const typo = typoAt(view.state, sel.head);
   if (!typo) return [];
   const hasProject = !!useProject.getState().project;
-  const dictionaries = customDictionaries();
-  // One row saves to the project dictionary (application-level without a project);
-  // its submenu still offers each level, the custom dictionaries and the
-  // inspection controls. A custom dictionary is offered under the name the
-  // settings configured it with; without one, the row opens the settings.
+  const dictionaries = hasProject ? customDictionaries() : [];
+  // The submenu offers each available dictionary and the inspection controls.
   const saveSubmenu: MenuItem[] = [
     ...(hasProject
       ? [

@@ -105,19 +105,22 @@ function SpellingPage() {
   const [defaultDictionary, setDefaultDictionary] = useSetting<string>("spelling.defaultDictionary", "global");
   const newProjects = useSettingsDialog((s) => s.newProjects);
   const hasProject = useProject((s) => !!s.project) && !newProjects;
+  const fallback = hasProject ? "project" : "application";
   const options: SelectOption<string>[] = [
     ...(hasProject ? [{ value: "project", label: "Project dictionary" }] : []),
     { value: "application", label: "Application dictionary" },
-    ...(dictionaries ?? []).map((d) => ({ value: d.trim(), label: d.trim(), verbatim: true })),
+    ...words(dictionaries ?? [])
+      .filter((d) => d !== "project" && d !== "application")
+      .map((d) => ({ value: d, label: d, verbatim: true })),
   ];
   return (
     <div className={styles.spelling}>
       <Section stackFields>
         <Row label="Default dictionary" hint="The dictionary the editor's Save '…' to dictionary quick fix writes to.">
           <Select
-            value={defaultDictionary || (hasProject ? "project" : "application")}
+            value={options.some((option) => option.value === defaultDictionary) ? defaultDictionary : fallback}
             options={options}
-            onChange={(v) => setDefaultDictionary(v === (hasProject ? "project" : "application") ? "" : v)}
+            onChange={(v) => setDefaultDictionary(v)}
             aria-label="Default dictionary"
           />
         </Row>
