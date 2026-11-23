@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useRef, useState, type RefObject } from "react";
 import clsx from "clsx";
 import { useTx } from "@/platform/i18n";
-import { Dialog, IconButton } from "@/ui";
+import { isImeKey } from "@/platform/ime";
+import { Button, IconButton, Popup } from "@/ui";
 import styles from "./Run.module.css";
 
 /**
@@ -25,9 +26,10 @@ export function ExpandableTextarea({
   onChange: (value: string) => void;
 }) {
   const tx = useTx();
+  const fieldRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(false);
   return (
-    <div className={styles.textareaWithButton}>
+    <div ref={fieldRef} className={styles.textareaWithButton}>
       <textarea
         className={clsx(styles.textarea, invalid && styles.textareaInvalid)}
         aria-label={tx(label)}
@@ -43,58 +45,86 @@ export function ExpandableTextarea({
           }
         }}
       />
-      <IconButton icon="expand-all" size="small" iconSize={14} title="Expand (⇧⏎)" onClick={() => setExpanded(true)} />
+      <IconButton
+        icon="expand-all"
+        size="small"
+        iconSize={14}
+        title="Expand (⇧⏎)"
+        aria-haspopup="dialog"
+        aria-expanded={expanded}
+        onClick={() => setExpanded(!expanded)}
+      />
       {expanded && (
-        <ExpandedTextDialog label={label} value={value} onOk={onChange} onClose={() => setExpanded(false)} />
+        <ExpandedTextPopup
+          anchor={fieldRef}
+          label={tx(label)}
+          value={value}
+          onOk={onChange}
+          onClose={() => setExpanded(false)}
+        />
       )}
     </div>
   );
 }
 
-function ExpandedTextDialog({
+function ExpandedTextPopup({
+  anchor,
   label,
   value,
   onOk,
   onClose,
 }: {
+  anchor: RefObject<HTMLDivElement | null>;
   label: string;
   value: string;
   onOk: (value: string) => void;
   onClose: () => void;
 }) {
-  const tx = useTx();
   const [text, setText] = useState(value);
+  const apply = () => {
+    if (text !== value) onOk(text);
+    onClose();
+  };
   return (
-    <Dialog
+    <Popup
       open
-      title={tx(label)}
+      anchor={anchor}
+      aria-label={label}
+      className={styles.expandedEditor}
       onClose={onClose}
-      width={720}
+      trapFocus
+      matchWidth
+      closeOnDeactivate={false}
       resizable="both"
-      minWidth={360}
-      minHeight={220}
-      buttons={[
-        {
-          label: "OK",
-          role: "default",
-          onClick: () => {
-            if (text !== value) onOk(text);
-            onClose();
-          },
-        },
-        { label: "Cancel", role: "cancel" },
-      ]}
+      minWidth={240}
+      minHeight={160}
     >
-      <textarea
-        className={clsx(styles.textarea, styles.expandedTextarea)}
-        aria-label={tx(label)}
-        spellCheck={false}
-        wrap="off"
-        rows={14}
-        value={text}
-        autoFocus
-        onChange={(e) => setText(e.target.value)}
-      />
-    </Dialog>
+      <div
+        className={styles.expandedEditorBody}
+        onKeyDown={(e) => {
+          if (e.key !== "Enter" || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || isImeKey(e.nativeEvent))
+            return;
+          e.preventDefault();
+          e.stopPropagation();
+          apply();
+        }}
+      >
+        <textarea
+          className={clsx(styles.textarea, styles.expandedTextarea)}
+          aria-label={label}
+          spellCheck={false}
+          wrap="off"
+          value={text}
+          data-autofocus
+          onChange={(e) => setText(e.target.value)}
+        />
+        <div className={styles.expandedEditorActions}>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button variant="primary" onClick={apply}>
+            OK
+          </Button>
+        </div>
+      </div>
+    </Popup>
   );
 }

@@ -93,6 +93,8 @@ export interface TreeProps<T> {
   getIcon?: (node: T, expanded: boolean) => IconName | (string & {}) | undefined;
   /** Muted trailing detail (e.g. a path next to the project root); may include styled content. */
   getDetail?: (node: T) => ReactNode;
+  /** Native tooltip and accessible description for a row. */
+  getTooltip?: (node: T) => string | undefined;
   /** Label colour, e.g. VCS status. */
   getColor?: (node: T) => string | undefined;
   /** Filesystem directory for actions on the focused selection; groups return null. */
@@ -800,6 +802,7 @@ export function Tree<T>(props: TreeProps<T>) {
                 aria-setsize={positions[v.index]![1]}
                 aria-expanded={row.expandable ? row.expanded : undefined}
                 aria-selected={isSelected}
+                title={props.getTooltip?.(row.node)}
                 className={clsx(
                   styles.row,
                   props.horizontalScroll && styles.wideRow,

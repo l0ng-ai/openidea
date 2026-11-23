@@ -360,6 +360,7 @@ export function SettingsLayout() {
             isExpandable={(n) => n.children.length > 0}
             defaultExpanded={current ? ancestorKeys(tree, current.key) : []}
             expanded={query ? expanded : undefined}
+            indent={16}
             selected={current ? new Set([current.key]) : new Set()}
             onSelectionChange={(_sel, node) => node && selectPage(node.key)}
             multiSelect={false}

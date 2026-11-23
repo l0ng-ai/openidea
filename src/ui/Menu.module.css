@@ -4,7 +4,7 @@
   min-width: 180px;
   overflow-x: hidden;
 }
-.popup .menu {
+.popup:not(.anchorWidthPopup) .menu {
   max-width: 420px;
 }
 .titledPopup {
@@ -78,6 +78,20 @@
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.splitLabel {
+  display: flex;
+}
+.labelStart,
+.labelEnd {
+  min-width: 0;
+  overflow: hidden;
+  pointer-events: none;
+  text-overflow: ellipsis;
+}
+.labelEnd {
+  flex: none;
+  max-width: 50%;
 }
 .shortcut {
   min-width: 0;

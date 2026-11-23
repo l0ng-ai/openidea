@@ -85,6 +85,66 @@ test("⌘K commits the checked changes with the typed message", async ({ workben
   await expect(changes.getByRole("checkbox", { name: "Include build.gradle.kts in commit" })).toBeHidden();
 });
 
+test("commit options align author fields and keep the date editable in a narrow dialog", async ({
+  workbench: page,
+}) => {
+  await stubRepository(page);
+  await page.setViewportSize({ width: 1040, height: 700 });
+  await page.keyboard.press("Meta+k");
+  const panel = page.getByRole("region", { name: "Commit", exact: true });
+  await panel.getByRole("button", { name: "Commit Options", exact: true }).click();
+  const popup = page.getByRole("dialog", { name: "Commit Options", exact: true });
+  const author = popup.getByRole("textbox", { name: "Author", exact: true });
+  const date = popup.getByLabel("Author date", { exact: true });
+  const clear = popup.getByRole("button", { name: "Clear author date", exact: true });
+  const name = "Regional Ledger Review <review@example.invalid>";
+  const time = "2024-06-04T13:20:21";
+  await author.fill(name);
+  await date.fill(time);
+  const authorBox = (await author.boundingBox())!;
+  const dateBox = (await date.boundingBox())!;
+  const dateLabel = (await popup.getByText("Author date", { exact: true }).boundingBox())!;
+  const clearBox = (await clear.boundingBox())!;
+  expect(authorBox.x).toBeCloseTo(dateBox.x, 0);
+  expect(dateLabel.y).toBeGreaterThanOrEqual(dateBox.y);
+  expect(dateLabel.y).toBeLessThan(dateBox.y + dateBox.height);
+  expect(clearBox.x + clearBox.width).toBeCloseTo(authorBox.x + authorBox.width, 0);
+  await expect(clear).toBeInViewport({ ratio: 1 });
+
+  await page.keyboard.press("Escape");
+  await expect(popup).toBeHidden();
+  await page.evaluate(async () => {
+    const projectModule = "/src/platform/project.ts";
+    const { useProject } = await import(/* @vite-ignore */ projectModule);
+    const { settings } = useProject.getState();
+    useProject.setState({
+      settings: { ...settings, vcs: { ...settings?.vcs, commit: { ...settings?.vcs?.commit, nonModal: false } } },
+    });
+  });
+  await page.setViewportSize({ width: 650, height: 650 });
+  await page.keyboard.press("Meta+k");
+  const dialog = page.getByRole("dialog", { name: "Commit Changes", exact: true });
+  const options = dialog.getByRole("group", { name: "Commit Options", exact: true });
+  const compactAuthor = options.getByRole("textbox", { name: "Author", exact: true });
+  const compactDate = options.getByLabel("Author date", { exact: true });
+  const compactClear = options.getByRole("button", { name: "Clear author date", exact: true });
+  await expect(compactAuthor).toHaveValue(name);
+  await expect(compactDate).toHaveValue(time);
+  const labelBox = (await options.getByText("Author:", { exact: true }).boundingBox())!;
+  const inputBox = (await compactAuthor.boundingBox())!;
+  expect(inputBox.x).toBeCloseTo(labelBox.x, 0);
+  expect(inputBox.y).toBeGreaterThanOrEqual(labelBox.y + labelBox.height);
+  const box = (await compactDate.boundingBox())!;
+  const buttonBox = (await compactClear.boundingBox())!;
+  expect(box.width).toBeCloseTo(inputBox.width, 0);
+  expect(buttonBox.y).toBeGreaterThanOrEqual(box.y + box.height);
+  expect(await options.evaluate((node) => node.scrollWidth - node.clientWidth)).toBeLessThanOrEqual(1);
+  await compactClear.click();
+  await expect(compactDate).toHaveValue("");
+  await expect(compactClear).toBeHidden();
+  await expect(compactAuthor).toHaveValue(name);
+});
+
 test("the Commit window gives its message preferred focus", async ({ workbench: page }) => {
   await stubRepository(page);
   const stripe = page.locator('[data-stripe-button="commit"]');
@@ -720,6 +780,81 @@ test("Commit Options applies a named TODO filter independently of the TODO windo
   expect(await ipcCalls(page, "vcs_commit")).toEqual([]);
 });
 
+test("commit check text scrolls independently of its status icon and retry action", async ({ workbench: page }) => {
+  await stubRepository(page);
+  await page.setViewportSize({ width: 850, height: 650 });
+  await page.evaluate(async () => {
+    const registryPath = "/src/features/vcs/commitCheckRegistry.ts";
+    const layoutPath = "/src/workbench/toolwindows/store.ts";
+    const { registerCommitCheck } = await import(/* @vite-ignore */ registryPath);
+    const layout = await import(/* @vite-ignore */ layoutPath);
+    layout.moveToolWindow("commit", "left");
+    layout.setToolWindowSize("left", 238);
+    for (let index = 0; index < 6; index++) {
+      registerCommitCheck({
+        id: `test.commitLayout.${index}`,
+        order: index - 1000,
+        title: `Ledger check ${index + 1}`,
+        run: () => {
+          if (index === 0) document.body.dataset.checkRuns = String(Number(document.body.dataset.checkRuns ?? 0) + 1);
+          return {
+            severity: "error",
+            text: "The regional settlement totals differ from the monthly inventory audit and need a second review.",
+            fix:
+              index === 5
+                ? {
+                    label: "Review final check",
+                    run: () => {
+                      document.body.dataset.commitCheckReviewed = "yes";
+                    },
+                  }
+                : undefined,
+          };
+        },
+      });
+    }
+  });
+  await page.keyboard.press("Meta+k");
+  const commit = page.getByRole("region", { name: "Commit", exact: true });
+  await commit.getByRole("textbox", { name: "Commit message" }).fill("Review the settlement totals");
+  await commit.getByRole("button", { name: "Commit Options", exact: true }).click();
+  const options = page.getByRole("dialog", { name: "Commit Options", exact: true });
+  await options.getByRole("button", { name: "Run Commit Checks", exact: true }).click();
+
+  const feedback = commit.getByRole("alert").filter({ hasText: "Ledger check 1" });
+  const first = feedback.getByText("Ledger check 1", { exact: true });
+  const second = feedback.getByText("Ledger check 2", { exact: true });
+  const results = first.locator("../..");
+  const icon = feedback.locator("svg").first();
+  const retry = commit.getByRole("button", { name: "Rerun Commit Checks", exact: true });
+  const commitAnyway = commit.getByRole("button", { name: "Commit Anyway", exact: true });
+  await expect(commitAnyway).toBeInViewport({ ratio: 1 });
+  await expect(first).toHaveCSS("font-size", "13px");
+  const firstRow = (await first.locator("..").boundingBox())!;
+  const secondRow = (await second.locator("..").boundingBox())!;
+  expect(secondRow.y - (firstRow.y + firstRow.height)).toBeCloseTo(4, 0);
+  expect(await results.evaluate((node) => node.scrollHeight > node.clientHeight)).toBe(true);
+  const statusTop = (await icon.boundingBox())!.y;
+  const retryTop = (await retry.boundingBox())!.y;
+  await results.evaluate((node) => {
+    node.scrollTop = node.scrollHeight;
+  });
+  expect(await results.evaluate((node) => node.scrollTop)).toBeGreaterThan(0);
+  expect((await icon.boundingBox())!.y).toBeCloseTo(statusTop, 0);
+  expect((await retry.boundingBox())!.y).toBeCloseTo(retryTop, 0);
+  const details = feedback.getByRole("button", { name: "Review final check", exact: true });
+  await expect(details).toBeInViewport({ ratio: 1 });
+  await expect(icon).toBeInViewport({ ratio: 1 });
+  await expect(retry).toBeInViewport({ ratio: 1 });
+  await expect(commitAnyway).toBeInViewport({ ratio: 1 });
+  await details.click();
+  await expect(page.locator("body")).toHaveAttribute("data-commit-check-reviewed", "yes");
+  await retry.click();
+  await expect(page.locator("body")).toHaveAttribute("data-check-runs", "2");
+  await expect(first).toBeVisible();
+  expect(await ipcCalls(page, "vcs_commit")).toEqual([]);
+});
+
 test("the TODO check reports unreadable files and can retry after they become available", async ({
   workbench: page,
 }) => {
@@ -1024,27 +1159,51 @@ test("the Commit tool window restores the draft and author options for the inclu
   await expect(message).toHaveValue("Default draft");
 });
 
-test("commit message history opens above the message without an empty icon column", async ({ workbench: page }) => {
+test("commit message history shows compact message previews above the editor", async ({ workbench: page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
   await stubRepository(page);
   await page.keyboard.press("Meta+k");
   const message = page.getByRole("textbox", { name: "Commit message" });
   await expect(message).toBeVisible();
   await page.evaluate((root) => {
-    localStorage.setItem(`openidea.vcs.commitMessages:${root}`, JSON.stringify(["Previous commit message"]));
+    localStorage.setItem(
+      `openidea.vcs.commitMessages:${root}`,
+      JSON.stringify([
+        "Update inventory\n\nReview settlement totals",
+        "Update inventory\n\nReconcile export records",
+        ...Array.from({ length: 7 }, (_, index) => `Earlier message ${index + 1}`),
+      ]),
+    );
   }, ROOT);
   await message.fill("Draft");
-  await page.getByRole("button", { name: "Commit Message History" }).click();
+  const history = page.getByRole("button", { name: "Commit Message History" });
+  await history.click();
 
   const menu = page.getByRole("menu", { name: "Recent commit messages" });
-  const row = menu.getByRole("menuitem", { name: "Previous commit message" });
+  const row = menu.getByRole("menuitem", { name: /Update inventory.*Review settlement totals/ });
   await expect(row).toBeVisible();
-  const messageBox = await message.boundingBox();
-  const menuBox = await menu.locator("..").boundingBox();
-  expect(messageBox).not.toBeNull();
-  expect(menuBox).not.toBeNull();
-  expect(menuBox!.y + menuBox!.height).toBeLessThan(messageBox!.y);
-  expect(Math.abs(menuBox!.x - messageBox!.x)).toBeLessThan(2);
+  const messageBox = (await message.boundingBox())!;
+  const menuBox = (await menu.locator("..").boundingBox())!;
+  const rowBox = (await row.boundingBox())!;
+  expect(messageBox.y - menuBox.y - menuBox.height).toBeCloseTo(3, 0);
+  expect(Math.abs(menuBox.x - messageBox.x)).toBeLessThan(2);
+  expect(menuBox.height).toBeLessThan(rowBox.height * 8);
+  await expect(row).toHaveCSS("font-family", await message.evaluate((el) => getComputedStyle(el).fontFamily));
+  await expect(row).toHaveCSS("font-size", await message.evaluate((el) => getComputedStyle(el).fontSize));
   await expect(row.locator("span")).toHaveCount(1);
+
+  await row.press("Escape");
+  await expect(menu).toBeHidden();
+  await expect(message).toHaveValue("Draft");
+  await history.click();
+  await row.press("Home");
+  await expect(row).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  const second = menu.getByRole("menuitem", { name: /Update inventory.*Reconcile export records/ });
+  await expect(second).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(message).toHaveValue("Update inventory\n\nReconcile export records");
+  await expect(message).toBeFocused();
 });
 
 test("Amend shows the original author and warns when the committer differs", async ({ workbench: page }) => {
@@ -1154,6 +1313,60 @@ async function stubEarlierAmend(page: Page) {
     ];
   });
 }
+
+test("Amend sizes the chooser for long subjects while keeping the last commit action distinct", async ({
+  workbench: page,
+}) => {
+  await stubEarlierAmend(page);
+  const tip = "Record regional settlement adjustments across the quarterly audit and reconciliation reports";
+  const earlier = "Expand the warehouse reconciliation report with monthly ledger and inventory audit totals";
+  await page.evaluate(
+    ({ tip, earlier }) => {
+      const handlers = window.__ipc.handlers;
+      const log = handlers.vcs_log!;
+      handlers.vcs_log = (args) =>
+        (log(args) as { id: string; summary: string; message: string }[]).map((commit) => {
+          const subject = commit.id === "1111111" ? tip : commit.id === "aaaaaaa" ? earlier : commit.summary;
+          return { ...commit, summary: subject, message: subject };
+        });
+    },
+    { tip, earlier },
+  );
+  await page.setViewportSize({ width: 1040, height: 700 });
+  await page.keyboard.press("Meta+k");
+  const panel = page.getByRole("region", { name: "Commit", exact: true });
+  const choose = panel.getByRole("button", { name: "Choose Commit to Amend", exact: true });
+  await choose.click();
+  const list = page.getByRole("listbox", { name: "Choose Commit to Amend", exact: true });
+  const popup = list.locator("xpath=ancestor::*[@data-popup]");
+  const search = popup.getByRole("textbox", { name: "Search commits", exact: true });
+  const last = list.getByRole("option", { name: /^Amend Last Commit/ });
+  const previous = list.getByRole("option", { name: earlier, exact: true });
+
+  await expect(previous).toBeVisible();
+  const wide = (await popup.boundingBox())!;
+  expect(wide.width).toBeGreaterThan(360);
+  expect(wide.width).toBeLessThanOrEqual(522);
+  await expect(last.getByText("Amend Last Commit", { exact: true })).toHaveCSS("font-weight", "600");
+  await expect(last.getByText(tip, { exact: true })).toHaveAttribute("title", tip);
+  await expect(previous.getByText(earlier, { exact: true })).toHaveAttribute("title", earlier);
+
+  await page.setViewportSize({ width: 440, height: 520 });
+  await expect
+    .poll(async () => {
+      const box = (await popup.boundingBox())!;
+      return box.x >= 0 && box.x + box.width <= 440 && box.width < wide.width;
+    })
+    .toBe(true);
+  await expect(search).toBeFocused();
+  await search.fill("inventory audit");
+  await expect(previous).toBeVisible();
+  await search.press("Enter");
+  await expect(list).toBeHidden();
+  await page.setViewportSize({ width: 1040, height: 700 });
+  await page.keyboard.press("Meta+k");
+  await expect(panel.getByRole("textbox", { name: "Commit message" })).toHaveValue(earlier);
+});
 
 test("Amend can select an earlier commit before protected history", async ({ workbench: page }) => {
   await stubEarlierAmend(page);

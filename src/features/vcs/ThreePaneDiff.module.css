@@ -27,6 +27,29 @@
 .pane + .pane {
   border-left: 1px solid var(--border);
 }
+.versionLabels {
+  font-size: var(--fs-ui);
+}
+.versionLabels > span,
+.labelFile {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.labelFile {
+  min-width: 0;
+  color: var(--fg-strong);
+}
+.labelFile > svg {
+  flex: none;
+}
+.labelFilename {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.versionLabels .versionName {
+  flex: none;
+}
 .absent {
   color: var(--fg-subtle);
 }
