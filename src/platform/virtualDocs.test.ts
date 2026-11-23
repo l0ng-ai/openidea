@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   gitRevisionOf,
   isVirtualUri,
+  libraryArchiveRoot,
   libraryEntryPaths,
   virtualContainer,
   virtualName,
@@ -129,6 +130,11 @@ describe("libraryEntryPaths", () => {
         `${GRADLE}/binaryHash/a-1.0.jar`,
       ]),
     ).toEqual([`${SOURCES}!/org/x/Y.java`, `${GRADLE}/sourceHash/a-1.0.jar!/org/x/Y.class`]);
+  });
+
+  it("names the archive that contains a library document", () => {
+    expect(libraryArchiveRoot(JDT)).toBe("/m2/spring-boot-4.1.1.jar!");
+    expect(libraryArchiveRoot("untitled:Untitled-1")).toBeNull();
   });
 });
 

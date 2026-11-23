@@ -27,6 +27,7 @@ import type {
   RunId,
   SymbolKind,
 } from "@/bindings";
+import { getContext } from "@/platform/context";
 import { notifyEach } from "@/platform/listeners";
 import type { ProjectType } from "@/ui/projectType";
 import type { MenuItem } from "@/ui/Menu";
@@ -1567,6 +1568,11 @@ export interface ProjectViewLead {
  * editor takes over (focus, tab switch). `null` = the editor is the context.
  */
 export const useProjectViewLead = create<{ lead: ProjectViewLead | null }>(() => ({ lead: null }));
+
+/** The Project view lead while the editor does not have focus. */
+export function projectViewContextLead(): ProjectViewLead | null {
+  return getContext().editorFocus ? null : useProjectViewLead.getState().lead;
+}
 
 export function setProjectViewLead(lead: ProjectViewLead | null) {
   const prev = useProjectViewLead.getState().lead;

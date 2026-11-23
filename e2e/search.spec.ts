@@ -14,7 +14,7 @@ test("double Shift opens Search Everywhere with its tabs; Escape closes it", asy
 });
 
 test("Search Everywhere finds and runs an action", async ({ workbench: page }) => {
-  await doubleShift(page);
+  await page.locator("header").getByRole("button", { name: "Search Everywhere", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Search Everywhere" });
   await dialog.getByRole("combobox").fill("Language Servers");
   const option = dialog.getByRole("option", { name: /Language Servers/ }).first();
