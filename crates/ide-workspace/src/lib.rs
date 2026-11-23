@@ -18,6 +18,7 @@ pub mod roots;
 pub mod settings;
 pub mod text_refs;
 pub mod unity;
+pub mod unreal;
 pub mod window_groups;
 pub mod workspace;
 

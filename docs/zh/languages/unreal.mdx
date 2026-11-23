@@ -1,0 +1,71 @@
+---
+title: "Unreal Engine"
+description: "用 .uproject 文件打开 Unreal 项目，运行编辑器、游戏或专用服务器，并用 LLDB 调试。"
+---
+
+只要文件夹顶层有 `.uproject` 文件，OpenIDEA 就把它识别为 Unreal 项目；顶层是 `Engine/Build/Build.version`（没有 `.uproject`）的，则识别为 Unreal 引擎源码树。两者都只看这一个标记，不扫描目录树。不需要编辑器插件，也不需要生成的 `.sln`。
+
+## 识别到什么
+
+| 文件夹             | 识别为     | 依据                                            |
+| ------------------ | ---------- | ----------------------------------------------- |
+| 游戏工程或插件宿主 | **Unreal** | 顶层有 `.uproject`                              |
+| 引擎源码树         | **Unreal** | 有 `Engine/Build/Build.version`，无 `.uproject` |
+
+Project 工具窗口会在仓库名旁边显示工程声明的引擎，例如 Launcher 安装的显示 `Unreal 5.8`，注册过的源码构建显示 `Unreal UE_5.8_Source`。工程在自己的引擎树里时取该引擎的版本；引擎没装时显示 `Unreal · engine not found`。
+
+`.uproject` 与 `.uplugin` 文件按 JSON 高亮打开，并接入 JSON 语言服务器。
+
+## Unreal 项目视图
+
+**Source** 目录是源码根，**Config** 是资源根。以下目录在索引、搜索与文件监听中都被排除，即使 Unreal 还没创建它们：
+
+- `Binaries`
+- `Intermediate`
+- `Saved`
+- `DerivedDataCache`
+
+`Content` 存放二进制 `.uasset` 包。它在 Project 面板里照常可见，但不按源码处理，资产不会进入符号索引。
+
+## 定位引擎
+
+运行配置需要编辑器可执行文件，它在引擎安装目录里，不在工程里。OpenIDEA 按以下顺序解析：
+
+1. 用工程的 `EngineAssociation` 查引擎注册表：
+   - Launcher 安装：`HKLM\SOFTWARE\EpicGames\Unreal Engine\<版本>\InstalledDirectory`，键名是 `5.8` 这样的版本号；
+   - 源码构建：`HKCU\SOFTWARE\Epic Games\Unreal Engine\Builds`，键名是 GUID 或你自取的名字。
+2. 没有可用的 association 时，向上找最近一个含 `Engine/Build/Build.version` 的祖先目录——即工程就在自己的引擎树里的情况。
+3. 否则取已注册安装中 `Engine/Binaries/Win64/UnrealEditor.exe` 存在且版本最高的。
+
+注册目录若已不存在会被忽略，卸载掉的引擎不会留下坏配置。**完全找不到引擎时不提供任何 Unreal 运行配置**——需要注册引擎，或把 `EngineAssociation` 指向已注册的那个。引擎查找读的是 Windows 注册表，因此仅支持 Windows。
+
+## 运行配置
+
+每个 Unreal 工程都提供三条配置。三条都是启动 `UnrealEditor.exe`、把 `.uproject` 当作第一个参数，模式只差一个开关：
+
+| 配置          | 参数                      | 启动什么                     |
+| ------------- | ------------------------- | ---------------------------- |
+| Unreal Editor | `<工程>.uproject`         | 加载该工程的编辑器。         |
+| Unreal Game   | `<工程>.uproject -game`   | 以独立游戏客户端运行该工程。 |
+| Unreal Server | `<工程>.uproject -server` | 以专用服务器运行该工程。     |
+
+工作目录是工程目录，因此工程内的相对路径照常解析。纯蓝图工程（没有 `Source`、没有 target）同样有三条——运行模式由引擎决定，与工程的 target 文件无关。
+
+没有单独的 client 配置：client 是打包产物（`<Game>Client-Win64-Shipping.exe`），不是编辑器能直接跑的东西。
+
+## 调试
+
+Unreal 配置通过 **lldb-dap** 调试。在 C++ 源码里下断点，选一条配置启动，编辑器在调试器下启动，进程走到你的代码时断点命中。
+
+要调试已经在跑的会话，从 **Native (LLDB)** 分组 Attach 到运行中的 `UnrealEditor.exe`。引擎代码在未安装 **Editor symbols for debugging** 时是 stripped 的，所以预期是单步自己的游戏模块，而不是引擎内部。
+
+不支持蓝图调试（调用栈里出现 Blueprint 栈帧）。
+
+## 限制
+
+- **不代你构建。** Run 配置只启动编辑器，不会先编译工程或引擎。源码构建的引擎需要你自己先编一次，否则 `UnrealEditor.exe` 会因缺少模块清单在启动时退出。
+- **不生成编译数据库。** OpenIDEA 不会调用 UnrealBuildTool 产出 `compile_commands.json`，clangd 因此拿不到引擎代码的逐文件 include 路径，可能报缺失头文件或未知宏。需要准确的引擎级代码智能，请通过 `.clangd` 自带一份编译数据库。
+- **没有 UnrealHeaderTool 检查。** 反射宏诊断（`UPROPERTY` 无效果、缺 `GENERATED_BODY`、非法 specifier）来自构建期的 UnrealHeaderTool，不来自编辑器。
+- **没有 Unreal 专属 inspection**——没有命名约定检查、没有蓝图用法分析、没有 RPC 校验。
+- **没有 Live Coding。** 重编译要你自己跑一次构建，编辑器里没有热重载按钮。
+- **引擎查找仅支持 Windows**，因为它读引擎注册表。
