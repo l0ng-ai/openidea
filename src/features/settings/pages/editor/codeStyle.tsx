@@ -246,6 +246,13 @@ function LanguageStyle({ lang }: { lang: LanguageInfo }) {
       <SchemeRow />
       {lang.id === "java" && <JavaFormatter style={own} onChange={set} />}
       <CodeStyleTabs tabs={tabs} />
+      {lang.id === "python" && (
+        <div className={styles.note}>
+          {tx(
+            "Ruff formats with the indent, tab character and hard wrap set here, and Black with the hard wrap, when no Ruff or Black configuration of the project or user applies. A file's .editorconfig values come first, as in the editor.",
+          )}
+        </div>
+      )}
       {lang.id === "php" && (
         <section aria-label={tx("Alignment")}>
           <div className={styles.previewTitle}>

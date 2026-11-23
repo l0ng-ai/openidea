@@ -379,8 +379,20 @@ pub async fn sdk_locate_tools(
     .map_err(join_err)
 }
 
-/// Creates a Python environment with `tool` (`venv` / `uv` / `poetry` / `pipenv`); output streams through
-/// `on_output`. `install_packages` also installs what the project's `Pipfile` declares (pipenv).
+/// The environments the window's project defines for Hatch, `default` first (hatch must be on PATH).
+#[command(trust = outside_restricted)]
+pub async fn sdk_python_hatch_envs(host: &Host, window: &str, request: RequestId) -> IdeResult<Vec<String>> {
+    host.require_trust_if_project(window)?;
+    let root = host.project(window)?.root.clone();
+    let cancel = host.begin_project_request(window, request);
+    let result =
+        tokio::task::spawn_blocking(move || ide_sdk::python::hatch_envs(&root, &cancel)).await.map_err(join_err);
+    host.end_request(request);
+    result?
+}
+
+/// Creates a Python environment and streams its output through `on_output`.
+/// With Pipenv, `install_packages` also installs the packages declared in the project's `Pipfile`.
 #[allow(clippy::too_many_arguments)]
 #[command(trust = outside_restricted)]
 pub async fn sdk_python_create_venv(
@@ -411,12 +423,14 @@ pub async fn sdk_python_packages(
     host: &Host,
     window: &str,
     python: PathBuf,
+    outdated: bool,
     request: RequestId,
 ) -> IdeResult<Vec<PythonPackage>> {
     host.require_trust_if_project(window)?;
     let cancel = host.begin_project_request(window, request);
-    let result =
-        tokio::task::spawn_blocking(move || ide_sdk::python::list_packages(&python, &cancel)).await.map_err(join_err);
+    let result = tokio::task::spawn_blocking(move || ide_sdk::python::list_packages(&python, outdated, &cancel))
+        .await
+        .map_err(join_err);
     host.end_request(request);
     result?
 }
@@ -662,6 +676,7 @@ ide_command::domain!(
     sdk_project_libraries,
     sdk_python_create_venv,
     sdk_python_effective,
+    sdk_python_hatch_envs,
     sdk_python_interpreter,
     sdk_python_packages,
     sdk_python_pip,

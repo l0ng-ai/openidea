@@ -1870,7 +1870,6 @@
   "Runs Maven with -o": "Uruchamia Maven z opcją -o",
   "Runs Optimize Imports when the file has no errors, unless it would change the caret line.": "Uruchamia Optymalizację importów, gdy plik nie zawiera błędów, chyba że zmieniłoby to wiersz kursora.",
   "Runs npm scripts and Node-based language servers (vtsls, eslint, pyright…).": "Uruchamia skrypty npm oraz serwery językowe oparte na środowisku Node (vtsls, eslint, pyright…).",
-  "Runs the language server's Organize Imports action.": "Uruchamia akcję Organizuj importy serwera językowego.",
   "Runs the language server's formatter before an explicit save (Actions on Save).": "Uruchamia formatowanie serwera językowego przed jawnym zapisem (Akcje podczas zapisywania).",
   "Search history": "Historia wyszukiwania",
   "Searching for usages of '{symbol}'": "Wyszukiwanie użyć '{symbol}'",
@@ -5909,5 +5908,7 @@
   "Default (the module's JDK)": "Domyślnie (zestaw JDK modułu)",
   "Use classpath of module": "Użyj ścieżki klas modułu",
   "Find by main class": "Znajdź według klasy głównej",
-  "Select files in the Project view, Commit tool window, or open a file in the editor": "Wybierz pliki w widoku Projektu, oknie Commit lub otwórz plik w edytorze"
+  "Select files in the Project view, Commit tool window, or open a file in the editor": "Wybierz pliki w widoku Projektu, oknie Commit lub otwórz plik w edytorze",
+  "Agent Reference": "Odwołanie do agenta",
+  "Copy Agent Reference": "Kopiuj odwołanie do agenta"
 }

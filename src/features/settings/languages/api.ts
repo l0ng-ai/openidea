@@ -123,7 +123,7 @@ function streamed<T>(
 }
 
 /** Tool that creates a new Python environment (`VenvTool` in `ide-sdk`). */
-export type VenvTool = "venv" | "uv" | "poetry" | "conda" | "pipenv";
+export type VenvTool = "venv" | "uv" | "poetry" | "conda" | "pipenv" | "hatch";
 
 export function createVenv(
   tool: VenvTool,
@@ -137,6 +137,18 @@ export function createVenv(
     (req, ch) => call(commands.sdkPythonCreateVenv(tool, base, location, installPackages, req, ch)),
     onLine,
   );
+}
+
+/**
+ * The open project's Hatch environments, or an empty list when Hatch is unconfigured.
+ * Hatch may install plugins first, so the caller cancels it when it no longer needs it.
+ */
+export function hatchEnvs(): Streamed<string[]> {
+  const request = nextRequestId();
+  return {
+    promise: call(commands.sdkPythonHatchEnvs(request)),
+    cancel: () => void commands.cancelRequest(request),
+  };
 }
 
 /** Resolves an interpreter picked by hand ("Existing environment") into an SDK like the detected ones. */
@@ -167,7 +179,16 @@ export function pythonProjectInterpreters(): Promise<ProjectInterpreter[]> {
 }
 
 export function listPackages(python: string): Promise<PythonPackage[]> {
-  return call(commands.sdkPythonPackages(python, nextRequestId()));
+  return call(commands.sdkPythonPackages(python, false, nextRequestId()));
+}
+
+/** The packages with a newer release (`latestVersion`). Asks the package index, so it can take a while. */
+export function outdatedPackages(python: string): { promise: Promise<PythonPackage[]>; cancel: () => void } {
+  const request = nextRequestId();
+  return {
+    promise: call(commands.sdkPythonPackages(python, true, request)),
+    cancel: () => void commands.cancelRequest(request),
+  };
 }
 
 export function pip(

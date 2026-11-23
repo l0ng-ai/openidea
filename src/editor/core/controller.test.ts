@@ -543,6 +543,42 @@ describe("EditorController", () => {
     }
   });
 
+  it("passes the caret line and the selected line range to Copy Agent Reference", async () => {
+    const path = "/p/a.ts";
+    ctrl = new EditorController(createMemoryBackend({ [path]: "first\nsecond\nthird\n" }));
+    ctrl.start();
+    await ctrl.openFile(path, { focus: false });
+    const slot = ctrl.activeSlot!;
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = slot.mount(host);
+    vi.spyOn(view, "posAtCoords").mockReturnValue(null);
+    try {
+      for (const [selection, lines] of [
+        [{ anchor: 7 }, { from: 2, to: 2 }],
+        [
+          { anchor: 0, head: 13 },
+          { from: 1, to: 2 },
+        ],
+      ] as const) {
+        view.dispatch({ selection });
+        ctrl.onContextMenu(slot, new MouseEvent("contextmenu"));
+        const copy = useContextMenuStore
+          .getState()
+          .menu!.items.find((item) => "label" in item && item.label === "Copy / Paste Special");
+        expect(copy).toMatchObject({
+          submenu: expect.arrayContaining([
+            expect.objectContaining({ action: "agents.copyAgentReference", arg: [{ path, lines }] }),
+          ]),
+        });
+      }
+    } finally {
+      hideContextMenu();
+      slot.unmount();
+      host.remove();
+    }
+  });
+
   it("builds IDEA's editor tab menu", async () => {
     useProject.setState({
       project: { name: "p", root: "/p", trusted: true, isGit: true, settings: {} } as never,
