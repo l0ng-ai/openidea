@@ -91,6 +91,7 @@ import {
   explainHiddenPath,
   loadDir,
   loadOutline,
+  previewTabEnabled,
   revealPath,
   selectModel,
   setDropTarget,
@@ -588,9 +589,9 @@ export function ProjectView() {
       void revealRange(
         lead.path,
         { start: lead.member.selection_range.start },
-        { preview: o.previewTab, focus: false, external: false },
+        { preview: true, focus: false, external: false },
       );
-    } else void openFile(lead.path, { preview: o.previewTab, focus: false, external: false });
+    } else void openFile(lead.path, { preview: true, focus: false, external: false });
   }, []);
 
   const onActivate = useCallback((node: ProjectNode) => {
@@ -633,7 +634,7 @@ export function ProjectView() {
       if (o.singleClickExpand) toggleExpanded(node);
       return;
     }
-    if (!o.singleClickOpen && !o.previewTab) return;
+    if (!o.singleClickOpen && !previewTabEnabled()) return;
     const opts = { preview: o.singleClickOpen ? undefined : true, focus: false };
     if (node.member) void revealRange(node.path, { start: node.member.selection_range.start }, opts);
     else void openFile(node.path, opts);
