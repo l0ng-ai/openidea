@@ -31,13 +31,60 @@ options = [{ value = "C#", label = "C#" }, { value = "F#", label = "F#" }]
 default = "C#"
 visible = { template = ["console", "classlib", "webapi", "mvc", "xunit"] }
 
+[[fields]]
+id = "sdk"
+label = "SDK version:"
+type = "sdk"
+sdk = "dotnet"
+version = true
+hint = "Pinned in global.json. Automatic uses the newest installed SDK."
+
+[[fields]]
+id = "solution"
+label = "Create solution"
+type = "checkbox"
+default = "true"
+hint = "As in Visual Studio: the solution file at the top, the project in its own folder."
+
+[[fields]]
+id = "solution-name"
+label = "Solution name:"
+type = "text"
+pattern = '^[^/\\:*?"<>|.\s][^/\\:*?"<>|]*$'
+default = "{{name}}"
+visible = { solution = "true" }
+
+# First, so that `dotnet new` itself runs on the pinned SDK and targets its framework.
+[[steps]]
+label = "Pinning the .NET SDK"
+program = "dotnet"
+args = ["new", "globaljson", "--sdk-version", "{{sdk}}"]
+if-set = "sdk"
+env = { DOTNET_CLI_TELEMETRY_OPTOUT = "1", DOTNET_NOLOGO = "1" }
+
+[[steps]]
+label = "Creating the solution"
+program = "dotnet"
+args = ["new", "sln", "--name", "{{solution-name}}"]
+when = { solution = "true" }
+env = { DOTNET_CLI_TELEMETRY_OPTOUT = "1", DOTNET_NOLOGO = "1" }
+
 [[steps]]
 label = "Running dotnet new"
 program = "dotnet"
 args = [
-    "new", "{{template}}", "--name", "{{name}}", "--output", ".",
+    "new", "{{template}}", "--name", "{{name}}",
+    { when = { solution = "true" }, args = ["--output", "{{name}}"] },
+    { when = { solution = "false" }, args = ["--output", "."] },
     { when = { template = ["console", "classlib", "webapi", "mvc", "xunit"] }, args = ["--language", "{{lang}}"] },
 ]
+env = { DOTNET_CLI_TELEMETRY_OPTOUT = "1", DOTNET_NOLOGO = "1" }
+
+[[steps]]
+label = "Adding the project to the solution"
+program = "dotnet"
+args = ["sln", "add", "{{name}}"]
+when = { solution = "true" }
 env = { DOTNET_CLI_TELEMETRY_OPTOUT = "1", DOTNET_NOLOGO = "1" }
 
 [[after]]

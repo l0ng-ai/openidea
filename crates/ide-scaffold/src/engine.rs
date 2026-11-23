@@ -425,11 +425,11 @@ pub(crate) fn create_with(
     let project = staging.0.join(name);
 
     download_service(def, &values, &staging.0, &project, cancel, emit)?;
-    let creates_dir = def.steps.iter().any(|s| s.cwd == Cwd::Parent && matches(&s.when, &values));
+    let creates_dir = def.steps.iter().any(|s| s.cwd == Cwd::Parent && s.applies(&values));
     if !creates_dir {
         std::fs::create_dir_all(&project)?;
     }
-    for step in def.steps.iter().filter(|s| matches(&s.when, &values)) {
+    for step in def.steps.iter().filter(|s| s.applies(&values)) {
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
         }
@@ -446,7 +446,7 @@ pub(crate) fn create_with(
     }
     write_files(def, &values, &project)?;
     write_settings(def, &values, &project)?;
-    for step in def.after.iter().filter(|s| matches(&s.when, &values)) {
+    for step in def.after.iter().filter(|s| s.applies(&values)) {
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
         }

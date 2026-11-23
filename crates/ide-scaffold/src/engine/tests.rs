@@ -108,7 +108,7 @@ fn command_lines() {
             .steps
             .iter()
             .chain(&def.after)
-            .filter(|s| matches(&s.when, &values))
+            .filter(|s| s.applies(&values))
             .map(|s| argv(s, &values).join(" "))
             .collect();
         if !steps.is_empty() {
@@ -137,6 +137,26 @@ fn conditional_arguments() {
     assert!(!argv(&def.steps[0], &values).contains(&"--python".to_owned()));
     values.insert("python".into(), "3.13".into());
     assert!(argv(&def.steps[0], &values).ends_with(&["--python".to_owned(), "3.13".to_owned()]));
+}
+
+#[test]
+fn dotnet_pins_the_sdk_and_creates_a_solution() {
+    let def = def("dotnet").unwrap();
+    let lines = |pairs: &[(&str, &str)]| {
+        let given = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let values = with_defaults(def, "Shop", &given);
+        def.steps.iter().filter(|s| s.applies(&values)).map(|s| argv(s, &values).join(" ")).collect::<Vec<_>>()
+    };
+    assert_eq!(
+        lines(&[("sdk", "8.0.404"), ("solution-name", "Store")]),
+        [
+            "dotnet new globaljson --sdk-version 8.0.404",
+            "dotnet new sln --name Store",
+            "dotnet new console --name Shop --output Shop --language C#",
+            "dotnet sln add Shop",
+        ]
+    );
+    assert_eq!(lines(&[("solution", "false")]), ["dotnet new console --name Shop --output . --language C#"]);
 }
 
 fn failing_def(steps: &str) -> Def {
