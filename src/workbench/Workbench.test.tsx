@@ -500,6 +500,30 @@ describe("workbench shell", () => {
     }
   });
 
+  it("keeps the title bar and project tabs visible while a project opens", async () => {
+    const { useProject } = await import("@/platform/project");
+    const { useWindowGroup } = await import("@/platform/windowGroups");
+    const { Workbench } = await import("./Workbench");
+    useProject.setState({ project: null, opening: true, openingPath: "/work/new-project" });
+    useWindowGroup.setState({
+      tabs: [
+        { label: "main", name: "old", root: "/old", current: false },
+        { label: "project-1", name: "new-project", root: "/work/new-project", current: true },
+      ],
+    });
+    const { unmount } = render(<Workbench />);
+    try {
+      expect(screen.getByRole("status", { name: "Opening new-project…" })).toBeVisible();
+      expect(screen.getByRole("button", { name: "new-project" })).toBeInTheDocument();
+      expect(screen.getByRole("tab", { name: "new-project" })).toHaveAttribute("aria-selected", "true");
+      expect(screen.getByRole("tab", { name: "old" })).toBeInTheDocument();
+    } finally {
+      unmount();
+      useProject.setState({ project: null, opening: false, openingPath: null });
+      useWindowGroup.setState({ tabs: [] });
+    }
+  });
+
   it("renders the welcome view without a project and the frame with one", async () => {
     const { useProject } = await import("@/platform/project");
     const { Workbench } = await import("./Workbench");

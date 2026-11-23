@@ -63,7 +63,8 @@ function ProjectOpening({ path }: { path: string }) {
   const label = t("app.project.opening", { name: basename(path) });
   return (
     <div className={styles.opening} data-project-opening>
-      <TitleBar bare />
+      <TitleBar />
+      <WindowGroupTabs />
       <div className={styles.openingBody} role="status" aria-label={label}>
         <div className={styles.openingBrand} aria-hidden="true">
           <img className={styles.openingLogo} src={projectMark} alt="" draggable={false} />
@@ -93,11 +94,13 @@ export function Workbench() {
   const statusBar = useAppearanceFlag("showStatusBar");
   const navBarPosition = useNavigationBarPosition();
   const frame = project ? styles.framed : lightEdit || standaloneTitle ? styles.lightEditFrame : undefined;
+  const tintName = project?.name ?? (openingPath ? basename(openingPath) : null);
+  const tintRoot = root ?? openingPath;
 
   return (
     <div
       className={frame ? `${styles.workbench} ${frame}` : styles.workbench}
-      style={project ? tabColorVars(project.name, root ? tabColorOverride(root) : null) : undefined}
+      style={tintName ? tabColorVars(tintName, tintRoot ? tabColorOverride(tintRoot) : null) : undefined}
     >
       <div className={styles.content} inert={openingPath !== null} aria-hidden={openingPath ? true : undefined}>
         {project ? (
