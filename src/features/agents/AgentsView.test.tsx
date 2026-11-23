@@ -281,8 +281,9 @@ describe("Agents docked view", () => {
     ]);
   });
 
-  it("lists Import Sessions from Other Apps in Find Action", () => {
+  it("lists Import Sessions in Find Action", () => {
     const action = taskActions.find((a) => a.id === "agents.importSessions");
+    expect(action?.title).toBe("Import Sessions…");
     expect(action?.hidden).toBeFalsy();
     expect(action?.when).toBe("projectOpen");
     act(() => void action?.run({} as never));
@@ -502,17 +503,17 @@ describe("Agents pinned and grouped tasks", () => {
     expect(rows.some((text) => text.includes("one"))).toBe(true);
   });
 
-  it("offers the groups, a new one and a way out in Move to Group", () => {
+  it("offers the groups, a new one and a way out in the Group submenu", () => {
     useAgents.setState({ organize: { groups: [frontend], groupOf: { two: "g1" }, pinned: [] } });
     const menu = taskMenu([useAgents.getState().tasks.get("two")!]);
-    const move = menu.find((item) => "label" in item && item.label === "Move to Group");
+    const move = menu.find((item) => "label" in item && item.label === "Group");
     expect(move).toBeDefined();
     const submenu = (move as { submenu: { label?: string; checked?: boolean }[] }).submenu;
     expect(submenu.map((item) => item.label ?? "separator")).toEqual([
       "Frontend",
       "separator",
       "New Group…",
-      "Remove from Group",
+      "No Group",
     ]);
     expect(submenu[0]).toMatchObject({ checked: true });
   });
@@ -520,7 +521,7 @@ describe("Agents pinned and grouped tasks", () => {
   it("moves a pinned task into a group, out of the pinned section", () => {
     useAgents.setState({ organize: { groups: [frontend], groupOf: {}, pinned: ["two"] } });
     const menu = taskMenu([useAgents.getState().tasks.get("two")!]);
-    const move = menu.find((item) => "label" in item && item.label === "Move to Group") as {
+    const move = menu.find((item) => "label" in item && item.label === "Group") as {
       submenu: { label?: string; run?: () => void }[];
     };
     act(() => move.submenu.find((item) => item.label === "Frontend")!.run!());

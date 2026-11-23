@@ -67,16 +67,108 @@ export interface GraphCommit {
 
 export const emptyGraphState = (): GraphState => ({ lanes: [], nextColor: 0 });
 
-const firstFree = (lanes: Array<Lane | null>) => {
-  const i = lanes.indexOf(null);
-  return i < 0 ? lanes.length : i;
-};
-
 const seg = (from: number, to: number, color: number, dashed?: boolean): GraphSegment =>
   dashed ? { from, to, color, dashed: true } : { from, to, color };
 
 const laneOf = (id: string, color: number, dashed: boolean): Lane =>
   dashed ? { id, color, dashed: true } : { id, color };
+
+/** Inserts `value` into the ascending `list` (no-op if present). */
+function insertSorted(list: number[], value: number) {
+  let lo = 0;
+  let hi = list.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (list[mid]! < value) lo = mid + 1;
+    else hi = mid;
+  }
+  if (list[lo] !== value) list.splice(lo, 0, value);
+}
+
+function removeSorted(list: number[], value: number) {
+  let lo = 0;
+  let hi = list.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (list[mid]! < value) lo = mid + 1;
+    else hi = mid;
+  }
+  if (list[lo] === value) list.splice(lo, 1);
+}
+
+/**
+ * The lane slots of the layout. A lane may sit at a high slot number (the preferred lane of
+ * a commit is its branch's layout number, which grows with the log), so the slots are kept
+ * sparsely: a row then costs the number of live lanes, not the highest slot number.
+ * A slot is a lane, `null` (vacated: the next free slot, see {@link firstFree}) or absent
+ * (never used, which counts as unoccupied but is not offered as the next free slot).
+ */
+class LaneSlots {
+  /** Slot count (the highest slot ever extended to, less trimmed vacated tail slots). */
+  length: number;
+  private readonly slots = new Map<number, Lane | null>();
+  /** Slot numbers holding a lane, ascending. */
+  private readonly live: number[] = [];
+  /** Slot numbers holding `null`, ascending. */
+  private readonly vacated: number[] = [];
+
+  constructor(initial: ReadonlyArray<Lane | null | undefined>) {
+    this.length = initial.length;
+    initial.forEach((lane, i) => {
+      if (lane === undefined) return;
+      this.slots.set(i, lane);
+      (lane ? this.live : this.vacated).push(i);
+    });
+  }
+
+  get(i: number): Lane | null | undefined {
+    return this.slots.get(i);
+  }
+
+  /** Lanes in slot order. */
+  forEachLane(fn: (lane: Lane, slot: number) => void) {
+    for (const i of this.live) fn(this.slots.get(i) as Lane, i);
+  }
+
+  /** Slots of the lanes leading to `id`, in slot order. */
+  slotsOf(id: string): number[] {
+    return this.live.filter((i) => (this.slots.get(i) as Lane).id === id);
+  }
+
+  /** The first vacated slot, else one past the last. */
+  firstFree(): number {
+    return this.vacated.length ? this.vacated[0]! : this.length;
+  }
+
+  vacate(i: number) {
+    if (i >= this.length) this.length = i + 1;
+    removeSorted(this.live, i);
+    this.slots.set(i, null);
+    insertSorted(this.vacated, i);
+  }
+
+  set(i: number, lane: Lane) {
+    if (i >= this.length) this.length = i + 1;
+    removeSorted(this.vacated, i);
+    insertSorted(this.live, i);
+    this.slots.set(i, lane);
+  }
+
+  /** Drops vacated slots at the end. */
+  trim() {
+    while (this.length && this.slots.get(this.length - 1) === null) {
+      this.vacated.pop();
+      this.slots.delete(this.length - 1);
+      this.length--;
+    }
+  }
+
+  toArray(): Array<Lane | null> {
+    const out = new Array<Lane | null>(this.length);
+    for (const [i, lane] of this.slots) out[i] = lane;
+    return out;
+  }
+}
 
 /**
  * Lays out `commits` (continuing from `state`, so pages can be appended).
@@ -86,7 +178,7 @@ export function computeGraph(
   commits: ReadonlyArray<GraphCommit>,
   state: GraphState = emptyGraphState(),
 ): { rows: GraphRow[]; state: GraphState } {
-  const lanes = [...state.lanes];
+  const lanes = new LaneSlots(state.lanes);
   const track = commits.some((c) => c.refs !== undefined);
   const positions = new Map(commits.map((c, i) => [c.id, i]));
   const layout = graphLayout(commits);
@@ -106,40 +198,33 @@ export function computeGraph(
   const rows: GraphRow[] = [];
 
   for (const c of commits) {
-    const matching: number[] = [];
-    lanes.forEach((l, i) => {
-      if (l?.id === c.id) matching.push(i);
-    });
+    const matching = lanes.slotsOf(c.id);
     let lane: number;
     let color: number;
     if (matching.length) {
       lane = matching[0]!;
-      color = lanes[lane]!.color;
+      color = lanes.get(lane)!.color;
     } else {
-      const preferred = refAware ? Math.max(0, layout.layout[positions.get(c.id)!]! - 1) : firstFree(lanes);
-      lane = !lanes[preferred] ? preferred : firstFree(lanes);
+      const preferred = refAware ? Math.max(0, layout.layout[positions.get(c.id)!]! - 1) : lanes.firstFree();
+      lane = !lanes.get(preferred) ? preferred : lanes.firstFree();
       color = stableColor(c.id, nextColor++);
     }
     const widthBefore = lanes.length;
 
     const up: GraphSegment[] = [];
     const upTargets: string[] = [];
-    lanes.forEach((l, i) => {
-      if (!l) return;
+    lanes.forEachLane((l, i) => {
       up.push(describe(seg(i, l.id === c.id ? lane : i, l.color, l.dashed), l));
       upTargets.push(l.id);
     });
-    for (const m of matching) lanes[m] = null;
-    if (lane >= lanes.length) lanes.length = lane + 1;
-    lanes[lane] = null;
+    for (const m of matching) lanes.vacate(m);
+    lanes.vacate(lane);
 
     const down: GraphSegment[] = [];
     const downTargets: string[] = [];
-    lanes.forEach((l, i) => {
-      if (l) {
-        down.push(describe(seg(i, i, l.color, l.dashed), l));
-        downTargets.push(l.id);
-      }
+    lanes.forEachLane((l, i) => {
+      down.push(describe(seg(i, i, l.color, l.dashed), l));
+      downTargets.push(l.id);
     });
 
     c.parents.forEach((p, k) => {
@@ -163,27 +248,30 @@ export function computeGraph(
       // The first parent continues this lane even if another lane also leads to it
       // (both lines then converge at the parent's node, like `git log --graph`).
       if (k === 0) {
-        lanes[lane] = { ...laneOf(p, color, dashed), ...info };
+        lanes.set(lane, { ...laneOf(p, color, dashed), ...info });
         down.push(describe(seg(lane, lane, color, dashed), { ...info, color }));
         downTargets.push(p);
         return;
       }
-      const existing = lanes.findIndex((l) => l?.id === p);
+      const existing = lanes.slotsOf(p)[0] ?? -1;
       if (existing >= 0) {
         down.push(
-          describe(seg(lane, existing, lanes[existing]!.color, dashed), { ...info, color: lanes[existing]!.color }),
+          describe(seg(lane, existing, lanes.get(existing)!.color, dashed), {
+            ...info,
+            color: lanes.get(existing)!.color,
+          }),
         );
         downTargets.push(p);
         return;
       }
-      const slot = firstFree(lanes);
+      const slot = lanes.firstFree();
       const col = stableColor(p, nextColor++);
-      lanes[slot] = { ...laneOf(p, col, dashed), ...info };
+      lanes.set(slot, { ...laneOf(p, col, dashed), ...info });
       down.push(describe(seg(lane, slot, col, dashed), { ...info, color: col }));
       downTargets.push(p);
     });
 
-    while (lanes.length && lanes[lanes.length - 1] === null) lanes.pop();
+    lanes.trim();
     const widthAfter = down.reduce((width, segment) => Math.max(width, segment.to + 1), 0);
     rows.push({
       ...(track ? { id: c.id } : {}),
@@ -200,7 +288,7 @@ export function computeGraph(
     const last = rows.at(-1)!;
     last.down = last.down.map((s) => (s.kind === "unloaded" ? { ...s, arrow: "down", targetRow: -1 } : s));
   }
-  return { rows, state: { lanes, nextColor } };
+  return { rows, state: { lanes: lanes.toArray(), nextColor } };
 }
 
 /**

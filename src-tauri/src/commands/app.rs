@@ -346,6 +346,21 @@ pub(crate) fn project_current(window: Window) -> Option<ProjectInfo> {
     state.project(window.label()).ok().filter(|p| !p.light).map(|p| project_info(&p))
 }
 
+// Off the IPC thread: each member's `for_project().layer(Project)` re-parses both settings layers
+// and validates the merge against the whole `Settings` type, which a debug build's stack-heavy
+// recursion can overflow from the WebView2 callback (see the `settings_set` note above).
+pub(crate) fn project_workspace_members(window: Window) -> IdeResult<Vec<ide_host::ops::project::WorkspaceMember>> {
+    let state = window.state::<AppState>();
+    state.note_ipc();
+    ide_host::ops::project::project_workspace_members(&state.host, window.label())
+}
+
+pub(crate) fn project_workspace_member_set(window: Window, root: PathBuf, key: String, value: String) -> IdeResult<()> {
+    let state = window.state::<AppState>();
+    state.note_ipc();
+    ide_host::ops::project::project_workspace_member_set(&state.host, window.label(), root, key, value)
+}
+
 #[derive(Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum LogLevel {

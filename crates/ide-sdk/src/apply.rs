@@ -1365,8 +1365,15 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
             _ => {}
         }
     }
-    // TypeScript 7 serves LSP itself: it replaces the tsserver-based server.
+    let vue_command = s.tool_path(vue::SERVER).and_then(|p| setting_path(root, p));
+    let vue_command = vue_command.as_deref().map_or(vue::SERVER.into(), Path::to_string_lossy);
+    let vue_pkg = vue::server_package(&vue_command, &search_path());
+    // TypeScript 7 serves LSP itself: it replaces the tsserver-based server, whose plugin
+    // host goes away with it. The Vue language server's `@vue/typescript-plugin` loads into
+    // that host, so a Vue project that has the server keeps the vtsls route and its `.vue`
+    // support; elsewhere the native server still wins.
     if matches!(name, "vtsls" | "typescript-language-server")
+        && !(name == "vtsls" && vue_pkg.is_some() && (vue::vue_project(server_root) || vue::vue_project(root)))
         && let Some(native) = native_tsdk(server_root, s).or_else(|| native_tsdk(root, s))
     {
         cfg.command = native.to_string_lossy().into_owned();
@@ -1380,10 +1387,8 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
         cfg.tsserver_project = false;
         return;
     }
-    let vue_command = s.tool_path(vue::SERVER).and_then(|p| setting_path(root, p));
-    let vue_command = vue_command.as_deref().map_or(vue::SERVER.into(), Path::to_string_lossy);
     if name == "vtsls"
-        && let Some(vue) = vue::server_package(&vue_command, &search_path())
+        && let Some(vue) = vue_pkg
     {
         let plugin = vue::tsserver_plugin(&vue);
         merge_init_options(cfg, json!({ "vtsls": { "tsserver": { "globalPlugins": [plugin] } } }));
@@ -2451,6 +2456,56 @@ mod maven_linkage_tests {
         configure_server(&mut cfg, root, root, &s);
         let options = serde_json::to_value(cfg.initialization_options).unwrap();
         assert_eq!(options.pointer("/typescript/tsserver/maxTsServerMemory"), Some(&json!(6144)));
+    }
+
+    #[test]
+    fn typescript_7_keeps_vtsls_when_the_vue_server_is_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // The Vue server, as the hybrid block finds it through the tool's package dir.
+        let bin = root.join("tools/node_modules/.bin/vue-language-server");
+        let pkg = root.join("tools/node_modules/@vue/language-server/package.json");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(pkg.parent().unwrap()).unwrap();
+        std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+        std::fs::write(&pkg, "{}").unwrap();
+        let mut s = Settings::default();
+        s.tools
+            .insert(vue::SERVER.into(), ide_core::settings::ToolSettings { path: bin.to_string_lossy().into_owned() });
+        // A Vue project whose TypeScript is 7: the native executable would take over.
+        std::fs::write(root.join("package.json"), r#"{"dependencies":{"vue":"^3.0.0"}}"#).unwrap();
+        let modules = root.join("node_modules");
+        let os = match std::env::consts::OS {
+            "macos" => "darwin",
+            "windows" => "win32",
+            os => os,
+        };
+        let arch = match std::env::consts::ARCH {
+            "aarch64" => "arm64",
+            "x86_64" => "x64",
+            arch => arch,
+        };
+        std::fs::create_dir_all(modules.join("typescript/lib")).unwrap();
+        std::fs::write(modules.join("typescript/package.json"), r#"{"name":"typescript","version":"7.0.2"}"#).unwrap();
+        let native = modules.join(format!("@typescript/typescript-{os}-{arch}/lib")).join(crate::exe("tsc"));
+        std::fs::create_dir_all(native.parent().unwrap()).unwrap();
+        std::fs::write(&native, "").unwrap();
+        s.languages.typescript.version = "workspace".into();
+
+        // vtsls hosts the Vue plugin's tsserver; the native server cannot, so it loses.
+        let mut cfg = crate::tests::server("vtsls");
+        configure_server(&mut cfg, root, root, &s);
+        assert_eq!(cfg.command, "vtsls");
+        assert_eq!(
+            serde_json::to_value(cfg.initialization_options).unwrap().pointer("/vtsls/tsserver/globalPlugins/0/name"),
+            Some(&json!("@vue/typescript-plugin"))
+        );
+        assert_eq!(cfg.tsserver_project_extras.extensions, [vue::EXTENSION.to_string()]);
+
+        // typescript-language-server gets no plugin route: the native server still applies.
+        let mut cfg = crate::tests::server("typescript-language-server");
+        configure_server(&mut cfg, root, root, &s);
+        assert_eq!(Path::new(&cfg.command), native);
     }
 
     #[test]

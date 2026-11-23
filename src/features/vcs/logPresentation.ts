@@ -10,10 +10,13 @@ import {
 import { commitKey, graphCommit, type RepoCommit } from "./multiRoot";
 import type { LogOptions } from "./logOptions";
 
+/** The options that shape the displayed graph; every other option leaves it as it is. */
+export type GraphOptions = Pick<LogOptions, "collapseLinear" | "linearizeMerges" | "longEdges">;
+
 /** The same displayed adjacency drives painting, navigation and fragment actions. */
 export function presentLogGraph(
   all: readonly RepoCommit[],
-  options: LogOptions,
+  options: GraphOptions,
   fragments: { expanded: ReadonlySet<string>; collapsed: ReadonlySet<string>; merges: ReadonlySet<string> },
   keep: ReadonlySet<string>,
 ) {

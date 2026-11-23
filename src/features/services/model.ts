@@ -206,6 +206,20 @@ export function containersUsingVolume(snap: DockerSnapshot, volume: DockerVolume
   return snap.containers.filter((c) => c.mounts?.includes(volume.name));
 }
 
+/** Whether `volume` is an anonymous Docker volume rather than a named one. */
+export function isAnonymousVolume(volume: DockerVolume): boolean {
+  if (volume.labels && "com.docker.volume.anonymous" in volume.labels) return true;
+  if (volume.labels?.["com.docker.compose.volume"]) return false;
+  return /^[0-9a-f]{64}$/i.test(volume.name);
+}
+
+/** Named volumes in `snap` created by Compose `project`. */
+export function volumesInComposeProject(snap: DockerSnapshot, project: string): DockerVolume[] {
+  return snap.volumes
+    .filter((v) => v.composeProject === project && !isAnonymousVolume(v))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
 /** Containers in `snap` attached to `network`. */
 export function containersInNetwork(snap: DockerSnapshot, network: DockerNetwork): DockerContainer[] {
   return snap.containers.filter((c) => c.networks?.includes(network.name));
