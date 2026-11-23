@@ -265,7 +265,9 @@ class OverviewLane {
     const onMove = (ev: MouseEvent) => {
       s.scrollTop = startTop + ((ev.clientY - startY) * travel) / track;
     };
-    const onUp = () => {
+    const onUp = (event?: MouseEvent | PointerEvent | FocusEvent) => {
+      if (event?.type === "mouseup" && (event as MouseEvent).button !== 0) return;
+      if (event?.type === "pointercancel" && (event as PointerEvent).pointerType !== "mouse") return;
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
       window.removeEventListener("blur", onUp);

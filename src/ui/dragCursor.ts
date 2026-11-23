@@ -48,7 +48,7 @@ export function lockScrollbarCursor(): () => void {
   surface.setAttribute("data-scrollbar-drag-surface", "");
   surface.setAttribute("aria-hidden", "true");
   document.body.appendChild(surface);
-  return untilDragEnds(() => surface.remove());
+  return () => surface.remove();
 }
 
 function untilDragEnds(cleanup: () => void): () => void {

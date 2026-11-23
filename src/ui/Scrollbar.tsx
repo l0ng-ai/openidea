@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, type RefObject } from "react";
 import { lockScrollbarCursor } from "./dragCursor";
 import styles from "./Scrollbar.module.css";
 
@@ -27,6 +27,15 @@ export function Scrollbar({
   const thumb = useRef<HTMLDivElement>(null);
   const drag = useRef<{ pointerId: number; y: number; top: number; unlock: () => void } | null>(null);
   const geometry = useRef<Geometry | null>(null);
+  const endDrag = useCallback(() => {
+    const current = drag.current;
+    if (!current) return;
+    drag.current = null;
+    current.unlock();
+    delete thumb.current?.dataset.dragging;
+    const el = track.current;
+    if (el?.hasPointerCapture(current.pointerId)) el.releasePointerCapture(current.pointerId);
+  }, []);
 
   useLayoutEffect(() => {
     geometry.current = layout(target.current, track.current, thumb.current);
@@ -40,13 +49,14 @@ export function Scrollbar({
     el.addEventListener("scroll", sync, { passive: true });
     const observer = new ResizeObserver(sync);
     observer.observe(el);
+    window.addEventListener("blur", endDrag);
     return () => {
-      drag.current?.unlock();
-      drag.current = null;
+      endDrag();
+      window.removeEventListener("blur", endDrag);
       el.removeEventListener("scroll", sync);
       observer.disconnect();
     };
-  }, [target]);
+  }, [target, endDrag]);
 
   return (
     <div
@@ -75,10 +85,7 @@ export function Scrollbar({
         if (g) scrollNow(el, drag.current.top + ((e.clientY - drag.current.y) / g.range) * g.max);
       }}
       onLostPointerCapture={(e) => {
-        if (drag.current?.pointerId !== e.pointerId) return;
-        drag.current.unlock();
-        drag.current = null;
-        delete thumb.current?.dataset.dragging;
+        if (drag.current?.pointerId === e.pointerId) endDrag();
       }}
     >
       <div ref={thumb} className={styles.thumb} />
