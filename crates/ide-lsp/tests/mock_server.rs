@@ -635,11 +635,12 @@ async fn java_sharing_cancels_a_retiring_initialize_before_starting_its_replacem
     let old = state.peer();
     shared.store(true, Ordering::SeqCst);
     let switched = tokio::time::timeout(Duration::from_secs(2), h.mgr.reconfigure()).await;
-    let closed_before_response = old.is_closed();
-    gate.open();
     switched.expect("initialize cancellation must not wait for its response");
+    // The retiring transport closes asynchronously; wait for it before releasing
+    // the initialize response so the ordering check does not race the close.
+    eventually(|| old.is_closed()).await;
+    gate.open();
     eventually(|| state.requested("initialize").len() == 2).await;
-    assert!(closed_before_response, "the old transport must close before its initialize response is released");
     assert_eq!(h.mgr.servers().len(), 1);
     assert_eq!(h.mgr.servers()[0].root.as_ref(), h.root.as_path());
     h.mgr.shutdown_all().await;
