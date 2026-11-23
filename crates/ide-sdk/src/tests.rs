@@ -12,6 +12,7 @@ use ide_language::LanguageServerConfig;
 use ide_run::RunConfig;
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::time::Duration;
 
 fn fake_venv(root: &Path, name: &str) -> std::path::PathBuf {
     let venv = root.join(name);
@@ -1602,6 +1603,21 @@ fn env_tools_are_reported_missing_before_they_run() {
     )
     .unwrap_err();
     assert!(pipenv.message.contains("Pipenv is not installed"), "{}", pipenv.message);
+    std::fs::write(dir.path().join("hatch.toml"), "").unwrap();
+    let hatch = crate::python::create_venv_with(
+        crate::python::VenvTool::Hatch,
+        &base,
+        &location,
+        false,
+        none,
+        &Default::default(),
+        &|_| {},
+    )
+    .unwrap_err();
+    assert!(hatch.message.contains("Hatch is not installed"), "{}", hatch.message);
+    let listed =
+        crate::python::hatch_envs_with(dir.path(), none, Duration::from_secs(5), &Default::default()).unwrap_err();
+    assert!(listed.message.contains("Hatch is not installed"), "{}", listed.message);
     // An existing environment is refused before any tool runs.
     std::fs::create_dir_all(&location).unwrap();
     std::fs::write(location.join("pyvenv.cfg"), "home = /python").unwrap();
@@ -1702,7 +1718,7 @@ fn pipenv_creates_the_projects_environment_and_never_replaces_one() {
     let tmp = tempfile::tempdir().unwrap();
     let tmp = dunce::canonicalize(tmp.path()).unwrap();
     let project = tmp.join("shop");
-    let home = tmp.join("workon").join(crate::discover::pipenv_env_name(&project));
+    let home = tmp.join("workon/custom-shop");
     std::fs::create_dir_all(&project).unwrap();
     let python = tmp.join("python");
     std::fs::write(&python, "#!/bin/sh\necho 'Python 3.12.1'\n").unwrap();
@@ -1752,6 +1768,114 @@ fn pipenv_creates_the_projects_environment_and_never_replaces_one() {
     assert!(err.message.contains("Python 3.11 environment, not Python 3.12"), "{}", err.message);
     assert!(err.message.contains("pipenv --rm"), "{}", err.message);
     assert_eq!(calls().lines().count(), 2);
+}
+
+#[test]
+fn hatch_lists_the_projects_own_environments_default_first() {
+    use crate::python::parse_hatch_envs;
+    let out = r#"{"docs":{"type":"virtual"},"default":{"type":"virtual"},"hatch-build":{"builder":true},"hatch-test.py3.12":{"python":"3.12"},"test.py3.12":{"python":"3.12"}}"#;
+    assert_eq!(parse_hatch_envs(out).unwrap(), ["default", "docs", "test.py3.12"]);
+    assert_eq!(parse_hatch_envs(&format!("a warning\n{out}\n")).unwrap().len(), 3);
+    assert!(parse_hatch_envs("not json").unwrap().is_empty());
+    assert!(parse_hatch_envs("{broken").is_err());
+}
+
+#[test]
+fn hatch_environment_choices_require_hatch_configuration() {
+    use crate::python::hatch_envs_with;
+    let tmp = tempfile::tempdir().unwrap();
+    let pyproject = tmp.path().join("pyproject.toml");
+    let no_lookup = |_: &str| panic!("Hatch must not run for an unconfigured project");
+    let timeout = Duration::from_secs(5);
+    assert!(hatch_envs_with(tmp.path(), no_lookup, timeout, &Default::default()).unwrap().is_empty());
+    std::fs::write(&pyproject, "[build-system]\nbuild-backend = 'hatchling.build'\n").unwrap();
+    assert!(hatch_envs_with(tmp.path(), no_lookup, timeout, &Default::default()).unwrap().is_empty());
+    let missing = |_: &str| None;
+    std::fs::write(&pyproject, "[tool.hatch.envs.docs]\n").unwrap();
+    assert!(hatch_envs_with(tmp.path(), missing, timeout, &Default::default()).is_err());
+    std::fs::remove_file(pyproject).unwrap();
+    std::fs::write(tmp.path().join("hatch.toml"), "[envs.docs]\n").unwrap();
+    assert!(hatch_envs_with(tmp.path(), missing, timeout, &Default::default()).is_err());
+}
+
+#[test]
+#[cfg(unix)]
+fn listing_hatch_environments_gives_up_after_the_timeout() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("hatch.toml"), "").unwrap();
+    // Stuck installing an environment plugin, say.
+    let hatch = tmp.path().join("hatch");
+    std::fs::write(&hatch, "#!/bin/sh\nsleep 30\n").unwrap();
+    std::fs::set_permissions(&hatch, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let which = |tool: &str| (tool == "hatch").then(|| hatch.clone());
+    let started = std::time::Instant::now();
+    let err =
+        crate::python::hatch_envs_with(tmp.path(), which, Duration::from_millis(300), &Default::default()).unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::TimedOut, "{}", err.message);
+    assert!(started.elapsed() < Duration::from_secs(10));
+}
+
+#[test]
+#[cfg(unix)]
+fn hatch_creates_the_selected_environment_on_the_base_interpreter() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("shop");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(project.join("hatch.toml"), "").unwrap();
+    let storage = tmp.path().join("data/env/virtual/shop/abcdefgh");
+    std::fs::create_dir_all(&storage).unwrap();
+    let python = tmp.path().join("python");
+    std::fs::write(&python, "#!/bin/sh\necho 'Python 3.12.1'\n").unwrap();
+    std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // `env create <name>` builds the environment with $HATCH_PYTHON in Hatch's data directory (the
+    // default one is named after the project); `--env <name> run` installs what it lacks and runs in it.
+    let hatch = tmp.path().join("hatch");
+    std::fs::write(
+        &hatch,
+        format!(
+            "#!/bin/sh\nwhile [ \"${{1#--}}\" != \"$1\" ]; do [ \"$1\" = --env ] && {{ name=$2; shift; }}; shift; done\n\
+             [ \"$1 $2\" = 'env create' ] && name=$3\n\
+             [ \"$1 $2\" = 'env find' ] && name=$4\nhome='{storage}'/$name\n\
+             [ \"$name\" = default ] && home='{storage}'/shop\n\
+             [ \"$name\" = docs ] && home='{outside}'\n\
+             [ \"$1 $2\" = 'env find' ] && {{ echo \"$home\"; exit 0; }}\n\
+             if [ \"$1\" = run ]; then echo 'Syncing dependencies'; : > \"$home/synced\"; echo \"$home\"; exit 0; fi\n\
+             [ \"$1 $2\" = 'env create' ] || exit 2\necho \"$name\" >> '{storage}'/created\n[ -d \"$home\" ] && exit 0\n\
+             mkdir -p \"$home/bin\"\ncp \"$HATCH_PYTHON\" \"$home/bin/python\"\n\
+             echo 'version = 3.12.1' > \"$home/pyvenv.cfg\"\necho \"Creating environment: $name\"\n",
+            storage = storage.display(),
+            outside = tmp.path().join("custom docs").display(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&hatch, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let which = |tool: &str| (tool == "hatch").then(|| hatch.clone());
+    let create = |env: &str| {
+        crate::python::create_venv_with(
+            crate::python::VenvTool::Hatch,
+            &python,
+            &project.join(env),
+            false,
+            which,
+            &Default::default(),
+            &|_| {},
+        )
+    };
+    let sdk = create("default").unwrap();
+    assert_eq!(&*sdk.path, storage.join("shop/bin/python").as_path());
+    assert_eq!((sdk.name.as_str(), sdk.source.as_str()), ("Python 3.12 (Hatch: shop)", "hatch"));
+    let docs = create("docs").unwrap();
+    assert_eq!((docs.name.as_str(), docs.source.as_str()), ("Python 3.12 (Hatch: shop:docs)", "hatch"));
+    assert!(tmp.path().join("custom docs/synced").is_file());
+    // Hatch keeps an existing environment whatever `HATCH_PYTHON` says: one on another Python
+    // version is refused before anything runs, rather than reported as created.
+    std::fs::write(tmp.path().join("custom docs/pyvenv.cfg"), "version = 3.11.4\n").unwrap();
+    let err = create("docs").unwrap_err();
+    assert!(err.message.contains("Python 3.11 environment, not Python 3.12"), "{}", err.message);
+    assert!(err.message.contains("hatch env remove docs"), "{}", err.message);
+    assert_eq!(std::fs::read_to_string(storage.join("created")).unwrap(), "default\ndocs\n");
 }
 
 #[test]

@@ -3757,5 +3757,11 @@
   "Upgrade available: {latest}": "Upgrade available: {latest}",
   "Rearrange Code": "Rearrange Code",
   "Nothing to rearrange: members are in order, or moving them could change the class": "Nothing to rearrange: members are in order, or moving them could change the class",
-  "The file changed while rearranging; try again": "The file changed while rearranging; try again"
+  "The file changed while rearranging; try again": "The file changed while rearranging; try again",
+  "Hatch Environment": "Hatch Environment",
+  "This project has no Hatch configuration": "This project has no Hatch configuration",
+  "Environment:": "Environment:",
+  "Hatch environment": "Hatch environment",
+  "No environments": "No environments",
+  "Runs “hatch env create <environment>” in the project. Hatch decides where to store the environment.": "Runs “hatch env create <environment>” in the project. Hatch decides where to store the environment."
 }
