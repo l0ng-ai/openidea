@@ -187,8 +187,8 @@ export function libraryEntryPaths(uri: string, archives: readonly string[] = [])
 }
 
 /** The archive root (`<jar>!`) containing a library document, when it has one. */
-export function libraryArchiveRoot(uri: string, archives: readonly string[] = []): string | null {
-  const entry = libraryEntryPaths(uri, archives)[0];
+export function libraryArchiveRoot(uri: string): string | null {
+  const entry = libraryEntryPaths(uri)[0];
   const separator = entry?.indexOf("!/") ?? -1;
   return entry && separator > 0 ? `${entry.slice(0, separator)}!` : null;
 }

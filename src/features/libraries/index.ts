@@ -44,12 +44,8 @@ function archiveGroupName(uri: string, fallback: string): string {
 
 /** A class opened from a jar the build model has not listed yet; show its exact archive. */
 export function openedLibraryGroup(uri: string, groups: readonly LibraryGroup[]): LibraryGroup | null {
-  const roots = groups.flatMap((g) => g.roots);
-  const archive = libraryArchiveRoot(
-    uri,
-    roots.map((r) => r.path).filter((path) => path.endsWith("!")),
-  );
-  if (!archive || roots.some((r) => r.path === archive)) return null;
+  const archive = libraryArchiveRoot(uri);
+  if (!archive || groups.some((group) => group.roots.some((root) => root.path === archive))) return null;
   const separator = Math.max(archive.lastIndexOf("/"), archive.lastIndexOf("\\"));
   const name = archive.slice(separator + 1, -1) || archive;
   return { name: archiveGroupName(uri, name), kind: "classpath", roots: [{ name, path: archive }] };
@@ -206,7 +202,7 @@ export function activate(): () => void {
   let settled: LibraryGroup[] = [];
   /** The last build/SDK result, before archives opened from the editor are added. */
   let backendGroups: LibraryGroup[] = [];
-  /** Exact archives opened from a language server whose build model did not list them. */
+  /** One group per opened archive, so the build model can replace each archive independently. */
   let openedGroups: LibraryGroup[] = [];
   let request: RequestId | undefined;
   /** The project whose libraries are shown (and `settled`). */
@@ -289,7 +285,7 @@ export function activate(): () => void {
     if (!path || !shownFor) return;
     const group = openedLibraryGroup(path, shownGroups);
     if (!group) return;
-    openedGroups = mergeLibraryGroups([...openedGroups, group]);
+    openedGroups.push(group);
     render(backendGroups);
   };
   const disposeGoMod = registerEditorContribution({
