@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { create } from "zustand";
 import { registerActions } from "@/platform/actions";
+import { choosePath } from "@/platform/choosePath";
 import { call, commands, isCancelled, nextRequestId, onIdeEvent, type RequestId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
@@ -26,8 +27,8 @@ async function retrieve(path: string, choose: boolean) {
   try {
     let sources: string | null = null;
     if (choose) {
-      const { open } = await import("@/platform/dialog");
-      const selected = await open({
+      const selected = await choosePath({
+        directory: false,
         title: tx("Choose Sources…"),
         filters: [{ name: tx("Source archives"), extensions: ["jar", "zip"] }],
       });
