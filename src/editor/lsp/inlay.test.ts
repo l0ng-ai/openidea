@@ -40,6 +40,7 @@ const hint: InlayHint = {
       location: { path: "/p/foo.rs", range: { start: { line: 4, col: 7 }, end: { line: 4, col: 10 } } },
     },
   ],
+  textEdits: [],
 };
 
 const views: EditorView[] = [];
