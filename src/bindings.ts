@@ -11289,6 +11289,8 @@ export type PythonClassFacts = {
 	name: string,
 	/**  The class name identifier (selection range). */
 	selection: Range,
+	/**  First line of the definition, its decorators included. */
+	definitionLine: number,
 	/**  Base names as written, a qualified name reduced to its last segment. */
 	bases: string[],
 	methods: PythonMethodFacts[],
@@ -11303,6 +11305,8 @@ export type PythonDebuggerSettings = {
 /**  One Python module's classes, in source order. */
 export type PythonFacts = {
 	classes: PythonClassFacts[],
+	/**  `# noinspection` comments, in source order. */
+	suppressions: PythonSuppression[],
 };
 
 /**  A method definition the inspections can reason about. */
@@ -11310,6 +11314,8 @@ export type PythonMethodFacts = {
 	name: string,
 	/**  The method name identifier (selection range). */
 	selection: Range,
+	/**  First line of the definition, its decorators included. */
+	definitionLine: number,
 	/**
 	 *  Parameter names in order; `None` for a form whose forwarding cannot be compared
 	 *  (`*args`, `**kwargs`, keyword-only, positional-only).
@@ -11355,6 +11361,16 @@ export type PythonSettings = {
 	hideOtherProjectInterpreters?: boolean,
 	/**  Show each interpreter's path under its name on the interpreters page. */
 	showInterpreterPaths?: boolean,
+};
+
+/**
+ *  A `# noinspection Id1,Id2` comment (PyCharm's) and the code it covers: the statement
+ *  right below it (a whole `def` / `class` with its decorators), or the whole file when it
+ *  sits among the file's leading comments, followed by a blank line.
+ */
+export type PythonSuppression = {
+	ids: string[],
+	range: Range,
 };
 
 /**  Color Scheme › Language Defaults › Rainbow brackets: which delimiters are coloured. */

@@ -13,6 +13,7 @@ import {
   contributedIntentions,
   contributedIntentionsAsync,
   contributedQuickFixes,
+  inspectionControlProviders,
   intentionProviders,
   intentionsChanged,
   whenSynced,
@@ -39,7 +40,7 @@ import { iconNode } from "@/ui/iconNode";
 import { editorPrefs } from "@/platform/editorSettings";
 import { spellingIntentions } from "./spelling";
 import { inspectionsAt, type EditorDiagnostic } from "./diagnostics";
-import { SPELLING_INSPECTION } from "@/platform/inspections";
+import { SPELLING_INSPECTION, type InspectionRef } from "@/platform/inspections";
 import { editInspectionSettings, intentionControls } from "@/platform/inspectionControls";
 import { runInteractiveCodeAction } from "./interactiveCommand";
 import { tx, txPart } from "@/platform/i18n";
@@ -496,8 +497,12 @@ export function withInspectionControls(view: EditorView, items: ListPopupItem[])
   );
   if (!inspections.length) return items;
   const fixes = items.filter((i) => isFixItem(i) && !i.submenu);
+  const controls = (inspection: InspectionRef) => [
+    ...intentionControls(inspection),
+    ...view.state.facet(inspectionControlProviders).flatMap((provide) => provide(view, inspection.id)),
+  ];
   if (inspections.length === 1 && fixes.length) {
-    const submenu = intentionControls(inspections[0]!);
+    const submenu = controls(inspections[0]!);
     return items.map((i) => (fixes.includes(i) ? { ...i, submenu } : i));
   }
   return [
@@ -508,7 +513,7 @@ export function withInspectionControls(view: EditorView, items: ListPopupItem[])
       section: { id: "inspection-options" },
       icon: "settings",
       run: () => editInspectionSettings(inspection.id),
-      submenu: intentionControls(inspection),
+      submenu: controls(inspection),
     })),
   ];
 }
