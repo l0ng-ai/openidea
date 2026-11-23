@@ -3743,5 +3743,12 @@
   "Visible columns": "Visible columns",
   "Pipenv Environment": "Pipenv Environment",
   "Install packages from Pipfile": "Install packages from Pipfile",
-  "Runs “pipenv --python <base>” in the project, which writes a Pipfile (from requirements.txt if there is one) when the project has none. Pipenv chooses where to store the environment and reuses an existing one.": "Runs “pipenv --python <base>” in the project, which writes a Pipfile (from requirements.txt if there is one) when the project has none. Pipenv chooses where to store the environment and reuses an existing one."
+  "Runs “pipenv --python <base>” in the project, which writes a Pipfile (from requirements.txt if there is one) when the project has none. Pipenv chooses where to store the environment and reuses an existing one.": "Runs “pipenv --python <base>” in the project, which writes a Pipfile (from requirements.txt if there is one) when the project has none. Pipenv chooses where to store the environment and reuses an existing one.",
+  "Latest": "Latest",
+  "Checking for newer versions": "Checking for newer versions",
+  "Could not check for newer versions of the packages.": "Could not check for newer versions of the packages.",
+  "Upgrade available: {latest}": "Upgrade available: {latest}",
+  "Rearrange Code": "Rearrange Code",
+  "Nothing to rearrange: members are in order, or moving them could change the class": "Nothing to rearrange: members are in order, or moving them could change the class",
+  "The file changed while rearranging; try again": "The file changed while rearranging; try again"
 }

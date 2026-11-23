@@ -560,8 +560,12 @@
 }
 .codeBlock:hover > .codeCopy,
 .markdown :global([data-mermaid]:hover) .codeCopy,
-.codeCopy:focus-visible {
+.codeCopy:focus-visible,
+.codeCopy[data-copied] {
   opacity: 1;
+}
+.codeCopy[data-copied] {
+  color: var(--success);
 }
 /* A drawn diagram carries its own tools at the top-right; Copy moves aside. */
 .markdown :global([data-mermaid][data-mermaid-state="ok"]) .codeCopy {

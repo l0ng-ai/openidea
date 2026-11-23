@@ -14,6 +14,9 @@ use std::time::Duration;
 pub struct PythonPackage {
     pub name: String,
     pub version: String,
+    /// The newest release the interpreter can install; only [`list_packages`] with `outdated` sets it.
+    #[specta(optional)]
+    pub latest_version: Option<String>,
 }
 
 /// The tool that creates a new Python environment in "Add Python Interpreter".
@@ -343,24 +346,97 @@ fn pip_env(python: &Path) -> Vec<(String, String)> {
     venv_of(python).map(|v| vec![("VIRTUAL_ENV".to_owned(), v.to_string_lossy().into_owned())]).unwrap_or_default()
 }
 
-/// Installed packages (`pip list --format=json`), sorted by name.
-pub fn list_packages(python: &Path, cancel: &CancellationToken) -> IdeResult<Vec<PythonPackage>> {
+/// How long the check for newer releases may take in all: offline, pip waits for every
+/// package in turn.
+const OUTDATED_LIMIT: Duration = Duration::from_secs(120);
+
+/// Installed packages (`pip list --format=json`), sorted by name. With `outdated`, only the
+/// ones the configured index has a newer release of (`--outdated`, which goes to the network).
+pub fn list_packages(python: &Path, outdated: bool, cancel: &CancellationToken) -> IdeResult<Vec<PythonPackage>> {
     if !python.is_file() {
         return Err(IdeError::not_found(format!("{} does not exist", python.display())));
     }
     let installer = installer(python)?;
-    let (program, args) = pip_command(python, &installer, &["list", "--format", "json"]);
+    let mut env = pip_env(python);
+    if matches!(installer, Installer::Pip) {
+        // Quiet mode suppresses the JSON package list, including with --format json.
+        env.push(("PIP_QUIET".into(), "0".into()));
+    }
+    let mut sub = vec!["list", "--format", "json"];
+    if outdated {
+        sub.push("--outdated");
+        // One retry, so a request that fails always prints pip's retry warning (`retries = 0`
+        // in pip.conf would hide it); the command line wins over pip.conf and `PIP_RETRIES`.
+        if matches!(installer, Installer::Pip) {
+            sub.extend(["--retries", "1", "--timeout", "5"]);
+        }
+    }
+    let (program, args) = pip_command(python, &installer, &sub);
     let dir = neutral_dir();
-    let out = stream(&program, &args, dir.as_ref().map(|d| d.path()), &pip_env(python), cancel, &|_| {})?;
+    let run =
+        |cancel: &CancellationToken| stream(&program, &args, dir.as_ref().map(|d| d.path()), &env, cancel, &|_| {});
+    let out = if outdated { with_deadline(cancel, OUTDATED_LIMIT, run)? } else { run(cancel)? };
+    if outdated && pip_request_failed(&out) {
+        return Err(IdeError::unavailable("pip could not reach the package index for every package"));
+    }
     let mut packages = parse_pip_list(&out)?;
     packages.sort_by_key(|p| p.name.to_lowercase());
     Ok(packages)
 }
 
+/// Runs `work` with a token that is also cancelled after `limit`; that is reported as timed out.
+pub(crate) fn with_deadline<T>(
+    cancel: &CancellationToken,
+    limit: Duration,
+    work: impl FnOnce(&CancellationToken) -> IdeResult<T>,
+) -> IdeResult<T> {
+    let token = cancel.child_token();
+    let (done, finished) = std::sync::mpsc::channel::<()>();
+    let timer = std::thread::spawn({
+        let token = token.clone();
+        move || {
+            if finished.recv_timeout(limit) == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+                token.cancel();
+            }
+        }
+    });
+    let result = work(&token);
+    drop(done);
+    let _ = timer.join();
+    match result {
+        Err(e) if token.is_cancelled() && !cancel.is_cancelled() => Err(IdeError::new(
+            ide_core::error::ErrorKind::TimedOut,
+            format!("timed out after {} s: {e}", limit.as_secs()),
+        )),
+        other => other,
+    }
+}
+
+/// pip reports a package it could not look up as up to date: exit 0, the package left out of
+/// the list, and only its retry warnings. A warning means a request failed, so the list may
+/// be missing newer releases. (uv fails instead.)
+pub(crate) fn pip_request_failed(out: &str) -> bool {
+    out.lines().any(|l| l.starts_with("WARNING: Retrying ("))
+}
+
 pub(crate) fn parse_pip_list(out: &str) -> IdeResult<Vec<PythonPackage>> {
+    #[derive(Deserialize)]
+    struct Listed {
+        name: String,
+        version: String,
+        latest_version: Option<String>,
+    }
     // Skip the echoed command line and any warnings before the JSON array.
-    let json = out.lines().find(|l| l.trim_start().starts_with('[')).unwrap_or("[]");
-    serde_json::from_str(json).map_err(|e| IdeError::internal(format!("unexpected pip output: {e}")))
+    let json = out
+        .lines()
+        .find(|l| l.trim_start().starts_with('['))
+        .ok_or_else(|| IdeError::internal("unexpected pip output: missing package list"))?;
+    let listed: Vec<Listed> =
+        serde_json::from_str(json).map_err(|e| IdeError::internal(format!("unexpected pip output: {e}")))?;
+    Ok(listed
+        .into_iter()
+        .map(|p| PythonPackage { name: p.name, version: p.version, latest_version: p.latest_version })
+        .collect())
 }
 
 /// A requirement naming a local path (`.`, `./pkg`, `../lib[dev]`) made absolute

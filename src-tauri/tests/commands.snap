@@ -229,6 +229,7 @@ doc_open_untitled                            always             project_host bin
 doc_open_virtual                             always             project_host bindings async
 doc_outline                                  always             project_host bindings async
 doc_python_facts                             always             project_host bindings async
+doc_rearrange                                always             project_host bindings async
 doc_reload_from_disk                         always             project_host bindings async
 doc_save                                     always             project_host bindings async
 doc_save_all                                 always             project_host bindings async
