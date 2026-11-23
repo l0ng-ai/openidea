@@ -93,6 +93,37 @@ for (const activation of ["double-click", "Enter"] as const) {
   });
 }
 
+test("records a modified wheel gesture and runs the assigned action", async ({ workbench: page }) => {
+  await page.keyboard.press("Meta+,");
+  const settings = page.getByRole("dialog", { name: "Settings", exact: true });
+  await settings.getByRole("treeitem", { name: "Keymap", exact: true }).click();
+  await settings.getByRole("textbox", { name: "Search actions" }).fill("Find Action");
+  const row = settings.getByRole("tree", { name: "Actions" }).getByRole("treeitem", { name: /Find Action/ });
+  await row.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Add Mouse Shortcut", exact: true }).click();
+  const recorder = page.getByRole("dialog", { name: "Mouse Shortcut: Find Action…", exact: true });
+  const pad = recorder.getByRole("textbox", { name: "Mouse shortcut" });
+  await pad.hover();
+  const scrollUp = async () => {
+    await page.keyboard.down("Control");
+    await page.mouse.wheel(0, -120);
+    await page.keyboard.up("Control");
+  };
+  await scrollUp();
+  await expect(pad).toHaveText("⌃Wheel Up");
+  const search = page.getByRole("dialog", { name: "Search Everywhere", exact: true });
+  await expect(search).toBeHidden();
+  await recorder.getByRole("button", { name: "OK", exact: true }).click();
+  await expect(row).toContainText("⌃Wheel Up");
+  await settings.getByRole("button", { name: "OK", exact: true }).click();
+  await expect(settings).toBeHidden();
+  await page.mouse.move(700, 450);
+  await page.mouse.wheel(0, 120);
+  await expect(search).toBeHidden();
+  await scrollUp();
+  await expect(search).toBeVisible();
+});
+
 test("rectangular drag remains configurable after removal and saves a middle mouse binding", async ({
   workbench: page,
 }) => {
