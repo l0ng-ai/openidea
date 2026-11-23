@@ -23,6 +23,8 @@ describe("IntelliJ IDEA keymap import", () => {
           <keyboard-shortcut first-keystroke="meta shift N" />
           <keyboard-shortcut first-keystroke="meta K" second-keystroke="meta C" />
           <mouse-shortcut keystroke="alt button1" />
+          <mouse-shortcut keystroke="control button143" />
+          <mouse-shortcut keystroke="shift alt button142" />
           <mouse-shortcut keystroke="double button1" />
         </action>
         <action id="GotoDeclaration" />
@@ -31,7 +33,7 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.name).toBe("My Mac");
     expect(k.parent).toBe("intellij-macos");
     expect(k.overrides["navigate.gotoClass"]).toEqual(
-      ["Meta+Shift+N", "Meta+K Meta+C", "Alt+Button1"].map(normalizeBinding),
+      ["Meta+Shift+N", "Meta+K Meta+C", "Alt+Button1", "Ctrl+WheelUp", "Alt+Shift+WheelDown"].map(normalizeBinding),
     );
     expect(k.overrides["navigate.declaration"]).toEqual([]);
     expect(k.applied).toBe(2);

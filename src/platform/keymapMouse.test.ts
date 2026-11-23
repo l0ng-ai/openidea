@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  applyKeymapSettings,
+  bindingsFor,
   formatBinding,
   dispatchMouseShortcut,
   installKeyboardDispatcher,
@@ -76,6 +78,37 @@ describe("mouse shortcuts", () => {
     expect(shortcutLabel("t.mouseFirst")).toBeUndefined();
   });
 
+  it.each([
+    ["en", "Wheel Up", "Wheel Down"],
+    ["zh", "滚轮向上", "滚轮向下"],
+  ])("formats wheel directions in %s", async (locale, up, down) => {
+    const originalLocale = useI18n.getState().locale;
+    try {
+      await setLocale(locale);
+      expect(formatBinding("ctrl+wheelup", false)).toBe(`Ctrl+${up}`);
+      expect(formatBinding("meta+shift+wheeldown", true)).toBe(`⇧⌘${down}`);
+    } finally {
+      await setLocale(originalLocale);
+    }
+  });
+
+  it("loads canonical single-stroke wheel bindings from preset and custom overrides", () => {
+    const original = useKeymap.getState();
+    const overrides = {
+      "t.wheel": ["alt+ctrl+wheelup", "Ctrl+Alt+WheelUp", "WheelDown", "Ctrl+K WheelDown", "Alt Alt+WheelUp"],
+    };
+    try {
+      for (const id of ["intellij-windows", "user:wheel"]) {
+        applyKeymapSettings(id, overrides, { "user:wheel": { parent: "intellij-windows", overrides } });
+        expect(bindingsFor("t.wheel")).toEqual(["Ctrl+Alt+WheelUp", "WheelDown"]);
+        expect(bindingsFor("t.wheel").every(isMouseBinding)).toBe(true);
+        expect(primaryKeyBinding("t.wheel")).toBeUndefined();
+      }
+    } finally {
+      useKeymap.setState(original);
+    }
+  });
+
   describe("dispatch", () => {
     let uninstall = () => {};
     const back = vi.fn();
@@ -104,6 +137,45 @@ describe("mouse shortcuts", () => {
       for (const e of events) target.dispatchEvent(e);
       return events;
     };
+
+    const wheel = (init: WheelEventInit, at: number, ticks?: number) => {
+      const event = new WheelEvent("wheel", { deltaY: -1, bubbles: true, cancelable: true, ...init });
+      Object.defineProperty(event, "timeStamp", { value: at });
+      if (ticks !== undefined) Object.defineProperty(event, "wheelDeltaY", { value: ticks });
+      editor.dispatchEvent(event);
+      return event;
+    };
+
+    it("consumes one shortcut per notch and leaves unmatched and horizontal scroll events alone", () => {
+      useKeymap.setState({ overrides: { "navigate.back": ["Ctrl+WheelUp"], "navigate.forward": ["WheelDown"] } });
+      const scroll = vi.fn();
+      editor.addEventListener("wheel", scroll);
+      expect(wheel({ ctrlKey: true, deltaMode: WheelEvent.DOM_DELTA_LINE }, 1).defaultPrevented).toBe(true);
+      expect(wheel({ ctrlKey: true }, 2, 120).defaultPrevented).toBe(true);
+      expect(wheel({ ctrlKey: true }, 3, 120).defaultPrevented).toBe(true);
+      expect(wheel({ deltaY: 1, deltaMode: WheelEvent.DOM_DELTA_LINE }, 4).defaultPrevented).toBe(true);
+      expect(wheel({ ctrlKey: true, deltaY: 1 }, 5).defaultPrevented).toBe(false);
+      expect(wheel({ ctrlKey: true, deltaY: 0, deltaX: -10 }, 6).defaultPrevented).toBe(false);
+      expect(wheel({ deltaMode: WheelEvent.DOM_DELTA_LINE }, 7).defaultPrevented).toBe(false);
+      expect(back).toHaveBeenCalledTimes(3);
+      expect(forward).toHaveBeenCalledOnce();
+      expect(scroll).toHaveBeenCalledTimes(3);
+    });
+
+    it("swallows a bound trackpad burst without repeating the action or taking over unbound momentum", () => {
+      useKeymap.setState({ overrides: { "navigate.back": ["Alt+WheelUp"], "navigate.forward": ["Alt+WheelDown"] } });
+      expect(wheel({ deltaY: -30 }, 0).defaultPrevented).toBe(false);
+      expect(wheel({ altKey: true, deltaY: -20 }, 20).defaultPrevented).toBe(false);
+      expect(back).not.toHaveBeenCalled();
+      expect(wheel({ altKey: true, deltaY: -30 }, 200).defaultPrevented).toBe(true);
+      expect(wheel({ altKey: true, deltaY: -20 }, 220).defaultPrevented).toBe(true);
+      expect(wheel({ altKey: true, deltaY: -10 }, 240).defaultPrevented).toBe(true);
+      expect(back).toHaveBeenCalledOnce();
+      expect(wheel({ altKey: true, deltaY: 20 }, 260).defaultPrevented).toBe(true);
+      expect(forward).toHaveBeenCalledOnce();
+      expect(wheel({ altKey: true, deltaY: -30 }, 450).defaultPrevented).toBe(true);
+      expect(back).toHaveBeenCalledTimes(2);
+    });
 
     it("does not prepare the editor for a disabled mouse action", () => {
       const run = vi.fn();
