@@ -38,7 +38,7 @@ pub use skill_installer::{
 };
 
 use conversation::{Conversation, SavedSubagent, Session};
-use ide_core::{IdeError, IdeResult, IpcPath};
+use ide_core::{IdeError, IdeResult, IpcPath, error::ErrorKind};
 use ide_jsonrpc::{Framing, Handler, Peer, RpcError, codes};
 use ide_vcs::Repo;
 use parking_lot::{Mutex, RwLock};
@@ -1172,35 +1172,14 @@ impl AgentManager {
 
     /// Drops a queued message.
     pub fn unqueue(&self, id: &str, queued: &str) -> IdeResult<AgentQueued> {
-        let task = self.task(id)?;
-        let item = {
-            let mut s = task.state.lock();
-            let i =
-                s.task.queue.iter().position(|q| q.id == queued).ok_or_else(|| IdeError::not_found("already sent"))?;
-            s.task.queue.remove(i)
-        };
-        task.persist();
-        task.emit_task();
-        Ok(item)
+        self.task(id)?.take_queued(queued, false).map(|(item, _)| item)
     }
 
     /// Sends queued message `queued` now: into the running turn when the agent takes
     /// messages mid-turn, else next, cancelling the current turn if there is one.
     pub async fn send_queued_now(&self, id: &str, queued: &str) -> IdeResult<()> {
         let task = self.task(id)?;
-        let (item, busy) = {
-            let mut s = task.state.lock();
-            let i =
-                s.task.queue.iter().position(|q| q.id == queued).ok_or_else(|| IdeError::not_found("already sent"))?;
-            let item = s.task.queue.remove(i);
-            let busy = s.busy;
-            if !busy {
-                s.busy = true;
-            }
-            (item, busy)
-        };
-        task.persist();
-        task.emit_task();
+        let (item, busy) = task.take_queued(queued, true)?;
         if !busy {
             self.shared.runtime.spawn(async move { task.run(item.prompt).await });
             return Ok(());
@@ -2345,6 +2324,23 @@ impl Task {
         self.shared.emit(AgentEvent::Task { task: Box::new(task) });
     }
 
+    /// Takes the item and, for Send now, claims an idle turn under the same lock.
+    fn take_queued(&self, id: &str, for_send: bool) -> IdeResult<(AgentQueued, bool)> {
+        let mut s = self.state.lock();
+        let Some(index) = s.task.queue.iter().position(|item| item.id == id) else {
+            drop(s);
+            self.emit_task();
+            return Err(IdeError::new(ErrorKind::OutOfSync, "Message is no longer queued"));
+        };
+        let item = s.task.queue.remove(index);
+        let was_busy = s.busy;
+        s.busy |= for_send;
+        drop(s);
+        self.persist();
+        self.emit_task();
+        Ok((item, was_busy))
+    }
+
     /// Shows (or clears) the agent's pending retry; emitted only when it changes.
     fn set_retry(&self, retry: Option<AgentRetry>) {
         {
@@ -2553,7 +2549,10 @@ impl Task {
                 self.push_entry(AgentEntry::Error { message: "The agent declined to continue.".into() });
             }
             match (next, result) {
-                (Some(queued), _) => prompt = queued.prompt,
+                (Some(queued), _) => {
+                    self.emit_task();
+                    prompt = queued.prompt;
+                }
                 (None, Ok(stop)) => {
                     self.set_status(AgentStatus::Ready, None);
                     if stop != "cancelled" {

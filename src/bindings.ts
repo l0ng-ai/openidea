@@ -6543,7 +6543,7 @@ report?: PushReport | null } |
 { type: "amendConflict"; commit: string };
 
 export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "invalidInput" | 
-/**  Document version mismatch; the UI must resync the full text. */
+/**  The requested state is stale; the UI must use the current snapshot. */
 "outOfSync" | "cancelled" | "timedOut" | 
 /**  A required external tool (language server, git, debugger) is unavailable. */
 "unavailable" | "io" | "protocol" | "internal";
