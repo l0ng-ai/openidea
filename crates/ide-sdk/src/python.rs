@@ -94,6 +94,7 @@ pub(crate) fn create_venv_with(
 }
 
 const HATCH_MISSING: &str = "Hatch is not installed (install it from https://hatch.pypa.io)";
+const HATCH_SHOW_ARGS: [&str; 5] = ["--no-color", "--no-interactive", "env", "show", "--json"];
 
 /// Hatch's own environments (`hatch-build`, `hatch-test.py3.12`, `hatch-static-analysis`, …).
 fn is_internal_hatch_env(name: &str) -> bool {
@@ -101,7 +102,7 @@ fn is_internal_hatch_env(name: &str) -> bool {
 }
 
 /// The environments the project at `root` defines for Hatch (`hatch env show --json`), `default`
-/// first, without Hatch's internal ones. Every project has `default`, configured or not.
+/// first, without Hatch's internal ones. Unconfigured projects return an empty list.
 pub fn hatch_envs(root: &Path, cancel: &CancellationToken) -> IdeResult<Vec<String>> {
     // Hatch first installs the environment plugins the project requires, which can take a while.
     hatch_envs_with(root, which, Duration::from_secs(120), cancel)
@@ -113,8 +114,9 @@ pub(crate) fn hatch_envs_with(
     timeout: Duration,
     cancel: &CancellationToken,
 ) -> IdeResult<Vec<String>> {
+    let Some((project, _)) = crate::discover::hatch_project_config(root) else { return Ok(Vec::new()) };
     let hatch = which("hatch").ok_or_else(|| IdeError::unavailable(HATCH_MISSING))?;
-    let args = ["--no-color", "--no-interactive", "env", "show", "--json"].map(str::to_owned);
+    let args = HATCH_SHOW_ARGS.map(str::to_owned);
     // Cancelled when the caller cancels, or when `timeout` passes first.
     let token = cancel.child_token();
     let (done, finished) = std::sync::mpsc::channel::<()>();
@@ -124,7 +126,7 @@ pub(crate) fn hatch_envs_with(
             watchdog.cancel();
         }
     });
-    let out = stream(&hatch, &args, Some(root), &[], &token, &|_| {});
+    let out = stream(&hatch, &args, Some(&project), &[], &token, &|_| {});
     drop(done);
     match out {
         Err(_) if token.is_cancelled() && !cancel.is_cancelled() => Err(IdeError::new(
@@ -133,6 +135,37 @@ pub(crate) fn hatch_envs_with(
         )),
         out => parse_hatch_envs(&out?),
     }
+}
+
+fn hatch_find_args(name: &str) -> [&str; 6] {
+    ["--no-color", "--no-interactive", "env", "find", "--", name]
+}
+
+fn hatch_output_home(output: &str) -> Option<PathBuf> {
+    output
+        .lines()
+        .rev()
+        .map(|line| PathBuf::from(line.trim()))
+        .find(|home| home.is_absolute() && home.join("pyvenv.cfg").is_file())
+}
+
+/// Existing project virtualenvs, including custom locations resolved by Hatch itself.
+pub(crate) fn hatch_env_paths(root: &Path, hatch: &Path) -> Option<Vec<(PathBuf, String)>> {
+    const TIMEOUT: Duration = Duration::from_secs(4);
+    let output = query_in(hatch, &HATCH_SHOW_ARGS, Some(root), &[], TIMEOUT)?;
+    let names = parse_hatch_envs(&output).ok()?;
+    Some(
+        names
+            .chunks(4)
+            .flat_map(|names| {
+                crate::discover::par_map(names, |name| {
+                    let output = query_in(hatch, &hatch_find_args(name), Some(root), &[], TIMEOUT)?;
+                    let python = hatch_output_home(&output)?.join(bin_dir()).join(exe("python"));
+                    python.is_file().then(|| (python, name.clone()))
+                })
+            })
+            .collect(),
+    )
 }
 
 pub(crate) fn parse_hatch_envs(out: &str) -> IdeResult<Vec<String>> {
@@ -177,11 +210,13 @@ fn create_hatch_env(
     cancel: &CancellationToken,
     on_line: &dyn Fn(String),
 ) -> IdeResult<Sdk> {
-    let hatch = which("hatch").ok_or_else(|| IdeError::unavailable(HATCH_MISSING))?;
     let project = location
         .parent()
         .filter(|p| p.is_dir())
         .ok_or_else(|| IdeError::invalid("Hatch environments need an open project directory"))?;
+    let (project, _) = crate::discover::hatch_project_config(project)
+        .ok_or_else(|| IdeError::invalid("This project has no Hatch configuration"))?;
+    let hatch = which("hatch").ok_or_else(|| IdeError::unavailable(HATCH_MISSING))?;
     let env = location
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -190,23 +225,18 @@ fn create_hatch_env(
     let run = |args: &[&str]| {
         let args: Vec<String> =
             ["--no-color", "--no-interactive"].iter().chain(args).map(|a| (*a).to_owned()).collect();
-        stream(&hatch, &args, Some(project), &hatch_python, cancel, on_line)
+        stream(&hatch, &args, Some(&project), &hatch_python, cancel, on_line)
     };
-    let existing = query_in_cancellable(&hatch, &["env", "find", &env], project, &[], Duration::from_secs(30), cancel)
-        .and_then(|out| out.lines().map(PathBuf::from).find(|home| home.join("pyvenv.cfg").is_file()));
+    let existing = query_in_cancellable(&hatch, &hatch_find_args(&env), &project, &[], Duration::from_secs(30), cancel)
+        .and_then(|out| hatch_output_home(&out));
     if let Some(home) = existing {
         reuse_existing_env(&home, base, &format!("hatch env remove {env}"))?;
     }
     run(&["env", "create", &env])?;
     let out = run(&["--env", &env, "run", "python", "-c", "import sys; print(sys.prefix)"])?;
-    let home = out
-        .lines()
-        .rev()
-        .map(|line| PathBuf::from(line.trim()))
-        .find(|home| home.join("pyvenv.cfg").is_file())
-        .ok_or_else(|| IdeError::internal("hatch created no environment".to_owned()))?;
+    let home = hatch_output_home(&out).ok_or_else(|| IdeError::internal("hatch created no environment".to_owned()))?;
     let python = home.join(bin_dir()).join(exe("python"));
-    crate::discover::python_sdk(&python, "venv", Some(project))
+    crate::discover::hatch_sdk(&python, &project, &env)
         .ok_or_else(|| IdeError::internal(format!("{} was not created", python.display())))
 }
 

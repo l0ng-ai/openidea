@@ -134,8 +134,8 @@ export function createVenv(
 }
 
 /**
- * The environments the open project defines for Hatch, `default` first; fails when hatch is not
- * installed. Hatch may install plugins first, so the caller cancels it when it no longer needs it.
+ * The open project's Hatch environments, or an empty list when Hatch is unconfigured.
+ * Hatch may install plugins first, so the caller cancels it when it no longer needs it.
  */
 export function hatchEnvs(): Streamed<string[]> {
   const request = nextRequestId();

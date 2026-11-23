@@ -40,8 +40,7 @@ export function AddInterpreterDialog({
   const [location, setLocation] = useState(`${root}/.venv`);
   // Conda keeps named environments in its own envs directory, so only a name is asked for.
   const [envName, setEnvName] = useState(() => root.replaceAll("\\", "/").split("/").filter(Boolean).at(-1) ?? "env");
-  // Hatch keeps environments in its data directory: the project's environment to create is asked for.
-  const [hatchNames, setHatchNames] = useState<string[] | null>(null);
+  const [hatch, setHatch] = useState<{ root: string; names: string[]; error?: string }>();
   const [hatchEnv, setHatchEnv] = useState<string | null>(null);
   const [existing, setExisting] = useState<string | null>(null);
   const [browsed, setBrowsed] = useState<Sdk[]>([]);
@@ -99,23 +98,26 @@ export function AddInterpreterDialog({
   };
 
   useEffect(() => {
-    if (kind !== "hatch") return;
     let live = true;
     const job = hatchEnvs();
-    job.promise
-      .then((names) => live && setHatchNames(names))
+    void job.promise
+      .then((names) => live && setHatch({ root, names }))
       .catch((e: unknown) => {
-        if (!live || isCancelled(e)) return;
-        setHatchNames([]);
-        setError(String((e as Error)?.message ?? e));
+        if (live && !isCancelled(e)) setHatch({ root, names: [], error: String((e as Error)?.message ?? e) });
+      })
+      .finally(() => {
+        live = false;
       });
     return () => {
+      if (live) job.cancel();
       live = false;
-      job.cancel();
     };
-  }, [kind]);
-  const hatchEnvValue = hatchEnv ?? hatchNames?.[0] ?? null;
+  }, [root]);
+  const hatchForRoot = hatch?.root === root ? hatch : undefined;
+  const hatchNames = hatchForRoot?.names ?? [];
+  const hatchEnvValue = hatchEnv && hatchNames.includes(hatchEnv) ? hatchEnv : (hatchNames[0] ?? null);
   const hatchTarget = hatchEnvValue ? `${root}/${hatchEnvValue}` : "";
+  const formError = error ?? (kind === "hatch" && mode === "new" ? hatchForRoot?.error : undefined);
 
   const target = (kind === "conda" ? envName : kind === "hatch" ? hatchTarget : location).trim();
   const ok = () => {
@@ -124,7 +126,8 @@ export function AddInterpreterDialog({
     if (mode === "existing") {
       if (existing)
         checkExisting(existing, (sdk) => {
-          rememberSdk("python", sdk);
+          const detected = list.find((known) => known.source === "hatch" && known.path === sdk.path);
+          rememberSdk("python", detected ?? sdk);
           onAdded(sdk.path);
         });
       return;
@@ -152,9 +155,7 @@ export function AddInterpreterDialog({
     poetry: tx(
       "Runs “poetry env use <base>” in the project; poetry keeps the environment under its own cache directory.",
     ),
-    hatch: tx(
-      "Runs “hatch env create <environment>” in the project; Hatch keeps the environment in its own data directory.",
-    ),
+    hatch: tx("Runs “hatch env create <environment>” in the project. Hatch decides where to store the environment."),
   }[kind];
 
   return (
@@ -176,7 +177,7 @@ export function AddInterpreterDialog({
     >
       <div className={styles.dialogBody}>
         <ul className={styles.kinds} aria-label={tx("Interpreter type")}>
-          {KINDS.map((k) => (
+          {KINDS.filter((k) => k.tool !== "hatch" || hatchNames.length > 0 || hatchForRoot?.error).map((k) => (
             <li key={k.tool}>
               <button
                 type="button"
@@ -190,7 +191,7 @@ export function AddInterpreterDialog({
                 }}
               >
                 <Icon name={k.icon} size={16} />
-                {k.label}
+                <T>{k.label}</T>
               </button>
             </li>
           ))}
@@ -235,10 +236,10 @@ export function AddInterpreterDialog({
                   <Select
                     id={ids.location}
                     value={hatchEnvValue}
-                    options={(hatchNames ?? []).map((name) => ({ value: name, label: name, verbatim: true }))}
+                    options={hatchNames.map((name) => ({ value: name, label: name, verbatim: true }))}
                     onChange={setHatchEnv}
-                    placeholder={hatchNames ? "No environments" : "Detecting…"}
-                    aria-label="Hatch environment"
+                    placeholder="No environments"
+                    aria-label={tx("Hatch environment")}
                   />
                 </>
               ) : (
@@ -332,9 +333,9 @@ export function AddInterpreterDialog({
               </div>
             </>
           )}
-          {error && (
+          {formError && (
             <div className={styles.error} role="alert">
-              {error}
+              <T>{formError}</T>
             </div>
           )}
           {log.length > 0 && <pre className={styles.log}>{log.join("\n")}</pre>}
