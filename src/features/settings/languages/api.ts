@@ -122,15 +122,20 @@ function streamed<T>(
 }
 
 /** Tool that creates a new Python environment (`VenvTool` in `ide-sdk`). */
-export type VenvTool = "venv" | "uv" | "poetry" | "conda" | "hatch";
+export type VenvTool = "venv" | "uv" | "poetry" | "conda" | "pipenv" | "hatch";
 
 export function createVenv(
   tool: VenvTool,
   base: string,
   location: string,
+  /** Also install the packages the project declares (pipenv: its `Pipfile`). */
+  installPackages: boolean,
   onLine: (line: string) => void,
 ): Streamed<Sdk> {
-  return streamed((req, ch) => call(commands.sdkPythonCreateVenv(tool, base, location, req, ch)), onLine);
+  return streamed(
+    (req, ch) => call(commands.sdkPythonCreateVenv(tool, base, location, installPackages, req, ch)),
+    onLine,
+  );
 }
 
 /**
