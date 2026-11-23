@@ -1,5 +1,5 @@
 import { isBrowserLaunch } from "../browser";
-import type { DebugSession } from "../state";
+import { tabOrderOf, type DebugSession } from "../state";
 
 export interface SessionTab {
   session: DebugSession;
@@ -14,14 +14,26 @@ export interface SessionTab {
  * empty session for the launch and a child for the page, and only the page has anything to show.
  */
 export function sessionTabs(sessions: readonly DebugSession[]): SessionTab[] {
+  const byId = new Map(sessions.map((s) => [s.id, s]));
   const parents = new Set(sessions.map((s) => s.parent));
   const launches = new Set(
     sessions.filter((s) => s.parent == null && isBrowserLaunch(s.launch) && parents.has(s.id)).map((s) => s.id),
   );
+  // The launch row is hidden behind its page, so the page has to inherit the launch's slot.
+  const orderOf = (s: DebugSession) => {
+    const page = s.parent != null && launches.has(s.parent);
+    return tabOrderOf(page ? (byId.get(s.parent!) ?? s) : s);
+  };
   return sessions
     .filter((s) => !launches.has(s.id))
     .map((s) => {
       const page = s.parent != null && launches.has(s.parent);
       return { session: s, owner: page ? s.parent! : s.id, child: s.parent != null && !page };
-    });
+    })
+    .sort(
+      (a, b) =>
+        orderOf(a.session) - orderOf(b.session) ||
+        tabOrderOf(a.session) - tabOrderOf(b.session) ||
+        a.session.id - b.session.id,
+    );
 }
