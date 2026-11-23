@@ -1161,8 +1161,8 @@ mod python_tests {
     fn sys_path_is_the_interpreters_own_and_can_be_cancelled() {
         let Some(python) = crate::exec::which("python3") else { return };
         let paths = python_sys_path(&python, &CancellationToken::new()).unwrap();
-        assert!(!paths.is_empty());
-        assert!(paths.iter().all(|p| p.is_absolute()), "{paths:?}");
+        // Site hooks can add non-filesystem entries for editable packages.
+        assert!(paths.iter().any(|p| p.is_absolute()), "{paths:?}");
         let cancelled = CancellationToken::new();
         cancelled.cancel();
         assert_eq!(python_sys_path(&python, &cancelled), None);

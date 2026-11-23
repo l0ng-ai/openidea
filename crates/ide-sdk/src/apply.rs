@@ -1966,10 +1966,17 @@ pub fn apply_to_run_configs_in(configs: &mut [RunConfig], root: &Path, fallback:
         let mut path_dirs: Vec<PathBuf> = Vec::new();
         match c.kind.as_str() {
             "python" | "pytest" | "django-test" => {
-                let python = toolchain("python", &owner);
+                let command = Path::new(&c.command);
+                let own = !c.detected && command.components().count() > 1 && is_python_command(&c.command);
+                let python = if own {
+                    let cwd = root.join(c.cwd.as_deref().unwrap_or(Path::new("")));
+                    Some(ide_core::project_roots::resolve(&cwd, command))
+                } else {
+                    toolchain("python", &owner)
+                };
                 // The member's explicit interpreter, else the inherited one, else the
                 // member's own venv / pin.
-                if let Some(py) = explicit_python.as_ref().or(inherited_python.as_ref()).or(python.as_ref()) {
+                if !own && let Some(py) = explicit_python.as_ref().or(inherited_python.as_ref()).or(python.as_ref()) {
                     let runner = PY_RUNNERS.contains(&c.command.as_str());
                     if (c.kind == "python" || c.kind == "django-test") && (runner || is_python_command(&c.command)) {
                         if runner && c.args.first().map(String::as_str) == Some("run") {

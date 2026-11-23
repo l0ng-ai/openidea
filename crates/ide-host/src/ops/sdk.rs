@@ -532,7 +532,8 @@ mod tests {
         let kept = with_user_paths(vec![root.clone(), for_main.clone()], &host.config_dir, &project, None, Some(&root));
         assert_eq!(kept, [root.clone(), for_main]);
 
-        // Debug reads the interpreter its launch configuration names, so it agrees with Run.
+        // Debug resolves a relative command against its working directory before sending it.
+        let debug_interpreter = bare.join("..").join(own_python.strip_prefix(&base).unwrap());
         let mut launch = ide_dap::LaunchConfig {
             name: "Python".into(),
             adapter: "debugpy".into(),
@@ -541,9 +542,9 @@ mod tests {
             args: vec![],
             cwd: Some(bare.as_path().into()),
             env: Default::default(),
-            extra_json: Some(serde_json::json!({ "python": text(&own_python) }).to_string()),
+            extra_json: Some(serde_json::json!({ "python": text(&debug_interpreter) }).to_string()),
         };
-        assert_eq!(debug_python(&launch), Some(text(&own_python)));
+        assert_eq!(debug_python(&launch), Some(text(&debug_interpreter)));
         assert_eq!(paths(debug_python(&launch).as_deref(), &bare), [for_own]);
         launch.extra_json = Some(serde_json::json!({ "python": ["uv", "run", "python"] }).to_string());
         assert_eq!(debug_python(&launch), None);

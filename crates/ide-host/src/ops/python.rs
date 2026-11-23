@@ -33,7 +33,8 @@ pub(super) fn with_user_paths(
     let named = command
         .filter(|c| ide_sdk::apply::is_python_command(c))
         .map(PathBuf::from)
-        .filter(|p| p.is_absolute() && p.is_file());
+        .filter(|p| p.is_absolute() && p.is_file())
+        .map(|p| ide_core::project_roots::resolve(&project.root, &p));
     let python = named.or_else(|| super::sdk::effective_python(config_dir, project, near));
     if let Some(python) = python {
         for path in ide_sdk::apply::interpreter_user_paths(&python, &project.settings.effective()) {
