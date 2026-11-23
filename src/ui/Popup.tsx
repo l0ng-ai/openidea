@@ -67,6 +67,8 @@ export interface PopupProps {
   closeOnDeactivate?: boolean;
   /** Match the anchor's width (dropdowns). */
   matchWidth?: boolean;
+  /** Limit an anchored popup to its anchor's width plus this many pixels. */
+  maxWidthOverAnchor?: number;
   /** Plain surface without border/shadow styling. */
   unstyled?: boolean;
   /**
@@ -91,12 +93,13 @@ const measureNaturalHeight: Middleware = {
   fn({ elements, middlewareData }) {
     // Keep the new cap through internal flip/size restarts, not through the next update.
     if (middlewareData.measureNaturalHeight) return {};
+    const scrollTop = elements.floating.scrollTop;
     const previousLimit = elements.floating.style.removeProperty("max-height");
-    return { data: { measured: true }, reset: previousLimit ? { rects: true } : undefined };
+    return { data: { scrollTop }, reset: previousLimit ? { rects: true } : undefined };
   },
 };
 
-function watchResizablePopup(reference: Element | VirtualElement, floating: HTMLElement, update: () => void) {
+function watchPopupSize(reference: Element | VirtualElement, floating: HTMLElement, update: () => void) {
   // Positioning writes the popup's size limits. Defer those writes outside the resize observer's delivery.
   let frame = 0;
   let placed = false;
@@ -149,6 +152,7 @@ function PopupInner({
   closeOnOutsideClick = true,
   closeOnDeactivate = true,
   matchWidth = false,
+  maxWidthOverAnchor,
   unstyled = false,
   resizable,
   minWidth = 200,
@@ -168,19 +172,22 @@ function PopupInner({
       shift({ padding: 6 }),
       sizeMw({
         padding: 6,
-        apply({ rects, elements, availableHeight, availableWidth }) {
+        apply({ rects, elements, availableHeight, availableWidth, middlewareData }) {
           const floatingStyle = elements.floating.style;
           const maxHeight = Math.max(120, availableHeight);
           if (!hasInlineMaxHeight && (rects.floating.height > maxHeight || floatingStyle.maxHeight)) {
             floatingStyle.maxHeight = `${maxHeight}px`;
+            const scrollTop = middlewareData.measureNaturalHeight?.scrollTop;
+            if (scrollTop) elements.floating.scrollTop = scrollTop;
           }
-          const width = Math.max(0, availableWidth);
+          const anchorLimit = maxWidthOverAnchor === undefined ? Infinity : rects.reference.width + maxWidthOverAnchor;
+          const width = Math.max(0, Math.min(availableWidth, anchorLimit));
           floatingStyle.maxWidth = `${width}px`;
           if (matchWidth) floatingStyle.minWidth = `${Math.min(rects.reference.width, width)}px`;
         },
       }),
     ],
-    [hasInlineMaxHeight, offset, matchWidth],
+    [hasInlineMaxHeight, offset, matchWidth, maxWidthOverAnchor],
   );
   const { refs, floatingStyles, isPositioned } = useFloating({
     placement,
@@ -188,7 +195,7 @@ function PopupInner({
     transform: false,
     middleware,
     elements: { reference },
-    whileElementsMounted: resizable ? watchResizablePopup : autoUpdate,
+    whileElementsMounted: resizable || maxWidthOverAnchor !== undefined ? watchPopupSize : autoUpdate,
   });
   const elRef = useRef<HTMLDivElement | null>(null);
   const onCloseRef = useRef(onClose);

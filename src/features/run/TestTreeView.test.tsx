@@ -375,7 +375,8 @@ describe("Export Test Results", () => {
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     act(() => testTree.exportResults!());
     expect(screen.getByRole("dialog", { name: "Export Test Results" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Output file")).toHaveValue("/p/Test Results - calc tests.html");
+    expect(screen.getByLabelText("File name")).toHaveValue("Test Results - calc tests.html");
+    expect(screen.getByLabelText("Folder")).toHaveValue("/p");
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog", { name: "Export Test Results" })).toBeNull();
     unmount();

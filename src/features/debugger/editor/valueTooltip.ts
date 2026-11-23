@@ -13,6 +13,7 @@ import { activeSession, evaluate, useDebug } from "../state";
 import { inlineValue, shownValue } from "../values";
 import { tx } from "@/platform/i18n";
 import { iconMarkup, selectableText } from "@/ui";
+import { iconNode } from "@/ui/iconNode";
 import { mountValueTree } from "../ui/ValueHintTree";
 import styles from "./editor.module.css";
 
@@ -96,6 +97,7 @@ export function expressionAt(
 
 /** IDEA's value hint: `expression = value {type}`, objects expandable into a variables tree in place. */
 export function valueHint(
+  view: EditorView,
   expression: string,
   value: Variable,
   session: DebugSessionId,
@@ -104,15 +106,21 @@ export function valueHint(
 ): { dom: HTMLElement; destroy: () => void } {
   const dom = document.createElement("div");
   dom.className = `${styles.valueTooltip} ${selectableText}`;
+  const stopSizing = watchHintWidth(view, dom);
   let tree: { unmount(): void } | null = null;
+  const destroy = () => {
+    stopSizing();
+    tree?.unmount();
+  };
   const expandTree = () => {
+    dom.classList.remove(styles.valueTooltip!);
     dom.classList.replace(selectableText, styles.valueTooltipTree!);
     dom.replaceChildren();
     tree = mountValueTree(dom, expression, value, session);
   };
   if (value.variablesReference > 0 && opts.expanded) {
     expandTree();
-    return { dom, destroy: () => tree?.unmount() };
+    return { dom, destroy };
   }
   if (value.variablesReference > 0) {
     // IDEA's value hint: the "+" expands the object into a variables tree in place.
@@ -131,6 +139,8 @@ export function valueHint(
     });
     dom.append(expand);
   }
+  const summary = document.createElement("span");
+  summary.className = styles.valueText!;
   const name = document.createElement("span");
   name.className = styles.valueName!;
   name.textContent = `${expression} = `;
@@ -143,11 +153,33 @@ export function valueHint(
     span.textContent = text;
     return span;
   };
-  dom.append(name);
-  if (leading) dom.append(type(`${shown.label} `));
-  dom.append(max === null ? shown.text : inlineValue(shown.text, max));
-  if (shown.label && !leading) dom.append(type(`  ${shown.label}`));
-  return { dom, destroy: () => tree?.unmount() };
+  summary.append(name);
+  if (leading) summary.append(type(`${shown.label} `));
+  summary.append(max === null ? shown.text : inlineValue(shown.text, max));
+  if (shown.label && !leading) summary.append(type(`  ${shown.label}`));
+  dom.append(iconNode("variable", 16, styles.valueGlyph), summary);
+  return { dom, destroy };
+}
+
+function watchHintWidth(view: EditorView, dom: HTMLElement): () => void {
+  let width = 0;
+  let resizeFrame = 0;
+  const updateWidth = () => {
+    const next = view.dom.clientWidth;
+    if (!next || next === width) return;
+    width = next;
+    dom.style.setProperty("--debug-value-editor-width", `${width}px`);
+  };
+  updateWidth();
+  const resize = new ResizeObserver(() => {
+    cancelAnimationFrame(resizeFrame);
+    resizeFrame = requestAnimationFrame(updateWidth);
+  });
+  resize.observe(view.dom);
+  return () => {
+    resize.disconnect();
+    cancelAnimationFrame(resizeFrame);
+  };
 }
 
 export function showQuickValue(
@@ -158,7 +190,7 @@ export function showQuickValue(
   session: DebugSessionId,
 ) {
   if (value.variablesReference > 0) showValueTree(view, pos, expression, value, session);
-  else showHint(view, () => valueHint(expression, value, session), { pos, timeout: 60_000 });
+  else showHint(view, () => valueHint(view, expression, value, session), { pos, timeout: 60_000 });
 }
 
 export function valueTooltip(): Extension {
@@ -185,7 +217,7 @@ export function valueTooltip(): Extension {
         end: expr.to,
         above: true,
         create: (view) =>
-          valueHint(expr.text, value, session.id, 400, {
+          valueHint(view, expr.text, value, session.id, 400, {
             // The tree outgrows the hint and may move to the other side of the line, away from the
             // mouse, which closed the hover tooltip before it could be reached. Like IDEA's value
             // popup it stays until Escape, a click in the editor or the next step.
@@ -208,21 +240,7 @@ function pinnedTree(view: EditorView, expression: string, value: Variable, sessi
   const unsubscribe = useDebug.subscribe((s) => {
     if (s.stopSeq !== stop || s.sessions[session]?.status !== "paused") hideHint(view);
   });
-  const hint = valueHint(expression, value, session, 400, { expanded: true });
-  let width = 0;
-  let resizeFrame = 0;
-  const updateWidth = () => {
-    const next = view.dom.clientWidth;
-    if (!next || next === width) return;
-    width = next;
-    hint.dom.style.setProperty("--debug-value-editor-width", `${width}px`);
-  };
-  updateWidth();
-  const resize = new ResizeObserver(() => {
-    cancelAnimationFrame(resizeFrame);
-    resizeFrame = requestAnimationFrame(updateWidth);
-  });
-  resize.observe(view.dom);
+  const hint = valueHint(view, expression, value, session, 400, { expanded: true });
   // The tree has the focus, so the editor's Escape doesn't reach the hint.
   hint.dom.addEventListener("keydown", (e) => {
     if (e.key !== "Escape" || e.defaultPrevented) return;
@@ -233,8 +251,6 @@ function pinnedTree(view: EditorView, expression: string, value: Variable, sessi
   return {
     dom: hint.dom,
     destroy: () => {
-      resize.disconnect();
-      cancelAnimationFrame(resizeFrame);
       unsubscribe();
       hint.destroy();
     },
@@ -287,7 +303,10 @@ export function selectionValueTooltip(): Extension {
         }
         // The selection moved on while evaluating.
         if (seq !== this.seq) return;
-        showHint(this.view, () => valueHint(expr.text, value, session.id), { pos: expr.from, timeout: 60_000 });
+        showHint(this.view, () => valueHint(this.view, expr.text, value, session.id), {
+          pos: expr.from,
+          timeout: 60_000,
+        });
       }
 
       destroy() {

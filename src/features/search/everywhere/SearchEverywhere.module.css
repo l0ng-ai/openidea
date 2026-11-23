@@ -248,6 +248,20 @@
 .rightActive {
   color: var(--fg-muted);
 }
+.textLocation {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-1);
+}
+.textFile {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.textLine {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
 .actionRow {
   flex: 1;
   min-width: 0;

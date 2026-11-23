@@ -143,10 +143,6 @@
   gap: var(--space-0-5);
   padding: 0 6px 0 8px;
 }
-.pin {
-  color: var(--fg-muted);
-  margin-left: -2px;
-}
 .deprecated {
   text-decoration-line: line-through;
 }
