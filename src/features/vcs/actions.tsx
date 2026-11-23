@@ -1090,8 +1090,8 @@ export function registerVcsActions(): () => void {
       category: "Git",
       icon: "history",
       when: VCS,
-      run: ({ arg, ctx }) => {
-        const path = focusedPaths(arg, ctx)[0];
+      run: ({ arg }) => {
+        const path = selectedPaths(arg)[0];
         if (!path) return;
         openLogTab("history", path);
         showGitWindow();
