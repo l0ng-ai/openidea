@@ -1880,7 +1880,6 @@
   "Runs Optimize Imports when the file has no errors, unless it would change the caret line.": "Ejecuta Optimizar importaciones cuando el archivo no tiene errores, a menos que modifique la línea del cursor.",
   "Runs npm scripts and Node-based language servers (vtsls, eslint, pyright…).": "Ejecuta scripts de npm y servidores de lenguaje basados en Node (vtsls, eslint, pyright…).",
   "Runs sync, builds and Maven run configurations. A chosen home is used instead of the project's mvnw. Bypassed while the Maven daemon is enabled.": "Ejecuta sincronización, compilaciones y configuraciones de ejecución de Maven. Se usa el directorio elegido en lugar del mvnw del proyecto. Se omite mientras el daemon de Maven esté habilitado.",
-  "Runs the language server's Organize Imports action.": "Ejecuta la acción Organizar importaciones del servidor de lenguaje.",
   "Runs the language server's formatter before an explicit save (Actions on Save).": "Ejecuta el formateador del servidor de lenguaje antes de un guardado explícito (Acciones al guardar).",
   "Search history": "Historial de búsqueda",
   "Search history ({previous} / {next})": "Historial de búsqueda ({previous} / {next})",
