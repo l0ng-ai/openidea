@@ -5,6 +5,7 @@ import {
   type InputHTMLAttributes,
   type FocusEvent,
   type KeyboardEvent,
+  type MouseEvent,
   type ReactNode,
   type Ref,
   type TextareaHTMLAttributes,
@@ -12,6 +13,7 @@ import {
 import clsx from "clsx";
 import { Icon, type IconName } from "./icons";
 import { IconButton } from "./Button";
+import { startDragAutoscroll } from "./dragAutoscroll";
 import styles from "./Input.module.css";
 import { setContext } from "@/platform/context";
 import { useGivenTx } from "@/platform/i18n";
@@ -37,6 +39,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
     autoComplete = "off",
     placeholder,
     onFocus,
+    onMouseDown,
     "aria-label": ariaLabel,
     ...rest
   },
@@ -61,6 +64,10 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
           e.currentTarget.select();
         }
         onFocus?.(e);
+      }}
+      onMouseDown={(e) => {
+        startDragAutoscroll(e);
+        onMouseDown?.(e);
       }}
       className={clsx(styles.input, variant === "bare" ? styles.bare : styles.framed, mono && styles.mono, className)}
       {...rest}
@@ -163,7 +170,7 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(functi
   commands.current.newLine = multiline ? insertNewLine : undefined;
   // oxlint-disable-next-line react/refs
   commands.current.history = onHistory;
-  const { onKeyDown, onFocus, onBlur, ...fieldProps } = rest;
+  const { onKeyDown, onFocus, onBlur, onMouseDown, ...fieldProps } = rest;
   const keyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (multiline && isNewLineKey(e)) {
       e.preventDefault();
@@ -186,7 +193,16 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(functi
     }
     onBlur?.(e);
   };
-  const handlers = { onKeyDown: keyDown, onFocus: focus, onBlur: blur };
+  const mouseDown = (e: MouseEvent<HTMLInputElement>) => {
+    startDragAutoscroll(e);
+    onMouseDown?.(e);
+  };
+  const handlers = {
+    onKeyDown: keyDown,
+    onFocus: focus,
+    onBlur: blur,
+    onMouseDown: mouseDown,
+  };
   // Removing a focused field fires no blur.
   useEffect(() => {
     const own = commands.current;
