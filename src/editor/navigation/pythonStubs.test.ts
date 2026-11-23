@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent } from "@testing-library/react";
+import { deferred } from "@/test/deferred";
 
 const ipc = vi.hoisted(() => ({ navPythonStubs: vi.fn() }));
 const nav = vi.hoisted(() => ({ openCodeLocation: vi.fn() }));
+const sync = vi.hoisted(() => ({ whenAllSynced: vi.fn() }));
 const fs = vi.hoisted(() => ({
   listeners: [] as ((e: { created: string[]; modified: string[]; removed: string[] }) => void)[],
 }));
@@ -24,6 +26,7 @@ vi.mock("@/platform/ipc", () => ({
 }));
 vi.mock("@/editor/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/editor/api")>()),
+  whenAllSynced: sync.whenAllSynced,
   whenSynced: () => Promise.resolve(),
   openCodeLocation: nav.openCodeLocation,
 }));
@@ -32,7 +35,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { iconAreaExtension } from "@/editor/core/cm/iconArea";
 import type { StubLink } from "@/platform/ipc";
-import { linkAt, pythonStubGutter } from "./pythonStubs";
+import { linkAt, pythonStubGutter, stubRelatedItems } from "./pythonStubs";
 
 const range = (start: number, end = start) => ({ start: { line: start, col: 0 }, end: { line: end, col: 0 } });
 const link = (name: string, start: number, end: number, target = 0): StubLink => ({
@@ -53,6 +56,27 @@ describe("linkAt", () => {
 
   it("finds none outside every declaration", () => {
     expect(linkAt(links, 10)).toBeNull();
+  });
+});
+
+describe("stub navigation", () => {
+  afterEach(() => {
+    sync.whenAllSynced.mockReset();
+    ipc.navPythonStubs.mockReset();
+  });
+
+  it("waits for pending edits before resolving the source and counterpart positions", async () => {
+    const synced = deferred<void>();
+    sync.whenAllSynced.mockReturnValue(synced.promise);
+    ipc.navPythonStubs.mockResolvedValue({
+      status: "ok",
+      data: { counterpart: "/p/m.pyi", links: [link("f", 3, 4, 7)] },
+    });
+
+    const items = stubRelatedItems(1, "/p/m.py", 3);
+    expect(ipc.navPythonStubs).not.toHaveBeenCalled();
+    synced.resolve();
+    await expect(items).resolves.toEqual([{ path: "/p/m.pyi", line: 7, col: 0, label: "f", group: "Stub" }]);
   });
 });
 

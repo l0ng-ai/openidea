@@ -10,6 +10,7 @@ import {
   mapLineStart,
   onEditorEvent,
   openCodeLocation,
+  whenAllSynced,
   whenSynced,
   type EditorDocContext,
 } from "@/editor/api";
@@ -37,6 +38,7 @@ export function linkAt(links: readonly StubLink[], line: number): StubLink | nul
 /** Related Symbol (and Navigate › Stub / Implementation): the counterpart of the caret's declaration, else the file. */
 export async function stubRelatedItems(doc: number, path: string, line: number): Promise<RelatedItem[]> {
   if (!isPythonFile(path)) return [];
+  await whenAllSynced();
   const found = await pythonStubLinks(doc);
   if (!found.counterpart) return [];
   const link = linkAt(found.links, line);
