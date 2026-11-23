@@ -3466,6 +3466,7 @@
   "Rename branch {name} ({root})": "Rename branch {name} ({root})",
   "rename it back to {name}": "rename it back to {name}",
   "Unset upstream of {to} ({root})": "Unset upstream of {to} ({root})",
+  "(no tracking branch)": "(no tracking branch)",
   "Group by Repository": "Group by Repository",
   "Diagnose with Agent": "Diagnose with Agent",
   "Adds a failed test's name, source location, expected and actual values and output to the agent message typed last, to review and send.": "Adds a failed test's name, source location, expected and actual values and output to the agent message typed last, to review and send.",
