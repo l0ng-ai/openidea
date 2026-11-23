@@ -37,6 +37,15 @@ test("type-ahead jumps to a matching node", async ({ workbench: page }) => {
   await expect(tree.locator('[role="treeitem"][aria-selected="true"]')).toHaveText("README.md");
 });
 
+test("a single click shows the file in the preview tab, which the next one reuses", async ({ workbench: page }) => {
+  const tabs = page.getByRole("tablist", { name: "Editor tabs" });
+  await page.getByRole("treeitem", { name: "README.md", exact: true }).click();
+  await expect(tabs.getByRole("tab", { name: "README.md" })).toBeVisible();
+  await page.getByRole("treeitem", { name: "settings.gradle.kts", exact: true }).click();
+  await expect(tabs.getByRole("tab", { name: "settings.gradle.kts" })).toBeVisible();
+  await expect(tabs.getByRole("tab", { name: "README.md" })).toHaveCount(0);
+});
+
 test("Rename targets a file or folder directly from its context menu", async ({ workbench: page }) => {
   await page.setViewportSize({ width: 720, height: 480 });
   const menu = page.getByRole("menu", { name: "Context menu" });

@@ -6,7 +6,7 @@ import { canRevealInFileManager, revealInFileManagerLabel } from "@/platform/fil
 import { dirname, useProject } from "@/platform/project";
 import { showContextMenu, type MenuItem } from "@/ui";
 import { maybeEditorService, menuGroupItems, toolWindowService } from "@/workbench/contributions";
-import { OPTION_LABELS, SORT_LABELS } from "./HeaderActions";
+import { OPTION_LABELS, SORT_LABELS, flipToggle, isToggled } from "./HeaderActions";
 import { compareTarget, newMenuItems, revealLabel } from "./contextMenu";
 import { openNewPopup } from "./newPopupModel";
 import type { ProjectNode } from "./model";
@@ -191,8 +191,8 @@ export function registerProjectActions(): () => void {
     category: "View",
     // IDEA's former name of Always Select Opened File.
     keywords: ["project", "tree", "toggle", ...(key === "autoscrollFromSource" ? ["autoscroll from source"] : [])],
-    toggled: () => useProjectTree.getState().options[key],
-    run: () => setViewOption(key, !useProjectTree.getState().options[key]),
+    toggled: () => isToggled(key),
+    run: () => flipToggle(key),
   }));
 
   const modes: Action[] = VIEW_MODES.map(([mode, label]) => ({
