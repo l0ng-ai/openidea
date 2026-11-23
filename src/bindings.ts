@@ -8107,6 +8107,8 @@ export type InlayHint = {
 	 *  their values concatenate to `label`.
 	 */
 	parts: InlayLabelPart[],
+	/**  The edits that turn the hint into code (an annotation and any import it needs). */
+	textEdits: TextEdit[],
 };
 
 /**  Editor › Inlay Hints. */
