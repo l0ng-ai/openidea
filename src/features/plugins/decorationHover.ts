@@ -22,7 +22,7 @@ export function resizableDecorationHover(
   content.className = styles.content!;
   content.tabIndex = 0;
   content.setAttribute("role", "region");
-  content.setAttribute("aria-label", tx("Conversation"));
+  content.setAttribute("aria-label", tx("Hover card"));
   content.append(markdown);
   const dom = hoverCard([content]);
   dom.classList.add(styles.card!);
@@ -85,11 +85,11 @@ export function resizableDecorationHover(
     apply({ left, top, width: right - left, height: bottom - top });
   };
   const labels = {
-    n: tx("Resize conversation from the top"),
-    e: tx("Resize conversation from the right"),
-    s: tx("Resize conversation from the bottom"),
-    w: tx("Resize conversation from the left"),
-    se: tx("Resize conversation from the corner"),
+    n: tx("Resize hover card from the top"),
+    e: tx("Resize hover card from the right"),
+    s: tx("Resize hover card from the bottom"),
+    w: tx("Resize hover card from the left"),
+    se: tx("Resize hover card from the corner"),
   };
   for (const edge of ["n", "e", "s", "w", "se"] as const) {
     const handle = document.createElement("button");

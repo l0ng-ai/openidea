@@ -12,18 +12,13 @@ import {
 import type { DecorationSet, Range } from "@/bindings";
 import { registerEditorContribution, useEditorRegistry, type EditorDocContext } from "@/editor/api";
 import { resizableDecorationHover } from "./decorationHover";
-import { registerAction } from "@/platform/actions";
-import { openDecorationFileAction, prepareDecorationFileLinks } from "./decorationFileLinks";
-import type { DocLinkHandler } from "@/editor/lsp/markdown";
 import { highlightInto, loadMarkdown, markupToHtml, renderMarkup } from "@/editor/lsp/markdown";
 import { foldChipWidth } from "@/editor/core/cm/folding";
 import { commands, isTauri } from "@/platform/ipc";
-import { tx } from "@/platform/i18n";
 import { logError } from "@/platform/errorLog";
-import { useRemote } from "@/platform/remote";
 import { useProject } from "@/platform/project";
 import { addPathIconProvider, bumpFileIconRevision } from "@/ui";
-import { notifications, setFileDecorations, type FileDecoration } from "@/workbench/contributions";
+import { setFileDecorations, type FileDecoration } from "@/workbench/contributions";
 import styles from "./decorations.module.css";
 
 const snapshots = new Map<string, DecorationSet[]>();
@@ -31,8 +26,6 @@ const pluginIcons = new Map<string, Map<string, string>>();
 let removePathIcons: (() => void) | null = null;
 const refresh = StateEffect.define<null>();
 const versions = new Map<string, number>();
-let revision = 0;
-let refreshing = false;
 
 function resolvePluginPathIcon(path: string): string | null {
   for (const map of pluginIcons.values()) {
@@ -224,7 +217,6 @@ class AfterText extends WidgetType {
 
 /** A Markdown hover placed on a range (and its `after` label). */
 interface PlacedHover {
-  doc: Text;
   plugin: string;
   path: string;
   range: Range;
@@ -236,14 +228,13 @@ interface PlacedHover {
 
 /** A hover card that is open now; refreshed when its plugin pushes new data. */
 interface OpenHover {
-  invalidate: () => void;
   plugin: string;
   path: string;
   range: Range;
   after: string | null;
   close: () => void;
   dom: HTMLElement;
-  render: (markdown: string) => HTMLElement;
+  uiMode: EditorDocContext["uiMode"];
 }
 
 const openHovers = new Set<OpenHover>();
@@ -283,8 +274,8 @@ function withoutPluginResources(html: string): string {
 }
 
 /** Keep the shared renderer's links/styles without its unfiltered async Markdown rewrite. */
-function renderPluginMarkdown(value: string, language: string | null, onLink: DocLinkHandler): HTMLElement {
-  const dom = renderMarkup({ kind: "plaintext", value: "" }, language, onLink);
+function renderPluginMarkdown(value: string, language: string | null): HTMLElement {
+  const dom = renderMarkup({ kind: "plaintext", value: "" }, language);
   let rendered: string | undefined;
   const update = () => {
     const html = withoutPluginResources(markupToHtml({ kind: "markdown", value }));
@@ -309,9 +300,8 @@ function renderPluginMarkdown(value: string, language: string | null, onLink: Do
 function refreshOpenHovers(plugin: string) {
   for (const card of openHovers) {
     if (card.plugin !== plugin) continue;
-    card.invalidate();
     const markdown = refreshedMarkdown(card);
-    if (markdown) card.dom.replaceChildren(card.render(markdown));
+    if (markdown) card.dom.replaceChildren(renderPluginMarkdown(markdown, card.uiMode));
     else card.close();
   }
 }
@@ -358,7 +348,6 @@ export function decorationExtension(ctx: EditorDocContext) {
             const markdown = item.markdownHover || null;
             if (markdown)
               hovers.push({
-                doc,
                 plugin,
                 path: ctx.path,
                 range: item.range,
@@ -457,20 +446,7 @@ function markdownHover(
       end: placed.to,
       above: true,
       create: () => {
-        const sourceEditor = { path: placed.path, language: ctx.language, selections: [placed.range] };
-        let links: ReturnType<typeof prepareDecorationFileLinks> | undefined;
-        const render = (markdown: string) => {
-          links?.dispose();
-          const version = versions.get(placed.plugin);
-          links = prepareDecorationFileLinks(
-            placed.plugin,
-            sourceEditor,
-            () => view.state.doc === placed.doc && versions.get(placed.plugin) === version,
-            () => !refreshing,
-          );
-          return renderPluginMarkdown(markdown, ctx.uiMode, links.onLink);
-        };
-        const hover = resizableDecorationHover(view, render(placed.markdown), {
+        const hover = resizableDecorationHover(view, renderPluginMarkdown(placed.markdown, ctx.uiMode), {
           anchor,
           position: fromLabel ? (labelPos(placed) ?? placed.to) : placed.from,
           close: () => close(view),
@@ -481,16 +457,13 @@ function markdownHover(
           },
         });
         const card: OpenHover = {
-          invalidate: () => {
-            links?.dispose();
-          },
           plugin: placed.plugin,
           path: placed.path,
           range: placed.range,
           after: placed.after,
           close: () => close(view),
           dom: hover.content,
-          render,
+          uiMode: ctx.uiMode,
         };
         openHovers.add(card);
         let live = true;
@@ -506,7 +479,6 @@ function markdownHover(
           destroy: () => {
             live = false;
             mounted = false;
-            links?.dispose();
             hover.destroy?.();
             openHovers.delete(card);
             if (active.get(view)?.tooltip === tooltip) active.delete(view);
@@ -519,85 +491,38 @@ function markdownHover(
   };
 }
 
-/** Native events are invalidations: only the current host's snapshot supplies metadata. */
-export function refreshPluginDecorations() {
-  const at = ++revision;
-  const before = new Map(versions);
-  const project = useProject.getState().project;
-  const root = project?.root;
-  const remote = useRemote.getState().session;
-  const remoteIdentity = JSON.stringify(remote);
-  if (
-    !isTauri() ||
-    !project ||
-    useProject.getState().opening ||
-    (remote && (remote.root !== root || !remote.commands.includes("plugin_decoration_sets")))
-  )
-    return;
-  const current = () =>
-    at === revision &&
-    useProject.getState().project === project &&
-    project.root === root &&
-    !useProject.getState().opening &&
-    useRemote.getState().session === remote &&
-    JSON.stringify(remote) === remoteIdentity;
-  refreshing = true;
-  // Session subscribers run before enableRemote installs its invoke route.
-  void Promise.resolve()
-    .then(() => (current() ? commands.pluginDecorationSets() : null))
-    .then((all) => {
-      if (!all || !current()) return;
-      refreshing = false;
-      for (const plugin of snapshots.keys())
-        if (!all[plugin] && versions.get(plugin) === before.get(plugin)) setPluginDecorations(plugin, []);
-      for (const [plugin, sets] of Object.entries(all))
-        if (
-          versions.get(plugin) === before.get(plugin) &&
-          JSON.stringify(snapshots.get(plugin)) !== JSON.stringify(sets)
-        )
-          setPluginDecorations(plugin, sets);
-    })
-    .catch((error: unknown) => {
-      if (!current()) return;
-      refreshing = false;
-      for (const plugin of snapshots.keys()) setPluginDecorations(plugin, []);
-      logError("cannot refresh plugin annotations", error);
-      notifications().notify({
-        group: "plugins",
-        key: "plugins.decorations",
-        level: "warning",
-        title: tx("Cannot refresh plugin annotations"),
-        body: error instanceof Error ? error.message : String(error),
-      });
-    });
-}
-
 /** Catch up editors and project trees opened after publication. */
 export function startPluginDecorations(): () => void {
-  const offAction = registerAction(openDecorationFileAction);
-  const reset = () => {
-    ++revision;
-    refreshing = false;
-    for (const plugin of snapshots.keys()) setPluginDecorations(plugin, []);
-    if (!useProject.getState().opening) refreshPluginDecorations();
+  let disposed = false;
+  let revision = 0;
+  const load = () => {
+    const at = ++revision;
+    const before = new Map(versions);
+    if (isTauri())
+      void Promise.resolve(commands.pluginDecorationSets())
+        .then((all) => {
+          if (disposed || at !== revision) return;
+          for (const plugin of snapshots.keys())
+            if (!all[plugin] && versions.get(plugin) === before.get(plugin)) setPluginDecorations(plugin, []);
+          for (const [plugin, sets] of Object.entries(all))
+            if (versions.get(plugin) === before.get(plugin)) setPluginDecorations(plugin, sets);
+        })
+        .catch(() => {});
   };
   const offProject = useProject.subscribe((s, prev) => {
-    if (s.project !== prev.project || s.opening !== prev.opening) reset();
-  });
-  const offRemote = useRemote.subscribe((s, prev) => {
-    if (s.session !== prev.session) reset();
+    if (s.project?.root === prev.project?.root) return;
+    for (const [plugin, sets] of snapshots) updateTree(plugin, sets);
+    for (const editor of useEditorRegistry.getState().editors) editor.view.dispatch({ effects: refresh.of(null) });
+    load();
   });
   const off = registerEditorContribution({
     id: "plugins.decorations",
     extensions: decorationExtension,
   });
-  refreshPluginDecorations();
+  load();
   return () => {
-    ++revision;
-    refreshing = false;
+    disposed = true;
     offProject();
-    offRemote();
-    offAction();
     off();
     for (const plugin of snapshots.keys()) setPluginDecorations(plugin, []);
     snapshots.clear();

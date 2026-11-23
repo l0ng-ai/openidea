@@ -1303,51 +1303,6 @@ labels when a file is opened or focused should subscribe to
 `file-opened`/`editor-focused` and call `clear_decorations` when its data no
 longer applies; the host already bounds what a set can carry.
 
-#### File links in decoration cards
-
-A decoration publisher can opt into file navigation without changing its WIT
-imports. Declare `on-command:open-decoration-file` in `activation`, retain
-`project.read`, and render a generated metadata entry as
-`[display name](#openidea-file/opaque-token)`. The token is 1–128 ASCII letters,
-digits, `_` or `-`; it is **not** a path, URI or command name. Escape the display
-name as Markdown. Older hosts leave these fragments inert.
-
-The floating card dispatches the hidden action `plugins.openDecorationFile` to
-that same plugin's fixed `open-decoration-file` command. Its JSON argument is
-`{"target":"opaque-token"}`; the invocation editor is the card's source path,
-language and original UTF-16 range, not the currently focused editor. There are
-no selected paths or global settings scope. The host never decodes a filename,
-joins a project root or opens the target through the generic editor service.
-
-The **plugin** must resolve the token against its own generated metadata, binding
-it to the exact source, publication/session identity and file; reject stale or
-unknown tokens, never recycle them to mean a different file, and call
-`host::open_location` only after rechecking that association. Never create these
-entries from recorded message text. Keep untrusted prose escaped/quoted; links
-inside blockquotes or code cannot activate this route. The host preserves web
-links, but does not open generic `file:` or virtual-source links from plugin
-cards. Regular documentation rendering is unchanged.
-
-Native decoration events are invalidations, not trusted content: the renderer
-fetches the current machine's authoritative snapshot only after invoke routing is
-installed, rechecking the captured source before dispatch and rejecting stale replies.
-A remote host without `plugin_decoration_sets` cannot fall back to local data.
-New navigation is suspended until refresh completes. A failed refresh withdraws
-stale publications and reports the error; successful unchanged snapshots leave
-existing card operations intact.
-
-Card replacement/destruction, document changes, project transitions, plugin
-ineligibility (including revoked `project.read`) and source-connection changes
-invalidate navigation. Pending command requests are cancelled, not retried. Non-cancellation failures
-are shown through the existing notification service with the native error message.
-Cancellation cannot retract an already-emitted native event. The native host
-rechecks grants and canonical paths, including existence and symlink escapes,
-and targets the invoking client. `open_location` retains its existing
-invocation-root semantics (and plugin-private-directory exception); unlike
-project resource reads, it does not search sibling workspace-member roots.
-Plugins must not emulate that behavior by concatenating the main root or
-opening a `file://` link instead.
-
 The new Git reads run on the project machine, require a trusted open project and
 `vcs.read`, and disable repository-configured helpers, textconv and external diff
 programs. `vcs_log` returns commit ids, author/email, Unix seconds, subject/body

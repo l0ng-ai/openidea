@@ -9980,12 +9980,10 @@
   "Pipenv Environment": "Pipenv 环境",
   "Install packages from Pipfile": "安装 Pipfile 中的软件包",
   "Runs “pipenv --python <base>” in the project, which writes a Pipfile (from requirements.txt if there is one) when the project has none. Pipenv chooses where to store the environment and reuses an existing one.": "在项目中运行“pipenv --python <base>”。项目没有 Pipfile 时会写入一个（有 requirements.txt 时从中导入）。环境的存放位置由 Pipenv 决定，已有环境会被复用。",
-  "Open plugin file": "打开插件文件",
-  "Cannot open plugin file": "无法打开插件文件",
-  "Cannot refresh plugin annotations": "无法刷新插件标注",
-  "Resize conversation from the top": "从上边缘调整会话窗口大小",
-  "Resize conversation from the right": "从右边缘调整会话窗口大小",
-  "Resize conversation from the bottom": "从下边缘调整会话窗口大小",
-  "Resize conversation from the left": "从左边缘调整会话窗口大小",
-  "Resize conversation from the corner": "从角部调整会话窗口大小"
+  "Hover card": "悬浮卡片",
+  "Resize hover card from the top": "从上边缘调整悬浮卡片大小",
+  "Resize hover card from the right": "从右边缘调整悬浮卡片大小",
+  "Resize hover card from the bottom": "从下边缘调整悬浮卡片大小",
+  "Resize hover card from the left": "从左边缘调整悬浮卡片大小",
+  "Resize hover card from the corner": "从角部调整悬浮卡片大小"
 }

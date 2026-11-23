@@ -1,13 +1,16 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { EditorState, StateEffect } from "@codemirror/state";
 import { EditorView, activateHover, getTooltip, hoverTooltip, showTooltip, tooltips } from "@codemirror/view";
-import type { DecorationSet } from "@/bindings";
+import type { DecorationSet, PluginInfo } from "@/bindings";
 import { _addEditor, _removeEditor, type EditorDocContext, type TextEditorHandle } from "@/editor/api";
 import { useProject } from "@/platform/project";
 import { loadMarkdown, renderMarkup } from "@/editor/lsp/markdown";
 import { fileIconName, registerExternalIcons, themedFolderIconName } from "@/ui";
 import { getFileDecoration } from "@/workbench/contributions";
-import { decorationExtension, setPluginDecorations } from "../decorations";
+import { commands } from "@/platform/ipc";
+import { decorationExtension, setPluginDecorations, startPluginDecorations } from "../decorations";
+import { createMemoryPluginsBackend, setPluginsBackend, tauriPluginsBackend } from "../backend";
+import { usePlugins } from "../store";
 import { capabilityDescription } from "../consent";
 import { handleRuntimeEvent } from "../runtimeUi";
 
@@ -208,6 +211,7 @@ it("renders a Markdown hover card instead of the native tooltip", async () => {
   await vi.advanceTimersByTimeAsync(400);
   const card = document.querySelector(".cm-tooltip .cm-lsp-hover");
   expect(card?.textContent).toContain("model");
+  expect(card?.querySelector('[role="region"]')?.getAttribute("aria-label")).toBe("Hover card");
   vi.useRealTimers();
 });
 
@@ -393,16 +397,16 @@ function resizePointer(target: EventTarget, type: string, x: number, y: number, 
 }
 
 it.each([
-  ["n", 0, -60, 400, 300],
-  ["e", 80, 0, 480, 240],
-  ["s", 0, 60, 400, 300],
-  ["w", -80, 0, 480, 240],
-  ["se", 80, 60, 480, 300],
-] as const)("resizes the model hover by its %s edge", async (edge, dx, dy, width, height) => {
+  ["n", 0, -60, 400, 300, "Resize hover card from the top"],
+  ["e", 80, 0, 480, 240, "Resize hover card from the right"],
+  ["s", 0, 60, 400, 300, "Resize hover card from the bottom"],
+  ["w", -80, 0, 480, 240, "Resize hover card from the left"],
+  ["se", 80, 60, 480, 300, "Resize hover card from the corner"],
+] as const)("resizes the hover card by its %s edge", async (edge, dx, dy, width, height, label) => {
   const card = await openResizeHover();
   const handle = card.querySelector<HTMLButtonElement>(`button[data-edge="${edge}"]`);
   expect(handle).not.toBeNull();
-  expect(handle!.getAttribute("aria-label")).toBeTruthy();
+  expect(handle!.getAttribute("aria-label")).toBe(label);
   resizePointer(handle!, "pointerdown", 300, 220);
   resizePointer(window, "pointermove", 300 + dx, 220 + dy);
   expect(card.style.width).toBe(`${width}px`);
@@ -540,6 +544,39 @@ it("opens the configured commit detail URL when the conversation SHA is clicked"
     await vi.waitFor(() => expect(openUrl).toHaveBeenCalledWith(url));
   } finally {
     vi.unstubAllGlobals();
+  }
+});
+
+it("does not run plugin commands for file-fragment links in a hover card", async () => {
+  // The withdrawn `#openidea-file` contract must stay inert: fragments never dispatch commands.
+  const info: PluginInfo = {
+    ...(await createMemoryPluginsBackend().list()).plugins[0]!,
+    id: "test",
+    enabled: true,
+    hasCode: true,
+    status: "active",
+    activation: ["on-command:open-decoration-file"],
+    capabilities: [{ id: "project.read", granted: true, optional: false, risk: "low", description: "Read project" }],
+  };
+  usePlugins.setState({ plugins: [info], ui: [] });
+  setPluginsBackend(tauriPluginsBackend);
+  const run = vi.spyOn(commands, "pluginRunCommand").mockResolvedValue({ status: "ok", data: null });
+  openUrl.mockClear();
+  const dispose = startPluginDecorations();
+  try {
+    await loadMarkdown();
+    const card = await openResizeHover("[entry](#openidea-file/token-0)");
+    vi.stubGlobal("__TAURI_INTERNALS__", {});
+    card.querySelector("a")!.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(run).not.toHaveBeenCalled();
+    expect(openUrl).not.toHaveBeenCalled();
+  } finally {
+    vi.unstubAllGlobals();
+    dispose();
+    setPluginsBackend(null);
+    usePlugins.setState({ plugins: [], ui: [] });
+    vi.restoreAllMocks();
   }
 });
 
