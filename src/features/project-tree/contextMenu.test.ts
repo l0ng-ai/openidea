@@ -115,6 +115,17 @@ describe("project view context menu", () => {
     }
   });
 
+  it("passes the selected Project view directory to Commit…", () => {
+    const items = contextMenuItems([node("/p/module", true)]);
+    const git = items.find((item) => item.kind !== "separator" && item.kind !== "header" && item.label === "Git");
+    const commit =
+      git && "submenu" in git
+        ? git.submenu?.find((item) => item.kind !== "separator" && item.kind !== "header" && item.label === "Commit…")
+        : undefined;
+
+    expect(commit).toMatchObject({ kind: "action", action: "vcs.commit", arg: "/p/module" });
+  });
+
   it("lists contributed links in Copy Path/Reference…", () => {
     disposers.push(
       registerMenuGroup({

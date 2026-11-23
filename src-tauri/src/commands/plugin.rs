@@ -568,21 +568,27 @@ pub struct PluginSecretState {
 #[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
-pub fn plugin_secrets(state: State<'_, AppState>, plugin_id: String) -> IdeResult<Vec<PluginSecretState>> {
-    Ok(state.plugins.secrets(&plugin_id)?.into_iter().map(|(name, set)| PluginSecretState { name, set }).collect())
+pub async fn plugin_secrets(state: State<'_, AppState>, plugin_id: String) -> IdeResult<Vec<PluginSecretState>> {
+    let host = state.plugins.clone();
+    blocking(move || {
+        Ok(host.secrets(&plugin_id)?.into_iter().map(|(name, set)| PluginSecretState { name, set }).collect())
+    })
+    .await
 }
 
 /// Stores a plugin secret (`None` or empty deletes it). The value never goes back to the UI or the plugin.
+/// The keychain call takes up to hundreds of milliseconds, so it runs on the blocking pool.
 #[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
-pub fn plugin_set_secret(
+pub async fn plugin_set_secret(
     state: State<'_, AppState>,
     plugin_id: String,
     name: String,
     value: Option<String>,
 ) -> IdeResult<()> {
-    state.plugins.set_secret(&plugin_id, &name, value.as_deref())
+    let host = state.plugins.clone();
+    blocking(move || host.set_secret(&plugin_id, &name, value.as_deref())).await
 }
 
 /// Plugin secrets in the login keychain (service `ai.l0ng.openidea.plugin.<id>`).
