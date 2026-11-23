@@ -568,7 +568,7 @@ fn source_endpoints(official: Vec<String>, source: UpdateSource) -> Vec<String> 
     }
 }
 
-fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option<tauri_plugin_updater::Updater>> {
+pub(crate) fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option<tauri_plugin_updater::Updater>> {
     use tauri_plugin_updater::UpdaterExt;
     if !updates_configured(app) {
         return Ok(None);
@@ -666,24 +666,23 @@ pub enum UpdateProgress {
 /// Limits download events to one per whole percent (or per 256 KiB without a length).
 #[derive(Default)]
 struct ProgressThrottle {
-    downloaded: u64,
     last_step: Option<u64>,
 }
 
 impl ProgressThrottle {
     const UNKNOWN_STEP: u64 = 256 * 1024;
 
-    fn chunk(&mut self, len: usize, total: Option<u64>) -> Option<UpdateProgress> {
-        self.downloaded += len as u64;
+    /// Converts the downloader's absolute byte count into a throttled event.
+    fn report(&mut self, downloaded: u64, total: Option<u64>) -> Option<UpdateProgress> {
         let step = match total {
-            Some(t) if t > 0 => self.downloaded.min(t) * 100 / t,
-            _ => self.downloaded / Self::UNKNOWN_STEP,
+            Some(t) if t > 0 => downloaded.min(t) * 100 / t,
+            _ => downloaded / Self::UNKNOWN_STEP,
         };
         if self.last_step == Some(step) {
             return None;
         }
         self.last_step = Some(step);
-        Some(UpdateProgress::Downloading { downloaded: self.downloaded as f64, total: total.map(|t| t as f64) })
+        Some(UpdateProgress::Downloading { downloaded: downloaded as f64, total: total.map(|t| t as f64) })
     }
 }
 
@@ -721,28 +720,22 @@ pub async fn app_install_update(
         InstallingGuard::acquire().ok_or_else(|| IdeError::unavailable("an update is already being installed"))?;
     let token = state.host.begin_request(request);
     let result = async {
-        let updater = updater(&app, source)?.ok_or_else(|| IdeError::unavailable("updates are not configured"))?;
-        let update = tokio::select! {
-            r = updater.check() => r.map_err(|e| IdeError::unavailable(e.to_string()))?,
-            _ = token.cancelled() => return Err(IdeError::cancelled()),
-        }
-        .ok_or_else(|| IdeError::not_found("no update available"))?;
         let mut throttle = ProgressThrottle::default();
         let progress = on_progress.clone();
-        let download = update.download(
-            move |len, total| {
-                if let Some(p) = throttle.chunk(len, total) {
+        let downloaded = tokio::select! {
+            result = crate::updates::download_update(&app, source, &token, move |done, total| {
+                if let Some(p) = throttle.report(done, total) {
                     let _ = progress.send(p);
                 }
-            },
-            || {},
-        );
-        let bytes = tokio::select! {
-            r = download => r.map_err(|e| IdeError::unavailable(e.to_string()))?,
+            }) => result?,
             _ = token.cancelled() => return Err(IdeError::cancelled()),
         };
+        let crate::updates::DownloadedUpdate { update, bytes, path } = downloaded;
+        if token.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
         let _ = on_progress.send(UpdateProgress::Installing);
-        tauri::async_runtime::spawn_blocking(move || {
+        let installed = tauri::async_runtime::spawn_blocking(move || {
             #[cfg(windows)]
             if update.target.ends_with("-portable") {
                 let exe = tauri::utils::platform::current_exe()?;
@@ -751,7 +744,11 @@ pub async fn app_install_update(
             update.install(bytes).map_err(|e| IdeError::internal(e.to_string()))
         })
         .await
-        .map_err(|e| IdeError::internal(e.to_string()))?
+        .map_err(|e| IdeError::internal(e.to_string()))?;
+        if installed.is_ok() {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+        installed
     }
     .await;
     state.host.end_request(request);
@@ -880,22 +877,33 @@ mod tests {
     #[test]
     fn throttle_reports_each_whole_percent_once() {
         let mut t = ProgressThrottle::default();
-        assert_eq!(downloading(t.chunk(1, Some(1000))), Some((1.0, Some(1000.0))));
-        assert_eq!(downloading(t.chunk(5, Some(1000))), None);
-        assert_eq!(downloading(t.chunk(4, Some(1000))), Some((10.0, Some(1000.0))));
-        let reported = (0..99).filter(|_| t.chunk(10, Some(1000)).is_some()).count();
-        assert_eq!(reported, 99);
-        assert_eq!(t.downloaded, 1000);
+        assert_eq!(downloading(t.report(1, Some(1000))), Some((1.0, Some(1000.0))));
+        assert_eq!(downloading(t.report(9, Some(1000))), None);
+        assert_eq!(downloading(t.report(10, Some(1000))), Some((10.0, Some(1000.0))));
+        let reported = (11..=100).filter(|percent| t.report(percent * 10, Some(1000)).is_some()).count();
+        assert_eq!(reported, 90);
     }
 
     #[test]
     fn throttle_without_length_reports_per_step() {
         let mut t = ProgressThrottle::default();
-        assert!(t.chunk(10, None).is_some());
-        assert!(t.chunk(1024, None).is_none());
-        assert_eq!(downloading(t.chunk(256 * 1024, None)), Some(((256 * 1024 + 1034) as f64, None)));
+        assert!(t.report(10, None).is_some());
+        assert!(t.report(1024, None).is_none());
+        assert_eq!(downloading(t.report(256 * 1024 + 1034, None)), Some(((256 * 1024 + 1034) as f64, None)));
         // A zero length is treated as unknown, not divided by.
-        assert!(ProgressThrottle::default().chunk(1, Some(0)).is_some());
+        assert!(ProgressThrottle::default().report(1, Some(0)).is_some());
+    }
+
+    #[test]
+    fn throttle_uses_absolute_bytes_after_a_full_download_restart() {
+        let mut t = ProgressThrottle::default();
+        let total = 100 * 1024 * 1024;
+        assert_eq!(downloading(t.report(40 * 1024 * 1024, None)), Some(((40 * 1024 * 1024) as f64, None)));
+        assert_eq!(downloading(t.report(1024, Some(total))), Some((1024.0, Some(total as f64))));
+        assert_eq!(
+            downloading(t.report(50 * 1024 * 1024, Some(total))),
+            Some(((50 * 1024 * 1024) as f64, Some(total as f64)))
+        );
     }
 
     #[test]
