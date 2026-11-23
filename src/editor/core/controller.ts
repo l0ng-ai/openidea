@@ -2324,6 +2324,9 @@ export class EditorController implements SlotHost {
                       },
                     ] as MenuItem[])
                   : []),
+                // The links the project view and the editor chooser offer (features/vcs: GitHub Link).
+                { kind: "separator" },
+                ...menuGroupItems("copyPath", { paths: [path] }),
               ],
             },
             { kind: "separator" },

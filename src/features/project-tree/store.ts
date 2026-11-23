@@ -13,6 +13,8 @@ import { libraryEntryPaths } from "@/platform/virtualDocs";
 import { isIgnoredName } from "@/platform/ignoredNames";
 import { tx, txPart } from "@/platform/i18n";
 import { notifications } from "@/workbench/contributions";
+import { editorPrefs } from "@/platform/editorSettings";
+import { useProject } from "@/platform/project";
 import { ipcPath } from "@/platform/paths";
 import {
   DEFAULT_TREE_OPTIONS,
@@ -57,8 +59,6 @@ export interface ViewOptions extends TreeOptions {
   singleClickOpen: boolean;
   /** Single click on a folder row expands / collapses it. */
   singleClickExpand: boolean;
-  /** Single click shows files in the preview tab (IDEA's "Enable Preview Tab"). */
-  previewTab: boolean;
   /** Show a file's declarations as expandable rows below it. */
   showMembers: boolean;
   /** Show the location of each project root beside its name. */
@@ -73,8 +73,6 @@ export const DEFAULT_VIEW_OPTIONS: ViewOptions = {
   autoscrollToSource: false,
   singleClickOpen: false,
   singleClickExpand: false,
-  // IDEA's "Enable Preview Tab" is off by default.
-  previewTab: false,
   showMembers: false,
   showRootPaths: true,
   horizontalScroll: true,
@@ -82,6 +80,8 @@ export const DEFAULT_VIEW_OPTIONS: ViewOptions = {
 
 function storedOptions(): ViewOptions {
   const options = { ...DEFAULT_VIEW_OPTIONS, ...readJson<Partial<ViewOptions>>(OPTIONS_KEY) };
+  // Former view-only switch, now the editor's preview tab setting (`previewTabEnabled`).
+  delete (options as { previewTab?: unknown }).previewTab;
   if (!["name", "type", "modified"].includes(options.sortBy)) options.sortBy = "name";
   return options;
 }
@@ -500,6 +500,22 @@ export function setViewOption<K extends keyof ViewOptions>(key: K, value: ViewOp
   const options = { ...get().options, [key]: value };
   set({ options });
   writeJson(OPTIONS_KEY, options);
+}
+
+/** Single click shows files in the preview tab: IDEA's "Enable Preview Tab" is the editor's own setting. */
+export const previewTabEnabled = () => editorPrefs().tabs.previewTab;
+
+export async function setPreviewTabEnabled(on: boolean): Promise<void> {
+  try {
+    const settings = await call(commands.settingsSet("global", "editor.tabs.previewTab", JSON.stringify(on)));
+    useProject.setState({ settings });
+  } catch (e) {
+    notifications().notify({
+      level: "error",
+      title: "Cannot change the setting",
+      body: e instanceof Error ? e.message : String(e),
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
