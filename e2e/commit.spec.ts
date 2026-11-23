@@ -780,6 +780,81 @@ test("Commit Options applies a named TODO filter independently of the TODO windo
   expect(await ipcCalls(page, "vcs_commit")).toEqual([]);
 });
 
+test("commit check text scrolls independently of its status icon and retry action", async ({ workbench: page }) => {
+  await stubRepository(page);
+  await page.setViewportSize({ width: 850, height: 650 });
+  await page.evaluate(async () => {
+    const registryPath = "/src/features/vcs/commitCheckRegistry.ts";
+    const layoutPath = "/src/workbench/toolwindows/store.ts";
+    const { registerCommitCheck } = await import(/* @vite-ignore */ registryPath);
+    const layout = await import(/* @vite-ignore */ layoutPath);
+    layout.moveToolWindow("commit", "left");
+    layout.setToolWindowSize("left", 238);
+    for (let index = 0; index < 6; index++) {
+      registerCommitCheck({
+        id: `test.commitLayout.${index}`,
+        order: index - 1000,
+        title: `Ledger check ${index + 1}`,
+        run: () => {
+          if (index === 0) document.body.dataset.checkRuns = String(Number(document.body.dataset.checkRuns ?? 0) + 1);
+          return {
+            severity: "error",
+            text: "The regional settlement totals differ from the monthly inventory audit and need a second review.",
+            fix:
+              index === 5
+                ? {
+                    label: "Review final check",
+                    run: () => {
+                      document.body.dataset.commitCheckReviewed = "yes";
+                    },
+                  }
+                : undefined,
+          };
+        },
+      });
+    }
+  });
+  await page.keyboard.press("Meta+k");
+  const commit = page.getByRole("region", { name: "Commit", exact: true });
+  await commit.getByRole("textbox", { name: "Commit message" }).fill("Review the settlement totals");
+  await commit.getByRole("button", { name: "Commit Options", exact: true }).click();
+  const options = page.getByRole("dialog", { name: "Commit Options", exact: true });
+  await options.getByRole("button", { name: "Run Commit Checks", exact: true }).click();
+
+  const feedback = commit.getByRole("alert").filter({ hasText: "Ledger check 1" });
+  const first = feedback.getByText("Ledger check 1", { exact: true });
+  const second = feedback.getByText("Ledger check 2", { exact: true });
+  const results = first.locator("../..");
+  const icon = feedback.locator("svg").first();
+  const retry = commit.getByRole("button", { name: "Rerun Commit Checks", exact: true });
+  const commitAnyway = commit.getByRole("button", { name: "Commit Anyway", exact: true });
+  await expect(commitAnyway).toBeInViewport({ ratio: 1 });
+  await expect(first).toHaveCSS("font-size", "13px");
+  const firstRow = (await first.locator("..").boundingBox())!;
+  const secondRow = (await second.locator("..").boundingBox())!;
+  expect(secondRow.y - (firstRow.y + firstRow.height)).toBeCloseTo(4, 0);
+  expect(await results.evaluate((node) => node.scrollHeight > node.clientHeight)).toBe(true);
+  const statusTop = (await icon.boundingBox())!.y;
+  const retryTop = (await retry.boundingBox())!.y;
+  await results.evaluate((node) => {
+    node.scrollTop = node.scrollHeight;
+  });
+  expect(await results.evaluate((node) => node.scrollTop)).toBeGreaterThan(0);
+  expect((await icon.boundingBox())!.y).toBeCloseTo(statusTop, 0);
+  expect((await retry.boundingBox())!.y).toBeCloseTo(retryTop, 0);
+  const details = feedback.getByRole("button", { name: "Review final check", exact: true });
+  await expect(details).toBeInViewport({ ratio: 1 });
+  await expect(icon).toBeInViewport({ ratio: 1 });
+  await expect(retry).toBeInViewport({ ratio: 1 });
+  await expect(commitAnyway).toBeInViewport({ ratio: 1 });
+  await details.click();
+  await expect(page.locator("body")).toHaveAttribute("data-commit-check-reviewed", "yes");
+  await retry.click();
+  await expect(page.locator("body")).toHaveAttribute("data-check-runs", "2");
+  await expect(first).toBeVisible();
+  expect(await ipcCalls(page, "vcs_commit")).toEqual([]);
+});
+
 test("the TODO check reports unreadable files and can retry after they become available", async ({
   workbench: page,
 }) => {
