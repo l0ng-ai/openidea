@@ -10,6 +10,7 @@ import { StateEffect, StateField, type EditorState, type Extension } from "@code
 import { EditorView, ViewPlugin } from "@codemirror/view";
 import { whenSynced } from "@/editor/api";
 import { call, commands, isCancelled, isTauri, nextRequestId, type RequestId } from "@/platform/ipc";
+import { executeAction } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import {
   inspectionOption,
@@ -39,6 +40,9 @@ interface PlacedTypo {
 }
 
 const setTypos = StateEffect.define<readonly PlacedTypo[]>();
+
+/** A custom dictionary file changed on disk; the file is checked again. */
+const dictionariesChanged = StateEffect.define<null>();
 
 /** The last check's typos, mapped through later edits (for the quick fixes). */
 const typosField = StateField.define<readonly PlacedTypo[]>({
@@ -81,6 +85,48 @@ export async function saveToDictionary(word: string, level: "project" | "ide") {
   const scope = level === "project" ? "project" : "global";
   const settings = await call(commands.settingsSet(scope, key, JSON.stringify([...list, w].sort())));
   useProject.setState({ settings });
+}
+
+/** Configured custom dictionaries (`spelling.customDictionaries`), trimmed and in order. */
+function customDictionaries(): string[] {
+  return (spellingOf(useProject.getState().settings)?.customDictionaries ?? []).map((d) => d.trim()).filter(Boolean);
+}
+
+/**
+ * Appends the word to a custom dictionary file (the backend resolves `~/…`
+ * against the home folder, relative paths against the project root, and
+ * creates the file when missing). The dictionary change re-checks the file
+ * like the other saves; an error is reported at the caret.
+ */
+async function saveToCustomDictionary(view: EditorView, dictionary: string, word: string) {
+  try {
+    await call(commands.spellSaveToDictionary(dictionary, word));
+    view.dispatch({ effects: dictionariesChanged.of(null) });
+  } catch (e) {
+    if (!isCancelled(e)) showHint(view, e instanceof Error ? e.message : String(e), { tone: "error" });
+  }
+}
+
+/**
+ * The dictionary "Save '…' to dictionary" writes to: the Default dictionary
+ * setting (`project`, `application`, or a custom dictionary's configured
+ * path); without one, project when a project is open, application otherwise.
+ * A default naming a removed dictionary, or a project's file with no project
+ * open, falls back — the row always works.
+ */
+function defaultSaveTarget(view: EditorView, word: string): () => void {
+  const hasProject = !!useProject.getState().project;
+  const setting = spellingOf(useProject.getState().settings)?.defaultDictionary;
+  if (
+    hasProject &&
+    setting &&
+    setting !== "project" &&
+    setting !== "application" &&
+    customDictionaries().includes(setting)
+  ) {
+    return () => saveToCustomDictionary(view, setting, word);
+  }
+  return () => saveToDictionary(word, hasProject && setting !== "application" ? "project" : "ide");
 }
 
 function typoAt(state: EditorState, pos: number): PlacedTypo | undefined {
@@ -146,8 +192,8 @@ export function spellingIntentions(view: EditorView): ListPopupItem[] {
   const typo = typoAt(view.state, sel.head);
   if (!typo) return [];
   const hasProject = !!useProject.getState().project;
-  // One row saves to the project dictionary (application-level without a project);
-  // its submenu still offers each level, then the inspection controls.
+  const dictionaries = hasProject ? customDictionaries() : [];
+  // The submenu offers each available dictionary and the inspection controls.
   const saveSubmenu: MenuItem[] = [
     ...(hasProject
       ? [
@@ -163,6 +209,20 @@ export function spellingIntentions(view: EditorView): ListPopupItem[] {
       label: "Save to application-level dictionary",
       run: () => void saveToDictionary(typo.word, "ide"),
     },
+    ...dictionaries.map((d) => ({
+      id: `spelling.saveCustom.${d}`,
+      label: tx`Save to '${d}'`,
+      run: () => void saveToCustomDictionary(view, d, typo.word),
+    })),
+    ...(dictionaries.length
+      ? []
+      : [
+          {
+            id: "spelling.addCustom",
+            label: "Add custom dictionary…",
+            run: () => void executeAction("file.settings", "editor.naturalLanguages.spelling"),
+          },
+        ]),
     { kind: "separator" },
     ...intentionControls({ id: SPELLING_INSPECTION, name: "Typo" }),
   ];
@@ -184,7 +244,7 @@ export function spellingIntentions(view: EditorView): ListPopupItem[] {
       id: "spelling.save",
       label: tx`Save '${typo.word}' to dictionary`,
       icon: "bulb-fix",
-      run: () => saveToDictionary(typo.word, hasProject ? "project" : "ide"),
+      run: defaultSaveTarget(view, typo.word),
       submenu: saveSubmenu,
     },
   ];
@@ -256,7 +316,7 @@ export function spellingExtension(): Extension {
     });
     return {
       update: (u) => {
-        if (u.docChanged) schedule();
+        if (u.docChanged || u.transactions.some((tr) => tr.effects.some((e) => e.is(dictionariesChanged)))) schedule();
       },
       destroy: () => {
         clearTimeout(timer);
