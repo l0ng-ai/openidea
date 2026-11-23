@@ -481,6 +481,16 @@ impl Http {
         self.get_text_response(url, None, Request::GetOrEmptyOn404, cancel)
     }
 
+    /// [`Self::get_text_or_empty_on_404`], failing when the response is larger than `max_bytes`.
+    pub fn get_text_limited_or_empty_on_404(
+        &self,
+        url: &str,
+        max_bytes: u64,
+        cancel: &CancellationToken,
+    ) -> IdeResult<String> {
+        self.get_text_response(url, Some(max_bytes), Request::GetOrEmptyOn404, cancel)
+    }
+
     fn get_text_response(
         &self,
         url: &str,

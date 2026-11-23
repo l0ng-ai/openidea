@@ -121,6 +121,24 @@ const NERD_FONTS = [
   "Hasklug Nerd Font",
   "CaskaydiaCove Nerd Font",
 ];
+
+/**
+ * CJK faces, named after the icon fonts on a grid's font stack. Such a renderer measures each
+ * glyph once to derive its per-cell letter spacing, and when the face drawing wide characters is
+ * only implicit (the webview's own fallback) that measurement and the rendering can disagree by
+ * about a pixel per character: every wide character then takes less than its two cells, and rows
+ * that mix CJK with a full-width background — pi's overlay panel, a boxed CLI — drift left, by up
+ * to two cells across one panel. Naming the face makes measurement and rendering use the same one,
+ * whatever its own advance, and two cells stay two cells. The webview skips missing families, so
+ * one list covers every platform.
+ */
+export const CJK_FALLBACK_FACES = [
+  "Microsoft YaHei",
+  "PingFang SC",
+  "Noto Sans CJK SC",
+  "Noto Sans SC",
+  "Source Han Sans SC",
+];
 /** In running text the proportional faces give icons their own width instead of one cell's. */
 const UI_NERD_FONTS = [
   "JetBrainsMono Nerd Font Propo",

@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+base64.workspace = true
 dirs.workspace = true
 dunce.workspace = true
 ignore.workspace = true
@@ -16,6 +17,7 @@ ide-vfs.workspace = true
 quick-xml = "0.42"
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10"
 specta.workspace = true
 tempfile.workspace = true
 toml.workspace = true

@@ -23,7 +23,7 @@ import {
 import type { SyntaxNode } from "@lezer/common";
 import { indentMore } from "@codemirror/commands";
 import { visibleColumn } from "./visibleColumn";
-import { literalAt } from "./literals";
+import { lineLiteralAt, literalAt } from "./literals";
 import { SEMICOLON_LANGS, codeEnd, lineCommentToken } from "./editing";
 
 // --- Tab -------------------------------------------------------------------------------
@@ -552,7 +552,7 @@ const PLUS_CONCAT_LANGS = new Set([
 function stringLiteralAt(state: EditorState, pos: number): { from: number; to: number } | null {
   for (let n: SyntaxNode | null = syntaxTree(state).resolveInner(pos, -1); n; n = n.parent)
     if (/^(StringLiteral|String)$/.test(n.name)) return { from: n.from, to: n.to };
-  const lit = literalAt(state, pos);
+  const lit = lineLiteralAt(state, pos);
   return lit?.kind === "string" ? lit : null;
 }
 

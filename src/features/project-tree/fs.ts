@@ -4,6 +4,7 @@
  */
 import type { FileEntry } from "@/bindings";
 import { notifyFileOperation } from "@/platform/fileOps";
+import { toBase64 } from "@/platform/base64";
 import { call, commands, emitLocalIdeEvent, isTauri, IpcError, nextRequestId } from "@/platform/ipc";
 import { isRemoteWindow } from "@/platform/remote";
 import { invokeLocal } from "@/platform/tauriCore";
@@ -31,7 +32,7 @@ export const tauriFs: ProjectFs = {
     notifyFileOperation({ kind: "created", paths: [path] });
   },
   createFileBytes: async (path, data) => {
-    await call(commands.fsCreateFileBytes(path, [...data]));
+    await call(commands.fsCreateFileBytes(path, toBase64(data)));
     notifyFileOperation({ kind: "created", paths: [path] });
   },
   createDir: async (path) => void (await call(commands.fsCreateDir(path))),

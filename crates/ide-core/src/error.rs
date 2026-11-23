@@ -95,7 +95,7 @@ pub enum ErrorKind {
     AlreadyExists,
     PermissionDenied,
     InvalidInput,
-    /// Document version mismatch; the UI must resync the full text.
+    /// The requested state is stale; the UI must use the current snapshot.
     OutOfSync,
     Cancelled,
     TimedOut,

@@ -1,7 +1,7 @@
 use super::{Channel, Emit};
 use crate::Host;
 use ide_command::command;
-use ide_core::{IdeResult, TerminalId};
+use ide_core::{IdeResult, IpcBytes, TerminalId};
 use ide_terminal::{TerminalInfo, TerminalOptions};
 
 mod images;
@@ -9,7 +9,7 @@ mod images;
 const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 
 #[command(trust = always)]
-pub async fn term_store_image(host: &Host, id: TerminalId, data: Vec<u8>, mime: String) -> IdeResult<String> {
+pub async fn term_store_image(host: &Host, id: TerminalId, data: IpcBytes, mime: String) -> IdeResult<String> {
     if data.len() > MAX_IMAGE_BYTES {
         return Err(ide_core::IdeError::invalid("image is too large to paste (limit 20 MB)"));
     }
@@ -183,28 +183,18 @@ pub fn term_available_shells() -> Vec<String> {
 mod tests {
     use super::*;
     use crate::HostConfig;
-    use ide_core::{NullSink, error::ErrorKind};
-    use std::sync::Arc;
+    use ide_core::error::ErrorKind;
 
     #[tokio::test]
     async fn image_size_limit_is_checked_before_storage() {
         let root = tempfile::tempdir().unwrap();
-        let host = Host::new(HostConfig {
-            config_dir: root.path().join("config"),
-            data_dir: root.path().join("data"),
-            local_data_dir: root.path().join("data"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(NullSink)),
-            owner: |window| window,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(HostConfig::for_test(root.path()));
         let id = TerminalId::next();
-        let error = term_store_image(&host, id, vec![0; MAX_IMAGE_BYTES + 1], "image/png".into()).await.unwrap_err();
+        let error =
+            term_store_image(&host, id, vec![0; MAX_IMAGE_BYTES + 1].into(), "image/png".into()).await.unwrap_err();
         assert_eq!(error.kind, ErrorKind::InvalidInput);
         assert_eq!(error.message, "image is too large to paste (limit 20 MB)");
-        let error = term_store_image(&host, id, vec![0; MAX_IMAGE_BYTES], "image/png".into()).await.unwrap_err();
+        let error = term_store_image(&host, id, vec![0; MAX_IMAGE_BYTES].into(), "image/png".into()).await.unwrap_err();
         assert_eq!(error.message, "terminal session not found");
         assert!(!host.data_dir.join("terminal-images").exists());
     }

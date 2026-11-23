@@ -153,11 +153,10 @@ pub fn uri_target(uri: &str) -> (PathBuf, Option<String>) {
     }
 }
 
-pub use ide_core::text::is_virtual_uri;
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ide_core::is_virtual_uri;
 
     #[test]
     fn file_uris_a_server_leaves_unencoded_are_encoded() {

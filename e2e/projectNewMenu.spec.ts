@@ -5,14 +5,29 @@ test.use({ video: "on" });
 test("offers file templates for the selected workspace member", async ({ workbench: page }) => {
   await stubDesktop(page);
   await page.evaluate(async () => {
-    const markers: Record<string, string> = {
-      "/work/api": "go.mod",
-      "/work/web": "pom.xml",
-      "/work/library": "pom.xml",
+    const markers: Record<string, string[]> = {
+      "/work/api": ["go.mod"],
+      "/work/web": ["pom.xml"],
+      "/work/library": ["pom.xml"],
+      "/work/tutor": ["package.json", "vite.config.ts"],
     };
     window.__ipc.handlers.fs_read_dir = ({ path }) => {
-      const name = markers[String(path)];
-      return name ? [{ name, path: `${path}/${name}`, kind: "file", size: 0, mtimeMs: 0 }] : [];
+      const files = (markers[String(path)] ?? []).map((name) => ({
+        name,
+        path: `${path}/${name}`,
+        kind: "file",
+        size: 0,
+        mtimeMs: 0,
+      }));
+      return path === "/work/tutor"
+        ? [...files, { name: "src", path: "/work/tutor/src", kind: "dir", size: 0, mtimeMs: 0 }]
+        : files;
+    };
+    const backend = "/src/editor/core/backend.ts";
+    const { docBackend } = await import(/* @vite-ignore */ backend);
+    window.__ipc.handlers.fs_create_file = ({ path }) => {
+      docBackend().files.set(String(path), "");
+      return null;
     };
     window.__ipc.handlers.run_configs = () => [
       {
@@ -54,6 +69,7 @@ test("offers file templates for the selected workspace member", async ({ workben
   await expect(page.getByRole("menuitem", { name: "Go Module", exact: true })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "JSON File", exact: true })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Java Class", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("menuitem", { name: "Svelte Component", exact: true })).toHaveCount(0);
   await expect(page.getByRole("menuitem", { name: "Tomcat Context Descriptor", exact: true })).toHaveCount(0);
   await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");
@@ -73,6 +89,23 @@ test("offers file templates for the selected workspace member", async ({ workben
   await expect(popup.getByText("Java Class", { exact: true })).toBeVisible();
   await expect(popup.getByText("Tomcat Context Descriptor", { exact: true })).toHaveCount(0);
   await expect(popup.getByText("Go File", { exact: true })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+
+  const tutor = page.getByRole("treeitem", { name: "tutor /work/tutor", exact: true });
+  if ((await tutor.getAttribute("aria-expanded")) !== "true") await tutor.locator("[data-tree-toggle]").click();
+  await newMenu("/work/tutor/src");
+  const component = page.getByRole("menuitem", { name: "Svelte Component", exact: true });
+  await expect(component).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath("svelte-new-menu.png"), animations: "disabled" });
+  await component.click();
+  const svelte = page.getByRole("dialog", { name: "New Svelte Component", exact: true });
+  const name = svelte.getByRole("textbox", { name: "Name", exact: true });
+  await name.fill("+page.svelte");
+  await name.press("Enter");
+  await expect(svelte).toBeHidden();
+  expect(await ipcCalls(page, "fs_create_file")).toEqual([{ path: "/work/tutor/src/+page.svelte" }]);
+  await expect(page.getByRole("tab", { name: "+page.svelte" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".cm-content")).toContainText("<script>");
 });
 
 test("uses the single project's type in the keyboard New popup", async ({ workbench: page }) => {

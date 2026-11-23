@@ -324,6 +324,8 @@ pub enum LspRefreshKind {
     InlayHints,
     SemanticTokens,
     CodeLens,
+    /// An import or classpath update may have changed inheritance search results.
+    Inheritance,
     /// The Dart server published a document's Flutter outline.
     FlutterOutline,
 }

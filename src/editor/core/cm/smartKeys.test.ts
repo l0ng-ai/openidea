@@ -101,6 +101,14 @@ describe("Enter in a string literal", () => {
     expect(enter("char c = 'a|';", "java", java())).toBeNull();
   });
 
+  it("splits a string of a language without a Lezer string node, and not a multi-line one", () => {
+    const kt = StreamLanguage.define(interpolationParser(kotlin, "Kotlin"));
+    expect(enter('fun f() {\n    val t = "hello|world"\n}', "kotlin", kt)).toBe(
+      'fun f() {\n    val t = "hello" +\n            "|world"\n}',
+    );
+    expect(enter('val t = """\n  a|b\n  """', "kotlin", kt)).toBeNull();
+  });
+
   it("splits after an escaped backslash", () => {
     expect(enter('String t = "a\\\\|b";', "java", java())).toBe('String t = "a\\\\" +\n        "|b";');
   });

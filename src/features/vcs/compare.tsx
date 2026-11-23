@@ -4,6 +4,7 @@
  */
 import { activeEditor } from "@/editor/api";
 import { registerActions } from "@/platform/actions";
+import { choosePath } from "@/platform/choosePath";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { isRemoteWindow } from "@/platform/remote";
 import { maybeEditorService, notifications, projectViewSelection } from "@/workbench/contributions";
@@ -97,16 +98,13 @@ function info(title: string) {
 }
 
 async function pickFile(near: string): Promise<string | null> {
-  if (!isTauri()) return null;
-  const { open } = await import("@/platform/dialog");
   const dir = near.slice(0, near.lastIndexOf("/")) || undefined;
-  const picked = await open({ multiple: false, directory: false, title: "Compare With", defaultPath: dir });
-  return (Array.isArray(picked) ? picked[0] : picked) ?? null;
+  return choosePath({ directory: false, title: tx("Compare With"), defaultPath: dir });
 }
 
 /**
- * The file to compare `path` against: the OS file dialog on the desktop; a
- * browser file picker's contents elsewhere (remote development / `pnpm dev`),
+ * The file to compare `path` against: a project-host path in the app; a
+ * browser file picker's contents in the browser build,
  * compared as text since no absolute path is available to the backend.
  */
 async function pickComparison(

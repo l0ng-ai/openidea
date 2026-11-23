@@ -40,6 +40,7 @@ import {
   shellCommand,
   cursorModelDefaults,
   emptyDraft,
+  hasMention,
   isMentioned,
   isPerModelOption,
   mentionOf,
@@ -135,7 +136,7 @@ interface AgentsState {
   external: ExternalSession[];
   /** Why the external sessions could not be listed. */
   externalError: string | null;
-  /** The Import Sessions from Other Apps dialog is open. */
+  /** The Import Sessions dialog is open. */
   importOpen: boolean;
   /** External sessions being imported (`provider:sessionId`), so none is imported twice. */
   importing: ReadonlySet<string>;
@@ -531,6 +532,7 @@ async function refreshProviderModels(
 export async function connect(): Promise<void> {
   if (!isTauri()) return;
   const gen = ++generation;
+  clearChangeRefreshes();
   const channel = new Channel<AgentEvent>();
   channel.onmessage = (e) => {
     if (gen === generation) onEvent(e);
@@ -616,8 +618,6 @@ const CACHED_CLOSED_TASKS = 5;
 
 /** Recent closed-task ids kept in memory so reopening a just-closed tab avoids refetching. */
 const closedTaskMru: string[] = [];
-/** Bumped when a task's cache is dropped, so a fetch started before that doesn't refill it. */
-const cacheDrops = new Map<string, number>();
 
 function isTaskKey(key: string, taskId: string): boolean {
   return key === taskId || key.startsWith(`${taskId}/`);
@@ -639,11 +639,9 @@ function clearTaskMaps(taskId: string, clearStreaming = false) {
     if (isTaskKey(key, taskId)) positions.delete(key);
   }
   if (clearStreaming) streamingReply.delete(taskId);
-  const timer = pendingChanges.get(taskId);
-  if (timer !== undefined) {
-    clearTimeout(timer);
-    pendingChanges.delete(taskId);
-  }
+  cancelScheduledChanges(taskId);
+  const last = changeRefreshes.get(taskId);
+  if (last) last.cache.dropped = true;
 }
 
 function withoutTaskCache(s: AgentsState, taskId: string): Partial<AgentsState> | null {
@@ -682,8 +680,6 @@ function withoutTaskCache(s: AgentsState, taskId: string): Partial<AgentsState> 
 
 function dropTaskCache(taskId: string) {
   clearTaskMaps(taskId);
-  // A deleted task needs no marker: fetches already discard results for tasks that are gone.
-  if (useAgents.getState().tasks.has(taskId)) cacheDrops.set(taskId, (cacheDrops.get(taskId) ?? 0) + 1);
   useAgents.setState((s) => withoutTaskCache(s, taskId) ?? s);
 }
 
@@ -726,9 +722,7 @@ export function disconnect() {
   streamingReply.clear();
   modelFlights.clear();
   closedTaskMru.length = 0;
-  cacheDrops.clear();
-  for (const timer of pendingChanges.values()) clearTimeout(timer);
-  pendingChanges.clear();
+  clearChangeRefreshes();
   resetAllAgentFontZoom();
   useAgents.setState({
     loaded: false,
@@ -780,7 +774,6 @@ function onEvent(e: AgentEvent) {
     }
     case "removed": {
       clearTaskMaps(e.id, true);
-      cacheDrops.delete(e.id);
       const tasks = new Map(s.tasks);
       tasks.delete(e.id);
       const composers = new Map(s.composers);
@@ -921,17 +914,49 @@ export async function loadEntries(task: string, subagent: string | null = null):
   }
 }
 
-export async function refreshChanges(task: string): Promise<void> {
-  // Discard a result that arrives after a project switch, the task's deletion, or its cache being dropped.
+const pendingChanges = new Map<string, ReturnType<typeof setTimeout>>();
+/** Last pass for each task. The active and trailing pass share a cache lifetime until eviction. */
+const changeRefreshes = new Map<string, { done: Promise<void>; started: boolean; cache: { dropped: boolean } }>();
+
+function cancelScheduledChanges(task: string) {
+  clearTimeout(pendingChanges.get(task));
+  pendingChanges.delete(task);
+}
+
+function clearChangeRefreshes() {
+  for (const timer of pendingChanges.values()) clearTimeout(timer);
+  pendingChanges.clear();
+  changeRefreshes.clear();
+}
+
+/** Waits for the first read that starts after this request, not for the queue to go idle. */
+export function refreshChanges(task: string): Promise<void> {
+  if (!useAgents.getState().tasks.has(task)) return Promise.resolve();
+  const last = changeRefreshes.get(task);
+  const current = last && !last.cache.dropped ? last : undefined;
+  if (current && !current.started) return current.done;
+
   const gen = generation;
-  const drops = cacheDrops.get(task);
-  const stillWanted = () =>
-    gen === generation && useAgents.getState().tasks.has(task) && cacheDrops.get(task) === drops;
-  // The whole task's changes are read in either scope: the session's summary counts them.
-  await Promise.all([
-    refreshTaskChanges(task, stillWanted),
-    useChangesOptions.getState().scope === "turn" && refreshTurnChanges(task, stillWanted),
-  ]);
+  const pass = { done: Promise.resolve(), started: false, cache: current?.cache ?? { dropped: false } };
+  const stillWanted = () => gen === generation && !pass.cache.dropped && useAgents.getState().tasks.has(task);
+  const read = async () => {
+    pass.started = true;
+    try {
+      if (!stillWanted()) return;
+      cancelScheduledChanges(task); // This read covers notifications still waiting on the timer.
+      // The session summary needs the whole task even when the pane shows just its last turn.
+      await Promise.all([
+        refreshTaskChanges(task, stillWanted),
+        useChangesOptions.getState().scope === "turn" && refreshTurnChanges(task, stillWanted),
+      ]);
+    } finally {
+      if (changeRefreshes.get(task) === pass) changeRefreshes.delete(task);
+    }
+  };
+  changeRefreshes.set(task, pass);
+  // A reopened tab can't cancel the obsolete IPC either; wait for it before starting a fresh read.
+  pass.done = last ? last.done.then(read, read) : read();
+  return pass.done;
 }
 
 async function refreshTurnChanges(task: string, stillWanted: () => boolean): Promise<void> {
@@ -995,7 +1020,6 @@ export async function acceptChanges(task: string, relPaths: string[] | null): Pr
   }
 }
 
-const pendingChanges = new Map<string, ReturnType<typeof setTimeout>>();
 /** Reloads the task's changes after a short pause (tool diffs, commits landing). */
 export function scheduleChanges(task: string) {
   if (pendingChanges.has(task)) return;
@@ -1667,6 +1691,20 @@ export interface ReferenceTarget {
   lines?: { from: number; to: number };
 }
 
+/** The active composer's task and path roots for agent references. */
+export function composerReferenceContext() {
+  const key = activeComposerKey();
+  const task = key === HOME ? null : (useAgents.getState().tasks.get(key) ?? null);
+  const project = useProject.getState().project;
+  const root = (task ? task.cwd : homeProjectRoot()) ?? "";
+  const roots = {
+    root,
+    projectRoot: (task ? (task.projectRoot ?? project?.root) : null) ?? root,
+    members: project?.workspace?.projects,
+  };
+  return { key, task, roots };
+}
+
 /**
  * Adds `@file` references (with an optional line range) to the composer on show (else the one
  * typed in last) and shows it: IDEA-style "send this to the chat". Paths resolve like the
@@ -1674,33 +1712,28 @@ export interface ReferenceTarget {
  * how many were added; a path outside every project shows a notice.
  */
 export function addReferences(targets: readonly ReferenceTarget[]): number {
-  return appendToComposer((mentions) => mentions.join(" "), targets);
+  // A reference the message already holds (same file, same lines) is not added a second time.
+  return appendToComposer(
+    (mentions, text) => mentions.filter((m, i) => !hasMention(text, m) && mentions.indexOf(m) === i).join(" "),
+    targets,
+  );
 }
 
 /**
  * Appends text to the agent message typed last (a task's or New Task's) and opens it; nothing is
  * sent. `compose` gets the `@` mentions of `targets` (those inside this window's projects, which
- * also become chips). Returns how many targets were referenced.
+ * also become chips) and the message's current text. Returns how many targets were referenced.
  */
 export function appendToComposer(
-  compose: (mentions: readonly string[]) => string,
+  compose: (mentions: readonly string[], text: string) => string,
   targets: readonly ReferenceTarget[] = [],
 ): number {
-  const s = useAgents.getState();
-  const key = activeComposerKey();
-  const task = key === HOME ? null : s.tasks.get(key)!;
-  const project = useProject.getState().project;
-  const root = task ? task.cwd : homeProjectRoot();
-  const roots = {
-    root: root ?? "",
-    projectRoot: (task ? (task.projectRoot ?? project?.root) : null) ?? root ?? "",
-    members: project?.workspace?.projects,
-  };
+  const { key, task, roots } = composerReferenceContext();
   const current = composerDraft(key);
   const files: FileRef[] = [];
   const mentions: string[] = [];
   for (const { path, lines } of targets) {
-    const ref = root ? referenceOf(roots, path) : null;
+    const ref = roots.root ? referenceOf(roots, path) : null;
     if (!ref) continue;
     // A folder keeps its trailing slash, so its chip is a folder reference.
     const rel = /[\\/]$/.test(path) && ref.rel !== "." ? `${ref.rel}/` : ref.rel;
@@ -1709,15 +1742,26 @@ export function appendToComposer(
   }
   if (files.length < targets.length)
     notifications().notify({ level: "info", title: tx("Only files of this window's projects can be referenced") });
-  const joined = compose(mentions);
-  if (!joined) return 0;
+  const joined = compose(mentions, current.text);
+  if (!joined) {
+    // Every reference is already in the message: show it rather than doing nothing.
+    if (!files.length) return 0;
+    if (task) openTask(task.id);
+    else openHome();
+    return files.length;
+  }
   // A block of several lines (a test failure) goes in a paragraph of its own.
   const text = joined.includes("\n")
     ? `${current.text.trimEnd() ? `${current.text.trimEnd()}\n\n` : ""}${joined}\n`
     : current.text && !/\s$/.test(current.text)
       ? `${current.text} ${joined} `
       : `${current.text}${joined} `;
-  updateComposer(key, { text, files: [...current.files, ...files] });
+  const added = files.filter(
+    (f, i) =>
+      !current.files.some((c) => c.path === f.path && c.rel === f.rel) &&
+      files.findIndex((o) => o.path === f.path && o.rel === f.rel) === i,
+  );
+  updateComposer(key, { text, files: [...current.files, ...added] });
   if (task) openTask(task.id);
   else openHome();
   return files.length;
