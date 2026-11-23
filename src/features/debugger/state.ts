@@ -169,8 +169,21 @@ export function tabOrderOf(s: Pick<DebugSession, "id" | "tabOrder">): number {
   return s.tabOrder ?? s.id;
 }
 
+/** Sessions as their Debug tabs show: by their root's slot, so children stay next to their parent. */
+export function inTabOrder<T extends Pick<DebugSession, "id" | "parent" | "tabOrder">>(sessions: readonly T[]): T[] {
+  const byId = new Map(sessions.map((s) => [s.id, s]));
+  const root = (s: T) => {
+    let cur = s;
+    for (let p = byId.get(cur.parent!); cur.parent != null && p; p = byId.get(cur.parent!)) cur = p;
+    return cur;
+  };
+  return [...sessions].sort(
+    (a, b) => tabOrderOf(root(a)) - tabOrderOf(root(b)) || tabOrderOf(a) - tabOrderOf(b) || a.id - b.id,
+  );
+}
+
 function sessionsInTabOrder(sessions: Record<number, DebugSession>): DebugSession[] {
-  return Object.values(sessions).sort((a, b) => tabOrderOf(a) - tabOrderOf(b) || a.id - b.id);
+  return inTabOrder(Object.values(sessions));
 }
 
 /** Execution point of the selected frame, plus the frame's locals for inline values. */

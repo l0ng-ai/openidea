@@ -49,6 +49,14 @@ describe("debug session tabs", () => {
     ]);
   });
 
+  it("keeps a child next to its parent when the parent took an older slot", () => {
+    expect(shown([session(2, null, null, 2), session(3, null, null, 1), session(4, 3, null, 3)])).toEqual([
+      [3, 3, false],
+      [4, 4, true],
+      [2, 2, false],
+    ]);
+  });
+
   it("puts a browser page in the slot of the launch it stands for", () => {
     expect(shown([session(21, 20, null, 20), session(30, null, null, 1), session(20, null, page, 2)])).toEqual([
       [30, 30, false],
