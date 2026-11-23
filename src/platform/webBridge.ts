@@ -62,6 +62,11 @@ interface ChannelFrameMessage {
   data: unknown;
 }
 
+interface ChannelEndFrameMessage {
+  type: "channelEnd";
+  id: number;
+}
+
 interface EventFrameMessage {
   type: "event";
   window: string | null;
@@ -72,7 +77,13 @@ interface PongMessage {
   type: "pong";
 }
 
-type ServerMessage = ReadyMessage | ResponseMessage | ChannelFrameMessage | EventFrameMessage | PongMessage;
+type ServerMessage =
+  | ReadyMessage
+  | ResponseMessage
+  | ChannelFrameMessage
+  | ChannelEndFrameMessage
+  | EventFrameMessage
+  | PongMessage;
 
 /** Resolves the WebSocket endpoint relative to `pageHref` (preserving any reverse-proxy subpath). */
 export function resolveWebSocketUrl(pageHref: string): string {
@@ -83,21 +94,25 @@ export function resolveWebSocketUrl(pageHref: string): string {
 }
 
 /** Replaces Tauri `Channel` objects in command arguments with `{ $channel: id }` markers for the server. */
-export function encodeWebArgs(value: unknown): unknown {
+export function encodeWebArgs(value: unknown, channels?: number[]): unknown {
   if (value === null || value === undefined || typeof value !== "object") return value;
-  if (Array.isArray(value)) return value.map(encodeWebArgs);
+  if (Array.isArray(value)) return value.map((item) => encodeWebArgs(item, channels));
   const record = value as Record<string, unknown>;
   if (typeof record[SERIALIZE_TO_IPC_FN] === "function") {
     const serialized = (record[SERIALIZE_TO_IPC_FN] as () => unknown)();
     if (typeof serialized === "string") {
       const m = CHANNEL_RE.exec(serialized);
-      if (m) return { $channel: Number(m[1]) };
+      if (m) {
+        const id = Number(m[1]);
+        channels?.push(id);
+        return { $channel: id };
+      }
     }
     return serialized;
   }
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(record)) {
-    if (v !== undefined) out[k] = encodeWebArgs(v);
+    if (v !== undefined) out[k] = encodeWebArgs(v, channels);
   }
   return out;
 }
@@ -163,8 +178,21 @@ export async function initWebRuntime(): Promise<boolean> {
 
   const callbacks = new Map<number, { fn: (payload: unknown) => void; once: boolean }>();
   const channelSeq = new Map<number, number>();
+  const activeChannels = new Set<number>();
   const eventListeners = new Map<string, Map<number, number>>();
   const pending = new Map<number, PendingCall>();
+
+  const removeEventListener = (event: string, eventId: number) => {
+    const map = eventListeners.get(event);
+    if (!map) return;
+    const callbackId = map.get(eventId);
+    map.delete(eventId);
+    if (map.size === 0) eventListeners.delete(event);
+    if (callbackId !== undefined) {
+      callbacks.delete(callbackId);
+      channelSeq.delete(callbackId);
+    }
+  };
 
   const dispatchLocalEvent = (eventName: string, payload: unknown) => {
     const listeners = eventListeners.get(eventName);
@@ -172,7 +200,7 @@ export async function initWebRuntime(): Promise<boolean> {
     for (const [id, callbackId] of [...listeners.entries()]) {
       const cb = callbacks.get(callbackId);
       if (!cb) continue;
-      if (cb.once) callbacks.delete(callbackId);
+      if (cb.once) removeEventListener(eventName, id);
       try {
         cb.fn({ event: eventName, id, payload });
       } catch (e) {
@@ -187,6 +215,27 @@ export async function initWebRuntime(): Promise<boolean> {
     const index = channelSeq.get(id) ?? 0;
     channelSeq.set(id, index + 1);
     cb.fn({ index, message: data });
+  };
+
+  const endChannel = (id: number) => {
+    activeChannels.delete(id);
+    const cb = callbacks.get(id);
+    const index = channelSeq.get(id) ?? 0;
+    if (cb) {
+      try {
+        cb.fn({ index, end: true });
+      } catch {
+        /* ignore cleanup errors from listener */
+      }
+    }
+    callbacks.delete(id);
+    channelSeq.delete(id);
+  };
+
+  const endAllActiveChannels = () => {
+    for (const id of [...activeChannels]) {
+      endChannel(id);
+    }
   };
 
   const rejectAllPending = (message: string) => {
@@ -213,7 +262,7 @@ export async function initWebRuntime(): Promise<boolean> {
       case "plugin:event|unlisten": {
         const event = String(args.event ?? "");
         const eventId = Number(args.eventId ?? 0);
-        eventListeners.get(event)?.delete(eventId);
+        removeEventListener(event, eventId);
         return null;
       }
       case "plugin:event|emit":
@@ -271,17 +320,21 @@ export async function initWebRuntime(): Promise<boolean> {
       const local = handlePluginCommand(cmd, args);
       if (local !== undefined) return Promise.resolve(local);
     }
+    const callChannels: number[] = [];
+    const encoded = encodeWebArgs(args, callChannels);
     if (!ws || ws.readyState !== WebSocket.OPEN) {
+      for (const cid of callChannels) endChannel(cid);
       return Promise.reject({ kind: "io", message: "Not connected to OpenIDEA server" });
     }
     const id = nextInvokeId++;
-    const encoded = encodeWebArgs(args);
+    for (const cid of callChannels) activeChannels.add(cid);
     return new Promise((resolve, reject) => {
       pending.set(id, { resolve, reject });
       try {
         ws!.send(JSON.stringify({ type: "invoke", id, cmd, args: encoded }));
       } catch (e) {
         pending.delete(id);
+        for (const cid of callChannels) endChannel(cid);
         reject({ kind: "io", message: e instanceof Error ? e.message : String(e) });
       }
     });
@@ -295,6 +348,7 @@ export async function initWebRuntime(): Promise<boolean> {
       return id;
     },
     unregisterCallback: (id: number) => {
+      activeChannels.delete(id);
       callbacks.delete(id);
       channelSeq.delete(id);
     },
@@ -309,7 +363,7 @@ export async function initWebRuntime(): Promise<boolean> {
 
   const eventInternals = {
     unregisterListener: (event: string, eventId: number) => {
-      eventListeners.get(event)?.delete(eventId);
+      removeEventListener(event, eventId);
     },
   };
 
@@ -384,6 +438,10 @@ export async function initWebRuntime(): Promise<boolean> {
             deliverChannel(msg.id, msg.data);
             break;
           }
+          case "channelEnd": {
+            endChannel(msg.id);
+            break;
+          }
           case "event": {
             dispatchLocalEvent("ide://event", msg.event);
             break;
@@ -396,6 +454,7 @@ export async function initWebRuntime(): Promise<boolean> {
       socket.addEventListener("close", () => {
         if (ws === socket) ws = null;
         rejectAllPending("Connection to OpenIDEA server closed");
+        endAllActiveChannels();
         if (!settled) {
           settled = true;
           if (initialTimer !== null) window.clearTimeout(initialTimer);

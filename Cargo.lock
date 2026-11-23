@@ -4461,6 +4461,7 @@ dependencies = [
  "dirs 6.0.0",
  "dunce",
  "encoding_rs",
+ "flate2",
  "futures",
  "getrandom 0.3.4",
  "globset",

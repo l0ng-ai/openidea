@@ -23,7 +23,7 @@ The quickest way to launch the web IDE (from a repo checkout or inside a contain
 ./scripts/start-web.sh
 ```
 
-It listens on `0.0.0.0:8080` by default (configurable via `OPENIDEA_HOST` / `OPENIDEA_PORT`), auto-detects the `openidea-server` binary, the built `dist/` folder, and the workspace directory, and stores persistent settings and caches inside `<workspace>/.openidea-server`.
+It listens on `0.0.0.0:8080` by default (configurable via `OPENIDEA_HOST` / `OPENIDEA_PORT`), auto-detects the `openidea-server` binary, the built `dist/` folder, and the workspace directory, and stores persistent settings and caches in `~/.openidea` (outside the workspace so indexes and downloaded tools are not watched as project files).
 
 Or invoke `openidea-server --web` directly on any host and port (default: `127.0.0.1:8080`):
 
@@ -74,7 +74,7 @@ The server prints a login URL containing `?token=...` (which sets an `HttpOnly; 
 
 ## Persistent Storage & Containers
 
-In ephemeral container environments, point `OPENIDEA_SERVER_HOME` at a mounted persistent volume (for example inside your mounted workspace directory) so settings, recent projects, and indexes survive restarts. The included launcher script [`scripts/start-web.sh`](https://github.com/luisfelipe18/openidea/blob/main/scripts/start-web.sh) does this automatically when `OPENIDEA_WORKSPACE_DIR` is set.
+In ephemeral container environments, point `OPENIDEA_SERVER_HOME` at a mounted persistent volume outside the project directory (for example `/home/openidea/.openidea`) so settings, recent projects, and indexes survive restarts without being watched or indexed as project files.
 
 Build and run with Docker:
 

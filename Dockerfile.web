@@ -13,7 +13,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY patches ./patches
 RUN pnpm install --frozen-lockfile --ignore-scripts
 COPY . .
-RUN pnpm build
+RUN pnpm build && find /src/dist -name '*.map' -delete
 
 FROM rust:1-bookworm AS backend
 WORKDIR /src
@@ -50,7 +50,8 @@ RUN chmod +x /usr/local/bin/openidea-server /usr/local/bin/start-openidea-web.sh
 USER openidea
 WORKDIR /workspace
 
-ENV OPENIDEA_HOST="0.0.0.0" \
+ENV MALLOC_ARENA_MAX="2" \
+    OPENIDEA_HOST="0.0.0.0" \
     OPENIDEA_PORT="8080" \
     OPENIDEA_WEB_DIR="/opt/openidea/web" \
     OPENIDEA_WORKSPACE_DIR="/workspace"

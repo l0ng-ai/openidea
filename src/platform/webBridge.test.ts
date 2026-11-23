@@ -149,7 +149,7 @@ describe("webBridge", () => {
     ws.receive({ type: "response", id: sentInvoke.id, ok: true, data: { version: "0.1.38" } });
     await expect(req).resolves.toEqual({ version: "0.1.38" });
 
-    // Channel streaming delivers ordered frames.
+    // Channel streaming delivers ordered frames and cleans up on channelEnd.
     const received: unknown[] = [];
     const cbId = internals.transformCallback((msg: unknown) => received.push(msg)) as number;
     const chObj = { __TAURI_TO_IPC_KEY__: () => `__CHANNEL__:${cbId}` };
@@ -160,18 +160,25 @@ describe("webBridge", () => {
     ws.receive({ type: "channel", id: cbId, data: "world" });
     ws.receive({ type: "response", id: sentStream.id, ok: true, data: 1 });
     await expect(streamReq).resolves.toBe(1);
+    ws.receive({ type: "channelEnd", id: cbId });
+    // Further frames after channelEnd are ignored because the callback was unregistered.
+    ws.receive({ type: "channel", id: cbId, data: "late" });
     expect(received).toEqual([
       { index: 0, message: "hello " },
       { index: 1, message: "world" },
+      { index: 2, end: true },
     ]);
 
-    // Backend events reach ide://event listeners.
+    // Backend events reach ide://event listeners and unlisten removes the callback.
     const events: unknown[] = [];
     const evCb = internals.transformCallback((e: unknown) => events.push(e)) as number;
-    await internals.invoke("plugin:event|listen", { event: "ide://event", handler: evCb });
+    const eventId = (await internals.invoke("plugin:event|listen", { event: "ide://event", handler: evCb })) as number;
     ws.receive({ type: "event", window: "main", event: { type: "settingsChanged", key: "appearance.theme" } });
     expect(events).toHaveLength(1);
     expect((events[0] as { payload: unknown }).payload).toEqual({ type: "settingsChanged", key: "appearance.theme" });
+    await internals.invoke("plugin:event|unlisten", { event: "ide://event", eventId });
+    ws.receive({ type: "event", window: "main", event: { type: "settingsChanged", key: "appearance.theme" } });
+    expect(events).toHaveLength(1);
 
     // Dropping the socket enters reconnecting state.
     ws.close();

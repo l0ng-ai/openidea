@@ -60,8 +60,30 @@ pub struct ChannelMessage {
     pub data: Value,
 }
 
-/// Delivers one streaming value from a command back to its caller (stdio notification or WebSocket frame).
-pub type ChannelSink = Arc<dyn Fn(ChannelMessage) + Send + Sync>;
+/// Streaming lifecycle signal delivered through a [`ChannelSink`].
+#[derive(Debug, Clone)]
+pub enum ChannelSignal {
+    /// Emitted when a command claims a `{ "$channel": id }` argument.
+    Opened(u64),
+    /// One serialized streaming payload.
+    Data(ChannelMessage),
+    /// Emitted automatically when the last clone of the command's channel emitter is dropped.
+    End(u64),
+}
+
+/// Delivers streaming values and lifecycle signals from a command back to its caller.
+pub type ChannelSink = Arc<dyn Fn(ChannelSignal) + Send + Sync>;
+
+struct ChannelDropGuard {
+    id: u64,
+    sink: ChannelSink,
+}
+
+impl Drop for ChannelDropGuard {
+    fn drop(&mut self) {
+        (self.sink)(ChannelSignal::End(self.id));
+    }
+}
 
 /// One `invoke`: its arguments and a way to stream values back.
 pub struct Call {
@@ -93,16 +115,20 @@ impl Call {
             .and_then(Value::as_u64)
             .ok_or_else(|| IdeError::invalid(format!("argument {name}: expected a channel")))?;
         let sink = self.channel_sink.clone();
+        sink(ChannelSignal::Opened(id));
+        let guard = ChannelDropGuard { id, sink };
         Ok(Arc::new(move |data: T| match serde_json::to_value(&data) {
-            Ok(data) => sink(ChannelMessage { id, data }),
-            Err(e) => tracing::warn!("channel {id}: {e}"),
+            Ok(data) => (guard.sink)(ChannelSignal::Data(ChannelMessage { id: guard.id, data })),
+            Err(e) => tracing::warn!("channel {}: {e}", guard.id),
         }))
     }
 }
 
 fn peer_channel_sink(peer: Arc<OnceLock<Peer>>) -> ChannelSink {
-    Arc::new(move |msg: ChannelMessage| {
-        if let Some(peer) = peer.get() {
+    Arc::new(move |signal: ChannelSignal| {
+        if let ChannelSignal::Data(msg) = signal
+            && let Some(peer) = peer.get()
+        {
             let _ = peer.notify("channel", msg);
         }
     })

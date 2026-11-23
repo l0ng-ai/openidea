@@ -11,7 +11,8 @@ set -euo pipefail
 #   OPENIDEA_WORKSPACE_DIR   Workspace folder to open on startup (auto-detects
 #                            /mnt/code, /workspace, or current directory)
 #   OPENIDEA_SERVER_HOME     Persistent config/data directory (defaults to
-#                            <workspace>/.openidea-server if writable, else ~/.openidea)
+#                            ~/.openidea, outside the workspace so caches and
+#                            tools are never indexed or watched as project files)
 #   OPENIDEA_WEB_DIR         Built frontend directory (auto-detects /opt/openidea/web
 #                            or <repo>/dist)
 #   OPENIDEA_SERVER_BIN      Path to openidea-server binary (auto-detected)
@@ -23,6 +24,9 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 HOST="${OPENIDEA_HOST:-0.0.0.0}"
 PORT="${OPENIDEA_PORT:-8080}"
+
+# Limit glibc malloc arenas so bursty thread pools do not retain excess RSS in containers.
+export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
 
 # 1. Resolve workspace directory.
 WORKSPACE_DIR="${OPENIDEA_WORKSPACE_DIR:-${WORKSPACE_DIR:-}}"
@@ -40,13 +44,9 @@ if [[ -z "${WORKSPACE_DIR}" ]]; then
   fi
 fi
 
-# 2. Resolve persistent config/data directory.
+# 2. Resolve persistent config/data directory (keep outside WORKSPACE_DIR).
 if [[ -z "${OPENIDEA_SERVER_HOME:-}" ]]; then
-  if [[ -n "${WORKSPACE_DIR}" && -w "${WORKSPACE_DIR}" ]]; then
-    export OPENIDEA_SERVER_HOME="${WORKSPACE_DIR}/.openidea-server"
-  else
-    export OPENIDEA_SERVER_HOME="${HOME:-/tmp}/.openidea"
-  fi
+  export OPENIDEA_SERVER_HOME="${HOME:-/tmp}/.openidea"
 fi
 mkdir -p "${OPENIDEA_SERVER_HOME}/config" "${OPENIDEA_SERVER_HOME}/data"
 

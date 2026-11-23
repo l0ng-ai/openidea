@@ -177,7 +177,13 @@ fn main() {
         };
         let base = parsed.home_override.unwrap_or_else(server_home);
         init_process_env(&base);
-        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime");
+        let worker_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).clamp(2, 8);
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(worker_threads)
+            .max_blocking_threads(32)
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
         let code = runtime.block_on(web_server::run(parsed.config, base));
         std::process::exit(code);
     }

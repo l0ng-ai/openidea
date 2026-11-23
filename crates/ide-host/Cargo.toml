@@ -67,6 +67,7 @@ toml.workspace = true
 specta.workspace = true
 specta-typescript.workspace = true
 bytes = "1"
+flate2.workspace = true
 http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }

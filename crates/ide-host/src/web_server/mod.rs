@@ -7,10 +7,12 @@
 pub mod commands;
 
 use crate::plugins::remote::{RemotePluginLanguages, SYNC_COMMAND};
-use crate::rpc::{self, ChannelMessage, ChannelSink, Dispatcher, ServerInfo};
+use crate::rpc::{self, ChannelSignal, ChannelSink, Dispatcher, ServerInfo};
 use crate::{Host, HostConfig};
 use bytes::Bytes;
 use commands::WebShellState;
+use flate2::Compression;
+use flate2::write::GzEncoder;
 use futures::{SinkExt, StreamExt};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
@@ -19,12 +21,13 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use ide_core::{EventSink, IdeError, IdeEvent, IdeResult, SharedSink};
+use ide_core::{EventSink, IdeError, IdeEvent, IdeResult, RequestId, SharedSink};
 use ide_language::LanguageRegistry;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::io::Write as _;
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -39,6 +42,10 @@ use tokio_tungstenite::tungstenite::protocol::Role;
 
 /// Keepalive ping interval so reverse proxies do not drop idle WebSocket sessions.
 const WS_PING_INTERVAL: Duration = Duration::from_secs(25);
+/// Maximum queued outbound frames per WebSocket session to bound server memory under slow clients.
+const WS_OUTBOUND_CAPACITY: usize = 2048;
+/// Minimum uncompressed asset size (bytes) before applying gzip compression.
+const GZIP_MIN_BYTES: usize = 1024;
 const AUTH_COOKIE_NAME: &str = "openidea_token";
 const WEB_META_TAG: &str = r#"<meta name="openidea-web" content="1">"#;
 
@@ -115,6 +122,9 @@ enum ServerMessage {
         id: u64,
         data: Value,
     },
+    ChannelEnd {
+        id: u64,
+    },
     Event {
         window: Option<String>,
         event: IdeEvent,
@@ -122,7 +132,7 @@ enum ServerMessage {
     Pong,
 }
 
-type Subscriber = (u64, mpsc::UnboundedSender<ServerMessage>);
+type Subscriber = (u64, mpsc::Sender<ServerMessage>);
 
 /// Fans out [`IdeEvent`]s emitted by [`Host`] to active WebSocket connections per window label.
 #[derive(Default)]
@@ -133,7 +143,7 @@ struct WebEventHub {
 }
 
 impl WebEventHub {
-    fn subscribe(&self, window: &str, tx: mpsc::UnboundedSender<ServerMessage>) -> u64 {
+    fn subscribe(&self, window: &str, tx: mpsc::Sender<ServerMessage>) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.subscribers.write().entry(window.to_owned()).or_default().push((id, tx));
         id
@@ -155,14 +165,14 @@ impl WebEventHub {
             Some(w) => {
                 if let Some(list) = map.get(w) {
                     for (_, tx) in list {
-                        let _ = tx.send(ServerMessage::Event { window: Some(w.to_owned()), event: event.clone() });
+                        let _ = tx.try_send(ServerMessage::Event { window: Some(w.to_owned()), event: event.clone() });
                     }
                 }
             }
             None => {
                 for (w, list) in map.iter() {
                     for (_, tx) in list {
-                        let _ = tx.send(ServerMessage::Event { window: Some(w.clone()), event: event.clone() });
+                        let _ = tx.try_send(ServerMessage::Event { window: Some(w.clone()), event: event.clone() });
                     }
                 }
             }
@@ -554,10 +564,13 @@ async fn handle_http(req: Request<Incoming>, state: Arc<ServerState>) -> Respons
         return text_response(StatusCode::METHOD_NOT_ALLOWED, "text/plain; charset=utf-8", "Method Not Allowed");
     }
 
+    let head_only = req.method() == Method::HEAD;
+    let gzip = accepts_gzip(&req);
+
     // Resolve static assets inside `web_dir` (supporting reverse-proxy subpaths even when rewrite=false).
     if let Some((file_path, rel_path)) = resolve_static_asset(&state.web_dir, &effective_path) {
         if rel_path != "index.html" {
-            return serve_static_file(&file_path, &rel_path, req.method() == Method::HEAD).await;
+            return serve_static_file(&file_path, &rel_path, head_only, gzip).await;
         }
     } else if looks_like_asset_path(&effective_path) {
         return text_response(StatusCode::NOT_FOUND, "text/plain; charset=utf-8", "Not Found");
@@ -596,7 +609,7 @@ async fn handle_http(req: Request<Incoming>, state: Arc<ServerState>) -> Respons
         }
     }
 
-    serve_index_html(&state.web_dir, req.method() == Method::HEAD).await
+    serve_index_html(&state.web_dir, head_only, gzip).await
 }
 
 async fn handle_auth_post(req: Request<Incoming>, state: &ServerState) -> Response<Full<Bytes>> {
@@ -699,12 +712,44 @@ fn handle_ws_upgrade(req: Request<Incoming>, state: Arc<ServerState>) -> Respons
         .unwrap()
 }
 
+fn collect_arg_channels(val: &Value, out: &mut Vec<u64>) {
+    match val {
+        Value::Object(map) => {
+            if map.len() == 1
+                && let Some(id) = map.get("$channel").and_then(Value::as_u64)
+            {
+                out.push(id);
+                return;
+            }
+            for v in map.values() {
+                collect_arg_channels(v, out);
+            }
+        }
+        Value::Array(items) => {
+            for v in items {
+                collect_arg_channels(v, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn send_channel_end(tx: &mpsc::Sender<ServerMessage>, id: u64) {
+    if let Err(mpsc::error::TrySendError::Full(msg)) = tx.try_send(ServerMessage::ChannelEnd { id }) {
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            let _ = tx.send(msg).await;
+        });
+    }
+}
+
 async fn serve_ws_session<S>(ws: WebSocketStream<S>, state: Arc<ServerState>)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let (mut ws_tx, mut ws_rx) = ws.split();
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<ServerMessage>();
+    let (out_tx, mut out_rx) = mpsc::channel::<ServerMessage>(WS_OUTBOUND_CAPACITY);
+    let active_requests: Arc<Mutex<HashSet<RequestId>>> = Arc::new(Mutex::new(HashSet::new()));
 
     // Writer task forwards queued server messages and emits periodic keepalive pings.
     let writer = tokio::spawn(async move {
@@ -757,7 +802,7 @@ where
 
         match parsed {
             ClientMessage::Ping => {
-                let _ = out_tx.send(ServerMessage::Pong);
+                let _ = out_tx.try_send(ServerMessage::Pong);
             }
             ClientMessage::Hello { window, project } => {
                 if let (Some(old_w), Some(old_id)) = (window_label.take(), sub_id.take()) {
@@ -769,7 +814,9 @@ where
                 state.shell.seed_launch(&state.host, &label, requested);
                 window_label = Some(label.clone());
                 sub_id = Some(id);
-                let _ = out_tx.send(ServerMessage::Ready { window: label, server: rpc::server_info() });
+                if out_tx.send(ServerMessage::Ready { window: label, server: rpc::server_info() }).await.is_err() {
+                    break;
+                }
             }
             ClientMessage::Invoke { id, cmd, args } => {
                 let window = match &window_label {
@@ -783,22 +830,57 @@ where
                         label
                     }
                 };
+                let mut arg_channels = Vec::new();
+                collect_arg_channels(&args, &mut arg_channels);
+                let req_id = args.get("request").and_then(|v| serde_json::from_value::<RequestId>(v.clone()).ok());
+                if let Some(req) = req_id {
+                    active_requests.lock().insert(req);
+                }
                 let state = state.clone();
                 let tx = out_tx.clone();
+                let active_requests = active_requests.clone();
                 tokio::spawn(async move {
+                    let opened_channels: Arc<Mutex<HashSet<u64>>> = Arc::new(Mutex::new(HashSet::new()));
                     let ch_tx = tx.clone();
-                    let channel_sink: ChannelSink = Arc::new(move |msg: ChannelMessage| {
-                        let _ = ch_tx.send(ServerMessage::Channel { id: msg.id, data: msg.data });
+                    let opened_for_sink = opened_channels.clone();
+                    let channel_sink: ChannelSink = Arc::new(move |signal: ChannelSignal| match signal {
+                        ChannelSignal::Opened(cid) => {
+                            opened_for_sink.lock().insert(cid);
+                        }
+                        ChannelSignal::Data(msg) => {
+                            let _ = ch_tx.try_send(ServerMessage::Channel { id: msg.id, data: msg.data });
+                        }
+                        ChannelSignal::End(cid) => {
+                            send_channel_end(&ch_tx, cid);
+                        }
                     });
                     let reply =
                         match state.dispatcher.invoke(state.host.clone(), window, &cmd, args, channel_sink).await {
                             Ok(data) => ServerMessage::Response { id, ok: true, data: Some(data), error: None },
                             Err(error) => ServerMessage::Response { id, ok: false, data: None, error: Some(error) },
                         };
-                    let _ = tx.send(reply);
+                    if let Some(req) = req_id {
+                        active_requests.lock().remove(&req);
+                    }
+                    // Close any channel arguments the command never claimed (e.g. validation or trust error).
+                    if !arg_channels.is_empty() {
+                        let opened = opened_channels.lock();
+                        for cid in arg_channels {
+                            if !opened.contains(&cid) {
+                                send_channel_end(&tx, cid);
+                            }
+                        }
+                    }
+                    let _ = tx.send(reply).await;
                 });
             }
         }
+    }
+
+    // Cancel any cancellable requests still running for this disconnected session.
+    let pending_reqs: Vec<RequestId> = active_requests.lock().drain().collect();
+    for req in pending_reqs {
+        state.host.cancel_request(req);
     }
 
     if let (Some(w), Some(id)) = (window_label, sub_id) {
@@ -933,21 +1015,66 @@ fn content_type_for(rel: &str) -> &'static str {
     }
 }
 
-async fn serve_static_file(path: &Path, rel: &str, head_only: bool) -> Response<Full<Bytes>> {
+fn accepts_gzip(req: &Request<Incoming>) -> bool {
+    req.headers().get_all(header::ACCEPT_ENCODING).iter().filter_map(|v| v.to_str().ok()).any(|s| {
+        s.split(',').any(|part| part.split(';').next().is_some_and(|enc| enc.trim().eq_ignore_ascii_case("gzip")))
+    })
+}
+
+fn is_compressible(rel: &str) -> bool {
+    let ext = rel.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    matches!(ext.as_str(), "html" | "htm" | "js" | "mjs" | "css" | "json" | "map" | "svg" | "wasm" | "txt")
+}
+
+fn gzip_bytes(input: &[u8]) -> Option<Vec<u8>> {
+    let mut encoder = GzEncoder::new(Vec::with_capacity(input.len() / 3), Compression::fast());
+    encoder.write_all(input).ok()?;
+    let compressed = encoder.finish().ok()?;
+    (compressed.len() < input.len()).then_some(compressed)
+}
+
+async fn serve_static_file(path: &Path, rel: &str, head_only: bool, gzip: bool) -> Response<Full<Bytes>> {
+    let cache = if rel.starts_with("assets/") { "public, max-age=31536000, immutable" } else { "no-cache" };
+    let compressible = is_compressible(rel);
+    if head_only {
+        let Ok(meta) = tokio::fs::metadata(path).await else {
+            return text_response(StatusCode::NOT_FOUND, "text/plain; charset=utf-8", "Not Found");
+        };
+        let mut builder = Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, content_type_for(rel))
+            .header(header::CONTENT_LENGTH, meta.len().to_string())
+            .header(header::CACHE_CONTROL, cache);
+        if compressible {
+            builder = builder.header(header::VARY, "Accept-Encoding");
+        }
+        return builder.body(Full::new(Bytes::new())).unwrap();
+    }
     let bytes = match tokio::fs::read(path).await {
         Ok(b) => b,
         Err(_) => return text_response(StatusCode::NOT_FOUND, "text/plain; charset=utf-8", "Not Found"),
     };
-    let cache = if rel.starts_with("assets/") { "public, max-age=31536000, immutable" } else { "no-cache" };
-    let len = bytes.len();
-    let body = if head_only { Bytes::new() } else { Bytes::from(bytes) };
-    Response::builder()
+    let (payload, encoded_gzip) = if gzip && compressible && bytes.len() >= GZIP_MIN_BYTES {
+        match gzip_bytes(&bytes) {
+            Some(compressed) => (compressed, true),
+            None => (bytes, false),
+        }
+    } else {
+        (bytes, false)
+    };
+    let len = payload.len();
+    let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type_for(rel))
         .header(header::CONTENT_LENGTH, len.to_string())
-        .header(header::CACHE_CONTROL, cache)
-        .body(Full::new(body))
-        .unwrap()
+        .header(header::CACHE_CONTROL, cache);
+    if compressible {
+        builder = builder.header(header::VARY, "Accept-Encoding");
+    }
+    if encoded_gzip {
+        builder = builder.header(header::CONTENT_ENCODING, "gzip");
+    }
+    builder.body(Full::new(Bytes::from(payload))).unwrap()
 }
 
 fn inject_web_meta(html: &str) -> String {
@@ -967,21 +1094,32 @@ fn inject_web_meta(html: &str) -> String {
     }
 }
 
-async fn serve_index_html(web_dir: &Path, head_only: bool) -> Response<Full<Bytes>> {
+async fn serve_index_html(web_dir: &Path, head_only: bool, gzip: bool) -> Response<Full<Bytes>> {
     let raw = match tokio::fs::read_to_string(web_dir.join("index.html")).await {
         Ok(s) => s,
         Err(_) => return text_response(StatusCode::NOT_FOUND, "text/plain; charset=utf-8", "index.html not found"),
     };
     let html = inject_web_meta(&raw);
-    let len = html.len();
-    let body = if head_only { Bytes::new() } else { Bytes::from(html) };
-    Response::builder()
+    let (payload, encoded_gzip) = if !head_only && gzip && html.len() >= GZIP_MIN_BYTES {
+        match gzip_bytes(html.as_bytes()) {
+            Some(compressed) => (Bytes::from(compressed), true),
+            None => (Bytes::from(html), false),
+        }
+    } else {
+        (Bytes::from(html), false)
+    };
+    let len = payload.len();
+    let body = if head_only { Bytes::new() } else { payload };
+    let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
         .header(header::CONTENT_LENGTH, len.to_string())
         .header(header::CACHE_CONTROL, "no-cache")
-        .body(Full::new(body))
-        .unwrap()
+        .header(header::VARY, "Accept-Encoding");
+    if encoded_gzip {
+        builder = builder.header(header::CONTENT_ENCODING, "gzip");
+    }
+    builder.body(Full::new(body)).unwrap()
 }
 
 #[cfg(test)]
@@ -1206,6 +1344,116 @@ mod tests {
         assert_eq!(status, 200);
         assert!(html.contains(WEB_META_TAG));
 
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn compresses_large_js_assets_with_gzip() {
+        use flate2::read::GzDecoder;
+        use std::io::Read as _;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let web_dir = tmp.path().join("dist");
+        let home_dir = tmp.path().join("home");
+        std::fs::create_dir_all(web_dir.join("assets")).unwrap();
+        std::fs::write(web_dir.join("index.html"), "<!doctype html><html><head></head><body>ok</body></html>").unwrap();
+        let original = "export const message = 'hello openidea web';\n".repeat(120);
+        std::fs::write(web_dir.join("assets/bundle.js"), &original).unwrap();
+
+        let server = start(
+            WebServerConfig {
+                host: "127.0.0.1".into(),
+                port: 0,
+                base_path: None,
+                web_dir,
+                project: None,
+                trust_project: true,
+                auth_token: None,
+            },
+            home_dir,
+        )
+        .await
+        .unwrap();
+
+        let mut stream = tokio::net::TcpStream::connect(server.addr).await.unwrap();
+        let req = format!(
+            "GET /assets/bundle.js HTTP/1.1\r\nHost: {}\r\nAccept-Encoding: gzip, deflate\r\nConnection: close\r\n\r\n",
+            server.addr
+        );
+        stream.write_all(req.as_bytes()).await.unwrap();
+        let mut buf = Vec::new();
+        stream.read_to_end(&mut buf).await.unwrap();
+        let sep = buf.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        let head = std::str::from_utf8(&buf[..sep]).unwrap();
+        let body = &buf[sep + 4..];
+        assert!(head.contains("content-encoding: gzip"), "head={head}");
+        assert!(body.len() < original.len() / 5, "expected strong gzip compression");
+
+        let mut decoder = GzDecoder::new(body);
+        let mut decoded = String::new();
+        decoder.read_to_string(&mut decoded).unwrap();
+        assert_eq!(decoded, original);
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn emits_channel_end_on_streaming_command_completion_and_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let web_dir = tmp.path().join("dist");
+        let home_dir = tmp.path().join("home");
+        let proj_dir = tmp.path().join("proj");
+        std::fs::create_dir_all(&web_dir).unwrap();
+        std::fs::create_dir_all(&proj_dir).unwrap();
+        std::fs::write(web_dir.join("index.html"), "<!doctype html><html><head></head><body>ok</body></html>").unwrap();
+
+        let server = start(
+            WebServerConfig {
+                host: "127.0.0.1".into(),
+                port: 0,
+                base_path: None,
+                web_dir,
+                project: Some(proj_dir),
+                trust_project: true,
+                auth_token: None,
+            },
+            home_dir,
+        )
+        .await
+        .unwrap();
+
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{}/api/ws", server.addr)).await.unwrap();
+        ws.send(WsMessage::Text(json!({ "type": "hello", "window": "main" }).to_string().into())).await.unwrap();
+        let _ready = ws.next().await.unwrap().unwrap();
+
+        // Command that fails before claiming its channel must still close the channel on the client.
+        ws.send(WsMessage::Text(
+            json!({
+                "type": "invoke",
+                "id": 10,
+                "cmd": "nonexistent_streaming_cmd",
+                "args": { "onEvent": { "$channel": 77 } }
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+
+        let mut saw_end = false;
+        let mut saw_reply = false;
+        while !saw_end || !saw_reply {
+            let msg: Value = serde_json::from_str(&ws.next().await.unwrap().unwrap().into_text().unwrap()).unwrap();
+            if msg["type"] == "channelEnd" && msg["id"] == 77 {
+                saw_end = true;
+            } else if msg["type"] == "response" && msg["id"] == 10 {
+                saw_reply = true;
+            }
+        }
+        assert!(saw_end && saw_reply);
+
+        ws.close(None).await.ok();
         server.shutdown().await;
     }
 }
