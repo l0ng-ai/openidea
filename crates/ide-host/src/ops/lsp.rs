@@ -150,7 +150,7 @@ fn merge_language_highlights(
     server
 }
 
-/// Items from plugins carry no server: commands don't apply, and a code
+/// Items from plugins (and the host's own Ruff Optimize Imports) carry no server: commands don't apply, and a code
 /// action is resolved by the plugin named in its `data` ([`PluginActionRef`]).
 const PLUGIN_SERVER: ServerId = ServerId(0);
 
@@ -908,7 +908,15 @@ pub async fn lsp_code_actions(
     let version = blocking(move || documents.version(doc)).await?;
     let target = position_document(host, window, doc, range.start).await?;
     let range = project.lsp.injected_request_range(target, range);
-    let result = project.lsp.code_actions(target, range, only.clone()).await;
+    let mut result = project.lsp.code_actions(target, range, only.clone()).await;
+    if only.iter().any(|k| k == ORGANIZE_IMPORTS)
+        && !result.as_ref().is_ok_and(|actions| actions.iter().any(organizes_imports))
+        && let Some(action) = ruff_organize_imports(host, window, doc).await?
+    {
+        let mut actions = result.unwrap_or_default();
+        actions.push(action);
+        result = Ok(actions);
+    }
     let plugin_actions = match plugin_providers(host, window, doc, ProviderKind::CodeActions) {
         Some((plugins, d)) => plugin_call(move || plugins.provide_code_actions(&d, range)).await.unwrap_or_default(),
         None => Vec::new(),
@@ -929,6 +937,40 @@ pub async fn lsp_code_actions(
         out
     };
     prepare_actions(project, doc, version, actions).await
+}
+
+const ORGANIZE_IMPORTS: &str = "source.organizeImports";
+
+fn organizes_imports(action: &CodeAction) -> bool {
+    action.kind.as_deref().is_some_and(|k| k == ORGANIZE_IMPORTS || k.starts_with("source.organizeImports."))
+}
+
+/// Optimize Imports with Ruff's CLI for a Python file no language server organizes; a missing Ruff
+/// is a disabled action that says so. Like a plugin's, the action carries its edit and is applied as is.
+async fn ruff_organize_imports(host: &Host, window: &str, doc: DocId) -> IdeResult<Option<CodeAction>> {
+    let (edit, disabled_reason) = match crate::formatter::python_import_edits(host, window, doc).await {
+        Ok(None) => return Ok(None),
+        Ok(Some((path, edits))) => {
+            let files = vec![ide_core::FileEdit::Edit { path, edits, version: None }];
+            (Some(WorkspaceEdit { files, preconditions: Vec::new() }), None)
+        }
+        Err(e) if matches!(e.data, Some(ide_core::error::ErrorData::Tool { missing: true, .. })) => {
+            (None, Some("Install Ruff to optimize imports in Python files".to_owned()))
+        }
+        Err(e) => return Err(e),
+    };
+    Ok(Some(CodeAction {
+        title: "Optimize Imports (Ruff)".into(),
+        diagnostics: Vec::new(),
+        original_diagnostics: None,
+        kind: Some(format!("{ORGANIZE_IMPORTS}.ruff")),
+        is_preferred: true,
+        disabled_reason,
+        edit,
+        command: None,
+        data: None,
+        server: PLUGIN_SERVER,
+    }))
 }
 
 /// Where a plugin's code action may change or open files: the project root and its content
@@ -2126,6 +2168,59 @@ pub fn plugin_formatters() -> IdeResult<Vec<crate::plugins::language_features::F
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn python_optimize_imports_without_a_server_runs_ruff_on_the_unsaved_text() {
+        use super::*;
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let root = base.join("project");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("main.py"), "import sys\nimport os\n").unwrap();
+        std::fs::write(root.join("notes.txt"), "import sys\n").unwrap();
+        // A stand-in Ruff that checks its arguments and keeps only the last stdin line.
+        let ruff = base.join("ruff");
+        std::fs::write(
+            &ruff,
+            "#!/bin/sh\n[ \"$1 $2 $3 $4\" = \"check --select I,F401 --fix\" ] || exit 2\ntail -n 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&ruff, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let host = crate::Host::new(crate::HostConfig {
+            config_dir: base.join("config"),
+            data_dir: base.join("data"),
+            local_data_dir: base.join("local"),
+            languages: std::sync::Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+            syntax: std::sync::Arc::default(),
+            sink_for: Box::new(|_| std::sync::Arc::new(|_| {})),
+            owner: |w| w,
+            runtime: tokio::runtime::Handle::current(),
+            project_environment: false,
+        });
+        host.trust.decide(&root, true, false).unwrap();
+        let project = host.open_project("main", &root).unwrap();
+        project
+            .settings
+            .set(
+                ide_workspace::settings::SettingsScope::Project,
+                "languages.ruff.path",
+                ruff.to_string_lossy().into_owned().into(),
+            )
+            .unwrap();
+        let doc = project.documents.open(&root.join("main.py")).unwrap().id;
+        let action = ruff_organize_imports(&host, "main", doc).await.unwrap().unwrap();
+        assert_eq!(action.kind.as_deref(), Some("source.organizeImports.ruff"));
+        assert!(organizes_imports(&action) && action.disabled_reason.is_none());
+        let Some(ide_core::FileEdit::Edit { edits, .. }) = action.edit.unwrap().files.into_iter().next() else {
+            panic!("no edit")
+        };
+        // "import sys\nimport os\n" loses "sys\nimport " and keeps "import os\n".
+        assert_eq!(edits, [TextEdit { range: Range::new(Pos::new(0, 7), Pos::new(1, 7)), new_text: String::new() }]);
+        let text = project.documents.open(&root.join("notes.txt")).unwrap().id;
+        assert!(ruff_organize_imports(&host, "main", text).await.unwrap().is_none());
+    }
+
     #[test]
     fn language_features_merge_without_overwriting_lsp_ranges_or_masking_errors() {
         use super::*;

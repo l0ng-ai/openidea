@@ -86,6 +86,8 @@ Ruff 只为位于 Ruff 配置之下的文件启动：`ruff.toml`、`.ruff.toml`�
 
 **重新格式化代码**（`⌘⌥L` / `Ctrl+Alt+L`）使用 Ruff。在 **设置 › 语言和框架 › Ruff** 中可以设置 Ruff 路径、配置目录、**格式化工具**（**自动（优先语言服务器）** 或 Ruff）以及 **保存时运行**。不指定配置目录时，Ruff 读取最近的 `pyproject.toml`（`[tool.ruff]`）、`ruff.toml` 或 `.ruff.toml`。
 
+**优化导入**（`⌃⌥O` / `Ctrl+Alt+O`）删除未使用的导入并排序其余导入。在 Ruff 配置所在目录及其子目录中由 Ruff 服务器完成；其他位置由 IDE 对文件运行 `ruff check --select I,F401 --fix`，因此需要安装 Ruff。保存时、提交前和代码清理中的优化导入也是如此。
+
 ## 运行与测试
 
 在包含 `pyproject.toml`、`setup.py`、`setup.cfg`、`requirements.txt`、`pytest.ini`、`tox.ini`、`manage.py` 或项目虚拟环境的目录里，OpenIDEA 会自动识别这些运行配置：

@@ -451,15 +451,7 @@ async fn provider_edits(
             config_file.as_deref(),
         ));
         let formatted = formatter::run(tool, command, &snap.text, &Default::default())?;
-        Ok(text
-            .diff(&formatted)
-            .changes
-            .into_iter()
-            .map(|c| TextEdit {
-                range: Range::new(text.offset_to_pos(c.from), text.offset_to_pos(c.to)),
-                new_text: c.insert,
-            })
-            .collect())
+        Ok(diff_edits(&text, &formatted))
     })
     .await
     .map_err(|e| IdeError::internal(e.to_string()))?;
@@ -473,6 +465,50 @@ async fn provider_edits(
         });
     }
     edits.map(Some).map_err(|e| e.with_tool(tool))
+}
+
+/// The edits that turn `text` into `formatted`, one per changed region.
+fn diff_edits(text: &ide_text::Document, formatted: &str) -> Vec<TextEdit> {
+    text.diff(formatted)
+        .changes
+        .into_iter()
+        .map(|c| TextEdit {
+            range: Range::new(text.offset_to_pos(c.from), text.offset_to_pos(c.to)),
+            new_text: c.insert,
+        })
+        .collect()
+}
+
+/// Optimize Imports for a Python document no language server organizes (the Ruff server starts
+/// only below a Ruff configuration): Ruff's CLI removes the unused imports and sorts the rest, with
+/// the project's Ruff settings when there are any. `None` for other documents and untrusted projects.
+pub async fn python_import_edits(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+) -> IdeResult<Option<(ide_core::IpcPath, Vec<TextEdit>)>> {
+    let project = host.project(window)?;
+    let snap = project.documents.snapshot(doc)?;
+    if snap.language.as_str() != "python" || snap.read_only || project.require_trust().is_err() {
+        return Ok(None);
+    }
+    let settings = project.settings.effective();
+    let custom = ide_sdk::apply::setting_path(&project.root, &settings.languages.ruff.path);
+    let configured = settings.languages.ruff.configuration_directory.clone();
+    let root = project.root.clone();
+    let tools = Tools::new(&host.local_data_dir);
+    tokio::task::spawn_blocking(move || {
+        let config_file = ide_sdk::apply::ruff_configuration(&root, &configured)?;
+        let mut command = tools.formatter_command("ruff", &snap.path, custom.as_deref())?;
+        if let Some(dir) = snap.path.parent() {
+            command.current_dir(dir);
+        }
+        command.args(formatter::ruff_organize_imports_arguments(&snap.path, config_file.as_deref()));
+        let fixed = formatter::run("ruff", command, &snap.text, &Default::default())?;
+        Ok(Some((snap.path, diff_edits(&ide_text::Document::new(&snap.text), &fixed))))
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
 #[cfg(test)]

@@ -201,6 +201,19 @@ pub fn arguments(
     args
 }
 
+/// `ruff check` that removes unused imports (F401) and sorts them (I) in the text on stdin and
+/// prints the result, for Optimize Imports where the Ruff server isn't running. Fixes that remain
+/// (unsafe ones, such as re-exports in `__init__.py`) are not errors.
+pub fn ruff_organize_imports_arguments(file: &Path, config_file: Option<&Path>) -> Vec<OsString> {
+    let mut args: Vec<OsString> =
+        ["check", "--select", "I,F401", "--fix", "--exit-zero", "--quiet"].map(OsString::from).into();
+    if let Some(config_file) = config_file {
+        args.extend(["--config".into(), config_file.as_os_str().to_owned()]);
+    }
+    args.extend(["--stdin-filename".into(), file.as_os_str().to_owned(), "-".into()]);
+    args
+}
+
 impl Tools {
     /// `php vendor/bin/php-cs-fixer fix` of `target` with the project's configuration, from the
     /// configuration's folder; `php` is the interpreter chosen in the settings, else the one on `PATH`.
@@ -425,5 +438,31 @@ mod tests {
         );
         assert!(supports_range("ruff", &config));
         assert!(!args.iter().any(|arg| arg == "--stdin-filepath"));
+    }
+
+    #[test]
+    fn ruff_organizes_imports_of_stdin_without_failing_on_what_it_cannot_fix() {
+        let file = Path::new("/project/src/example.py");
+        let args = |config: Option<&Path>| -> Vec<String> {
+            ruff_organize_imports_arguments(file, config)
+                .into_iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+        assert_eq!(
+            args(None),
+            [
+                "check",
+                "--select",
+                "I,F401",
+                "--fix",
+                "--exit-zero",
+                "--quiet",
+                "--stdin-filename",
+                "/project/src/example.py",
+                "-"
+            ]
+        );
+        assert_eq!(args(Some(Path::new("/shared/ruff.toml")))[6..8], ["--config", "/shared/ruff.toml"]);
     }
 }
