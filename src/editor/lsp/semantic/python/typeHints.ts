@@ -3,6 +3,9 @@
  * filled with the types the server infers: its type inlay hints carry the edit
  * that inserts them (and any import they need); a parameter's type comes from
  * hovering it, kept only when it names builtins, which need no import.
+ * Annotations Python evaluates (signatures, module variables) use `X | Y` and
+ * `list[X]` only when `requires-python` or `from __future__ import annotations`
+ * allows them.
  */
 import { syntaxTree } from "@codemirror/language";
 import type { Text } from "@codemirror/state";
@@ -13,6 +16,8 @@ import { commands, nextRequestId, type InlayHint, type TextEdit } from "@/platfo
 import { tx } from "@/platform/i18n";
 import { docOf, lspRequest } from "../../lsp";
 import { offsetToPos, offsetsToRange, posToOffset, textEditsToChanges } from "../../positions";
+import { readFileLines } from "../../files";
+import { useProject } from "@/platform/project";
 
 /** A name to annotate: the end of the name is where its annotation goes. */
 interface Slot {
@@ -22,7 +27,8 @@ interface Slot {
 }
 
 export type AnnotationTarget =
-  | { kind: "variable"; slot: Slot }
+  /** `evaluated`: a module variable, whose annotation runs at import; a local's never runs. */
+  | { kind: "variable"; slot: Slot; evaluated: boolean }
   | { kind: "function"; name: string; header: { from: number; to: number }; returns: Slot | null; params: Slot[] };
 
 /** The unannotated variable assignment or function header at `pos`. */
@@ -38,7 +44,12 @@ export function annotationTarget(tree: Tree, doc: Text, pos: number): Annotation
         statement.firstChild?.from === n.from &&
         n.nextSibling?.name === "AssignOp" &&
         statement.getChildren("AssignOp").length === 1;
-      return simple ? { kind: "variable", slot: { end: n.to } } : null;
+      if (!simple) return null;
+      const scope = scopeOf(statement);
+      // A class body's annotated name becomes a field (dataclass, NamedTuple, pydantic…).
+      if (scope?.name !== "FunctionDefinition" && scope?.name !== "Script") return null;
+      if (declaredGlobal(scope, doc, doc.sliceString(n.from, n.to))) return null;
+      return { kind: "variable", slot: { end: n.to }, evaluated: scope.name === "Script" };
     }
     if (n.name === "FunctionDefinition") {
       const params = n.getChild("ParamList");
@@ -46,13 +57,12 @@ export function annotationTarget(tree: Tree, doc: Text, pos: number): Annotation
       const name = n.getChild("VariableName");
       if (!params || !body || !name || pos > body.from) return null;
       const slots: Slot[] = [];
-      let first = true;
+      // Only defaulted parameters: `self` / `cls` have no default.
       for (let c = params.firstChild; c; c = c.nextSibling) {
         if (c.name !== "VariableName") continue;
         const star = c.prevSibling?.name === "*" || c.prevSibling?.name === "**";
-        if (!first && !star && c.nextSibling?.name === "AssignOp")
+        if (!star && c.nextSibling?.name === "AssignOp")
           slots.push({ end: c.to, value: c.nextSibling?.nextSibling?.from });
-        first = false;
       }
       const returns = n.getChild("TypeDef") ? null : { end: params.to };
       return {
@@ -66,6 +76,54 @@ export function annotationTarget(tree: Tree, doc: Text, pos: number): Annotation
     if (/Statement$|^Body$|^Script$/.test(n.name)) return null;
   }
   return null;
+}
+
+/** The function, class, lambda or module whose scope `node` is in. */
+function scopeOf(node: SyntaxNode): SyntaxNode | null {
+  for (let n = node.parent; n; n = n.parent)
+    if (/^(?:FunctionDefinition|ClassDefinition|LambdaExpression|Script)$/.test(n.name)) return n;
+  return null;
+}
+
+/** `name` is declared `global` / `nonlocal` in function `scope` itself, where annotating it is a SyntaxError. */
+function declaredGlobal(scope: SyntaxNode, doc: Text, name: string): boolean {
+  if (scope.name !== "FunctionDefinition") return false;
+  let found = false;
+  scope
+    .getChild("Body")
+    ?.cursor()
+    .iterate((n) => {
+      if (/^(?:FunctionDefinition|ClassDefinition|LambdaExpression)$/.test(n.name)) return false;
+      if (n.name !== "ScopeStatement") return;
+      const names = doc
+        .sliceString(n.from, n.to)
+        .replace(/^\s*(?:global|nonlocal)\s+/, "")
+        .split(/\s*,\s*/);
+      if (names.includes(name)) found = true;
+      return false;
+    });
+  return found;
+}
+
+/** The Python minor version (3.x) an evaluated annotation `type` needs: 10 for `X | Y`, 9 for `list[X]`. */
+export function minorNeeded(type: string): number {
+  if (type.includes("|")) return 10;
+  return /\b(?:list|dict|set|frozenset|tuple|type)\[/.test(type) ? 9 : 0;
+}
+
+/** The lowest Python 3 minor version `requires-python` allows, or 0 when unknown. */
+export function requiredMinor(pyproject: readonly string[]): number {
+  const spec = pyproject.map((l) => /^\s*requires-python\s*=\s*["']([^"']*)["']/.exec(l)?.[1]).find(Boolean);
+  const m = spec && /(?:>=|~=|==)\s*3\.(\d+)/.exec(spec);
+  return m ? Number(m[1]) : 0;
+}
+
+/** The newest syntax the file's evaluated annotations may use (99: anything, under the future import). */
+async function annotationMinor(text: Text): Promise<number> {
+  if (/^from __future__ import [^\n]*\bannotations\b/m.test(text.toString())) return 99;
+  const root = useProject.getState().project?.root;
+  const lines = root ? await readFileLines(`${root}/pyproject.toml`).catch(() => null) : null;
+  return lines ? requiredMinor(lines) : 0;
 }
 
 const BUILTINS = new Set([
@@ -137,14 +195,18 @@ export async function pythonTypeHintIntentions(view: EditorView, signal: AbortSi
   const hints = await lspRequest(() =>
     commands.lspInlayHints(doc.doc, offsetsToRange(state.doc, span.from, span.to)),
   ).catch(() => [] as InlayHint[]);
+  const evaluated = target.kind === "function" || target.evaluated;
+  const minor = evaluated ? await annotationMinor(state.doc) : 99;
   if (signal.aborted || view.state.doc !== state.doc) return [];
+  const usable = (a: Annotation | null): Annotation | null => (a && minorNeeded(a.label) <= minor ? a : null);
   const fromHint = (h: InlayHint | undefined): Annotation | null =>
     h ? { label: h.label.trim(), edits: h.textEdits } : null;
 
   if (target.kind === "variable") {
-    const found =
+    const found = usable(
       fromHint(hintAt(state.doc, hints, target.slot.end, ":")) ??
-      (await hoverAnnotation(view, target.slot).catch(() => null));
+        (await hoverAnnotation(view, target.slot).catch(() => null)),
+    );
     if (!found || signal.aborted || view.state.doc !== state.doc) return [];
     const annotation = found.label;
     return [
@@ -157,10 +219,10 @@ export async function pythonTypeHintIntentions(view: EditorView, signal: AbortSi
     ];
   }
 
-  const returns = target.returns && fromHint(hintAt(state.doc, hints, target.returns.end, "->"));
-  const params = (await Promise.all(target.params.map((p) => hoverAnnotation(view, p).catch(() => null)))).filter(
-    (a): a is Annotation => !!a,
-  );
+  const returns = target.returns && usable(fromHint(hintAt(state.doc, hints, target.returns.end, "->")));
+  const params = (
+    await Promise.all(target.params.map((p) => hoverAnnotation(view, p).then(usable, () => null)))
+  ).filter((a): a is Annotation => !!a);
   if (signal.aborted || view.state.doc !== state.doc) return [];
   const out: ContributedIntention[] = [];
   if (returns) {
