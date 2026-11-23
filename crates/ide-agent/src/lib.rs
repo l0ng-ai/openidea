@@ -4255,12 +4255,21 @@ fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from)
 }
 
+/// How many times each file was written, in test builds: lets a test count a task's saves.
+#[cfg(test)]
+static FILE_WRITES: std::sync::LazyLock<Mutex<HashMap<PathBuf, u32>>> = std::sync::LazyLock::new(Mutex::default);
+
 fn write_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path)).map_err(|e| e.to_string())
+    std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path)).map_err(|e| e.to_string())?;
+    #[cfg(test)]
+    {
+        *FILE_WRITES.lock().entry(path.to_owned()).or_default() += 1;
+    }
+    Ok(())
 }
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + 'static) -> IdeResult<T> {
