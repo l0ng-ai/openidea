@@ -23,14 +23,12 @@ import {
   T,
 } from "@/ui";
 import { notifications, useOccurrenceNavigator } from "@/workbench/contributions";
-import { confirm } from "@/workbench/messages";
 import { basename, openLocation, relDir } from "../common/open";
 import { countFileMatches } from "./session";
 import { CodePreview, MatchText, type PreviewHighlight } from "./parts";
+import { confirmReplacement } from "./ReplaceAllConfirmation";
 import {
   NO_MARKS,
-  confirmAllText,
-  confirmText,
   countUsages,
   groupState,
   loadReplacePreview,
@@ -369,22 +367,11 @@ function FindTabView({ tab }: { tab: FindTab }) {
   // Past the search's limit, every match in the scope is replaced, listed or not (as in IDEA).
   const allInScope = !!st.summary?.limitHit;
   const confirmReplaceAll = async () => {
-    const ok = await confirm({
-      title: "Replace All",
-      ok: "Replace",
-      message: (
-        <>
-          {allInScope
-            ? confirmAllText(tab.query.pattern, tab.replacement ?? "")
-            : confirmText(countUsages(allPending), tab.query.pattern, tab.replacement ?? "")}
-          {marks.excluded.size > 0 && (
-            <>
-              {" "}
-              <T>Excluded usages are skipped.</T>
-            </>
-          )}
-        </>
-      ),
+    const ok = await confirmReplacement({
+      counts: allInScope ? null : countUsages(allPending),
+      pattern: tab.query.pattern,
+      replacement: tab.replacement ?? "",
+      hasExclusions: marks.excluded.size > 0,
     });
     if (ok) void replace(allPending, allInScope);
   };

@@ -39,14 +39,12 @@ import {
 } from "@/ui";
 import { useRowHeight } from "@/ui/density";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
-import { confirm } from "@/workbench/messages";
 import { basename, dirname, openLocation } from "../common/open";
 import { CodePreview, MatchText, ReplaceDiffPreview } from "./parts";
 import { clearPreviewCache } from "./preview";
+import { confirmReplacement } from "./ReplaceAllConfirmation";
 import {
   NO_MARKS,
-  confirmAllText,
-  confirmText,
   countUsages,
   groupState,
   loadReplacePreview,
@@ -346,22 +344,11 @@ function FindInFilesDialog() {
       void replaceAll(usages);
       return;
     }
-    const ok = await confirm({
-      title: "Replace All",
-      ok: "Replace",
-      message: (
-        <>
-          {allInScope
-            ? confirmAllText(s.pattern, s.replacement || "")
-            : confirmText(counts, s.pattern, s.replacement || "")}
-          {marks.excluded.size > 0 && (
-            <>
-              {" "}
-              <T>Excluded usages are skipped.</T>
-            </>
-          )}
-        </>
-      ),
+    const ok = await confirmReplacement({
+      counts: allInScope ? null : counts,
+      pattern: s.pattern,
+      replacement: s.replacement || "",
+      hasExclusions: marks.excluded.size > 0,
     });
     if (ok) void replaceAll(usages, allInScope);
   };
