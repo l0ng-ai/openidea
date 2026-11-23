@@ -60,11 +60,14 @@ done
     let (send, mut events) = tokio::sync::mpsc::unbounded_channel();
     for window in ["first", "second"] {
         let send = send.clone();
-        host.project(window).unwrap().agents.subscribe(Arc::new(move |event| {
-            if let AgentEvent::ModelCatalog { catalog } = event {
-                let _ = send.send((window, catalog));
-            }
-        }));
+        host.project(window).unwrap().agents.subscribe_as(
+            "",
+            Arc::new(move |event| {
+                if let AgentEvent::ModelCatalog { catalog } = event {
+                    let _ = send.send((window, catalog));
+                }
+            }),
+        );
     }
     for _ in 0..20 {
         for window in ["first", "second"] {

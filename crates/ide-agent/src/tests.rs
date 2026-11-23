@@ -1153,7 +1153,7 @@ async fn a_task_runs_asks_for_permission_and_survives_a_restart() {
     let mgr = manager(tmp.path(), agent.clone());
     let events = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
     let sink = events.clone();
-    mgr.subscribe(Arc::new(move |e| sink.lock().push(e)));
+    mgr.subscribe_as("", Arc::new(move |e| sink.lock().push(e)));
 
     let task = mgr
         .create(NewAgentTask {
@@ -1443,14 +1443,17 @@ async fn stale_queue_actions_refresh_the_queue_without_starting_another_turn() {
     let permission = *handle.permissions.lock().keys().next().unwrap();
     let (tx, mut updates) = tokio::sync::mpsc::unbounded_channel();
     let weak = Arc::downgrade(&handle);
-    mgr.subscribe(Arc::new(move |event| {
-        if let AgentEvent::Task { task } = event
-            && task.queue.is_empty()
-            && let Some(handle) = weak.upgrade()
-        {
-            let _ = tx.send(handle.turns.load(Ordering::Acquire));
-        }
-    }));
+    mgr.subscribe_as(
+        "",
+        Arc::new(move |event| {
+            if let AgentEvent::Task { task } = event
+                && task.queue.is_empty()
+                && let Some(handle) = weak.upgrade()
+            {
+                let _ = tx.send(handle.turns.load(Ordering::Acquire));
+            }
+        }),
+    );
     mgr.respond(&task.id, permission, Some("yes".into())).unwrap();
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
     assert_eq!(updates.try_recv().unwrap(), 1, "publish the dequeue before starting the second turn");
@@ -3038,7 +3041,7 @@ async fn reload_providers_updates_registry_install_clears_stale_probes_and_notif
 
     let events = Arc::new(Mutex::new(Vec::new()));
     let events_sink = events.clone();
-    mgr.subscribe(Arc::new(move |ev| events_sink.lock().push(ev)));
+    mgr.subscribe_as("", Arc::new(move |ev| events_sink.lock().push(ev)));
 
     let toml = format!(
         "name = \"GitHub Copilot\"\ncommand = {:?}\nargs = [\"--acp\", \"--stdio\"]\n",
@@ -3457,14 +3460,17 @@ async fn config_choice_shows_before_the_agent_answers() {
     let mgr = manager(tempfile::tempdir().unwrap().path(), agent.clone());
     let shown: Arc<Mutex<Option<std::time::Instant>>> = Arc::default();
     let mark = shown.clone();
-    mgr.subscribe(Arc::new(move |e| {
-        if let AgentEvent::Task { task } = e
-            && task.config.iter().any(|o| o.id == "fast" && o.current.as_deref() == Some("false"))
-            && mark.lock().is_none()
-        {
-            *mark.lock() = Some(std::time::Instant::now());
-        }
-    }));
+    mgr.subscribe_as(
+        "",
+        Arc::new(move |e| {
+            if let AgentEvent::Task { task } = e
+                && task.config.iter().any(|o| o.id == "fast" && o.current.as_deref() == Some("false"))
+                && mark.lock().is_none()
+            {
+                *mark.lock() = Some(std::time::Instant::now());
+            }
+        }),
+    );
     let task = mgr
         .create(NewAgentTask {
             project_root: None,
@@ -4308,7 +4314,7 @@ async fn attention_finished_not_cancelled() {
     let mgr = manager(tmp.path(), agent.clone());
     let events = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
     let sink = events.clone();
-    mgr.subscribe(Arc::new(move |e| sink.lock().push(e)));
+    mgr.subscribe_as("", Arc::new(move |e| sink.lock().push(e)));
 
     let done = mgr
         .create(NewAgentTask {
@@ -4362,7 +4368,7 @@ async fn attention_failed() {
     let mgr = manager(tmp.path(), agent);
     let events = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
     let sink = events.clone();
-    mgr.subscribe(Arc::new(move |e| sink.lock().push(e)));
+    mgr.subscribe_as("", Arc::new(move |e| sink.lock().push(e)));
     let task = mgr
         .create(NewAgentTask {
             project_root: None,
@@ -4387,7 +4393,7 @@ async fn attention_input_not_auto_bypass() {
     let mgr = manager(tmp.path(), agent);
     let events = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
     let sink = events.clone();
-    mgr.subscribe(Arc::new(move |e| sink.lock().push(e)));
+    mgr.subscribe_as("", Arc::new(move |e| sink.lock().push(e)));
 
     let asked = mgr
         .create(NewAgentTask {
@@ -4452,7 +4458,7 @@ async fn attention_not_emitted_on_restore() {
     let restored = manager(tmp.path(), Arc::new(FakeAgent::default()));
     let events = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
     let sink = events.clone();
-    let tasks = restored.subscribe(Arc::new(move |e| sink.lock().push(e)));
+    let tasks = restored.subscribe_as("", Arc::new(move |e| sink.lock().push(e)));
     assert!(tasks.iter().any(|t| t.id == task.id));
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(attention_reasons(&events.lock()).is_empty(), "snapshot restore must not re-notify: {:?}", *events.lock());
@@ -4605,7 +4611,7 @@ async fn per_session_skill_overrides_filter_commands_persist_and_reload_when_idl
 
     // Persisted task file preserves `skill_overrides` across restart.
     let restored_mgr = manager(root, Arc::new(FakeAgent::default()));
-    let restored = restored_mgr.subscribe(Arc::new(|_| {})).into_iter().find(|t| t.id == task.id).unwrap();
+    let restored = restored_mgr.subscribe_as("", Arc::new(|_| {})).into_iter().find(|t| t.id == task.id).unwrap();
     assert_eq!(restored.skill_overrides.get("tdd"), Some(&AgentSkillMode::Off));
     assert_eq!(restored.skill_overrides.get("noisy"), Some(&AgentSkillMode::Auto));
     restored_mgr.shutdown();

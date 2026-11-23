@@ -2579,10 +2579,10 @@ form?: AgentForm | null;
 /**  Name of the chosen option, or `None` while pending. Cancelled requests read "Cancelled". */
 chosen: string | null } | { type: "error"; message: string };
 
-/**  Streamed to the window that subscribed (`AgentManager::subscribe`). */
+/**  Streamed to the window that subscribed (`AgentManager::subscribe_as`). */
 export type AgentEvent = AgentEvent_Serialize | AgentEvent_Deserialize;
 
-/**  Streamed to the window that subscribed (`AgentManager::subscribe`). */
+/**  Streamed to the window that subscribed (`AgentManager::subscribe_as`). */
 export type AgentEvent_Deserialize = 
 /**  A task was created or its metadata changed. */
 ({ type: "task"; task: AgentTask_Deserialize }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; text?: never } | ({ type: "removed"; id: string }) & { catalog?: never; entry?: never; eventId?: never; from?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
@@ -2604,7 +2604,7 @@ export type AgentEvent_Deserialize =
 /**  The task needs attention once (finished turn, explicit input, or failure). */
 ({ type: "attention"; task: string; eventId: string; reason: AgentAttentionReason }) & { catalog?: never; entry?: never; from?: never; id?: never; index?: never; length?: never; limits?: never; provider?: never; subagent?: never; text?: never };
 
-/**  Streamed to the window that subscribed (`AgentManager::subscribe`). */
+/**  Streamed to the window that subscribed (`AgentManager::subscribe_as`). */
 export type AgentEvent_Serialize = 
 /**  A task was created or its metadata changed. */
 ({ type: "task"; task: AgentTask_Serialize }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; text?: never } | ({ type: "removed"; id: string }) & { catalog?: never; entry?: never; eventId?: never; from?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
