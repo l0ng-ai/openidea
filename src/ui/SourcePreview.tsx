@@ -9,7 +9,7 @@
  * Usages. Files beyond `MAX_PARSE` stay plain rather than colouring the window
  * with the wrong block-comment context.
  */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import clsx from "clsx";
 import { T } from "./T";
 import { tokenSpans, type SourceToken } from "./tokenSpans";
@@ -46,6 +46,8 @@ export interface SourcePreviewProps {
   version?: number;
   /** Stable (module-level) syntax colouring; without it lines stay plain. */
   colorize?: SourceColorizer;
+  /** Fit the gutter to the line numbers and keep the selected line visible when the pane resizes. */
+  editorLayout?: boolean;
   className?: string;
 }
 
@@ -56,6 +58,7 @@ export function SourcePreview({
   load,
   version = 0,
   colorize,
+  editorLayout,
   className,
 }: SourcePreviewProps) {
   const [text, setText] = useState<{ path: string; lines: string[] } | null>(null);
@@ -160,6 +163,7 @@ export function SourcePreview({
       lines={current.lines}
       tokensByLine={tokensByLine}
       highlights={highlights}
+      editorLayout={editorLayout}
       className={className}
     />
   );
@@ -176,6 +180,7 @@ function PreviewBody({
   lines,
   tokensByLine,
   highlights,
+  editorLayout,
   className,
 }: {
   path: string;
@@ -183,6 +188,7 @@ function PreviewBody({
   lines: string[];
   tokensByLine: Map<number, SourceToken[]> | null;
   highlights: readonly SourceHighlight[];
+  editorLayout?: boolean;
   className?: string;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -192,8 +198,21 @@ function PreviewBody({
   useLayoutEffect(() => {
     const box = scrollRef.current;
     const el = box?.querySelector<HTMLElement>(`[data-line="${line}"]`);
-    if (box && el) box.scrollTop = el.offsetTop - box.clientHeight / 2 + el.offsetHeight / 2;
-  }, [line, path, lines]);
+    if (!box || !el) return;
+    const center = () => {
+      box.scrollTop = el.offsetTop - box.clientHeight / 2 + el.offsetHeight / 2;
+    };
+    center();
+    if (!editorLayout || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (el.offsetTop < box.scrollTop || el.offsetTop + el.offsetHeight > box.scrollTop + box.clientHeight) {
+        center();
+      }
+    });
+    observer.observe(box);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [editorLayout, line, path, lines]);
 
   const byLine = new Map(highlights.map((h) => [h.line, h.ranges]));
   const start = Math.max(0, line - WINDOW);
@@ -214,7 +233,18 @@ function PreviewBody({
   }
   return (
     <div ref={scrollRef} className={clsx(styles.preview, className)} role="region" aria-label={tx("Preview")}>
-      <pre className={styles.pre}>{rows}</pre>
+      <pre
+        className={styles.pre}
+        style={
+          editorLayout
+            ? ({
+                "--source-preview-gutter-width": `calc(${String(lines.length).length}ch + var(--space-4))`,
+              } as CSSProperties)
+            : undefined
+        }
+      >
+        {rows}
+      </pre>
     </div>
   );
 }

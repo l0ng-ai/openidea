@@ -71,9 +71,10 @@ async fn external_maven_link_persists_reloads_and_unlink_keeps_files() {
 }
 
 /// The language server's Maven import roots once `ready` holds: a settings change refreshes them in
-/// the background.
+/// the background. The deadline is generous because a loaded CI runner can take well over a few
+/// seconds to re-import.
 async fn import_roots(host: &Host, ready: impl Fn(&[std::path::PathBuf]) -> bool) -> Vec<std::path::PathBuf> {
-    for _ in 0..200 {
+    for _ in 0..600 {
         let roots = host.project("main").unwrap().lsp.jdtls_import_roots();
         if ready(&roots) {
             return roots;

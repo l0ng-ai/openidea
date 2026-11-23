@@ -1,6 +1,6 @@
 /**
  * Shared MCP server model, multi-level inheritance resolution (IDE -> Project -> Global -> Agent CLI),
- * and reactive cache for Settings › Agents › External MCP Servers and the Composer MCP picker.
+ * and reactive cache for Settings › Agents › MCP Connections and the Composer MCP picker.
  */
 import { useEffect } from "react";
 import { create } from "zustand";

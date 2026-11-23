@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FileMatches, SearchQuery, SearchSummary } from "@/platform/ipc";
 import {
   FindSession,
@@ -147,6 +147,49 @@ describe("FindSession", () => {
     running[1]!.finish({ ...summary(0), files: 0 });
     await flush();
     expect(last()).toMatchObject({ status: "done", stale: false, files: [], matchCount: 0 });
+  });
+
+  describe("while results stream in", () => {
+    afterEach(() => vi.useRealTimers());
+
+    it("publishes a burst of files as a few updates, showing the first at once and the last without waiting for done", async () => {
+      vi.useFakeTimers();
+      const { session, running, states, last } = setup();
+      void session.search(q("foo"));
+      await vi.advanceTimersByTimeAsync(0);
+      const before = states.length;
+      // 1000 files, one per millisecond: 1s of streaming.
+      running[0]!.onFile(file("f0.kt", [1]));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(last().files).toHaveLength(1);
+      for (let i = 1; i < 1000; i++) {
+        running[0]!.onFile(file(`f${i}.kt`, [1]));
+        await vi.advanceTimersByTimeAsync(1);
+      }
+      await vi.advanceTimersByTimeAsync(100);
+      expect(last().files).toHaveLength(1000);
+      expect(last().matchCount).toBe(1000);
+      expect(last().status).toBe("searching");
+      // One per 50 ms plus the first: far below the one-per-file of an unbatched stream.
+      expect(states.length - before).toBeLessThanOrEqual(30);
+      running[0]!.finish(summary(1000));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(last().status).toBe("done");
+    });
+
+    it("does not publish a pending update after dispose", async () => {
+      vi.useFakeTimers();
+      const { session, running, states } = setup();
+      void session.search(q("foo"));
+      await vi.advanceTimersByTimeAsync(0);
+      running[0]!.onFile(file("a.kt", [1]));
+      await vi.advanceTimersByTimeAsync(0);
+      running[0]!.onFile(file("b.kt", [1]));
+      session.dispose();
+      const seen = states.length;
+      await vi.advanceTimersByTimeAsync(200);
+      expect(states.length).toBe(seen);
+    });
   });
 
   it("reports invalid patterns without starting a search", async () => {

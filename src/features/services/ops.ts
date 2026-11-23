@@ -7,6 +7,7 @@ import type { MenuItem } from "@/ui";
 import { confirm, confirmChecked } from "@/workbench/messages";
 import { promptText } from "./dialogs";
 import { openContainerLogInEditor } from "./logEditor";
+import { hasComposeSource, jumpToComposeProjectSource, jumpToContainerComposeSource } from "./composeSource";
 import { isRunning, nodeContainers, nodeLabel, shortId, type DockerTarget, type ServiceNode } from "./model";
 import {
   busyOp,
@@ -235,6 +236,17 @@ export function nodeMenu(t: DockerTarget): MenuItem[] {
       { label: "Restart", icon: "rerun", run: () => void restart(t) },
     );
   }
+  if (n.kind === "compose" && n.containers[0] && hasComposeSource(n.containers[0])) {
+    items.push(
+      { kind: "separator" },
+      {
+        label: "Jump to Source",
+        icon: "autoscroll-to-source",
+        shortcut: "F4",
+        run: () => void jumpToComposeProjectSource(n.project, n.containers),
+      },
+    );
+  }
   if (n.kind === "container") {
     const running = isRunning(n.container);
     items.push(
@@ -248,6 +260,16 @@ export function nodeMenu(t: DockerTarget): MenuItem[] {
           },
       { kind: "separator" },
       { label: "Dashboard", icon: "layout", run: () => showDetail("dashboard") },
+      ...(hasComposeSource(n.container)
+        ? [
+            {
+              label: "Jump to Source",
+              icon: "autoscroll-to-source",
+              shortcut: "F4",
+              run: () => void jumpToContainerComposeSource(n.container),
+            },
+          ]
+        : []),
       { label: "Show Log", icon: "file-log", run: () => showDetail("log") },
       {
         label: "Open Log in Editor",

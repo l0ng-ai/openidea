@@ -158,12 +158,14 @@ export function CommitList({ fileHistory = false }: { fileHistory?: boolean }) {
       ),
     [all, heads, headCommit],
   );
+  // Only these options shape the graph: resizing a column or toggling the author must not lay it out again.
+  const { collapseLinear, linearizeMerges, longEdges } = opts;
   const keep = useMemo(
     () =>
-      opts.collapseLinear || fragments.collapsed.size
+      collapseLinear || fragments.collapsed.size
         ? new Set([...headKeys, ...selection, ...Object.keys(bookmarks)])
         : null,
-    [opts.collapseLinear, fragments.collapsed, headKeys, selection, bookmarks],
+    [collapseLinear, fragments.collapsed, headKeys, selection, bookmarks],
   );
   const {
     commits,
@@ -171,7 +173,10 @@ export function CommitList({ fileHistory = false }: { fileHistory?: boolean }) {
     linear,
     collapsed,
     graph: displayedGraph,
-  } = useMemo(() => presentLogGraph(all, opts, fragments, keep ?? new Set()), [all, opts, fragments, keep]);
+  } = useMemo(
+    () => presentLogGraph(all, { collapseLinear, linearizeMerges, longEdges }, fragments, keep ?? new Set()),
+    [all, collapseLinear, linearizeMerges, longEdges, fragments, keep],
+  );
   const { edges: highlighted, nodes: highlightedNodes } = useMemo(() => {
     const empty = { edges: new Set<string>(), nodes: new Set<string>() };
     if (!hoverColor) return empty;

@@ -15,7 +15,7 @@ agent_custom_import                          trusted            desktop      bin
 agent_custom_remove                          trusted            desktop      bindings sync
 agent_custom_save                            trusted            desktop      bindings sync
 agent_delete                                 trusted            project_host bindings async
-agent_entries                                always             project_host bindings sync
+agent_entries                                always             project_host bindings async
 agent_external_sessions                      trusted            project_host bindings async
 agent_fork                                   trusted            project_host bindings async
 agent_grouped_changes                        trusted            project_host bindings async
@@ -32,7 +32,7 @@ agent_mcp_set_enabled                        always             project_host bin
 agent_mcp_test                               trusted            project_host bindings async
 agent_probe                                  trusted            project_host bindings async
 agent_prompt                                 trusted            project_host bindings async
-agent_providers                              trusted            project_host bindings sync
+agent_providers                              trusted            project_host bindings async
 agent_refresh_models                         trusted            project_host bindings sync
 agent_registry_install                       always             project_host bindings async
 agent_registry_list                          always             project_host bindings async
@@ -286,6 +286,7 @@ fs_read_range                                always             project_host bin
 fs_read_text                                 always             project_host bindings async
 fs_rename                                    always             project_host bindings async
 fs_resolve_reference                         always             project_host bindings async
+fs_scratches_dir                             always             project_host bindings sync
 fs_set_writable                              always             project_host bindings sync
 fs_synchronize_directories                   always             project_host bindings async
 fs_undo_delete                               always             project_host bindings async
@@ -476,7 +477,7 @@ plugin_roll_back                             outside_restricted desktop      bin
 plugin_run_command                           trusted            project_host bindings async
 plugin_run_targets                           trusted            project_host bindings async
 plugin_search                                trusted            project_host bindings async
-plugin_secrets                               trusted            desktop      bindings sync
+plugin_secrets                               trusted            desktop      bindings async
 plugin_select_tests                          trusted            project_host bindings async
 plugin_service_detail                        trusted            project_host bindings async
 plugin_service_log                           trusted            project_host bindings async
@@ -484,7 +485,7 @@ plugin_set_active_file                       always             project_host bin
 plugin_set_capability                        outside_restricted desktop      bindings async
 plugin_set_enabled                           outside_restricted desktop      bindings async
 plugin_set_market_url                        always             desktop      bindings sync
-plugin_set_secret                            trusted            desktop      bindings sync
+plugin_set_secret                            trusted            desktop      bindings async
 plugin_set_theme                             always             desktop      bindings sync
 plugin_set_theme_frame                       always             desktop      bindings sync
 plugin_set_ui_locale                         always             project_host bindings async
@@ -514,8 +515,8 @@ project_trust_list                           always             project_host bin
 project_trust_remove_location                always             project_host bindings async
 project_trust_set                            always             project_host bindings async
 project_trust_status                         always             project_host bindings sync
-project_workspace_member_set                 always             project_host bindings sync
-project_workspace_members                    always             project_host bindings sync
+project_workspace_member_set                 always             project_host bindings spawn
+project_workspace_members                    always             project_host bindings spawn
 proxy_check_connection                       always             desktop      bindings async
 python_requirements                          trusted            project_host bindings async
 recent_files                                 always             project_host bindings sync
@@ -615,7 +616,7 @@ settings_set                                 always             project_host bin
 show_system_notification                     trusted            desktop      bindings sync
 spell_check                                  always             project_host bindings async
 spell_suggest                                always             project_host bindings async
-spring_route_sources                         trusted            desktop      bindings sync
+spring_route_sources                         trusted            desktop      bindings async
 ssh_askpass_answer                           always             desktop      bindings sync
 ssh_connected                                always             project_host bindings sync
 ssh_disconnect                               always             project_host bindings sync

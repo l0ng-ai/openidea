@@ -646,7 +646,10 @@ impl LspManager {
     /// jdtls reports `ProjectStatus` when an import or project update ends (a POM
     /// change, a Maven sync, other Maven profiles), but does not check open documents
     /// again against the new classpath: their errors would stay until the next edit.
-    /// Generated Maven sources are attached first, so that recheck sees them.
+    /// Nor does it ask for a semantic tokens refresh: a file outside any project (its
+    /// import failed, say on an unresolvable parent POM) gets no tokens, and would stay
+    /// uncoloured after the import is fixed. Generated Maven sources are attached
+    /// first, so the recheck and the new tokens see them.
     pub(crate) fn java_projects_updated(self: &Arc<Self>, server: Arc<Server>, generation: u64) {
         let uris: Vec<String> = self
             .docs
@@ -663,6 +666,10 @@ impl LspManager {
         self.runtime.spawn(async move {
             let Some(run) = server.running_gen(generation) else { return };
             mgr.sync_generated_sources(&server, &run).await;
+            mgr.sink().emit(ide_core::IdeEvent::LspRefresh {
+                server: server.id,
+                kind: ide_core::event::LspRefreshKind::SemanticTokens,
+            });
             for uri in uris {
                 let params =
                     json!({ "command": "java.project.refreshDiagnostics", "arguments": [uri, "thisFile", false] });

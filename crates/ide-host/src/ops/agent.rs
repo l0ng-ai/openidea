@@ -43,12 +43,19 @@ pub fn agent_unsubscribe(host: &Host, window: &str, subscriber: String) -> IdeRe
     Ok(())
 }
 
+/// Reads the ACP registry's install state for every provider from disk, so it runs on the
+/// blocking pool.
 #[command(trust = trusted)]
-pub fn agent_providers(host: &Host, window: &str) -> IdeResult<Vec<AgentProvider>> {
+pub async fn agent_providers(host: &Host, window: &str) -> IdeResult<Vec<AgentProvider>> {
     host.require_trust(window)?;
-    let mut providers = host.project(window)?.agents.providers();
-    ide_agent::registry::mark_updates(&registry_paths(host), &mut providers);
-    Ok(providers)
+    let agents = host.project(window)?.agents.clone();
+    let paths = registry_paths(host);
+    host.blocking(move || {
+        let mut providers = agents.providers();
+        ide_agent::registry::mark_updates(&paths, &mut providers);
+        Ok(providers)
+    })
+    .await
 }
 
 /// Hermes Agent profiles on this machine (`default` first); empty without Hermes.
@@ -249,9 +256,15 @@ pub async fn agent_commands(
     host.project(window)?.agents.commands(&provider, task.as_deref()).await
 }
 
-/// Entries of `task`'s conversation, or of its subagent `subagent`'s.
+/// Entries of `task`'s conversation, or of its subagent `subagent`'s. Async so a long
+/// conversation is cloned and serialised off the main thread.
 #[command(trust = always)]
-pub fn agent_entries(host: &Host, window: &str, task: String, subagent: Option<String>) -> IdeResult<Vec<AgentEntry>> {
+pub async fn agent_entries(
+    host: &Host,
+    window: &str,
+    task: String,
+    subagent: Option<String>,
+) -> IdeResult<Vec<AgentEntry>> {
     host.project(window)?.agents.entries(&task, subagent)
 }
 

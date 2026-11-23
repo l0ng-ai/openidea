@@ -29,7 +29,14 @@ test("Find in Files keeps the scope list and pattern editor usable in a narrow w
   expect((await list.boundingBox())!.x).toBeLessThan((await name.boundingBox())!.x);
 
   await page.setViewportSize({ width: 460, height: 530 });
-  const fields = (await pattern.boundingBox())!;
+  // The dialog relays out over a few frames after the resize; measure once it has settled.
+  let fields = (await pattern.boundingBox())!;
+  await expect(async () => {
+    const previous = fields.y;
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    fields = (await pattern.boundingBox())!;
+    expect(fields.y).toBe(previous);
+  }).toPass();
   expect(fields.y).toBeGreaterThanOrEqual((await list.boundingBox())!.y + (await list.boundingBox())!.height);
   expect(fields.width).toBeGreaterThan(250);
   await list.evaluate((el) => (el.scrollTop = el.scrollHeight));

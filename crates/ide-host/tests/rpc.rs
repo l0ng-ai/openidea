@@ -74,6 +74,13 @@ async fn serves_projects_files_documents_search_and_runs() {
     let info: ServerInfo = peer.request("initialize", json!({ "version": rpc::PROTOCOL_VERSION }), None).await.unwrap();
     assert_eq!(info.protocol, rpc::PROTOCOL_VERSION);
 
+    let scratch_path = base.join("data/scratches");
+    assert!(!scratch_path.exists());
+    let expected = serde_json::to_value(ide_core::IpcPath::from(scratch_path.clone())).unwrap();
+    assert_eq!(invoke(&peer, "fs_scratches_dir", json!({})).await.unwrap(), expected);
+    assert!(scratch_path.is_dir());
+    assert_eq!(invoke(&peer, "fs_scratches_dir", json!({})).await.unwrap(), expected);
+
     let opened = invoke(&peer, "open_project", json!({ "path": project })).await.unwrap();
     assert_eq!(opened["name"], "demo");
     assert_eq!(opened["trusted"], false);

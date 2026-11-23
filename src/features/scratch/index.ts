@@ -5,6 +5,7 @@
 import { registerActions } from "@/platform/actions";
 import { onFileOperation } from "@/platform/fileOps";
 import { emitLocalIdeEvent } from "@/platform/ipc";
+import { useRemote } from "@/platform/remote";
 import { registerMenuGroup, registerOverlay, registerProjectViewRoot } from "@/workbench/contributions";
 import { ScratchChooserHost } from "./ScratchChooser";
 import { openChooser } from "./store";
@@ -20,10 +21,15 @@ export function activate(): () => void {
   let disposed = false;
   let unregisterRoot = () => {};
   let dir: string | null = null;
-  if (scratchesAvailable())
+  let generation = 0;
+  const registerRoot = () => {
+    const current = ++generation;
+    unregisterRoot();
+    unregisterRoot = () => {};
+    dir = null;
     void scratchesDir()
       .then((path) => {
-        if (disposed) return;
+        if (disposed || current !== generation) return;
         dir = path;
         unregisterRoot = registerProjectViewRoot({
           id: "scratches",
@@ -35,7 +41,13 @@ export function activate(): () => void {
         });
       })
       .catch((e: unknown) => console.warn("scratch files: no scratches folder", e));
+  };
+  if (scratchesAvailable()) registerRoot();
   const disposers = [
+    // Attaching to (or leaving) a remote server moves the scratches to that host.
+    useRemote.subscribe((state, previous) => {
+      if (state.session !== previous.session && scratchesAvailable()) registerRoot();
+    }),
     // The file watcher covers the project only: deleted scratches close their editors like watched files.
     onFileOperation((op) => {
       const removed = dir && op.kind === "deleted" ? op.paths.filter((p) => p === dir || p.startsWith(`${dir}/`)) : [];
