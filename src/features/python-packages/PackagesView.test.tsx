@@ -133,8 +133,11 @@ describe("Python Packages", () => {
     search("acme-utils");
     await new Promise((resolve) => setTimeout(resolve, 400));
     expect(mocks.pypi).not.toHaveBeenCalled();
+    // Not even the name search's results, though searching the cached list sends nothing.
+    expect(mocks.names).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Search PyPI for acme-utils" }));
     await waitFor(() => expect(mocks.pypi).toHaveBeenCalledWith("acme-utils", expect.anything()));
+    await waitFor(() => expect(mocks.names).toHaveBeenCalledWith("acme-utils", expect.anything()));
   });
 
   it("says when PyPI cannot be reached, and tries again", async () => {

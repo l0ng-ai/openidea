@@ -229,8 +229,9 @@ export function PackagesView() {
   const name = query.trim();
   const searchable = !container && isPackageName(name);
   const search = usePypi(searchable && (auto || asked === name) ? name : null, 300);
-  // Searching the local copy of PyPI's name list sends nothing.
-  const names = useNames(!container && name.length >= 2 ? name : null);
+  // Searching the local copy of PyPI's name list sends nothing, but with another index its
+  // results wait for the same click: a public namesake of a private package is one of them.
+  const names = useNames(!container && name.length >= 2 && (auto || asked === name) ? name : null);
   const rows = useMemo(
     () => listRows(packages ?? [], local.newer, search.found, names.names.slice(0, SHOWN_NAMES), query),
     [packages, local.newer, search.found, names.names, query],
