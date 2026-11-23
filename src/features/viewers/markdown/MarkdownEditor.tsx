@@ -60,6 +60,7 @@ import { applyImageZoomWidth, svgDataUrlSize } from "@/ui/svgSize";
 import styles from "./Markdown.module.css";
 import { tx } from "@/platform/i18n";
 import { wheelZoomStep } from "@/platform/wheelZoom";
+import { isMarkdownPath } from "../fileKinds";
 import { attachPanZoom } from "../panZoom";
 
 /** Loaded local images by absolute path (data URLs), shared by all previews. */
@@ -83,7 +84,7 @@ function imageUrl(path: string): Promise<string> {
  * read or has no such heading.
  */
 async function anchorLine(path: string, anchor: string): Promise<number | undefined> {
-  if (!/\.(md|markdown|mdx)$/i.test(path)) return undefined;
+  if (!isMarkdownPath(path, "source")) return undefined;
   const open = editorsFor(path)[0];
   const text = open ? open.view.state.doc.toString() : await call(commands.fsReadText(path)).catch(() => null);
   return (text === null ? null : headingLine(text, anchor)) ?? undefined;
@@ -222,6 +223,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   const html = useMemo(() => render(deferred), [render, deferred]);
   const renderSvg = html.includes(' data-math="') ? use(loadSvgRenderer()) : null;
   const ref = useRef<HTMLDivElement>(null);
+  const linkRequest = useRef(0);
   const blocks = useRef<ReturnType<typeof blocksOf>>([]);
   const theme = useSyncExternalStore(subscribeTheme, themeKey, () => "");
   const diagrams = useRef<Node[]>([]);
@@ -236,7 +238,12 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   /** `<details>` the reader opened or closed, by position: each edit re-renders them as written. */
   const toggled = useRef(new Map<number, boolean>());
 
-  useLayoutEffect(() => toggled.current.clear(), [path]);
+  useLayoutEffect(() => {
+    toggled.current.clear();
+    return () => {
+      linkRequest.current++;
+    };
+  }, [path]);
   useLayoutEffect(() => {
     ref.current?.querySelectorAll("details").forEach((d, i) => {
       const open = toggled.current.get(i);
@@ -555,6 +562,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     e.preventDefault();
     const target = resolveLink(path, a.getAttribute("href") ?? "");
     if (!target) return;
+    const request = ++linkRequest.current;
     const scrollTo = (id: string) => {
       const root = ref.current;
       if (!root) return;
@@ -570,6 +578,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     else
       void (async () => {
         const line = target.line ?? (target.anchor ? await anchorLine(target.path, target.anchor) : undefined);
+        if (request !== linkRequest.current) return;
         await maybeEditorService()?.openFile(target.path, {
           focus: true,
           ...(line !== undefined ? { selection: { line, col: 0 } } : {}),
