@@ -142,6 +142,9 @@ describe("TooltipHost on cut-off text", () => {
         <div style={{ textOverflow: "ellipsis" }} title="native" data-testid="titled">
           long name
         </div>
+        <div style={{ textOverflow: "ellipsis" }} data-no-tooltip="" data-testid="opted-out">
+          long name
+        </div>
         <div style={{ textOverflow: "clip" }} data-testid="clipped">
           long name
         </div>
@@ -150,8 +153,9 @@ describe("TooltipHost on cut-off text", () => {
         </div>
       </>,
     );
-    for (const id of ["titled", "clipped", "own"]) widths(screen.getByTestId(id), 300, 120);
+    for (const id of ["titled", "opted-out", "clipped", "own"]) widths(screen.getByTestId(id), 300, 120);
     expect(hover(screen.getByTestId("titled"))).toBeNull();
+    expect(hover(screen.getByTestId("opted-out"))).toBeNull();
     expect(hover(screen.getByTestId("clipped"))).toBeNull();
     expect(hover(screen.getByTestId("own"))).toBe("long nameOwn tooltip");
   });

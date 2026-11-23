@@ -7,7 +7,7 @@
  * proven in `openidea-kubernetes` (`ResourceDetails.tsx`).
  */
 import { writeClipboardText } from "@/platform/clipboard";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import type {
   DockerContainer,
@@ -536,6 +536,154 @@ export function parseNetworkInspect(raw: string | null): ParsedNetworkInspect | 
 
 const copyText = (text: string) => void writeClipboardText(text);
 
+const SAFE_SHELL_TOKEN = /^[A-Za-z0-9_./:@%+=,-]+$/;
+
+function formatShellToken(token: string): string {
+  const normalized = token.replace(/\r\n?/g, "\n");
+  if (!normalized) return "''";
+  if (normalized.includes("\n")) {
+    const trimmed = normalized.replace(/^\n+|\n+$/g, "");
+    return `'\n${trimmed.replace(/'/g, "'\\''")}\n'`;
+  }
+  if (SAFE_SHELL_TOKEN.test(normalized)) return normalized;
+  return `'${normalized.replace(/'/g, "'\\''")}'`;
+}
+
+function formatPreviewToken(token: string): string {
+  const normalized = token.replace(/\r\n?/g, "\n");
+  if (!normalized) return "''";
+  if (normalized.includes("\n")) {
+    const lines = normalized
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    return `'${lines.join(" ↵ ")}'`;
+  }
+  if (SAFE_SHELL_TOKEN.test(normalized)) return normalized;
+  return `'${normalized.replace(/'/g, "'\\''")}'`;
+}
+
+export interface FormattedDockerCommand {
+  preview: string;
+  entrypoint: string;
+  args: string;
+  fullText: string;
+  copyText: string;
+  lineCount: number;
+}
+
+export function formatDockerCommand(
+  entrypoint: readonly string[],
+  cmd: readonly string[],
+  fallback = "",
+): FormattedDockerCommand | null {
+  if (entrypoint.length || cmd.length) {
+    const entrypointText = entrypoint.map(formatShellToken).join(" ");
+    const argsText = cmd.map(formatShellToken).join(" ");
+    const copyText = entrypointText && argsText ? `${entrypointText} ${argsText}` : entrypointText || argsText;
+    const preview = [...entrypoint, ...cmd].map(formatPreviewToken).join(" ");
+    return {
+      preview,
+      entrypoint: entrypointText,
+      args: argsText,
+      fullText: copyText,
+      copyText,
+      lineCount: copyText.split("\n").length,
+    };
+  }
+  const trimmed = fallback.replace(/\r\n?/g, "\n").trim();
+  if (!trimmed) return null;
+  const lines = trimmed.split("\n");
+  const preview =
+    lines.length > 1
+      ? lines
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .join(" ↵ ")
+      : trimmed;
+  return {
+    preview,
+    entrypoint: "",
+    args: "",
+    fullText: trimmed,
+    copyText: trimmed,
+    lineCount: lines.length,
+  };
+}
+
+function CommandField({ command }: { command: FormattedDockerCommand }) {
+  const tx = useTx();
+  const [expanded, setExpanded] = useState(false);
+  const [overflowing, setOverflowing] = useState(false);
+  const previewRef = useRef<HTMLElement>(null);
+  const multiLine = command.lineCount > 1;
+
+  useEffect(() => {
+    const el = previewRef.current;
+    if (!el || expanded || multiLine) return;
+    const measure = () => setOverflowing(el.scrollWidth > el.clientWidth);
+    const frame = requestAnimationFrame(measure);
+    if (typeof ResizeObserver === "undefined") return () => cancelAnimationFrame(frame);
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [command.preview, expanded, multiLine]);
+
+  const canExpand = multiLine || overflowing;
+  const count = command.lineCount;
+  const hasSplitSections = !!command.entrypoint && !!command.args;
+
+  return (
+    <div className={styles.commandField}>
+      <div className={styles.commandHeader}>
+        {!expanded && (
+          <code ref={previewRef} className={styles.commandPreview} data-no-tooltip="">
+            {command.preview}
+          </code>
+        )}
+        {(canExpand || expanded) && (
+          <button
+            type="button"
+            className={styles.commandToggle}
+            aria-expanded={expanded}
+            onClick={() => setExpanded((v) => !v)}
+          >
+            <Icon name={expanded ? "chevron-down" : "chevron-right"} size={12} />
+            <span>{expanded ? <T>Collapse</T> : multiLine ? tx`${count} lines` : <T>Expand</T>}</span>
+          </button>
+        )}
+        {expanded && multiLine && <span className={styles.mutedMeta}>{tx`${count} lines`}</span>}
+        <IconButton icon="copy" size="small" title="Copy Command" onClick={() => copyText(command.copyText)} />
+      </div>
+      {expanded && (
+        <div className={styles.commandBody}>
+          {hasSplitSections ? (
+            <>
+              <div className={styles.commandSection}>
+                <div className={styles.commandSectionLabel}>
+                  <T>Entrypoint</T>
+                </div>
+                <pre className={styles.commandPre}>{command.entrypoint}</pre>
+              </div>
+              <div className={styles.commandSection}>
+                <div className={styles.commandSectionLabel}>
+                  <T>Command arguments</T>
+                </div>
+                <pre className={styles.commandPre}>{command.args}</pre>
+              </div>
+            </>
+          ) : (
+            <pre className={styles.commandPre}>{command.fullText}</pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 async function openExternalUrl(url: string): Promise<void> {
   try {
     if (isTauri()) {
@@ -737,6 +885,10 @@ export function ContainerDashboard({
   const cpuPct = stats ? parsePercent(stats.cpuPerc) : 0;
   const memPair = stats ? parseUsagePair(stats.memUsage) : null;
   const labels = inspect?.labels.length ? inspect.labels : Object.entries(container.labels ?? {});
+  const command = useMemo(
+    () => formatDockerCommand(inspect?.entrypoint ?? [], inspect?.cmd ?? [], container.command),
+    [inspect, container.command],
+  );
 
   return (
     <div className={styles.dashboard} tabIndex={0} onKeyDown={copySelectionOnKeyDown}>
@@ -831,12 +983,8 @@ export function ContainerDashboard({
         <PropRow label={<T>Started</T>} hidden={!inspect?.startedAt || inspect.startedAt.startsWith("0001-01-01")}>
           {formatCreatedDetailed(inspect?.startedAt)}
         </PropRow>
-        <PropRow label={<T>Command</T>} hidden={!container.command && !inspect?.cmd.length}>
-          <code className={styles.codeInline}>
-            {inspect && (inspect.entrypoint.length || inspect.cmd.length)
-              ? [...inspect.entrypoint, ...inspect.cmd].join(" ")
-              : container.command}
-          </code>
+        <PropRow label={<T>Command</T>} hidden={!command}>
+          {command && <CommandField command={command} />}
         </PropRow>
         <PropRow label={<T>Working directory</T>} hidden={!inspect?.workingDir}>
           <span className={styles.mono}>{inspect?.workingDir}</span>
@@ -1192,6 +1340,7 @@ export function ImageDashboard({
     return [...new Set([...fromSnap, ...fromInspect])];
   }, [snapshot, image, inspect]);
   const usingContainers = useMemo(() => containersUsingImage(snapshot, image), [snapshot, image]);
+  const command = useMemo(() => formatDockerCommand(inspect?.entrypoint ?? [], inspect?.cmd ?? []), [inspect]);
 
   return (
     <div className={styles.dashboard} tabIndex={0} onKeyDown={copySelectionOnKeyDown}>
@@ -1236,10 +1385,8 @@ export function ImageDashboard({
         <PropRow label={<T>Platform</T>} hidden={!inspect?.os && !inspect?.architecture}>
           <span className={styles.mono}>{[inspect?.os, inspect?.architecture].filter(Boolean).join("/")}</span>
         </PropRow>
-        <PropRow label={<T>Command</T>} hidden={!inspect?.entrypoint.length && !inspect?.cmd.length}>
-          <code className={styles.codeInline}>
-            {[...(inspect?.entrypoint ?? []), ...(inspect?.cmd ?? [])].join(" ")}
-          </code>
+        <PropRow label={<T>Command</T>} hidden={!command}>
+          {command && <CommandField command={command} />}
         </PropRow>
         <PropRow label={<T>Working directory</T>} hidden={!inspect?.workingDir}>
           <span className={styles.mono}>{inspect?.workingDir}</span>
