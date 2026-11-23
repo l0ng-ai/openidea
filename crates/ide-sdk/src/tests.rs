@@ -1460,6 +1460,7 @@ fn outdated_pip_list_carries_the_latest_version() {
         assert_eq!(pkgs[0].latest_version.as_deref(), Some("1.17.0"));
     }
     assert!(parse_pip_list("$ python -m pip list --outdated\n[]\n").unwrap().is_empty());
+    assert!(parse_pip_list("$ python -m pip list --outdated\n").is_err());
 }
 
 #[test]

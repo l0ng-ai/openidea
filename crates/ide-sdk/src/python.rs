@@ -278,6 +278,11 @@ pub fn list_packages(python: &Path, outdated: bool, cancel: &CancellationToken) 
         return Err(IdeError::not_found(format!("{} does not exist", python.display())));
     }
     let installer = installer(python)?;
+    let mut env = pip_env(python);
+    if matches!(installer, Installer::Pip) {
+        // Quiet mode suppresses the JSON package list, including with --format json.
+        env.push(("PIP_QUIET".into(), "0".into()));
+    }
     let mut sub = vec!["list", "--format", "json"];
     if outdated {
         sub.push("--outdated");
@@ -289,14 +294,13 @@ pub fn list_packages(python: &Path, outdated: bool, cancel: &CancellationToken) 
     }
     let (program, args) = pip_command(python, &installer, &sub);
     let dir = neutral_dir();
-    let run = |cancel: &CancellationToken| {
-        stream(&program, &args, dir.as_ref().map(|d| d.path()), &pip_env(python), cancel, &|_| {})
-    };
+    let run =
+        |cancel: &CancellationToken| stream(&program, &args, dir.as_ref().map(|d| d.path()), &env, cancel, &|_| {});
     let out = if outdated { with_deadline(cancel, OUTDATED_LIMIT, run)? } else { run(cancel)? };
-    let mut packages = parse_pip_list(&out)?;
     if outdated && pip_request_failed(&out) {
         return Err(IdeError::unavailable("pip could not reach the package index for every package"));
     }
+    let mut packages = parse_pip_list(&out)?;
     packages.sort_by_key(|p| p.name.to_lowercase());
     Ok(packages)
 }
@@ -344,7 +348,10 @@ pub(crate) fn parse_pip_list(out: &str) -> IdeResult<Vec<PythonPackage>> {
         latest_version: Option<String>,
     }
     // Skip the echoed command line and any warnings before the JSON array.
-    let json = out.lines().find(|l| l.trim_start().starts_with('[')).unwrap_or("[]");
+    let json = out
+        .lines()
+        .find(|l| l.trim_start().starts_with('['))
+        .ok_or_else(|| IdeError::internal("unexpected pip output: missing package list"))?;
     let listed: Vec<Listed> =
         serde_json::from_str(json).map_err(|e| IdeError::internal(format!("unexpected pip output: {e}")))?;
     Ok(listed
