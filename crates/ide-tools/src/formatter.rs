@@ -9,7 +9,7 @@ use std::process::Command;
 use std::time::Duration;
 
 /// A selection to format. Offsets are UTF-16 code units for Prettier; the
-/// one-based line and column values are Unicode code points for Ruff.
+/// one-based line and column values are Unicode code points for Ruff (Black uses the lines).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FormatRange {
     pub start_offset: u32,
@@ -62,9 +62,10 @@ fn package_bin(package: &Path, tool: &str) -> IdeResult<PathBuf> {
     Ok(path)
 }
 
-/// Prettier and Ruff format ranges for some languages (`config.range`); oxfmt and Biome format whole files only.
+/// Prettier, Ruff and Black format ranges for some languages (`config.range`); oxfmt and Biome
+/// format whole files only.
 pub fn supports_range(tool: &str, config: &FormatterConfig) -> bool {
-    matches!(tool, "prettier" | "ruff") && config.range
+    matches!(tool, "prettier" | "ruff" | "black") && config.range
 }
 
 fn is_formatter(tool: &str) -> bool {
@@ -128,7 +129,7 @@ impl Tools {
 /// Every tool resolves its configuration itself. Prettier's project configuration
 /// overrides the editor indentation passed here; oxfmt, Biome and Ruff read their own
 /// configuration files. Ruff also discovers the nearest `pyproject.toml`,
-/// `ruff.toml`, or `.ruff.toml` from the stdin filename.
+/// `ruff.toml`, or `.ruff.toml` from the stdin filename, and Black its `pyproject.toml`.
 pub fn arguments(
     tool: &str,
     config: &FormatterConfig,
@@ -153,6 +154,22 @@ pub fn arguments(
                 format!("{}:{}-{}:{}", range.start_line, range.start_col, range.end_line, range.end_col).into(),
             ]);
         }
+        return args;
+    }
+    if tool == "black" {
+        args.extend(["--quiet".into(), "--stdin-filename".into(), file.as_os_str().to_owned()]);
+        if supports_range(tool, config)
+            && let Some(range) = range
+        {
+            // Inclusive lines: a selection ending at the start of a line leaves that line out.
+            let end = if range.end_col == 1 && range.end_line > range.start_line {
+                range.end_line - 1
+            } else {
+                range.end_line
+            };
+            args.extend(["--line-ranges".into(), format!("{}-{}", range.start_line, end).into()]);
+        }
+        args.push("-".into());
         return args;
     }
     if tool == "biome" {
@@ -198,6 +215,36 @@ pub fn arguments(
             args.extend(["--ignore-path".into(), path.into_os_string()]);
         }
     }
+    args
+}
+
+/// The Code Style › Python values the user set, for a file without a Ruff or Black configuration.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PythonStyle {
+    pub line_length: Option<u32>,
+    pub indent_width: Option<u32>,
+    pub use_tabs: Option<bool>,
+}
+
+/// [`arguments`] with `style` added as Ruff's `--config` overrides or Black's `--line-length`
+/// (Black has no indentation settings).
+pub fn with_python_style(tool: &str, mut args: Vec<OsString>, style: PythonStyle) -> Vec<OsString> {
+    let settings: Vec<OsString> = match tool {
+        "ruff" => [
+            style.line_length.map(|n| format!("line-length={n}")),
+            style.indent_width.map(|n| format!("indent-width={n}")),
+            style.use_tabs.map(|tabs| format!("format.indent-style=\"{}\"", if tabs { "tab" } else { "space" })),
+        ]
+        .into_iter()
+        .flatten()
+        .flat_map(|setting| ["--config".into(), setting.into()])
+        .collect(),
+        "black" => style.line_length.map(|n| vec!["--line-length".into(), n.to_string().into()]).unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    // Ruff's options follow its `format` subcommand.
+    let at = usize::from(tool == "ruff").min(args.len());
+    args.splice(at..at, settings);
     args
 }
 
@@ -442,6 +489,54 @@ mod tests {
         );
         assert!(supports_range("ruff", &config));
         assert!(!args.iter().any(|arg| arg == "--stdin-filepath"));
+    }
+
+    #[test]
+    fn python_style_becomes_ruff_overrides_or_blacks_line_length() {
+        let config = FormatterConfig { tool: "ruff".into(), parser: "python".into(), range: true };
+        let file = Path::new("/project/main.py");
+        let style = PythonStyle { line_length: Some(100), indent_width: Some(2), use_tabs: Some(true) };
+        let args = |tool: &str, style| -> Vec<String> {
+            with_python_style(tool, arguments(tool, &config, file, 4, true, None, None), style)
+                .into_iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+        assert_eq!(
+            args("ruff", style)[..7],
+            [
+                "format",
+                "--config",
+                "line-length=100",
+                "--config",
+                "indent-width=2",
+                "--config",
+                "format.indent-style=\"tab\""
+            ]
+        );
+        assert_eq!(args("black", style)[..3], ["--line-length", "100", "--quiet"]);
+        assert_eq!(args("ruff", PythonStyle::default())[1], "--stdin-filename");
+        assert_eq!(args("black", PythonStyle { use_tabs: Some(true), ..Default::default() })[0], "--quiet");
+    }
+
+    #[test]
+    fn black_formats_stdin_with_inclusive_line_ranges() {
+        let config = FormatterConfig { tool: "ruff".into(), parser: "python".into(), range: true };
+        let file = Path::new("/project/src/example.py");
+        let args = |range| -> Vec<String> {
+            arguments("black", &config, file, 4, true, range, None)
+                .into_iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect()
+        };
+        assert_eq!(args(None), ["--quiet", "--stdin-filename", "/project/src/example.py", "-"]);
+        let range = |end_line, end_col| {
+            Some(FormatRange { start_offset: 0, end_offset: 0, start_line: 2, start_col: 1, end_line, end_col })
+        };
+        assert_eq!(args(range(4, 1))[3..], ["--line-ranges", "2-3", "-"]);
+        assert_eq!(args(range(4, 6))[3..], ["--line-ranges", "2-4", "-"]);
+        assert_eq!(args(range(2, 1))[3..], ["--line-ranges", "2-2", "-"]);
+        assert!(supports_range("black", &config));
     }
 
     #[test]
