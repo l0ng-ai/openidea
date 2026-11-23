@@ -428,6 +428,18 @@ describe("launch", () => {
     }
   });
 
+  it("uncovers the splash when launch setup fails", async () => {
+    listen.mockRejectedValueOnce(new Error("listener unavailable"));
+    const dispose = installLaunchHandling();
+    try {
+      await holdSplash.mock.calls[0]![0];
+      await startupLaunchHandled();
+      expect(windowTakeLaunch).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+    }
+  });
+
   it("waits for an existing project restore before opening a received file", async () => {
     useProject.setState({ opening: true, openingPath: "/p" });
     windowTakeLaunch.mockResolvedValueOnce({

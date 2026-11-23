@@ -687,7 +687,7 @@ export function installLaunchHandling(): () => void {
       if (s.openingPath !== null) done();
     });
     if (useProject.getState().openingPath !== null) done();
-    void launch.finally(done);
+    void launch.then(done, done);
   });
   holdSplash(shown);
   return () => {

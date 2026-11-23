@@ -7,6 +7,7 @@ import { ContextMenuHost, hideContextMenu } from "@/ui/Menu";
 import { registerStatusItem, registerToolWindow, type StatusItemContribution } from "./contributions";
 import { orderStatusItems, StatusBar, TaskStatus } from "./StatusBar";
 import { orderTitleItems } from "./TitleBar";
+import { setTabColorOverride, tabColorVars } from "./tabColors";
 import { Balloons, NOTIFICATIONS_TOOL_WINDOW, notificationActions, NotificationsToolWindow } from "./Notifications";
 import {
   BALLOON_TIMEOUT,
@@ -481,21 +482,29 @@ describe("workbench shell", () => {
       openingPath: null,
     });
     loadToolWindowLayout("/old");
-    const { unmount } = render(<Workbench />);
+    setTabColorOverride("/old", "1");
+    setTabColorOverride("/work/new-project", "2");
+    const { container, unmount } = render(<Workbench />);
     const input = screen.getByRole("textbox", { name: "old project input" });
+    const color = () => (container.firstElementChild as HTMLElement).style.getPropertyValue("--project-color");
     try {
       act(() => useProject.setState({ opening: true, openingPath: "/work/new-project" }));
       expect(screen.getByRole("status", { name: "Opening new-project…" })).toBeVisible();
+      expect(screen.getByRole("button", { name: "new-project" })).toBeVisible();
       expect(screen.getByText("/work/new-project")).toBeVisible();
+      expect(color()).toBe(tabColorVars("new-project", "2")["--project-color"]);
       expect(input.closest("[inert]")).not.toBeNull();
       expect(input).toBeInTheDocument();
       act(() => useProject.setState({ opening: false, openingPath: null }));
       expect(screen.queryByText("Opening new-project…")).toBeNull();
+      expect(color()).toBe(tabColorVars("old", "1")["--project-color"]);
       expect(input.closest("[inert]")).toBeNull();
       expect(screen.getByRole("textbox", { name: "old project input" })).toBe(input);
     } finally {
       unmount();
       dispose();
+      setTabColorOverride("/old", null);
+      setTabColorOverride("/work/new-project", null);
       useProject.setState({ project: null, opening: false, openingPath: null });
     }
   });

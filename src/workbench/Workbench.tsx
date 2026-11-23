@@ -60,7 +60,7 @@ function LightEditFrame({ title }: { title?: string }) {
 
 function ProjectOpening({ path }: { path: string }) {
   const t = useT();
-  const label = t("app.project.opening", { name: basename(path) });
+  const label = t("app.project.opening", { name: basename(path) || path });
   return (
     <div className={styles.opening} data-project-opening>
       <TitleBar />
@@ -94,8 +94,8 @@ export function Workbench() {
   const statusBar = useAppearanceFlag("showStatusBar");
   const navBarPosition = useNavigationBarPosition();
   const frame = project ? styles.framed : lightEdit || standaloneTitle ? styles.lightEditFrame : undefined;
-  const tintName = project?.name ?? (openingPath ? basename(openingPath) : null);
-  const tintRoot = root ?? openingPath;
+  const tintName = openingPath ? basename(openingPath) || openingPath : project?.name;
+  const tintRoot = openingPath ?? root;
 
   return (
     <div
