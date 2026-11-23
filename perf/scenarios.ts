@@ -768,6 +768,123 @@ const projectTree: Scenario = {
   },
 };
 
+/** Files in the `combinedDiff` scenarios (`OPENIDEA_PERF_COMBINED_FILES`). */
+const COMBINED_FILES = Number(process.env.OPENIDEA_PERF_COMBINED_FILES ?? 500);
+/** Farthest the wheel pass scrolls before turning back: about 100 files of 40 lines. */
+const COMBINED_WHEEL_PX = 100_000;
+
+/**
+ * Opens an all-in-one diff of `COMBINED_FILES` files from a key press, then scrolls down and back
+ * up, for at most 60 s each way. `wheel`: 120 px per 16 ms of wall time (a fast wheel; the
+ * compositor keeps scrolling through a slow frame), down to the end or `COMBINED_WHEEL_PX`.
+ * `stress`: a viewport (or 1/300 of the whole height, if more) a frame, down to the end.
+ * `blankFrames`: frames whose viewport centre shows neither a diff nor a file header.
+ * `slowFrameMs` / `slowTimePct`: time in frames over 33 ms, and its share of the scroll time:
+ * shares of frame counts mislead when one side renders far fewer, longer frames.
+ */
+async function combinedDiffScroll(h: Harness, mode: "wheel" | "stress") {
+  // Opened from a key press, the measured input (no default shortcut opens it).
+  await h.page.evaluate((n) => {
+    const w = window as never as {
+      __openideaPerf: { openCombinedDiff(n: number): Promise<{ first: string; last: string }> };
+      __combinedPaths?: Promise<{ first: string; last: string }>;
+    };
+    addEventListener("keydown", () => (w.__combinedPaths = w.__openideaPerf.openCombinedDiff(n)), {
+      capture: true,
+      once: true,
+    });
+  }, COMBINED_FILES);
+  const openMs = await h.measure(
+    () => h.page.keyboard.press("Pause"),
+    "[data-combined-scroll] .cm-content",
+    null,
+    30_000,
+  );
+  const paths = await h.page.evaluate(
+    () => (window as never as { __combinedPaths: Promise<{ first: string; last: string }> }).__combinedPaths,
+  );
+  await h.page.waitForTimeout(500);
+  const refresh = await h.refreshMs();
+  const t0 = await h.now();
+  await h.inPage((p) => p.startFrames());
+  const pass = await h.page.locator("[data-combined-scroll]").evaluate(
+    async (el, { first, last, wheel, maxPx }) => {
+      const editors = () => el.querySelectorAll(".cm-editor").length;
+      const box = el.getBoundingClientRect();
+      const blank = () => {
+        const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+        return !hit?.closest(".cm-editor, [data-combined-block] > :first-child");
+      };
+      const shown = (path: string) => !!el.querySelector(`[data-combined-block="${CSS.escape(path)}"]`);
+      const step = () => Math.max(el.clientHeight, Math.ceil((el.scrollHeight - el.clientHeight) / 300));
+      let peakEditors = editors();
+      let blankFrames = 0;
+      let frames = 0;
+      let reachedEnd = false;
+      const walk = async (down: boolean) => {
+        const started = performance.now();
+        const from = el.scrollTop;
+        // The end only once the view has stayed there for 30 frames: blocks loading near the bottom
+        // still grow the view, so a first touch of the bottom isn't the end of the whole change.
+        let settled = 0;
+        while (performance.now() - started < 60_000) {
+          const atEnd = el.scrollTop + el.clientHeight >= el.scrollHeight - 1 && shown(last);
+          settled = down && atEnd ? settled + 1 : 0;
+          if (settled >= 30) reachedEnd = true;
+          if (down ? reachedEnd || (wheel && el.scrollTop - from >= maxPx) : el.scrollTop <= 0 && shown(first))
+            return true;
+          const moved = wheel ? ((performance.now() - started) * 120) / 16 : 0;
+          if (wheel) el.scrollTop = down ? Math.min(from + moved, from + maxPx) : Math.max(0, from - moved);
+          else el.scrollTop = down ? el.scrollTop + step() : Math.max(0, el.scrollTop - step());
+          await new Promise(requestAnimationFrame);
+          frames++;
+          if (blank()) blankFrames++;
+          peakEditors = Math.max(peakEditors, editors());
+        }
+        return false;
+      };
+      await walk(true);
+      const scrolledPx = el.scrollTop;
+      const backAtTop = await walk(false);
+      return { reachedEnd, backAtTop, scrolledPx, peakEditors, blankFrames, frames };
+    },
+    { ...paths, wheel: mode === "wheel", maxPx: COMBINED_WHEEL_PX },
+  );
+  const frames = await h.inPage((p) => p.stopFrames());
+  const tbtMs = totalBlockingTime(await h.longTasksSince(t0));
+  const slow = frames.filter((f) => f > 33);
+  const slowFrameMs = slow.reduce((sum, f) => sum + f, 0);
+  const totalMs = frames.reduce((sum, f) => sum + f, 0);
+  return {
+    openMs,
+    ...frameSummary(frames, refresh),
+    slowFramesPct: frames.length ? (100 * slow.length) / frames.length : 0,
+    slowFrameMs,
+    slowTimePct: totalMs ? (100 * slowFrameMs) / totalMs : 0,
+    tbtMs,
+    peakEditors: pass.peakEditors,
+    blankFrames: pass.blankFrames,
+    scrollFrames: pass.frames,
+    blankPct: pass.frames ? (100 * pass.blankFrames) / pass.frames : 0,
+    scrolledPx: pass.scrolledPx,
+    reachedEnd: pass.reachedEnd ? 1 : 0,
+    backAtTop: pass.backAtTop ? 1 : 0,
+    domNodes: (await h.counters()).Nodes ?? NaN,
+  };
+}
+
+const combinedDiff: Scenario = {
+  id: "combinedDiff",
+  title: `Wheel through an all-in-one diff of ${COMBINED_FILES} files`,
+  run: (h) => combinedDiffScroll(h, "wheel"),
+};
+
+const combinedDiffStress: Scenario = {
+  id: "combinedDiffStress",
+  title: `Scroll an all-in-one diff of ${COMBINED_FILES} files a screen a frame`,
+  run: (h) => combinedDiffScroll(h, "stress"),
+};
+
 /** Opening and closing editors repeatedly must not grow the heap or the DOM. */
 const leaks: Scenario = {
   id: "leaks",
@@ -816,5 +933,7 @@ export const SCENARIOS: Scenario[] = [
   popups,
   toolWindows,
   projectTree,
+  combinedDiff,
+  combinedDiffStress,
   leaks,
 ];
