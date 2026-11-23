@@ -9983,5 +9983,8 @@
   "Latest": "最新版本",
   "Checking for newer versions": "正在检查新版本",
   "Could not check for newer versions of the packages.": "无法检查软件包的新版本。",
-  "Upgrade available: {latest}": "可升级到 {latest}"
+  "Upgrade available: {latest}": "可升级到 {latest}",
+  "Rearrange Code": "重新排列代码",
+  "Nothing to rearrange: members are in order, or moving them could change the class": "无需重新排列：成员已按顺序排列，或移动它们可能改变类的行为",
+  "The file changed while rearranging; try again": "重新排列期间文件已更改，请重试"
 }

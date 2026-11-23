@@ -3747,5 +3747,8 @@
   "Latest": "Latest",
   "Checking for newer versions": "Checking for newer versions",
   "Could not check for newer versions of the packages.": "Could not check for newer versions of the packages.",
-  "Upgrade available: {latest}": "Upgrade available: {latest}"
+  "Upgrade available: {latest}": "Upgrade available: {latest}",
+  "Rearrange Code": "Rearrange Code",
+  "Nothing to rearrange: members are in order, or moving them could change the class": "Nothing to rearrange: members are in order, or moving them could change the class",
+  "The file changed while rearranging; try again": "The file changed while rearranging; try again"
 }

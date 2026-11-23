@@ -574,6 +574,11 @@ export const commands = {
 	docOutline: (doc: DocId) => typedError<OutlineItem[], IdeError>(__TAURI_INVOKE("doc_outline", { doc })),
 	/**  Python class facts for the inheritance inspections: tree-sitter, no language server. */
 	docPythonFacts: (doc: DocId) => typedError<PythonFacts, IdeError>(__TAURI_INVOKE("doc_python_facts", { doc })),
+	/**
+	 *  Rearrange Code: the edits that put the document's class members in arrangement order (Python
+	 *  for now); none when they already are or the language has no arrangement.
+	 */
+	docRearrange: (doc: DocId) => typedError<TextEdit[], IdeError>(__TAURI_INVOKE("doc_rearrange", { doc })),
 	/**  Load Changes from Disk: discards the buffer's unsaved changes and reads its file again. */
 	docReloadFromDisk: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_reload_from_disk", { doc })),
 	docSave: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_save", { doc })),
