@@ -71,6 +71,7 @@ import { remoteChange } from "@/editor/api";
 import { tooltipBounds } from "@/editor/core/cm/setup";
 import { completionLabelOffset } from "./theme";
 import { expectedFromSignature, expectedFromText, mentionedNames, smartItems } from "./smartCompletion";
+import { pythonInheritanceGraph } from "@/editor/navigation/inheritanceGraph";
 
 interface RequestContext {
   doc: number;
@@ -720,6 +721,7 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
     if (inflight === id) inflight = null;
   }
   if (ctx.aborted || !list.items.length) return list.items.length || smart ? null : fallback(ctx);
+  let lower: ReadonlySet<CompletionItem> = new Set();
   if (smart) {
     const expected = await expectedType(ctx, doc.doc, word?.from ?? ctx.pos);
     if (ctx.aborted) return null;
@@ -727,9 +729,20 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
       smartHint(ctx, tx("No expected type at the caret"));
       return null;
     }
-    const mentioned = mentionedNames(ctx.state.doc.toString());
-    list = { ...list, items: await smartItems(list.items, expected, (item) => resolveItem(doc.doc, item), mentioned) };
+    const from = word?.from ?? ctx.pos;
+    const graph = doc.language === "python" ? await pythonInheritanceGraph().catch(() => []) : [];
+    const bases = new Map<string, string[]>();
+    for (const c of graph) bases.set(c.name, [...(bases.get(c.name) ?? []), ...c.bases]);
+    const smartResult = await smartItems(list.items, expected, (item) => resolveItem(doc.doc, item), {
+      typed: word?.text ?? "",
+      member: ctx.state.sliceDoc(from - 1, from) === ".",
+      mentioned: mentionedNames(ctx.state.doc.toString()),
+      bases: (name) => bases.get(name) ?? [],
+      aborted: () => ctx.aborted,
+    });
     if (ctx.aborted) return null;
+    list = { ...list, items: smartResult.items };
+    lower = smartResult.lower;
     if (!list.items.length) {
       smartHint(ctx, tx`No suggestions of type ${expected}`);
       return null;
@@ -752,9 +765,17 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
   }
   return {
     from: word ? word.from : ctx.pos,
-    options: items.map((item) => makeCompletion(item, req)),
-    // "All letters" must re-check case on every keystroke.
-    validFor: list.isIncomplete || (prefs.matchCase && prefs.caseSensitivity === "all") ? undefined : VALID_FOR,
+    options: items.map((item) => {
+      const option = makeCompletion(item, req);
+      // Smart Type: an item that may fit (`Any`) follows the ones that do.
+      if (lower.has(item)) option.boost = -10;
+      return option;
+    }),
+    // "All letters" must re-check case on every keystroke; Smart Type resolved only what matched the typed letters.
+    validFor:
+      list.isIncomplete || (prefs.matchCase && prefs.caseSensitivity === "all") || (smart && typed)
+        ? undefined
+        : VALID_FOR,
     filter: true,
   };
 }
@@ -877,6 +898,12 @@ function smartHint(ctx: CompletionContext, text: string) {
   if (!ctx.view) return;
   explicitPending.delete(ctx.view);
   showHint(ctx.view, text, { timeout: 2000 });
+}
+
+/** ⌃Space: Basic completion, leaving Smart Type mode as IDEA does. */
+export function basicCompletion(view: EditorView): boolean {
+  if (view.state.field(smartLookup, false)) view.dispatch({ effects: setSmartLookup.of(false) });
+  return explicitCompletion(view);
 }
 
 /** ⌃⇧Space: the lookup lists only what fits the expected type at the caret. */

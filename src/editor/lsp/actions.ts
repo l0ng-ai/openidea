@@ -8,7 +8,7 @@ import { maybeEditorService } from "@/workbench/contributions";
 import { useProject } from "@/platform/project";
 import { validateLanguages } from "@/platform/languageSettings";
 import type { Settings } from "@/bindings";
-import { explicitCompletion, smartTypeCompletion } from "./completion";
+import { basicCompletion, smartTypeCompletion } from "./completion";
 import { SMART_TYPE_LANGUAGES } from "./smartCompletion";
 import { triggerSignatureHelp } from "./signature";
 import { quickDefinition, quickDocumentation } from "./hover";
@@ -242,7 +242,7 @@ export function registerActionsOnSave(): () => void {
 
 export function registerLspActions(): () => void {
   return registerActions([
-    editorAction("code.completion", "Basic", "Code Completion", (v) => explicitCompletion(v), {
+    editorAction("code.completion", "Basic", "Code Completion", (v) => basicCompletion(v), {
       icon: "list",
       keywords: ["code completion", "basic completion", "autocomplete"],
     }),
