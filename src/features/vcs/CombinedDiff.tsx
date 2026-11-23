@@ -170,6 +170,11 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
     overscan: 4,
     rangeExtractor,
   });
+  // A block's real height is only known once its diff loads, up to thousands of lines past the
+  // estimate. The view moves with every block above it that grows, scrolling up too (the library
+  // skips that), or a reveal, Previous File and scrolling up land blocks early.
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) =>
+    item.end <= (instance.scrollOffset ?? 0);
 
   /** Index of the block at the top of the view. */
   const current = () =>

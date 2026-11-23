@@ -229,6 +229,67 @@ describe("the all-in-one diff tab with many files", () => {
     expect(atTop()).toBe("/r/src/File2.ts");
   });
 
+  describe("as blocks above the view grow once their diffs load", () => {
+    // Slots report their size through the virtualizer's ResizeObserver, the way a loaded diff does.
+    const observers = new Map<ResizeObserverCallback, Set<Element>>();
+    const original = window.ResizeObserver;
+    beforeEach(() => {
+      window.ResizeObserver = class {
+        targets = new Set<Element>();
+        constructor(callback: ResizeObserverCallback) {
+          observers.set(callback, this.targets);
+        }
+        observe(target: Element) {
+          this.targets.add(target);
+        }
+        unobserve(target: Element) {
+          this.targets.delete(target);
+        }
+        disconnect() {
+          this.targets.clear();
+        }
+      } as never;
+    });
+    afterEach(() => {
+      window.ResizeObserver = original;
+      observers.clear();
+      Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, get: () => 600 });
+    });
+    const grow = (index: number, height: number) => {
+      const slot = document.querySelector(`[data-index="${index}"]`)!;
+      const [callback] = [...observers].find(([, targets]) => targets.has(slot))!;
+      act(() =>
+        callback([{ target: slot, borderBoxSize: [{ blockSize: height, inlineSize: 400 }] }] as never, {} as never),
+      );
+    };
+    /** How far below the top of the view a file's block starts. */
+    const below = (path: string) => {
+      const el = document.querySelector<HTMLElement>("[data-combined-scroll]")!;
+      const block = el.querySelector(`[data-combined-block="${path}"]`)!;
+      return Number.parseFloat(block.closest<HTMLElement>("[data-index]")!.style.top) - el.scrollTop;
+    };
+
+    it("stays on the file it opened at", async () => {
+      // Still loading, the blocks are shorter than the estimate.
+      Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, get: () => 40 });
+      render(<CombinedDiffTab input={combinedDiffInput({ items: many(60), reveal: "/r/src/File40.ts" })} />);
+      await act(() => new Promise((r) => setTimeout(r, 50)));
+      expect(atTop()).toBe("/r/src/File40.ts");
+      grow(38, 3000);
+      grow(39, 5000);
+      expect(atTop()).toBe("/r/src/File40.ts");
+    });
+
+    it("keeps what is shown in place while scrolling up", async () => {
+      render(<CombinedDiffTab input={combinedDiffInput({ items: many(60), reveal: "/r/src/File40.ts" })} />);
+      await act(() => new Promise((r) => setTimeout(r, 50)));
+      scrollBy(-300);
+      expect(below("/r/src/File40.ts")).toBe(300);
+      grow(38, 130_000);
+      expect(below("/r/src/File40.ts")).toBe(300);
+    });
+  });
+
   it("keeps the focused block mounted when it is scrolled away", () => {
     render(<CombinedDiffTab input={combinedDiffInput({ items: many(30) })} />);
     act(() => screen.getAllByRole("button", { name: "Collapse File" })[0]!.focus());
