@@ -81,6 +81,8 @@ export interface InheritanceInspectionDeps {
   index: InheritanceIndex;
   factsOf: (path: string) => Promise<PythonFacts | null>;
   outlineOf: (path: string) => Promise<readonly OutlineItem[]>;
+  /** Direct subclasses by [`declarationKey`] of their base (`PythonIndex.subclasses`). */
+  subclasses: () => Promise<Map<string, ClassInheritance[]>>;
   /** Producers whose inspection is on; missing means every rule runs. */
   enabled?: ReadonlySet<string>;
 }
@@ -163,6 +165,24 @@ class ProjectView {
     if (decl.path === this.deps.path) return this.liveOf.get(declarationKey(decl))?.methods ?? [];
     const facts = await this.factsOf(decl.path);
     return facts?.classes.find((c) => sameDeclaration(c, decl))?.methods ?? [];
+  }
+
+  /** Whether a class below `cls` (transitively) declares `name`. */
+  async overriddenBelow(cls: ClassView, name: string): Promise<boolean> {
+    const subclasses = await this.deps.subclasses();
+    const seen = new Set<string>();
+    const queue = [cls.decl];
+    while (queue.length) {
+      for (const sub of subclasses.get(declarationKey(queue.shift()!)) ?? []) {
+        const key = declarationKey(sub);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if ((await this.membersOf(sub)).has(name) || (await this.methodsOf(sub)).some((m) => m.name === name))
+          return true;
+        queue.push(sub);
+      }
+    }
+    return false;
   }
 
   async membersOf(decl: ClassInheritance): Promise<ReadonlySet<string>> {
@@ -249,7 +269,8 @@ export async function inheritanceDiagnostics(deps: InheritanceInspectionDeps): P
     if (runs(PYTHON_REDUNDANT_OVERRIDE_PRODUCER)) out.push(...(await redundantOverride(view, cls)));
     if (runs(PYTHON_ABSTRACT_METHOD_PRODUCER)) out.push(...(await missingAbstractMethods(view, cls)));
     // A method may override one a foreign base declares: only a fully known chain can say it does not.
-    if (runs(PYTHON_METHOD_MAY_BE_STATIC_PRODUCER) && view.complete(cls)) out.push(...(await mayBeStatic(view, cls)));
+    if (runs(PYTHON_METHOD_MAY_BE_STATIC_PRODUCER) && view.complete(cls))
+      out.push(...(await mayBeStatic(view, cls, deps.path)));
   }
   return out;
 }
@@ -286,11 +307,20 @@ async function unusedOverride(view: ProjectView, cls: ClassView): Promise<Diagno
   return out;
 }
 
-/** Methods whose body never names the receiver (the parser decides, `unusedReceiver`), unless they override. */
-async function mayBeStatic(view: ProjectView, cls: ClassView): Promise<Diagnostic[]> {
+/** pytest's and unittest's naming: test methods take `self` without needing it. */
+const isTestFile = (path: string) => /(^|\/)(test_[^/]*|[^/]*_test|conftest)\.py$/.test(path);
+
+/**
+ * Methods whose body never names the receiver (the parser decides, `unusedReceiver`), unless
+ * they override a base's or a subclass overrides them (the instance method is then part of a
+ * polymorphic call), or they are test code.
+ */
+async function mayBeStatic(view: ProjectView, cls: ClassView, path: string): Promise<Diagnostic[]> {
+  if (isTestFile(path) || cls.facts.name.startsWith("Test")) return [];
   const out: Diagnostic[] = [];
   for (const method of cls.facts.methods) {
-    if (!method.unusedReceiver || (await declaredInAncestry(view, cls, method.name))) continue;
+    if (!method.unusedReceiver || method.name.startsWith("test")) continue;
+    if ((await declaredInAncestry(view, cls, method.name)) || (await view.overriddenBelow(cls, method.name))) continue;
     out.push(
       problem(
         method.selection,
@@ -481,26 +511,30 @@ export function pythonInheritanceExtension(ctx: EditorDocContext): Extension {
   watchChanges();
   const suppress = inspectionControlProviders.of((view, id) => suppressControls(view, id, latestFacts.get(view)));
   // Make method static, on a method this run reported.
-  const makeStatic = (view: EditorView, from: number, to: number): ContributedIntention[] => {
-    const facts = latestFacts.get(view);
-    const reported = [from, to].some((pos) =>
-      inspectionsAt(ctx.path, view.state.doc, pos).some((i) => i.id === PYTHON_METHOD_MAY_BE_STATIC_INSPECTION),
+  const makeStatic = (view: EditorView, from: number): ContributedIntention[] => {
+    // After an edit, the facts and the problems' ranges are stale until the next run.
+    const latest = latestFacts.get(view);
+    if (!latest || latest.doc !== view.state.doc) return [];
+    const reported = inspectionsAt(ctx.path, latest.doc, from).some(
+      (i) => i.id === PYTHON_METHOD_MAY_BE_STATIC_INSPECTION,
     );
-    const changes = facts && reported ? makeStaticChanges(view.state.doc, facts, from) : null;
+    const changes = reported ? makeStaticChanges(latest.doc, latest.facts, from) : null;
     return changes
       ? [
           {
             id: "python.make-static",
             label: "Make method static",
             quickFix: true,
-            run: () => view.dispatch({ changes, userEvent: "input" }),
+            run: () => {
+              if (view.state.doc === latest.doc) view.dispatch({ changes, userEvent: "input" });
+            },
           },
         ]
       : [];
   };
   const fixes = [
     quickFixProviders.of(makeStatic),
-    intentionProviders.of((view) => makeStatic(view, view.state.selection.main.from, view.state.selection.main.to)),
+    intentionProviders.of((view) => makeStatic(view, view.state.selection.main.head)),
   ];
   const plugin = ViewPlugin.define((view: EditorView) => {
     if (!isTauri()) return {};
@@ -538,6 +572,7 @@ export function pythonInheritanceExtension(ctx: EditorDocContext): Extension {
           factsOf: (path) =>
             withDocument(path, (doc) => lspRequest(() => commands.docPythonFacts(doc))).catch(() => null),
           outlineOf: (path) => withDocument(path, (doc) => lspRequest(() => commands.docOutline(doc))).catch(() => []),
+          subclasses: project.subclasses,
         });
         if (disposed || mine !== sequence || view.state.doc !== text) return;
         latestFacts.set(view, { facts, doc: text });

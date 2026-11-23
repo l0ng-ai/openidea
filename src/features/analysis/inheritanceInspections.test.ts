@@ -9,7 +9,7 @@ import type {
   PythonMethodFacts,
   Range,
 } from "@/platform/ipc";
-import { inheritanceIndex } from "@/editor/navigation/inheritanceGraph";
+import { inheritanceIndex, subclassMap } from "@/editor/navigation/inheritanceGraph";
 import { inheritanceDiagnostics, pythonInheritanceExtension } from "./inheritanceInspections";
 
 interface MethodSpec {
@@ -127,11 +127,13 @@ class Fixture {
   async run(enabled?: ReadonlySet<string>): Promise<Diagnostic[]> {
     const facts = this.facts.get(this.current);
     if (!facts) throw new Error(`no fixture for ${this.current}`);
+    const index = inheritanceIndex(this.graph, { readFiles: async () => new Map() });
     return inheritanceDiagnostics({
       path: this.current,
       outline: this.outlines.get(this.current) ?? [],
       facts,
-      index: inheritanceIndex(this.graph, { readFiles: async () => new Map() }),
+      index,
+      subclasses: () => subclassMap(index),
       factsOf: async (path) => this.facts.get(path) ?? null,
       outlineOf: async (path) => this.outlines.get(path) ?? [],
       enabled,
@@ -427,4 +429,29 @@ it("leaves alone a static candidate that overrides or may override", async () =>
   // `Widget` is a library class: it may declare `helper`.
   const foreign = new Fixture("/p/a.py").add("/p/a.py", [{ name: "C", line: 0, bases: ["Widget"], methods: [helper] }]);
   expect(await foreign.run()).toEqual([]);
+});
+
+it("leaves alone a static candidate a subclass overrides", async () => {
+  const project = new Fixture("/p/a.py")
+    .add("/p/a.py", [{ name: "Base", line: 0, bases: [], methods: [helper] }])
+    .add("/p/mid.py", [{ name: "Mid", line: 0, bases: ["Base"] }])
+    .add("/p/child.py", [
+      { name: "Child", line: 0, bases: ["Mid"], methods: [{ name: "helper", line: 1, body: OTHER }] },
+    ]);
+  expect(await project.run()).toEqual([]);
+});
+
+it("leaves test code alone", async () => {
+  const testClass = new Fixture("/p/a.py").add("/p/a.py", [
+    { name: "TestParser", line: 0, bases: [], methods: [helper] },
+  ]);
+  expect(await testClass.run()).toEqual([]);
+  const testMethod = new Fixture("/p/a.py").add("/p/a.py", [
+    { name: "Checks", line: 0, bases: [], methods: [{ ...helper, name: "test_parse" }] },
+  ]);
+  expect(await testMethod.run()).toEqual([]);
+  for (const path of ["/p/tests/test_a.py", "/p/a_test.py", "/p/conftest.py"]) {
+    const testFile = new Fixture(path).add(path, [{ name: "Helpers", line: 0, bases: [], methods: [helper] }]);
+    expect(await testFile.run()).toEqual([]);
+  }
 });

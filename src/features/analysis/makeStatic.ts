@@ -1,23 +1,27 @@
 import type { ChangeSpec, Text } from "@codemirror/state";
-import type { PythonFacts, Range } from "@/platform/ipc";
+import { posToOffset } from "@/editor/lsp/positions";
+import type { PythonFacts } from "@/platform/ipc";
 
-const offset = (doc: Text, pos: Range["start"]) => doc.line(pos.line + 1).from + pos.col;
+const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
  * Make method static for the method whose name is at `pos`: `@staticmethod` above its
- * definition (decorators included) and its receiver parameter removed. Calls through
- * `self.method(...)` keep working, so they are left as they are.
+ * definition (decorators included) and its receiver parameter removed. Calls through an
+ * instance (`self.method(...)`) keep working; a call through a class of this file
+ * (`Base.method(obj, ...)`) passes the instance itself and would break, so then there is no fix.
  */
 export function makeStaticChanges(doc: Text, facts: PythonFacts, pos: number): ChangeSpec[] | null {
   for (const cls of facts.classes) {
     for (const method of cls.methods) {
       const { selection, unusedReceiver } = method;
-      if (!unusedReceiver || pos < offset(doc, selection.start) || pos > offset(doc, selection.end)) continue;
-      const first = doc.line(method.definitionLine + 1);
+      if (!unusedReceiver || pos < posToOffset(doc, selection.start) || pos > posToOffset(doc, selection.end)) continue;
+      const classes = facts.classes.map((c) => escape(c.name)).join("|");
+      if (new RegExp(`\\b(?:${classes})\\s*\\.\\s*${escape(method.name)}\\s*\\(`).test(doc.toString())) return null;
+      const first = doc.line(Math.min(method.definitionLine + 1, doc.lines));
       const indent = /^\s*/.exec(first.text)![0];
       return [
         { from: first.from, insert: `${indent}@staticmethod\n` },
-        { from: offset(doc, unusedReceiver.start), to: offset(doc, unusedReceiver.end) },
+        { from: posToOffset(doc, unusedReceiver.start), to: posToOffset(doc, unusedReceiver.end) },
       ];
     }
   }

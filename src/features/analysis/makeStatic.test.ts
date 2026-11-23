@@ -38,3 +38,11 @@ it("adds @staticmethod and removes the receiver", () => {
   );
   expect(makeStaticChanges(state.doc, FACTS, 3)).toBeNull();
 });
+
+it("has no fix when the file calls the method through its class", () => {
+  const state = EditorState.create({ doc: SRC + "\nC.helper(C(), 1)\n" });
+  expect(makeStaticChanges(state.doc, FACTS, state.doc.line(3).from + 10)).toBeNull();
+  // Through an instance the call keeps working.
+  const ok = EditorState.create({ doc: SRC + "\nC().helper(1)\n" });
+  expect(makeStaticChanges(ok.doc, FACTS, ok.doc.line(3).from + 10)).not.toBeNull();
+});
