@@ -4,7 +4,7 @@ use ide_command::command;
 use ide_core::{CancellationToken, DocId, IdeError, IdeResult, RequestId};
 use ide_workspace::dependencies::{
     DependencyVersionSource, DependencyVersions, PythonRequirements, UnsatisfiedRequirement, cargo, go, maven, npm,
-    python,
+    pypi, python,
 };
 use std::collections::BTreeMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -301,6 +301,35 @@ pub async fn python_requirements(
     result
 }
 
+/// A project on pypi.org by its exact name; `None` when PyPI has no such project.
+#[command(trust = outside_restricted)]
+pub async fn pypi_package(
+    host: &Host,
+    window: &str,
+    name: String,
+    request: RequestId,
+) -> IdeResult<Option<pypi::PypiPackage>> {
+    let url = pypi::project_url(name.trim()).ok_or_else(|| IdeError::invalid("not a package name"))?;
+    let cancel = host.begin_project_read_request(window, request);
+    let result = host
+        .blocking(move || {
+            let search_path = std::env::var_os("PATH").unwrap_or_default();
+            let text = ide_tools::Http::new(&search_path)?.https_only().get_text_limited_or_empty_on_404(
+                &url,
+                16 * 1024 * 1024,
+                &cancel,
+            )?;
+            // The helper's body for a 404.
+            if text == "[]" {
+                return Ok(None);
+            }
+            pypi::parse_project(&text).map(Some).ok_or_else(|| IdeError::internal("invalid PyPI response"))
+        })
+        .await;
+    host.end_request(request);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -458,4 +487,4 @@ mod tests {
     }
 }
 
-ide_command::domain!(dependencies: dependency_versions, python_requirements);
+ide_command::domain!(dependencies: dependency_versions, python_requirements, pypi_package);

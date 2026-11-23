@@ -435,6 +435,26 @@ pub async fn sdk_python_packages(
     result?
 }
 
+/// A package index other than PyPI that installing from `python` uses; `None` for PyPI.
+#[command(trust = outside_restricted)]
+pub async fn sdk_python_package_index(
+    host: &Host,
+    window: &str,
+    python: PathBuf,
+    request: RequestId,
+) -> IdeResult<Option<String>> {
+    host.require_trust_if_project(window)?;
+    let project_root = host.project(window).ok().map(|p| p.root.clone());
+    let cancel = host.begin_project_request(window, request);
+    let result = tokio::task::spawn_blocking(move || {
+        ide_sdk::python::configured_index(&python, project_root.as_deref(), &cancel)
+    })
+    .await
+    .map_err(join_err);
+    host.end_request(request);
+    result?
+}
+
 /// Installs (`uninstall = false`) or removes a package; output streams through `on_output`.
 #[allow(clippy::too_many_arguments)]
 #[command(trust = outside_restricted)]
@@ -679,6 +699,7 @@ ide_command::domain!(
     sdk_python_hatch_envs,
     sdk_python_interpreter,
     sdk_python_packages,
+    sdk_python_package_index,
     sdk_python_pip,
     sdk_python_project_interpreters,
     sdk_python_sys_path,
