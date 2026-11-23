@@ -28,7 +28,15 @@ interface Fake {
   cursor(x: number, y: number): void;
 }
 
-function fake({ cursorX = 0, cursorY = 0, cols = 80, rows = 20 } = {}): Fake {
+function fake({
+  cursorX = 0,
+  cursorY = 0,
+  cols = 80,
+  rows = 20,
+  showCursor = false,
+  viewportY = 0,
+  baseY = 0,
+} = {}): Fake {
   const host = document.createElement("div");
   const screen = document.createElement("div");
   screen.className = "xterm-screen";
@@ -43,12 +51,13 @@ function fake({ cursorX = 0, cursorY = 0, cols = 80, rows = 20 } = {}): Fake {
   textarea.style.height = "18px";
   host.append(screen, textarea);
   const listeners: (() => void)[] = [];
-  const active = { cursorX, cursorY };
+  const active = { cursorX, cursorY, viewportY, baseY };
   const term = {
     textarea,
     cols,
     rows,
     buffer: { active },
+    modes: { showCursor },
     onRender: (fn: () => void) => {
       listeners.push(fn);
       return { dispose: () => listeners.splice(listeners.indexOf(fn), 1) };
@@ -115,6 +124,20 @@ describe("installImeAnchor", () => {
 
   it("leaves xterm's own anchor alone while the cursor is inside the screen", () => {
     const f = fake({ cursorX: 12 });
+    addCaret(f, 100, 90);
+    installImeAnchor({ host: f.host, term: f.term });
+
+    f.tick();
+
+    expect(f.textarea.style.left).toBe("");
+    expect(f.textarea.style.top).toBe("");
+  });
+
+  it.each([
+    ["the terminal cursor is visible", { showCursor: true }],
+    ["the terminal is showing scrollback", { baseY: 30, viewportY: 15 }],
+  ] as const)("ignores reverse video when %s", (_scenario, options) => {
+    const f = fake({ cursorX: 79, ...options });
     addCaret(f, 100, 90);
     installImeAnchor({ host: f.host, term: f.term });
 
@@ -255,9 +278,11 @@ describe("installImeAnchor", () => {
 
     f.tick();
     expect(view.style.left).toBe("60px");
+    expect(view.hasAttribute("data-openidea-ime-anchor")).toBe(true);
 
     dispose();
     expect(view.style.left).toBe("632px");
+    expect(view.hasAttribute("data-openidea-ime-anchor")).toBe(false);
     // xterm owns the position again: nothing moves it away any more.
     f.textarea.style.left = "640px";
     await settle();

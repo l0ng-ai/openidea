@@ -22,7 +22,7 @@
    last column therefore leaves one cell of room, and the pre-edit text is painted almost invisibly.
    The view is drawn on the caret instead (imeAnchor), so the width that matters is the space from
    that caret to the edge — which `.xterm` clips anyway. */
-.xterm .composition-view {
+.xterm .composition-view[data-openidea-ime-anchor] {
   max-width: none !important;
 }
 

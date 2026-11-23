@@ -11,10 +11,10 @@
  * method opens.
  *
  * Nothing in the protocol reports where such a caret is, but the program draws it: a caret painted
- * with reverse video is an inverted cell, which xterm marks `xterm-bg-257`. While the terminal
- * cursor sits at the right edge (`EDGE_COLUMNS`) and one such cell stands out, that cell is taken as
- * the caret: one on the cursor's row wins, and a single one anywhere keeps working when the program's
- * own row tracking drifts. Anything else is a selection or a highlighted row, not a caret.
+ * with reverse video is an inverted cell, which xterm marks `xterm-bg-257`. While the hidden cursor
+ * sits at the right edge (`EDGE_COLUMNS`) in the live viewport and one such cell stands out, that
+ * cell is taken as the caret: one on the cursor's row wins, and a single one anywhere keeps working
+ * when the program's own row tracking drifts. Anything else is a selection or a highlighted row.
  *
  * The textarea is moved with `left`/`top`, i.e. inside the terminal's box: Chromium reports that
  * rectangle to the input method, and a rectangle outside the window makes Windows open the
@@ -98,6 +98,8 @@ function ownCaret(term: Terminal, host: HTMLElement, cell: Cell): Spot | undefin
 export function installImeAnchor({ host, term }: ImeAnchorOptions): () => void {
   const textarea = term.textarea;
   if (!textarea) return () => {};
+  const preedit = host.querySelector<HTMLElement>(".composition-view");
+  const elements = preedit ? [textarea, preedit] : [textarea];
 
   /** The caret cell, or `null` while xterm's own placement is the right one. */
   let target: Spot | null = null;
@@ -109,23 +111,14 @@ export function installImeAnchor({ host, term }: ImeAnchorOptions): () => void {
    * composition that opens in such a frame must not fall back to the far end of the row.
    */
   let caretFromCursor: Spot | null = null;
-  let writing = false;
-
-  const view = () => host.querySelector<HTMLElement>(".composition-view");
 
   const write = (spot: Spot | undefined) => {
     if (!spot) return;
-    writing = true;
-    try {
-      textarea.style.left = `${spot.left}px`;
-      textarea.style.top = `${spot.top}px`;
-      const preedit = view();
-      if (preedit) {
-        preedit.style.left = `${spot.left}px`;
-        preedit.style.top = `${spot.top}px`;
-      }
-    } finally {
-      writing = false;
+    const left = `${spot.left}px`;
+    const top = `${spot.top}px`;
+    for (const { style } of elements) {
+      if (style.left !== left) style.left = left;
+      if (style.top !== top) style.top = top;
     }
   };
 
@@ -144,10 +137,16 @@ export function installImeAnchor({ host, term }: ImeAnchorOptions): () => void {
   const place = () => {
     const cols = term.cols;
     const screen = host.querySelector<HTMLElement>(".xterm-screen");
+    const buffer = term.buffer.active;
     target = null;
     const cursor = cursorSpot();
-    // A cursor the program placed on its own caret is xterm's to serve: leave the textarea there.
-    if (screen && cursor && cols > 0 && term.buffer.active.cursorX >= cols - EDGE_COLUMNS) {
+    if (
+      screen &&
+      cursor &&
+      !term.modes.showCursor &&
+      buffer.viewportY === buffer.baseY &&
+      buffer.cursorX >= cols - EDGE_COLUMNS
+    ) {
       const screenRect = screen.getBoundingClientRect();
       const cell = { width: screenRect.width / cols, height: term.rows > 0 ? screenRect.height / term.rows : 0 };
       const anchor = ownCaret(term, host, cell);
@@ -159,11 +158,13 @@ export function installImeAnchor({ host, term }: ImeAnchorOptions): () => void {
       caretFromCursor = null;
     }
     if (target) {
+      if (!moved) preedit?.setAttribute("data-openidea-ime-anchor", "");
       moved = true;
       write(target);
     } else if (moved) {
       // The drawn caret is gone: hand the position back to xterm.
       moved = false;
+      preedit?.removeAttribute("data-openidea-ime-anchor");
       write(cursorSpot());
     }
   };
@@ -176,11 +177,9 @@ export function installImeAnchor({ host, term }: ImeAnchorOptions): () => void {
   // xterm re-places the textarea as the input method opens and on every update; the observer lands
   // in the microtask after that write, before the browser asks for the caret rectangle.
   const observer = new MutationObserver(() => {
-    if (!writing && target) write(target);
+    if (target) write(target);
   });
-  observer.observe(textarea, { attributes: true, attributeFilter: ["style"] });
-  const preedit = view();
-  if (preedit) observer.observe(preedit, { attributes: true, attributeFilter: ["style"] });
+  for (const element of elements) observer.observe(element, { attributes: true, attributeFilter: ["style"] });
 
   return () => {
     render.dispose();
@@ -189,6 +188,7 @@ export function installImeAnchor({ host, term }: ImeAnchorOptions): () => void {
     target = null;
     if (moved) {
       moved = false;
+      preedit?.removeAttribute("data-openidea-ime-anchor");
       write(cursorSpot());
     }
   };
