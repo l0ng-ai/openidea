@@ -27,7 +27,7 @@ import {
 } from "../logStore";
 import { relTo } from "../model";
 import { branchesByRepo } from "../multiRoot";
-import { chooseLogPaths, editLogPaths } from "../PathFilterDialog";
+import { LogPathsEditor, chooseLogPaths } from "../PathFilterDialog";
 import { openExternalLog } from "../RevisionBrowser";
 import { currentRepo, repoName, useVcs } from "../store";
 import { useDropdownMenu, useLogRepositories, useReadOnlyLog } from "./logHooks";
@@ -51,13 +51,21 @@ interface LogFilter {
   onClear: () => void;
 }
 
-function FilterButton({ label, value, onOpen, onClear, hidden }: LogFilter & { hidden?: boolean }) {
+function FilterButton({
+  label,
+  value,
+  onOpen,
+  onClear,
+  hidden,
+  triggerRef,
+}: LogFilter & { hidden?: boolean; triggerRef?: (button: HTMLButtonElement | null) => void }) {
   return (
     <span
       className={clsx(styles.filterButton, value && styles.filterActive, hidden && styles.filterHidden)}
       inert={hidden}
     >
       <button
+        ref={triggerRef}
         type="button"
         className={styles.filterMain}
         onClick={(e) => onOpen(e.currentTarget)}
@@ -125,6 +133,11 @@ export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
   }, [repositories, filters.repositories, version, logGeneration]);
   const [text, setText] = useState(filters.text);
   const [branchAnchor, setBranchAnchor] = useState<HTMLElement | null>(null);
+  const [pathEditor, setPathEditor] = useState<{ roots: string[]; initial: string[] } | null>(null);
+  const [pathsTrigger, setPathsTrigger] = useState<HTMLButtonElement | null>(null);
+  const [overflowTrigger, setOverflowTrigger] = useState<HTMLButtonElement | null>(null);
+  const pathEditorAnchor = overflowTrigger ?? pathsTrigger;
+  if (!active && pathEditor) setPathEditor(null);
   const [menuBelow, dropdown] = useDropdownMenu();
   // Filters that do not fit move behind a chevron, like a toolbar's overflow.
   const groupRef = useRef<HTMLSpanElement>(null);
@@ -246,7 +259,13 @@ export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
       paths: [],
       repositories: selected.length === repositories.length ? [] : selected,
     });
+  const closePathEditorAt = (anchor: HTMLElement) => {
+    if (!pathEditor || pathEditorAnchor !== anchor) return false;
+    setPathEditor(null);
+    return true;
+  };
   const openPaths = (anchor: HTMLElement) => {
+    if (closePathEditorAt(anchor)) return;
     const modifier = isMacHost() ? "⌘" : "Ctrl";
     const repositoryItems: MenuItem[] =
       repositories.length > 1
@@ -292,10 +311,7 @@ export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
     menuBelow(anchor, [
       {
         label: "Select…",
-        run: async () => {
-          const selected = await editLogPaths(pathRoots, paths);
-          if (selected) selectPaths(selected);
-        },
+        run: () => setPathEditor({ roots: pathRoots, initial: paths }),
       },
       {
         label: "Select in Tree…",
@@ -373,17 +389,24 @@ export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
         />
         <span ref={groupRef} className={styles.filterGroup}>
           {logFilters.map((f, i) => (
-            <FilterButton key={f.label} {...f} hidden={i >= hiddenFrom} />
+            <FilterButton
+              key={f.label}
+              {...f}
+              hidden={i >= hiddenFrom}
+              triggerRef={f.label === "Paths" ? setPathsTrigger : undefined}
+            />
           ))}
         </span>
         {hiddenFrom < logFilters.length && (
           <IconButton
+            ref={setOverflowTrigger}
             icon="chevron-right"
             title="More Filters"
             size="small"
             aria-haspopup="menu"
             onClick={(e) => {
               const anchor = e.currentTarget;
+              if (closePathEditorAt(anchor)) return;
               menuBelow(
                 anchor,
                 logFilters.slice(hiddenFrom).map((f) => ({
@@ -396,6 +419,16 @@ export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
         )}
       </div>
       {dropdown}
+      {pathEditor && pathEditorAnchor && (
+        <LogPathsEditor
+          {...pathEditor}
+          anchor={pathEditorAnchor}
+          onDone={(paths) => {
+            setPathEditor(null);
+            if (paths) selectPaths(paths);
+          }}
+        />
+      )}
       {branchAnchor && (
         <BranchFilterPopup
           anchor={branchAnchor}
