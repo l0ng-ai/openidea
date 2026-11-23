@@ -679,7 +679,7 @@ function CustomAgentModal({
     try {
       const trimmed = name.trim();
       const title = trimmed ? tx`Select ${trimmed}` : tx("Select executable");
-      const path = await backend.chooseExecutable(title, command);
+      const path = await backend.chooseExecutable(title, command, "desktop");
       if (path) setCommand(path);
       setError(null);
     } catch (e) {

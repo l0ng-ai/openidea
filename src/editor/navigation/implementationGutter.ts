@@ -11,7 +11,7 @@
  * of the file in batches; results are cached per document text, and markers
  * follow their lines in between.
  * The cache outlives the editor view (switching tabs remounts it) until other
- * files change or a language server settles: on some servers (jdtls) every
+ * files change, a language server settles or its classpath changes: on some servers (jdtls) every
  * implementation search walks the whole workspace, so asking again is costly.
  * Library sources ask no inheritors from the server (`isLibrarySource`).
  */
@@ -119,11 +119,15 @@ function watchChanges() {
     // documents: re-render them instead of waiting for an edit or a settling server.
     for (const plugin of live) plugin.refreshSoon();
   });
-  // Answers (outlines too) given while a server was starting or indexing may be incomplete.
-  onServerSettled(() => {
+  // Answers (outlines too) given while a server was starting or importing may be incomplete.
+  const refreshCaches = () => {
     docMarkers.clear();
     forgetInheritanceGraph();
     for (const plugin of live) plugin.refreshSoon();
+  };
+  onServerSettled(refreshCaches);
+  onIdeEvent("lspRefresh", (e) => {
+    if (e.kind === "inheritance") refreshCaches();
   });
   // Go to Declaration and the like go first: in-flight marker requests are cancelled and
   // asked again once the navigation is done.

@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { commands } from "@/platform/ipc";
+import { registerHostPathChooser } from "@/platform/choosePath";
+import { useRemote } from "@/platform/remote";
 import { ExportTestResultsDialog, defaultExportName, loadExportOptions } from "./ExportTestResultsDialog";
 import { TestResults } from "./testing";
 
@@ -15,6 +17,7 @@ const messages = vi.hoisted(() => ({ confirm: vi.fn(async () => true) }));
 vi.mock("@/workbench/messages", async (orig) => ({ ...(await orig<object>()), confirm: messages.confirm }));
 const dialog = vi.hoisted(() => ({ save: vi.fn(async (): Promise<string | null> => null) }));
 vi.mock("@/platform/dialog", () => dialog);
+vi.mock("@/platform/ipc", async (orig) => ({ ...(await orig<object>()), isTauri: () => true }));
 
 const ok = { status: "ok", data: null } as const;
 let onDisk: Record<string, "file" | "dir"> = {};
@@ -39,7 +42,10 @@ beforeEach(() => {
     return ok;
   });
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  useRemote.setState({ session: null });
+  vi.restoreAllMocks();
+});
 
 function results() {
   const r = new TestResults();
@@ -162,6 +168,59 @@ describe("ExportTestResultsDialog", () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(messages.confirm).not.toHaveBeenCalled();
     expect(written.map((w) => w.path)).toEqual([path]);
+  });
+
+  it.each(["html", "xml"] as const)(
+    "browses the remote folder for a %s report and confirms replacement",
+    async (format) => {
+      useRemote.setState({ session: { root: "/work/app", os: "linux" } as never });
+      const choose = vi.fn(async () => ["/srv/reports"]);
+      const unregister = registerHostPathChooser(choose);
+      try {
+        const onClose = open();
+        if (format === "xml") fireEvent.click(screen.getByRole("radio", { name: "XML" }));
+        const name = `Test Results - go test _calc.${format}`;
+        const path = `/srv/reports/${name}`;
+        onDisk[path] = "file";
+        press("Browse…");
+        await waitFor(() => expect(folder()).toHaveValue("/srv/reports"));
+        expect(choose).toHaveBeenCalledWith(expect.objectContaining({ directory: true, defaultPath: "/work/app/" }));
+        expect(dialog.save).not.toHaveBeenCalled();
+        expect(file()).toHaveValue(name);
+
+        messages.confirm.mockResolvedValueOnce(false);
+        press("OK");
+        await waitFor(() => expect(messages.confirm).toHaveBeenCalledOnce());
+        await waitFor(() => expect(screen.getByRole("button", { name: "OK" })).toBeEnabled());
+        expect(commands.fsDelete).not.toHaveBeenCalled();
+        expect(written).toHaveLength(0);
+
+        press("OK");
+        await waitFor(() => expect(onClose).toHaveBeenCalled());
+        expect(written.map((w) => w.path)).toEqual([path]);
+      } finally {
+        unregister();
+      }
+    },
+  );
+
+  it("moves an absolute report path to the browsed remote folder", async () => {
+    useRemote.setState({ session: { root: "/work/app", os: "linux" } as never });
+    const choose = vi.fn(async () => ["/srv/reports"]);
+    const unregister = registerHostPathChooser(choose);
+    try {
+      const onClose = open();
+      fireEvent.change(file(), { target: { value: "/tmp/custom.html" } });
+      press("Browse…");
+      await waitFor(() => expect(file()).toHaveValue("custom.html"));
+      expect(choose).toHaveBeenCalledWith(expect.objectContaining({ defaultPath: "/tmp/" }));
+      fireEvent.click(screen.getByRole("checkbox", { name: "Open exported file in browser" }));
+      press("OK");
+      await waitFor(() => expect(onClose).toHaveBeenCalled());
+      expect(written.map((w) => w.path)).toEqual(["/srv/reports/custom.html"]);
+    } finally {
+      unregister();
+    }
   });
 
   it("confirms again when the destination changes after using the save dialog", async () => {
