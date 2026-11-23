@@ -65,6 +65,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  # Line tables keep test backtraces readable and the binaries the build job hands on small.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
   # The languages a pull request can affect: a change to one language's fixture, definition or
@@ -132,10 +134,40 @@ jobs:
           done < files.txt
           echo "languages=$(emit "$langs")" | tee -a "$GITHUB_OUTPUT"
 
-  smoke:
-    name: Language smoke (${{ matrix.language }})
+  # Builds the smoke test binaries and openidea-server once for every language below.
+  build:
+    name: Build
     needs: changes
     if: needs.changes.outputs.languages != '[]'
+    # The tests find the fixtures through the checkout path compiled into them (CARGO_MANIFEST_DIR),
+    # which is the same on every GitHub-hosted runner.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: language-smoke
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: |
+          set -euo pipefail
+          mkdir -p smoke-bin
+          cargo test --locked -p ide-host --test language_smoke --test project_smoke --no-run --message-format=json \
+            | jq -r 'select(.reason == "compiler-artifact" and .executable != null and .target.kind == ["test"]) | "\(.target.name) \(.executable)"' \
+            | while read -r name exe; do cp "$exe" "smoke-bin/$name"; done
+          cargo build --locked -p ide-host --bin openidea-server
+          cp target/debug/openidea-server smoke-bin/
+          ls -l smoke-bin
+          test -x smoke-bin/language_smoke && test -x smoke-bin/project_smoke
+          # A tar keeps the executable bits, which artifacts drop.
+          tar -cf smoke-bin.tar smoke-bin
+      - uses: actions/upload-artifact@v6
+        with: { name: smoke-bin, path: smoke-bin.tar, retention-days: 1 }
+
+  smoke:
+    name: Language smoke (${{ matrix.language }})
+    needs: [changes, build]
     strategy:
       fail-fast: false
       matrix:
@@ -149,11 +181,11 @@ jobs:
       - run: grep -E '^[A-Z0-9_]+=' .github/tool-versions.env >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "rust-analyzer, rustfmt" }
-      # One build cache for every language; main saves it.
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: language-smoke
-          save-if: ${{ github.ref == 'refs/heads/main' && matrix.language == 'rust' }}
+      - uses: actions/download-artifact@v6
+        with: { name: smoke-bin }
+      - run: |
+          tar -xf smoke-bin.tar && rm smoke-bin.tar
+          mkdir -p target/debug && mv smoke-bin/openidea-server target/debug/
 
       - uses: pnpm/action-setup@v4
         with: { version: 11 }
@@ -209,17 +241,20 @@ jobs:
       - if: matrix.language == 'php'
         run: npm install --global "intelephense@$INTELEPHENSE"
 
-      - run: cargo test --locked -p ide-host --test language_smoke --no-run
-      - run: cargo test --locked -p ide-host --test language_smoke -- --ignored --exact ${{ matrix.language }}
+      # The binaries from the build job, run from the crate directory as `cargo test` does.
+      - working-directory: crates/ide-host
+        run: ../../smoke-bin/language_smoke --ignored --exact ${{ matrix.language }}
       - if: matrix.language == 'java'
-        run: cargo test --locked -p ide-host --test project_smoke -- --ignored --exact maven_sync jdk maven_launch_classpath_uses_the_runner_jdk_classifier
+        working-directory: crates/ide-host
+        run: ../../smoke-bin/project_smoke --ignored --exact maven_sync jdk maven_launch_classpath_uses_the_runner_jdk_classifier
       - if: matrix.language == 'kotlin'
-        run: cargo test --locked -p ide-host --test project_smoke -- --ignored --exact gradle_sync
+        working-directory: crates/ide-host
+        run: ../../smoke-bin/project_smoke --ignored --exact gradle_sync
       - if: matrix.language == 'python'
-        run: cargo test --locked -p ide-host --test project_smoke -- --ignored --exact python_venv
+        working-directory: crates/ide-host
+        run: ../../smoke-bin/project_smoke --ignored --exact python_venv
 
       - run: pnpm install --frozen-lockfile
-      - run: cargo build --locked -p ide-host --bin openidea-server
       - run: pnpm smoke smoke/run.test.ts -t "^${{ matrix.language }}$"
       - run: pnpm smoke smoke/debug.test.ts -t "^${{ matrix.language }}$"
         # The IDE installs the debugger from GitHub releases: authenticated, against rate limits.
