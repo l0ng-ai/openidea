@@ -73,19 +73,31 @@ const LABELS: Record<SuppressTarget, string> = {
   class: "Suppress for class",
 };
 
-/** The ⌥↵ Suppress rows for inspection `inspectionId` at the caret, from the document's last `facts`. */
+/** Facts of a document and the text they were read from. */
+export interface FactsOf {
+  facts: PythonFacts;
+  doc: Text;
+}
+
+/**
+ * The ⌥↵ Suppress rows for inspection `inspectionId` at the caret, from the last run's facts.
+ * After an edit their lines are stale: nothing is offered until the next run.
+ */
 export function suppressControls(
   view: EditorView,
   inspectionId: string,
-  facts: PythonFacts | undefined,
+  latest: FactsOf | undefined,
 ): ContributedIntention[] {
   const id = suppressIdOf(inspectionId);
-  if (!id || !facts) return [];
+  if (!id || !latest || latest.doc !== view.state.doc) return [];
+  const { facts, doc } = latest;
   const head = view.state.selection.main.head;
   const line = view.state.doc.lineAt(head);
   return suppressTargets(facts, { line: line.number - 1, col: head - line.from }).map(({ target, line }) => ({
     id: `inspection.suppress.${target}`,
     label: LABELS[target],
-    run: () => view.dispatch({ changes: suppressChange(view.state.doc, line, id), userEvent: "input" }),
+    run: () => {
+      if (view.state.doc === doc) view.dispatch({ changes: suppressChange(doc, line, id), userEvent: "input" });
+    },
   }));
 }

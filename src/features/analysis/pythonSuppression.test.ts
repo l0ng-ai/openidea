@@ -1,7 +1,8 @@
-import { Text } from "@codemirror/state";
+import { EditorState, Text } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
 import { expect, it } from "vitest";
 import type { Diagnostic, PythonFacts, Range } from "@/platform/ipc";
-import { isSuppressed, suppressChange, suppressTargets } from "./pythonSuppression";
+import { isSuppressed, suppressChange, suppressControls, suppressTargets } from "./pythonSuppression";
 
 const range = (sl: number, sc: number, el: number, ec: number): Range => ({
   start: { line: sl, col: sc },
@@ -78,4 +79,18 @@ it("writes the comment above the target at its indentation, or adds to the one t
   expect(apply(commented, suppressChange(commented, 0, "PyAbstractClass"))).toBe(
     "# noinspection PyAbstractClass\n" + commented.toString(),
   );
+});
+
+it("offers no Suppress rows once the text has changed since the facts were read", () => {
+  const doc = Text.of(["class Shape:", "    pass", "", "    @override", "    def area(self):", "        pass"]);
+  const view = new EditorView({ state: EditorState.create({ doc, selection: { anchor: doc.line(5).from + 10 } }) });
+  const latest = { facts: FACTS, doc: view.state.doc };
+  const rows = suppressControls(view, "builtin:python-override", latest);
+  expect(rows.map((r) => r.label)).toEqual(["Suppress for statement", "Suppress for function", "Suppress for class"]);
+  view.dispatch({ changes: { from: 0, insert: "import os\n" } });
+  expect(suppressControls(view, "builtin:python-override", latest)).toEqual([]);
+  // A row picked from a menu opened before the edit does nothing.
+  rows[0]!.run();
+  expect(view.state.doc.line(1).text).toBe("import os");
+  view.destroy();
 });

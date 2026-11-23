@@ -52,7 +52,7 @@ import {
   type PythonMethodFacts,
   type Range,
 } from "@/platform/ipc";
-import { isSuppressed, suppressControls } from "./pythonSuppression";
+import { isSuppressed, suppressControls, type FactsOf } from "./pythonSuppression";
 
 /** The inspection producers, one per rule. */
 const PRODUCERS = [
@@ -416,7 +416,7 @@ function applyProfileTo(diagnostics: readonly Diagnostic[]): Diagnostic[] {
 
 const viewers = new Map<string, number>();
 /** Each open document's facts of the last run, for the ⌥↵ Suppress rows. */
-const latestFacts = new Map<string, PythonFacts>();
+const latestFacts = new Map<string, FactsOf>();
 const hasClass = (items: readonly OutlineItem[]): boolean =>
   items.some((item) => item.kind === "class" || hasClass(item.children));
 
@@ -463,7 +463,7 @@ export function pythonInheritanceExtension(ctx: EditorDocContext): Extension {
           outlineOf: (path) => withDocument(path, (doc) => lspRequest(() => commands.docOutline(doc))).catch(() => []),
         });
         if (disposed || mine !== sequence || view.state.doc !== text) return;
-        latestFacts.set(ctx.path, facts);
+        latestFacts.set(ctx.path, { facts, doc: text });
         // `# noinspection` comments, then the profile, decide what is shown and how strongly.
         const shown = found.filter((d) => !isSuppressed(d, facts.suppressions));
         setFileDiagnostics(ctx.path, SOURCE, applyProfileTo(shown));
