@@ -1,3 +1,4 @@
+import { SearchHistoryMenu } from "@/ui/SearchHistoryMenu";
 import {
   useEffect,
   useId,
@@ -72,7 +73,6 @@ import {
   customScopeName,
   customScopeValue,
   describeQuery,
-  findHistory,
   hideFindPopup,
   recentMasks,
   rememberFindString,
@@ -550,19 +550,6 @@ function FindInFilesDialog() {
     checked: m === s.mask ? true : undefined,
     run: () => set({ mask: m, maskEnabled: true }),
   }));
-  const historyItems = (kind: "find" | "replace"): MenuItem[] => {
-    const h = findHistory(kind);
-    return h.length
-      ? [
-          { kind: "header", label: kind === "find" ? "Recent Searches" : "Recent Replacements" },
-          ...h.map((q) => ({
-            label: q,
-            verbatim: true,
-            run: () => set(kind === "find" ? { pattern: q } : { replacement: q }),
-          })),
-        ]
-      : [{ label: kind === "find" ? "No recent searches" : "No recent replacements", disabled: true }];
-  };
   const contextItems: MenuItem[] = SEARCH_CONTEXTS.map((c) => ({
     label: c.label,
     checked: c.value === s.context ? true : undefined,
@@ -961,12 +948,10 @@ function FindInFilesDialog() {
         placement="bottom-end"
         onClose={() => setMaskMenu(false)}
       />
-      <Menu
-        open={historyMenu !== null}
+      <SearchHistoryMenu
+        kind={historyMenu}
         anchor={historyMenu === "replace" ? replaceBoxRef : patternBoxRef}
-        items={historyMenu ? historyItems(historyMenu) : []}
-        placement="bottom-start"
-        aria-label="Recent searches"
+        onSelect={(value) => set(historyMenu === "replace" ? { replacement: value } : { pattern: value })}
         onClose={() => setHistoryMenu(null)}
       />
       <Menu

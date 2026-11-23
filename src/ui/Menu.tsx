@@ -479,6 +479,7 @@ export interface MenuProps {
   title?: string;
   iconColumn?: boolean;
   placement?: Placement;
+  maxWidthOverAnchor?: number;
   "aria-label"?: string;
   /** Numeric mnemonics on the first nine rows; see `MenuList`. */
   numbers?: boolean;
@@ -492,6 +493,7 @@ export function Menu({
   items,
   title,
   placement = "bottom-start",
+  maxWidthOverAnchor,
   iconColumn,
   numbers,
   ...aria
@@ -505,7 +507,12 @@ export function Menu({
       placement={placement}
       role="presentation"
       autoFocus={false}
-      className={clsx(styles.popup, heading && styles.titledPopup)}
+      maxWidthOverAnchor={maxWidthOverAnchor}
+      className={clsx(
+        styles.popup,
+        heading && styles.titledPopup,
+        maxWidthOverAnchor !== undefined && styles.anchorWidthPopup,
+      )}
     >
       {heading && <div className={styles.menuHeading}>{heading}</div>}
       <MenuList
