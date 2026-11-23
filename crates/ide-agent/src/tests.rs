@@ -278,6 +278,24 @@ impl Handler for FakeAgent {
                     self.say(&session, "running it in the background");
                     return Ok(json!({"stopReason": "end_turn"}));
                 }
+                if text == "stream tool output" {
+                    // A long command whose output grows: every update carries all of it so far.
+                    let update = |kind: &str, status: &str, output: &str| {
+                        json!({"sessionUpdate": kind, "toolCallId": "build", "title": "cargo build",
+                            "kind": "execute", "status": status,
+                            "content": [{"type": "content", "content": {"type": "text", "text": output}}]})
+                    };
+                    self.update(&session, update("tool_call", "in_progress", "$ cargo build"));
+                    let mut output = String::from("$ cargo build");
+                    for i in 0..40 {
+                        output.push_str(&format!("\n{i:04} {}", "x".repeat(1500)));
+                        self.update(&session, update("tool_call_update", "in_progress", &output));
+                        // Longer than the flush interval: every update reaches the window on its own.
+                        std::thread::sleep(FLUSH_DELAY + Duration::from_millis(30));
+                    }
+                    self.update(&session, update("tool_call_update", "completed", &output));
+                    return Ok(json!({"stopReason": "end_turn"}));
+                }
                 if text == "delegate" {
                     self.delegate(&session);
                     return Ok(json!({"stopReason": "end_turn"}));
@@ -3493,6 +3511,53 @@ async fn discovery_times_out_when_session_new_hangs() {
     assert!(started.elapsed() < Duration::from_secs(10), "discovery should time out quickly in tests");
     let cursor = mgr.providers().into_iter().find(|p| p.id == "cursor").unwrap();
     assert!(!cursor.config.iter().any(|o| o.category.as_deref() == Some("model")));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_growing_tool_output_is_not_sent_whole_on_every_flush() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    // What a window receives of the conversation: the bytes of every event about the tool's entry.
+    let sent = Arc::new(Mutex::new((0usize, 0usize)));
+    let sink = sent.clone();
+    mgr.subscribe(Arc::new(move |e| {
+        let json = serde_json::to_value(&e).unwrap();
+        if json["entry"]["type"] == "tool" || json["type"] == "toolOutput" {
+            let mut sent = sink.lock();
+            sent.0 += json.to_string().len();
+            sent.1 += 1;
+        }
+    }));
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("stream tool output"),
+            provider: "claude".into(),
+            isolation: Isolation::Local,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    // The turn takes a few seconds: the agent paces its updates by the flush interval.
+    let finished = |mgr: &AgentManager| {
+        mgr.entries(&task.id, None).unwrap().into_iter().find_map(|e| match e {
+            AgentEntry::Tool { output, status: AgentToolStatus::Completed, .. } => output,
+            _ => None,
+        })
+    };
+    for _ in 0..6000 {
+        if finished(&mgr).is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    tokio::time::sleep(FLUSH_DELAY * 3).await;
+
+    let output = finished(&mgr).expect("the command's output was kept");
+    assert!(output.len() > 60_000, "a long output that the timeline keeps whole: {}", output.len());
+    let (bytes, events) = *sent.lock();
+    assert!(events >= 30, "the output reached the window in many flushes: {events}");
+    assert!(bytes < 3 * output.len(), "{bytes} bytes sent for {} bytes of output over {events} events", output.len());
 }
 
 #[test]
