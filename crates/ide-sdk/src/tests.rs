@@ -1463,10 +1463,39 @@ fn outdated_pip_list_carries_the_latest_version() {
 }
 
 #[test]
-fn pip_retry_warnings_mean_the_index_was_not_reached() {
-    let offline = "$ python -m pip list --outdated\nWARNING: Retrying (Retry(total=4, connect=None, read=None, redirect=None, status=None)) after connection broken by 'NewConnectionError(…)': /simple/six/\n[]\n";
-    assert!(crate::python::pip_index_unreachable(offline));
-    assert!(!crate::python::pip_index_unreachable("$ python -m pip list --outdated\n[]\n"));
+fn pip_retry_warnings_mean_the_check_is_incomplete() {
+    let warning = "WARNING: Retrying (Retry(total=0, connect=None, read=None, redirect=None, status=None)) after connection broken by 'NewConnectionError(…)': /simple/six/";
+    // Offline: nothing listed. Partly offline: some packages listed, others silently left out.
+    for out in [
+        format!("$ python -m pip list --outdated\n{warning}\n[]\n"),
+        format!("{warning}\n[{{\"name\": \"idna\", \"version\": \"3.6\", \"latest_version\": \"3.20\"}}]\n"),
+    ] {
+        assert!(crate::python::pip_request_failed(&out), "{out}");
+    }
+    assert!(!crate::python::pip_request_failed("$ python -m pip list --outdated\n[]\n"));
+}
+
+#[test]
+fn the_outdated_check_stops_at_its_deadline() {
+    let cancel = ide_core::CancellationToken::new();
+    let started = std::time::Instant::now();
+    let result: ide_core::IdeResult<()> =
+        crate::python::with_deadline(&cancel, std::time::Duration::from_millis(100), |token| {
+            while !token.is_cancelled() {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(ide_core::IdeError::cancelled())
+        });
+    assert_eq!(result.unwrap_err().kind, ide_core::error::ErrorKind::TimedOut);
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    // Finishing in time, or being cancelled by the caller, is reported as such.
+    assert!(crate::python::with_deadline(&cancel, std::time::Duration::from_secs(60), |_| Ok(())).is_ok());
+    cancel.cancel();
+    let result: ide_core::IdeResult<()> =
+        crate::python::with_deadline(&cancel, std::time::Duration::from_secs(60), |_| {
+            Err(ide_core::IdeError::cancelled())
+        });
+    assert_eq!(result.unwrap_err().kind, ide_core::error::ErrorKind::Cancelled);
 }
 
 /// A directory whose `typing.py` breaks any interpreter that imports it from there.

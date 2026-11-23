@@ -75,7 +75,7 @@ You can also select an existing interpreter or environment folder. The new inter
 
 ### Packages
 
-The same page lists the installed packages of the selected interpreter. You can search them, **Install** a package by name, **Upgrade** and **Uninstall**. The IDE uses the interpreter's pip, or `uv pip` for environments without pip (uv creates them that way). The **Latest** column marks the packages that have a newer release: after the list loads, the IDE asks the same tool (`pip list --outdated`), so the answer comes from the index pip is configured to use and is the newest release that the interpreter can install.
+The same page lists the installed packages of the selected interpreter. You can search them, **Install** a package by name, **Upgrade** and **Uninstall**. The IDE uses the interpreter's pip, or `uv pip` for environments without pip (uv creates them that way). The **Latest** column marks the packages that have a newer release: after the list loads, the IDE asks the same tool (`pip list --outdated`, or `uv pip list --outdated`), so the answer comes from the index that tool is configured to use (pip's configuration for pip, uv's for uv) and is the newest release that the interpreter can install. When the index cannot be reached for every package, or the check takes more than two minutes, the page says the check failed rather than show a list that may be missing upgrades.
 
 Other options on the page:
 
