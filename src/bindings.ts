@@ -574,6 +574,11 @@ export const commands = {
 	docOutline: (doc: DocId) => typedError<OutlineItem[], IdeError>(__TAURI_INVOKE("doc_outline", { doc })),
 	/**  Python class facts for the inheritance inspections: tree-sitter, no language server. */
 	docPythonFacts: (doc: DocId) => typedError<PythonFacts, IdeError>(__TAURI_INVOKE("doc_python_facts", { doc })),
+	/**
+	 *  Rearrange Code: the edits that put the document's class members in arrangement order (Python
+	 *  for now); none when they already are or the language has no arrangement.
+	 */
+	docRearrange: (doc: DocId) => typedError<TextEdit[], IdeError>(__TAURI_INVOKE("doc_rearrange", { doc })),
 	/**  Load Changes from Disk: discards the buffer's unsaved changes and reads its file again. */
 	docReloadFromDisk: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_reload_from_disk", { doc })),
 	docSave: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_save", { doc })),
@@ -1646,10 +1651,15 @@ export const commands = {
 	 *  with the Maven / Gradle dependency jars of the build model.
 	 */
 	sdkProjectLibraries: (request: RequestId, onGroups: Channel<LibraryGroup[]>) => typedError<LibraryGroup[], IdeError>(__TAURI_INVOKE("sdk_project_libraries", { request, onGroups })),
-	/**  Creates a Python environment with `tool` (`venv` / `uv` / `poetry`); output streams through `on_output`. */
-	sdkPythonCreateVenv: (tool: VenvTool, base: string, location: string, request: RequestId, onOutput: Channel<string>) => typedError<Sdk, IdeError>(__TAURI_INVOKE("sdk_python_create_venv", { tool, base, location, request, onOutput })),
+	/**
+	 *  Creates a Python environment and streams its output through `on_output`.
+	 *  With Pipenv, `install_packages` also installs the packages declared in the project's `Pipfile`.
+	 */
+	sdkPythonCreateVenv: (tool: VenvTool, base: string, location: string, installPackages: boolean, request: RequestId, onOutput: Channel<string>) => typedError<Sdk, IdeError>(__TAURI_INVOKE("sdk_python_create_venv", { tool, base, location, installPackages, request, onOutput })),
 	/**  The interpreter the project uses: the configured one, else its virtualenv. */
 	sdkPythonEffective: (near: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_effective", { near })),
+	/**  The environments the window's project defines for Hatch, `default` first (hatch must be on PATH). */
+	sdkPythonHatchEnvs: (request: RequestId) => typedError<string[], IdeError>(__TAURI_INVOKE("sdk_python_hatch_envs", { request })),
 	/**  An existing Python executable or virtualenv folder as an SDK; `None` if Python cannot run. */
 	sdkPythonInterpreter: (path: string) => typedError<{
 	/**
@@ -1670,11 +1680,18 @@ export const commands = {
 	/**  Rust standard library sources, Go default GOPATH. */
 	extra: IpcPath | null,
 } | null, IdeError>(__TAURI_INVOKE("sdk_python_interpreter", { path })),
-	sdkPythonPackages: (python: string, request: RequestId) => typedError<PythonPackage[], IdeError>(__TAURI_INVOKE("sdk_python_packages", { python, request })),
+	sdkPythonPackages: (python: string, outdated: boolean, request: RequestId) => typedError<PythonPackage[], IdeError>(__TAURI_INVOKE("sdk_python_packages", { python, outdated, request })),
 	/**  Installs (`uninstall = false`) or removes a package; output streams through `on_output`. */
 	sdkPythonPip: (python: string, requirement: string, uninstall: boolean, upgrade: boolean, request: RequestId, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("sdk_python_pip", { python, requirement, uninstall, upgrade, request, onOutput })),
 	/**  The Python interpreters of the recently opened projects, each with its project. */
 	sdkPythonProjectInterpreters: () => typedError<ProjectInterpreter[], IdeError>(__TAURI_INVOKE("sdk_python_project_interpreters")),
+	/**  `sys.path` of the interpreter `python`, for All Interpreters › Show Paths. */
+	sdkPythonSysPath: (python: string, request: RequestId) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("sdk_python_sys_path", { python, request })),
+	/**
+	 *  For each folder added to an interpreter's paths, why it stays off the import path
+	 *  (`None`: it is used). The folders may not be saved yet.
+	 */
+	sdkPythonUserPathProblems: (paths: string[]) => typedError<(UserPathProblem | null)[], IdeError>(__TAURI_INVOKE("sdk_python_user_path_problems", { paths })),
 	/**
 	 *  Find in Files. Results stream through `on_event`; ends with `Done`.
 	 *  Cancel with `cancel_request(request)`.
@@ -8130,6 +8147,8 @@ export type InlayHint = {
 	 *  their values concatenate to `label`.
 	 */
 	parts: InlayLabelPart[],
+	/**  The edits that turn the hint into code (an annotation and any import it needs). */
+	textEdits: TextEdit[],
 };
 
 /**  Editor › Inlay Hints. */
@@ -11353,6 +11372,8 @@ export type PythonMethodFacts = {
 export type PythonPackage = {
 	name: string,
 	version: string,
+	/**  The newest release the interpreter can install; only [`list_packages`] with `outdated` sets it. */
+	latestVersion?: string | null,
 };
 
 export type PythonRequirements = {
@@ -11383,6 +11404,11 @@ export type PythonSettings = {
 	hideOtherProjectInterpreters?: boolean,
 	/**  Show each interpreter's path under its name on the interpreters page. */
 	showInterpreterPaths?: boolean,
+	/**
+	 *  Folders the user added to an interpreter's `sys.path` (All Interpreters › Show Paths),
+	 *  by interpreter executable; absolute or `~/`.
+	 */
+	interpreterPaths?: { [key in string]: string[] },
 };
 
 /**  Color Scheme › Language Defaults › Rainbow brackets: which delimiters are coloured. */
@@ -13665,6 +13691,13 @@ export type UpstreamTracking = {
 	branch: string,
 };
 
+/**  Why a folder added to an interpreter's paths stays off the import path. */
+export type UserPathProblem = 
+/**  Not an existing folder. */
+"missing" | 
+/**  Not absolute or `~/`, or it holds the separator of `PYTHONPATH`. */
+"invalid";
+
 export type Variable = Variable_Serialize | Variable_Deserialize;
 
 export type Variable_Deserialize = {
@@ -13769,7 +13802,11 @@ export type VenvTool =
 /**  `poetry env use <base>` in the project, then `poetry env info --path`. */
 "poetry" | 
 /**  `conda create -n <name> -y` for a bare name, else `-p <location>` (conda must be on PATH). */
-"conda";
+"conda" | 
+/**  `pipenv --python <base>` in the project (pipenv must be on PATH). */
+"pipenv" | 
+/**  `hatch env create <env>` in the project (hatch must be on PATH). */
+"hatch";
 
 /**  What a view or custom editor shows. */
 export type View = {

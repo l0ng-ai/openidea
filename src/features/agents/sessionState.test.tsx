@@ -1125,12 +1125,7 @@ describe("scrolling", () => {
   it("defers prepending during a pointer drag and preserves the first row's viewport position", async () => {
     const entries = Array.from({ length: 90 }, (_, i): AgentEntry => ({ type: "agent", text: `History ${i}` }));
     useAgents.setState({ entries: new Map([["A", entries]]) });
-    // Mount hidden so the initial batch hasn't yet restored the bottom offset.
-    const view = render(
-      <EditorShownProvider value={false}>
-        <SessionEditor input={input("A")} />
-      </EditorShownProvider>,
-    );
+    const view = render(<SessionEditor input={input("A")} />);
     const el = stream();
     Object.defineProperty(el, "scrollHeight", {
       configurable: true,
