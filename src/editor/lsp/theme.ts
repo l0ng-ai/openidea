@@ -213,22 +213,28 @@ export const lspTheme = EditorView.theme({
     color: "var(--fg-muted)",
   },
   ".cm-lsp-completion-footer, .cm-lsp-inplace-footer": {
-    display: "flex",
     flex: "none",
-    flexWrap: "wrap",
     alignItems: "center",
-    padding: "5px 12px",
     backgroundColor: "var(--bg-popup-inline, var(--bg-elev))",
     color: "var(--fg-subtle)",
     fontFamily: "var(--font-ui)",
     fontSize: "var(--fs-small)",
-    gap: "var(--space-1) var(--space-3)",
-    justifyContent: "space-between",
     borderRadius: "0 0 calc(var(--radius-popup) - 1px) calc(var(--radius-popup) - 1px)",
   },
+  ".cm-lsp-completion-footer": {
+    display: "grid",
+    gridTemplateColumns: "minmax(0, 1fr) minmax(0, max-content)",
+    gap: "var(--space-2)",
+    paddingBlock: "var(--space-1) 3px",
+    paddingInline: "var(--space-3) var(--space-2)",
+  },
+  ".cm-lsp-completion-footer > span, .cm-lsp-completion-sort": {
+    minWidth: "0",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
   ".cm-lsp-completion-sort": {
-    flex: "none",
-    maxWidth: "100%",
     padding: "0",
     border: "none",
     background: "none",
@@ -495,7 +501,14 @@ export const lspTheme = EditorView.theme({
   '.cm-lsp-inplace-suggestions button[aria-current="true"]': {
     backgroundColor: "var(--bg-list-selected, var(--bg-tree-selected, var(--bg-selected-strong)))",
   },
-  ".cm-lsp-inplace-footer": { overflowWrap: "anywhere" },
+  ".cm-lsp-inplace-footer": {
+    display: "flex",
+    flexWrap: "wrap",
+    padding: "5px 12px",
+    gap: "var(--space-1) var(--space-3)",
+    justifyContent: "space-between",
+    overflowWrap: "anywhere",
+  },
 
   // --- floating lightbulb (intentions.ts) -----------------------------------
   ".cm-lsp-bulb": {

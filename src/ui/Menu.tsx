@@ -43,6 +43,8 @@ export type MenuItem =
       label: string;
       /** User text (e.g. a past query): shown as is, never looked up in the catalog. */
       verbatim?: boolean;
+      /** Keep the end of a long label visible when the menu has to truncate it. */
+      preserveLabelEnd?: boolean;
       icon?: IconName | (string & {});
       shortcut?: string;
       disabled?: boolean;
@@ -67,6 +69,7 @@ interface Resolved {
   kind: "item" | "separator" | "header" | "title";
   key: string;
   label: string;
+  preserveLabelEnd?: boolean;
   icon?: string;
   shortcut?: string;
   disabled?: boolean;
@@ -387,6 +390,8 @@ export function MenuList({
             </div>
           );
         const hasSub = !!r.submenu;
+        const characters = r.preserveLabelEnd ? Array.from(r.label) : [];
+        const split = characters.length > 24 ? characters.length - 12 : 0;
         return (
           <Fragment key={r.key}>
             <button
@@ -395,6 +400,7 @@ export function MenuList({
               }}
               type="button"
               role={r.checked !== undefined ? "menuitemcheckbox" : "menuitem"}
+              aria-label={split ? r.label : undefined}
               aria-checked={r.checked}
               aria-current={r.current || undefined}
               aria-disabled={r.disabled || undefined}
@@ -427,8 +433,15 @@ export function MenuList({
                   {r.checked ? <Icon name="check" size={13} /> : r.icon ? <Icon name={r.icon} size={14} /> : null}
                 </span>
               )}
-              <span className={styles.label} title={r.hint ? undefined : r.label}>
-                {r.label}
+              <span className={clsx(styles.label, split > 0 && styles.splitLabel)} title={r.hint ? undefined : r.label}>
+                {split ? (
+                  <>
+                    <span className={styles.labelStart}>{characters.slice(0, split).join("")}</span>
+                    <span className={styles.labelEnd}>{characters.slice(split).join("")}</span>
+                  </>
+                ) : (
+                  r.label
+                )}
               </span>
               {r.shortcut && (
                 <span className={styles.shortcut} title={r.shortcut}>
@@ -479,6 +492,7 @@ export interface MenuProps {
   title?: string;
   iconColumn?: boolean;
   placement?: Placement;
+  maxWidthOverAnchor?: number;
   "aria-label"?: string;
   /** Numeric mnemonics on the first nine rows; see `MenuList`. */
   numbers?: boolean;
@@ -492,6 +506,7 @@ export function Menu({
   items,
   title,
   placement = "bottom-start",
+  maxWidthOverAnchor,
   iconColumn,
   numbers,
   ...aria
@@ -505,7 +520,12 @@ export function Menu({
       placement={placement}
       role="presentation"
       autoFocus={false}
-      className={clsx(styles.popup, heading && styles.titledPopup)}
+      maxWidthOverAnchor={maxWidthOverAnchor}
+      className={clsx(
+        styles.popup,
+        heading && styles.titledPopup,
+        maxWidthOverAnchor !== undefined && styles.anchorWidthPopup,
+      )}
     >
       {heading && <div className={styles.menuHeading}>{heading}</div>}
       <MenuList

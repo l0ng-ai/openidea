@@ -49,7 +49,7 @@ class InlineValues extends WidgetType {
         e.stopPropagation();
         const session = activeSession();
         if (!session || session.status !== "paused") return;
-        showHint(view, () => valueHint(part.name, part.variable, session.id, null), {
+        showHint(view, () => valueHint(view, part.name, part.variable, session.id, null), {
           pos: view.posAtDOM(piece),
           timeout: 60_000,
         });
@@ -65,7 +65,7 @@ class InlineValues extends WidgetType {
           e.stopPropagation();
           const session = activeSession();
           if (!session || session.status !== "paused") return;
-          showHint(view, () => valueHint(part.name, part.variable, session.id, null), {
+          showHint(view, () => valueHint(view, part.name, part.variable, session.id, null), {
             pos: view.posAtDOM(show),
             timeout: 60_000,
           });

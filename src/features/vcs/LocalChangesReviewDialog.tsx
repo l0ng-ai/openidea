@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CheckoutOptions, FileStatus } from "@/bindings";
 import { bindingsFor, normalizeBinding, registerKeyClaim, shortcutLabel } from "@/platform/keymap";
-import { Dialog, Icon, IconButton, T, Tree, fileIconName, showContextMenu, type DialogButton } from "@/ui";
+import { Button, Dialog, Icon, IconButton, T, Tree, fileIconName, showContextMenu, type DialogButton } from "@/ui";
 import { showRollbackDialog } from "./changeOps";
 import { isNestedRepoEntry } from "./submoduleRollback";
 import { groupOf, isPartiallyStaged } from "./changes";
@@ -9,7 +9,7 @@ import { workingDiffData, withChain } from "./diffInput";
 import { openDialog } from "./dialogs";
 import { dirKeys, type FileTreeNode } from "./fileTree";
 import { filesUnder } from "./logChanges";
-import { baseName, effectiveKind, KIND_COLOR, rootOf } from "./model";
+import { baseName, dirName, effectiveKind, KIND_COLOR, rootOf } from "./model";
 import { repositoryPath } from "./repositoryPaths";
 import { refreshNow, repoName, useVcs } from "./store";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
@@ -180,15 +180,6 @@ function LocalChangesReviewDialog({
         },
         { label: text.cancel, role: "cancel", disabled: rollingBack },
       ];
-  if (operation === "checkout") {
-    buttons.splice(1, 0, {
-      label: "Force Checkout",
-      role: "extra",
-      title: "Discard local changes in affected repositories",
-      disabled: !blocked || rollingBack,
-      onClick: () => onDone({ mode: "force", files: visible }),
-    });
-  }
   return (
     <Dialog
       open
@@ -201,11 +192,29 @@ function LocalChangesReviewDialog({
       minHeight={300}
       resizable="both"
       buttons={buttons}
+      footerStart={
+        operation === "checkout" && (
+          <Button
+            title="Discard local changes in affected repositories"
+            disabled={!blocked || rollingBack}
+            onClick={() => onDone({ mode: "force", files: visible })}
+          >
+            Force Checkout
+          </Button>
+        )
+      }
     >
       <div ref={content} className={styles.content}>
-        <p>
-          <T>{blocked ? text.wouldOverwrite : text.cleared}</T>
-        </p>
+        <div className={styles.intro}>
+          <p>
+            <T>{blocked ? text.wouldOverwrite : text.cleared}</T>
+          </p>
+          {blocked && !reviewOnly && (
+            <p className={styles.hint}>
+              <T>{text[policy]}</T>
+            </p>
+          )}
+        </div>
         <div className={styles.review}>
           <div className={styles.toolbar}>
             <IconButton
@@ -269,27 +278,23 @@ function LocalChangesReviewDialog({
             className={styles.tree}
             renderNode={(node) => {
               const file = node.file;
+              const name = file ? baseName(node.name) : node.name;
+              const directory = file ? dirName(node.name) : "";
               const kind = file?.status && effectiveKind(file.status);
               return (
                 <>
-                  <Icon name={file ? fileIconName(baseName(node.name)) : "folder"} size={16} />
-                  <span
-                    className={styles.path}
-                    title={node.name}
-                    style={{ color: kind ? KIND_COLOR[kind] : undefined }}
-                  >
-                    {node.name}
+                  <Icon className={styles.nodeIcon} name={file ? fileIconName(name) : "folder"} size={16} />
+                  <span className={styles.fileLabel} title={node.name}>
+                    <span className={styles.fileName} style={{ color: kind ? KIND_COLOR[kind] : undefined }}>
+                      {name}
+                    </span>
+                    {directory && <span className={styles.directory}>{directory}</span>}
                   </span>
                 </>
               );
             }}
           />
         </div>
-        {blocked && !reviewOnly && (
-          <p className={styles.hint}>
-            <T>{text[policy]}</T>
-          </p>
-        )}
       </div>
     </Dialog>
   );

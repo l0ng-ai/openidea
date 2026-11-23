@@ -112,8 +112,14 @@ impl SearchContext {
     }
 }
 
+/// The longest file text, in bytes, that is searched for comments and string literals: the
+/// parser's limit (`ide_language::MAX_PARSE_BYTES`), above which a [`Literals`] finds none.
+/// The search leaves a longer text unread by it.
+pub const MAX_LITERALS_TEXT_BYTES: usize = 16 * 1024 * 1024;
+
 /// Comments and string literals of a file's text (sorted, non-overlapping),
-/// or `None` when its language has no syntax tree.
+/// or `None` when its language has no syntax tree or the text is longer than
+/// [`MAX_LITERALS_TEXT_BYTES`].
 pub type Literals<'a> = &'a (dyn Fn(&Path, &str) -> Option<Vec<LiteralRange>> + Sync);
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -198,21 +204,23 @@ pub struct SearchSummary {
 /// Text of unsaved open documents takes precedence over disk content.
 pub type Overlay<'a> = &'a (dyn Fn(&Path) -> Option<String> + Sync);
 
-/// Text of a file whose bytes are not UTF-8 (GBK, UTF-16 …); `None` for binary content.
-pub type Decode<'a> = &'a (dyn Fn(&Path, &[u8]) -> Option<String> + Sync);
+/// The encoding to read a file with when it is not UTF-8 and the encoding detected for it is not
+/// trusted to be right (GBK, UTF-16 …): its label, or `None` to go by what is detected.
+pub type FallbackEncoding<'a> = &'a (dyn Fn(&Path) -> Option<String> + Sync);
 
 /// Where a search reads file text from: the open document when `overlay` has
-/// it, else the file on disk, decoded by `decode` when it is not UTF-8.
+/// it, else the file on disk, decoded as the editor opens it when it is not UTF-8
+/// (`fallback` picks the encoding that [`ide_vfs::decode_text`] takes).
 #[derive(Clone, Copy)]
 pub struct TextSource<'a> {
     pub overlay: Overlay<'a>,
-    pub decode: Decode<'a>,
+    pub fallback: FallbackEncoding<'a>,
 }
 
 impl<'a> TextSource<'a> {
     /// Non-UTF-8 files decode as detected, without a configured fallback encoding.
     pub fn detected(overlay: Overlay<'a>) -> Self {
-        Self { overlay, decode: &|_, bytes| ide_vfs::decode_text(bytes, None) }
+        Self { overlay, fallback: &|_| None }
     }
 }
 

@@ -102,6 +102,9 @@ test("edits the staged version and keeps an unsaved draft when the index changes
   await expect(headPane).toContainText("val committed = 0");
   await expect(indexPane).toContainText("val external = 3");
   await expect(localPane).not.toBeEmpty();
+  const indexHeading = page.getByTitle(`Staged (index) ${path}`, { exact: true });
+  await expect(indexHeading.getByText("build.gradle.kts", { exact: true })).toBeVisible();
+  await expect(indexHeading.getByText("Staged (index)", { exact: true })).toBeVisible();
   const working = await localPane.textContent();
 
   await page.getByRole("button", { name: "Unstage Change", exact: true }).click();
