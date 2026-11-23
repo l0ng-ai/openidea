@@ -3716,5 +3716,9 @@
   "Previous Columns": "Previous Columns",
   "Next Columns": "Next Columns",
   "View Options": "View Options",
-  "Visible columns": "Visible columns"
+  "Visible columns": "Visible columns",
+  "Latest": "Latest",
+  "Checking for newer versions": "Checking for newer versions",
+  "Could not check for newer versions of the packages.": "Could not check for newer versions of the packages.",
+  "Upgrade available: {latest}": "Upgrade available: {latest}"
 }

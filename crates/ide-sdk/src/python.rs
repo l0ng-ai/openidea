@@ -14,6 +14,9 @@ use std::time::Duration;
 pub struct PythonPackage {
     pub name: String,
     pub version: String,
+    /// The newest release the interpreter can install; only [`list_packages`] with `outdated` sets it.
+    #[specta(optional)]
+    pub latest_version: Option<String>,
 }
 
 /// The tool that creates a new Python environment in "Add Python Interpreter".
@@ -264,24 +267,49 @@ fn pip_env(python: &Path) -> Vec<(String, String)> {
     venv_of(python).map(|v| vec![("VIRTUAL_ENV".to_owned(), v.to_string_lossy().into_owned())]).unwrap_or_default()
 }
 
-/// Installed packages (`pip list --format=json`), sorted by name.
-pub fn list_packages(python: &Path, cancel: &CancellationToken) -> IdeResult<Vec<PythonPackage>> {
+/// Installed packages (`pip list --format=json`), sorted by name. With `outdated`, only the
+/// ones the configured index has a newer release of (`--outdated`, which goes to the network).
+pub fn list_packages(python: &Path, outdated: bool, cancel: &CancellationToken) -> IdeResult<Vec<PythonPackage>> {
     if !python.is_file() {
         return Err(IdeError::not_found(format!("{} does not exist", python.display())));
     }
     let installer = installer(python)?;
-    let (program, args) = pip_command(python, &installer, &["list", "--format", "json"]);
+    let mut sub = vec!["list", "--format", "json"];
+    if outdated {
+        sub.push("--outdated");
+    }
+    let (program, args) = pip_command(python, &installer, &sub);
     let dir = neutral_dir();
     let out = stream(&program, &args, dir.as_ref().map(|d| d.path()), &pip_env(python), cancel, &|_| {})?;
     let mut packages = parse_pip_list(&out)?;
+    if outdated && packages.is_empty() && pip_index_unreachable(&out) {
+        return Err(IdeError::unavailable("pip could not reach the package index"));
+    }
     packages.sort_by_key(|p| p.name.to_lowercase());
     Ok(packages)
 }
 
+/// pip reports an index it cannot reach as "nothing is outdated": exit 0, an empty list and
+/// only its retry warnings. (uv fails instead.)
+pub(crate) fn pip_index_unreachable(out: &str) -> bool {
+    out.lines().any(|l| l.starts_with("WARNING: Retrying ("))
+}
+
 pub(crate) fn parse_pip_list(out: &str) -> IdeResult<Vec<PythonPackage>> {
+    #[derive(Deserialize)]
+    struct Listed {
+        name: String,
+        version: String,
+        latest_version: Option<String>,
+    }
     // Skip the echoed command line and any warnings before the JSON array.
     let json = out.lines().find(|l| l.trim_start().starts_with('[')).unwrap_or("[]");
-    serde_json::from_str(json).map_err(|e| IdeError::internal(format!("unexpected pip output: {e}")))
+    let listed: Vec<Listed> =
+        serde_json::from_str(json).map_err(|e| IdeError::internal(format!("unexpected pip output: {e}")))?;
+    Ok(listed
+        .into_iter()
+        .map(|p| PythonPackage { name: p.name, version: p.version, latest_version: p.latest_version })
+        .collect())
 }
 
 /// A requirement naming a local path (`.`, `./pkg`, `../lib[dev]`) made absolute

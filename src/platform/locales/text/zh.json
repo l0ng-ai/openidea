@@ -9953,5 +9953,9 @@
   "Previous Rows": "上一组行",
   "Next Rows": "下一组行",
   "Previous Columns": "上一组列",
-  "Next Columns": "下一组列"
+  "Next Columns": "下一组列",
+  "Latest": "最新版本",
+  "Checking for newer versions": "正在检查新版本",
+  "Could not check for newer versions of the packages.": "无法检查软件包的新版本。",
+  "Upgrade available: {latest}": "可升级到 {latest}"
 }

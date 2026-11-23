@@ -1445,6 +1445,28 @@ fn pip_list_output_is_parsed() {
     let pkgs = parse_pip_list(out).unwrap();
     assert_eq!(pkgs[0].name, "requests");
     assert_eq!(pkgs[0].version, "2.32.0");
+    assert_eq!(pkgs[0].latest_version, None);
+}
+
+#[test]
+fn outdated_pip_list_carries_the_latest_version() {
+    // pip, then uv (compact JSON after a line about the environment).
+    for out in [
+        "$ python -m pip list --outdated\n[{\"name\": \"six\", \"version\": \"1.15.0\", \"latest_version\": \"1.17.0\", \"latest_filetype\": \"wheel\"}]\n",
+        "Using Python 3.14.7 environment at: /venv\n[{\"name\":\"six\",\"version\":\"1.15.0\",\"latest_version\":\"1.17.0\",\"latest_filetype\":\"wheel\"}]\n",
+    ] {
+        let pkgs = parse_pip_list(out).unwrap();
+        assert_eq!(pkgs.len(), 1, "{out}");
+        assert_eq!(pkgs[0].latest_version.as_deref(), Some("1.17.0"));
+    }
+    assert!(parse_pip_list("$ python -m pip list --outdated\n[]\n").unwrap().is_empty());
+}
+
+#[test]
+fn pip_retry_warnings_mean_the_index_was_not_reached() {
+    let offline = "$ python -m pip list --outdated\nWARNING: Retrying (Retry(total=4, connect=None, read=None, redirect=None, status=None)) after connection broken by 'NewConnectionError(…)': /simple/six/\n[]\n";
+    assert!(crate::python::pip_index_unreachable(offline));
+    assert!(!crate::python::pip_index_unreachable("$ python -m pip list --outdated\n[]\n"));
 }
 
 /// A directory whose `typing.py` breaks any interpreter that imports it from there.
