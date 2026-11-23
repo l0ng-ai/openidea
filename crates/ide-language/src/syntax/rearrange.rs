@@ -7,10 +7,8 @@
 //! comments among its methods, or a decorator, default or annotation naming another method.
 
 use crate::{LanguageId, Syntax};
-use std::borrow::Cow;
 use std::ops::Range;
 use tree_sitter::Node;
-use unicode_normalization::UnicodeNormalization;
 
 impl Syntax {
     /// `text` with its class members rearranged; `None` when nothing moves, the text has syntax
@@ -102,10 +100,6 @@ fn method_name<'a>(member: Node, text: &'a str) -> Option<&'a str> {
     function_of(member)?.child_by_field_name("name").map(|n| &text[n.byte_range()])
 }
 
-fn normalized_identifier(name: &str) -> Cow<'_, str> {
-    if name.is_ascii() { Cow::Borrowed(name) } else { Cow::Owned(name.nfkc().collect()) }
-}
-
 fn function_of(member: Node) -> Option<Node> {
     match member.kind() {
         "function_definition" => Some(member),
@@ -195,11 +189,9 @@ fn header_names_any(member: Node, text: &str, others: &[&str]) -> bool {
             }
         }
     }
-    roots.into_iter().any(|root| {
-        any_in(root, |node| {
-            node.kind() == "identifier" && others.contains(&normalized_identifier(&text[node.byte_range()]).as_ref())
-        })
-    })
+    roots
+        .into_iter()
+        .any(|root| any_in(root, |node| node.kind() == "identifier" && others.contains(&&text[node.byte_range()])))
 }
 
 /// The methods of `class` in arrangement order; `None` when they already are or moving them could
@@ -220,6 +212,7 @@ fn class_change(class: Node, text: &str) -> Option<Change> {
     {
         lead -= 1;
     }
+    // Compare identifier spellings directly. Python's NFKC-equivalent spellings can differ here.
     let mut methods = Vec::new();
     let mut comments: Vec<Node> = members[lead..first].to_vec();
     for member in &members[first..] {
@@ -239,7 +232,7 @@ fn class_change(class: Node, text: &str) -> Option<Change> {
             return None;
         }
         let start = comments.first().map_or(member.start_byte(), |c| c.start_byte());
-        methods.push((*member, normalized_identifier(name), line_start(text, start)));
+        methods.push((*member, name, line_start(text, start)));
         comments.clear();
     }
     // A comment after the last method belongs to no method.
@@ -247,7 +240,7 @@ fn class_change(class: Node, text: &str) -> Option<Change> {
         return None;
     }
     for (member, name, _) in &methods {
-        let others: Vec<&str> = methods.iter().map(|m| m.1.as_ref()).filter(|n| *n != name.as_ref()).collect();
+        let others: Vec<&str> = methods.iter().map(|m| m.1).filter(|n| n != name).collect();
         if header_names_any(*member, text, &others) {
             return None;
         }
@@ -255,7 +248,7 @@ fn class_change(class: Node, text: &str) -> Option<Change> {
     // Same-named definitions form one unit, placed by its first definition.
     let mut units: Vec<(u8, &str, Vec<usize>)> = Vec::new();
     for (i, (_, name, _)) in methods.iter().enumerate() {
-        let name = name.as_ref();
+        let name = *name;
         match units.iter_mut().find(|u| u.1 == name) {
             Some(unit) => unit.2.push(i),
             None => units.push((group(name), name, vec![i])),
@@ -383,12 +376,9 @@ mod tests {
     }
 
     #[test]
-    fn python_normalizes_names_in_method_headers() {
-        for (definition, reference) in [("_ｄecorate", "_decorate"), ("_decorate", "_ｄecorate")] {
-            let text =
-                format!("class A:\n    def {definition}(fn): return fn\n    @{reference}\n    def public(self): ...\n");
-            assert_eq!(rearranged(&text), None, "{text}");
-        }
+    fn unicode_names_in_method_headers_match_their_source_spelling() {
+        let text = "class A:\n    def _装飾(fn): return fn\n    @_装飾\n    def public(self): ...\n";
+        assert_eq!(rearranged(text), None);
     }
 
     #[test]
