@@ -178,6 +178,14 @@ describe("Python Packages", () => {
     await waitFor(() => expect(mocks.pypi).toHaveBeenCalledWith("sixer", expect.anything()));
   });
 
+  it("lists 50 PyPI matches and says when there are more", async () => {
+    mocks.names.mockResolvedValue(ok(Array.from({ length: 51 }, (_, i) => `six-${i}`)));
+    open();
+    await screen.findByText("urllib3");
+    search("six-");
+    expect(await screen.findByText(/Only the first 50 PyPI matches are listed/)).toBeInTheDocument();
+  });
+
   it("keeps the exact-name lookup when the name list cannot be loaded", async () => {
     mocks.names.mockResolvedValue({ status: "error", error: { kind: "unavailable", message: "offline" } });
     open();

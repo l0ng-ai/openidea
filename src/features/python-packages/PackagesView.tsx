@@ -206,6 +206,9 @@ function useNames(query: string | null) {
 
 const NO_NAMES: string[] = [];
 
+/** PyPI matches listed; the backend sends one more, to tell when there are others. */
+const SHOWN_NAMES = 50;
+
 export function PackagesView() {
   const tx = useTx();
   const { root, container, python, snapshot, resolved, retry } = useInterpreter();
@@ -229,7 +232,7 @@ export function PackagesView() {
   // Searching the local copy of PyPI's name list sends nothing.
   const names = useNames(!container && name.length >= 2 ? name : null);
   const rows = useMemo(
-    () => listRows(packages ?? [], local.newer, search.found, names.names, query),
+    () => listRows(packages ?? [], local.newer, search.found, names.names.slice(0, SHOWN_NAMES), query),
     [packages, local.newer, search.found, names.names, query],
   );
   // By name, so a package stays selected when installing it moves it out of the PyPI section.
@@ -386,6 +389,11 @@ export function PackagesView() {
             <Button size="small" variant="ghost" onClick={search.retry}>
               <T>Retry</T>
             </Button>
+          </div>
+        )}
+        {names.names.length > SHOWN_NAMES && (
+          <div className={styles.note}>
+            <T>Only the first 50 PyPI matches are listed. Type more of the name to narrow them.</T>
           </div>
         )}
         {names.downloading && (

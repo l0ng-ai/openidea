@@ -1419,7 +1419,7 @@ export const commands = {
 	versions: string[],
 } | null, IdeError>(__TAURI_INVOKE("pypi_package", { name, request })),
 	/**
-	 *  PyPI project names containing `query`, best match first. Answers from a cached copy of
+	 *  PyPI project names containing `query`, best match first, 51 at most (50 are shown). Answers from a cached copy of
 	 *  PyPI's name list, which the first search downloads and a search a day later refreshes.
 	 */
 	pypiSearch: (query: string, request: RequestId) => typedError<string[], IdeError>(__TAURI_INVOKE("pypi_search", { query, request })),
