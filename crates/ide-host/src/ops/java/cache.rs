@@ -32,10 +32,12 @@ impl Outputs {
             && self.fingerprint == *fingerprint
             && self.snapshot.parent() == Some(snapshots)
             && !self.originals.is_empty()
+            // Only classes: a launched app may write other files under its classpath root.
             && self.contents.as_ref().is_some_and(|contents| {
                 contents.len() == self.originals.len()
                     && contents.iter().enumerate().all(|(i, recorded)| {
-                        Contents::scan(&self.snapshot.join(i.to_string())).is_some_and(|(c, _)| c == *recorded)
+                        Contents::scan(&self.snapshot.join(i.to_string()))
+                            .is_some_and(|(c, _)| c.classes == recorded.classes)
                     })
             })
     }
@@ -1060,7 +1062,11 @@ mod tests {
         assert_ne!(rebuilt.snapshot, first.snapshot);
         let reused = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
         assert_eq!(reused.snapshot, rebuilt.snapshot);
-        // A snapshot that lost a class since it was recorded is rebuilt too.
+        // A file the launched app wrote under its classpath root keeps the snapshot.
+        fs::write(reused.snapshot.join("0/app.log"), "log").unwrap();
+        let kept = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
+        assert_eq!(kept.snapshot, reused.snapshot);
+        // A snapshot that lost a class since it was recorded is rebuilt.
         fs::remove_file(reused.snapshot.join("0/Main.class")).unwrap();
         let again = session.build(root, &model, root, BuildOptions::default(), None, &cancel).unwrap();
         assert_ne!(again.snapshot, reused.snapshot);
