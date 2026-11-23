@@ -170,3 +170,16 @@ export function RuffPage() {
     />
   );
 }
+
+export function BlackPage() {
+  return (
+    <FormatterPage
+      tool="black"
+      name="Black formatter"
+      pathLabel="Black path"
+      pathHint="Auto: the project interpreter's environment, managed installation, then PATH. An explicit path overrides auto detection."
+      providerHint="Black formats Python instead of Ruff below a pyproject.toml with [tool.black], or when it is the selected provider."
+      saveHint="Run Black on save for enabled languages when it is the selected formatting provider."
+    />
+  );
+}

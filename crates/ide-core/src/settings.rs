@@ -1208,6 +1208,7 @@ pub struct LanguagesSettings {
     pub oxfmt: ExternalFormatterSettings,
     pub biome: ExternalFormatterSettings,
     pub ruff: ExternalFormatterSettings,
+    pub black: ExternalFormatterSettings,
     pub java: JavaSettings,
     pub ruby: RubySettings,
     pub markdown: MarkdownSettings,
@@ -1232,6 +1233,10 @@ impl Default for LanguagesSettings {
                 ..ExternalFormatterSettings::default()
             },
             ruff: ExternalFormatterSettings {
+                languages: vec!["python".into()],
+                ..ExternalFormatterSettings::default()
+            },
+            black: ExternalFormatterSettings {
                 languages: vec!["python".into()],
                 ..ExternalFormatterSettings::default()
             },
@@ -1304,6 +1309,7 @@ impl LanguagesSettings {
             ExternalFormatter::Oxfmt => &self.oxfmt,
             ExternalFormatter::Biome => &self.biome,
             ExternalFormatter::Ruff => &self.ruff,
+            ExternalFormatter::Black => &self.black,
         }
     }
 }
@@ -1316,6 +1322,7 @@ pub enum ExternalFormatter {
     Oxfmt,
     Biome,
     Ruff,
+    Black,
 }
 
 impl ExternalFormatter {
@@ -1326,6 +1333,7 @@ impl ExternalFormatter {
             Self::Oxfmt => "oxfmt",
             Self::Biome => "biome",
             Self::Ruff => "ruff",
+            Self::Black => "black",
         }
     }
 }
@@ -1334,7 +1342,7 @@ impl ExternalFormatter {
 pub const BIOME_LANGUAGES: [&str; 8] =
     ["css", "graphql", "javascript", "javascriptreact", "typescript", "typescriptreact", "json", "jsonc"];
 
-/// An external formatter (Prettier, oxfmt, Biome, Ruff) and the languages it formats.
+/// An external formatter (Prettier, oxfmt, Biome, Ruff, Black) and the languages it formats.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ExternalFormatterSettings {

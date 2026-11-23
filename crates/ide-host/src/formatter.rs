@@ -29,18 +29,33 @@ fn biome_formats(file: &Path) -> bool {
     }
 }
 
+/// Black formats below the nearest `pyproject.toml` when it has `[tool.black]`, the file Black
+/// reads its configuration from.
+fn black_configured(file: &Path) -> bool {
+    formatter::find_up(file, Path::new("pyproject.toml"))
+        .is_some_and(|p| ide_sdk::apply::toml_has_table(&p, "tool.black"))
+}
+
+/// Black in the project interpreter's environment (`.venv/bin/black`), next to its Python.
+fn interpreter_black(root: &Path, settings: &Settings) -> Option<PathBuf> {
+    let python = ide_sdk::apply::python_interpreter(root, settings)?;
+    let black = python.parent()?.join(if cfg!(windows) { "black.exe" } else { "black" });
+    black.is_file().then_some(black)
+}
+
 fn supports_external_format(language: &LanguageConfig, tool: ExternalFormatter) -> bool {
     match language.formatter.as_ref().map(|f| f.tool.as_str()) {
         Some("prettier") if tool == ExternalFormatter::Biome => BIOME_LANGUAGES.contains(&language.id.as_str()),
         Some("prettier") => matches!(tool, ExternalFormatter::Prettier | ExternalFormatter::Oxfmt),
-        Some("ruff") => tool == ExternalFormatter::Ruff,
+        Some("ruff") => matches!(tool, ExternalFormatter::Ruff | ExternalFormatter::Black),
         _ => false,
     }
 }
 
 /// The external formatter of a file, for a language with an external formatter.
-/// `forced` names the tool (Reformat with Prettier, oxfmt, Biome, or Ruff). Ruff is
-/// the base formatter for Python; Biome, then oxfmt, can replace Prettier for their
+/// `forced` names the tool (Reformat with Prettier, oxfmt, Biome, Ruff, or Black). Ruff is
+/// the base formatter for Python, replaced by Black when configured or selected; Biome,
+/// then oxfmt, can replace Prettier for their
 /// languages when configured or selected. A tool that cannot format the language is
 /// rejected even when explicitly requested.
 fn external_tool(
@@ -49,7 +64,7 @@ fn external_tool(
     file: &Path,
     settings: &LanguagesSettings,
 ) -> IdeResult<Option<ExternalFormatter>> {
-    use ExternalFormatter::{Biome, Oxfmt, Prettier, Ruff};
+    use ExternalFormatter::{Biome, Black, Oxfmt, Prettier, Ruff};
     let Some(language) = language.filter(|l| l.formatter.is_some()) else {
         return match forced {
             Some(tool) => Err(IdeError::invalid(format!(
@@ -73,7 +88,11 @@ fn external_tool(
     }
     let enabled = |tool| settings.formatter(tool).languages.iter().any(|l| l == language.id.as_str());
     if language.formatter.as_ref().is_some_and(|f| f.tool == "ruff") {
-        return Ok(enabled(Ruff).then_some(Ruff));
+        return Ok(if enabled(Black) && (settings.black.prefer || black_configured(file)) {
+            Some(Black)
+        } else {
+            enabled(Ruff).then_some(Ruff)
+        });
     }
     let found = |names: &[&str]| names.iter().any(|name| formatter::find_up(file, Path::new(name)).is_some());
     let biome = enabled(Biome) && supports_external_format(language, Biome);
@@ -374,8 +393,10 @@ async fn provider_edits(
         return Ok(Some(edits));
     }
     let mut selected = external_tool(options.tool, language.as_ref(), &snap.path, &settings.languages)?;
+    // Black is selected only when configured or preferred: the Ruff server's formatting doesn't replace it.
     if let Some(tool) = selected
         && options.tool.is_none()
+        && tool != ExternalFormatter::Black
         && !settings.languages.formatter(tool).prefer
         && match doc {
             Some(doc) => project.lsp.can_format(doc).await?,
@@ -408,7 +429,13 @@ async fn provider_edits(
     let config = language.and_then(|l| l.formatter).expect("external_tool selects languages with a formatter");
     let tool = selected.name();
     let name = formatter::display_name(tool);
-    let custom = ide_sdk::apply::setting_path(&project.root, &tool_settings.path);
+    let mut custom = ide_sdk::apply::setting_path(&project.root, &tool_settings.path);
+    if custom.is_none() && selected == ExternalFormatter::Black {
+        let (root, settings) = (project.root.clone(), settings.clone());
+        custom = tokio::task::spawn_blocking(move || interpreter_black(&root, &settings))
+            .await
+            .map_err(|e| IdeError::internal(e.to_string()))?;
+    }
     let tools = Tools::new(&host.local_data_dir);
     let whole_selection = range.is_some() && !formatter::supports_range(tool, &config);
     let project_root = project.root.clone();
@@ -461,7 +488,7 @@ async fn provider_edits(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ExternalFormatter::{Biome, Oxfmt, Prettier, Ruff};
+    use ExternalFormatter::{Biome, Black, Oxfmt, Prettier, Ruff};
     use ide_core::LanguageId;
     use ide_language::LanguageRegistry;
 
@@ -506,6 +533,28 @@ mod tests {
         assert_eq!(oxfmt.message, "oxfmt cannot format Python files");
         let biome = tool(Some(Biome), "python", file, &settings).unwrap_err();
         assert_eq!(biome.message, "Biome cannot format Python files");
+        assert_eq!(tool(Some(Black), "python", file, &settings).unwrap(), Some(Black));
+        let black = tool(Some(Black), "typescript", Path::new("/project/app.ts"), &settings).unwrap_err();
+        assert_eq!(black.message, "Black cannot format TypeScript files");
+    }
+
+    #[test]
+    fn black_config_or_preference_selects_black_for_python() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("svc/src")).unwrap();
+        std::fs::create_dir_all(root.join("api")).unwrap();
+        let (svc, api) = (root.join("svc/src/main.py"), root.join("api/main.py"));
+        let mut settings = LanguagesSettings::default();
+        std::fs::write(root.join("svc/pyproject.toml"), "[tool.ruff]\nline-length = 100\n").unwrap();
+        assert_eq!(tool(None, "python", &svc, &settings).unwrap(), Some(Ruff));
+        std::fs::write(root.join("svc/pyproject.toml"), "[tool.black]\nline-length = 100\n").unwrap();
+        assert_eq!(tool(None, "python", &svc, &settings).unwrap(), Some(Black));
+        assert_eq!(tool(None, "python", &api, &settings).unwrap(), Some(Ruff));
+        settings.black.prefer = true;
+        assert_eq!(tool(None, "python", &api, &settings).unwrap(), Some(Black));
+        settings.black.languages.clear();
+        assert_eq!(tool(None, "python", &svc, &settings).unwrap(), Some(Ruff));
     }
 
     #[test]

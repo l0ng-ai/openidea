@@ -9948,5 +9948,13 @@
   "Previous Rows": "上一组行",
   "Next Rows": "下一组行",
   "Previous Columns": "上一组列",
-  "Next Columns": "下一组列"
+  "Next Columns": "下一组列",
+  "Black formatter": "Black 格式化工具",
+  "Reformat with Black": "使用 Black 重新格式化",
+  "Black formatting failed": "Black 格式化失败",
+  "Black formatting timed out": "Black 格式化超时",
+  "Black path": "Black 路径",
+  "Auto: the project interpreter's environment, managed installation, then PATH. An explicit path overrides auto detection.": "自动：依次查找项目解释器的环境、托管安装和 PATH。明确指定的路径优先于自动检测。",
+  "Black formats Python instead of Ruff below a pyproject.toml with [tool.black], or when it is the selected provider.": "在含 [tool.black] 的 pyproject.toml 所在目录及其子目录中，或选择 Black 作为格式化工具时，Black 将代替 Ruff 格式化 Python。",
+  "Run Black on save for enabled languages when it is the selected formatting provider.": "对已启用的语言，在选择 Black 作为格式化工具时于保存时运行。"
 }

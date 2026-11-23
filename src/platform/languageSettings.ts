@@ -26,7 +26,7 @@ const DEFAULT_GO_BUILD_TAGS: GoBuildTags = {
   experiments: "",
 };
 
-/** An external formatter (Prettier, oxfmt, Biome, Ruff) and the languages it formats. */
+/** An external formatter (Prettier, oxfmt, Biome, Ruff, Black) and the languages it formats. */
 interface ExternalFormatterValid {
   path: string;
   configurationDirectory: string;
@@ -64,7 +64,7 @@ const DEFAULT_BIOME_FORMATTER: ExternalFormatterValid = {
   languages: ["css", "graphql", "javascript", "javascriptreact", "typescript", "typescriptreact", "json", "jsonc"],
 };
 
-const DEFAULT_RUFF_FORMATTER: ExternalFormatterValid = {
+const DEFAULT_PYTHON_FORMATTER: ExternalFormatterValid = {
   ...DEFAULT_FORMATTER,
   languages: ["python"],
 };
@@ -209,6 +209,7 @@ export interface LanguagesValid {
   oxfmt: ExternalFormatterValid;
   biome: ExternalFormatterValid;
   ruff: ExternalFormatterValid;
+  black: ExternalFormatterValid;
   java: {
     jdk: string;
     languageLevel: (typeof JAVA_LANGUAGE_LEVELS)[number];
@@ -320,7 +321,8 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
   prettier: DEFAULT_FORMATTER,
   oxfmt: DEFAULT_FORMATTER,
   biome: DEFAULT_BIOME_FORMATTER,
-  ruff: DEFAULT_RUFF_FORMATTER,
+  ruff: DEFAULT_PYTHON_FORMATTER,
+  black: DEFAULT_PYTHON_FORMATTER,
   java: {
     jdk: "",
     languageLevel: "",
@@ -495,7 +497,8 @@ export function validateLanguages(raw: unknown): LanguagesValid {
     prettier: validateFormatter(l.prettier),
     oxfmt: validateFormatter(l.oxfmt),
     biome: validateFormatter(l.biome, DEFAULT_BIOME_FORMATTER),
-    ruff: validateFormatter(l.ruff, DEFAULT_RUFF_FORMATTER),
+    ruff: validateFormatter(l.ruff, DEFAULT_PYTHON_FORMATTER),
+    black: validateFormatter(l.black, DEFAULT_PYTHON_FORMATTER),
     java: {
       jdk: text(java.jdk, d.java.jdk),
       languageLevel: oneOf(java.languageLevel, JAVA_LANGUAGE_LEVELS, d.java.languageLevel),

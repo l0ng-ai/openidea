@@ -31,7 +31,8 @@ pub fn setting_path(root: &Path, s: &str) -> Option<PathBuf> {
     Some(if p.is_absolute() { p } else { root.join(p) })
 }
 
-fn toml_has_table(file: &Path, table: &str) -> bool {
+/// Whether the TOML `file` has the dotted `table` (`tool.ruff`).
+pub fn toml_has_table(file: &Path, table: &str) -> bool {
     let Ok(text) = std::fs::read_to_string(file) else { return false };
     let Ok(value) = toml::from_str::<toml::Value>(&text) else { return false };
     table.split('.').try_fold(&value, |value, key| value.get(key)).is_some_and(toml::Value::is_table)

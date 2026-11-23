@@ -3709,5 +3709,13 @@
   "Previous Columns": "Previous Columns",
   "Next Columns": "Next Columns",
   "View Options": "View Options",
-  "Visible columns": "Visible columns"
+  "Visible columns": "Visible columns",
+  "Black formatter": "Black formatter",
+  "Reformat with Black": "Reformat with Black",
+  "Black formatting failed": "Black formatting failed",
+  "Black formatting timed out": "Black formatting timed out",
+  "Black path": "Black path",
+  "Auto: the project interpreter's environment, managed installation, then PATH. An explicit path overrides auto detection.": "Auto: the project interpreter's environment, managed installation, then PATH. An explicit path overrides auto detection.",
+  "Black formats Python instead of Ruff below a pyproject.toml with [tool.black], or when it is the selected provider.": "Black formats Python instead of Ruff below a pyproject.toml with [tool.black], or when it is the selected provider.",
+  "Run Black on save for enabled languages when it is the selected formatting provider.": "Run Black on save for enabled languages when it is the selected formatting provider."
 }

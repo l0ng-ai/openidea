@@ -202,10 +202,12 @@ function editorAction(
 
 /** Whether saving a `language` file formats it: Format on save, or Run on save of an external formatter. */
 export function formatsOnSave(settings: Settings | null, language: string): boolean {
-  const { prettier, oxfmt, biome, ruff } = validateLanguages(settings?.languages);
+  const { prettier, oxfmt, biome, ruff, black } = validateLanguages(settings?.languages);
   return (
     !!settings?.editor?.formatOnSave ||
-    [prettier, oxfmt, biome, ruff].some((formatter) => formatter.runOnSave && formatter.languages.includes(language))
+    [prettier, oxfmt, biome, ruff, black].some(
+      (formatter) => formatter.runOnSave && formatter.languages.includes(language),
+    )
   );
 }
 
@@ -295,6 +297,13 @@ export function registerLspActions(): () => void {
       "Code",
       (v) => formatDocument(v, { explicit: true, tool: "ruff" }),
       { keywords: ["format", "ruff", "python"] },
+    ),
+    editorAction(
+      "code.reformatWithBlack",
+      "Reformat with Black",
+      "Code",
+      (v) => formatDocument(v, { explicit: true, tool: "black" }),
+      { keywords: ["format", "black", "python"] },
     ),
     editorAction("code.reformatDialog", "Reformat File…", "Code", (v) =>
       reformatDialog(v, (view) => applyKindSilently(view, "source.organizeImports")),
