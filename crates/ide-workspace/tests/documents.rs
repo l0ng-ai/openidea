@@ -1567,3 +1567,107 @@ fn undo_back_to_the_disk_text_reloads_on_checkout() {
     f.docs.on_disk_changed(std::slice::from_ref(&path));
     assert_eq!(f.docs.snapshot(id).unwrap().text, "checked out\n");
 }
+
+fn project_encoding(f: &Fixture, label: &str) {
+    let mut defaults = f.docs.file_defaults();
+    defaults.project_fallback = label.into();
+    f.docs.set_file_defaults(defaults);
+}
+
+fn latin9_editorconfig(f: &Fixture) {
+    fs::write(f.root.join(".editorconfig"), "root = true\n[*.java]\ncharset = iso-8859-15\n").unwrap();
+}
+
+#[test]
+fn editorconfig_charset_applies_to_an_existing_ascii_file_over_the_project_encoding() {
+    let f = fixture();
+    project_encoding(&f, "gbk");
+    latin9_editorconfig(&f);
+    let path = f.root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "iso-8859-15");
+    f.docs.edit(doc.id, doc.version, change(0, 0, "// ação €\n")).unwrap();
+    f.docs.save(doc.id).unwrap();
+
+    assert_eq!(fs::read(&path).unwrap(), b"// a\xe7\xe3o \xa4\nclass A {}\n");
+}
+
+#[test]
+fn editorconfig_charset_decodes_a_legacy_file_over_the_project_encoding() {
+    let f = fixture();
+    project_encoding(&f, "gbk");
+    latin9_editorconfig(&f);
+    let path = f.root.join("A.java");
+    fs::write(&path, b"// a\xe7\xe3o \xa4\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+
+    assert_eq!((doc.text.as_str(), doc.encoding.as_str()), ("// ação €\n", "iso-8859-15"));
+}
+
+#[test]
+fn editorconfig_charset_survives_a_reload_from_disk() {
+    let f = fixture();
+    project_encoding(&f, "gbk");
+    latin9_editorconfig(&f);
+    let path = f.root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+    let doc = f.docs.open(&path).unwrap();
+
+    fs::write(&path, b"class A { int changed; }\n").unwrap();
+    f.docs.sync_from_disk();
+
+    let reloaded = f.docs.snapshot(doc.id).unwrap();
+    assert_eq!((reloaded.text.as_str(), reloaded.encoding.as_str()), ("class A { int changed; }\n", "iso-8859-15"));
+}
+
+#[test]
+fn editorconfig_without_a_usable_charset_leaves_the_encoding_alone() {
+    let open = |project: Option<&str>, editorconfig: &str, enabled: bool| {
+        let f = fixture();
+        let mut defaults = f.docs.file_defaults();
+        if let Some(project) = project {
+            defaults.project_fallback = project.into();
+        }
+        defaults.editorconfig = enabled;
+        f.docs.set_file_defaults(defaults);
+        fs::write(f.root.join(".editorconfig"), format!("root = true\n[*.java]\n{editorconfig}\n")).unwrap();
+        let path = f.root.join("A.java");
+        fs::write(&path, b"class A {}\n").unwrap();
+        f.docs.open(&path).unwrap().encoding
+    };
+
+    assert_eq!(open(None, "indent_size = 2", true), "utf-8", "nothing configured");
+    assert_eq!(open(None, "charset = ebcdic", true), "utf-8", "unknown charset");
+    assert_eq!(open(Some("iso-8859-15"), "indent_size = 2", true), "iso-8859-15", "no charset: the project's");
+    assert_eq!(open(Some("iso-8859-15"), "charset = ebcdic", true), "iso-8859-15", "unknown charset: the project's");
+    assert_eq!(open(Some("iso-8859-15"), "charset = gbk", false), "iso-8859-15", "EditorConfig support is off");
+    assert_eq!(open(Some("iso-8859-15"), "charset = utf-16le", true), "iso-8859-15", "UTF-16 is detected, not assumed");
+}
+
+#[test]
+fn utf16_text_without_a_bom_keeps_utf16_under_a_utf8_charset() {
+    let f = fixture();
+    fs::write(f.root.join(".editorconfig"), "root = true\n[*.java]\ncharset = utf-8\n").unwrap();
+    let path = f.root.join("A.java");
+    fs::write(&path, ide_vfs::encode("class A {}\n", "utf-16le", false).unwrap()).unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+
+    assert_eq!((doc.text.as_str(), doc.encoding.as_str()), ("class A {}\n", "utf-16le"));
+}
+
+#[test]
+fn a_file_declared_utf8_that_is_not_utf8_is_decoded_with_the_project_encoding() {
+    let f = fixture();
+    latin_project(&f);
+    fs::write(f.root.join(".editorconfig"), "root = true\n[*.java]\ncharset = utf-8\n").unwrap();
+    let path = f.root.join("A.java");
+    fs::write(&path, b"// a\xe7\xe3o \xa4\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+
+    assert_eq!((doc.text.as_str(), doc.encoding.as_str()), ("// ação €\n", "iso-8859-15"));
+}
