@@ -9,13 +9,25 @@ import {
   commands,
   type ClassInheritance,
   type HierarchyItem,
+  type IdeEvent,
   type Location,
   type OutlineItem,
   type Pos,
   type SymbolKind,
 } from "@/platform/ipc";
+import { setInvokeRoute } from "@/platform/tauriCore";
 
 const nav = vi.hoisted(() => ({ navigateTo: vi.fn(async () => {}), openPopup: vi.fn() }));
+const ideListeners = vi.hoisted(() => new Map<string, Set<(event: IdeEvent) => void>>());
+vi.mock("@/platform/ipc", async (orig) => ({
+  ...(await orig<typeof import("@/platform/ipc")>()),
+  onIdeEvent: (type: string, listener: (event: IdeEvent) => void) => {
+    let listeners = ideListeners.get(type);
+    if (!listeners) ideListeners.set(type, (listeners = new Set()));
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  },
+}));
 vi.mock("@/editor/lsp/navigation", async (orig) => ({
   ...(await orig<typeof import("@/editor/lsp/navigation")>()),
   navigateTo: nav.navigateTo,
@@ -623,6 +635,59 @@ describe("clicking a marker", () => {
 });
 
 describe("inheritance gutter", () => {
+  it.each([
+    { type: "interface", source: SHAPE, outline: SHAPE_OUTLINE },
+    { type: "abstract class", source: BASE, outline: BASE_OUTLINE },
+  ])(
+    "refreshes implementation and override markers when a Java project update finishes ($type)",
+    async ({ source, outline }) => {
+      vi.useFakeTimers();
+      let indexed = false;
+      const target = "/p/service/target/generated-sources/example/ServiceImpl.java";
+      const queries = vi.fn<MarkerDeps["implementations"]>(async (positions) =>
+        positions.map(({ line }) => (indexed ? [loc(target, line + 2)] : [])),
+      );
+      setInvokeRoute(async (command, args) => {
+        if (command === "doc_outline") return outline;
+        if (command === "lsp_type_hierarchy") {
+          throw { kind: "unavailable", message: "no type hierarchy", data: null };
+        }
+        if (command === "lsp_implementations") return queries((args as { positions: Pos[] }).positions);
+        return null;
+      });
+      const ctx = { doc: 12, path: `/p/api/${outline[0]!.name}.java`, language: "java", uiMode: null, readOnly: false };
+      const view = new EditorView({
+        doc: Text.of(source),
+        extensions: [lspDoc.of(ctx), iconAreaExtension, implementationGutter(ctx)],
+        parent: document.body,
+      });
+      const kinds = () =>
+        [...view.dom.querySelectorAll<HTMLElement>('[class*="cm-openidea-lineMarker-"]')].map((el) => el.dataset.kind);
+      const emit = (event: IdeEvent) => {
+        for (const listener of ideListeners.get(event.type) ?? []) listener(event);
+      };
+      try {
+        await vi.advanceTimersByTimeAsync(500);
+        expect(queries).toHaveBeenCalledTimes(1);
+        expect(kinds()).toEqual([]);
+
+        indexed = true;
+        emit({ type: "lspRefresh", server: 1, kind: "semanticTokens" });
+        await vi.advanceTimersByTimeAsync(500);
+        expect(queries).toHaveBeenCalledTimes(1);
+
+        emit({ type: "lspRefresh", server: 1, kind: "inheritance" });
+        await vi.advanceTimersByTimeAsync(500);
+        expect(queries).toHaveBeenCalledTimes(2);
+        expect(kinds()).toEqual(["implemented", "implemented", "overridden"]);
+      } finally {
+        view.destroy();
+        setInvokeRoute(null);
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it.each([
     { kind: "overriding", language: "java", declaration: "@SuperBuilder" },
     { kind: "overridden", language: "java", declaration: "@Data" },
