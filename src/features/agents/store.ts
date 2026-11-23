@@ -40,6 +40,7 @@ import {
   shellCommand,
   cursorModelDefaults,
   emptyDraft,
+  hasMention,
   isMentioned,
   isPerModelOption,
   mentionOf,
@@ -1697,16 +1698,20 @@ export interface ReferenceTarget {
  * how many were added; a path outside every project shows a notice.
  */
 export function addReferences(targets: readonly ReferenceTarget[]): number {
-  return appendToComposer((mentions) => mentions.join(" "), targets);
+  // A reference the message already holds (same file, same lines) is not added a second time.
+  return appendToComposer(
+    (mentions, text) => mentions.filter((m, i) => !hasMention(text, m) && mentions.indexOf(m) === i).join(" "),
+    targets,
+  );
 }
 
 /**
  * Appends text to the agent message typed last (a task's or New Task's) and opens it; nothing is
  * sent. `compose` gets the `@` mentions of `targets` (those inside this window's projects, which
- * also become chips). Returns how many targets were referenced.
+ * also become chips) and the message's current text. Returns how many targets were referenced.
  */
 export function appendToComposer(
-  compose: (mentions: readonly string[]) => string,
+  compose: (mentions: readonly string[], text: string) => string,
   targets: readonly ReferenceTarget[] = [],
 ): number {
   const s = useAgents.getState();
@@ -1732,15 +1737,26 @@ export function appendToComposer(
   }
   if (files.length < targets.length)
     notifications().notify({ level: "info", title: tx("Only files of this window's projects can be referenced") });
-  const joined = compose(mentions);
-  if (!joined) return 0;
+  const joined = compose(mentions, current.text);
+  if (!joined) {
+    // Every reference is already in the message: show it rather than doing nothing.
+    if (!files.length) return 0;
+    if (task) openTask(task.id);
+    else openHome();
+    return files.length;
+  }
   // A block of several lines (a test failure) goes in a paragraph of its own.
   const text = joined.includes("\n")
     ? `${current.text.trimEnd() ? `${current.text.trimEnd()}\n\n` : ""}${joined}\n`
     : current.text && !/\s$/.test(current.text)
       ? `${current.text} ${joined} `
       : `${current.text}${joined} `;
-  updateComposer(key, { text, files: [...current.files, ...files] });
+  const added = files.filter(
+    (f, i) =>
+      !current.files.some((c) => c.path === f.path && c.rel === f.rel) &&
+      files.findIndex((o) => o.path === f.path && o.rel === f.rel) === i,
+  );
+  updateComposer(key, { text, files: [...current.files, ...added] });
   if (task) openTask(task.id);
   else openHome();
   return files.length;

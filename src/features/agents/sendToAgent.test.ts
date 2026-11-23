@@ -155,6 +155,24 @@ describe("Send to Agent from the editor", () => {
     });
   });
 
+  it("sending the same file or lines again does not reference them twice (#5296)", () => {
+    setup({});
+    openEditor(`${BACK}/pom.xml`);
+    expect(sendSelection()).toBe(true);
+    expect(sendSelection()).toBe(true);
+    expect(sent()).toEqual({ text: "@pom.xml", files: [["pom.xml", `${BACK}/pom.xml`]] });
+
+    // Other lines of the same file are a reference of their own; the same lines again are not.
+    openEditor(`${BACK}/pom.xml`, 2, 3);
+    sendSelection();
+    sendSelection();
+    expect(sent()).toEqual({ text: "@pom.xml @pom.xml:2", files: [["pom.xml", `${BACK}/pom.xml`]] });
+
+    // Files from the Project view: only the ones not in the message yet are added.
+    sendPaths([`${BACK}/pom.xml`, `${BACK}/src/`, `${BACK}/src/`]);
+    expect(sent().text).toBe("@pom.xml @pom.xml:2 @src/");
+  });
+
   it("the whole file without a selection; a file outside the projects shows the notice", () => {
     setup({ members: [BACK, FRONT], homeRoot: BACK });
     openEditor(`${BACK}/pom.xml`);
