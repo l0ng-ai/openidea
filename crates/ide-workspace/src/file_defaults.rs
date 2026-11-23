@@ -129,15 +129,15 @@ mod tests {
         s.editor.encodings.project = "gbk".into();
         let mut d = FileDefaults::from_settings(&s, Some(Path::new("/p")));
         d.pom_encodings = vec![
-            (PathBuf::from("/p/legacy"), "iso-8859-15".into()),
-            (PathBuf::from("/p/legacy/modern"), "utf-8".into()),
-            (PathBuf::from("/elsewhere/linked"), "windows-1252".into()),
+            (PathBuf::from("/p/legacy/src"), "iso-8859-15".into()),
+            (PathBuf::from("/p/legacy/src/modern/src"), "utf-8".into()),
+            (PathBuf::from("/elsewhere/linked/src"), "windows-1252".into()),
         ];
         assert_eq!(d.fallback_for(Path::new("/p/legacy/src/main/java/A.java")), Some("iso-8859-15"));
-        assert_eq!(d.fallback_for(Path::new("/p/legacy/pom.xml")), Some("iso-8859-15"));
+        assert_eq!(d.fallback_for(Path::new("/p/legacy/pom.xml")), Some("gbk"), "outside the source folder");
         // UTF-8 in the POM is a choice too: the project encoding does not apply.
-        assert_eq!(d.fallback_for(Path::new("/p/legacy/modern/src/A.java")), None);
-        assert_eq!(d.fallback_for(Path::new("/p/legacy-notes/A.java")), Some("gbk"), "a sibling, not a child");
+        assert_eq!(d.fallback_for(Path::new("/p/legacy/src/modern/src/A.java")), None);
+        assert_eq!(d.fallback_for(Path::new("/p/legacy/src-notes/A.java")), Some("gbk"), "a sibling, not a child");
         assert_eq!(d.fallback_for(Path::new("/p/other/A.java")), Some("gbk"));
         assert_eq!(d.fallback_for(Path::new("/elsewhere/linked/src/A.java")), Some("windows-1252"));
         assert_eq!(d.fallback_for(Path::new("/elsewhere/A.java")), None);

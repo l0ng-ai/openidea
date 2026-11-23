@@ -67,7 +67,6 @@ const model: BuildModel = {
     command: `${dir}/gradlew`,
     env: {},
     javaVersion: null,
-    sourceEncoding: null,
     syncedAt: 1,
     stale: false,
     syncError: null,
