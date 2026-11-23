@@ -145,6 +145,22 @@ describe("project view context menu", () => {
     ]);
   });
 
+  it("lists contributed links in Copy Path/Reference… of library files too", () => {
+    disposers.push(
+      registerMenuGroup({
+        id: "test.link",
+        menus: ["copyPath"],
+        items: (_menu, ctx) => [{ label: `Link ${ctx.paths.join()}`, verbatim: true, run: () => undefined }],
+      }),
+    );
+    expect(sub(contextMenuItems([{ ...node("/root/.m2/lib.jar"), readOnly: true }]), "Copy Path/Reference…")).toEqual([
+      "Absolute Path",
+      "File Name",
+      "-",
+      "Link /root/.m2/lib.jar",
+    ]);
+  });
+
   it("groups clipboard, search, file changes, formatting and history actions for a file", () => {
     const items = contextMenuItems([node(`${ROOT}/src/a.py`)]);
     expect(labels(items)).toEqual([
