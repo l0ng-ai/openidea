@@ -102,14 +102,14 @@ pub fn jcmd(pid: u32, command_line: &str, timeout: Duration) -> Result<String, A
 }
 
 #[cfg(unix)]
-fn socket_path(pid: u32) -> PathBuf {
+pub(crate) fn socket_path(pid: u32) -> PathBuf {
     temp_dir().join(format!(".java_pid{pid}"))
 }
 
 /// Same trust rule as the JDK's `VirtualMachineImpl`: only talk to a socket we own and
 /// nobody else can reach, otherwise another user could answer in the JVM's place.
 #[cfg(unix)]
-fn check_socket(path: &Path) -> Result<(), AttachError> {
+pub(crate) fn check_socket(path: &Path) -> Result<(), AttachError> {
     // No symlink following: in a sticky, world-writable /tmp anyone can plant a symlink to a
     // socket we own, pass this check, then re-point it before connect.
     let meta = match std::fs::symlink_metadata(path) {

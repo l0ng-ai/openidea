@@ -2,24 +2,27 @@ use std::time::Duration;
 
 use crate::socket::AttachError;
 #[cfg(unix)]
-use crate::socket::{has_listener, temp_dir};
+use crate::socket::{check_socket, has_listener, has_listener_at, socket_path, temp_dir};
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+use std::time::UNIX_EPOCH;
 #[cfg(unix)]
 use std::{
-    fs::OpenOptions,
+    fs::{Metadata, OpenOptions},
     io,
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
-    time::Instant,
+    time::{Instant, SystemTime},
 };
 
-/// Budget for `ensure_listener`; an idle JVM opens its listener in about 200 ms.
+/// Default budget for `ensure_listener`.
 pub const LISTENER_START_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[cfg(unix)]
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// True when `pid` is confirmed to be a HotSpot JVM: it has an attach listener, a perf-data
-/// file of the current user, or runs an executable named `java` (`-XX:-UsePerfData` JVMs).
+/// file of the current user written since it started, or runs an executable named `java`
+/// (`-XX:-UsePerfData` JVMs).
 pub fn is_hotspot(pid: u32) -> bool {
     #[cfg(unix)]
     {
@@ -34,35 +37,48 @@ pub fn is_hotspot(pid: u32) -> bool {
 
 /// Opens `pid`'s attach listener if it has none, as the JDK's attach API does: a
 /// `.attach_pid<pid>` trigger file, then SIGQUIT. Refuses anything `is_hotspot` does not
-/// confirm, because SIGQUIT's default action terminates any other process.
+/// confirm (`NotAJvm`), because SIGQUIT's default action terminates any other process, and a
+/// socket that fails the ownership check (`ForeignListener`).
+///
+/// Blocks for up to `timeout`. A JVM that ignores attach (`-XX:+DisableAttachMechanism`) still
+/// handles the SIGQUIT: it prints a thread dump to its own stdout.
 pub fn ensure_listener(pid: u32, timeout: Duration) -> Result<(), AttachError> {
     #[cfg(unix)]
     {
-        if has_listener(pid) {
-            return Ok(());
-        }
-        let Some(target) = signal_target(pid).filter(|_| is_hotspot(pid)) else {
-            return Err(AttachError::NotAJvm);
-        };
-        let deadline = Instant::now() + timeout;
-        let _trigger = Trigger::create(pid)?;
-        signal(target, libc::SIGQUIT)?;
-        loop {
-            if has_listener(pid) {
-                return Ok(());
-            }
-            signal(target, 0)?;
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(AttachError::ListenerDidNotStart);
-            }
-            std::thread::sleep(remaining.min(POLL_INTERVAL));
-        }
+        ensure_listener_at(&socket_path(pid), pid, timeout)
     }
     #[cfg(not(unix))]
     {
         let _ = (pid, timeout);
         Err(AttachError::Unsupported)
+    }
+}
+
+#[cfg(unix)]
+fn ensure_listener_at(socket: &Path, pid: u32, timeout: Duration) -> Result<(), AttachError> {
+    // `has_listener` reads a socket that fails the trust check as absent; signalling past it
+    // would leave its owner answering in the JVM's place.
+    match check_socket(socket) {
+        Ok(()) => return Ok(()),
+        Err(AttachError::NoListener) => {}
+        Err(e) => return Err(e),
+    }
+    let Some(target) = signal_target(pid).filter(|_| is_hotspot(pid)) else {
+        return Err(AttachError::NotAJvm);
+    };
+    let deadline = Instant::now() + timeout;
+    let _trigger = Trigger::create(pid)?;
+    signal(target, libc::SIGQUIT)?;
+    loop {
+        if has_listener_at(socket) {
+            return Ok(());
+        }
+        signal(target, 0)?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(AttachError::ListenerDidNotStart);
+        }
+        std::thread::sleep(remaining.min(POLL_INTERVAL));
     }
 }
 
@@ -127,16 +143,74 @@ fn create_private(path: &Path) -> io::Result<()> {
 
 #[cfg(unix)]
 fn owned_regular_file(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|meta| owned_regular(&meta))
+}
+
+#[cfg(unix)]
+fn owned_regular(meta: &Metadata) -> bool {
     // SAFETY: geteuid has no preconditions and cannot fail.
-    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file() && meta.uid() == unsafe { libc::geteuid() })
+    meta.is_file() && meta.uid() == unsafe { libc::geteuid() }
 }
 
 /// `<temp>/hsperfdata_<user>/<pid>`, which HotSpot writes unless run with `-XX:-UsePerfData`.
 /// Ownership matters outside macOS, where the directory sits in a shared `/tmp`.
 #[cfg(unix)]
 fn has_perf_data(pid: u32) -> bool {
-    effective_user_name()
-        .is_some_and(|user| owned_regular_file(&temp_dir().join(format!("hsperfdata_{user}")).join(pid.to_string())))
+    let Some(user) = effective_user_name() else { return false };
+    let path = temp_dir().join(format!("hsperfdata_{user}")).join(pid.to_string());
+    std::fs::symlink_metadata(path).is_ok_and(|meta| {
+        owned_regular(&meta) && meta.modified().is_ok_and(|modified| written_since_start(modified, process_start(pid)))
+    })
+}
+
+/// Absorbs the coarser clock of the start time: Linux knows the boot time only to the second.
+#[cfg(unix)]
+const START_SLACK: Duration = Duration::from_secs(2);
+
+/// A perf-data file older than the process was left by a JVM that died without removing it
+/// (SIGKILL) and whose pid was reused. An unknown start time proves nothing.
+#[cfg(unix)]
+fn written_since_start(modified: SystemTime, started: Option<SystemTime>) -> bool {
+    started.and_then(|start| start.checked_sub(START_SLACK)).is_some_and(|earliest| modified >= earliest)
+}
+
+#[cfg(target_os = "macos")]
+fn process_start(pid: u32) -> Option<SystemTime> {
+    let pid = libc::c_int::try_from(pid).ok()?;
+    // SAFETY: proc_bsdinfo is plain data; all-zero is a valid value.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: `info` is writable for `size` bytes, the most PROC_PIDTBSDINFO writes.
+    let written = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), size) };
+    if written != size {
+        return None;
+    }
+    Some(UNIX_EPOCH + Duration::from_secs(info.pbi_start_tvsec) + Duration::from_micros(info.pbi_start_tvusec))
+}
+
+#[cfg(target_os = "linux")]
+fn process_start(pid: u32) -> Option<SystemTime> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let system = std::fs::read_to_string("/proc/stat").ok()?;
+    // SAFETY: sysconf has no preconditions.
+    let ticks_per_sec = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    start_from_proc(&stat, &system, u64::try_from(ticks_per_sec).ok().filter(|t| *t > 0)?)
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn process_start(_pid: u32) -> Option<SystemTime> {
+    None
+}
+
+/// `/proc/<pid>/stat` field 22 is the start in clock ticks since boot; `btime` in `/proc/stat`
+/// is the boot time in seconds since the epoch.
+#[cfg(any(target_os = "linux", test))]
+fn start_from_proc(stat: &str, system: &str, ticks_per_sec: u64) -> Option<SystemTime> {
+    // The command name (field 2) may contain spaces and parentheses; the fields after it start at 3.
+    let ticks: u64 = stat.rsplit_once(')')?.1.split_whitespace().nth(22 - 3)?.parse().ok()?;
+    let boot: u64 = system.lines().find_map(|line| line.strip_prefix("btime "))?.trim().parse().ok()?;
+    let since_boot = Duration::from_millis(ticks.checked_mul(1000)? / ticks_per_sec);
+    Some(UNIX_EPOCH + Duration::from_secs(boot) + since_boot)
 }
 
 /// HotSpot names the perf-data directory after the effective user's passwd entry.
@@ -199,6 +273,61 @@ mod tests {
         assert!(matches!(result, Err(AttachError::NotAJvm)), "{result:?}");
         // SAFETY: signal 0 only checks that the pid exists.
         assert_eq!(unsafe { libc::kill(pid as libc::pid_t, 0) }, 0, "the process must still be alive");
+    }
+
+    #[test]
+    fn foreign_socket_is_refused_without_a_signal() {
+        use std::os::unix::{fs::PermissionsExt, net::UnixListener};
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join(".java_pid1");
+        let _listener = UnixListener::bind(&socket).unwrap();
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o666)).unwrap();
+        let sleep = spawn_sleep();
+        let pid = sleep.0.id();
+        let result = ensure_listener_at(&socket, pid, Duration::from_millis(500));
+        assert!(matches!(result, Err(AttachError::ForeignListener)), "{result:?}");
+        assert!(!temp_dir().join(format!(".attach_pid{pid}")).exists());
+        // SAFETY: signal 0 only checks that the pid exists.
+        assert_eq!(unsafe { libc::kill(pid as libc::pid_t, 0) }, 0, "the process must still be alive");
+    }
+
+    #[test]
+    fn perf_data_counts_only_when_written_since_the_process_started() {
+        let start = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        assert!(!written_since_start(start - Duration::from_secs(60), Some(start)));
+        assert!(!written_since_start(start - Duration::from_secs(3), Some(start)));
+        assert!(written_since_start(start - Duration::from_secs(1), Some(start)));
+        assert!(written_since_start(start + Duration::from_secs(5), Some(start)));
+        assert!(!written_since_start(start + Duration::from_secs(5), None));
+    }
+
+    #[test]
+    fn our_own_start_time_is_known_and_recent() {
+        let start = process_start(std::process::id()).expect("start time of this process");
+        let age = SystemTime::now().duration_since(start).expect("started in the past");
+        assert!(age < Duration::from_secs(24 * 3600), "{age:?}");
+    }
+
+    #[test]
+    fn start_time_from_proc_files() {
+        let stat = "1234 (my (odd) proc) S 1 1234 1234 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 5000 1000 50";
+        let system = "cpu  1 2 3
+btime 1700000000
+processes 9
+";
+        let start = start_from_proc(stat, system, 100).unwrap();
+        assert_eq!(start, UNIX_EPOCH + Duration::from_secs(1_700_000_050));
+        assert_eq!(
+            start_from_proc(
+                stat,
+                "cpu 1 2 3
+",
+                100
+            ),
+            None
+        );
+        assert_eq!(start_from_proc("1234 (short) S 1", system, 100), None);
     }
 
     #[test]
