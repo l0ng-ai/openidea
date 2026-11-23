@@ -4703,7 +4703,6 @@
   "Show commit time rather than author time": "Pokaż czas zatwierdzenia zamiast czasu autora",
   "Show references on the left": "Pokaż odnośniki po lewej stronie",
   "Visible columns": "Widoczne kolumny",
-  "Visible columns:": "Widoczne kolumny:",
   "Get from Revision": "Pobierz z wersji",
   "Replace '{path}' with its content from the revision? Local changes to it are lost.": "Zastąpić '{path}' zawartością z tej wersji? Lokalne zmiany w tym pliku zostaną utracone.",
   "Replace {length} files with their content from the revision? Local changes to them are lost.": "Zastąpić pliki w liczbie {length} ich zawartością z tej wersji? Lokalne zmiany w nich zostaną utracone.",
