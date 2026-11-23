@@ -19,7 +19,7 @@ import { isBusy, type ReplyTimes, type ReplyTurn } from "../model";
 import { useRevealedText } from "../reveal";
 import { forkTask, rerunFrom, resendMessage } from "../store";
 import { PermissionLine, QuestionForm, type QuestionAnswer } from "./QuestionForm";
-import { type UserEntry } from "./shared";
+import { samePropsExcept, type UserEntry } from "./shared";
 import { SubagentCard, ThoughtEntry, ToolEntry } from "./toolEntries";
 
 /** When a message was sent, or when the turn behind a reply finished, and how long it took. */
@@ -92,19 +92,7 @@ function AgentMessage({
   );
 }
 
-export const Entry = memo(function Entry({
-  task,
-  entry,
-  turn,
-  turnCount,
-  reply,
-  time,
-  thoughtMs,
-  working,
-  drafts,
-  onOpenSubagent,
-  onDiagramDrawn,
-}: {
+interface EntryProps {
   task: AgentTask;
   entry: AgentEntry;
   /** Number of the turn this message started (from 0), when it started one. */
@@ -120,7 +108,21 @@ export const Entry = memo(function Entry({
   drafts: RefObject<Map<string, QuestionAnswer[]>>;
   onOpenSubagent: (id: string) => void;
   onDiagramDrawn: () => void;
-}) {
+}
+
+function EntryView({
+  task,
+  entry,
+  turn,
+  turnCount,
+  reply,
+  time,
+  thoughtMs,
+  working,
+  drafts,
+  onOpenSubagent,
+  onDiagramDrawn,
+}: EntryProps) {
   switch (entry.type) {
     case "user":
       return <UserMessage task={task} entry={entry} turn={turn} turnCount={turnCount} />;
@@ -220,7 +222,23 @@ export const Entry = memo(function Entry({
         </div>
       );
   }
-});
+}
+
+/** The reply and its times are rebuilt from the conversation with every chunk: what they say is what counts. */
+export const Entry = memo(
+  EntryView,
+  samePropsExcept<EntryProps>({
+    reply: (a, b) =>
+      a.reply === b.reply ||
+      (!!a.reply &&
+        !!b.reply &&
+        a.reply.turn === b.reply.turn &&
+        a.reply.steered === b.reply.steered &&
+        a.reply.prompt === b.reply.prompt),
+    time: (a, b) =>
+      a.time === b.time || (!!a.time && !!b.time && a.time.sentMs === b.time.sentMs && a.time.doneMs === b.time.doneMs),
+  }),
+);
 
 function AgentErrorText({ message }: { message: string }) {
   return <span>{useAgentErrorText(message)}</span>;

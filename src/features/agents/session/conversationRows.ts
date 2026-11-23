@@ -14,6 +14,8 @@ export type ConversationRow =
   | { kind: "turn"; index: number; turn: FoldedTurn; rows: ConversationRow[] };
 
 export type EntryRow = Extract<ConversationRow, { kind: "entry" }>;
+export type ProcessRow = Extract<ConversationRow, { kind: "process" }>;
+export type TurnRow = Extract<ConversationRow, { kind: "turn" }>;
 
 export const liveTool = (entry: AgentEntry) =>
   entry.type === "tool" && (entry.status === "running" || entry.status === "pending");
@@ -67,4 +69,39 @@ export function foldTurnRows(rows: ConversationRow[], turns: ReadonlyMap<number,
     }
   }
   return out;
+}
+
+/** The entries a row paints, in order. */
+export function rowEntries(row: ConversationRow): AgentEntry[] {
+  if (row.kind === "entry") return [row.entry];
+  return row.kind === "process" ? row.entries.map(({ entry }) => entry) : row.rows.flatMap(rowEntries);
+}
+
+/**
+ * Whether two rows paint the same entries. Rows are rebuilt for every streamed chunk: a row's
+ * identity says nothing, and only the one the chunk grew differs.
+ */
+export function sameRow(a: ConversationRow, b: ConversationRow): boolean {
+  if (a === b) return true;
+  if (a.index !== b.index) return false;
+  switch (a.kind) {
+    case "entry":
+      return b.kind === "entry" && a.entry === b.entry;
+    case "process":
+      return (
+        b.kind === "process" &&
+        a.entries.length === b.entries.length &&
+        a.entries.every(({ entry }, i) => entry === b.entries[i]!.entry)
+      );
+    case "turn":
+      return (
+        b.kind === "turn" &&
+        a.turn.user === b.turn.user &&
+        a.turn.reply === b.turn.reply &&
+        a.turn.sentMs === b.turn.sentMs &&
+        a.turn.doneMs === b.turn.doneMs &&
+        a.rows.length === b.rows.length &&
+        a.rows.every((row, i) => sameRow(row, b.rows[i]!))
+      );
+  }
 }
