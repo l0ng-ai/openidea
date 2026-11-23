@@ -141,7 +141,7 @@ function expansionAt(
 
 async function expandAtSites(
   view: EditorView,
-  t: Pick<LiveTemplate, "body" | "variables">,
+  t: Pick<LiveTemplate, "body" | "variables"> & Partial<Pick<LiveTemplate, "id">>,
   sites: readonly TemplateSite[],
   opts: ExpandOptions = {},
 ): Promise<void> {
@@ -149,23 +149,32 @@ async function expandAtSites(
   const clipboard = needsClipboard(t) ? await readClipboard() : "";
   if (view.state.doc !== state.doc || !view.state.selection.eq(state.selection) || view.state.readOnly) return;
   let expansions = sites.map(({ from }) => expansionAt(state, t, from, clipboard, opts));
-  if (sites.length === 1) {
-    const { from, to } = sites[0]!;
-    clearMulticaretSnippet(view);
-    snippet(expansions[0]!.snippet)(view, null, from, to);
-  } else {
+  if (sites.length > 1) {
     // A variable stays editable everywhere if any caret needs it as a tab stop.
     const editable = new Set(expansions.flatMap((e) => e.fields));
     if (expansions.some((e) => e.fields.length !== editable.size)) {
       const variables = t.variables?.map((v) => (editable.has(v.name) ? { ...v, skipIfDefined: false } : v));
       expansions = sites.map(({ from }) => expansionAt(state, { ...t, variables }, from, clipboard, opts));
     }
-    applyMulticaretSnippet(
-      view,
-      sites.map((site, i) => ({ ...site, snippet: expansions[i]!.snippet })),
-    );
   }
   const exp = expansions[0]!;
+  const linkedField = t.id === "java.fori" ? exp.fields.indexOf("I") : -1;
+  if (sites.length === 1 && linkedField < 0) {
+    const { from, to } = sites[0]!;
+    clearMulticaretSnippet(view);
+    snippet(exp.snippet)(view, null, from, to);
+  } else {
+    const { main } = state.selection;
+    applyMulticaretSnippet(
+      view,
+      sites.map(({ from, to }, i) => ({
+        from,
+        to: sites.length === 1 && to === main.from ? main.to : to,
+        snippet: expansions[i]!.snippet,
+      })),
+      linkedField,
+    );
+  }
   if (view.state.field(fieldCompletion, false) !== undefined)
     view.dispatch({ effects: setFieldCompletion.of(exp.completing) });
   if (exp.completeFirst) setTimeout(() => startCompletion(view), 0);
