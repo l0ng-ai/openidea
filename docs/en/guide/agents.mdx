@@ -125,16 +125,16 @@ Tasks are saved per project and survive restarts. When the agent supports resumi
 
 ## Manage agents
 
-**Settings › Tools › Agents** (also **More Agents…** in the agent picker) has two tabs:
+**Settings › Agents › Agent Setup** (also **More Agents…** in the agent picker) lists built-in agents and agents from the ACP Registry.
 
 - **Built-in**: for each built-in agent, whether its executable was found on `PATH`, a field to point at a **Custom executable**, **Environment variables** for the agent process (written as `NAME=value; OTHER=value`; the values are kept in the OS credential store) and how to sign in. Changes apply to new sessions. When the agent is a global npm install (such as Claude Code, Codex or Gemini CLI), **Check for updates** compares it with npm's latest stable release and **Update to…** updates that installation.
 - **ACP Registry**: agents published in the [ACP Registry](https://agentclientprotocol.com). Search, **Install**, **Update** and **Remove**. Installed agents are kept in OpenIDEA's data directory; downloads are checked against the registry's SHA-256 when it provides one.
 
-**Settings › Tools › Agents › Chat** chooses what the task header shows: **Context window usage**, **Time spent on the task**, **Usage limits** (when the agent reports them, such as Claude Code) and **Session cost**.
+**Settings › Agents › Chat** chooses what the task header shows: **Context window usage**, **Time spent on the task**, **Usage limits** (when the agent reports them, such as Claude Code) and **Session cost**.
 
 ### External MCP servers
 
-**Settings › Agents › External MCP Servers** configures MCP servers across three persistent levels, while the composer's **MCP** picker (or `/mcp`) controls them per session:
+**Settings › Agents › MCP Connections** configures MCP servers across three persistent levels, while the composer's **MCP** picker (or `/mcp`) controls them per session:
 
 - **Global (`User`)**: saved in `settings.toml` with environment variable and HTTP header values stored in the OS credential store, shared across projects and agents (or scoped to selected agents).
 - **Project (`Workspace`)**: saved in `.openidea/settings.toml`; entries with the same name override Global servers, and servers added outside OpenIDEA stay off until approved.

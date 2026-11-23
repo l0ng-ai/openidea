@@ -224,11 +224,12 @@
   flex: none;
 }
 
-/* Import Sessions from Other Apps: filter above a fixed-height list, so the dialog doesn't grow. */
+/* Keep the import list height stable while filtering. */
 .chooser {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  padding: var(--space-3) var(--space-4) 0;
 }
 .chooserList {
   height: 312px;
