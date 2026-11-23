@@ -319,6 +319,52 @@ describe("Tree speed search", () => {
     }
   });
 
+  it("⌘V pastes the clipboard text into the query instead of running the view's Paste", () => {
+    const previousOs = usePlatform.getState().os;
+    usePlatform.setState({ os: "macos" });
+    const pasteFiles = vi.fn();
+    useKeymap.setState({ preset: "intellij-macos", overrides: { "test.paste": ["Meta+V"] } });
+    const dispose = [
+      registerAction({ id: "test.paste", title: "Paste", run: pasteFiles }),
+      installKeyboardDispatcher(),
+    ];
+    try {
+      const view = setup({ defaultExpanded: ["src", "main"] });
+      const tree = view.tree;
+      const paste = (text: string) =>
+        fireEvent.paste(tree, { clipboardData: { getData: () => text } } as unknown as ClipboardEventInit);
+      view.key("ArrowDown");
+      // ⌘F arms the search with an empty query; the clipboard text becomes the query.
+      view.key("f", { metaKey: true });
+      expect(screen.getByRole("status").textContent).toBe("");
+      paste("index.t");
+      expect(screen.getByRole("status")).toHaveTextContent(/^index\.t$/);
+      expect(view.lead()).toBe("index.ts");
+      // A line of pasted text joins the query as typing it would; a wrapped name stays one line.
+      paste("s");
+      expect(screen.getByRole("status")).toHaveTextContent(/^index\.ts$/);
+      // ⌘V is the query's, not the view's file Paste, while the search is active.
+      view.key("v", { metaKey: true });
+      expect(pasteFiles).not.toHaveBeenCalled();
+      // A blank clipboard changes nothing.
+      paste("   ");
+      expect(screen.getByRole("status")).toHaveTextContent(/^index\.ts$/);
+      // Closed, the view's Paste owns ⌘V again.
+      view.key("Escape");
+      view.key("v", { metaKey: true });
+      expect(pasteFiles).toHaveBeenCalledOnce();
+      expect(view.tree).toHaveFocus();
+      // A multi-line clipboard is flattened into the one-line query.
+      view.key("f", { metaKey: true });
+      paste("App\n.tsx");
+      expect(screen.getByRole("status")).toHaveTextContent(/^App \.tsx$/);
+    } finally {
+      dispose.forEach((d) => d());
+      useKeymap.setState({ overrides: {} });
+      usePlatform.setState({ os: previousOs });
+    }
+  });
+
   it("filter mode hides non-matching rows but keeps ancestors", () => {
     const { tree, key } = setup({ defaultExpanded: ["src", "main"], speedSearchMode: "filter" });
     key("ArrowDown");
