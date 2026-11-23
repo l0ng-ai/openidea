@@ -9945,5 +9945,8 @@
   "Previous Rows": "上一组行",
   "Next Rows": "下一组行",
   "Previous Columns": "上一组列",
-  "Next Columns": "下一组列"
+  "Next Columns": "下一组列",
+  "Smart Type": "智能类型",
+  "No expected type at the caret": "光标处没有预期类型",
+  "No suggestions of type {expected}": "没有 {expected} 类型的建议"
 }

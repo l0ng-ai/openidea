@@ -495,6 +495,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
                 "Code Completion",
                 vec![
                     act("code.completion", "Basic"),
+                    act("code.smartTypeCompletion", "Smart Type"),
                     SEP,
                     act("code.cyclicExpandWord", "Cyclic Expand Word"),
                     act("code.cyclicExpandWordBackward", "Cyclic Expand Word (Backward)"),

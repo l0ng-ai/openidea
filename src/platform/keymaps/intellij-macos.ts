@@ -77,6 +77,7 @@ export const intellijMacos: Record<string, string[]> = {
 
   // Code
   "code.completion": ["Ctrl+Space"],
+  "code.smartTypeCompletion": ["Ctrl+Shift+Space"],
   "editor.inlineCompletion.trigger": ["Alt+\\"],
   "editor.inlineCompletion.accept": ["Tab"],
   "editor.inlineCompletion.acceptWord": ["Meta+Right"],

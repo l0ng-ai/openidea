@@ -3709,5 +3709,8 @@
   "Previous Columns": "Previous Columns",
   "Next Columns": "Next Columns",
   "View Options": "View Options",
-  "Visible columns": "Visible columns"
+  "Visible columns": "Visible columns",
+  "Smart Type": "Smart Type",
+  "No expected type at the caret": "No expected type at the caret",
+  "No suggestions of type {expected}": "No suggestions of type {expected}"
 }

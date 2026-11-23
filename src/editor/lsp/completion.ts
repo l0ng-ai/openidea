@@ -70,6 +70,7 @@ import { languageSemantics } from "./semantic";
 import { remoteChange } from "@/editor/api";
 import { tooltipBounds } from "@/editor/core/cm/setup";
 import { completionLabelOffset } from "./theme";
+import { expectedFromSignature, expectedFromText, mentionedNames, smartItems } from "./smartCompletion";
 
 interface RequestContext {
   doc: number;
@@ -695,6 +696,7 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
   if (!ctx.explicit && !word && !trigger) return null;
   if (!ctx.explicit && word && !trigger && /^\d/.test(word.text)) return null;
   if (!ctx.explicit && completionBackoff.active(doc.doc)) return fallback(ctx);
+  const smart = ctx.state.field(smartLookup, false) ?? false;
   cancelInflight();
   const id = nextRequestId();
   inflight = id;
@@ -711,13 +713,28 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
   } catch (e) {
     if (isUnavailable(e)) {
       completionBackoff.mark(doc.doc);
-      return fallback(ctx);
+      return smart ? null : fallback(ctx);
     }
     return null;
   } finally {
     if (inflight === id) inflight = null;
   }
-  if (ctx.aborted || !list.items.length) return list.items.length ? null : fallback(ctx);
+  if (ctx.aborted || !list.items.length) return list.items.length || smart ? null : fallback(ctx);
+  if (smart) {
+    const expected = await expectedType(ctx, doc.doc, word?.from ?? ctx.pos);
+    if (ctx.aborted) return null;
+    if (!expected) {
+      smartHint(ctx, tx("No expected type at the caret"));
+      return null;
+    }
+    const mentioned = mentionedNames(ctx.state.doc.toString());
+    list = { ...list, items: await smartItems(list.items, expected, (item) => resolveItem(doc.doc, item), mentioned) };
+    if (ctx.aborted) return null;
+    if (!list.items.length) {
+      smartHint(ctx, tx`No suggestions of type ${expected}`);
+      return null;
+    }
+  }
   const req: RequestContext = { doc: doc.doc, path: doc.path, language: doc.uiMode, pos: ctx.pos, text: ctx.state.doc };
   const prefs = editorPrefs().completion;
   const typed = word?.text ?? "";
@@ -823,9 +840,58 @@ function exclusiveSource(ctx: CompletionContext): CompletionSource | null {
   return null;
 }
 
+/**
+ * Smart Type completion: while its lookup is open, the language server's items are narrowed to
+ * the caret's expected type and the other sources stay out.
+ */
+const setSmartLookup = StateEffect.define<boolean>();
+const smartLookup = StateField.define<boolean>({
+  create: () => false,
+  update: (value, tr) => tr.effects.reduce((v, e) => (e.is(setSmartLookup) ? e.value : v), value),
+});
+
+/** Ends Smart Type mode when its lookup closes or finds nothing. */
+const endSmartLookup = EditorView.updateListener.of((u) => {
+  if (!u.state.field(smartLookup) || completionStatus(u.startState) === null || completionStatus(u.state) !== null)
+    return;
+  queueMicrotask(() => {
+    if (u.view.state.field(smartLookup) && completionStatus(u.view.state) === null)
+      u.view.dispatch({ effects: setSmartLookup.of(false) });
+  });
+});
+
+/** The type expected at `from`: an annotated assignment, a `return`, else the active parameter's. */
+async function expectedType(ctx: CompletionContext, doc: number, from: number): Promise<string | null> {
+  const line = ctx.state.doc.lineAt(from);
+  const lines = ctx.state.doc.sliceString(0, line.from).split("\n");
+  const fromText = expectedFromText(lines, line.number - 1, line.text.slice(0, from - line.from));
+  if (fromText) return fromText;
+  const help = await lspRequest(() => commands.lspSignatureHelp(doc, offsetToPos(ctx.state.doc, from))).catch(
+    () => null,
+  );
+  return expectedFromSignature(help);
+}
+
+/** Says why the Smart Type lookup is empty, in place of the generic "No suggestions". */
+function smartHint(ctx: CompletionContext, text: string) {
+  if (!ctx.view) return;
+  explicitPending.delete(ctx.view);
+  showHint(ctx.view, text, { timeout: 2000 });
+}
+
+/** ⌃⇧Space: the lookup lists only what fits the expected type at the caret. */
+export function smartTypeCompletion(view: EditorView): boolean {
+  closeCompletion(view);
+  view.dispatch({ effects: setSmartLookup.of(true) });
+  const started = explicitCompletion(view);
+  if (!started) view.dispatch({ effects: setSmartLookup.of(false) });
+  return started;
+}
+
 /** Show suggestions as you type: sources only answer explicit requests when it is off. */
 function gated(source: CompletionSource): CompletionSource {
   return (ctx) => {
+    if (ctx.state.field(smartLookup, false) && source !== claimingLspSource) return null;
     const only = exclusiveSource(ctx);
     if (only) return source === contributedSource ? only(ctx) : null;
     if (!ctx.explicit && (!editorPrefs().completion.autoPopup || inplaceRenameActive(ctx.state))) return null;
@@ -1091,6 +1157,8 @@ export function completionExtension() {
   return [
     lookupKeys,
     prefetchResolve,
+    smartLookup,
+    endSmartLookup,
     autocompletion({
       override: [gated(claimingLspSource), gated(contributedSource), gated(pathFallbackSource)],
       icons: false,

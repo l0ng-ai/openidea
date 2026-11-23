@@ -6,6 +6,7 @@ import { intellijWindows } from "./intellij-windows";
 describe("IDEA keymap parity", () => {
   it.each([
     ["code.splitLine", ["Meta+Enter"], ["Ctrl+Enter"]],
+    ["code.smartTypeCompletion", ["Ctrl+Shift+Space"], ["Ctrl+Shift+Space"]],
     ["editor.scrollToCenter", ["Ctrl+L"], ["Ctrl+M"]],
     ["editor.codeBlockStart", ["Meta+Alt+["], ["Ctrl+["]],
     ["editor.codeBlockEnd", ["Meta+Alt+]"], ["Ctrl+]"]],

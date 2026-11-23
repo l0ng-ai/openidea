@@ -15,6 +15,8 @@ export const eclipseWindows: Record<string, string[]> = {
   "refactor.changeSignature": ["Shift+Alt+C"],
   "db.modifyTable": ["Shift+Alt+C"],
   "vcs.commit": [],
+  // Eclipse gives ⌃⇧Space to Parameter Info / Quick Documentation.
+  "code.smartTypeCompletion": [],
   "editor.closeTab": ["Ctrl+W"],
   "toolwindow.closeContent": ["Ctrl+W"],
   "editor.closeAllTabs": ["Shift+Ctrl+F4", "Shift+Ctrl+W"],
