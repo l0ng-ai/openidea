@@ -3165,6 +3165,32 @@ async fn open_java_files_are_checked_again_after_a_project_update() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_project_update_refreshes_java_semantic_tokens() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let _ = h.open("A.java", "class A { private String name; }");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let state = h.launcher.state("jdtls");
+    let refreshes = || {
+        h.events
+            .lock()
+            .iter()
+            .filter(|e| matches!(e, IdeEvent::LspRefresh { kind: LspRefreshKind::SemanticTokens, .. }))
+            .count()
+    };
+    state
+        .peer()
+        .notify("language/status", json!({ "type": "Message", "message": "Updating project configurations..." }))
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(refreshes(), 0);
+
+    // jdtls answers with no tokens for a file outside any project and sends no
+    // `workspace/semanticTokens/refresh` once a later import takes it in.
+    state.peer().notify("language/status", json!({ "type": "ProjectStatus", "message": "OK" })).unwrap();
+    eventually(|| refreshes() == 1).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_project_update_attaches_maven_generated_sources_before_rechecking() {
     let mut caps = incremental_caps();
     caps["executeCommandProvider"]["commands"].as_array_mut().unwrap().push(json!("openidea.java.generatedSources"));
