@@ -49,20 +49,23 @@ export function suppressTargets(facts: PythonFacts, pos: Pos): { target: Suppres
     : [];
 }
 
-const NOINSPECTION = /^(\s*)#\s*noinspection\s+(.*?)\s*$/;
+const NOINSPECTION = /^\s*#\s*noinspection\s+(.*?)\s*$/;
 
 /** The change that suppresses `id` above 0-based `line`: a new comment, or `id` added to the one there. */
 export function suppressChange(doc: Text, line: number, id: string): { from: number; to?: number; insert: string } {
   const target = doc.line(line + 1);
   const indent = /^\s*/.exec(target.text)![0];
-  if (line > 0) {
-    const above = doc.line(line);
+  for (let row = line; row > 0; row--) {
+    const above = doc.line(row);
+    if (!above.text.startsWith(`${indent}#`)) break;
     const m = NOINSPECTION.exec(above.text);
-    if (m && m[1] === indent) {
-      const ids = m[2]!.split(",").map((s) => s.trim());
-      if (ids.includes(id) || ids.includes("ALL")) return { from: above.from, insert: "" };
-      return { from: above.from, to: above.to, insert: `${indent}# noinspection ${[...ids, id].join(",")}` };
-    }
+    if (!m) continue;
+    const ids = m[1]!
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (ids.includes(id) || ids.includes("ALL")) return { from: above.from, insert: "" };
+    return { from: above.from, to: above.to, insert: `${indent}# noinspection ${[...ids, id].join(",")}` };
   }
   return { from: target.from, insert: `${indent}# noinspection ${id}\n` };
 }
@@ -89,7 +92,7 @@ export function suppressControls(
   latest: FactsOf | undefined,
 ): ContributedIntention[] {
   const id = suppressIdOf(inspectionId);
-  if (!id || !latest || latest.doc !== view.state.doc) return [];
+  if (!id || !latest || latest.doc !== view.state.doc || view.state.readOnly) return [];
   const { facts, doc } = latest;
   const head = view.state.selection.main.head;
   const line = view.state.doc.lineAt(head);
@@ -97,7 +100,8 @@ export function suppressControls(
     id: `inspection.suppress.${target}`,
     label: LABELS[target],
     run: () => {
-      if (view.state.doc === doc) view.dispatch({ changes: suppressChange(doc, line, id), userEvent: "input" });
+      if (view.state.doc === doc && !view.state.readOnly)
+        view.dispatch({ changes: suppressChange(doc, line, id), userEvent: "input" });
     },
   }));
 }

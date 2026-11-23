@@ -415,8 +415,8 @@ function applyProfileTo(diagnostics: readonly Diagnostic[]): Diagnostic[] {
 }
 
 const viewers = new Map<string, number>();
-/** Each open document's facts of the last run, for the ⌥↵ Suppress rows. */
-const latestFacts = new Map<string, FactsOf>();
+/** Each editor view's facts of the last run, for the ⌥↵ Suppress rows. */
+const latestFacts = new WeakMap<EditorView, FactsOf>();
 const hasClass = (items: readonly OutlineItem[]): boolean =>
   items.some((item) => item.kind === "class" || hasClass(item.children));
 
@@ -424,7 +424,7 @@ const hasClass = (items: readonly OutlineItem[]): boolean =>
 export function pythonInheritanceExtension(ctx: EditorDocContext): Extension {
   if (ctx.language !== "python" || ctx.virtual || ctx.doc < 0) return [];
   watchChanges();
-  const suppress = inspectionControlProviders.of((view, id) => suppressControls(view, id, latestFacts.get(ctx.path)));
+  const suppress = inspectionControlProviders.of((view, id) => suppressControls(view, id, latestFacts.get(view)));
   const plugin = ViewPlugin.define((view: EditorView) => {
     if (!isTauri()) return {};
     viewers.set(ctx.path, (viewers.get(ctx.path) ?? 0) + 1);
@@ -444,7 +444,7 @@ export function pythonInheritanceExtension(ctx: EditorDocContext): Extension {
         const outline = await lspRequest(() => commands.docOutline(ctx.doc));
         // Every rule is about a class: no class, nothing to fetch the graph for.
         if (!hasClass(outline)) {
-          latestFacts.delete(ctx.path);
+          latestFacts.delete(view);
           setFileDiagnostics(ctx.path, SOURCE, []);
           return;
         }
@@ -463,7 +463,7 @@ export function pythonInheritanceExtension(ctx: EditorDocContext): Extension {
           outlineOf: (path) => withDocument(path, (doc) => lspRequest(() => commands.docOutline(doc))).catch(() => []),
         });
         if (disposed || mine !== sequence || view.state.doc !== text) return;
-        latestFacts.set(ctx.path, { facts, doc: text });
+        latestFacts.set(view, { facts, doc: text });
         // `# noinspection` comments, then the profile, decide what is shown and how strongly.
         const shown = found.filter((d) => !isSuppressed(d, facts.suppressions));
         setFileDiagnostics(ctx.path, SOURCE, applyProfileTo(shown));
@@ -494,7 +494,6 @@ export function pythonInheritanceExtension(ctx: EditorDocContext): Extension {
           return;
         }
         viewers.delete(ctx.path);
-        latestFacts.delete(ctx.path);
         setFileDiagnostics(ctx.path, SOURCE, []);
       },
     };

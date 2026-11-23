@@ -1,4 +1,4 @@
-import { EditorState, Text } from "@codemirror/state";
+import { EditorState, StateEffect, Text } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { expect, it } from "vitest";
 import type { Diagnostic, PythonFacts, Range } from "@/platform/ipc";
@@ -75,6 +75,15 @@ it("writes the comment above the target at its indentation, or adds to the one t
     "class Shape:\n    # noinspection PyAbstractClass,PyOverrideDecorator\n    def area(self):",
   );
   expect(apply(commented, suppressChange(commented, 2, "PyAbstractClass"))).toBe(commented.toString());
+  const stacked = Text.of([
+    "class Shape:",
+    "    # noinspection PyAbstractClass",
+    "    # keep this",
+    "    def area(self):",
+  ]);
+  expect(apply(stacked, suppressChange(stacked, 3, "PyOverrideDecorator"))).toBe(
+    "class Shape:\n    # noinspection PyAbstractClass,PyOverrideDecorator\n    # keep this\n    def area(self):",
+  );
   // A comment at another indentation belongs to other code.
   expect(apply(commented, suppressChange(commented, 0, "PyAbstractClass"))).toBe(
     "# noinspection PyAbstractClass\n" + commented.toString(),
@@ -92,5 +101,17 @@ it("offers no Suppress rows once the text has changed since the facts were read"
   // A row picked from a menu opened before the edit does nothing.
   rows[0]!.run();
   expect(view.state.doc.line(1).text).toBe("import os");
+  view.destroy();
+});
+
+it("keeps a read-only document unchanged", () => {
+  const doc = Text.of(["class Shape:", "    pass", "", "    @override", "    def area(self):", "        pass"]);
+  const view = new EditorView({ state: EditorState.create({ doc, selection: { anchor: doc.line(5).from + 10 } }) });
+  const latest = { facts: FACTS, doc: view.state.doc };
+  const [row] = suppressControls(view, "builtin:python-override", latest);
+  view.dispatch({ effects: StateEffect.appendConfig.of(EditorState.readOnly.of(true)) });
+  expect(suppressControls(view, "builtin:python-override", latest)).toEqual([]);
+  row!.run();
+  expect(view.state.doc).toBe(doc);
   view.destroy();
 });

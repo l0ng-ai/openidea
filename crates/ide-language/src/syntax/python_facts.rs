@@ -158,7 +158,11 @@ fn suppressions(tree: &Tree, text: &str, idx: &LineIndex) -> Vec<PythonSuppressi
         } else if blank_after {
             return;
         } else {
-            let Some(statement) = statement_at(root, starts[next] + indent_len(lines[next])) else { return };
+            let indent = indent_len(lines[next]);
+            if indent != node.start_position().column {
+                return;
+            }
+            let Some(statement) = statement_at(root, starts[next] + indent) else { return };
             idx.range(statement.start_byte(), statement.end_byte())
         };
         out.push(PythonSuppression { ids, range });
@@ -180,7 +184,7 @@ fn statement_at(root: Node, byte: usize) -> Option<Node> {
         }
         node = parent;
     }
-    (node.start_byte() == byte).then_some(node)
+    (node.start_byte() == byte && node.parent().is_some_and(|p| matches!(p.kind(), "module" | "block"))).then_some(node)
 }
 
 /// The methods declared directly in `class`.
@@ -558,6 +562,14 @@ mod tests {
         let f = facts("x = 1\n# noinspection PyAbstractClass\n\nclass C:\n    pass\n");
         assert!(covered(&f).is_empty());
         let f = facts("# noinspection\nclass C:\n    pass\n# noinspectionX A\nclass D:\n    pass\n");
+        assert!(covered(&f).is_empty());
+    }
+
+    #[test]
+    fn noinspection_does_not_cross_a_block_boundary() {
+        let f = facts("def wrapper():\n    pass\n    # noinspection ALL\nclass Other:\n    pass\n");
+        assert!(covered(&f).is_empty());
+        let f = facts("values = [\n    # noinspection ALL\n    1,\n]\n");
         assert!(covered(&f).is_empty());
     }
 
