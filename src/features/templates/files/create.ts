@@ -1,4 +1,5 @@
 /** Creates a file from a template and fills it through the editor. */
+import { toBase64 } from "@/platform/base64";
 import { tx } from "@/platform/i18n";
 import { notifyFileOperation } from "@/platform/fileOps";
 import { EditorSelection } from "@codemirror/state";
@@ -191,7 +192,7 @@ export async function createFromTemplate(
   // A provided editor (a notebook shows cells, not text) reads the file from
   // disk and has no view to insert into, so its body is written on create.
   const provided = await providedEditor(plan.path);
-  if (provided && text) await call(commands.fsCreateFileBytes(plan.path, [...new TextEncoder().encode(text)]));
+  if (provided && text) await call(commands.fsCreateFileBytes(plan.path, toBase64(new TextEncoder().encode(text))));
   else await call(commands.fsCreateFile(plan.path));
   notifyFileOperation({ kind: "created", paths: [plan.path] });
   onCreated?.();

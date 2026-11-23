@@ -1,7 +1,7 @@
 use super::Channel;
 use crate::{Host, Project};
 use ide_command::command;
-use ide_core::{IdeError, IdeResult, RequestId};
+use ide_core::{IdeError, IdeResult, IpcBytes, RequestId};
 use ide_vfs::FileEntry;
 use ide_workspace::DeletionUndo;
 use std::path::{Path, PathBuf};
@@ -209,7 +209,7 @@ pub fn fs_create_file(host: &Host, window: &str, path: PathBuf) -> IdeResult<()>
 }
 
 #[command(trust = always)]
-pub async fn fs_create_file_bytes(host: &Host, window: &str, path: PathBuf, data: Vec<u8>) -> IdeResult<()> {
+pub async fn fs_create_file_bytes(host: &Host, window: &str, path: PathBuf, data: IpcBytes) -> IdeResult<()> {
     let project = host.project(window).ok();
     host.blocking(move || {
         ide_vfs::create_file_bytes(&path, &data)?;
