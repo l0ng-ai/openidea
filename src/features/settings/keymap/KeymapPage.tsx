@@ -9,6 +9,7 @@
 import { useMemo, useRef, useState, type MouseEvent } from "react";
 import clsx from "clsx";
 import { allActions, useActions, type Action } from "@/platform/actions";
+import { toBase64 } from "@/platform/base64";
 import { defaultPreset, formatBinding, type Keymap, PRESET_TITLES, PRESETS } from "@/platform/keymap";
 import { call, commands } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
@@ -300,7 +301,7 @@ export function KeymapPage() {
     try {
       // The save dialog already confirmed replacing an existing file.
       await call(commands.fsDelete(path)).catch(() => {});
-      await call(commands.fsCreateFileBytes(path, Array.from(new TextEncoder().encode(json))));
+      await call(commands.fsCreateFileBytes(path, toBase64(new TextEncoder().encode(json))));
       notifications().notify({
         level: "info",
         title: tx("Keymap exported"),

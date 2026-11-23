@@ -4,6 +4,7 @@
  * config-dir scratches. Creating one picks the next free `scratch[_n].<ext>` name and opens
  * it as a normal document.
  */
+import { toBase64 } from "@/platform/base64";
 import { call, commands, emitLocalIdeEvent, isTauri } from "@/platform/ipc";
 import { scratchesDir as hostScratchesDir } from "@/platform/scratchesDir";
 import { editorService, notifications } from "@/workbench/contributions";
@@ -23,7 +24,7 @@ export const tauriScratchBackend: ScratchBackend = {
   listNames: async (dir) => (await call(commands.fsReadDir(dir))).map((e) => e.name),
   createFile: async (path, text) =>
     void (await call(
-      text ? commands.fsCreateFileBytes(path, [...new TextEncoder().encode(text)]) : commands.fsCreateFile(path),
+      text ? commands.fsCreateFileBytes(path, toBase64(new TextEncoder().encode(text))) : commands.fsCreateFile(path),
     )),
   languages: async () => scratchLanguages(await commands.languages()),
   open: (path, caret) => editorService().openFile(path, { focus: true, ...(caret && { selection: caret }) }),
