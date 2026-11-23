@@ -1363,6 +1363,9 @@ async fn a_turn_saves_the_task_file_once_per_stop() {
     let (again_at, again) = stopped(AgentStatus::Ready, seen).await;
     assert_eq!(again, Some((status(AgentStatus::Ready), 7)));
     let second_turn = again_at - ready_at;
+    eprintln!(
+        "task file saves: {first_turn} to the first question, {answered} to answer it and finish, {second_turn} for a second turn"
+    );
     assert!(
         first_turn <= 4 && answered <= 2 && second_turn <= 3,
         "task file saves: {first_turn} to the first question (4 or fewer), {answered} to answer it and finish (2 or fewer), {second_turn} for a second turn (3 or fewer)"
@@ -1427,6 +1430,205 @@ async fn saving_a_large_task_does_not_hold_up_readers() {
     eprintln!("longest wait for the state lock while saving: {waits:?}");
     assert!(shortest * 3 < serialising, "readers waited {shortest:?} while the task was saved ({serialising:?})");
     mgr.shutdown();
+}
+
+async fn idle_task(mgr: &AgentManager, title: &str) -> AgentTask {
+    let request = NewAgentTask {
+        prompt: text(title),
+        provider: "claude".into(),
+        isolation: Isolation::Local,
+        idle: true,
+        ..Default::default()
+    };
+    mgr.create(request).await.unwrap()
+}
+
+fn saved_title(path: &Path) -> Option<String> {
+    let file: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    file["task"]["title"].as_str().map(str::to_owned)
+}
+
+/// Changes asked for in a burst are written once, as the latest state, and no older state is
+/// written after it.
+#[tokio::test(flavor = "multi_thread")]
+async fn saves_asked_for_in_a_burst_write_the_latest_state_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let task = idle_task(&mgr, "first").await;
+    let handle = mgr.task(&task.id).unwrap();
+    let path = task_file(tmp.path(), &task.id);
+    let before = saves(&path);
+    for i in 0..50 {
+        handle.state.lock().task.title = format!("title {i}");
+        handle.persist_soon();
+    }
+    for _ in 0..500 {
+        if saved_title(&path).as_deref() == Some("title 49") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(saved_title(&path).as_deref(), Some("title 49"));
+    tokio::time::sleep(SAVE_DELAY * 2).await;
+    assert_eq!(saved_title(&path).as_deref(), Some("title 49"), "an older state was written back");
+    let written = saves(&path) - before;
+    mgr.shutdown();
+    assert!(written <= 2, "50 changes in a burst were saved {written} times");
+}
+
+/// Saves of one task from several threads, whether they wait or not, never put an older
+/// state back over a newer one, and saves of other tasks never mix in.
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_saves_keep_the_newest_state_of_each_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let mut tasks = Vec::new();
+    for name in ["alpha", "beta"] {
+        let task = idle_task(&mgr, name).await;
+        let handle = mgr.task(&task.id).unwrap();
+        // Long enough that a save takes a while between the copy and the write.
+        handle.state.lock().conversation.main.push(AgentEntry::Agent { text: "text ".repeat(60_000) });
+        tasks.push((name, handle, task_file(tmp.path(), &task.id)));
+    }
+    // "<name> <n>", n growing with every change made under the state lock.
+    let change = |name: &str, handle: &Task, n: &AtomicU64| {
+        let mut s = handle.state.lock();
+        s.task.title = format!("{name} {}", n.fetch_add(1, Ordering::AcqRel) + 1);
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut watchers = Vec::new();
+    let mut writers = Vec::new();
+    for (name, handle, path) in &tasks {
+        let counter = Arc::new(AtomicU64::new(0));
+        for pace in 0..2 {
+            let (name, handle, counter) = (*name, handle.clone(), counter.clone());
+            writers.push(std::thread::spawn(move || {
+                for i in 0..40 {
+                    change(name, &handle, &counter);
+                    if (i + pace) % 2 == 0 {
+                        handle.persist();
+                    } else {
+                        handle.persist_soon();
+                    }
+                }
+            }));
+        }
+        let (name, path, stop) = (*name, path.clone(), stop.clone());
+        watchers.push(std::thread::spawn(move || {
+            let mut newest = 0;
+            while !stop.load(Ordering::Acquire) {
+                if let Some(title) = saved_title(&path) {
+                    // Nothing was saved yet but the task's name, before the first change.
+                    let n: u64 = match title.strip_prefix(&format!("{name} ")) {
+                        Some(n) => n.parse().unwrap(),
+                        None => {
+                            assert_eq!(title, name, "another task's state");
+                            0
+                        }
+                    };
+                    assert!(n >= newest, "{name}: state {n} was written after state {newest}");
+                    newest = n;
+                }
+                std::thread::sleep(Duration::from_micros(100));
+            }
+        }));
+    }
+    for writer in writers {
+        writer.join().unwrap();
+    }
+    for (_, handle, _) in &tasks {
+        handle.persist();
+    }
+    stop.store(true, Ordering::Release);
+    for watcher in watchers {
+        watcher.join().unwrap();
+    }
+    tokio::time::sleep(SAVE_DELAY * 2).await;
+    for (name, handle, path) in &tasks {
+        let title = handle.state.lock().task.title.clone();
+        assert_eq!(title, format!("{name} 80"));
+        assert_eq!(saved_title(path), Some(title));
+    }
+    mgr.shutdown();
+}
+
+/// What was asked to be saved soon is written when the manager shuts down, and a task that
+/// is deleted meanwhile stays deleted.
+#[tokio::test]
+async fn shutdown_writes_the_saves_still_waiting_and_a_delete_drops_them() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let kept = idle_task(&mgr, "kept").await;
+    let gone = idle_task(&mgr, "gone").await;
+    let (kept_path, gone_path) = (task_file(tmp.path(), &kept.id), task_file(tmp.path(), &gone.id));
+    for id in [&kept.id, &gone.id] {
+        let handle = mgr.task(id).unwrap();
+        handle.state.lock().task.title = "renamed".into();
+        handle.persist_soon();
+    }
+    // This runtime runs one thing at a time and nothing has yielded to it: the saves wait.
+    assert_eq!(saved_title(&kept_path).as_deref(), Some("kept"));
+    mgr.delete(&gone.id, false).await.unwrap();
+    mgr.shutdown();
+    assert_eq!(saved_title(&kept_path).as_deref(), Some("renamed"), "shutdown left the task unsaved");
+
+    let restored = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    assert_eq!(restored.task(&kept.id).unwrap().state.lock().task.title, "renamed");
+    assert!(restored.task(&gone.id).is_err());
+    tokio::time::sleep(SAVE_DELAY * 2).await;
+    assert!(!gone_path.exists(), "the save that was waiting brought the deleted task back");
+    assert_eq!(saved_title(&kept_path).as_deref(), Some("renamed"));
+}
+
+/// Archiving saves the task as it is, including changes nobody asked to be saved.
+#[tokio::test]
+async fn archiving_saves_the_task_before_it_returns() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let task = idle_task(&mgr, "task").await;
+    let path = task_file(tmp.path(), &task.id);
+    mgr.task(&task.id).unwrap().state.lock().task.title = "changed meanwhile".into();
+    mgr.archive(&task.id).unwrap();
+    assert_eq!(saved_task(&path).map(|(status, _)| status), Some(serde_json::to_value(AgentStatus::Archived).unwrap()));
+    assert_eq!(saved_title(&path).as_deref(), Some("changed meanwhile"));
+    mgr.shutdown();
+}
+
+/// A turn that fails or hits the usage limit is in the task file by the time the window is
+/// told, like the end of a turn.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_turn_is_saved_before_the_window_hears_of_it() {
+    for (message, status) in [("auth", AgentStatus::Failed), ("limit", AgentStatus::Limited)] {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+        let _shut_down = ShutDown(&mgr);
+        let told = Arc::new(Mutex::new(None));
+        let (sink, dir) = (told.clone(), tmp.path().to_path_buf());
+        mgr.subscribe(Arc::new(move |event| {
+            if let AgentEvent::Task { task } = event
+                && task.status == status
+            {
+                *sink.lock() = Some(saved_task(&task_file(&dir, &task.id)).map(|(status, _)| status));
+            }
+        }));
+        let task = mgr
+            .create(NewAgentTask {
+                prompt: text(message),
+                provider: "claude".into(),
+                isolation: Isolation::Local,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        wait_for(&mgr, &task.id, status).await;
+        for _ in 0..500 {
+            if told.lock().is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(*told.lock(), Some(Some(serde_json::to_value(status).unwrap())), "{status:?}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
