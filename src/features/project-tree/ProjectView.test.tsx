@@ -222,6 +222,42 @@ describe("ProjectView", () => {
     }
   });
 
+  it("pastes a copied keyword into the tree's speed search instead of pasting files", async () => {
+    dispatchViaKeymap();
+    // Explorer holds a file, and the user wants to paste a word they copied from somewhere else
+    // into the search they just opened with ⌘F.
+    fs.nodes.set("/elsewhere/Photo.png", { kind: "file", size: 3 });
+    setOsClipboardForTests({
+      files: async () => ["/elsewhere/Photo.png"],
+      hasFiles: async () => true,
+      setFiles: async () => false,
+    });
+    try {
+      const { tree, row, rows } = setup();
+      await waitFor(() => expect(rows()).toContain("README.md"));
+      fireEvent.mouseDown(row("src"));
+      tree.focus();
+      fireEvent.keyDown(tree, { key: "f", code: "KeyF", metaKey: true });
+      fireEvent.paste(tree, {
+        clipboardData: { getData: () => "Read" },
+      } as unknown as ClipboardEventInit);
+      expect(within(tree.parentElement!).getByRole("status")).toHaveTextContent("Read");
+      // The file Paste never ran: give a wrong one the time to land, then check the project.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      });
+      expect([...fs.nodes.keys()].filter((p) => p.startsWith("/w/acme/") && p.endsWith("Photo.png"))).toEqual([]);
+      // Closed, ⌘V is the view's file Paste again.
+      fireEvent.keyDown(tree, { key: "Escape", code: "Escape" });
+      fireEvent.keyDown(tree, { key: "v", code: "KeyV", metaKey: true });
+      await waitFor(() =>
+        expect([...fs.nodes.keys()].some((p) => p.startsWith("/w/acme/") && p.endsWith("Photo.png"))).toBe(true),
+      );
+    } finally {
+      setOsClipboardForTests(null);
+    }
+  });
+
   it("clears cut dimming and disables Paste on focus after the OS clipboard becomes text", async () => {
     dispatchViaKeymap();
     let files: string[] = [];
