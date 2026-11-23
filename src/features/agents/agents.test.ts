@@ -13,6 +13,7 @@ import {
   imageFromDataUrl,
   mainOptions,
   matchCommands,
+  hasMention,
   mentionOf,
   modeIcon,
   nextValue,
@@ -257,6 +258,10 @@ describe("agent composer", () => {
       images: [],
     });
     expect(mentionOf("a.rs", { from: 3, to: 3 })).toBe("@a.rs:3");
+    expect(hasMention("see @a.rs:3 and", "@a.rs:3")).toBe(true);
+    expect(hasMention("see @a.rs:3-4", "@a.rs:3")).toBe(false);
+    expect(hasMention("see @a.rs:3", "@a.rs")).toBe(false);
+    expect(hasMention("@src/a.rs", "@a.rs")).toBe(false);
     // A folder counts while `@src/` is left as typed, not once a file inside it was picked.
     const folder = { path: "/w/src", rel: "src/" };
     expect(toPrompt({ text: "explain @src/ please", files: [folder], images: [] }).files).toEqual(["/w/src"]);

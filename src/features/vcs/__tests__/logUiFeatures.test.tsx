@@ -34,6 +34,7 @@ import { LogScope } from "../LogScope";
 import { CommitDetails } from "../log/CommitDetails";
 import { DEFAULT_LOG_OPTIONS, useLogOptions } from "../logOptions";
 import { emptyFilters, openLogTab, reloadLog, selectGitTab, useGitLog } from "../logStore";
+import * as logPresentation from "../logPresentation";
 import { commitKey } from "../multiRoot";
 import { useVcs } from "../store";
 
@@ -147,6 +148,24 @@ describe("log controls", () => {
     fireEvent.keyDown(list, { key: "b" });
     expect(useGitLog.getState().selected).toBe("/repo\0base");
     expect(screen.getByRole("status")).toHaveTextContent("b");
+  });
+
+  it("lays the graph out again only for the options that shape it", async () => {
+    const present = vi.spyOn(logPresentation, "presentLogGraph");
+    render(<LogView />);
+    const list = await screen.findByRole("listbox", { name: "Commits" });
+    await waitFor(() => expect(within(list).getAllByRole("option")).toHaveLength(3));
+    const laidOut = () => present.mock.calls.length;
+    const before = laidOut();
+
+    act(() => useLogOptions.setState({ showAuthor: false, columnWidths: { author: 200 } }));
+    expect(laidOut()).toBe(before);
+
+    act(() => useLogOptions.setState({ longEdges: true }));
+    expect(laidOut()).toBe(before + 1);
+
+    act(() => useGitLog.setState({ commits: [...useGitLog.getState().commits, c("older")] }));
+    expect(laidOut()).toBe(before + 2);
   });
 
   it("hides the column headers unless View Options shows them", async () => {

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { AgentProvider, AgentTask, ProjectInfo } from "@/bindings";
 import { useProject } from "@/platform/project";
 import { HomeEditor } from "./HomeEditor";
@@ -23,6 +23,9 @@ const backend = vi.hoisted(() => ({
   tauri: false,
   create: vi.fn(),
   prompt: vi.fn(),
+  unqueue: vi.fn(),
+  sendQueued: vi.fn(),
+  notify: vi.fn(),
   open: vi.fn(),
   close: vi.fn(),
 }));
@@ -38,6 +41,8 @@ vi.mock("@/platform/ipc", async (original) => ({
   commands: {
     agentCreate: backend.create,
     agentPrompt: backend.prompt,
+    agentUnqueue: backend.unqueue,
+    agentSendQueuedNow: backend.sendQueued,
     agentSubscribe: async () => ({ status: "ok", data: [] }),
     agentProviders: async () => ({ status: "ok", data: [provider] }),
     agentRefreshModels: async (id: string) => ({
@@ -64,6 +69,7 @@ vi.mock("@/workbench/contributions", async (original) => ({
   editorService: () => ({ openInput: backend.open, closeInput: backend.close }),
   maybeEditorService: () => ({ activePath: () => null }),
   toolWindowService: () => ({ show: vi.fn() }),
+  notifications: () => ({ notify: backend.notify }),
 }));
 
 const ok = <T,>(data: T) => ({ status: "ok" as const, data });
@@ -350,6 +356,50 @@ describe.each(paths)("$name acknowledgement", (path) => {
     response.resolve(success());
     await response.pending;
     expect(useAgents.getState().history).toEqual(path.key === HOME ? ["submitted prompt"] : []);
+  });
+});
+
+describe("queued message actions", () => {
+  const item = (id: string) => ({ id, prompt: { text: id, files: [], images: [] } });
+  function showQueue() {
+    useAgents.setState({ tasks: new Map([["A", { ...task("A"), queue: [item("first"), item("second")] }]]) });
+    updateComposer("A", { text: "unsent draft" });
+    render(<SessionEditor input={{ kind: SESSION_KIND, key: sessionKey("A"), data: { task: "A" } }} />);
+    return within(screen.getByLabelText("Queued messages"));
+  }
+
+  it("locks only the pending row and leaves the draft alone when another turn takes it", async () => {
+    const response = deferred();
+    backend.unqueue.mockReturnValue(response.promise);
+    const queue = showQueue();
+    fireEvent.click(queue.getAllByRole("button", { name: "Edit" })[0]!);
+    for (const name of ["Send now", "Edit", "Remove"]) {
+      const [first, second] = queue.getAllByRole("button", { name });
+      expect(first).toBeDisabled();
+      expect(second).toBeEnabled();
+      fireEvent.click(first!);
+    }
+    expect(backend.unqueue).toHaveBeenCalledTimes(1);
+    expect(backend.sendQueued).not.toHaveBeenCalled();
+    await act(async () => {
+      useAgents.setState({ tasks: new Map([["A", { ...task("A"), queue: [item("second")] }]]) });
+      response.resolve({ status: "error", error: { kind: "outOfSync", message: "Message is no longer queued" } });
+    });
+    expect(queue.queryByText("first")).not.toBeInTheDocument();
+    expect(composerDraft("A").text).toBe("unsent draft");
+    expect(backend.notify).not.toHaveBeenCalled();
+  });
+
+  it("still reports a missing task and allows another action after a real failure", async () => {
+    backend.sendQueued.mockResolvedValue({ status: "error", error: { kind: "notFound", message: "missing task" } });
+    const queue = showQueue();
+    fireEvent.click(queue.getAllByRole("button", { name: "Send now" })[0]!);
+    await waitFor(() =>
+      expect(backend.notify).toHaveBeenCalledWith(expect.objectContaining({ body: "IpcError: missing task" })),
+    );
+    backend.unqueue.mockResolvedValue(ok(item("first")));
+    fireEvent.click(queue.getAllByRole("button", { name: "Edit" })[0]!);
+    await waitFor(() => expect(composerDraft("A").text).toBe("first\nunsent draft"));
   });
 });
 

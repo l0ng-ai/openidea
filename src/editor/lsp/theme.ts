@@ -1,5 +1,6 @@
 /** Editor-side styling for LSP features (CodeMirror theme; tokens only). */
 import { EditorView } from "@codemirror/view";
+import { inlineBackground, inlineFramedFallback, inlineFramedModern } from "@/editor/core/cm/inlineBg";
 import { RAINBOW_COLORS } from "./semantic";
 
 const tooltipSurface = {
@@ -402,7 +403,8 @@ export const lspTheme = EditorView.theme({
   ".cm-lsp-occurrence-write, .cm-lsp-occurrence-tail-write": {
     "--lsp-occurrence-bg": "var(--bg-identifier-under-caret-write, color-mix(in srgb, var(--danger) 12%, transparent))",
   },
-  ".cm-lsp-occurrence": { backgroundColor: "var(--lsp-occurrence-bg)" },
+  ".cm-line.cm-lsp-occurrence": { backgroundColor: "var(--lsp-occurrence-bg)" },
+  "span.cm-lsp-occurrence": inlineBackground("var(--lsp-occurrence-bg)"),
   // Text fill, not `color`: it reaches the syntax and semantic spans nested inside, and with the
   // variable unset the declaration drops, so they keep their own colours.
   "span.cm-lsp-occurrence, .cm-lsp-occurrence-text": { WebkitTextFillColor: "var(--fg-identifier-under-caret)" },
@@ -436,17 +438,20 @@ export const lspTheme = EditorView.theme({
     borderBottomColor: "var(--bg-popup)",
   },
   // Chooser highlight (tempHighlight.ts): the expression / occurrences a choice would take.
-  ".cm-lsp-chooser-highlight": { backgroundColor: "var(--bg-text-search-result)" },
-  ".cm-lsp-chooser-removed": { backgroundColor: "var(--diff-deleted)" },
+  ".cm-lsp-chooser-highlight": inlineBackground("var(--bg-text-search-result)"),
+  ".cm-lsp-chooser-removed": inlineBackground("var(--diff-deleted)"),
 
   // --- in-place rename (inplaceRename.ts) ------------------------------------
   ".cm-lsp-inplace": {
-    backgroundColor: "var(--bg-identifier-under-caret, color-mix(in srgb, var(--accent) 14%, transparent))",
+    "--lsp-inplace-bg": "var(--bg-identifier-under-caret, color-mix(in srgb, var(--accent) 14%, transparent))",
+    ...inlineBackground("var(--lsp-inplace-bg)"),
   },
   ".cm-lsp-inplace-primary": {
-    outline: "1px solid var(--focus-ring)",
-    outlineOffset: "-1px",
+    ...inlineFramedFallback("var(--lsp-inplace-bg)", "var(--focus-ring)"),
     borderRadius: "2px",
+  },
+  "@supports (height: 1lh)": {
+    ".cm-lsp-inplace-primary": inlineFramedModern("var(--lsp-inplace-bg)", "var(--focus-ring)"),
   },
   ".cm-lsp-inplace-hint": {
     color: "var(--fg-secondary)",

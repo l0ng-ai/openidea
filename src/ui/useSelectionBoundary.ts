@@ -111,6 +111,46 @@ function textEdge(root: HTMLElement, side: "start" | "end"): { node: Node; offse
 }
 
 /**
+ * Marks `ref` with `data-selection` while the document's selection intersects it, and keeps the
+ * mark until the frame after the selection leaves. WebKit never clears the selection highlight of
+ * a subtree that skips rendering (`content-visibility: auto` or `hidden`); pairing `[data-selection]`
+ * with `content-visibility: visible` lets WebKit apply the deselection before skipping again.
+ */
+export function useSelectionVisibility(ref: RefObject<HTMLElement | null>, enabled = true): void {
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !enabled) return;
+    const doc = el.ownerDocument;
+    const win = doc.defaultView ?? window;
+    let frame = 0;
+    const selected = () => {
+      const sel = doc.getSelection();
+      return !!sel && !sel.isCollapsed && sel.rangeCount > 0 && sel.getRangeAt(0).intersectsNode(el);
+    };
+    const update = () => {
+      win.cancelAnimationFrame(frame);
+      if (selected()) {
+        el.setAttribute("data-selection", "");
+        return;
+      }
+      if (!el.hasAttribute("data-selection")) return;
+      frame = win.requestAnimationFrame(() => {
+        frame = win.requestAnimationFrame(() => {
+          if (!selected()) el.removeAttribute("data-selection");
+        });
+      });
+    };
+    update();
+    doc.addEventListener("selectionchange", update);
+    return () => {
+      win.cancelAnimationFrame(frame);
+      doc.removeEventListener("selectionchange", update);
+      el.removeAttribute("data-selection");
+    };
+  }, [ref, enabled]);
+}
+
+/**
  * Selects the text of the reading pane (`useSelectionBoundary`) that `focused` is in, unless it
  * is an editable field, which selects its own text. False when it isn't in one.
  */

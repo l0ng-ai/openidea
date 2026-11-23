@@ -717,6 +717,7 @@ function FindInFilesDialog() {
               invalid={state.status === "invalid"}
               className={styles.field}
               multiline
+              maxRows={3}
               onHistory={() => setHistoryMenu("find")}
               toggles={[
                 {
@@ -757,6 +758,7 @@ function FindInFilesDialog() {
                 aria-label="Replace with"
                 className={styles.field}
                 multiline
+                maxRows={3}
                 onHistory={() => setHistoryMenu("replace")}
                 toggles={[
                   {
