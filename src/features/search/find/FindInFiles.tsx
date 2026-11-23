@@ -282,6 +282,8 @@ function FindInFilesDialog() {
   const rows = useMemo(() => matchRows(state.files), [state.files]);
   const active = rows.length ? Math.min(sel.lead, rows.length - 1) : -1;
   const selected = active >= 0 ? rows[active] : undefined;
+  const previewDirectory = selected?.relPath.includes("/") ? dirname(selected.relPath) : "";
+  const previewParentStart = Math.max(0, previewDirectory.lastIndexOf("/"));
   const chosen = useMemo(() => selectedRows(rows, sel), [rows, sel]);
   const fileHighlights = useMemo(() => {
     if (stale || !selected) return [];
@@ -864,16 +866,21 @@ function FindInFilesDialog() {
               </SplitPanel>
               <SplitHandle hairline={false} />
               <SplitPanel id="preview" minSize={96}>
-                <div className={styles.previewHeader}>
-                  {selected ? (
-                    <span className={styles.previewPath}>
-                      <span className={styles.previewName}>{basename(selected.relPath)}</span>
-                      {selected.relPath.includes("/") && dirname(selected.relPath)}
-                    </span>
-                  ) : (
-                    <span />
-                  )}
-                </div>
+                {selected && (
+                  <div className={styles.previewHeader} title={selected.relPath}>
+                    <span className={styles.previewName}>{basename(selected.relPath)}</span>
+                    {previewDirectory && (
+                      <span className={styles.previewDirectory} dir="ltr">
+                        {previewParentStart > 0 && (
+                          <span className={styles.previewSegment}>{previewDirectory.slice(0, previewParentStart)}</span>
+                        )}
+                        <span className={clsx(styles.previewSegment, styles.previewParent)}>
+                          {previewDirectory.slice(previewParentStart)}
+                        </span>
+                      </span>
+                    )}
+                  </div>
+                )}
                 <div className={styles.previewBox}>
                   {!stale && previewMode && s.replace && selected ? (
                     <ReplaceDiffPreview

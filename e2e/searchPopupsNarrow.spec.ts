@@ -15,7 +15,7 @@ async function run(page: Page, id: string) {
   }, id);
 }
 
-async function stubFindMatches(page: Page) {
+async function stubFindMatches(page: Page, firstPath = LONG_RESULT_PATH) {
   await stubDesktop(page);
   await page.evaluate((longPath) => {
     window.__ipc.handlers.search_validate = () => null;
@@ -39,7 +39,7 @@ async function stubFindMatches(page: Page) {
       }, 20);
       return null;
     };
-  }, LONG_RESULT_PATH);
+  }, firstPath);
 }
 
 async function expectControlsFit(page: Page) {
@@ -204,4 +204,30 @@ test("Find in Files prioritizes the preview and remembers an adjusted split", as
   await run(page, "find.inPath");
   await expect(handle).toBeAttached();
   await expect.poll(resultsShare).toBeCloseTo(adjusted, 2);
+});
+
+test("Find in Files keeps the file and its parent folder visible in the preview caption", async ({
+  workbench: page,
+}) => {
+  await page.setViewportSize({ width: 400, height: 570 });
+  const prefix = "config/generated/regional-integrations/sandbox/development/notifications";
+  const name = "RegionalLedgerSettings.txt";
+  const path = `${prefix}/runtime/${name}`;
+  await stubFindMatches(page, path);
+  await run(page, "find.inPath");
+  const dialog = page.getByRole("dialog", { name: "Find in Files" });
+  const search = dialog.getByPlaceholder("Search");
+  await search.fill("http://localhost:8080");
+  const preview = dialog.locator("[data-panel][id=preview]");
+  const caption = preview.getByTitle(path, { exact: true });
+  const folder = caption.getByText("/runtime", { exact: true });
+  const beginning = caption.getByText(prefix, { exact: true });
+  await expect(caption.getByText(name, { exact: true })).toBeInViewport({ ratio: 1 });
+  await expect(folder).toBeInViewport({ ratio: 1 });
+  await expect(folder).toHaveCSS("font-size", "13px");
+  expect(await beginning.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+  expect(await folder.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await search.press("ArrowDown");
+  await search.press("ArrowDown");
+  await expect(preview.getByTitle("config/endpoint-1.txt", { exact: true })).toContainText("endpoint-1.txt");
 });
