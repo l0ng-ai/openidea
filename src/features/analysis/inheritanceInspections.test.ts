@@ -20,6 +20,8 @@ interface MethodSpec {
   abstract?: boolean;
   override?: boolean;
   body?: MethodBody;
+  /** The parser found the receiver unused (`unusedReceiver`). */
+  receiverUnused?: boolean;
 }
 
 interface ClassSpec {
@@ -56,6 +58,7 @@ const methodFacts = (spec: MethodSpec): PythonMethodFacts => ({
   abstractMethod: spec.abstract ?? false,
   overrideDecorated: spec.override ?? false,
   body: spec.body ?? EMPTY,
+  unusedReceiver: spec.receiverUnused ? range(spec.line, 13) : null,
 });
 
 const classItem = (spec: ClassSpec, col: number, methods: PythonMethodFacts[]): OutlineItem => ({
@@ -405,4 +408,23 @@ it("installs the inspections for Python documents only", () => {
   const ctx = (language: string) => ({ doc: 1, path: "/p/a.py", language, uiMode: null, readOnly: false });
   expect(pythonInheritanceExtension(ctx("typescript"))).toEqual([]);
   expect(pythonInheritanceExtension(ctx("python"))).not.toEqual([]);
+});
+
+const STATIC = "builtin:python-method-may-be-static";
+const helper: MethodSpec = { name: "helper", line: 1, body: OTHER, receiverUnused: true };
+
+it("reports a method that may be static", async () => {
+  const project = new Fixture("/p/a.py").add("/p/a.py", [{ name: "C", line: 0, bases: ["ABC"], methods: [helper] }]);
+  expect(codes(await project.run())).toEqual([[STATIC, "info", 1]]);
+  expect(await project.run(new Set())).toEqual([]);
+});
+
+it("leaves alone a static candidate that overrides or may override", async () => {
+  const overrides = withBase({ name: "C", line: 0, bases: ["Base"], methods: [helper] }, [
+    { name: "Base", line: 0, bases: [], methods: [{ name: "helper", line: 1, body: OTHER }] },
+  ]);
+  expect(await overrides.run()).toEqual([]);
+  // `Widget` is a library class: it may declare `helper`.
+  const foreign = new Fixture("/p/a.py").add("/p/a.py", [{ name: "C", line: 0, bases: ["Widget"], methods: [helper] }]);
+  expect(await foreign.run()).toEqual([]);
 });

@@ -1,6 +1,7 @@
 /**
  * Python inheritance inspections: circular inheritance, `@override` consistency, abstract
- * methods a class leaves unimplemented, and overrides that only forward to the base.
+ * methods a class leaves unimplemented, overrides that only forward to the base, and methods
+ * that may be static.
  *
  * The rules read the IDE's inheritance graph (`inheritanceGraph.ts`) plus the facts the
  * Python parser reports for a document (`docPythonFacts`). Nothing here parses source text,
@@ -10,9 +11,15 @@
  */
 import type { Extension } from "@codemirror/state";
 import { ViewPlugin, type EditorView } from "@codemirror/view";
-import { inspectionControlProviders, type EditorDocContext } from "@/editor/api";
+import {
+  inspectionControlProviders,
+  intentionProviders,
+  quickFixProviders,
+  type ContributedIntention,
+  type EditorDocContext,
+} from "@/editor/api";
 import { onServerSettled } from "@/editor/lsp/availability";
-import { setFileDiagnostics } from "@/editor/lsp/diagnostics";
+import { inspectionsAt, setFileDiagnostics } from "@/editor/lsp/diagnostics";
 import { withDocument } from "@/editor/lsp/files";
 import { lspRequest } from "@/editor/lsp/lsp";
 import {
@@ -29,6 +36,8 @@ import {
   PYTHON_ABSTRACT_METHOD_PRODUCER,
   PYTHON_CIRCULAR_BASES_INSPECTION,
   PYTHON_CIRCULAR_BASES_PRODUCER,
+  PYTHON_METHOD_MAY_BE_STATIC_INSPECTION,
+  PYTHON_METHOD_MAY_BE_STATIC_PRODUCER,
   PYTHON_OVERRIDE_INSPECTION,
   PYTHON_OVERRIDE_PRODUCER,
   PYTHON_REDUNDANT_OVERRIDE_INSPECTION,
@@ -53,6 +62,7 @@ import {
   type Range,
 } from "@/platform/ipc";
 import { isSuppressed, suppressControls, type FactsOf } from "./pythonSuppression";
+import { makeStaticChanges } from "./makeStatic";
 
 /** The inspection producers, one per rule. */
 const PRODUCERS = [
@@ -60,6 +70,7 @@ const PRODUCERS = [
   PYTHON_OVERRIDE_PRODUCER,
   PYTHON_ABSTRACT_METHOD_PRODUCER,
   PYTHON_REDUNDANT_OVERRIDE_PRODUCER,
+  PYTHON_METHOD_MAY_BE_STATIC_PRODUCER,
 ];
 
 /** What the rules read for one document: its own facts and a way to read another file's. */
@@ -223,7 +234,7 @@ function sameDeclaration(cls: PythonClassFacts, decl: ClassInheritance): boolean
   return cls.selection.start.line === decl.line && cls.selection.start.col === decl.col;
 }
 
-/** Everything the four rules produce for one document. */
+/** Everything the rules produce for one document. */
 export async function inheritanceDiagnostics(deps: InheritanceInspectionDeps): Promise<Diagnostic[]> {
   const view = new ProjectView(deps);
   const runs = (producer: string) => deps.enabled?.has(producer) ?? true;
@@ -237,6 +248,8 @@ export async function inheritanceDiagnostics(deps: InheritanceInspectionDeps): P
     if (runs(PYTHON_OVERRIDE_PRODUCER) && view.complete(cls)) out.push(...(await unusedOverride(view, cls)));
     if (runs(PYTHON_REDUNDANT_OVERRIDE_PRODUCER)) out.push(...(await redundantOverride(view, cls)));
     if (runs(PYTHON_ABSTRACT_METHOD_PRODUCER)) out.push(...(await missingAbstractMethods(view, cls)));
+    // A method may override one a foreign base declares: only a fully known chain can say it does not.
+    if (runs(PYTHON_METHOD_MAY_BE_STATIC_PRODUCER) && view.complete(cls)) out.push(...(await mayBeStatic(view, cls)));
   }
   return out;
 }
@@ -267,6 +280,23 @@ async function unusedOverride(view: ProjectView, cls: ClassView): Promise<Diagno
         PYTHON_OVERRIDE_INSPECTION,
         "warning",
         tx`Method '${method.name}' is marked @override but no base class declares it`,
+      ),
+    );
+  }
+  return out;
+}
+
+/** Methods whose body never names the receiver (the parser decides, `unusedReceiver`), unless they override. */
+async function mayBeStatic(view: ProjectView, cls: ClassView): Promise<Diagnostic[]> {
+  const out: Diagnostic[] = [];
+  for (const method of cls.facts.methods) {
+    if (!method.unusedReceiver || (await declaredInAncestry(view, cls, method.name))) continue;
+    out.push(
+      problem(
+        method.selection,
+        PYTHON_METHOD_MAY_BE_STATIC_INSPECTION,
+        "info",
+        tx`Method '${method.name}' may be static`,
       ),
     );
   }
@@ -450,6 +480,28 @@ export function pythonInheritanceExtension(ctx: EditorDocContext): Extension {
   if (ctx.language !== "python" || ctx.virtual || ctx.doc < 0) return [];
   watchChanges();
   const suppress = inspectionControlProviders.of((view, id) => suppressControls(view, id, latestFacts.get(view)));
+  // Make method static, on a method this run reported.
+  const makeStatic = (view: EditorView, from: number, to: number): ContributedIntention[] => {
+    const facts = latestFacts.get(view);
+    const reported = [from, to].some((pos) =>
+      inspectionsAt(ctx.path, view.state.doc, pos).some((i) => i.id === PYTHON_METHOD_MAY_BE_STATIC_INSPECTION),
+    );
+    const changes = facts && reported ? makeStaticChanges(view.state.doc, facts, from) : null;
+    return changes
+      ? [
+          {
+            id: "python.make-static",
+            label: "Make method static",
+            quickFix: true,
+            run: () => view.dispatch({ changes, userEvent: "input" }),
+          },
+        ]
+      : [];
+  };
+  const fixes = [
+    quickFixProviders.of(makeStatic),
+    intentionProviders.of((view) => makeStatic(view, view.state.selection.main.from, view.state.selection.main.to)),
+  ];
   const plugin = ViewPlugin.define((view: EditorView) => {
     if (!isTauri()) return {};
     viewers.set(ctx.path, (viewers.get(ctx.path) ?? 0) + 1);
@@ -523,5 +575,5 @@ export function pythonInheritanceExtension(ctx: EditorDocContext): Extension {
       },
     };
   });
-  return [plugin, suppress];
+  return [plugin, suppress, fixes];
 }
