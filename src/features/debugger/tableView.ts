@@ -12,11 +12,6 @@ export function isTableType(typeName: string | null | undefined): boolean {
   return !!typeName && TABLE_TYPES.has(typeName);
 }
 
-/** Numbers are right-aligned, as in the database grid. */
-export function isNumericDtype(dtype: string | undefined): boolean {
-  return !!dtype && /^(u?int|float|complex|Int|UInt|Float)\d*$/.test(dtype);
-}
-
 export const ROW_PAGE = 100;
 export const COLUMN_PAGE = 30;
 
