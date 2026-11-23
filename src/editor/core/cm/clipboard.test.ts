@@ -172,10 +172,10 @@ it.each([
   vi.stubGlobal(
     "Worker",
     class {
-      onmessage?: (e: { data: { data: number[] } }) => void;
+      onmessage?: (e: { data: { data: string } }) => void;
       terminate() {}
       postMessage() {
-        queueMicrotask(() => this.onmessage?.({ data: { data: [137, 80, 78, 71] } }));
+        queueMicrotask(() => this.onmessage?.({ data: { data: "iVBORw==" } }));
       }
     },
   );

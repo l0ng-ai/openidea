@@ -131,3 +131,60 @@ for (const home of [false, true]) {
     }
   }
 }
+
+test("short prompts fit before and after a completed agent exchange", async ({ workbench: page }) => {
+  await prepare(page, true, false);
+  const box = page.getByRole("textbox", { name: "Message", exact: true }).filter({ visible: true });
+  const scroller = page.locator(".cm-scroller").filter({ has: box });
+  const overflow = () =>
+    scroller.evaluate((el) => ({
+      x: el.scrollWidth - el.clientWidth,
+      y: el.scrollHeight - el.clientHeight,
+    }));
+
+  await expect(box.locator(".cm-placeholder")).toBeVisible();
+  await expect.poll(overflow).toEqual({ x: 0, y: 0 });
+  await box.fill("Reply with OK.");
+  await expect.poll(overflow).toEqual({ x: 0, y: 0 });
+  await page.getByRole("button", { name: "Start", exact: true }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-submitted-prompt", /Reply with OK/);
+  await page.evaluate(() => document.dispatchEvent(new Event("test:agent-ack")));
+  await expect(page.getByRole("tab", { name: task.title })).toBeVisible();
+  await page.evaluate(async (id) => {
+    const storePath = "/src/features/agents/store.ts";
+    const { useAgents } = await import(storePath);
+    useAgents.setState({
+      entries: new Map([
+        [
+          id,
+          [
+            { type: "user", text: "Reply with OK.", attachments: [] },
+            { type: "agent", text: "OK" },
+          ],
+        ],
+      ]),
+    });
+  }, task.id);
+  await expect(page.getByText("OK", { exact: true })).toBeVisible();
+  await expect.poll(overflow).toEqual({ x: 0, y: 0 });
+
+  await page.getByRole("button", { name: "Agents", exact: true }).click();
+  await page.getByRole("button", { name: "New Agent Task", exact: true }).click();
+  await expect(box.locator(".cm-placeholder")).toBeVisible();
+  await expect(scroller).toHaveCSS("overflow-x", "hidden");
+  await expect.poll(overflow).toEqual({ x: 0, y: 0 });
+  await box.fill("Short draft");
+  await expect.poll(overflow).toEqual({ x: 0, y: 0 });
+
+  await box.fill("word".repeat(2000));
+  await expect(scroller).toHaveCSS("overflow-y", "auto");
+  await expect
+    .poll(async () => {
+      const { x, y } = await overflow();
+      return x === 0 && y > 0;
+    })
+    .toBe(true);
+  await box.fill("");
+  await expect(box.locator(".cm-placeholder")).toBeVisible();
+  await expect.poll(overflow).toEqual({ x: 0, y: 0 });
+});

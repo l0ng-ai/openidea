@@ -531,6 +531,38 @@ async fn sessions_without_a_title_get_one_generated() {
     assert_eq!(request["request"]["persist"], true);
 }
 
+/// A compaction that doesn't report what the context holds now (no `post_tokens`): the
+/// driver asks Claude Code, and the meter shows that instead of the count from before.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_compaction_without_its_token_count_reads_the_context_usage() {
+    let mut processes = load_fixture("simple");
+    processes[0].extend([
+        Frame::Cli(json!({"type": "system", "subtype": "compact_boundary",
+            "compact_metadata": {"trigger": "manual", "pre_tokens": 120000}})),
+        Frame::Shim(json!({"type": "control_request", "request_id": "req_3",
+            "request": {"subtype": "get_context_usage"}})),
+        Frame::Cli(json!({"type": "control_response", "response": {"subtype": "success", "request_id": "req_3",
+            "response": {"categories": [], "totalTokens": 4200, "maxTokens": 200000, "model": "claude"}}})),
+    ]);
+    let cli = replay_cli(processes);
+    let (config, cwd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let cwd_path = std::fs::canonicalize(cwd.path()).unwrap();
+    let h =
+        Harness::connect(cli.clone(), config.path().into(), config.path().join("pending"), cwd_path, Vec::new()).await;
+    let session = h.new_session().await;
+    h.prompt(&session, "Reply with exactly: hello there").await.unwrap();
+    let mut usage = Vec::new();
+    for _ in 0..100 {
+        usage = h.updates(&session, "usage_update");
+        if usage.last().is_some_and(|u| u["used"] == 4200) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(cli.errors.lock().is_empty(), "{:?}", cli.errors.lock());
+    assert_eq!(usage.last().map(|u| (u["used"].clone(), u["size"].clone())), Some((json!(4200), json!(200000))));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn replay_multi_turn() {
     let r = replay("multi_turn").await;
@@ -1096,6 +1128,24 @@ fn streamed_text_is_not_sent_twice() {
     // Usage needs the window, which a result reports.
     let usage = t.on_result(&json!({"modelUsage": {"x": {"contextWindow": 1000}}}));
     assert_eq!(usage[0].update, json!({"sessionUpdate": "usage_update", "used": 15, "size": 1000}));
+}
+
+#[test]
+fn a_compaction_replaces_the_context_usage() {
+    let mut t = Translator::new("s", PathBuf::from("/w"), true);
+    let assistant = json!({"type": "assistant", "parent_tool_use_id": null,
+        "message": {"id": "m1", "model": "x", "content": [], "usage": {"input_tokens": 900, "output_tokens": 50}}});
+    t.on_message(&assistant);
+    let result = json!({"modelUsage": {"x": {"contextWindow": 1000}}});
+    assert_eq!(t.on_result(&result)[0].update["used"], 950);
+    let boundary = |meta: Value| json!({"type": "system", "subtype": "compact_boundary", "compact_metadata": meta});
+    let out = t.on_message(&boundary(json!({"trigger": "manual", "pre_tokens": 950, "post_tokens": 120})));
+    assert_eq!(out[0].update, json!({"sessionUpdate": "usage_update", "used": 120, "size": 1000}));
+    // The `/compact` turn's result reports what compaction left, not the count from before.
+    assert_eq!(t.on_result(&result)[0].update["used"], 120);
+    // Without `post_tokens` nothing is known yet (the driver asks): the stale count stays out.
+    assert!(t.on_message(&boundary(json!({"trigger": "auto", "pre_tokens": 950}))).is_empty());
+    assert!(t.on_result(&result).is_empty());
 }
 
 #[test]

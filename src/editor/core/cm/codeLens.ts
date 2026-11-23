@@ -238,11 +238,13 @@ function buildDecorations(state: EditorState): DecorationSet {
 
 const lensTheme = EditorView.theme({
   // IDEA paints code vision with the colour scheme's Inline hints attribute.
+  // At least 16px, and taller when the hint font needs it: the row grows with its items, so a
+  // large editor font or a fallback font that inks below the baseline (CJK) is never cut off.
   ".cm-openidea-lens": {
     display: "flex",
     alignItems: "center",
     gap: "12px",
-    height: "16px",
+    minHeight: "16px",
     color: "var(--fg-inlay, var(--fg-muted))",
     WebkitUserSelect: "none",
     userSelect: "none",
@@ -276,7 +278,10 @@ const lensTheme = EditorView.theme({
     // Pinned to the line, the hint may run past the editor's edge (IDEA clips it there); cap it so a
     // long one cannot stretch across the whole window first.
     maxWidth: "min(60ch, 50vw)",
-    overflow: "hidden",
+    // The box is 1em tall (the anchor's `lineHeight: 1`): clip only past the side, so a glyph that
+    // inks above or below its em box (CJK fallback fonts) still shows whole.
+    overflowX: "clip",
+    overflowY: "visible",
     pointerEvents: "auto",
   },
   ".cm-openidea-lensItem": {
@@ -293,6 +298,9 @@ const lensTheme = EditorView.theme({
     fontFamily: "var(--font-ui)",
     fontSize: "calc(1em - 1px)",
   },
+  // The row's items size to the fonts their text is drawn with (fallback fonts included), not to the
+  // editor's line height, which `font: inherit` brings along.
+  ".cm-openidea-lens > .cm-openidea-lensItem": { lineHeight: "normal" },
   ".cm-openidea-lensAction": { cursor: "pointer" },
   ".cm-openidea-lensAction:hover": { color: "var(--accent)", textDecoration: "underline" },
   ".cm-openidea-lensIcon-run": { color: "var(--success)" },

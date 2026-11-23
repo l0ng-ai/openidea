@@ -1587,11 +1587,13 @@ mod tests {
     }
 
     /// A pipe stand-in that counts the bytes taken from it.
+    #[cfg(unix)]
     struct Counted<R> {
         inner: R,
         taken: Arc<AtomicUsize>,
     }
 
+    #[cfg(unix)]
     impl<R: Read> Read for Counted<R> {
         fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
             let n = self.inner.read(buf)?;

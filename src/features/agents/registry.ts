@@ -1,5 +1,7 @@
 /** Agents of the ACP Registry: listing, install / update / remove (`agent_registry_*`). */
 import { open } from "@/platform/dialog";
+import { choosePath } from "@/platform/choosePath";
+import { readDesktopText } from "@/platform/desktopFiles";
 import { Channel } from "@tauri-apps/api/core";
 import type {
   AcpImportOutcome,
@@ -31,7 +33,7 @@ export interface CommandsBackend {
   providers(): Promise<AgentProvider[]>;
   set(id: string, command: string | null): Promise<void>;
   setEnv(id: string, env: Record<string, string>): Promise<void>;
-  chooseExecutable(title: string, current?: string): Promise<string | null>;
+  chooseExecutable(title: string, current?: string, location?: "desktop"): Promise<string | null>;
   saveCustom(input: CustomAgentInput): Promise<void>;
   removeCustom(id: string): Promise<void>;
   importAcp(text: string): Promise<AcpImportOutcome[]>;
@@ -56,7 +58,8 @@ export const tauriCommands: CommandsBackend = {
   updateCli: (id, offer, request) => call(commands.agentCliUpdate(id, offer, request)),
   cancel: tauriRegistry.cancel,
   providers: () => call(commands.agentProviders()),
-  chooseExecutable: async (title, current) => {
+  chooseExecutable: async (title, current, location) => {
+    if (location !== "desktop") return choosePath({ title, defaultPath: current, directory: false });
     const picked = await open({ title, defaultPath: current || undefined, directory: false, multiple: false });
     return typeof picked === "string" ? picked : null;
   },
@@ -81,7 +84,7 @@ export const tauriCommands: CommandsBackend = {
       filters: [{ name: tx("ACP config"), extensions: ["json"] }],
     });
     if (typeof picked !== "string") return null;
-    return call(commands.fsReadText(picked));
+    return readDesktopText(picked);
   },
 };
 
