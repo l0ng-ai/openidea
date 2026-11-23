@@ -161,12 +161,17 @@
   padding: 14px;
 }
 .scope {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-0-5);
+  container: analysis-scope / inline-size;
+  min-inline-size: 0;
   margin: 0;
   padding: 0;
   border: 0;
+}
+.scopeOptions {
+  display: grid;
+  grid-template-columns: fit-content(45%) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-0-5) var(--space-2);
 }
 .fieldLabel {
   padding: 0 0 4px;
@@ -174,21 +179,33 @@
   font-size: var(--fs-small);
 }
 .radioRow {
+  grid-column: 1 / -1;
+  min-width: 0;
+  padding-block: var(--space-0-5);
+  overflow-wrap: anywhere;
+}
+.scopeWithField {
+  grid-column: 1;
+}
+.scopeControl {
+  grid-column: 2;
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: 3px 0;
-  color: var(--fg);
-  cursor: default;
-}
-.radioRow input {
-  margin: 0;
-  accent-color: var(--accent);
-}
-.dirRow {
-  display: flex;
   gap: var(--space-1-5);
-  padding: 4px 0 0 22px;
+  min-width: 0;
+}
+.scopeControl > button:last-child {
+  flex: none;
+}
+@container analysis-scope (max-width: 336px) {
+  .scopeOptions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .scopeControl {
+    grid-column: 1;
+    padding-inline-start: calc(16px + var(--space-2));
+    margin-block-end: var(--space-1);
+  }
 }
 .grow {
   flex: 1;
