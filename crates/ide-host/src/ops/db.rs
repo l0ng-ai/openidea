@@ -646,7 +646,6 @@ mod tests {
     use super::*;
     use crate::HostConfig;
     use ide_db::DbDriver;
-    use std::sync::Arc;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_reporting_error_stops_the_batch_and_releases_the_request() {
@@ -654,17 +653,7 @@ mod tests {
         let base = dunce::canonicalize(temp.path()).unwrap();
         let root = base.join("project");
         std::fs::create_dir(&root).unwrap();
-        let host = Host::new(HostConfig {
-            config_dir: base.join("config"),
-            data_dir: base.join("data"),
-            local_data_dir: base.join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(|_| {})),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(HostConfig { local_data_dir: base.join("local"), ..HostConfig::for_test(&base) });
         let window = "main";
         host.open_project(window, &root).unwrap();
         host.set_project_trust(&root, true, false).await.unwrap();

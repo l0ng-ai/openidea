@@ -382,10 +382,6 @@ impl Ledger {
         }
         grant.binaries.get(&key).cloned()
     }
-
-    pub fn subjects(&self) -> impl Iterator<Item = (&Subject, &Grant)> {
-        self.grants.iter()
-    }
 }
 
 /// What a confirmation page shows: every capability with its risk, high risk first.

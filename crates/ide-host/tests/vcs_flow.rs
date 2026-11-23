@@ -2,8 +2,10 @@
 //! marked in the gutter, Local Changes and its diff, a commit in the log, a branch, a stash, and
 //! a merge that conflicts, resolved and committed. Open documents follow every step.
 
+mod common;
+
 use ide_core::DocId;
-use ide_host::{Host, HostConfig, ops};
+use ide_host::{Host, ops};
 use ide_vcs::{ChangeKind, CommitOptions, FileStatus, HunkKind, LogQuery};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -55,17 +57,7 @@ impl Flow {
         }
         git(&root, &["add", "-A"]);
         git(&root, &["commit", "-q", "-m", "Initial commit"]);
-        let host = Arc::new(Host::new(HostConfig {
-            config_dir: base.join("config"),
-            data_dir: base.join("data"),
-            local_data_dir: base.join("data"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(|_| {})),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        }));
+        let host = Arc::new(Host::new(common::host_config(&base)));
         host.trust.decide(&root, true, false).unwrap();
         let project = ops::project::open(&host, WINDOW, &root).await.unwrap();
         for _ in 0..500 {
