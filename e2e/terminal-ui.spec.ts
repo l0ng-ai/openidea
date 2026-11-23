@@ -75,8 +75,11 @@ for (const { width, split } of [{ width: 220 }, { width: 280 }, { width: 520 }, 
     await expect(count).toHaveText(/\d+\/3/);
     await expect(count).toHaveCSS("font-size", "13px");
     const match = await count.textContent();
-    await input.press("Enter");
-    await expect(count).not.toHaveText(match!);
+    // The incremental search can report after the first Enter; retry until Enter moves on.
+    await expect(async () => {
+      await input.press("Enter");
+      await expect(count).not.toHaveText(match!, { timeout: 1000 });
+    }).toPass();
     if (process.env.OPENIDEA_TERMINAL_SHOTS)
       await terminal.screenshot({
         path: `${process.env.OPENIDEA_TERMINAL_SHOTS}/terminal-${width}${split ? "-split" : ""}.png`,
