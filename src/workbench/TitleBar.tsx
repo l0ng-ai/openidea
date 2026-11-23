@@ -3,7 +3,7 @@ import { useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { useActions } from "@/platform/actions";
 import { shortcutLabel, useKeymap } from "@/platform/keymap";
-import { useProject } from "@/platform/project";
+import { basename, useProject } from "@/platform/project";
 import { BarButton, Icon, IconButton, Menu, type MenuItem, showContextMenu, T } from "@/ui";
 import { useChromeIconSize } from "@/ui/density";
 import { useContributions, useWorkbenchSlots, type TitleItemContribution } from "./contributions";
@@ -55,8 +55,10 @@ function TitleItem({ item }: { item: TitleItemContribution }) {
 }
 
 function ProjectButton() {
-  const name = useProject((s) => s.project?.displayName || s.project?.name);
-  const root = useProject((s) => s.project?.root);
+  const name = useProject((s) =>
+    s.openingPath ? basename(s.openingPath) || s.openingPath : s.project?.displayName || s.project?.name,
+  );
+  const root = useProject((s) => s.openingPath ?? s.project?.root);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLButtonElement>(null);
   const actions = useActions((s) => s.actions);
@@ -298,7 +300,7 @@ function CompactTitle({ title }: { title?: string }) {
  * the caption buttons. `dialog`: a dialog window's bar (Settings), close button only.
  * `lightEdit`: a LightEdit window's bar, its title and the menu but no toolbar widgets.
  * `compact`: IDEA's compact header (Distraction Free, View › Appearance › Toolbar off).
- * `bare`: the window frame only, while a project opens.
+ * `bare`: the window frame only.
  */
 export function TitleBar({
   minimal = false,
