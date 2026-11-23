@@ -242,6 +242,282 @@ test("the Services detail pane adds no second scrollbar over a console", async (
   expect(result.scrollers.length).toBeGreaterThan(0);
 });
 
+test("Docker dashboard keeps multi-line container commands bounded and collapsible", async ({ workbench: page }) => {
+  await stubDesktop(page);
+  await page.evaluate(async () => {
+    const script = Array.from({ length: 18 }, (_, i) => `  export STEP_${i}="/persist/slot-${i}"`).join("\n");
+    const inspectJson = JSON.stringify([
+      {
+        Created: "2026-11-22T01:41:28Z",
+        State: { Status: "running", Pid: 2048, StartedAt: "2026-11-22T01:41:29Z" },
+        HostConfig: { RestartPolicy: { Name: "unless-stopped", MaximumRetryCount: 0 } },
+        Config: {
+          Entrypoint: ["/bin/bash", "-ec", `set -euo pipefail\n${script}\nexec /entrypoint.sh "$@"\n`, "--"],
+          Cmd: ["./bin/Runner.Listener", "run", "--startuptype", "service"],
+          WorkingDir: "/actions-runner",
+          Env: [],
+          Labels: {},
+        },
+        Mounts: [],
+        NetworkSettings: { Ports: {}, Networks: {} },
+      },
+    ]);
+    const containerId = "13de5573bf36a9c8d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3";
+    const snapshot = {
+      availability: { kind: "ready", clientVersion: "27.3.1", serverVersion: "27.3.1", context: null },
+      executable: "/usr/local/bin/docker",
+      containers: [
+        {
+          id: containerId,
+          name: "runner-1",
+          image: "myoung34/github-runner:latest",
+          command: '"/bin/bash -ec \'set…"',
+          state: "running",
+          status: "Up 2 hours",
+          ports: "",
+          createdAt: "2026-11-22 01:41:28 +0000 UTC",
+          composeProject: "selfhost",
+          composeService: "github-runner",
+          composeWorkingDir: "/Users/dev/selfhost",
+          composeFiles: ["/Users/dev/selfhost/docker-compose.yml"],
+        },
+      ],
+      images: [],
+      volumes: [],
+      networks: [],
+      errors: [],
+    };
+    window.__ipc.handlers.docker_settings = () => ({
+      connections: [{ id: "local", name: "Docker", endpoint: { kind: "default" } }],
+      registries: [],
+    });
+    window.__ipc.handlers.docker_snapshot = () => snapshot;
+    window.__ipc.handlers.docker_inspect = () => inspectJson;
+    window.__ipc.handlers.docker_container_stats = () => ({
+      cpuPerc: "1.20%",
+      memUsage: "256MiB / 8GiB",
+      memPerc: "3.12%",
+      netIo: "1MB / 1MB",
+      blockIo: "0B / 0B",
+      pids: "12",
+    });
+    window.__ipc.handlers.docker_events = () => new Promise(() => {});
+    window.__ipc.handlers.cancel_request = () => null;
+
+    const storeModule = "/src/features/services/store.ts";
+    const treeModule = "/src/features/services/tree.ts";
+    const { useServices } = await import(/* @vite-ignore */ storeModule);
+    const { useServicesTree } = await import(/* @vite-ignore */ treeModule);
+    useServices.setState({
+      settings: { connections: [{ id: "local", name: "Docker", endpoint: { kind: "default" } }], registries: [] },
+      conns: { local: { snapshot, loading: false, error: null } },
+      detailTab: "dashboard",
+    });
+    useServicesTree.setState({
+      expanded: new Set(["docker:local", "docker:local:compose:selfhost"]),
+      selectedKey: `docker:local:container:${containerId}`,
+      selectedKeys: new Set([`docker:local:container:${containerId}`]),
+    });
+  });
+
+  await page.keyboard.press("Meta+8");
+  const services = page.getByRole("region", { name: "Services", exact: true });
+  await expect(services.getByText("Container Overview")).toBeVisible();
+
+  const toggle = services.getByRole("button", { name: /^\d+ lines$/ });
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+  const preview = services.locator("code[data-no-tooltip]");
+  await expect(preview).toContainText("↵");
+
+  // Hovering the truncated command preview must not spawn a giant auto-ellipsis tooltip.
+  await preview.hover();
+  await page.waitForTimeout(700);
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
+
+  // Collapsed row stays strictly between Started and Working directory (no upward overlap).
+  const startedLabel = services.getByText("Started", { exact: true });
+  const commandLabel = services.getByText("Command", { exact: true });
+  const workingDirLabel = services.getByText("Working directory", { exact: true });
+  const collapsedStartedBox = (await startedLabel.boundingBox())!;
+  const collapsedPreviewBox = (await preview.boundingBox())!;
+  const collapsedWorkingBox = (await workingDirLabel.boundingBox())!;
+  expect(collapsedPreviewBox.y).toBeGreaterThan(collapsedStartedBox.y + collapsedStartedBox.height);
+  expect(collapsedWorkingBox.y).toBeGreaterThan(collapsedPreviewBox.y + collapsedPreviewBox.height);
+
+  // Expanding reveals Entrypoint + Command arguments inside a bounded scroll box growing downward.
+  await toggle.click();
+  const collapseBtn = services.getByRole("button", { name: "Collapse", exact: true });
+  await expect(collapseBtn).toHaveAttribute("aria-expanded", "true");
+  await expect(services.getByText("Entrypoint", { exact: true })).toBeVisible();
+  await expect(services.getByText("Command arguments", { exact: true })).toBeVisible();
+
+  const expandedStartedBox = (await startedLabel.boundingBox())!;
+  const expandedCommandLabelBox = (await commandLabel.boundingBox())!;
+  const entrypointPre = services.locator("pre").first();
+  const scrollContainer = entrypointPre.locator("xpath=ancestor::div[1]/parent::div");
+  const scrollBox = (await scrollContainer.boundingBox())!;
+  const expandedWorkingBox = (await workingDirLabel.boundingBox())!;
+
+  expect(expandedCommandLabelBox.y).toBeGreaterThan(expandedStartedBox.y + expandedStartedBox.height);
+  expect(scrollBox.y).toBeGreaterThan(expandedCommandLabelBox.y);
+  expect(scrollBox.height).toBeLessThanOrEqual(182);
+  expect(expandedWorkingBox.y).toBeGreaterThanOrEqual(scrollBox.y + scrollBox.height - 1);
+
+  await collapseBtn.click();
+  await expect(services.getByRole("button", { name: /^\d+ lines$/ })).toHaveAttribute("aria-expanded", "false");
+});
+
+test("Docker Compose container Jump to Source opens the Compose file at the command or the service", async ({
+  workbench: page,
+}) => {
+  await stubDesktop(page);
+  await page.evaluate(async () => {
+    const composePath = "/dev/acme-api/docker-compose.yml";
+    const composeYaml = [
+      "services:",
+      "  postgres:",
+      "    image: postgres:16",
+      "  github-runner:",
+      "    image: myoung34/github-runner:latest",
+      "    entrypoint:",
+      "      - /bin/bash",
+      "      - -ec",
+      "      - |",
+      "        mkdir -p /persist/slots",
+      '        exec /entrypoint.sh "$@"',
+      '    command: ["./bin/Runner.Listener", "run", "--startuptype", "service"]',
+      "",
+    ].join("\n");
+
+    const backendModule = "/src/editor/core/backend.ts";
+    const { docBackend } = await import(/* @vite-ignore */ backendModule);
+    docBackend().files.set(composePath, composeYaml);
+    window.__ipc.handlers.fs_read_text = ({ path }) => {
+      if (path === composePath) return composeYaml;
+      throw { kind: "notFound", message: `not found: ${String(path)}`, detail: null };
+    };
+
+    const runnerId = "13de5573bf36a9c8d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3";
+    const dbId = "98ab76cd54ef3210fedcba9876543210abcdef0123456789abcdef0123456789";
+    const snapshot = {
+      availability: { kind: "ready", clientVersion: "27.3.1", serverVersion: "27.3.1", context: null },
+      executable: "/usr/local/bin/docker",
+      containers: [
+        {
+          id: runnerId,
+          name: "selfhost-github-runner-1",
+          image: "myoung34/github-runner:latest",
+          command: '"/bin/bash -ec \'mkdir…"',
+          state: "running",
+          status: "Up 2 hours",
+          ports: "",
+          createdAt: "2026-11-22 01:41:28 +0000 UTC",
+          composeProject: "selfhost",
+          composeService: "github-runner",
+          composeWorkingDir: "/dev/acme-api",
+          composeFiles: [composePath],
+        },
+        {
+          id: dbId,
+          name: "selfhost-postgres-1",
+          image: "postgres:16",
+          command: "postgres",
+          state: "running",
+          status: "Up 2 hours",
+          ports: "",
+          createdAt: "2026-11-22 01:41:28 +0000 UTC",
+          composeProject: "selfhost",
+          composeService: "postgres",
+          composeWorkingDir: "/dev/acme-api",
+          composeFiles: [composePath],
+        },
+      ],
+      images: [],
+      volumes: [],
+      networks: [],
+      errors: [],
+    };
+
+    window.__ipc.handlers.docker_settings = () => ({
+      connections: [{ id: "local", name: "Docker", endpoint: { kind: "default" } }],
+      registries: [],
+    });
+    window.__ipc.handlers.docker_snapshot = () => snapshot;
+    window.__ipc.handlers.docker_inspect = () =>
+      JSON.stringify([
+        {
+          Created: "2026-11-22T01:41:28Z",
+          State: { Status: "running", Pid: 2048, StartedAt: "2026-11-22T01:41:29Z" },
+          HostConfig: { RestartPolicy: { Name: "unless-stopped", MaximumRetryCount: 0 } },
+          Config: {
+            Entrypoint: ["/bin/bash", "-ec", 'mkdir -p /persist/slots\nexec /entrypoint.sh "$@"'],
+            Cmd: ["./bin/Runner.Listener", "run", "--startuptype", "service"],
+            WorkingDir: "/actions-runner",
+            Env: [],
+            Labels: {},
+          },
+          Mounts: [],
+          NetworkSettings: { Ports: {}, Networks: {} },
+        },
+      ]);
+    window.__ipc.handlers.docker_container_stats = () => ({
+      cpuPerc: "0.50%",
+      memUsage: "128MiB / 8GiB",
+      memPerc: "1.56%",
+      netIo: "0B / 0B",
+      blockIo: "0B / 0B",
+      pids: "4",
+    });
+    window.__ipc.handlers.docker_events = () => new Promise(() => {});
+    window.__ipc.handlers.cancel_request = () => null;
+
+    const storeModule = "/src/features/services/store.ts";
+    const treeModule = "/src/features/services/tree.ts";
+    const { useServices } = await import(/* @vite-ignore */ storeModule);
+    const { useServicesTree } = await import(/* @vite-ignore */ treeModule);
+    useServices.setState({
+      settings: { connections: [{ id: "local", name: "Docker", endpoint: { kind: "default" } }], registries: [] },
+      conns: { local: { snapshot, loading: false, error: null } },
+      detailTab: "dashboard",
+    });
+    useServicesTree.setState({
+      expanded: new Set(["docker:local", "docker:local:compose:selfhost"]),
+      selectedKey: `docker:local:container:${runnerId}`,
+      selectedKeys: new Set([`docker:local:container:${runnerId}`]),
+    });
+  });
+
+  await page.keyboard.press("Meta+8");
+  const services = page.getByRole("region", { name: "Services", exact: true });
+  await expect(services.getByText("Container Overview")).toBeVisible();
+
+  // Clicking Jump to Source on the Command row opens docker-compose.yml with caret on `command:` value
+  await services.getByRole("button", { name: "Jump to Source", exact: true }).click();
+  const editor = page.locator(".cm-editor");
+  await expect(editor.locator(".cm-activeLine")).toHaveText(
+    '    command: ["./bin/Runner.Listener", "run", "--startuptype", "service"]',
+  );
+  const caret = await page.evaluate(async () => {
+    const api = await import(/* @vite-ignore */ "/src/editor/api.ts" as string);
+    const view = api.activeEditor()?.view;
+    if (!view) return null;
+    const head = view.state.selection.main.head;
+    const line = view.state.doc.lineAt(head);
+    return { line: line.number - 1, col: head - line.from };
+  });
+  expect(caret).toEqual({ line: 11, col: 13 });
+
+  // F4 on a Compose container node jumps to its service declaration
+  const tree = services.getByRole("tree", { name: "Services", exact: true });
+  await tree.getByRole("treeitem", { name: /github-runner/ }).click();
+  await page.keyboard.press("F4");
+  await expect(editor.locator(".cm-activeLine")).toHaveText("  github-runner:");
+  await tree.getByRole("treeitem", { name: /postgres/ }).click();
+  await page.keyboard.press("F4");
+  await expect(editor.locator(".cm-activeLine")).toHaveText("  postgres:");
+});
+
 test("Docker Compose dashboard shows per-service resource usage and named project volumes", async ({
   workbench: page,
 }) => {

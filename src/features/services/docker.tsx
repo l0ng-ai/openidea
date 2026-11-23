@@ -59,6 +59,7 @@ import {
   VolumeDashboard,
 } from "./dashboard";
 import { openContainerLogInEditor } from "./logEditor";
+import { hasComposeSource, jumpToComposeProjectSource, jumpToContainerComposeSource } from "./composeSource";
 import {
   canRemove,
   canRestart,
@@ -587,6 +588,18 @@ export const dockerProvider: ServiceProviderContribution = {
     if (t?.node.kind === "container") useServices.setState({ detailTab: "log" });
     const r = registryOf(item.key);
     if (r) openRegistryDialog(r);
+  },
+  jumpToSource: (item) => {
+    const t = resolveTarget(item.key);
+    if (t?.node.kind === "container" && hasComposeSource(t.node.container)) {
+      void jumpToContainerComposeSource(t.node.container);
+      return;
+    }
+    if (t?.node.kind === "compose" && t.node.containers[0] && hasComposeSource(t.node.containers[0])) {
+      void jumpToComposeProjectSource(t.node.project, t.node.containers);
+      return;
+    }
+    dockerProvider.activate?.(item);
   },
   detail: DockerDetail,
   banner: DockerTaskBanner,

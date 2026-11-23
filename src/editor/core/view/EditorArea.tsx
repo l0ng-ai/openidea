@@ -6,7 +6,16 @@ import { useFilePresentations } from "@/ui/filePresentation";
  * decorations, middle-click close, Alt+click close others, double-click to
  * keep a preview / maximize the editor, context menu) and the active editor.
  */
-import { Fragment, useEffect, useMemo, useRef, useState, type FocusEvent, type ReactNode } from "react";
+import {
+  Fragment,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FocusEvent,
+  type ReactNode,
+} from "react";
 import clsx from "clsx";
 import { useShallow } from "zustand/react/shallow";
 import { executeAction } from "@/platform/actions";
@@ -46,6 +55,7 @@ import {
   Tabs,
   showContextMenu,
   registerDropTarget,
+  useSelectionVisibility,
   FILES_DRAG,
   type TabItem,
   type TabsDnd,
@@ -544,12 +554,24 @@ function keptTabs(tabs: Tab[], mru: string[], kinds: Map<string, EditorKindContr
  * its content can't be focused or hit while skipped.
  */
 function KindEditor({ tab, shown, kept = false }: { tab: Tab; shown: boolean; kept?: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useSelectionVisibility(ref, kept);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!kept || shown || !el) return;
+    const sel = el.ownerDocument.getSelection();
+    if (sel && !sel.isCollapsed && sel.rangeCount > 0 && sel.getRangeAt(0).intersectsNode(el)) {
+      el.setAttribute("data-selection", "");
+      sel.removeAllRanges();
+    }
+  }, [kept, shown]);
   const kinds = useContributions((s) => s.editorKinds);
   const kind = kinds.get(tab.input.kind);
   if (!kind) return <EmptyState icon="file" title={tx`No editor for “${tab.input.kind}”`} />;
   const Component = kind.component;
   return (
     <div
+      ref={ref}
       className={clsx(styles.kind, kept && styles.kept, !shown && styles.keptHidden)}
       data-editor-focus={shown ? "" : undefined}
       tabIndex={-1}

@@ -9,6 +9,7 @@ import { EditorView } from "@codemirror/view";
 import { BRACKET_COLORS } from "./rainbowBrackets";
 import { LINE_INSET } from "./lineInset";
 import { GUIDE_COLORS } from "./indentGuides";
+import { inlineBackground, inlineFramedFallback, inlineFramedModern } from "./inlineBg";
 
 /** How much of its palette colour a rainbow indent guide takes. */
 const RAINBOW_GUIDE_STRENGTH = "55%";
@@ -19,10 +20,12 @@ export const findLocals = {
   "--editor-search-current": "var(--bg-search-match-current, color-mix(in srgb, var(--warning) 48%, transparent))",
 };
 
+const FIND_CURRENT_FRAME = "color-mix(in srgb, var(--editor-search-current) 60%, var(--fg-strong))";
+
 /** Find in file highlights (cm/find.ts), also for viewers with their own theme (diff). */
 export const findStyles = {
   ".cm-openidea-findMatch": {
-    backgroundColor: "var(--editor-search)",
+    ...inlineBackground("var(--editor-search)"),
     color: "var(--fg-search-match, inherit)",
     // Its own colour, over the text fill of an identifier highlight around the match.
     WebkitTextFillColor: "currentcolor",
@@ -32,13 +35,13 @@ export const findStyles = {
     textDecoration: "line-through",
     textDecorationColor: "var(--fg-muted)",
   },
-  ".cm-openidea-findScope": {
-    backgroundColor: "var(--editor-selection-inactive, var(--bg-editor-selection-inactive))",
-  },
+  ".cm-openidea-findScope": inlineBackground("var(--editor-selection-inactive, var(--bg-editor-selection-inactive))"),
   ".cm-openidea-findMatch-current": {
-    backgroundColor: "var(--editor-search-current)",
+    ...inlineFramedFallback("var(--editor-search-current)", FIND_CURRENT_FRAME),
     color: "var(--fg-search-match, inherit)",
-    outline: "1px solid color-mix(in srgb, var(--editor-search-current) 60%, var(--fg-strong))",
+  },
+  "@supports (height: 1lh)": {
+    ".cm-openidea-findMatch-current": inlineFramedModern("var(--editor-search-current)", FIND_CURRENT_FRAME),
   },
 };
 
@@ -222,25 +225,25 @@ export const openideaTheme = EditorView.theme({
     background: "var(--openidea-line-bg)",
     pointerEvents: "none",
   },
-  ".cm-selectionMatch": {
-    backgroundColor: "var(--bg-identifier-under-caret, color-mix(in srgb, var(--fg) 9%, transparent))",
-  },
+  ".cm-selectionMatch": inlineBackground(
+    "var(--bg-identifier-under-caret, color-mix(in srgb, var(--fg) 9%, transparent))",
+  ),
   // IDEA paints these with IDENTIFIER_UNDER_CARET_ATTRIBUTES, except the selection itself.
   ".cm-selectionMatch:not(.cm-selectionMatch-main)": { WebkitTextFillColor: "var(--fg-identifier-under-caret)" },
   // IDEA's MATCHED_BRACE_ATTRIBUTES (bold in dark schemes only) and MATCHED_TAG_NAME (never bold).
   ".cm-matchingBracket, &.cm-focused .cm-matchingBracket": {
-    backgroundColor: "var(--editor-brace)",
+    ...inlineBackground("var(--editor-brace)"),
     color: "inherit",
     fontWeight: "var(--matched-brace-weight, var(--fw-code-bold, 700))",
     borderRadius: "1px",
   },
   ".cm-matchingTag, &.cm-focused .cm-matchingTag": {
-    backgroundColor: "var(--bg-matched-tag, var(--editor-brace))",
+    ...inlineBackground("var(--bg-matched-tag, var(--editor-brace))"),
     fontWeight: "inherit",
   },
   ".cm-nonmatchingBracket, &.cm-focused .cm-nonmatchingBracket": {
     color: "var(--danger)",
-    backgroundColor: "color-mix(in srgb, var(--danger) 14%, transparent)",
+    ...inlineBackground("color-mix(in srgb, var(--danger) 14%, transparent)"),
   },
   ".cm-specialChar": { color: "var(--danger)" },
 
@@ -363,7 +366,7 @@ export const openideaTheme = EditorView.theme({
   ...findStyles,
   ...markWidgetStyles,
   // Find in Files preview matches (search/find/parts.tsx)
-  ".cm-openidea-searchResult": { backgroundColor: "var(--bg-search-result)" },
+  ".cm-openidea-searchResult": inlineBackground("var(--bg-search-result)"),
 
   // Overlays
   ".cm-tooltip": {

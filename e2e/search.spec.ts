@@ -122,7 +122,10 @@ test("Find in Files streams matches by file and opens the chosen one at its line
       const expected = getComputedStyle(probe).backgroundColor;
       probe.remove();
       const own = getComputedStyle(el);
-      return own.backgroundColor === expected && own.color === getComputedStyle(el.parentElement!).color;
+      return (
+        (own.backgroundColor === expected || own.backgroundImage.includes(expected)) &&
+        own.color === getComputedStyle(el.parentElement!).color
+      );
     }),
   ).toBe(true);
   const originalPreview = await preview.textContent();
