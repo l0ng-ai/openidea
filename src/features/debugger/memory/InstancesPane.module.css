@@ -14,7 +14,7 @@
   align-items: center;
   gap: var(--space-1);
   height: var(--h-row);
-  padding: 0 4px 0 12px;
+  padding: 0 var(--space-1) 0 var(--space-3);
   border-bottom: 1px solid var(--border);
 }
 
@@ -26,7 +26,7 @@
   white-space: nowrap;
   color: var(--fg-strong);
   font-size: var(--fs-ui);
-  font-family: var(--font-mono);
+  font-family: var(--font-ui);
 }
 
 .note,
@@ -72,11 +72,19 @@
   font-size: var(--fs-ui);
 }
 
+.node {
+  flex: 1;
+}
+
 .name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--fg-strong);
 }
 
 .equals {
+  flex: none;
   white-space: pre;
   color: var(--fg-subtle);
 }
@@ -90,6 +98,11 @@
   font-family: var(--font-mono);
 }
 
+.equals + .value {
+  /* Keep a preview readable beside long field names, even on indented rows. */
+  min-width: min(14ch, 45%);
+}
+
 .group {
   color: var(--fg-muted);
 }
@@ -101,7 +114,7 @@
 
 .rowButton {
   flex: none;
-  margin-left: 8px;
+  margin-inline-start: var(--space-2);
   opacity: 0;
 }
 /* Outranks `.iconButton:disabled`, which would show it on every row of an outdated list. */

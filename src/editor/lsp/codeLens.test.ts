@@ -37,6 +37,7 @@ const { lspDoc } = await import("./lsp");
 const { useProject } = await import("@/platform/project");
 const { emitLocalIdeEvent } = await import("@/platform/ipc");
 const { useProjectRoots } = await import("@/platform/projectRoots");
+const { _resetLanguages, loadLanguageInfos } = await import("@/editor/core/cm/languages");
 
 const ctx = { doc: 7, path: "/p/a.rs", language: "rust", uiMode: "Rust", readOnly: false };
 const views: EditorView[] = [];
@@ -81,6 +82,7 @@ beforeEach(() => {
 
 afterEach(() => {
   views.splice(0).forEach((v) => v.destroy());
+  _resetLanguages();
   useProject.setState({ settings: null });
   vi.useRealTimers();
 });
@@ -486,5 +488,88 @@ describe("recounting when the project's documents change", () => {
     _emitEditorEvent({ type: "docClosed", doc: 9, path: "/p/b.rs" });
     await settle();
     expect(titles(view)).toEqual(["4 usages"]);
+  });
+});
+
+describe("file changes on disk", () => {
+  const language = (id: string, extensions: string[], languageServers: string[], filenames: string[] = []) =>
+    ({ id, name: id, extensions, filenames, languageServers, uiMode: null }) as never;
+  const fsChanged = (modified: string[], ignoreRules: string[] = []) =>
+    emitLocalIdeEvent({ type: "fsChanged", created: [], modified, removed: [], ignoreRules });
+
+  async function settledEditors(views: number) {
+    await loadLanguageInfos({
+      languages: async () => [
+        language("rust", ["rs"], ["rust-analyzer"]),
+        language("log", ["log"], []),
+        language("dockerfile", [], ["docker-langserver"], ["Dockerfile.*"]),
+      ],
+    } as never);
+    ipc.docOutline.mockResolvedValue(ok(Array.from({ length: 60 }, (_, i) => item(`f${i}`, "function", i))));
+    for (let i = 0; i < views; i++) editor(60);
+    await settle();
+    const first = ipc.lspReferences.mock.calls.length;
+    expect(first).toBe(40 * views);
+    return first;
+  }
+
+  it.each([1, 4])("asks no new counts for events that no source file caused (%i views)", async (n) => {
+    const first = await settledEditors(n);
+    for (let i = 0; i < 10; i++) {
+      fsChanged(["/p/logo.png"]);
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+    fsChanged([], ["/p"]);
+    fsChanged(["/p/debug.log", "/p/Cargo.lock"]);
+    emitLocalIdeEvent({ type: "fsChanged", created: [], modified: [], removed: [] });
+    await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(first);
+  });
+
+  it("recounts once when a source file is among the changed paths", async () => {
+    const first = await settledEditors(1);
+    for (let i = 0; i < 5; i++) fsChanged(["/p/logo.png", "/p/b.rs", "/p/debug.log"]);
+    await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(2 * first);
+  });
+
+  it.each([
+    ["a created source file", { created: ["/p/new.rs"], modified: [], removed: [] }],
+    ["a removed source file", { created: [], modified: [], removed: ["/p/old.RS"] }],
+    ["a file the registry matches by name", { created: [], modified: ["/p/Dockerfile.dev"], removed: [] }],
+    [
+      "a path without an extension (a folder, or a script found by its first line)",
+      { created: [], modified: [], removed: ["/p/src/gen"] },
+    ],
+  ])("recounts for %s", async (_, paths) => {
+    const first = await settledEditors(1);
+    emitLocalIdeEvent({ type: "fsChanged", ...paths });
+    await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(2 * first);
+  });
+
+  it("recounts for a file Settings › File Types assigns to a language with a server", async () => {
+    useProject.setState({
+      settings: {
+        editor: { inlay: { codeVisionUsages: true, codeVisionAuthor: false } },
+        files: { fileTypes: { rust: { patterns: ["*.tpl"] } }, fileTypeOverrides: { "/p/x.log": "rust" } },
+      } as never,
+    });
+    const first = await settledEditors(1);
+    fsChanged(["/p/page.tpl"]);
+    await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(2 * first);
+    fsChanged(["/p/x.log"]);
+    await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(3 * first);
+  });
+
+  it("recounts for any path while the languages are not loaded", async () => {
+    ipc.docOutline.mockResolvedValue(ok(Array.from({ length: 60 }, (_, i) => item(`f${i}`, "function", i))));
+    editor(60);
+    await settle();
+    fsChanged(["/p/logo.png"]);
+    await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(80);
   });
 });

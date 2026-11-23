@@ -44,8 +44,8 @@ use std::sync::LazyLock;
 // Desktop bodies of project-host commands (`#[command(desktop_body = …)]`), which their derived
 // adapters call.
 use app::{
-    close_project, open_project, project_current, project_trust_remove_location, project_trust_set, settings_get,
-    settings_removed_theme, settings_set,
+    close_project, open_project, project_current, project_trust_remove_location, project_trust_set,
+    project_workspace_member_set, project_workspace_members, settings_get, settings_removed_theme, settings_set,
 };
 use doc::doc_edit;
 use plugin::plugin_event_kinds;

@@ -10,6 +10,7 @@ import { indentUnit } from "@codemirror/language";
 import { diff } from "@codemirror/merge";
 import { commands, isCancelled, type CodeAction, type Diagnostic } from "@/platform/ipc";
 import {
+  asyncIntentionProviders,
   contributedIntentions,
   contributedIntentionsAsync,
   contributedQuickFixes,
@@ -886,5 +887,8 @@ export function intentionsExtension(): Extension {
     bulbPlugin,
     floatingBulb,
     intentionProviders.of((view) => languageSemantics(docOf(view)?.language)?.intentions?.(view) ?? []),
+    asyncIntentionProviders.of(
+      async (view, signal) => (await languageSemantics(docOf(view)?.language)?.asyncIntentions?.(view, signal)) ?? [],
+    ),
   ];
 }

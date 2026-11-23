@@ -8,6 +8,7 @@ import { resetDistractionFree, setDistractionFree } from "@/workbench/distractio
 import * as contributions from "@/workbench/contributions";
 import {
   registerEditorKind,
+  registerMenuGroup,
   registerTextEditorWrapper,
   setProjectViewLead,
   useProjectViewLead,
@@ -542,6 +543,42 @@ describe("EditorController", () => {
     }
   });
 
+  it("passes the caret line and the selected line range to Copy Agent Reference", async () => {
+    const path = "/p/a.ts";
+    ctrl = new EditorController(createMemoryBackend({ [path]: "first\nsecond\nthird\n" }));
+    ctrl.start();
+    await ctrl.openFile(path, { focus: false });
+    const slot = ctrl.activeSlot!;
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = slot.mount(host);
+    vi.spyOn(view, "posAtCoords").mockReturnValue(null);
+    try {
+      for (const [selection, lines] of [
+        [{ anchor: 7 }, { from: 2, to: 2 }],
+        [
+          { anchor: 0, head: 13 },
+          { from: 1, to: 2 },
+        ],
+      ] as const) {
+        view.dispatch({ selection });
+        ctrl.onContextMenu(slot, new MouseEvent("contextmenu"));
+        const copy = useContextMenuStore
+          .getState()
+          .menu!.items.find((item) => "label" in item && item.label === "Copy / Paste Special");
+        expect(copy).toMatchObject({
+          submenu: expect.arrayContaining([
+            expect.objectContaining({ action: "agents.copyAgentReference", arg: [{ path, lines }] }),
+          ]),
+        });
+      }
+    } finally {
+      hideContextMenu();
+      slot.unmount();
+      host.remove();
+    }
+  });
+
   it("builds IDEA's editor tab menu", async () => {
     useProject.setState({
       project: { name: "p", root: "/p", trusted: true, isGit: true, settings: {} } as never,
@@ -577,6 +614,46 @@ describe("EditorController", () => {
     useRemote.setState({ session: null });
     dispose();
     useProject.setState({ project: null, settings: null });
+  });
+
+  it("offers contributed Copy Path links in the tab menu like the other copy menus", async () => {
+    useProject.setState({
+      project: { name: "p", root: "/p", trusted: true, isGit: true, settings: {} } as never,
+      settings: {} as never,
+    });
+    const dispose = registerActions(
+      ["project.copyAbsolutePath", "project.copyFileName", "project.copyRelativePath"].map((id) => ({
+        id,
+        title: id,
+        run: () => undefined,
+      })),
+    );
+    const links = registerMenuGroup({
+      id: "test.link",
+      menus: ["copyPath"],
+      items: () => [{ id: "test.copyLink", label: "GitHub Link", verbatim: true, run: () => undefined }],
+    });
+    try {
+      ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "" }));
+      ctrl.start();
+      await ctrl.openFile("/p/a.ts", { focus: false });
+      const s = useTabs.getState();
+      const pane = s.panes[s.activePane]!;
+      const submenu = resolveMenuItems(ctrl.tabMenu(pane.id, pane.tabs[0]!)).find(
+        (i) => i.label === "Copy Path/Reference…",
+      )!.submenu!;
+      expect(resolveMenuItems(submenu).map((i) => (i.kind === "separator" ? "-" : i.label))).toEqual([
+        "Absolute Path",
+        "File Name",
+        "Path From Content Root",
+        "-",
+        "GitHub Link",
+      ]);
+    } finally {
+      dispose();
+      links();
+      useProject.setState({ project: null, settings: null });
+    }
   });
 
   it.each(["editor", "tab"])(

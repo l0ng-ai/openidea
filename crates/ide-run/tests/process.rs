@@ -279,6 +279,73 @@ fn large_output_is_complete_and_batched() {
 }
 
 #[test]
+fn a_console_slower_than_the_process_still_gets_all_output_in_order_and_the_exit() {
+    const LINES: usize = 1_000_000;
+    let h = harness();
+    let chunks: Chunks = Arc::default();
+    let sink = chunks.clone();
+    let info =
+        h.pm.start(
+            h.root.path(),
+            &cfg("t:slow-console", "awk", &[&format!("BEGIN{{for(i=1;i<={LINES};i++)print i}}")]),
+            &StartOptions::default(),
+            h.sink.clone(),
+            Box::new(move |c| {
+                sink.lock().push(c);
+                std::thread::sleep(Duration::from_millis(1));
+            }),
+        )
+        .expect("start");
+    assert_eq!(wait_exit(&h, info.id, Duration::from_secs(120)), Some(0));
+    let expected: String = (1..=LINES).map(|n| format!("{n}\n")).collect();
+    assert!(text(&chunks, stdout) == expected, "the output arrived incomplete or out of order");
+    // The exit is reported after the output, never before the last of it.
+    let all = chunks.lock();
+    assert!(matches!(all.last(), Some(OutputChunk::System { text }) if text.contains("exit code 0")));
+}
+
+#[test]
+fn stop_ends_a_flooding_run_whose_console_stalled() {
+    let h = harness();
+    let chunks: Chunks = Arc::default();
+    let sink = chunks.clone();
+    let (stalled_tx, stalled) = mpsc::channel();
+    let (resume_tx, resume) = mpsc::channel::<()>();
+    // The first output blocks the console until `resume_tx` is dropped.
+    let resume = Mutex::new(Some(resume));
+    let info =
+        h.pm.start(
+            h.root.path(),
+            &cfg("t:stalled-console", "yes", &[]),
+            &StartOptions::default(),
+            h.sink.clone(),
+            Box::new(move |c| {
+                let output = matches!(c, OutputChunk::Stdout { .. });
+                sink.lock().push(c);
+                if output && let Some(resume) = resume.lock().take() {
+                    let _ = stalled_tx.send(());
+                    let _ = resume.recv();
+                }
+            }),
+        )
+        .expect("start");
+    stalled.recv_timeout(Duration::from_secs(10)).expect("no output reached the console");
+    // The pipe and the queue behind the stalled console fill up and `yes` waits on its pipe.
+    std::thread::sleep(Duration::from_millis(300));
+    h.pm.stop(info.id).unwrap();
+    let pid = i32::try_from(info.pid.expect("pid")).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while alive(pid) {
+        assert!(Instant::now() < deadline, "the stalled run survived Stop");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    drop(resume_tx);
+    assert_eq!(wait_exit(&h, info.id, Duration::from_secs(30)), Some(130));
+    let out = text(&chunks, stdout);
+    assert!(!out.is_empty() && out.lines().all(|l| l == "y"), "the output was damaged");
+}
+
+#[test]
 fn relative_program_resolves_against_cwd() {
     let h = harness();
     let script = h.root.path().join("tool.sh");
@@ -656,7 +723,7 @@ fn cmake_configure_discovers_builds_and_runs_a_multifile_target() {
 #[test]
 fn go_build_runs_with_separate_arguments_environment_and_working_directory() {
     let h = harness();
-    let Some(go) = ide_run::which::find_executable("go", &std::env::var_os("PATH").unwrap_or_default()) else {
+    let Some(go) = ide_core::process::find_executable("go", &std::env::var_os("PATH").unwrap_or_default()) else {
         eprintln!("skipped: no Go toolchain");
         return;
     };
@@ -698,7 +765,7 @@ fn go_build_runs_with_separate_arguments_environment_and_working_directory() {
 #[test]
 fn go_build_only_supports_multiple_packages_and_explicit_output() {
     let h = harness();
-    let Some(go) = ide_run::which::find_executable("go", &std::env::var_os("PATH").unwrap_or_default()) else {
+    let Some(go) = ide_core::process::find_executable("go", &std::env::var_os("PATH").unwrap_or_default()) else {
         return;
     };
     std::fs::write(h.root.path().join("go.mod"), "module example.com/buildall\ngo 1.22\n").unwrap();
@@ -742,7 +809,7 @@ fn go_build_only_supports_multiple_packages_and_explicit_output() {
 #[test]
 fn go_file_tests_use_build_selected_sources_and_only_the_selected_test_file() {
     let h = harness();
-    let Some(go) = ide_run::which::find_executable("go", &std::env::var_os("PATH").unwrap_or_default()) else {
+    let Some(go) = ide_core::process::find_executable("go", &std::env::var_os("PATH").unwrap_or_default()) else {
         eprintln!("skipped: no Go toolchain");
         return;
     };

@@ -26,7 +26,7 @@ const DEFAULT_GO_BUILD_TAGS: GoBuildTags = {
   experiments: "",
 };
 
-/** An external formatter (Prettier, oxfmt, Biome, Ruff) and the languages it formats. */
+/** An external formatter (Prettier, oxfmt, Biome, Ruff, Black) and the languages it formats. */
 interface ExternalFormatterValid {
   path: string;
   configurationDirectory: string;
@@ -64,7 +64,7 @@ const DEFAULT_BIOME_FORMATTER: ExternalFormatterValid = {
   languages: ["css", "graphql", "javascript", "javascriptreact", "typescript", "typescriptreact", "json", "jsonc"],
 };
 
-const DEFAULT_RUFF_FORMATTER: ExternalFormatterValid = {
+const DEFAULT_PYTHON_FORMATTER: ExternalFormatterValid = {
   ...DEFAULT_FORMATTER,
   languages: ["python"],
 };
@@ -173,6 +173,8 @@ export interface LanguagesValid {
     hideOtherProjectInterpreters: boolean;
     /** Show each interpreter's path under its name on the interpreters page. */
     showInterpreterPaths: boolean;
+    /** Folders added to an interpreter's `sys.path`, by interpreter executable. */
+    interpreterPaths: Record<string, string[]>;
   };
   ruby: { interpreter: string };
   zig: { zig: string };
@@ -209,6 +211,7 @@ export interface LanguagesValid {
   oxfmt: ExternalFormatterValid;
   biome: ExternalFormatterValid;
   ruff: ExternalFormatterValid;
+  black: ExternalFormatterValid;
   java: {
     jdk: string;
     languageLevel: (typeof JAVA_LANGUAGE_LEVELS)[number];
@@ -303,6 +306,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
     hiddenInterpreters: [],
     hideOtherProjectInterpreters: false,
     showInterpreterPaths: true,
+    interpreterPaths: {},
   },
   ruby: { interpreter: "" },
   zig: { zig: "" },
@@ -320,7 +324,8 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
   prettier: DEFAULT_FORMATTER,
   oxfmt: DEFAULT_FORMATTER,
   biome: DEFAULT_BIOME_FORMATTER,
-  ruff: DEFAULT_RUFF_FORMATTER,
+  ruff: DEFAULT_PYTHON_FORMATTER,
+  black: DEFAULT_PYTHON_FORMATTER,
   java: {
     jdk: "",
     languageLevel: "",
@@ -451,6 +456,9 @@ export function validateLanguages(raw: unknown): LanguagesValid {
       hiddenInterpreters: strings(py.hiddenInterpreters),
       hideOtherProjectInterpreters: bool(py.hideOtherProjectInterpreters, d.python.hideOtherProjectInterpreters),
       showInterpreterPaths: bool(py.showInterpreterPaths, d.python.showInterpreterPaths),
+      interpreterPaths: Object.fromEntries(
+        Object.entries(obj(py.interpreterPaths)).map(([python, paths]) => [python, strings(paths)]),
+      ),
     },
     ruby: { interpreter: text(ruby.interpreter, d.ruby.interpreter) },
     zig: { zig: text(zig.zig, d.zig.zig) },
@@ -495,7 +503,8 @@ export function validateLanguages(raw: unknown): LanguagesValid {
     prettier: validateFormatter(l.prettier),
     oxfmt: validateFormatter(l.oxfmt),
     biome: validateFormatter(l.biome, DEFAULT_BIOME_FORMATTER),
-    ruff: validateFormatter(l.ruff, DEFAULT_RUFF_FORMATTER),
+    ruff: validateFormatter(l.ruff, DEFAULT_PYTHON_FORMATTER),
+    black: validateFormatter(l.black, DEFAULT_PYTHON_FORMATTER),
     java: {
       jdk: text(java.jdk, d.java.jdk),
       languageLevel: oneOf(java.languageLevel, JAVA_LANGUAGE_LEVELS, d.java.languageLevel),

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { Text } from "@codemirror/state";
 import { javascriptLanguage, typescriptLanguage } from "@codemirror/lang-javascript";
+import { TreeFragment, type Tree } from "@lezer/common";
 import { semanticRanges } from "../index";
+import { decoratorRanges } from "./index";
 
 // tsserver's legend (vtsls and typescript-language-server send the same one).
 const tokenTypes = ["class", "variable", "function", "member", "property"];
@@ -83,5 +85,66 @@ describe("JavaScript and TypeScript semantic tokens (#4059)", () => {
     expect(at(1, "helper")).toBe("cm-sem-function");
     expect(at(1, "Math")).toBe("cm-sem-builtin");
     expect(at(1, "parseInt")).toBe("cm-sem-function cm-sem-builtin");
+  });
+});
+
+describe("decorator names after an edit", () => {
+  const parser = typescriptLanguage.parser;
+  const decorated = "@Component({ selector: 'a' })\nexport class Home {\n  @Input() title = ''\n}\n\n";
+  const plain = (count: number) =>
+    Array.from(
+      { length: count },
+      (_, i) =>
+        `/** Service ${i}, documented. */\nexport class Service${i} {\n  load(id: number) {\n    return id\n  }\n}\n\n`,
+    ).join("");
+
+  /** The decorator names by walking the whole tree: what each edit used to cost. */
+  function everyDecorator(tree: Tree): Array<[number, number]> {
+    const out: Array<[number, number]> = [];
+    tree.iterate({
+      enter(ref) {
+        if (ref.name !== "Decorator") return;
+        let head = ref.node.firstChild?.nextSibling ?? null;
+        while (head) {
+          if (head.name === "CallExpression") head = head.firstChild;
+          else if (head.name === "MemberExpression") {
+            if (head.lastChild?.name === "PropertyName") out.push([head.lastChild.from, head.lastChild.to]);
+            head = head.firstChild;
+          } else {
+            if (head.name === "VariableName") out.push([head.from, head.to]);
+            head = null;
+          }
+        }
+      },
+    });
+    return out;
+  }
+
+  /** Scans the tree of a file that is `count` services after its decorated classes, then the tree of the same file after one typed letter. */
+  function scanAfterTyping(count: number) {
+    const doc = decorated + plain(count) + decorated;
+    const tree = parser.parse(doc);
+    decoratorRanges(tree);
+    const at = doc.indexOf("return", doc.length >> 1);
+    const fragments = TreeFragment.applyChanges(TreeFragment.addTree(tree), [
+      { fromA: at, toA: at, fromB: at, toB: at + 1 },
+    ]);
+    const edited = parser.parse(doc.slice(0, at) + "a" + doc.slice(at), fragments);
+    const probe = { visited: 0 };
+    const ranges = decoratorRanges(edited, probe);
+    return { edited, ranges, visited: probe.visited };
+  }
+
+  it("finds the decorators of the whole file", () => {
+    const { edited, ranges } = scanAfterTyping(50);
+    expect(ranges.map((r) => [r.from, r.to])).toEqual(everyDecorator(edited));
+    expect(ranges).toHaveLength(4);
+  });
+
+  it("looks at as many tree nodes in a long file as in a short one", () => {
+    // The nodes an edit leaves alone were already known to hold no decorator.
+    const short = scanAfterTyping(100).visited;
+    const long = scanAfterTyping(1600).visited;
+    expect(long).toBeLessThan(short * 2);
   });
 });

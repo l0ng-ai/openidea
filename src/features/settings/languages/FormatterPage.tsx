@@ -31,6 +31,7 @@ interface FormatterPageProps {
   pathLabel: string;
   pathHint?: string;
   configurationDirectory?: boolean;
+  autoLabel?: string;
   providerHint?: string;
   saveHint: string;
 }
@@ -41,6 +42,7 @@ function FormatterPage({
   pathLabel,
   pathHint = "Auto: nearest project node_modules, managed installation, then PATH. An explicit path overrides auto detection.",
   configurationDirectory = false,
+  autoLabel = "Automatic (language server first)",
   providerHint,
   saveHint,
 }: FormatterPageProps) {
@@ -62,7 +64,7 @@ function FormatterPage({
             onChange={(v) => setPrefer(v === tool)}
             aria-label="Formatting provider"
             options={[
-              { value: "auto", label: "Automatic (language server first)" },
+              { value: "auto", label: autoLabel },
               { value: tool, label: name },
             ]}
           />
@@ -167,6 +169,20 @@ export function RuffPage() {
       configurationDirectory
       providerHint="Ruff reads the nearest pyproject.toml ([tool.ruff]), ruff.toml, or .ruff.toml. Use it before the language server when preferred."
       saveHint="Run Ruff on save for enabled languages when it is the selected formatting provider."
+    />
+  );
+}
+
+export function BlackPage() {
+  return (
+    <FormatterPage
+      tool="black"
+      name="Black formatter"
+      pathLabel="Black path"
+      pathHint="Auto: the project interpreter's environment, managed installation, then PATH. An explicit path overrides auto detection."
+      autoLabel="Automatic (projects with [tool.black])"
+      providerHint="Black formats Python instead of Ruff below a pyproject.toml with [tool.black], or when it is the selected provider."
+      saveHint="Run Black on save for enabled languages when it is the selected formatting provider. Reformat code in Actions on Save also runs it."
     />
   );
 }

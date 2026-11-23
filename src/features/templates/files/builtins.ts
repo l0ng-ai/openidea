@@ -154,6 +154,14 @@ export const BUILTIN_FILE_TEMPLATES: readonly FileTemplate[] = [
     ],
   },
   {
+    id: "svelte",
+    name: "Svelte Component",
+    icon: "file-svelte",
+    extension: "svelte",
+    nameStyle: "asis",
+    kinds: [{ id: "component", label: "Svelte Component", body: "<script>\n  $END$\n</script>\n" }],
+  },
+  {
     id: "javascript",
     name: "JavaScript File",
     icon: "file-js",

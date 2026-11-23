@@ -20,7 +20,7 @@ description: "OpenIDEA 的设置保存在哪里、全局文件与项目文件如
 
 有些设置在项目文件中会被忽略：`mcpServer`、导入的配色方案（`editor.customSchemes`）和 `agents.newTaskApprovals` 只能全局配置。项目信任状态永远不会从设置文件中读取。
 
-项目文件不能放宽编码智能体的权限：`agentSecurity.allowedCommands` 和 `agents.defaults` 只能全局配置；项目中的 `agentSecurity.blockedCommands` 会追加到全局列表中，而不是替换它。项目 `agents.mcpServers` 中的 MCP 服务器会保持关闭，直到你在 **设置 › 智能体 › 外部 MCP 服务器** 中将其开启；服务器定义改变后也需要重新开启。
+项目文件不能放宽编码智能体的权限：`agentSecurity.allowedCommands` 和 `agents.defaults` 只能全局配置；项目中的 `agentSecurity.blockedCommands` 会追加到全局列表中，而不是替换它。项目 `agents.mcpServers` 中的 MCP 服务器会保持关闭，直到你在 **设置 › 智能体 › MCP 连接** 中将其开启；服务器定义改变后也需要重新开启。
 
 ## 文件格式
 
@@ -55,7 +55,7 @@ exclude = ["**/.git", "**/node_modules", "**/target", "**/dist"]
 | 插件             | 插件                                                                                                                                                                                                                                                            |
 | 版本控制         | 提交；确认；目录映射；问题导航；日志；搁置；Git；GitHub                                                                                                                                                                                                         |
 | 构建、执行、部署 | CMake；Gradle；Maven；控制台；调试器（数据视图、单步执行）；Python 调试器；运行/调试；运行目标；部署（选项）                                                                                                                                                    |
-| 语言和框架       | 语言服务器；Go（构建标签、Go 模块）；Java；Markdown；Node.js；PHP；Python 解释器；Prettier；oxfmt；Biome；Ruff；Ruby；Rust；TypeScript                                                                                                                          |
+| 语言和框架       | 语言服务器；Go（构建标签、Go 模块）；Java；Markdown；Node.js；PHP；Python 解释器；Prettier；oxfmt；Biome；Ruff；Black 格式化工具；Ruby；Rust；TypeScript                                                                                                        |
 | 工具             | 智能体（聊天）；终端；保存时操作；外部工具；SSH 配置；MCP 服务器                                                                                                                                                                                                |
 | 安全             | 项目信任                                                                                                                                                                                                                                                        |
 

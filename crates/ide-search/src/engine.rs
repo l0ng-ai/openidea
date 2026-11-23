@@ -24,6 +24,11 @@ const CANCEL_CHECK_LINES: u32 = 256;
 /// How many matches a file keeps before claiming them from the shared budget: each file
 /// searched in parallel holds about this many unclaimed matches at most, not up to the whole budget.
 const CLAIM_BATCH: u32 = 64;
+/// Bytes at the start of a text that the searcher checks for binary content up front.
+const BINARY_HEAD_LEN: usize = 64 * 1024;
+/// Files longer than this hold no text the parser takes, whatever their encoding (UTF-16 halves
+/// the bytes of ASCII text, nothing else comes close): their comments and strings are not looked for.
+const MAX_LITERALS_FILE_BYTES: u64 = 2 * crate::MAX_LITERALS_TEXT_BYTES as u64;
 
 pub(crate) struct Request<'a> {
     pub root: &'a Path,
@@ -63,9 +68,11 @@ impl Control<'_> {
 
     /// Also polls the cancellation token (which takes a lock).
     fn should_stop(&self) -> bool {
-        if self.stopped() {
-            return true;
-        }
+        self.stopped() || self.cancel_requested()
+    }
+
+    /// Polls the cancellation token only: a search stopped by its match limit is not cancelled.
+    fn cancel_requested(&self) -> bool {
         if self.cancel.is_cancelled() {
             self.cancelled.store(true, Relaxed);
             self.stop.store(true, Relaxed);
@@ -302,22 +309,37 @@ impl Ctx<'_> {
         {
             return;
         }
-        // The search context needs the whole text to find comments and string literals.
+        // The search context needs the whole text to find comments and string literals. A file
+        // whose text is past the longest the parser takes has none, so it is not read for them.
         let in_context = match self.literals {
-            Some(literals) => {
+            Some(literals) => 'context: {
                 let text = match (self.text.overlay)(path) {
                     Some(text) => text,
-                    None => match std::fs::read(path) {
-                        Ok(bytes) => match String::from_utf8(bytes) {
-                            Ok(text) => text,
-                            // Binary content has nothing to classify.
-                            Err(e) => match (self.text.decode)(path, e.as_bytes()) {
-                                Some(text) => text,
-                                None => return,
+                    None => {
+                        match std::fs::metadata(path) {
+                            Ok(meta) if meta.len() > MAX_LITERALS_FILE_BYTES => {
+                                if self.context.needs_literals() {
+                                    return;
+                                }
+                                break 'context None;
+                            }
+                            Ok(_) => {}
+                            Err(_) => return,
+                        }
+                        match std::fs::read(path) {
+                            Ok(bytes) => match String::from_utf8(bytes) {
+                                Ok(text) => text,
+                                // Binary content has nothing to classify.
+                                Err(e) => {
+                                    match ide_vfs::decode_text(e.as_bytes(), (self.text.fallback)(path).as_deref()) {
+                                        Some(text) => text,
+                                        None => return,
+                                    }
+                                }
                             },
-                        },
-                        Err(_) => return,
-                    },
+                            Err(_) => return,
+                        }
+                    }
                 };
                 let ranges = literals(path, &text);
                 if ranges.is_none() && self.context.needs_literals() {
@@ -354,7 +376,8 @@ impl Ctx<'_> {
     }
 
     /// Streams the file's bytes; a file that turns out not to be UTF-8 (GBK,
-    /// UTF-16 …) is searched again in the text `decode` gives it.
+    /// UTF-16 …) is searched again in its text decoded as the editor opens it,
+    /// which is decoded as it is read.
     fn search_disk<'s>(
         &'s self,
         path: &Path,
@@ -362,7 +385,7 @@ impl Ctx<'_> {
         searcher: &mut Searcher,
         sink: &mut FileSink<'s>,
     ) -> io::Result<()> {
-        let mut reader = Utf8Probe::new(StopReader { inner: std::fs::File::open(path)?, ctl: &self.ctl });
+        let mut reader = Utf8Probe::new(StopReader { inner: std::fs::File::open(path)?, ctl: &self.ctl, hard: true });
         let result = searcher.search_reader(matcher, &mut reader, &mut *sink);
         // NUL bytes in the head of UTF-16 text stop the byte search; later ones mark binary.
         let decode = if sink.binary {
@@ -374,14 +397,29 @@ impl Ctx<'_> {
         if !decode || (self.ctl.stopped() && sink.claimed == 0) {
             return result;
         }
-        let Some(text) = (self.text.decode)(path, &std::fs::read(path)?) else {
+        // Only cancellation ends the reading: a search that hit the match limit still fills its claim.
+        let open = || Ok(StopReader { inner: std::fs::File::open(path)?, ctl: &self.ctl, hard: false });
+        let Some(text) = ide_vfs::decode_stream(open, (self.text.fallback)(path).as_deref())? else {
             sink.binary = true;
             return Ok(());
         };
+        let mut text = text;
+        // Text held whole gets the searcher's binary check only on its first 64 KiB and on the
+        // lines that match; this keeps that for the text read piece by piece.
+        let mut head = Vec::with_capacity(BINARY_HEAD_LEN);
+        (&mut text).take(BINARY_HEAD_LEN as u64).read_to_end(&mut head)?;
+        if head.contains(&0) {
+            sink.binary = true;
+            return Ok(());
+        }
         let claimed = sink.claimed;
         *sink = FileSink::new(matcher, &self.ctl, None);
         sink.claimed = claimed;
-        searcher.search_slice(matcher, text.as_bytes(), sink)
+        sink.binary_in_matches = true;
+        searcher.set_binary_detection(BinaryDetection::none());
+        let result = searcher.search_reader(matcher, io::Cursor::new(head).chain(text), sink);
+        searcher.set_binary_detection(BinaryDetection::quit(0));
+        result
     }
 }
 
@@ -404,6 +442,8 @@ struct FileSink<'a> {
     /// file is searched again under the claim of its byte search.
     claimed: u32,
     binary: bool,
+    /// A NUL byte in a matching line marks the file binary (the searcher's own check is off).
+    binary_in_matches: bool,
     ticks: u32,
     /// Scratch buffers reused across lines.
     found: Vec<(usize, usize)>,
@@ -425,6 +465,7 @@ impl<'a> FileSink<'a> {
             count: 0,
             claimed: 0,
             binary: false,
+            binary_in_matches: false,
             ticks: 0,
             found: Vec::new(),
             ranges: Vec::new(),
@@ -467,6 +508,10 @@ impl Sink for FileSink<'_> {
     type Error = io::Error;
 
     fn matched(&mut self, _searcher: &Searcher, m: &SinkMatch<'_>) -> Result<bool, io::Error> {
+        if self.binary_in_matches && memchr::memchr(0, m.bytes()).is_some() {
+            self.binary = true;
+            return Ok(false);
+        }
         self.ticks += 1;
         let stop = self.ctl.stopped() || (self.ticks.is_multiple_of(CANCEL_CHECK_LINES) && self.ctl.should_stop());
         // Unless cancelled, a decoded file still fills the claim its byte search took.
@@ -534,15 +579,17 @@ impl Sink for FileSink<'_> {
     }
 }
 
-/// Aborts disk reads once the search is stopped or cancelled.
+/// Aborts disk reads once the search is cancelled, or with `hard` once it is stopped.
 struct StopReader<'a, R> {
     inner: R,
     ctl: &'a Control<'a>,
+    hard: bool,
 }
 
 impl<R: Read> Read for StopReader<'_, R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if self.ctl.should_stop() {
+        let stop = if self.hard { self.ctl.should_stop() } else { self.ctl.cancel_requested() };
+        if stop {
             return Err(io::Error::other("search stopped"));
         }
         self.inner.read(buf)

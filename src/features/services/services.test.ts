@@ -34,6 +34,7 @@ import {
   findImageForContainer,
   findNode,
   imageTagsForId,
+  isAnonymousVolume,
   isUntaggedImage,
   nodeDetail,
   nodeIcon,
@@ -41,11 +42,13 @@ import {
   parseTreeKey,
   rootNodes,
   treeKey,
+  volumesInComposeProject,
   type ServiceNode,
 } from "./model";
 import {
   bytesToUnits,
   formatCreatedDetailed,
+  formatDockerCommand,
   parseContainerInspect,
   parseImageInspect,
   parseNetworkInspect,
@@ -56,6 +59,12 @@ import {
   unitsToBytes,
 } from "./dashboard";
 import { endpointFrom, sshConfigForUrl, sshConfigUrl } from "./dialogs";
+import {
+  hasComposeSource,
+  locateComposeServiceCommand,
+  pickComposeCommandLocation,
+  resolveComposeFilePaths,
+} from "./composeSource";
 import { dockerItems } from "./docker";
 import { setDockerFilters, useServices } from "./store";
 import { addServiceMenu, expandableKeys, indexTree, setProviderRoots, useServicesTree } from "./tree";
@@ -447,6 +456,55 @@ describe("phase 1: filters, cross-references and dashboard parsers", () => {
       "shop-db-1",
       "shop-api-1",
     ]);
+
+    const anonHex = "37cc33a7d603260a82a378d7d3eeb835b748b5712614e2e5b4a3d6572f5e1e71";
+    const snapWithComposeVolumes: DockerSnapshot = {
+      ...richSnapshot,
+      volumes: [
+        {
+          name: "shop_redis",
+          driver: "local",
+          mountpoint: "/var/lib/docker/volumes/shop_redis/_data",
+          composeProject: "shop",
+          labels: { "com.docker.compose.project": "shop", "com.docker.compose.volume": "redis" },
+        },
+        ...richSnapshot.volumes,
+        {
+          name: anonHex,
+          driver: "local",
+          mountpoint: `/var/lib/docker/volumes/${anonHex}/_data`,
+          composeProject: "shop",
+          labels: { "com.docker.volume.anonymous": "" },
+        },
+        {
+          name: anonHex.replace(/^37/, "aa"),
+          driver: "local",
+          mountpoint: "/var/lib/docker/volumes/legacy/_data",
+          composeProject: "shop",
+        },
+        {
+          name: "other_data",
+          driver: "local",
+          mountpoint: "/var/lib/docker/volumes/other_data/_data",
+          composeProject: "other",
+          labels: { "com.docker.compose.project": "other", "com.docker.compose.volume": "data" },
+        },
+        {
+          name: "standalone_vol",
+          driver: "local",
+          mountpoint: "/var/lib/docker/volumes/standalone_vol/_data",
+          composeProject: null,
+        },
+      ],
+    };
+    expect(isAnonymousVolume(snapWithComposeVolumes.volumes[0]!)).toBe(false);
+    expect(isAnonymousVolume(snapWithComposeVolumes.volumes[2]!)).toBe(true);
+    expect(isAnonymousVolume(snapWithComposeVolumes.volumes[3]!)).toBe(true);
+    expect(volumesInComposeProject(snapWithComposeVolumes, "shop").map((v) => v.name)).toEqual([
+      "shop_pgdata",
+      "shop_redis",
+    ]);
+    expect(volumesInComposeProject(snapWithComposeVolumes, "missing")).toEqual([]);
   });
 
   it("parses units, usage pairs, timestamps, ports, layers and inspect payloads", () => {
@@ -722,5 +780,212 @@ describe("docker compose detection and targets", () => {
     const svcDecl = resolveComposeReferenceAt(state, svcRefOffset);
     expect(svcDecl?.name).toBe("starrocks");
     expect(svcDecl?.line).toBe(8);
+  });
+});
+
+describe("formatDockerCommand", () => {
+  it("returns null when entrypoint, cmd, and fallback are empty", () => {
+    expect(formatDockerCommand([], [])).toBeNull();
+    expect(formatDockerCommand([], [], "   \n  ")).toBeNull();
+  });
+
+  it("keeps simple single-line entrypoint and cmd compact on one line", () => {
+    const formatted = formatDockerCommand(["docker-entrypoint.sh"], ["postgres", "-c", "max_connections=200"]);
+    expect(formatted).toEqual({
+      preview: "docker-entrypoint.sh postgres -c max_connections=200",
+      entrypoint: "docker-entrypoint.sh",
+      args: "postgres -c max_connections=200",
+      fullText: "docker-entrypoint.sh postgres -c max_connections=200",
+      copyText: "docker-entrypoint.sh postgres -c max_connections=200",
+      lineCount: 1,
+    });
+  });
+
+  it("separates multi-line shell entrypoints from command arguments and builds a single-line preview", () => {
+    const script = [
+      "mkdir -p /persist/slots",
+      "while true; do",
+      "  if flock -n 99; then break; fi",
+      "done",
+      'exec /entrypoint.sh "$@"',
+      "",
+    ].join("\n");
+    const formatted = formatDockerCommand(
+      ["/bin/bash", "-ec", script, "--"],
+      ["./bin/Runner.Listener", "run", "--startuptype", "service"],
+    )!;
+
+    expect(formatted.preview).toBe(
+      "/bin/bash -ec 'mkdir -p /persist/slots ↵ while true; do ↵ if flock -n 99; then break; fi ↵ done ↵ exec /entrypoint.sh \"$@\"' -- ./bin/Runner.Listener run --startuptype service",
+    );
+    expect(formatted.entrypoint).toBe(
+      [
+        "/bin/bash -ec '",
+        "mkdir -p /persist/slots",
+        "while true; do",
+        "  if flock -n 99; then break; fi",
+        "done",
+        'exec /entrypoint.sh "$@"',
+        "' --",
+      ].join("\n"),
+    );
+    expect(formatted.args).toBe("./bin/Runner.Listener run --startuptype service");
+    expect(formatted.lineCount).toBe(7);
+    expect(formatted.copyText).toBe(`${formatted.entrypoint} ${formatted.args}`);
+  });
+
+  it("quotes empty tokens and embedded single quotes and handles multi-line fallback strings", () => {
+    const quoted = formatDockerCommand(["sh", "-c", "echo 'hi'", ""], [])!;
+    expect(quoted.entrypoint).toBe("sh -c 'echo '\\''hi'\\''' ''");
+    expect(quoted.args).toBe("");
+    expect(quoted.lineCount).toBe(1);
+
+    const fallback = formatDockerCommand([], [], "set -e\r\n  npm start\r\n")!;
+    expect(fallback.preview).toBe("set -e ↵ npm start");
+    expect(fallback.fullText).toBe("set -e\n  npm start");
+    expect(fallback.lineCount).toBe(2);
+  });
+});
+
+describe("composeSource", () => {
+  it("resolves absolute, relative, Windows, and default Compose file paths", () => {
+    expect(hasComposeSource({ composeProject: "shop", composeWorkingDir: "/work/shop", composeFiles: [] })).toBe(true);
+    expect(hasComposeSource({ composeProject: null, composeWorkingDir: null, composeFiles: [] })).toBe(false);
+
+    expect(
+      resolveComposeFilePaths(["./compose.yaml", "/work/shop/compose.override.yaml", "compose.yaml"], "/work/shop/"),
+    ).toEqual(["/work/shop/compose.yaml", "/work/shop/compose.override.yaml"]);
+
+    expect(resolveComposeFilePaths(["docker\\compose.yml"], null, "C:\\repo")).toEqual(["C:/repo/docker/compose.yml"]);
+
+    expect(resolveComposeFilePaths([], "/work/shop")).toEqual([
+      "/work/shop/compose.yaml",
+      "/work/shop/compose.yml",
+      "/work/shop/docker-compose.yaml",
+      "/work/shop/docker-compose.yml",
+    ]);
+  });
+
+  it("locates inline commands, block scalars, block sequences, entrypoints, and service fallbacks", () => {
+    const compose = [
+      "services:",
+      "  postgres:",
+      "    image: postgres:16",
+      "  github-runner:",
+      "    image: myoung34/github-runner:latest",
+      "    entrypoint:",
+      "      - /bin/bash",
+      "      - -ec",
+      "      - |",
+      "        mkdir -p /persist/slots",
+      '    command: ["./bin/Runner.Listener", "run", "--startuptype", "service"]',
+      "  worker:",
+      "    image: python:3.12",
+      "    entrypoint: |",
+      "      # Initialize worker environment",
+      "      python -m app.worker",
+      "  compact-seq:",
+      "    command:",
+      "    - |",
+      "      npm run start",
+      "",
+    ].join("\n");
+
+    // Service without command or entrypoint falls back to the service declaration
+    expect(locateComposeServiceCommand(compose, "postgres")).toEqual({
+      kind: "service",
+      line: 1,
+      col: 2,
+    });
+
+    // Service with both entrypoint and command lands on command's value
+    expect(locateComposeServiceCommand(compose, "github-runner")).toEqual({
+      kind: "command",
+      line: 10,
+      col: 13,
+    });
+
+    // Service with only a literal block-scalar entrypoint lands on the first script line (preserving `#` comments)
+    expect(locateComposeServiceCommand(compose, "worker")).toEqual({
+      kind: "entrypoint",
+      line: 14,
+      col: 6,
+    });
+
+    // Compact sequence item using `- |` lands on the first script line inside the item
+    expect(locateComposeServiceCommand(compose, "compact-seq")).toEqual({
+      kind: "command",
+      line: 19,
+      col: 6,
+    });
+
+    // The service target always lands on the declaration
+    expect(locateComposeServiceCommand(compose, "github-runner", "service")).toEqual({
+      kind: "service",
+      line: 3,
+      col: 2,
+    });
+
+    expect(locateComposeServiceCommand(compose, "missing")).toBeNull();
+    expect(locateComposeServiceCommand(compose, null)).toEqual({ kind: "services", line: 0, col: 0 });
+  });
+
+  it("gives later override files precedence when resolving multi-file Compose commands", () => {
+    const base = [
+      "services:",
+      "  api:",
+      "    image: node:22",
+      "    command: npm run start",
+      "  worker:",
+      "    image: node:22",
+      "    command: node worker.js",
+      "  db:",
+      "    image: postgres:16",
+    ].join("\n");
+    const override = [
+      "services:",
+      "  api:",
+      "    ports:",
+      '      - "3000:3000"',
+      "  worker:",
+      "    command: npm run worker:dev",
+    ].join("\n");
+
+    const files = [
+      { path: "/work/compose.yaml", text: base },
+      { path: "/work/compose.override.yaml", text: override },
+    ];
+
+    // Override does not redefine `api.command`, so base file's `command` wins
+    expect(pickComposeCommandLocation(files, "api")).toEqual({
+      path: "/work/compose.yaml",
+      kind: "command",
+      line: 3,
+      col: 13,
+    });
+
+    // Override redefines `worker.command`, so override file's `command` wins
+    expect(pickComposeCommandLocation(files, "worker")).toEqual({
+      path: "/work/compose.override.yaml",
+      kind: "command",
+      line: 5,
+      col: 13,
+    });
+
+    // Neither file defines command/entrypoint for `db`, so base file's service declaration wins
+    // The service target prefers the first file that declares the service
+    expect(pickComposeCommandLocation(files, "worker", "service")).toEqual({
+      path: "/work/compose.yaml",
+      kind: "service",
+      line: 4,
+      col: 2,
+    });
+
+    expect(pickComposeCommandLocation(files, "db")).toEqual({
+      path: "/work/compose.yaml",
+      kind: "service",
+      line: 7,
+      col: 2,
+    });
   });
 });

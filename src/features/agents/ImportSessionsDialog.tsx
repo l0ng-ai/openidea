@@ -1,4 +1,4 @@
-/** Import Sessions from Other Apps: pick sessions a scan found now, and import them as tasks. */
+/** Pick external sessions and import them as agent tasks. */
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { Button, Dialog, Icon, List, SearchField, Spinner, T, listNavigate, rowSelectionMode, selectRow } from "@/ui";
 import { useRowHeight } from "@/ui/density";
@@ -160,7 +160,7 @@ function ImportSessionsDialog() {
     <Dialog
       open
       onClose={close}
-      title="Import Sessions from Other Apps"
+      title="Import Sessions"
       width={560}
       footerStart={
         <span className={styles.chooserFooter}>

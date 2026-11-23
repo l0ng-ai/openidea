@@ -8,10 +8,12 @@
 use crate::LspManager;
 use crate::server::{Running, Server};
 use ide_core::error::ErrorKind;
+use ide_core::event::LspRefreshKind;
 use ide_core::{CancellationToken, IdeError, IdeResult, LanguageId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use specta::Type;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -646,7 +648,8 @@ impl LspManager {
     /// jdtls reports `ProjectStatus` when an import or project update ends (a POM
     /// change, a Maven sync, other Maven profiles), but does not check open documents
     /// again against the new classpath: their errors would stay until the next edit.
-    /// Generated Maven sources are attached first, so that recheck sees them.
+    /// Open editors may have cached empty tokens or inheritance results during the import.
+    /// Attach generated Maven sources before refreshing either, so both see the new classpath.
     pub(crate) fn java_projects_updated(self: &Arc<Self>, server: Arc<Server>, generation: u64) {
         let uris: Vec<String> = self
             .docs
@@ -663,6 +666,9 @@ impl LspManager {
         self.runtime.spawn(async move {
             let Some(run) = server.running_gen(generation) else { return };
             mgr.sync_generated_sources(&server, &run).await;
+            for kind in [LspRefreshKind::SemanticTokens, LspRefreshKind::Inheritance] {
+                mgr.sink().emit(ide_core::IdeEvent::LspRefresh { server: server.id, kind });
+            }
             for uri in uris {
                 let params =
                     json!({ "command": "java.project.refreshDiagnostics", "arguments": [uri, "thisFile", false] });
@@ -846,37 +852,65 @@ impl LspManager {
         }
     }
 
-    /// Tells jdtls the build files of `uris` changed (`java/projectConfigurationsUpdate`),
-    /// so it re-imports their projects (e.g. after `~/.m2` gained an artifact it could
-    /// not resolve). Best-effort: skipped while jdtls is not already running.
-    pub async fn java_update_project_configs(&self, path: &Path, uris: Vec<String>) -> IdeResult<()> {
-        if uris.is_empty() {
-            return Ok(());
-        }
+    fn running_java_projects<'a>(&self, files: &'a [PathBuf]) -> Vec<(Running, Vec<&'a Path>)> {
         let java = LanguageId::new("java");
-        let Some(server) = self.servers_for(&java, path).into_iter().find(|s| s.name == SERVER) else {
-            return Ok(());
-        };
-        let Some(run) = server.running() else { return Ok(()) };
-        let identifiers: Vec<Value> = uris.iter().map(|u| json!({ "uri": u })).collect();
-        run.peer
-            .notify("java/projectConfigurationsUpdate", json!({ "identifiers": identifiers }))
-            .map_err(|e| crate::rpc_err(&server.name, "java/projectConfigurationsUpdate", e))
+        let mut targets = HashMap::new();
+        for file in files {
+            if let Some(server) = self.servers_for(&java, file).into_iter().find(|s| s.name == SERVER)
+                && let Some(run) = server.running()
+            {
+                let (_, paths) = targets.entry(server.id).or_insert_with(|| (run, Vec::new()));
+                paths.push(file.as_path());
+            }
+        }
+        targets.into_values().collect()
     }
 
-    /// Asks jdtls to re-read library archives replaced in place (`openidea.java.refreshArchives`):
-    /// a SNAPSHOT installed again keeps its path, and JDT would keep showing the classes it read
-    /// from the old archive. Best-effort: skipped while jdtls is not already running.
-    pub async fn java_refresh_archives(&self, path: &Path, archives: &[PathBuf]) -> IdeResult<()> {
-        let java = LanguageId::new("java");
-        let Some(server) = self.servers_for(&java, path).into_iter().find(|s| s.name == SERVER) else {
-            return Ok(());
-        };
-        if server.running().is_none() {
-            return Ok(());
+    /// Re-imports projects even when their build files did not change. Wait for
+    /// the Maven configuration job when a source refresh depends on its binaries.
+    pub async fn java_update_project_configs(
+        &self,
+        files: &[PathBuf],
+        wait: Option<&CancellationToken>,
+    ) -> IdeResult<()> {
+        const UPDATE: &str = "openidea.java.updateProjectConfigurations";
+        let mut result = Ok(());
+        for (run, paths) in self.running_java_projects(files) {
+            let uris: Vec<_> = paths.iter().map(|path| crate::path_to_uri_string(path)).collect();
+            let supports_wait = run.caps.read().commands().iter().any(|command| command == UPDATE);
+            let updated = match wait.filter(|_| supports_wait) {
+                Some(cancel) => self
+                    .jdtls_request(
+                        paths[0],
+                        "workspace/executeCommand",
+                        json!({ "command": UPDATE, "arguments": uris }),
+                        BUILD_TIMEOUT,
+                        cancel,
+                    )
+                    .await
+                    .map(|_| ()),
+                None => {
+                    let identifiers: Vec<_> = uris.into_iter().map(|uri| json!({ "uri": uri })).collect();
+                    run.peer
+                        .notify("java/projectConfigurationsUpdate", json!({ "identifiers": identifiers }))
+                        .map_err(|e| crate::rpc_err(SERVER, "java/projectConfigurationsUpdate", e))
+                }
+            };
+            result = result.and(updated);
         }
-        let archives = archives.iter().map(|a| Value::String(a.to_string_lossy().into_owned())).collect();
-        self.jdtls_command(path, "openidea.java.refreshArchives", archives).await.map(|_| ())
+        result
+    }
+
+    /// Asks jdtls to re-read library archives replaced in place.
+    pub async fn java_refresh_archives(&self, files: &[PathBuf], archives: &HashSet<PathBuf>) -> IdeResult<()> {
+        let mut archives: Vec<_> = archives.iter().map(|a| Value::String(a.to_string_lossy().into_owned())).collect();
+        archives.sort_by(|a, b| a.as_str().cmp(&b.as_str()));
+        let mut result = Ok(());
+        for (_, paths) in self.running_java_projects(files) {
+            let refreshed = self.jdtls_command(paths[0], "openidea.java.refreshArchives", archives.clone()).await;
+            result = result.and(refreshed.map(|_| ()));
+        }
+        result
     }
 
     /// Pause autobuild before resolving the launch classpath. That query takes the
