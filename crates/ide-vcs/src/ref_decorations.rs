@@ -121,8 +121,17 @@ mod tests {
             pending.extend(std::fs::read_dir(&dir).unwrap().flatten().filter(|e| e.path().is_dir()).map(|e| e.path()));
             paths.push(dir);
         }
+        let mut options = std::fs::File::options();
+        options.read(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_WRITE_ATTRIBUTES: u32 = 0x100;
+            const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+            options.access_mode(FILE_WRITE_ATTRIBUTES).custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+        }
         for path in paths.into_iter().filter(|p| p.exists()) {
-            std::fs::File::open(path).unwrap().set_modified(time).unwrap();
+            options.open(path).unwrap().set_modified(time).unwrap();
         }
     }
 
