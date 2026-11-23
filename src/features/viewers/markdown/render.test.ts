@@ -5,6 +5,7 @@ import { renderMath } from "@/editor/lsp/markdownMath";
 import {
   createMarkdownRenderer,
   frontMatter,
+  headingLine,
   joinPath,
   previewLineAtOffset,
   previewOffsetForLine,
@@ -284,6 +285,36 @@ describe("markdown preview rendering", () => {
     root.innerHTML = renderMarkdown("## Same\n\n## Same\n");
     expect([...root.querySelectorAll("h2")].map((h) => h.id)).toEqual(["user-content-same", "user-content-same-1"]);
     expect(slugify("Hello, World! v2")).toBe("hello-world-v2");
+  });
+
+  it("finds the source line of a heading anchor, as a link from another file opens there", () => {
+    const text = [
+      "---",
+      "title: x",
+      "---",
+      "# 成交对账",
+      "",
+      "```md",
+      "## 5.2 状态机",
+      "```",
+      "",
+      "## 5.2 状态机",
+      "",
+      "正文",
+      "",
+      "## 5.2 状态机",
+      "",
+      "### 4.1 Dubbo（`otcs-t0-server` client）",
+    ].join("\n");
+    expect(headingLine(text, "成交对账")).toBe(3);
+    expect(headingLine(text, "52-状态机")).toBe(9);
+    expect(headingLine(text, "52-状态机-1")).toBe(13);
+    expect(headingLine(text, "user-content-52-状态机")).toBe(9);
+    expect(headingLine(text, "41-dubbootcs-t0-server-client")).toBe(15);
+    const link = resolveLink("/repo/a.md", "b.md#52-%E7%8A%B6%E6%80%81%E6%9C%BA");
+    expect(link).toEqual({ kind: "file", path: "/repo/b.md", anchor: "52-状态机" });
+    expect(headingLine(text, "missing")).toBeNull();
+    expect(headingLine(text, "")).toBeNull();
   });
 
   it("resolves links against the file", () => {
