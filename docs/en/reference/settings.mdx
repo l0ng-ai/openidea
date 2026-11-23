@@ -140,6 +140,16 @@ Settings › Appearance & Behavior › Appearance, unless noted.
 
 Sub-tables such as `[editor.general]`, `[editor.appearance]`, `[editor.completion]`, `[editor.tabs]`, `[editor.codeStyle]` and `[editor.encodings]` hold the options of the matching Editor pages.
 
+`[editor.encodings.mappings]` in a project's `.openidea/settings.toml` gives a file or a folder its own encoding. Keys are paths relative to the project, with `/` separators. Choosing an encoding in the status bar adds the file here.
+
+```toml
+[editor.encodings.mappings]
+"src/main/java" = "iso-8859-15"   # every file in the folder
+"web/legacy/index.jsp" = "windows-1252"
+```
+
+A file's own entry wins over `.editorconfig`. A folder's entry applies where `.editorconfig` sets no `charset`, and wins over the project encoding; the nearest folder wins. An entry with an unknown encoding or a path outside the project is ignored.
+
 ### `[files]`
 
 | Key                      | Default                                       | Description                                                                                                        |

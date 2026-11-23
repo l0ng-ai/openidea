@@ -1,10 +1,11 @@
 use crate::Host;
 use crate::ops::blocking;
 use ide_command::command;
-use ide_core::{DocId, IdeResult, OutlineItem, Range, TextEdit};
+use ide_core::{DocId, IdeEvent, IdeResult, OutlineItem, Range, TextEdit};
 use ide_language::{FoldRange, SyntaxHighlights};
 use ide_text::LineEnding;
-use ide_workspace::{DocumentEncoding, DocumentInfo, DocumentLanguage, HistoryEntry};
+use ide_workspace::settings::SettingsScope;
+use ide_workspace::{DocumentEncoding, DocumentInfo, DocumentLanguage, FileDefaults, HistoryEntry};
 use std::path::PathBuf;
 
 /// Opens a read-only virtual document (see `lsp_virtual_document`) as an
@@ -64,6 +65,33 @@ pub async fn doc_set_encoding(
         return host.blocking(move || project.documents.replace_virtual(doc, &vd.text, &vd.encoding, vd.has_bom)).await;
     }
     host.blocking(move || project.documents.set_encoding(doc, &encoding, reload)).await
+}
+
+/// Keeps the encoding the user chose for a project file in the project's File Encodings
+/// mappings, so the file opens in it again. Nothing is kept for a document without a file
+/// in the project.
+#[command(trust = always)]
+pub async fn doc_remember_encoding(host: &Host, window: &str, doc: DocId) -> IdeResult<()> {
+    const MAPPINGS: &str = "editor.encodings.mappings";
+    let project = host.project(window)?;
+    let sink = host.window_sink(window);
+    blocking(move || {
+        let info = project.documents.snapshot(doc)?;
+        if project.light || info.uri.is_some() {
+            return Ok(());
+        }
+        let Some(file) = ide_workspace::file_defaults::mapping_key(&project.root, &info.path) else {
+            return Ok(());
+        };
+        if project.settings.effective().editor.encodings.mappings.get(&file) == Some(&info.encoding) {
+            return Ok(());
+        }
+        let settings = project.settings.set_map_entry(SettingsScope::Project, MAPPINGS, &file, info.encoding.into())?;
+        project.documents.set_file_defaults(FileDefaults::from_settings(&settings, Some(&project.root)));
+        sink.emit(IdeEvent::SettingsChanged { key: MAPPINGS.into() });
+        Ok(())
+    })
+    .await
 }
 
 #[command(trust = always)]
@@ -263,6 +291,7 @@ ide_command::domain!(
     doc_outline,
     doc_python_facts,
     doc_rearrange,
+    doc_remember_encoding,
     doc_selection_ranges,
     doc_set_bom,
     doc_set_encoding,
