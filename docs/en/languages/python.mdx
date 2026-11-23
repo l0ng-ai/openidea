@@ -86,6 +86,8 @@ Other options on the page:
 
 **Reformat Code** (`⌘⌥L` / `Ctrl+Alt+L`) uses Ruff. In **Settings › Languages & Frameworks › Ruff** you can set the Ruff path, a configuration directory, the **Formatting provider** (**Automatic (language server first)** or Ruff), and **Run on save**. Without a configuration directory, Ruff reads the nearest `pyproject.toml` (`[tool.ruff]`), `ruff.toml` or `.ruff.toml`.
 
+**Rearrange Code** (Find Action, or the Code menu) orders the methods of every class in the file: `__new__`, `__init__` and `__post_init__`, other dunder methods, public methods, `_protected`, then `__private` ones, each group in its original order. The docstring and class attributes before the first method stay put; a method moves with its decorators and the comments right above it, and definitions sharing a name (a property and its setter, `@overload` stubs) move together. A class with other statements among its methods is left as it is.
+
 ## Run and test
 
 OpenIDEA detects run configurations in folders that contain `pyproject.toml`, `setup.py`, `setup.cfg`, `requirements.txt`, `pytest.ini`, `tox.ini` or `manage.py`, or a project virtualenv:

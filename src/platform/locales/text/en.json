@@ -3712,5 +3712,8 @@
   "Previous Columns": "Previous Columns",
   "Next Columns": "Next Columns",
   "View Options": "View Options",
-  "Visible columns": "Visible columns"
+  "Visible columns": "Visible columns",
+  "Rearrange Code": "Rearrange Code",
+  "Nothing to rearrange: class members are already in order": "Nothing to rearrange: class members are already in order",
+  "The file changed while rearranging; try again": "The file changed while rearranging; try again"
 }
