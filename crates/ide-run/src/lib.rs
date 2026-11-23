@@ -18,7 +18,6 @@ pub mod ruby_reporter;
 pub mod scope;
 pub mod tomcat;
 mod utf8;
-pub mod which;
 pub mod wrap;
 
 pub use detect::cmake::{build_configs as cmake_build_configs, prepare as prepare_cmake};
