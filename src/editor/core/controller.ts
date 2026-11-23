@@ -117,7 +117,7 @@ import { isClassFile } from "@/platform/classFiles";
 import { isVirtualUri, virtualDocument } from "@/platform/virtualDocs";
 import type { VirtualDocument } from "@/platform/ipc";
 import type { Scheduler } from "./sync/DocSync";
-import { selectedLineContext } from "./selectedLines";
+import { selectedLineContext, selectedLines } from "./selectedLines";
 
 export const fileKey = (path: string) => `file:${path}`;
 export const fileInput = (path: string): EditorInput => ({ kind: "file", key: fileKey(path), path });
@@ -888,6 +888,7 @@ export class EditorController implements SlotHost {
       view.dispatch({ selection: EditorSelection.cursor(pos) });
     const hasSel = !view.state.selection.main.empty;
     const caretLine = view.state.doc.lineAt(view.state.selection.main.head).number - 1;
+    const { first, last } = selectedLines(view.state);
     const hoverItems: MenuItem[] = hoverActionsAt(slot.model.doc, caretLine).map(({ plugin, action }) => ({
       label: action.label,
       verbatim: true,
@@ -941,6 +942,17 @@ export class EditorController implements SlotHost {
         submenu: [
           { kind: "action", action: "editor.copyPathReference" },
           { kind: "action", action: "editor.copyReference" },
+          // A virtual document's `path` is not a file to point an agent at.
+          ...(slot.model.virtual || isVirtualUri(slot.model.path)
+            ? []
+            : ([
+                {
+                  kind: "action",
+                  action: "agents.copyAgentReference",
+                  label: "Copy Agent Reference",
+                  arg: [{ path: slot.model.path, lines: { from: first, to: last } }],
+                },
+              ] as MenuItem[])),
           { kind: "action", action: "code.pasteAsPlainText" },
           { kind: "action", action: "code.pasteFromHistory" },
         ],

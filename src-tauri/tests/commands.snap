@@ -619,6 +619,7 @@ settings_removed_theme                       always             project_host bin
 settings_set                                 always             project_host bindings sync
 show_system_notification                     trusted            desktop      bindings sync
 spell_check                                  always             project_host bindings async
+spell_save_to_dictionary                     always             project_host bindings async
 spell_suggest                                always             project_host bindings async
 spring_route_sources                         trusted            desktop      bindings async
 ssh_askpass_answer                           always             desktop      bindings sync

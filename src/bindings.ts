@@ -1745,6 +1745,14 @@ export const commands = {
 	 *  `cancel_request(request)`.
 	 */
 	spellCheck: (doc: DocId, scope: SpellScope, request: RequestId) => typedError<Typo[], IdeError>(__TAURI_INVOKE("spell_check", { doc, scope, request })),
+	/**
+	 *  Appends `word` to the custom dictionary `dictionary` (a
+	 *  `spelling.customDictionaries` entry: `~/…` from home, relative from the
+	 *  project root) and reports which file was written, creating it when missing.
+	 *  A Hunspell `.dic` with a `.aff` beside it keeps its word count line current;
+	 *  the speller picks the change up through its own mtime cache.
+	 */
+	spellSaveToDictionary: (dictionary: string, word: string) => typedError<string, IdeError>(__TAURI_INVOKE("spell_save_to_dictionary", { dictionary, word })),
 	/**  Replacements for a misspelt `word`, best first (Typo › Change to…). */
 	spellSuggest: (word: string) => typedError<string[], IdeError>(__TAURI_INVOKE("spell_suggest", { word })),
 	/**  Spring Web mapping sources for the request-path index of Search Everywhere. */
@@ -12754,6 +12762,12 @@ export type SpellingSettings = {
 	projectWords?: string[],
 	/**  Custom dictionaries: plain word lists or Hunspell `.dic` files. */
 	customDictionaries?: string[],
+	/**
+	 *  Where "Save '…' to dictionary" writes: `project`, `application`, or a
+	 *  `spelling.customDictionaries` entry verbatim; empty (the default) is
+	 *  project when one is open, application otherwise.
+	 */
+	defaultDictionary?: string | null,
 };
 
 /**  One row of SQL Resolution Scopes. */

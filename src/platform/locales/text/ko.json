@@ -6210,5 +6210,7 @@
   "The project is mounted here; paths and the working directory are mapped into it.": "프로젝트가 여기에 마운트되며, 경로와 작업 디렉터리가 이 위치로 매핑됩니다.",
   "Published ports": "게시된 포트",
   "Run as the image's user, not the project folder's owner (Linux)": "프로젝트 폴더 소유자가 아닌 이미지의 사용자로 실행(Linux)",
-  "Select files in the Project view, Commit tool window, or open a file in the editor": "프로젝트 뷰나 커밋 도구 창에서 파일을 선택하거나 편집기에서 파일을 여세요"
+  "Select files in the Project view, Commit tool window, or open a file in the editor": "프로젝트 뷰나 커밋 도구 창에서 파일을 선택하거나 편집기에서 파일을 여세요",
+  "Agent Reference": "에이전트 참조",
+  "Copy Agent Reference": "에이전트 참조 복사"
 }
