@@ -29,11 +29,24 @@ fn biome_formats(file: &Path) -> bool {
     }
 }
 
-/// Black formats below the nearest `pyproject.toml` when it has `[tool.black]`, the file Black
-/// reads its configuration from.
+/// The `pyproject.toml` Black reads for `file`, in the project root Black finds: the nearest folder
+/// with `.git`, `.hg`, or a `pyproject.toml` that has `[tool.black]` (one without it is skipped).
+/// `None` when that root has no `pyproject.toml`: Black then reads the user's configuration.
+fn black_pyproject(file: &Path) -> Option<PathBuf> {
+    let mut dirs = file.parent()?.ancestors();
+    let root = dirs
+        .find(|d| {
+            d.join(".git").exists()
+                || d.join(".hg").is_dir()
+                || ide_sdk::apply::toml_has_table(&d.join("pyproject.toml"), "tool.black")
+        })
+        .or_else(|| file.parent()?.ancestors().last())?;
+    Some(root.join("pyproject.toml")).filter(|p| p.is_file())
+}
+
+/// Black formats files whose project configures it (`[tool.black]`).
 fn black_configured(file: &Path) -> bool {
-    formatter::find_up(file, Path::new("pyproject.toml"))
-        .is_some_and(|p| ide_sdk::apply::toml_has_table(&p, "tool.black"))
+    black_pyproject(file).is_some_and(|p| ide_sdk::apply::toml_has_table(&p, "tool.black"))
 }
 
 /// Black in the environment of the interpreter for `near` (`svc/.venv/bin/black`), next to its
@@ -619,6 +632,28 @@ mod tests {
         assert_eq!(tool(None, "python", &api, &settings).unwrap(), Some(Black));
         settings.black.languages.clear();
         assert_eq!(tool(None, "python", &svc, &settings).unwrap(), Some(Ruff));
+    }
+
+    #[test]
+    fn black_finds_its_configuration_like_black_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join("pkg/src")).unwrap();
+        let file = repo.join("pkg/src/m.py");
+        assert_eq!(black_pyproject(&file), None);
+        // A pyproject without [tool.black] is passed over, up to the repository root.
+        std::fs::write(repo.join("pkg/pyproject.toml"), "[project]\nname = \"pkg\"\n").unwrap();
+        std::fs::write(repo.join("pyproject.toml"), "[tool.black]\nline-length = 100\n").unwrap();
+        assert_eq!(black_pyproject(&file), Some(repo.join("pyproject.toml")));
+        assert!(black_configured(&file));
+        // The repository root's pyproject is Black's even without [tool.black]; nothing above counts.
+        std::fs::write(repo.join("pyproject.toml"), "[project]\nname = \"repo\"\n").unwrap();
+        std::fs::write(dir.path().join("pyproject.toml"), "[tool.black]\n").unwrap();
+        assert_eq!(black_pyproject(&file), Some(repo.join("pyproject.toml")));
+        assert!(!black_configured(&file));
+        std::fs::write(repo.join("pkg/pyproject.toml"), "[tool.black]\n").unwrap();
+        assert_eq!(black_pyproject(&file), Some(repo.join("pkg/pyproject.toml")));
     }
 
     #[test]
