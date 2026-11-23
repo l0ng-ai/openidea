@@ -3727,5 +3727,8 @@
   "Previous Columns": "Previous Columns",
   "Next Columns": "Next Columns",
   "View Options": "View Options",
-  "Visible columns": "Visible columns"
+  "Visible columns": "Visible columns",
+  "Pipenv Environment": "Pipenv Environment",
+  "Install packages from Pipfile": "Install packages from Pipfile",
+  "Runs “pipenv --python <base>” in the project, which writes a Pipfile (from requirements.txt if there is one) when the project has none. Pipenv chooses where to store the environment and reuses an existing one.": "Runs “pipenv --python <base>” in the project, which writes a Pipfile (from requirements.txt if there is one) when the project has none. Pipenv chooses where to store the environment and reuses an existing one."
 }

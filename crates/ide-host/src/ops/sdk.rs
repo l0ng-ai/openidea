@@ -336,7 +336,9 @@ pub async fn sdk_locate_tools(
     .map_err(join_err)
 }
 
-/// Creates a Python environment with `tool` (`venv` / `uv` / `poetry`); output streams through `on_output`.
+/// Creates a Python environment with `tool` (`venv` / `uv` / `poetry` / `pipenv`); output streams through
+/// `on_output`. `install_packages` also installs what the project's `Pipfile` declares (pipenv).
+#[allow(clippy::too_many_arguments)]
 #[command(trust = outside_restricted)]
 pub async fn sdk_python_create_venv(
     host: &Host,
@@ -344,13 +346,14 @@ pub async fn sdk_python_create_venv(
     tool: ide_sdk::python::VenvTool,
     base: PathBuf,
     location: PathBuf,
+    install_packages: bool,
     request: RequestId,
     on_output: Channel<String>,
 ) -> IdeResult<Sdk> {
     host.require_trust_if_project(window)?;
     let cancel = host.begin_project_request(window, request);
     let result = tokio::task::spawn_blocking(move || {
-        ide_sdk::python::create_venv(tool, &base, &location, &cancel, &|line| {
+        ide_sdk::python::create_venv(tool, &base, &location, install_packages, &cancel, &|line| {
             let _ = on_output.send(line);
         })
     })
