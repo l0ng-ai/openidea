@@ -51,6 +51,7 @@ import { rerunFailedConfigs } from "./testing/rerun";
 import { formatDuration, nodeOutput } from "./testing";
 import { TestStatusBar, TestTreeView } from "./TestTreeView";
 import { StackTracePanel, useStackTraces, type StackTraceTab } from "./stackTrace";
+import { ThreadDumpPanel } from "./threadDump/ThreadDumpPanel";
 import { closeRunTab, runTabMenu } from "./runTabs";
 import { showApplicationUpdate, useApplicationUpdates } from "./applicationUpdate";
 import { isUpdatable } from "./updatePolicies";
@@ -549,6 +550,8 @@ export function RunView() {
       >
         {"session" in current ? (
           <SessionPanel key={id} session={current.session} />
+        ) : current.trace.kind === "threads" ? (
+          <ThreadDumpPanel key={id} tab={current.trace} />
         ) : (
           <StackTracePanel key={id} tab={current.trace} />
         )}
