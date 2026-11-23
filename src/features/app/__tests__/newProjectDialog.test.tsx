@@ -30,7 +30,7 @@ const dotnet: GeneratorInfo = {
     {
       id: "sdk",
       label: "SDK version:",
-      kind: { type: "sdk", sdk: "dotnet", version: true },
+      kind: { type: "sdk", sdk: "dotnet", version: true, min: "8.0" },
       default: "",
       visible: {},
       hint: "",
@@ -140,6 +140,14 @@ describe("File › New Project… SDK fields", () => {
           home: null,
           extra: null,
         },
+        {
+          path: "/dotnet/sdk/7.0.410",
+          name: ".NET 7.0",
+          version: "7.0.410",
+          source: "dotnet",
+          home: null,
+          extra: null,
+        },
       ]),
     );
   });
@@ -148,13 +156,15 @@ describe("File › New Project… SDK fields", () => {
     localStorage.clear();
   });
 
-  it("offers the installed .NET SDKs and submits the chosen version", async () => {
+  it("offers the installed .NET SDKs from its minimum and submits the chosen version", async () => {
     render(<NewProjectOverlay />);
     act(() => showNewProject());
     fireEvent.click(await screen.findByRole("option", { name: ".NET" }));
     await waitFor(() => expect(mocks.detect).toHaveBeenCalledWith("dotnet"));
     fireEvent.click(screen.getByRole("button", { name: "SDK version:" }));
-    fireEvent.click(await screen.findByRole("option", { name: /\.NET 8\.0/ }));
+    const sdk8 = await screen.findByRole("option", { name: /\.NET 8\.0/ });
+    expect(screen.queryByRole("option", { name: /\.NET 7\.0/ })).toBeNull();
+    fireEvent.click(sdk8);
     await waitFor(() => expect(createButton()).toBeEnabled());
     fireEvent.click(createButton());
     await waitFor(() => expect(mocks.create).toHaveBeenCalled());

@@ -8480,7 +8480,7 @@
   "Running dotnet new": "正在运行 dotnet new",
   "Adding a .gitignore": "正在添加 .gitignore",
   "SDK version:": "SDK 版本：",
-  "Pinned in global.json. Automatic uses the newest installed SDK.": "写入 global.json 固定版本。选择“自动”则使用已安装的最新 SDK。",
+  "Pinned in global.json; later patches and feature bands of the same .NET version also qualify. Automatic uses the newest installed SDK.": "写入 global.json 固定版本；同一 .NET 版本更新的补丁和功能区段也可使用。选择“自动”则使用已安装的最新 SDK。",
   "Create solution": "创建解决方案",
   "As in Visual Studio: the solution file at the top, the project in its own folder.": "与 Visual Studio 相同：解决方案文件在顶层，项目放在单独的文件夹中。",
   "Solution name:": "解决方案名称：",

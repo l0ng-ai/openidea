@@ -93,8 +93,9 @@ fn requirement(r: &RequireDef, values: &Values, search: &OsString) -> Requiremen
         }
         let mut cmd = Command::new(path);
         cmd.args(&r.version_args).env("PATH", search);
-        let (_, out) = run_quiet(cmd, std::time::Duration::from_secs(20))?;
-        Some(parse_version(&out).unwrap_or_default())
+        let (ok, out) = run_quiet(cmd, std::time::Duration::from_secs(20))?;
+        // A failing version command (`dotnet` without an SDK) reports no version.
+        Some(if ok { parse_version(&out).unwrap_or_default() } else { String::new() })
     });
     let satisfied = match (&found, &min) {
         (None, _) => false,

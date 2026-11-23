@@ -4,8 +4,11 @@ group = ".NET"
 icon = "project-dotnet"
 description = "A .NET project from dotnet new."
 
+# `dotnet --version` fails without an SDK (a runtime-only install). Blazor Web App and the
+# other templates' current options need SDK 8.
 [[requires]]
 program = "dotnet"
+min = "8.0"
 hint = "Install the .NET SDK: https://dotnet.microsoft.com/download"
 
 [[fields]]
@@ -37,7 +40,8 @@ label = "SDK version:"
 type = "sdk"
 sdk = "dotnet"
 version = true
-hint = "Pinned in global.json. Automatic uses the newest installed SDK."
+min = "8.0"
+hint = "Pinned in global.json; later patches and feature bands of the same .NET version also qualify. Automatic uses the newest installed SDK."
 
 [[fields]]
 id = "solution"
@@ -58,7 +62,8 @@ visible = { solution = "true" }
 [[steps]]
 label = "Pinning the .NET SDK"
 program = "dotnet"
-args = ["new", "globaljson", "--sdk-version", "{{sdk}}"]
+# Without a roll-forward policy the pin needs that exact feature band (`latestPatch`).
+args = ["new", "globaljson", "--sdk-version", "{{sdk}}", "--roll-forward", "latestFeature"]
 if-set = "sdk"
 env = { DOTNET_CLI_TELEMETRY_OPTOUT = "1", DOTNET_NOLOGO = "1" }
 

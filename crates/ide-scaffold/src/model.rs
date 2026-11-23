@@ -125,11 +125,13 @@ pub(crate) enum FieldKindDef {
     },
     Checkbox,
     /// An installed SDK of this `ide-sdk` kind (`jdk`); the value is its home, or its
-    /// version with `version = true`.
+    /// version with `version = true`. SDKs older than `min` are not offered.
     Sdk {
         sdk: String,
         #[serde(default)]
         version: bool,
+        #[serde(default)]
+        min: Option<String>,
     },
 }
 
@@ -303,10 +305,11 @@ pub enum FieldKind {
     },
     Checkbox,
     /// An installed SDK of this kind (`jdk`); the value is its home (its version when
-    /// `version`), empty = automatic.
+    /// `version`), empty = automatic. SDKs older than `min` are not offered.
     Sdk {
         sdk: String,
         version: bool,
+        min: Option<String>,
     },
     /// Several ids out of grouped items; the value is comma-separated.
     Dependencies {

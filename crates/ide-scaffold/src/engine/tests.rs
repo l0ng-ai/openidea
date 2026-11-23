@@ -150,13 +150,31 @@ fn dotnet_pins_the_sdk_and_creates_a_solution() {
     assert_eq!(
         lines(&[("sdk", "8.0.404"), ("solution-name", "Store")]),
         [
-            "dotnet new globaljson --sdk-version 8.0.404",
+            "dotnet new globaljson --sdk-version 8.0.404 --roll-forward latestFeature",
             "dotnet new sln --name Store",
             "dotnet new console --name Shop --output Shop --language C#",
             "dotnet sln add Shop",
         ]
     );
     assert_eq!(lines(&[("solution", "false")]), ["dotnet new console --name Shop --output . --language C#"]);
+}
+
+/// `dotnet` of a runtime-only install: `--version` fails ("No .NET SDKs were found").
+#[cfg(unix)]
+#[test]
+fn a_failing_version_command_does_not_meet_a_minimum() {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = tempfile::tempdir().unwrap();
+    let tool = bin.path().join("fake-dotnet");
+    std::fs::write(&tool, "#!/bin/sh\necho 'No .NET SDKs were found. Install 8.0 from the site.'\nexit 145\n").unwrap();
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let search = bin.path().as_os_str().to_owned();
+    let def = |min: &str| -> RequireDef { toml::from_str(&format!("program = \"fake-dotnet\"\n{min}")).unwrap() };
+    let req = requirement(&def(r#"min = "8.0""#), &Values::new(), &search);
+    assert!(!req.satisfied);
+    assert_eq!(req.found, None);
+    // Only a minimum asks for a usable version; the program alone is found.
+    assert!(requirement(&def(""), &Values::new(), &search).satisfied);
 }
 
 fn failing_def(steps: &str) -> Def {

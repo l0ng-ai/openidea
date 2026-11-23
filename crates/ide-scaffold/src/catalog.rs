@@ -103,7 +103,9 @@ pub(crate) fn field(def: &FieldDef) -> Field {
             segmented: *segmented,
         },
         FieldKindDef::Checkbox => FieldKind::Checkbox,
-        FieldKindDef::Sdk { sdk, version } => FieldKind::Sdk { sdk: sdk.clone(), version: *version },
+        FieldKindDef::Sdk { sdk, version, min } => {
+            FieldKind::Sdk { sdk: sdk.clone(), version: *version, min: min.clone() }
+        }
     };
     Field {
         id: def.id.clone(),

@@ -6763,9 +6763,9 @@ export type Field = {
 export type FieldKind = { type: "text"; pattern: string | null; placeholder: string } | { type: "choice"; options: ChoiceOption[]; segmented: boolean } | { type: "checkbox" } | 
 /**
  *  An installed SDK of this kind (`jdk`); the value is its home (its version when
- *  `version`), empty = automatic.
+ *  `version`), empty = automatic. SDKs older than `min` are not offered.
  */
-{ type: "sdk"; sdk: string; version: boolean } | 
+{ type: "sdk"; sdk: string; version: boolean; min: string | null } | 
 /**  Several ids out of grouped items; the value is comma-separated. */
 { type: "dependencies"; groups: DependencyGroup[] };
 

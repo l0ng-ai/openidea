@@ -36,7 +36,7 @@ import {
   T,
   hasIcon,
 } from "@/ui";
-import { effectiveValues, fieldError, isVisible, type Values } from "./newProjectTemplate";
+import { effectiveValues, fieldError, isVisible, versionAtLeast, type Values } from "./newProjectTemplate";
 import { defaultProjectDirectory, openProjectInWindow } from "./windows";
 import styles from "./newProject.module.css";
 
@@ -153,6 +153,7 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
   const [requirements, setRequirements] = useState<Requirement[]>([]);
   /** Installed SDKs by kind, once detected. */
   const [sdks, setSdks] = useState<Partial<Record<string, Sdk[]>>>({});
+  const detecting = useRef(new Set<string>());
   const [job, setJob] = useState<Job | null>(null);
   const layout = useRef<HTMLDivElement>(null);
   const [stacked, setStacked] = useState(false);
@@ -229,7 +230,8 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
   const sdkKinds = [...new Set(fields.flatMap((f) => (f.kind.type === "sdk" ? [f.kind.sdk] : [])))].join(",");
   useEffect(() => {
     for (const kind of sdkKinds.split(",")) {
-      if (!kind || sdks[kind]) continue;
+      if (!kind || sdks[kind] || detecting.current.has(kind)) continue;
+      detecting.current.add(kind);
       const found = (list: Sdk[]) => setSdks((all) => ({ ...all, [kind]: list }));
       call(commands.sdkDetect(kind as SdkKind))
         .then(found)
@@ -549,12 +551,14 @@ function FieldRow({
   else if (kind.type === "sdk") {
     const options: SelectOption[] = [
       { value: "", label: sdks === null ? "Detecting…" : "Automatic" },
-      ...(sdks ?? []).map((s) => ({
-        value: kind.version ? (s.version ?? "") : (s.home ?? s.path),
-        label: s.name,
-        detail: s.version ?? undefined,
-        verbatim: true,
-      })),
+      ...(sdks ?? [])
+        .filter((s) => !kind.min || versionAtLeast(s.version ?? "", kind.min))
+        .map((s) => ({
+          value: kind.version ? (s.version ?? "") : (s.home ?? s.path),
+          label: s.name,
+          detail: s.version ?? undefined,
+          verbatim: true,
+        })),
     ].filter((o, i) => i === 0 || o.value);
     if (value && !options.some((o) => o.value === value)) options.push({ value, label: value, verbatim: true });
     control = (

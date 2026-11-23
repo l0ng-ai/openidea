@@ -2082,7 +2082,7 @@
   "Running dotnet new": "Running dotnet new",
   "Adding a .gitignore": "Adding a .gitignore",
   "SDK version:": "SDK version:",
-  "Pinned in global.json. Automatic uses the newest installed SDK.": "Pinned in global.json. Automatic uses the newest installed SDK.",
+  "Pinned in global.json; later patches and feature bands of the same .NET version also qualify. Automatic uses the newest installed SDK.": "Pinned in global.json; later patches and feature bands of the same .NET version also qualify. Automatic uses the newest installed SDK.",
   "Create solution": "Create solution",
   "As in Visual Studio: the solution file at the top, the project in its own folder.": "As in Visual Studio: the solution file at the top, the project in its own folder.",
   "Solution name:": "Solution name:",

@@ -32,7 +32,7 @@ const java: GeneratorInfo = {
       default: "",
       hint: "",
       visible: {},
-      kind: { type: "sdk", sdk: "jdk", version: false },
+      kind: { type: "sdk", sdk: "jdk", version: false, min: null },
     },
   ],
 };
