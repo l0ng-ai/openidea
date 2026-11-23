@@ -49,6 +49,52 @@ fn black_configured(file: &Path) -> bool {
     black_pyproject(file).is_some_and(|p| ide_sdk::apply::toml_has_table(&p, "tool.black"))
 }
 
+/// Where Ruff and Black look for the user's own configuration (`~/.config/ruff/ruff.toml`,
+/// `~/.config/black`), whatever the platform's convention.
+fn user_config_dirs() -> Vec<PathBuf> {
+    let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
+    let home = dirs::home_dir();
+    [xdg, home.as_ref().map(|h| h.join(".config")), dirs::config_dir()].into_iter().flatten().collect()
+}
+
+/// Whether Ruff finds a configuration of the project for `file`: `ruff.toml`, `.ruff.toml` or a
+/// `pyproject.toml` with `[tool.ruff]` in its folder or above.
+fn ruff_project_configured(file: &Path) -> bool {
+    file.parent().into_iter().flat_map(Path::ancestors).any(|dir| {
+        dir.join("ruff.toml").is_file()
+            || dir.join(".ruff.toml").is_file()
+            || ide_sdk::apply::toml_has_table(&dir.join("pyproject.toml"), "tool.ruff")
+    })
+}
+
+/// The Code Style › Python values for `tool`, unless a configuration of the project or the user
+/// decides them (or the Ruff configuration directory is set).
+fn python_style_for(tool: &str, file: &Path, configured: bool, settings: &Settings) -> formatter::PythonStyle {
+    let user = |names: &[&str]| user_config_dirs().iter().any(|d| names.iter().any(|n| d.join(n).is_file()));
+    let has_config = configured
+        || match tool {
+            "ruff" => {
+                ruff_project_configured(file) || user(&["ruff/ruff.toml", "ruff/.ruff.toml", "ruff/pyproject.toml"])
+            }
+            "black" => {
+                black_configured(file)
+                    || user(&["black"])
+                    || dirs::home_dir().is_some_and(|h| h.join(".black").is_file())
+            }
+            _ => true,
+        };
+    if has_config {
+        return formatter::PythonStyle::default();
+    }
+    // Only what was set on the page: the global hard wrap (120) is not Ruff's or Black's default (88).
+    let style = settings.editor.code_style.languages.get("python");
+    formatter::PythonStyle {
+        line_length: style.and_then(|s| s.hard_wrap_at),
+        indent_width: style.and_then(|s| s.indent.or(s.tab_size)),
+        use_tabs: style.and_then(|s| s.use_tab),
+    }
+}
+
 /// Black in the environment of the interpreter for `near` (`svc/.venv/bin/black`), next to its
 /// Python, or in `Scripts` for conda and pixi environments on Windows.
 fn interpreter_black(root: &Path, near: Option<&Path>, settings: &Settings) -> Option<PathBuf> {
@@ -465,6 +511,7 @@ async fn provider_edits(
     let unsupported_range = range.is_some() && !formatter::supports_range(tool, &config);
     let project_root = project.root.clone();
     let configuration_directory = settings.languages.ruff.configuration_directory.clone();
+    let style_settings = settings.clone();
     let result: IdeResult<(Vec<TextEdit>, bool, bool)> = tokio::task::spawn_blocking(move || {
         let text = ide_text::Document::new(&snap.text);
         let range = range.map(|range| format_range(&text, range));
@@ -473,11 +520,12 @@ async fn provider_edits(
         } else {
             None
         };
+        let style = python_style_for(tool, &snap.path, config_file.is_some(), &style_settings);
         let dir = snap.path.parent().ok_or_else(|| IdeError::invalid(format!("{name}: file has no directory")))?;
         let run = |range| {
             let mut command = tools.formatter_command(tool, &snap.path, custom.as_deref())?;
             command.current_dir(dir);
-            command.args(formatter::arguments(
+            let args = formatter::arguments(
                 tool,
                 &config,
                 &snap.path,
@@ -485,7 +533,8 @@ async fn provider_edits(
                 options.insert_spaces,
                 range,
                 config_file.as_deref(),
-            ));
+            );
+            command.args(formatter::with_python_style(tool, args, style));
             formatter::run(tool, command, &snap.text, &Default::default())
         };
         let mut old_black = false;
@@ -590,6 +639,35 @@ mod tests {
         assert_eq!(tool(Some(Black), "python", file, &settings).unwrap(), Some(Black));
         let black = tool(Some(Black), "typescript", Path::new("/project/app.ts"), &settings).unwrap_err();
         assert_eq!(black.message, "Black cannot format TypeScript files");
+    }
+
+    #[test]
+    fn code_style_reaches_ruff_and_black_only_without_their_project_configuration() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("app/src")).unwrap();
+        let file = root.join("app/src/main.py");
+        let mut settings = Settings::default();
+        let none = formatter::PythonStyle::default();
+        // Nothing set on the page: the tools keep their defaults.
+        assert_eq!(python_style_for("ruff", &file, false, &settings), none);
+        let style = ide_core::editor_settings::LanguageCodeStyle {
+            hard_wrap_at: Some(100),
+            tab_size: Some(2),
+            ..Default::default()
+        };
+        settings.editor.code_style.languages.insert("python".into(), style);
+        let set = formatter::PythonStyle { line_length: Some(100), indent_width: Some(2), use_tabs: None };
+        assert_eq!(python_style_for("ruff", &file, false, &settings), set);
+        assert_eq!(python_style_for("black", &file, false, &settings), set);
+        assert_eq!(python_style_for("ruff", &file, true, &settings), none);
+        std::fs::write(root.join("app/pyproject.toml"), "[project]\nname = \"app\"\n").unwrap();
+        assert_eq!(python_style_for("ruff", &file, false, &settings), set);
+        std::fs::write(root.join("app/pyproject.toml"), "[tool.black]\n").unwrap();
+        assert_eq!(python_style_for("black", &file, false, &settings), none);
+        assert_eq!(python_style_for("ruff", &file, false, &settings), set);
+        std::fs::write(root.join(".ruff.toml"), "").unwrap();
+        assert_eq!(python_style_for("ruff", &file, false, &settings), none);
     }
 
     #[test]

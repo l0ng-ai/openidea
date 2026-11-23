@@ -3720,5 +3720,6 @@
   "Run Black on save for enabled languages when it is the selected formatting provider. Reformat code in Actions on Save also runs it.": "Run Black on save for enabled languages when it is the selected formatting provider. Reformat code in Actions on Save also runs it.",
   "Automatic (projects with [tool.black])": "Automatic (projects with [tool.black])",
   "{name} left the file unchanged: its configuration excludes it": "{name} left the file unchanged: its configuration excludes it",
-  "This Black cannot format a selection (Black 23.11 or later can); formatted the whole file": "This Black cannot format a selection (Black 23.11 or later can); formatted the whole file"
+  "This Black cannot format a selection (Black 23.11 or later can); formatted the whole file": "This Black cannot format a selection (Black 23.11 or later can); formatted the whole file",
+  "Ruff formats with the indent, tab character and hard wrap set here, and Black with the hard wrap, when no Ruff or Black configuration of the project or user applies.": "Ruff formats with the indent, tab character and hard wrap set here, and Black with the hard wrap, when no Ruff or Black configuration of the project or user applies."
 }

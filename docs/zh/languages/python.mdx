@@ -84,9 +84,9 @@ Ruff 只为位于 Ruff 配置之下的文件启动：`ruff.toml`、`.ruff.toml`�
 
 ### 格式化
 
-**重新格式化代码**（`⌘⌥L` / `Ctrl+Alt+L`）使用 Ruff。在 **设置 › 语言和框架 › Ruff** 中可以设置 Ruff 路径、配置目录、**格式化工具**（**自动（优先语言服务器）** 或 Ruff）以及 **保存时运行**。不指定配置目录时，Ruff 读取最近的 `pyproject.toml`（`[tool.ruff]`）、`ruff.toml` 或 `.ruff.toml`。
+**重新格式化代码**（`⌘⌥L` / `Ctrl+Alt+L`）使用 Ruff。在 **设置 › 语言和框架 › Ruff** 中可以设置 Ruff 路径、配置目录、**格式化工具**（**自动（优先语言服务器）** 或 Ruff）以及 **保存时运行**。不指定配置目录时，Ruff 读取最近的 `pyproject.toml`（`[tool.ruff]`）、`ruff.toml` 或 `.ruff.toml`。项目和用户配置里都没有时，Ruff 按 **设置 › 编辑器 › 代码样式 › Python** 中设置的缩进、制表符和硬换行格式化；保持默认的值不会传给 Ruff，Ruff 仍用自己的默认值（4 个空格、88 列）。
 
-在含 `[tool.black]` 表的 `pyproject.toml` 所在目录及其子目录中，或在 **设置 › 语言和框架 › Black 格式化工具** 中把 **格式化工具** 设为 Black 后，由 Black 代替 Ruff 格式化。Black 自己读取 `[tool.black]` 中的选项。IDE 优先使用项目解释器环境中的 `black`，其次是工具文件夹或 `PATH` 中的；都没有安装时，重新格式化代码会提示安装。在查找操作中运行 **使用 Black 重新格式化**，无论项目用什么格式化工具，都会用 Black 格式化。Black 自己的 **保存时运行** 或编辑器的 **保存时格式化** 打开时，保存文件会运行 Black。Black 配置排除的文件（`force-exclude`）保持不变；23.11 之前的 Black 不能格式化选区，会格式化整个文件。
+在含 `[tool.black]` 表的 `pyproject.toml` 所在目录及其子目录中，或在 **设置 › 语言和框架 › Black 格式化工具** 中把 **格式化工具** 设为 Black 后，由 Black 代替 Ruff 格式化。Black 自己读取 `[tool.black]` 中的选项。IDE 优先使用项目解释器环境中的 `black`，其次是工具文件夹或 `PATH` 中的；都没有安装时，重新格式化代码会提示安装。在查找操作中运行 **使用 Black 重新格式化**，无论项目用什么格式化工具，都会用 Black 格式化。Black 自己的 **保存时运行** 或编辑器的 **保存时格式化** 打开时，保存文件会运行 Black。没有 `[tool.black]` 或用户配置时，Black 使用代码样式 › Python 页中设置的硬换行（如果设置过）。Black 配置排除的文件（`force-exclude`）保持不变；23.11 之前的 Black 不能格式化选区，会格式化整个文件。
 
 ## 运行与测试
 

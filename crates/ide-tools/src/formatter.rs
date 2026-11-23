@@ -217,6 +217,36 @@ pub fn arguments(
     args
 }
 
+/// The Code Style › Python values the user set, for a file without a Ruff or Black configuration.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PythonStyle {
+    pub line_length: Option<u32>,
+    pub indent_width: Option<u32>,
+    pub use_tabs: Option<bool>,
+}
+
+/// [`arguments`] with `style` added as Ruff's `--config` overrides or Black's `--line-length`
+/// (Black has no indentation settings).
+pub fn with_python_style(tool: &str, mut args: Vec<OsString>, style: PythonStyle) -> Vec<OsString> {
+    let settings: Vec<OsString> = match tool {
+        "ruff" => [
+            style.line_length.map(|n| format!("line-length={n}")),
+            style.indent_width.map(|n| format!("indent-width={n}")),
+            style.use_tabs.map(|tabs| format!("format.indent-style=\"{}\"", if tabs { "tab" } else { "space" })),
+        ]
+        .into_iter()
+        .flatten()
+        .flat_map(|setting| ["--config".into(), setting.into()])
+        .collect(),
+        "black" => style.line_length.map(|n| vec!["--line-length".into(), n.to_string().into()]).unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    // Ruff's options follow its `format` subcommand.
+    let at = usize::from(tool == "ruff").min(args.len());
+    args.splice(at..at, settings);
+    args
+}
+
 impl Tools {
     /// `php vendor/bin/php-cs-fixer fix` of `target` with the project's configuration, from the
     /// configuration's folder; `php` is the interpreter chosen in the settings, else the one on `PATH`.
@@ -441,6 +471,34 @@ mod tests {
         );
         assert!(supports_range("ruff", &config));
         assert!(!args.iter().any(|arg| arg == "--stdin-filepath"));
+    }
+
+    #[test]
+    fn python_style_becomes_ruff_overrides_or_blacks_line_length() {
+        let config = FormatterConfig { tool: "ruff".into(), parser: "python".into(), range: true };
+        let file = Path::new("/project/main.py");
+        let style = PythonStyle { line_length: Some(100), indent_width: Some(2), use_tabs: Some(true) };
+        let args = |tool: &str, style| -> Vec<String> {
+            with_python_style(tool, arguments(tool, &config, file, 4, true, None, None), style)
+                .into_iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+        assert_eq!(
+            args("ruff", style)[..7],
+            [
+                "format",
+                "--config",
+                "line-length=100",
+                "--config",
+                "indent-width=2",
+                "--config",
+                "format.indent-style=\"tab\""
+            ]
+        );
+        assert_eq!(args("black", style)[..3], ["--line-length", "100", "--quiet"]);
+        assert_eq!(args("ruff", PythonStyle::default())[1], "--stdin-filename");
+        assert_eq!(args("black", PythonStyle { use_tabs: Some(true), ..Default::default() })[0], "--quiet");
     }
 
     #[test]
