@@ -1,5 +1,6 @@
 /** Remote Host tool window operations: list, open, create, rename, delete and download remote files. */
 import { tx, txTemplate } from "@/platform/i18n";
+import { choosePath } from "@/platform/choosePath";
 import { call, commands, type RemoteEntry } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { deploymentConnection, deploymentSecretKey, type DeploymentServerValid } from "@/platform/remoteSettings";
@@ -183,10 +184,8 @@ export async function downloadToProject(server: DeploymentServerValid, entries: 
  *  the project root, preselected), without the server path above them. */
 export async function downloadTo(server: DeploymentServerValid, entries: RemoteEntry[]) {
   if (!entries.length) return;
-  const { open } = await import("@/platform/dialog");
-  const target = await open({
+  const target = await choosePath({
     directory: true,
-    multiple: false,
     title: tx("Download to"),
     defaultPath: (await defaultDownloadFolder()) ?? undefined,
   });

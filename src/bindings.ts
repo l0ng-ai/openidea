@@ -9205,6 +9205,8 @@ export type LogcatLine = {
 };
 
 export type LspRefreshKind = "inlayHints" | "semanticTokens" | "codeLens" | 
+/**  An import or classpath update may have changed inheritance search results. */
+"inheritance" | 
 /**  The Dart server published a document's Flutter outline. */
 "flutterOutline";
 
