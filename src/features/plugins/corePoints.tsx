@@ -14,6 +14,7 @@ import { useProject } from "@/platform/project";
 import { Button, Kbd, T } from "@/ui";
 import { addIconTheme, iconThemeKey, selectIconTheme, useSelectedIconTheme } from "./iconThemes";
 import { defineUiPoint, type UiItem } from "./projection";
+import { addConsoleCommand, type ConsoleCommandDecl } from "./consoleCommands";
 import { SecretsDetails, type SecretDecl } from "./secrets";
 import { pluginSettingsPageId } from "./settings";
 import { pluginsBackend } from "./backend";
@@ -265,6 +266,12 @@ export function defineCoreUiPoints(): () => void {
         };
       },
       Details: CommandsDetails,
+    }),
+    // A console menu item: the Run console renders the trigger; the plugin's
+    // command runs with the selection as its argument (e.g. Copy MyBatis SQL).
+    defineUiPoint<ConsoleCommandDecl>("consoleCommands", {
+      title: "Console Commands",
+      project: ({ pluginId, decl }) => addConsoleCommand(pluginId, decl),
     }),
     // Offered by every theme picker while the plugin is live; `followThemeSetting` applies the selected one.
     defineUiPoint<ThemeDef>("themes", {

@@ -58,6 +58,12 @@
 //! command = "laravel.modelView"    # a command the server leaves to the client
 //! run = "model-view"               # this plugin's command; needs `lsp:phoxite`
 //!
+//! [[contributes.consoleCommands]]
+//! command = "copy-sql"             # a command under [[contributes.commands]]; it
+//! label = "Copy SQL"               #   receives the console's selection as argument
+//! # selectionContains = "==>  Preparing"   # only for selections containing this text
+//! # icon = "file-sql"              # an icon of the console's menu
+//!
 //! [[contributes.fileTemplates]]
 //! id = "drawing"
 //! name = "Excalidraw Drawing"
@@ -88,6 +94,7 @@ pub const MARKER_ICONS: &str = "markerIcons";
 pub const FILE_TEMPLATES: &str = "fileTemplates";
 pub const COMMIT_CHECKS: &str = "commitChecks";
 pub const SERVER_COMMANDS: &str = "serverCommands";
+pub const CONSOLE_COMMANDS: &str = "consoleCommands";
 
 const VIEW_ITEM_MENU: &str = "viewItem.context";
 /// The toolbar above the commit message (Commit tool window and dialog).
@@ -195,6 +202,38 @@ pub(super) fn menu(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
         (false, None) => format!("{}/{}", d.menu, d.command),
     };
     Ok(UiDecl::new(key, d.command.clone(), json(&d)?))
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ConsoleCommandDecl {
+    /// A command this plugin declares under `[[contributes.commands]]`; it
+    /// receives the console's selection as its argument.
+    command: String,
+    label: String,
+    /// Shown only while the console's selection contains this text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    selection_contains: Option<String>,
+    /// An icon of the console's menu (`copy`, `file-sql`, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    icon: Option<String>,
+}
+
+pub(super) fn console_command(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
+    let d: ConsoleCommandDecl = decode(CONSOLE_COMMANDS, decl)?;
+    declared_command(pkg, CONSOLE_COMMANDS, &d.command)?;
+    title(CONSOLE_COMMANDS, &d.label)?;
+    if let Some(icon) = &d.icon
+        && (icon.is_empty() || icon.len() > MAX_TITLE)
+    {
+        return Err(format!("contributes.{CONSOLE_COMMANDS}: icon must be 1–{MAX_TITLE} bytes"));
+    }
+    if let Some(text) = &d.selection_contains
+        && text.is_empty()
+    {
+        return Err(format!("contributes.{CONSOLE_COMMANDS}: `selectionContains` must not be empty"));
+    }
+    Ok(UiDecl::new(d.command.clone(), d.label.clone(), json(&d)?))
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1120,6 +1159,24 @@ pub(super) fn locales(pkg: &Package, _decl: toml::Value) -> Result<UiDecl, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn console_commands_need_a_declared_command_and_tell_the_selection_shape() {
+        let manifest = ide_extension::Manifest::parse(
+            "id='test'\nname='Test'\nversion='1.0.0'\nengines.openidea='^1.10'\n[[contributes.commands]]\nid='copy-sql'\ntitle='Copy SQL'",
+        )
+        .unwrap();
+        let pkg = Package::new(manifest, std::path::PathBuf::from("/unused"));
+        let check = |decl: &str| console_command(&pkg, toml::from_str(decl).unwrap());
+        let ok =
+            check("command='copy-sql'\nlabel='Copy SQL'\nselectionContains='==>  Preparing'\nicon='file-sql'").unwrap();
+        assert_eq!(ok.key, "copy-sql");
+        assert_eq!(ok.label, "Copy SQL");
+        assert_eq!(ok.json["selectionContains"], "==>  Preparing");
+        assert!(check("command='foreign'\nlabel='Copy'").is_err(), "undeclared command");
+        assert!(check("command='copy-sql'\nlabel=''").is_err(), "empty label");
+        assert!(check("command='copy-sql'\nlabel='Copy'\nselectionContains=''").is_err(), "empty marker");
+    }
 
     #[test]
     fn api4_menu_locations_require_api4_and_declared_commands() {

@@ -100,6 +100,7 @@ pub fn register_builtin_points(
     registry.register(Arc::new(UiPoint::new(p::FILE_TEMPLATES, ui.clone(), p::file_template)))?;
     registry.register(Arc::new(UiPoint::new(p::COMMIT_CHECKS, ui.clone(), p::commit_check)))?;
     registry.register(Arc::new(UiPoint::new(p::SERVER_COMMANDS, ui.clone(), p::server_command)))?;
+    registry.register(Arc::new(UiPoint::new(p::CONSOLE_COMMANDS, ui.clone(), p::console_command)))?;
     registry.register(Arc::new(UiPoint::new(ide_extension::LOCALES_POINT, ui.clone(), p::locales)))?;
     Ok(())
 }

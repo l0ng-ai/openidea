@@ -19,7 +19,7 @@ import { Icon, showContextMenu } from "@/ui";
 import { spanStyle } from "@/ui/ansi";
 import { logLineColor } from "@/ui/logColors";
 import { compileConsoleRules, matchConsoleRules, styleSpans, type ConsoleRuleMatch } from "@/ui/consoleRules";
-import { useConsoleRules } from "@/workbench/contributions";
+import { useConsoleCommands, useConsoleRules } from "@/workbench/contributions";
 import type { ConsoleLine, ConsoleModel } from "./console";
 import { findOutputLinks, type OutputLink } from "./links";
 import { debugConsoleUrl, openTarget, openUrl } from "./navigate";
@@ -204,6 +204,10 @@ export function ConsoleView({
   const patterns = useWorkflowSettings((s) => s.console.foldPatterns);
   const logColors = useWorkflowSettings((s) => s.console.logColors);
   const consoleRules = compileConsoleRules(useConsoleRules((s) => s.providers));
+  // Console commands a live plugin offers (the Run console renders the trigger; the plugin
+  // runs with the selection as its argument).
+  const offeredCommands = useConsoleCommands((s) => s.providers);
+  const consoleCommands = [...offeredCommands.values()].flat();
   // The Run console uses Tools › Terminal › Font (which can follow Editor › Font),
   // so the font and fallback configured there apply to process output too.
   const consoleFont = useConsoleFont();
@@ -454,6 +458,9 @@ export function ConsoleView({
         disabled: !selection,
         run: () => void writeClipboardText(selection).catch(() => undefined),
       },
+      ...consoleCommands
+        .filter((c) => c.when(selection))
+        .map((c) => ({ label: c.label, icon: c.icon, run: () => void c.run(selection) })),
       { label: "Select All", shortcut: formatBinding(hostBinding("Meta+A")), run: selectAll },
       { label: "Copy All", run: () => void writeClipboardText(model.text()).catch(() => undefined) },
       {

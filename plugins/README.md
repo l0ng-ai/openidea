@@ -161,6 +161,7 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `fileTemplates`     | `id`, `name`, `extension`, `path`; API 1.3: `fileName`, `variables = [{ name, prompt }]` — New menu                                                                                                                                    | no            |
 | `commitChecks`      | `id`, `title` — a before-commit check in Commit Options (see _Commits_)                                                                                                                                                                | yes           |
 | `serverCommands`    | `server`, `command`, `run` — a language server's client command run by this plugin's command (API 1.9; see _Commands a server hands to the client_)                                                                                    |
+| `consoleCommands`   | `command`, `label`, `selectionContains?`, `icon?` — an item in the Copy menu of the Run and Debug consoles; the command receives the selection as its argument                                                                         |
 
 A `viewItem.context` menu needs `view`, the id of one of the plugin's own
 views. It adds the commands to the right-click menu of the items in that

@@ -1115,6 +1115,34 @@ export function setConsoleRules(provider: string, rules: readonly ConsoleRule[])
   });
 }
 
+// Console commands: a plugin supplies the logic, the Run console renders the trigger and
+// runs it with the console's selection as the command's argument (`ui/commands`).
+
+export interface ConsoleCommand {
+  /** The provider's command id (`convert-sql-log`). */
+  command: string;
+  label: string;
+  icon?: string;
+  /** The console selection this command applies to. */
+  when: (selection: string) => boolean;
+  /** Runs the command with the console's selection; the plugin reports its own result. */
+  run: (selection: string) => Promise<void>;
+}
+
+export const useConsoleCommands = create<{ providers: ReadonlyMap<string, readonly ConsoleCommand[]> }>(() => ({
+  providers: new Map(),
+}));
+
+/** Replaces the commands of one provider (a plugin id); an empty list removes them. */
+export function setConsoleCommands(provider: string, commands: readonly ConsoleCommand[]) {
+  useConsoleCommands.setState((s) => {
+    const providers = new Map(s.providers);
+    if (commands.length) providers.set(provider, commands);
+    else if (!providers.delete(provider)) return s;
+    return { providers };
+  });
+}
+
 // ---------------------------------------------------------------------------
 // File decorations: colour / badge / tooltip for a path, shown by the project
 // tree, editor tabs, Search Everywhere, etc. Providers (VCS status, problems)
