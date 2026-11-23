@@ -16,15 +16,15 @@ async function convert(expr: string): Promise<Record<string, string>> {
 describe("Python string formatting conversions", () => {
   it("converts %-formatting to an f-string and to str.format()", async () => {
     expect(await convert(`"Hello %s, you are %d" % (name, age)`)).toEqual({
-      fString: `f"Hello {name}, you are {age:d}"`,
-      format: `"Hello {}, you are {:d}".format(name, age)`,
+      fString: `f"Hello {name}, you are {int(age)}"`,
+      format: `"Hello {}, you are {}".format(name, int(age))`,
     });
     expect(await convert(`'%s' % user.name`)).toEqual({ fString: `f'{user.name}'`, format: `'{}'.format(user.name)` });
   });
 
   it("maps flags, widths, precisions and conversions", async () => {
     expect((await convert(`"%5s|%-5s|%r|%.2f|%05d|%+x|%-8.3e|%%" % (a, b, c, d, e, f, g)`)).fString).toBe(
-      `f"{a!s:>5}|{b!s:<5}|{c!r}|{d:.2f}|{e:05d}|{f:+x}|{g:<8.3e}|%"`,
+      `f"{a!s:>5}|{b!s:<5}|{c!r}|{d:.2f}|{int(e):05d}|{f:+x}|{g:<8.3e}|%"`,
     );
   });
 
@@ -63,5 +63,31 @@ describe("Python string formatting conversions", () => {
     ])
       expect(await convert(expr), expr).toEqual({});
     expect((await convert(`'{}'.format(d["key"])`)).fString).toBe(`f'{d["key"]}'`);
+  });
+
+  it("keeps %d's truncation with int() unless the value is an int already", async () => {
+    expect(await convert(`"%d%%" % (ratio * 100)`)).toEqual({
+      fString: `f"{int(ratio * 100)}%"`,
+      format: `"{}%".format(int(ratio * 100))`,
+    });
+    expect((await convert(`"%s of %d tasks, %i/%d" % (len(done), len(tasks), 3, int(x))`)).fString).toBe(
+      `f"{len(done)} of {len(tasks)} tasks, {3}/{int(x)}"`,
+    );
+    expect(await convert(`"%(n)d is %(n)s" % {"n": x}`)).toEqual({ fString: `f"{int(x)} is {x}"` });
+  });
+
+  it("leaves \\N{...} escapes alone, except in raw strings", async () => {
+    expect(await convert(`"\\N{BULLET} %s" % x`)).toEqual({
+      fString: `f"\\N{BULLET} {x}"`,
+      format: `"\\N{BULLET} {}".format(x)`,
+    });
+    expect((await convert(`"\\N{BULLET} {}".format(x)`)).fString).toBe(`f"\\N{BULLET} {x}"`);
+    expect((await convert(`"\\\\N{x} %s" % y`)).fString).toBe(`f"\\\\N{{x}} {y}"`);
+    expect((await convert(`r"\\N{x} %s" % y`)).fString).toBe(`rf"\\N{{x}} {y}"`);
+  });
+
+  it("declines integer precisions and keyword names in .format()", async () => {
+    expect(await convert(`"%.2d" % h`)).toEqual({});
+    expect(await convert(`"%(class)s" % {"class": c}`)).toEqual({ fString: `f"{c}"` });
   });
 });

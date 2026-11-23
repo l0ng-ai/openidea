@@ -2,6 +2,8 @@
  * PyCharm's "Convert to f-string literal" and "Replace with str.format() call"
  * on `%`-formatting and `str.format()` calls. A conversion that could change
  * what the code does, or produce code an older Python rejects, is not offered.
+ * As in PyCharm, a single `%` operand that is not a tuple literal is taken as one
+ * value: a variable holding a tuple would format differently after conversion.
  */
 import { syntaxTree } from "@codemirror/language";
 import type { Text } from "@codemirror/state";
@@ -25,6 +27,8 @@ interface Field {
   tail: string;
   conv: string;
   spec: string;
+  /** A `%d`/`%i`/`%u` field: `%` truncates a float with `int()`, a `d` format spec raises. */
+  int?: boolean;
 }
 /** Literal text, already brace-escaped as it appears in the result. */
 type Part = string | Field;
@@ -36,6 +40,7 @@ interface Arg {
 
 interface Literal {
   prefix: string;
+  raw: boolean;
   quote: string;
   body: string;
 }
@@ -45,7 +50,12 @@ function literal(text: string): Literal | null {
   if (/[bBfFtT]/.test(prefix)) return null;
   const rest = text.slice(prefix.length);
   const quote = rest.startsWith('"""') || rest.startsWith("'''") ? rest.slice(0, 3) : rest[0]!;
-  return { prefix: prefix.replace(/[uU]/, ""), quote, body: rest.slice(quote.length, rest.length - quote.length) };
+  return {
+    prefix: prefix.replace(/[uU]/, ""),
+    raw: /[rR]/.test(prefix),
+    quote,
+    body: rest.slice(quote.length, rest.length - quote.length),
+  };
 }
 
 /** Comma-separated groups of `node`'s children, brackets dropped. */
@@ -66,15 +76,30 @@ const argOf = (doc: Text, g: SyntaxNode[]): Arg => ({
 
 const escapeBraces = (s: string) => s.replace(/[{}]/g, "$&$&");
 
+/** Length of a `\\` or `\N{NAME}` escape at `i` of a non-raw literal; its braces are not fields. */
+function escapeLength(body: string, i: number): number {
+  if (body[i] !== "\\") return 0;
+  if (body[i + 1] === "\\") return 2;
+  if (body[i + 1] !== "N" || body[i + 2] !== "{") return 0;
+  const end = body.indexOf("}", i);
+  return end < 0 ? 0 : end + 1 - i;
+}
+
 const PERCENT = /%(?:\((\w+)\))?([#0 +-]*)(\d+)?(?:\.(\d+))?[hlL]?([diouxXeEfFgGrsa%])/y;
 
 /** The fields of a `%` format string; null when a conversion has no f-string equivalent. */
-export function percentParts(body: string): Part[] | null {
+export function percentParts(body: string, raw = false): Part[] | null {
   const parts: Part[] = [];
   let text = "";
   for (let i = 0; i < body.length;) {
+    const escape = raw ? 0 : escapeLength(body, i);
+    if (escape) {
+      text += body.slice(i, i + escape);
+      i += escape;
+      continue;
+    }
     if (body[i] !== "%") {
-      text += body[i++];
+      text += escapeBraces(body[i++]!);
       continue;
     }
     PERCENT.lastIndex = i;
@@ -89,6 +114,9 @@ export function percentParts(body: string): Part[] | null {
       continue;
     }
     const prec = precision === undefined ? "" : `.${precision}`;
+    // An integer's `%` precision pads with zeros; a format spec rejects it.
+    if (prec && "diuoxX".includes(type)) return null;
+    const int = "diu".includes(type);
     let conv = "";
     let spec: string;
     if ("sra".includes(type)) {
@@ -98,23 +126,29 @@ export function percentParts(body: string): Part[] | null {
       const align = flags.includes("-") ? "<" : "";
       const sign = flags.includes("+") ? "+" : flags.includes(" ") ? " " : "";
       const zero = flags.includes("0") && !align && width ? "0" : "";
-      spec =
-        align + sign + (flags.includes("#") ? "#" : "") + zero + width + prec + ("diu".includes(type) ? "d" : type);
+      const rest = align + sign + (flags.includes("#") ? "#" : "") + zero + width + prec;
+      spec = int ? rest && `${rest}d` : rest + type;
     }
-    parts.push(escapeBraces(text), { key: key ?? null, tail: "", conv, spec: spec && `:${spec}` });
+    parts.push(text, { key: key ?? null, tail: "", conv, spec: spec && `:${spec}`, ...(int && { int }) });
     text = "";
   }
-  parts.push(escapeBraces(text));
+  parts.push(text);
   return parts;
 }
 
 const FIELD = /^(\d+|[A-Za-z_]\w*)?((?:\.[A-Za-z_]\w*|\[\d+\])*)(![rsa])?(:[^{}]*)?$/;
 
 /** The fields of a `str.format` string; null for nested or malformed fields. */
-export function formatParts(body: string): Part[] | null {
+export function formatParts(body: string, raw = false): Part[] | null {
   const parts: Part[] = [];
   let text = "";
   for (let i = 0; i < body.length;) {
+    const escape = raw ? 0 : escapeLength(body, i);
+    if (escape) {
+      text += body.slice(i, i + escape);
+      i += escape;
+      continue;
+    }
     const c = body[i]!;
     if ((c === "{" || c === "}") && body[i + 1] === c) {
       text += c + c;
@@ -139,6 +173,27 @@ export function formatParts(body: string): Part[] | null {
   return parts;
 }
 
+/** An int literal, or `len()` / `int()` / `ord()`: `%d` of it needs no `int()`. */
+function isInt(arg: Arg): boolean {
+  const node = arg.node;
+  if (node?.name === "Number") return /^(?:\d[\d_]*|0[xob][\da-f_]+)$/i.test(arg.text);
+  const callee = node?.name === "CallExpression" ? node.firstChild : null;
+  return callee?.name === "VariableName" && /^(?:len|int|ord)\($/.test(arg.text.slice(0, callee.to - node!.from + 1));
+}
+
+/** The argument as a `%d` value: wrapped in `int()` unless it is one already. */
+function asInt(arg: Arg): Arg {
+  if (isInt(arg)) return arg;
+  const inner = arg.node?.name === "ParenthesizedExpression" ? arg.text.slice(1, -1) : arg.text;
+  return { text: "int(" + inner + ")", node: null };
+}
+
+const KEYWORDS = new Set(
+  "False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield".split(
+    " ",
+  ),
+);
+
 const ATOMIC = new Set(["VariableName", "MemberExpression", "CallExpression", "SubscriptExpression"]);
 
 /** `parts` with each field's argument inlined, or null if that is not safe. */
@@ -161,11 +216,12 @@ function inline(parts: Part[], positional: Arg[], keyword: Map<string, Arg>, quo
           : keyword.get(part.key);
     if (!arg) return null;
     used.set(arg, (used.get(arg) ?? 0) + 1);
-    const text = arg.text;
+    const value = part.int ? asInt(arg) : arg;
+    const text = value.text;
     // Before Python 3.12 an f-string field cannot hold its quote, a backslash or a comment.
     if (text.includes("\\") || text.includes("#") || text.includes(quote[0]!)) return null;
     if (text.includes("\n") && quote.length === 1) return null;
-    const bare = arg.node && arg.node.name !== "LambdaExpression" && !text.includes(":=");
+    const bare = value !== arg || (arg.node && arg.node.name !== "LambdaExpression" && !text.includes(":="));
     let expr = bare ? text : `(${text})`;
     if (part.tail) expr = (arg.node && ATOMIC.has(arg.node.name) ? expr : `(${text})`) + part.tail;
     if (expr.startsWith("{")) expr = ` ${expr}`;
@@ -205,7 +261,7 @@ function percentConversions(doc: Text, node: SyntaxNode): StringConversion[] {
   const [str, op, rhs] = [node.firstChild, node.firstChild?.nextSibling, node.lastChild];
   if (str?.name !== "String" || op?.name !== "ArithOp" || doc.sliceString(op.from, op.to) !== "%" || !rhs) return [];
   const lit = literal(doc.sliceString(str.from, str.to));
-  const parts = lit && percentParts(lit.body);
+  const parts = lit && percentParts(lit.body, lit.raw);
   const args = rhs && percentArgs(doc, rhs);
   if (!lit || !parts || !args) return [];
   const fields = parts.filter((p): p is Field => typeof p !== "string");
@@ -222,7 +278,13 @@ function percentConversions(doc: Text, node: SyntaxNode): StringConversion[] {
       text: `${lit.prefix}f${lit.quote}${inlined}${lit.quote}`,
     });
   const body = parts.map((p) => (typeof p === "string" ? p : `{${p.key ?? ""}${p.conv}${p.spec}}`)).join("");
-  const callArgs = named ? [...args.keyword].map(([k, v]) => `${k}=${v.text}`) : args.positional.map((a) => a.text);
+  // `.format(k=…)` needs keys that are not keywords, and a key used as `%d` and as text cannot be both.
+  const intKeys = new Set(fields.filter((f) => f.int).map((f) => f.key));
+  const mixed = fields.some((f) => !f.int && intKeys.has(f.key));
+  if (named && (mixed || [...args.keyword.keys()].some((k) => KEYWORDS.has(k)))) return out;
+  const callArgs = named
+    ? [...args.keyword].map(([k, v]) => `${k}=${(intKeys.has(k) ? asInt(v) : v).text}`)
+    : args.positional.map((a, i) => (fields[i]!.int ? asInt(a) : a).text);
   out.push({
     kind: "format",
     from: node.from,
@@ -241,7 +303,7 @@ function formatConversion(doc: Text, call: SyntaxNode): StringConversion[] {
     return [];
   if (doc.sliceString(name.from, name.to) !== "format") return [];
   const lit = literal(doc.sliceString(str.from, str.to));
-  const parts = lit && formatParts(lit.body);
+  const parts = lit && formatParts(lit.body, lit.raw);
   if (!lit || !parts) return [];
   const positional: Arg[] = [];
   const keyword = new Map<string, Arg>();
