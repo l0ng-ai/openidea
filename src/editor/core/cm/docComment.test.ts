@@ -11,7 +11,8 @@ import {
   javaDocTags,
   jsDocTags,
   phpDocTags,
-  pythonDocTags,
+  pythonDocStub,
+  type PythonDocFormat,
 } from "./docComment";
 
 const views: EditorView[] = [];
@@ -182,38 +183,95 @@ describe("JavaScript / TypeScript documentation stub tags", () => {
 });
 
 describe("Python docstring stub", () => {
-  it("lists parameters (not self) and :return:", () => {
-    expect(pythonDocTags("def greet(self, name: str, *args, times=2, **kw) -> str:")).toEqual([
+  const header = "def greet(self, name: str, *args, times=2, **kw) -> str:";
+  const body = [
+    "    if not name:",
+    "        raise ValueError('empty')",
+    "    def inner():",
+    "        raise KeyError",
+    "    raise errors.GreetError from None",
+    "    raise",
+    "    return name",
+  ];
+
+  it("lists parameters (not self), the return value and raised exceptions in reST", () => {
+    expect(pythonDocStub(header, body, "rest")).toEqual([
       ":param name:",
       ":param args:",
       ":param times:",
       ":param kw:",
       ":return:",
+      ":raises ValueError:",
+      ":raises errors.GreetError:",
     ]);
-    expect(pythonDocTags("def __init__(self, x):")).toEqual([":param x:"]);
-    expect(pythonDocTags("async def run() -> None:")).toEqual([]);
+    expect(pythonDocStub("def __init__(self, x):", [], "rest")).toEqual([":param x:"]);
+    expect(pythonDocStub("async def run() -> None:", [], "rest")).toEqual([]);
   });
 
-  it("expands Enter between the quotes under a def", () => {
+  it("writes Epytext, Google and NumPy sections", () => {
+    const h = "def f(a, b) -> int:";
+    const raising = ["    raise ValueError"];
+    expect(pythonDocStub(h, raising, "epytext")).toEqual(["@param a:", "@param b:", "@return:", "@raise ValueError:"]);
+    expect(pythonDocStub(h, raising, "google")).toEqual([
+      "",
+      "Args:",
+      "    a:",
+      "    b:",
+      "",
+      "Returns:",
+      "",
+      "Raises:",
+      "    ValueError:",
+    ]);
+    expect(pythonDocStub(h, raising, "numpy")).toEqual([
+      "",
+      "Parameters",
+      "----------",
+      "a",
+      "b",
+      "",
+      "Returns",
+      "-------",
+      "",
+      "Raises",
+      "------",
+      "ValueError",
+    ]);
+    expect(pythonDocStub(h, raising, "plain")).toEqual([]);
+    expect(pythonDocStub("def g(self) -> None:", [], "google")).toEqual([]);
+  });
+
+  const enter = (doc: string, format: PythonDocFormat = "rest") => {
+    const at = doc.indexOf("|");
     const view = new EditorView({
-      state: EditorState.create({
-        doc: 'def greet(name):\n    """"""',
-        selection: { anchor: 'def greet(name):\n    """'.length },
-      }),
+      state: EditorState.create({ doc: doc.replace("|", ""), selection: { anchor: at } }),
     });
-    expect(enterInDocstring(view)).toBe(true);
+    const handled = enterInDocstring(() => format)(view);
     const s = view.state;
     const h = s.selection.main.head;
-    expect(s.sliceDoc(0, h) + "|" + s.sliceDoc(h)).toBe(
+    const out = s.sliceDoc(0, h) + "|" + s.sliceDoc(h);
+    view.destroy();
+    return handled ? out : null;
+  };
+
+  it("expands Enter between the quotes under a def", () => {
+    expect(enter('def greet(name):\n    """|"""')).toBe(
       'def greet(name):\n    """\n    |\n    :param name:\n    :return:\n    """',
     );
-    view.destroy();
   });
 
-  it("leaves a docstring that is not under a def alone", () => {
-    const view = new EditorView({ state: EditorState.create({ doc: 'x = 1\n"""', selection: { anchor: 9 } }) });
-    expect(enterInDocstring(view)).toBe(false);
-    view.destroy();
+  it("reads raised exceptions from the body below and follows the format", () => {
+    expect(enter('def check(x) -> None:\n    """|\n    if x:\n        raise TypeError(x)\n\ny = 1', "google")).toBe(
+      'def check(x) -> None:\n    """\n    |\n\n    Args:\n        x:\n\n    Raises:\n        TypeError:\n    """\n    if x:\n        raise TypeError(x)\n\ny = 1',
+    );
+  });
+
+  it("closes a class docstring with only the summary line", () => {
+    expect(enter('class Greeter(Base):\n    """|"""')).toBe('class Greeter(Base):\n    """\n    |\n    """');
+  });
+
+  it("leaves a docstring that is not under a def or class alone", () => {
+    expect(enter('x = 1\n"""|')).toBeNull();
   });
 });
 

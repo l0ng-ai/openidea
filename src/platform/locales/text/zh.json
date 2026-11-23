@@ -775,7 +775,7 @@
   "Cannot run this Python interpreter. Select a working Python executable or virtualenv folder.": "无法运行此 Python 解释器。请选择可用的 Python 可执行文件或虚拟环境文件夹。",
   "Docstrings": "文档字符串",
   "Documentation string format": "文档字符串格式",
-  "Docstring tags and keywords are highlighted according to this markup format (Color Scheme › Python styles their colours).": "文档字符串中的标签和关键字会按此标记格式高亮（颜色方案 › Python 定义它们的颜色）。",
+  "Docstring stubs (Enter after \"\"\") are written in this markup format, and docstring tags and keywords are highlighted according to it (Color Scheme › Python styles their colours).": "文档字符串存根（在 \"\"\" 后按 Enter）按此标记格式生成，文档字符串中的标签和关键字也按此格式高亮（颜色方案 › Python 定义它们的颜色）。",
   "Plain": "纯文本",
   "The {language} language server can't rename this symbol; renaming only the plugin's indexed names would leave it half renamed": "语言服务器无法重命名此符号（{language}）；仅重命名插件索引的名称会导致重命名不完整",
   "Native server declined rename": "语言服务器拒绝重命名",

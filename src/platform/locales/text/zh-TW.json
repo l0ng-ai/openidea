@@ -485,7 +485,7 @@
   "Cannot run this Python interpreter. Select a working Python executable or virtualenv folder.": "無法執行此 Python 直譯器。請選擇可用的 Python 可執行檔案或虛擬環境資料夾。",
   "Docstrings": "文件字串",
   "Documentation string format": "文件字串格式",
-  "Docstring tags and keywords are highlighted according to this markup format (Color Scheme › Python styles their colours).": "文件字串中的標籤和關鍵字會按此標記格式醒目提示（顏色方案 › Python 定義它們的顏色）。",
+  "Docstring stubs (Enter after \"\"\") are written in this markup format, and docstring tags and keywords are highlighted according to it (Color Scheme › Python styles their colours).": "文件字串存根（在 \"\"\" 後按 Enter）按此標記格式產生，文件字串中的標籤和關鍵字也按此格式醒目提示（顏色方案 › Python 定義它們的顏色）。",
   "Plain": "純文字",
   "The {language} language server can't rename this symbol; renaming only the plugin's indexed names would leave it half renamed": "語言伺服器無法重新命名此符號（{language}）；僅重新命名外掛索引的名稱會導致重新命名不完整",
   "Native server declined rename": "語言伺服器拒絕重新命名",

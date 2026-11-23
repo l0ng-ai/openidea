@@ -242,56 +242,126 @@ export function jsDocTags(text: string): string[] {
   return tags;
 }
 
-/** `:param` / `:return:` lines for the Python function whose header is `header` (reStructuredText, PyCharm's default). */
-export function pythonDocTags(header: string): string[] {
+/** Python docstring formats (Settings › Python › Docstrings). */
+export type PythonDocFormat = "plain" | "rest" | "epytext" | "google" | "numpy";
+
+/** Parameters, whether a value is returned, and the exceptions raised, of the `def` whose header is `header`. */
+function pythonSignature(header: string, body: readonly string[]) {
   const m = /^\s*(?:async\s+)?def\s+(\w+)\s*(?=\()/.exec(header);
-  if (!m) return [];
+  if (!m) return null;
   const list = paramList(header, m[0].length);
-  if (!list) return [];
-  const tags = splitParams(list.params).flatMap((p) => {
+  if (!list) return null;
+  const params = splitParams(list.params).flatMap((p) => {
     const name = /^\**(\w+)/.exec(p)?.[1];
-    return name && name !== "self" && name !== "cls" ? [`:param ${name}:`] : [];
+    return name && name !== "self" && name !== "cls" ? [name] : [];
   });
   const returns = /->\s*([^:]+):/.exec(list.after)?.[1]?.trim();
-  if (m[1] !== "__init__" && returns !== "None") tags.push(":return:");
-  return tags;
+  // ponytail: `raise` lines of the body by text, nested defs skipped; an exception class is capitalised.
+  const raises: string[] = [];
+  let nested = Infinity;
+  for (const line of body) {
+    const indent = line.length - line.trimStart().length;
+    if (!line.trim()) continue;
+    if (indent <= nested) nested = Infinity;
+    if (nested !== Infinity) continue;
+    if (/^\s*(async\s+)?(def|class)\b/.test(line)) nested = indent;
+    const name = /^\s*raise\s+([A-Za-z_][\w.]*)/.exec(line)?.[1];
+    if (name && /^[A-Z]/.test(name.split(".").pop()!) && !raises.includes(name)) raises.push(name);
+  }
+  return { params, returns: m[1] !== "__init__" && returns !== "None", raises };
 }
 
 /**
- * Enter between the quotes of a `"""` docstring opened right under a `def` (or `"""` alone at its
- * end): the docstring's lines with the function's `:param` / `:return:` fields, as PyCharm does.
+ * The lines of a docstring stub below its summary line, for the `def` whose header is `header`
+ * and whose body is `body`, in `format`, as PyCharm writes them.
  */
-export const enterInDocstring: Command = (view) => {
-  const { state } = view;
-  if (state.readOnly || state.selection.ranges.length !== 1 || !state.selection.main.empty) return false;
-  const head = state.selection.main.head;
-  const line = state.doc.lineAt(head);
-  const before = line.text.slice(0, head - line.from);
-  const after = line.text.slice(head - line.from);
-  const quote = /^\s*("""|''')$/.exec(before)?.[1];
-  if (!quote || (after.trim() && after.trim() !== quote)) return false;
-  // The function header ends on the closest line above with code.
-  let n = line.number - 1;
-  while (n >= 1 && !state.doc.line(n).text.trim()) n--;
-  if (n < 1 || !/:\s*(#.*)?$/.test(state.doc.line(n).text)) return false;
-  let start = n;
-  while (start > 1 && !/^\s*(async\s+)?def\b/.test(state.doc.line(start).text) && n - start < 20) start--;
-  const header = state.sliceDoc(state.doc.line(start).from, state.doc.line(n).to);
-  if (!/^\s*(async\s+)?def\b/.test(header)) return false;
-  const indent = /^\s*/.exec(before)![0];
-  const br = state.lineBreak;
-  const tags = pythonDocTags(header);
-  const summary = `${br}${indent}`;
-  const insert =
-    summary + (tags.length ? `${br}${tags.map((t) => `${indent}${t}`).join(br)}` : "") + `${br}${indent}${quote}`;
-  view.dispatch({
-    changes: { from: head, to: line.to, insert },
-    selection: EditorSelection.cursor(head + summary.length),
-    scrollIntoView: true,
-    userEvent: "input",
-  });
-  return true;
-};
+export function pythonDocStub(header: string, body: readonly string[], format: PythonDocFormat): string[] {
+  const sig = pythonSignature(header, body);
+  if (!sig || format === "plain") return [];
+  const { params, returns, raises } = sig;
+  switch (format) {
+    case "rest":
+    case "epytext": {
+      const [mark, raise] = format === "rest" ? [":", ":raises"] : ["@", "@raise"];
+      return [
+        ...params.map((p) => `${mark}param ${p}:`),
+        ...(returns ? [`${mark}return:`] : []),
+        ...raises.map((r) => `${raise} ${r}:`),
+      ];
+    }
+    case "google": {
+      const sections = [
+        params.length ? ["Args:", ...params.map((p) => `    ${p}:`)] : [],
+        returns ? ["Returns:", ""] : [],
+        raises.length ? ["Raises:", ...raises.map((r) => `    ${r}:`)] : [],
+      ].filter((s) => s.length);
+      return sectioned(sections);
+    }
+    case "numpy": {
+      const sections = [
+        params.length ? ["Parameters", "----------", ...params] : [],
+        returns ? ["Returns", "-------", ""] : [],
+        raises.length ? ["Raises", "------", ...raises] : [],
+      ].filter((s) => s.length);
+      return sectioned(sections);
+    }
+  }
+}
+
+/** Sections after a blank line below the summary, one blank line apart (a trailing blank line of a section kept once). */
+function sectioned(sections: string[][]): string[] {
+  const out: string[] = [];
+  for (const s of sections) {
+    if (out[out.length - 1] !== "") out.push("");
+    out.push(...s);
+  }
+  return out;
+}
+
+/**
+ * Enter between the quotes of a `"""` docstring opened right under a `def` or `class` (or `"""`
+ * alone at its end): the docstring's lines with the function's parameters, return value and raised
+ * exceptions in `format`, as PyCharm does.
+ */
+export function enterInDocstring(format: () => PythonDocFormat): Command {
+  return (view) => {
+    const { state } = view;
+    if (state.readOnly || state.selection.ranges.length !== 1 || !state.selection.main.empty) return false;
+    const head = state.selection.main.head;
+    const line = state.doc.lineAt(head);
+    const before = line.text.slice(0, head - line.from);
+    const after = line.text.slice(head - line.from);
+    const quote = /^\s*("""|''')$/.exec(before)?.[1];
+    if (!quote || (after.trim() && after.trim() !== quote)) return false;
+    // The header ends on the closest line above with code.
+    let n = line.number - 1;
+    while (n >= 1 && !state.doc.line(n).text.trim()) n--;
+    if (n < 1 || !/:\s*(#.*)?$/.test(state.doc.line(n).text)) return false;
+    let start = n;
+    const opens = (text: string) => /^\s*((async\s+)?def|class)\b/.test(text);
+    while (start > 1 && !opens(state.doc.line(start).text) && n - start < 20) start--;
+    const header = state.sliceDoc(state.doc.line(start).from, state.doc.line(n).to);
+    if (!opens(header)) return false;
+    const indent = /^\s*/.exec(before)![0];
+    const body: string[] = [];
+    for (let b = line.number + 1; b <= state.doc.lines && body.length < 2000; b++) {
+      const text = state.doc.line(b).text;
+      if (text.trim() && text.length - text.trimStart().length < indent.length) break;
+      body.push(text);
+    }
+    const br = state.lineBreak;
+    const tags = pythonDocStub(header, body, format());
+    const summary = `${br}${indent}`;
+    const insert = summary + tags.map((t) => br + (t ? indent + t : "")).join("") + `${br}${indent}${quote}`;
+    view.dispatch({
+      changes: { from: head, to: line.to, insert },
+      selection: EditorSelection.cursor(head + summary.length),
+      scrollIntoView: true,
+      userEvent: "input",
+    });
+    return true;
+  };
+}
 
 /**
  * Whether the comments at `pos` include `/* *\/` ones. Embedded languages list several comment
