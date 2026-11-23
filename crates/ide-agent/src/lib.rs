@@ -1851,7 +1851,7 @@ impl AgentManager {
         let task = self.task(id)?;
         let at = task.base();
         let (before, touched) = task.attribution();
-        read_changes(&self.shared, move || Ok(worktree::made_by_task(at.changes(&before)?, touched.as_deref()))).await
+        read_changes(&self.shared, move || at.changes(&before, touched.as_deref())).await
     }
 
     /// The task's uncommitted changes and, for a worktree task, the commits made since it
@@ -1930,7 +1930,7 @@ impl AgentManager {
         let (restamped, restored) = vcs(&self.shared, move || {
             let (changes, rev) = match view {
                 AgentChangesView::Group => (at.grouped_changes(&before)?.uncommitted, worktree::head_commit(at.cwd())?),
-                AgentChangesView::SinceStart | AgentChangesView::LastTurn => (at.changes(&before)?, at.rev()?),
+                AgentChangesView::SinceStart | AgentChangesView::LastTurn => (at.changes(&before, None)?, at.rev()?),
             };
             let changes = worktree::made_by_task(changes, touched.as_deref());
             let sources = match rev.as_deref() {
