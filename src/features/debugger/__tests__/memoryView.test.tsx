@@ -241,7 +241,8 @@ describe("MemoryView", () => {
       expect(screen.getByRole("button", { name: "刷新内存视图" }).getAttribute("data-tooltip")).toBe("刷新内存视图");
       const filter = screen.getByRole("textbox", { name: "筛选类" });
       expect(filter.getAttribute("placeholder")).toBe("筛选类");
-      expect(screen.getByRole("checkbox", { name: "仅显示有变化的" })).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "视图选项" }));
+      expect(screen.getByRole("menuitemcheckbox", { name: "仅显示有变化的" })).toBeInTheDocument();
     } finally {
       await setLocale("en");
     }
@@ -299,10 +300,15 @@ describe("MemoryView", () => {
     expect(screen.getByText("Cache$Entry")).toBeTruthy();
 
     fireEvent.change(screen.getByRole("textbox", { name: "Filter classes" }), { target: { value: "" } });
-    fireEvent.click(screen.getByRole("checkbox", { name: "Changed only" }));
+    const options = screen.getByRole("button", { name: "View Options" });
+    fireEvent.click(options);
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Changed only", checked: false }));
     expect(screen.getByText("Heap$Live")).toBeTruthy();
     expect(screen.queryByText("Cache$Entry")).toBeNull();
     expect(screen.queryByText("Dup")).toBeNull();
+    expect(options).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(options);
+    expect(screen.getByRole("menuitemcheckbox", { name: "Changed only", checked: true })).toBeInTheDocument();
   });
 
   it("sorts by the clicked column and reports it with aria-sort", async () => {
