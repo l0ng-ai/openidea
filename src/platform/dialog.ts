@@ -4,6 +4,7 @@
  * `zenity`, the plugin returns nothing and a picker looks cancelled, so those sessions get a GTK
  * chooser from the backend instead.
  */
+import { hostPathChooser } from "./choosePath";
 import {
   open as pluginOpen,
   save as pluginSave,
@@ -58,6 +59,16 @@ async function gtkPick(options: {
 }
 
 export async function open<T extends OpenDialogOptions>(options: T = {} as T): Promise<OpenDialogReturn<T>> {
+  // The files are on another machine (a phone paired with the desktop): browse them in the app.
+  const host = hostPathChooser();
+  if (host) {
+    const path = await host({
+      directory: !!options.directory,
+      title: options.title ?? "",
+      defaultPath: options.defaultPath,
+    });
+    return (options.multiple ? (path ? [path] : null) : path) as OpenDialogReturn<T>;
+  }
   if (needsGtk === false || !(await pluginDialogsUnavailable())) return pluginOpen(options);
   const paths = await gtkPick(options);
   return (options.multiple ? paths : (paths?.[0] ?? null)) as OpenDialogReturn<T>;

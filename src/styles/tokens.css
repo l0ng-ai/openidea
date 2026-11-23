@@ -1550,6 +1550,33 @@ html {
   /* MainToolbar.Button.arc 12 → 8 and Button.ToolWindow.arc 12 → 8 (stripe buttons). */
   --radius-toolbar-button: 4px;
 }
+/*
+ * Touch screens (platform/formFactor): rows, fields, buttons and tabs sized for a
+ * finger, overriding compact mode. Rows grow by the same 12px `ui/density` adds.
+ */
+:root[data-touch] {
+  --h-titlebar: 48px;
+  --titlebar-tool-button: 40px;
+  --h-toolbar-widget: 40px;
+  --stripe-icon-button: 40px;
+  --h-header: 48px;
+  --h-tabbar: 48px;
+  --h-tab: 40px;
+  --h-row: 36px;
+  --h-list-row: 36px;
+  --h-statusbar: 36px;
+  --h-field: 40px;
+  --h-button: 40px;
+  --h-floating-toolbar-button: 36px;
+  --fs-chrome: var(--fs-ui);
+  --island-gap: 6px;
+  --island-radius: 10px;
+  --tree-inset: 6px;
+  --radius-control: 4px;
+  --radius-toolbar-button: 6px;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
 /* Use contrast scrollbars. */
 :root[data-contrast-scrollbars] {
   --scrollbar-thumb: #ffffff80;

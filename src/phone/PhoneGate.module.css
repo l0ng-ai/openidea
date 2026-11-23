@@ -1,0 +1,135 @@
+.gate {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-app);
+  color: var(--fg);
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  font-size: var(--fs-ui);
+}
+.center {
+  margin: auto;
+  width: min(100%, 360px);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  text-align: center;
+}
+.center > button,
+.code {
+  width: 100%;
+}
+.title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+}
+.hint {
+  margin: 0;
+  color: var(--fg-muted);
+  line-height: 1.5;
+}
+.detail {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  word-break: break-word;
+}
+.error {
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--fs-small);
+  word-break: break-word;
+}
+.page {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+.barText {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.barTitle {
+  font-size: var(--fs-input-large);
+  font-weight: 600;
+}
+.barSub {
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.page > .hint,
+.page > .error {
+  padding: var(--space-4);
+}
+.list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding: var(--space-2) 0;
+  list-style: none;
+}
+.project {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 56px;
+  padding: var(--space-2) var(--space-4);
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.project:active:not(:disabled) {
+  background: var(--bg-hover);
+}
+.project:disabled {
+  opacity: 0.5;
+}
+.projectText {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.projectName {
+  font-weight: 600;
+}
+.projectName,
+.projectPath {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.projectPath {
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  direction: rtl;
+  text-align: left;
+}
+.branch {
+  flex: none;
+  max-width: 35%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}

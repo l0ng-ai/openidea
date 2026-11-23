@@ -83,3 +83,15 @@
   align-items: center;
   gap: var(--space-1);
 }
+
+/* A phone's full-screen chooser: the list takes the height left under the path. */
+:global(:root[data-form-factor="phone"]) .form:has(.pathList) {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+:global(:root[data-form-factor="phone"]) .pathList {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+}

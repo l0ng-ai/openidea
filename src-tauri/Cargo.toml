@@ -72,6 +72,9 @@ ide-command.workspace = true
 ide-mcp.workspace = true
 ide-notebook.workspace = true
 ide-jsonrpc.workspace = true
+ide-pair.workspace = true
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+whoami = { version = "2", default-features = false, features = ["std"] }
 ide-tools = { path = "../crates/ide-tools" }
 ide-scaffold.workspace = true
 ide-plugin = { path = "../crates/ide-plugin" }

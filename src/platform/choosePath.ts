@@ -21,13 +21,26 @@ export function registerHostPathChooser(chooser: HostChooser): () => void {
   };
 }
 
+/** Every command runs on another machine without a window of its own there (a paired phone). */
+let otherMachine = false;
+
+export function setCommandsRunElsewhere(elsewhere: boolean) {
+  otherMachine = elsewhere;
+}
+
+/** The in-app chooser when this window's files are on another machine, else null (the system's dialog). */
+export function hostPathChooser(): HostChooser | null {
+  return isRemoteWindow() || otherMachine ? hostChooser : null;
+}
+
 /**
  * File / folder chooser for a path on the host this window's commands run on: the desktop's dialog
  * locally, the in-app chooser in a remote window. Null when cancelled or outside Tauri.
  */
 export async function choosePath(opts: ChoosePathOptions): Promise<string | null> {
   if (!isTauri()) return null;
-  if (isRemoteWindow() && hostChooser) return hostChooser(opts);
+  const host = hostPathChooser();
+  if (host) return host(opts);
   // Lazy on purpose: loading platform/dialog starts its GTK capability probe at module load.
   const { open } = await import("@/platform/dialog");
   const picked = await open({

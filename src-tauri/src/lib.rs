@@ -4,7 +4,7 @@
 //! Tauri adapters of project-host commands are derived from their `ide-host` declarations. No
 //! domain logic lives here.
 // `commands::catalogue!` recurses a few times per command domain.
-#![recursion_limit = "256"]
+#![recursion_limit = "512"]
 
 mod application_focus;
 mod cli;
@@ -21,6 +21,7 @@ mod logging;
 #[cfg(target_os = "macos")]
 mod macos;
 mod menu;
+mod mobile;
 #[cfg(target_os = "macos")]
 mod page_swipe;
 mod plugin_web;
@@ -244,6 +245,7 @@ pub fn run() {
         let menu_state = menu::MenuState::default();
         menu::install(app.handle(), &menu_state, &state.recent.list());
         app.manage(state);
+        mobile::start_if_paired(app.handle());
         {
             let state = app.state::<AppState>();
             state.host.mcp.apply(&state.host);

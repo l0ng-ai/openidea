@@ -45,6 +45,8 @@ import { groupMenu, taskMenu } from "./taskActions";
 import { matchTask } from "./taskSearch";
 import { SessionEditor } from "./SessionEditor";
 import { HomeEditor } from "./HomeEditor";
+import { AgentsPhone } from "./AgentsPhone";
+import { useFormFactor } from "@/platform/formFactor";
 import styles from "./Agents.module.css";
 import { basename, useProject } from "@/platform/project";
 import { useTx } from "@/platform/i18n";
@@ -161,7 +163,13 @@ function TaskStatusIcon({ status }: { status: Status }) {
   }
 }
 
+/** The tool window's content: on a phone a page layout of its own (`AgentsPhone`). */
 export function AgentsView() {
+  const phone = useFormFactor((s) => s.formFactor === "phone");
+  return phone ? <AgentsPhone /> : <AgentsDesktopView />;
+}
+
+function AgentsDesktopView() {
   const project = useProject((s) => s.project);
   const tx = useTx();
   const loaded = useAgents((s) => s.loaded);

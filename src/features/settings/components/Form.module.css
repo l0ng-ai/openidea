@@ -277,3 +277,26 @@
   padding: 6px 8px;
   color: var(--fg-subtle);
 }
+
+/* Phone: every field goes below its label, full width. */
+:global(:root[data-form-factor="phone"]) .formGroup,
+:global(:root[data-form-factor="phone"]) .formGroup > .row,
+:global(:root[data-form-factor="phone"]) .formGroup > .formGroup,
+:global(:root[data-form-factor="phone"]) .row:not(.toggleRow) {
+  grid-template-columns: minmax(0, 1fr);
+}
+:global(:root[data-form-factor="phone"]) .row:not(.toggleRow) {
+  row-gap: var(--space-1);
+}
+:global(:root[data-form-factor="phone"]) .label {
+  white-space: normal;
+}
+:global(:root[data-form-factor="phone"]) .text {
+  width: 100%;
+}
+:global(:root[data-form-factor="phone"]) .sectionBody {
+  padding-left: 0;
+}
+:global(:root[data-form-factor="phone"]) .row:not(.toggleRow) > * {
+  grid-column: 1 / -1;
+}

@@ -1,4 +1,6 @@
 import { ContributedToolbar } from "@/workbench/ContributedToolbar";
+import { useFormFactor } from "@/platform/formFactor";
+import { setTouchEditing, useTouchEditing } from "../cm/touchReadMode";
 import { useFilePresentations } from "@/ui/filePresentation";
 /**
  * The editor area: split layout of panes, each with IDEA-style tabs (preview
@@ -574,19 +576,38 @@ function EditorTabActions({ paneId, tab }: { paneId: string; tab: Tab }) {
       : undefined;
   const [open, setOpen] = useState(false);
   const moreRef = useRef<HTMLButtonElement>(null);
+  const phone = useFormFactor((s) => s.formFactor === "phone");
+  const editing = useTouchEditing((s) => s.editing);
   return (
     <div className={styles.tabActions}>
       <ContributedToolbar slot="editor.title" />
       {LayoutActions && <LayoutActions path={tab.input.path!} tabId={tab.id} />}
-      <IconButton
-        icon="split"
-        title="Split Right"
-        size="small"
-        onClick={() => {
-          ctrl.activate(paneId, tab.id, false);
-          ctrl.split(paneId, "row");
-        }}
-      />
+      {phone ? (
+        // A phone has no room for splits; its editors open for reading (`touchReadMode`).
+        <IconButton
+          icon={editing ? "check" : "edit"}
+          title={editing ? "Done" : "Edit"}
+          size="small"
+          pressed={editing}
+          onClick={() => {
+            setTouchEditing(!editing);
+            const content = document.querySelector<HTMLElement>(`[data-pane-id="${CSS.escape(paneId)}"] .cm-content`);
+            // Focused in the tap itself, or iOS keeps the keyboard down.
+            if (!editing) content?.focus();
+            else content?.blur();
+          }}
+        />
+      ) : (
+        <IconButton
+          icon="split"
+          title="Split Right"
+          size="small"
+          onClick={() => {
+            ctrl.activate(paneId, tab.id, false);
+            ctrl.split(paneId, "row");
+          }}
+        />
+      )}
       <IconButton
         ref={moreRef}
         icon="more"

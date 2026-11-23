@@ -1,4 +1,5 @@
 import type { AgentTask } from "@/bindings";
+import { useFormFactor } from "@/platform/formFactor";
 import type { Action } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { auxiliaryWindow } from "@/platform/auxWindow";
@@ -33,11 +34,17 @@ import {
 /** The Agents tool window's options menu: where conversations open, a new list group, importing sessions. */
 export function useAgentsHeaderMenu(): MenuItem[] {
   const location = useAgents((s) => s.sessionLocation);
+  // A phone shows conversations on its Agents page only (`sessionLocation()`).
+  const phone = useFormFactor((s) => s.formFactor === "phone");
   return [
     // A radio pair: check marks only, no action icons beside them.
-    { kind: "action", action: "agents.useToolWindow", icon: "", checked: location === "toolWindow" },
-    { kind: "action", action: "agents.useEditor", icon: "", checked: location === "editor" },
-    { kind: "separator" },
+    ...(phone
+      ? []
+      : ([
+          { kind: "action", action: "agents.useToolWindow", icon: "", checked: location === "toolWindow" },
+          { kind: "action", action: "agents.useEditor", icon: "", checked: location === "editor" },
+          { kind: "separator" },
+        ] satisfies MenuItem[])),
     { kind: "action", action: "agents.newTaskGroup", label: "New Group…", icon: "plus" },
     { kind: "action", action: "agents.importSessions", icon: "download" },
   ];
@@ -233,6 +240,7 @@ export const taskActions: Action[] = [
   },
   {
     id: "agents.useToolWindow",
+    when: "formFactor != 'phone'",
     title: "Chat in Tool Window",
     category: "Agents",
     icon: "open-in-tool-window",
@@ -240,6 +248,7 @@ export const taskActions: Action[] = [
   },
   {
     id: "agents.useEditor",
+    when: "formFactor != 'phone'",
     title: "Chat in Editor",
     category: "Agents",
     icon: "editor-only",

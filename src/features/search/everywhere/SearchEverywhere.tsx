@@ -35,6 +35,7 @@ import { useFileDecoration } from "@/workbench/contributions";
 import { highlightTokens, languageForPath, type CodeToken } from "@/editor/lsp/markdown";
 import { badgeKind, basename, openInListOrder, openLocation, relDir } from "../common/open";
 import { parseLocationQuery } from "../common/query";
+import { useFormFactor } from "@/platform/formFactor";
 import { CodePreview, type PreviewHighlight } from "../find/parts";
 import { SeController, type SeSnapshot } from "./controller";
 import { ipcDeps, loadLanguages } from "./deps";
@@ -111,7 +112,9 @@ function SearchEverywhereDialog() {
   const fileSet = useSearchEverywhere((s) => s.fileSet);
   const session = useSearchEverywhere((s) => s.session);
   const ctx = useSearchEverywhere((s) => s.ctx);
-  const preview = useSearchEverywhere((s) => s.preview);
+  // A phone has no room for the preview, the scope options or the footer: just the query and its results.
+  const phone = useFormFactor((s) => s.formFactor === "phone");
+  const preview = useSearchEverywhere((s) => s.preview) && !phone;
   const filters = useSearchEverywhere((s) => s.filters);
 
   const inputRef = useRef<HTMLInputElement>(null);
@@ -505,7 +508,7 @@ function SearchEverywhereDialog() {
     <div
       ref={listRef}
       className={styles.results}
-      style={{ height: rows.length && !preview ? listHeight + 8 : undefined }}
+      style={{ height: rows.length && !preview && !phone ? listHeight + 8 : undefined }}
     >
       {rows.length > 0 && (
         <List<SeRow>
@@ -580,7 +583,7 @@ function SearchEverywhereDialog() {
           ))}
         </div>
         <div className={styles.tools}>
-          {tab === "all" || tab === "actions" ? (
+          {phone ? null : tab === "all" || tab === "actions" ? (
             <Checkbox
               className={styles.include}
               checked={includeNonProject}
@@ -607,15 +610,17 @@ function SearchEverywhereDialog() {
               />
             )
           )}
-          <IconButton
-            icon="list"
-            size="small"
-            className={styles.headerButton}
-            title={tx("Preview")}
-            pressed={preview}
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => setSearchEverywherePreview(!preview)}
-          />
+          {!phone && (
+            <IconButton
+              icon="list"
+              size="small"
+              className={styles.headerButton}
+              title={tx("Preview")}
+              pressed={preview}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => setSearchEverywherePreview(!preview)}
+            />
+          )}
           {isFilterTab(tab) && (
             <IconButton
               icon="filter"
@@ -629,14 +634,16 @@ function SearchEverywhereDialog() {
               onClick={(e) => setFilterAnchor(filterAnchor ? null : e.currentTarget)}
             />
           )}
-          <IconButton
-            icon="open-in-tool-window"
-            size="small"
-            className={styles.headerButton}
-            title={tx("Open in Find Tool Window")}
-            shortcut={tab === "text" ? formatBinding(hostBinding("Meta+Enter")) : undefined}
-            onClick={() => closeThen(() => void executeAction("find.inPath", { query: searchQuery.trim() }))}
-          />
+          {!phone && (
+            <IconButton
+              icon="open-in-tool-window"
+              size="small"
+              className={styles.headerButton}
+              title={tx("Open in Find Tool Window")}
+              shortcut={tab === "text" ? formatBinding(hostBinding("Meta+Enter")) : undefined}
+              onClick={() => closeThen(() => void executeAction("find.inPath", { query: searchQuery.trim() }))}
+            />
+          )}
         </div>
       </div>
       <div className={styles.queryRow}>
@@ -706,7 +713,7 @@ function SearchEverywhereDialog() {
         ) : null}
         {!rows.length && <div id="se-results" hidden />}
       </div>
-      {rows.length > 0 && (
+      {rows.length > 0 && !phone && (
         <footer className={styles.footer}>
           <span className={styles.footerInfo}>{describe(activeRow)}</span>
           {canSplit && (

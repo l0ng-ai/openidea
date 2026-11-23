@@ -1,4 +1,5 @@
 /** Agent tasks of the open project, mirrored from `ide-agent` through `agentSubscribe`. */
+import { useFormFactor } from "@/platform/formFactor";
 import { Channel } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { create } from "zustand";
@@ -94,6 +95,11 @@ export interface Draft {
 export const HOME = "home";
 
 export type SessionLocation = "editor" | "toolWindow";
+
+/** Where sessions open now: on a phone always its Agents page, never an editor tab. */
+export function sessionLocation(): SessionLocation {
+  return useFormFactor.getState().formFactor === "phone" ? "toolWindow" : useAgents.getState().sessionLocation;
+}
 
 interface AgentsState {
   loaded: boolean;
@@ -1094,7 +1100,7 @@ export function useAgentCommands(
 export function openTask(task: string) {
   if (routeToWindow(task)) return;
   forgetClosed(task);
-  if (useAgents.getState().sessionLocation === "toolWindow") {
+  if (sessionLocation() === "toolWindow") {
     showDockedTask(task);
     return;
   }
@@ -1159,6 +1165,13 @@ export function setSessionLocation(location: SessionLocation) {
   }
 }
 
+/** Back from the session or New Task page shown in the tool window to the task list (a phone). */
+export function closeInline() {
+  const { docked } = useAgents.getState();
+  useAgents.setState({ docked: null, homeOpen: false });
+  if (docked) releaseClosedTaskCache(docked);
+}
+
 /** Dragging a session into the tool window selects the same placement for other tasks. */
 export function dockTask(task: string) {
   saveSessionLocation("toolWindow");
@@ -1208,7 +1221,7 @@ export function openHome(prompt?: string) {
     });
   }
   if (prompt !== undefined) updateComposer(HOME, { text: prompt });
-  if (useAgents.getState().sessionLocation === "toolWindow") {
+  if (sessionLocation() === "toolWindow") {
     const previousDocked = useAgents.getState().docked;
     useAgents.setState({ docked: null, homeOpen: true });
     if (previousDocked) releaseClosedTaskCache(previousDocked);

@@ -274,3 +274,32 @@
   gap: var(--space-3);
   padding: 12px 16px;
 }
+
+/* Phone: the page list and a page are separate screens. */
+.phoneList,
+.phonePage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.phoneList .tree {
+  flex: 1;
+  min-height: 0;
+}
+.phonePage > :last-child {
+  flex: 1;
+  min-height: 0;
+}
+/* Pages lay out against their width as in the dialog's content pane. */
+.phonePage {
+  container: settings-content / inline-size;
+}
+/* The dialog's header names the page and leads back: no breadcrumb or page history. */
+.phonePage .crumbs,
+.phonePage .history {
+  display: none;
+}
+.phonePage .pageHeader:not(:has(> :not(.crumbs, .history, .headerSlot:empty))) {
+  display: none;
+}

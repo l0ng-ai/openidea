@@ -410,6 +410,10 @@ menu_configure                               always             desktop      bin
 menu_model                                   always             desktop      bindings sync
 menu_refresh                                 always             desktop      bindings sync
 menu_set_disabled                            always             desktop      bindings sync
+mobile_cancel_pairing                        always             desktop      bindings async
+mobile_device_remove                         outside_restricted desktop      bindings async
+mobile_devices                               always             desktop      bindings async
+mobile_pair                                  outside_restricted desktop      bindings async
 nav_index_definitions                        always             project_host bindings async
 nav_inheritance                              always             project_host bindings async
 nav_resolve_module                           always             project_host bindings async

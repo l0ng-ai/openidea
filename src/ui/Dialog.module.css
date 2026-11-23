@@ -307,3 +307,67 @@
     border: 1px solid CanvasText;
   }
 }
+
+/* Phone: a dialog is a full-screen page (`sheet`), its actions in the header. */
+.sheetBackdrop,
+.sheetBackdrop.top,
+.sheetBackdrop.belowTitleBar {
+  bottom: auto;
+  height: var(--visible-height, 100%);
+  padding: 0;
+  align-items: stretch;
+  background: var(--bg-app);
+}
+/* Over the dialog's own size (a search popup's fixed height). */
+.dialog.sheet {
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+  margin: 0 !important;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+.sheetHeader {
+  flex: none;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) 36px;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 48px;
+  padding: 0 var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+.sheetTitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  text-align: center;
+}
+/* Flat icon buttons in the foreground colour, as the toolbar's: ✕ / ‹ on the left, ✓ (the default button) on the right. */
+.sheetRound {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-toolbar-button);
+  background: none;
+  --icon-color: var(--fg);
+}
+.sheetRound:active {
+  background: var(--bg-hover);
+}
+.sheetDone {
+  justify-self: end;
+}
+.sheetRound:disabled {
+  opacity: 0.4;
+}
+.sheetSpacer {
+  width: 36px;
+}

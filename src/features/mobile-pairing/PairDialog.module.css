@@ -1,0 +1,99 @@
+.content {
+  padding: var(--space-4) var(--space-4) var(--space-2);
+}
+.pair {
+  display: flex;
+  gap: var(--space-4);
+  align-items: flex-start;
+}
+/* The QR code carries its own light quiet zone; no frame around it. */
+.code {
+  flex: none;
+  width: 160px;
+  height: 160px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-small);
+  overflow: hidden;
+}
+.qr {
+  width: 100%;
+  height: 100%;
+}
+.steps {
+  flex: 1;
+  min-width: 0;
+  padding-top: var(--space-2);
+}
+.steps p {
+  margin: 0 0 var(--space-2);
+}
+.lead {
+  color: var(--fg);
+}
+.hint {
+  color: var(--fg-muted);
+}
+.link {
+  padding: 0;
+  color: var(--link);
+  white-space: nowrap;
+}
+.link:hover {
+  color: var(--link-hover);
+  text-decoration: underline;
+}
+.error {
+  margin: 0;
+  padding: var(--space-2);
+  color: var(--danger);
+  font-size: var(--fs-small);
+}
+/* A titled separator: the section's name, then a line to the edge. */
+.separator {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-4) 0 var(--space-1);
+  color: var(--fg-muted);
+}
+.separator::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--border);
+}
+.empty {
+  margin: 0;
+  padding: var(--space-1) 0;
+  color: var(--fg-muted);
+}
+.devices {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.device {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--h-list-row);
+}
+.deviceIcon {
+  flex: none;
+  --icon-color: var(--fg-muted);
+}
+.deviceName {
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.deviceMeta {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+}

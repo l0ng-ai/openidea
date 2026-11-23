@@ -53,6 +53,7 @@ import { activate as agents } from "./agents";
 import { activate as vim } from "./vim";
 import { activate as ssh } from "./ssh";
 import { activate as lspMessages } from "./lsp-messages";
+import { activate as mobilePairing } from "./mobile-pairing";
 import { activate as remoteDev } from "./remote-dev";
 import { activate as whatsNew } from "./whats-new";
 
@@ -110,6 +111,7 @@ const features: Array<[string, Activate]> = [
   ["ssh", ssh],
   ["lsp-messages", lspMessages],
   ["remote-dev", remoteDev],
+  ["mobile-pairing", mobilePairing],
 ];
 
 function activateAll(what: string, list: Array<[string, Activate]>): () => void {

@@ -2,10 +2,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { act, render, renderHook } from "@testing-library/react";
 import { List } from "./List";
 import { Tree } from "./Tree";
-import { compactRowHeight, setCompactMode, useChromeIconSize, useRowHeight } from "./density";
+import { compactRowHeight, densityRowHeight, setCompactMode, useChromeIconSize, useRowHeight } from "./density";
+import { useFormFactor } from "@/platform/formFactor";
 import { setIconAppearance } from "./iconAppearance";
 
 afterEach(() => {
+  useFormFactor.setState({ formFactor: "desktop", touch: false }, true);
   setCompactMode(false);
   setIconAppearance(null);
 });
@@ -50,5 +52,15 @@ describe("compact mode density", () => {
     expect(option()?.style.height).toBe("24px");
     act(() => setCompactMode(true));
     expect(option()?.style.height).toBe("22px");
+  });
+
+  it("grows rows by 12px on a touch screen, ignoring compact mode", () => {
+    expect(densityRowHeight(24, true, true)).toBe(36);
+    expect(densityRowHeight(26, false, true)).toBe(38);
+    setCompactMode(true);
+    const rows = renderHook(() => [useRowHeight(), useChromeIconSize()]);
+    expect(rows.result.current).toEqual([22, 16]);
+    act(() => useFormFactor.setState({ formFactor: "phone", touch: true }, true));
+    expect(rows.result.current).toEqual([36, 20]);
   });
 });

@@ -29,6 +29,7 @@ import {
   type Placement,
   type VirtualElement,
 } from "@floating-ui/react-dom";
+import { screenInsets } from "./screenInsets";
 import { lockDragCursor } from "./dragCursor";
 import { FOCUSABLE, onWindowDeactivate, openLayer, trapTab } from "./popupState";
 import { tx } from "@/platform/i18n";
@@ -87,6 +88,16 @@ export interface PopupProps {
 
 type ResizeEdge = "right" | "bottom" | "corner";
 const EDGE_CURSOR = { right: "ew-resize", bottom: "ns-resize", corner: "nwse-resize" } as const;
+
+const TEXT_FIELD =
+  "input:not([type=checkbox]):not([type=radio]):not([type=button]), textarea, [contenteditable]:not([contenteditable='false'])";
+const isTouchScreen = () => document.documentElement.hasAttribute("data-touch");
+
+/** Space kept from the window's edges: 6px past the status bar, notch and keyboard of a phone. */
+const edgePadding = () => {
+  const i = screenInsets();
+  return { top: i.top + 6, right: i.right + 6, bottom: i.bottom + 6, left: i.left + 6 };
+};
 
 const measureNaturalHeight: Middleware = {
   name: "measureNaturalHeight",
@@ -168,10 +179,10 @@ function PopupInner({
     () => [
       offsetMw(offset),
       hasInlineMaxHeight ? null : measureNaturalHeight,
-      flip({ padding: 6 }),
-      shift({ padding: 6 }),
-      sizeMw({
-        padding: 6,
+      flip(() => ({ padding: edgePadding() })),
+      shift(() => ({ padding: edgePadding() })),
+      sizeMw(() => ({
+        padding: edgePadding(),
         apply({ rects, elements, availableHeight, availableWidth, middlewareData }) {
           const floatingStyle = elements.floating.style;
           const maxHeight = Math.max(120, availableHeight);
@@ -185,7 +196,7 @@ function PopupInner({
           floatingStyle.maxWidth = `${width}px`;
           if (matchWidth) floatingStyle.minWidth = `${Math.min(rects.reference.width, width)}px`;
         },
-      }),
+      })),
     ],
     [hasInlineMaxHeight, offset, matchWidth, maxWidthOverAnchor],
   );
@@ -254,11 +265,18 @@ function PopupInner({
   }, []);
 
   useEffect(() => {
-    if (!autoFocus) return;
     const el = elRef.current;
     if (!el) return;
+    // On a touch screen a focused text field brings up the keyboard, which covers half the
+    // screen and pushes the popup aside: the popup takes focus instead, until a field is tapped.
+    const touch = isTouchScreen();
+    const active = document.activeElement;
+    if (touch && active instanceof HTMLElement && el.contains(active) && active.matches(TEXT_FIELD)) {
+      el.focus({ preventScroll: true });
+    }
+    if (!autoFocus) return;
     const target = el.querySelector<HTMLElement>("[data-autofocus]") ?? el.querySelector<HTMLElement>(FOCUSABLE) ?? el;
-    target.focus({ preventScroll: true });
+    (touch && target.matches(TEXT_FIELD) ? el : target).focus({ preventScroll: true });
   }, [autoFocus]);
 
   const resize = (edge: ResizeEdge) => (e: ReactPointerEvent<HTMLDivElement>) => {

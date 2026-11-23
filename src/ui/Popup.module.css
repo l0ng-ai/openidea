@@ -79,3 +79,8 @@
   height: 8px;
   cursor: nwse-resize;
 }
+
+/* A phone: a popover with content (not a menu or list) spans the screen, as a sheet would. */
+:global(:root[data-form-factor="phone"]) .popup[role="dialog"]:not(.centered) {
+  width: calc(100vw - 12px - env(safe-area-inset-left) - env(safe-area-inset-right)) !important;
+}

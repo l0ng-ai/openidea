@@ -3,6 +3,7 @@
  * parts that change at runtime (language, settings, contributions).
  */
 import { Compartment, EditorState, Facet, Prec, type Extension, type Range } from "@codemirror/state";
+import { touchReadMode } from "./touchReadMode";
 import {
   Decoration,
   EditorView,
@@ -419,6 +420,7 @@ export function baseExtensions(o: SetupOptions): Extension {
     compartments.comments.of(commentTokens(o.info, o.ctx.language)),
     compartments.indent.of(indentExtension(o.indent ?? effectiveIndent(o.settings, o.info), o.formatIndent)),
     compartments.readOnly.of(readOnlyExtension(o.ctx.readOnly)),
+    touchReadMode,
     compartments.wrap.of(wrapExtension(o.settings, o.ctx.path, o.wrapOverride)),
     compartments.sticky.of(stickyExtension(o.settings)),
     compartments.heavy.of(heavyExtension(o.docLength, o.settings)),

@@ -3,6 +3,7 @@
  * page, projects plugin commands/keymaps/settings/themes, and follows plugin
  * updates without pulling in CodeMirror editor extensions.
  */
+import { useFormFactor } from "@/platform/formFactor";
 import { isMacHost, registerExtensionBindings } from "@/platform/keymap";
 import { languageListChanged } from "@/platform/languageList";
 import { lazyComponent, lazyWhen } from "@/ui";
@@ -19,6 +20,8 @@ import { refreshPlugins, SETTINGS_PAGE_ID, usePlugins } from "./store";
 import { syncPluginProjection, trackPluginTheme } from "./themeRuntime";
 
 export function registerPluginsPage(): () => void {
+  // Plugins are installed and managed on the desktop a phone is paired with.
+  if (useFormFactor.getState().formFactor === "phone") return () => {};
   return registerSettingsPage({
     id: SETTINGS_PAGE_ID,
     title: "Plugins",

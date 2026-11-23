@@ -8,7 +8,11 @@ await installCommonWindowBoot();
 // when not needed.
 const aux = auxiliaryWindow();
 
-if (aux) {
+if (import.meta.env.VITE_OPENIDEA_PHONE) {
+  // The phone app (`mobile/`): a client of a paired desktop.
+  const { bootPhone } = await import("./phone/boot");
+  bootPhone();
+} else if (aux) {
   const { bootAuxiliaryWindow } = await import("./auxiliaryBoot");
   await bootAuxiliaryWindow(aux);
 } else {

@@ -87,6 +87,11 @@ export interface ToolWindowContribution {
    */
   stripe?: "shown" | "onUse";
   /**
+   * Whether the open project uses it (a .NET or Android one): when not, it stays out of the
+   * stripe's "…" and the phone's More (`toolwindows/availability`); actions still open it.
+   */
+  appliesToProject?: () => Promise<boolean>;
+  /**
    * Its content lasts only while the project is open (run and debug sessions, search results),
    * so it isn't reopened with the project.
    */

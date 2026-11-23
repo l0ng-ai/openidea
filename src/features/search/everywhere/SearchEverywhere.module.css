@@ -439,3 +439,22 @@
     display: none;
   }
 }
+
+/* A phone: the query first, the tabs under it, the results filling the rest. */
+:global(:root[data-form-factor="phone"]) .dialog > :global([data-dialog-body]) {
+  flex: 1;
+  min-height: 0;
+}
+:global(:root[data-form-factor="phone"]) .queryRow {
+  order: -1;
+  margin: var(--space-2) var(--space-3) var(--space-1);
+}
+:global(:root[data-form-factor="phone"]) .header {
+  height: 40px;
+  padding: 0 var(--space-2);
+  background: none;
+  border-bottom: 1px solid var(--border);
+}
+:global(:root[data-form-factor="phone"]) .content {
+  flex: 1;
+}

@@ -1,0 +1,282 @@
+.shell {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-frame);
+  padding-top: env(safe-area-inset-top);
+}
+
+.appBar {
+  flex: none;
+  height: var(--h-header);
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+}
+.appBar:has(> .iconButton:first-child) {
+  padding-left: var(--space-1);
+}
+.switchers {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  overflow: hidden;
+}
+.switchers > * {
+  min-width: 0;
+  flex-shrink: 1;
+}
+.iconButton {
+  flex: none;
+  width: var(--h-button);
+  height: var(--h-button);
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-toolbar-button);
+  background: none;
+  color: var(--fg-icon);
+}
+.iconButton:active {
+  background: var(--bg-hover);
+}
+
+.segments {
+  flex: none;
+  display: flex;
+  gap: var(--space-0-5);
+  margin: 0 var(--island-gap) var(--island-gap);
+  padding: var(--space-0-5);
+  border-radius: var(--radius-popup);
+  background: var(--bg-island);
+}
+.segment {
+  flex: 1;
+  height: calc(var(--h-button) - 8px);
+  border: 0;
+  border-radius: var(--radius-control);
+  background: none;
+  color: var(--fg-muted);
+  font: inherit;
+}
+.segment[aria-selected="true"] {
+  background: var(--bg-hover);
+  color: var(--fg-strong);
+}
+
+.pages {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  margin: 0 var(--island-gap);
+}
+.page {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: var(--island-radius);
+  background: var(--bg-island);
+}
+.page[hidden] {
+  display: none;
+}
+
+.more {
+  flex: 1;
+  overflow: auto;
+  padding: var(--space-4) var(--space-3);
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+  gap: var(--space-2);
+}
+.tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1-5);
+  padding: var(--space-3) var(--space-1);
+  border: 0;
+  border-radius: var(--radius-popup);
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--fs-tiny);
+}
+.tile:active {
+  background: var(--bg-hover);
+}
+.tileIcon {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-popup-large);
+  background: var(--bg-elev);
+  color: var(--fg-icon);
+}
+.tileLabel {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tabBar {
+  flex: none;
+  display: flex;
+  padding: var(--space-1) var(--space-1) max(var(--space-1), env(safe-area-inset-bottom));
+}
+.tab {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-0-5);
+  padding: var(--space-1) 0;
+  border: 0;
+  background: none;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: var(--fs-tiny);
+}
+.tab[aria-current="page"] {
+  color: var(--accent);
+}
+.tabIcon {
+  position: relative;
+  display: grid;
+  place-items: center;
+}
+.tabLabel {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.badge {
+  position: absolute;
+  top: -4px;
+  left: calc(100% - 6px);
+  min-width: 16px;
+  height: 16px;
+  padding: 0 var(--space-1);
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--fg-on-accent);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+}
+
+/* While the on-screen keyboard is up (`data-keyboard`, set by the phone app). */
+:global(:root[data-keyboard]) .tabBar {
+  display: none;
+}
+
+/* The top bar as a sub-page's navigation bar: back, centred title, actions. */
+.navBar {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) minmax(44px, auto);
+}
+.navTitle {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.navTitleText {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--fg-strong);
+}
+.navDetail {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.navActions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.moreHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.editLink {
+  display: block;
+  margin: var(--space-4) auto 0;
+  border: 0;
+  background: none;
+  padding: var(--space-1) 0;
+  color: var(--accent);
+  font: inherit;
+}
+.editHint {
+  flex: 1;
+  margin: 0 0 var(--space-2);
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.editHintFull {
+  color: var(--danger);
+}
+.tilePinned .tileIcon {
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+.tileMark {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--bg-hover);
+  --icon-color: var(--fg);
+}
+.tileMarkOn {
+  background: var(--accent);
+  --icon-color: var(--fg-on-accent);
+}
+
+/* Edit Tab Bar: the tabs drag (no scrolling or selecting while doing so). */
+.tabBarEditing {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.tabMovable .tabIcon {
+  border-radius: var(--radius-toolbar-button);
+  outline: 1px dashed var(--border-strong, var(--border));
+  outline-offset: 3px;
+}
+.tabDragged {
+  transform: translateY(-4px);
+  transition: transform 120ms ease;
+}
+.tabDragged .tabIcon {
+  outline: 1.5px solid var(--accent);
+}

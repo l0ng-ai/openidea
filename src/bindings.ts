@@ -1076,6 +1076,14 @@ export const commands = {
 	 *  disabled in place (no rebuild).
 	 */
 	menuSetDisabled: (ids: string[]) => __TAURI_INVOKE<void>("menu_set_disabled", { ids }),
+	/**  Stops the current pairing code from pairing anything. */
+	mobileCancelPairing: () => typedError<null, IdeError>(__TAURI_INVOKE("mobile_cancel_pairing")),
+	/**  Forgets a paired phone and drops its connection; it has to pair again. */
+	mobileDeviceRemove: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("mobile_device_remove", { id })),
+	/**  The paired phones, each with whether it is connected now. */
+	mobileDevices: () => typedError<MobileDevice[], IdeError>(__TAURI_INVOKE("mobile_devices")),
+	/**  Starts accepting phones and gives the pairing code: the current one while it works, else a new one. */
+	mobilePair: () => typedError<MobilePairing, IdeError>(__TAURI_INVOKE("mobile_pair")),
 	/**
 	 *  Index definitions named `name` within the roots `from` may navigate into (its own root
 	 *  plus its configured dependencies).
@@ -7872,6 +7880,8 @@ export type IdeEvent =
 { type: "windowGroupsChanged" } | 
 /**  A project was loaded or unloaded for the MCP server without a window of its own. */
 { type: "mcpBackgroundProjectsChanged" } | 
+/**  A phone paired with this desktop, connected, disconnected or was removed. */
+{ type: "mobileDevicesChanged" } | 
 /**  A window entered or left full screen, itself or as a member of a full-screen window group. */
 { type: "windowFullscreenChanged" } | 
 /**
@@ -9794,6 +9804,25 @@ export type MethodStat = {
 	frame: number,
 	selfWeight: number | null,
 	total: number | null,
+};
+
+export type MobileDevice = {
+	id: string,
+	name: string,
+	/**  Milliseconds since the Unix epoch. */
+	pairedAtMs: number | null,
+	online: boolean,
+};
+
+/**  A pairing code to show as a QR code. */
+export type MobilePairing = {
+	/**  What the QR code holds (`openidea-pair:…`). */
+	ticket: string,
+	/**  The QR code as an SVG document. */
+	qrSvg: string,
+	expiresInSecs: number,
+	/**  This desktop's name, as the phone shows it. */
+	desktop: string,
 };
 
 /**  Dependency entry of a module (Project Structure › Modules › Dependencies). */

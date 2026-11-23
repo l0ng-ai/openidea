@@ -12,7 +12,22 @@ import {
   type SeparatorProps,
 } from "react-resizable-panels";
 import clsx from "clsx";
-import { createContext, useContext, useEffect, useImperativeHandle, useRef, useState } from "react";
+import {
+  Children,
+  createContext,
+  Fragment,
+  isValidElement,
+  useContext,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type MouseEvent,
+  type ReactElement,
+  type ReactNode,
+} from "react";
+import { useFormFactor } from "@/platform/formFactor";
+import { tx } from "@/platform/i18n";
 import styles from "./Splitter.module.css";
 
 const SplitResetContext = createContext<((handle: HTMLElement, defaultHandled: boolean) => void) | null>(null);
@@ -102,6 +117,10 @@ export function SplitGroup({
     const updated = g.getLayout();
     if (Object.keys(updated).length) saveLayout(updated);
   };
+  const phone = useFormFactor((s) => s.formFactor === "phone");
+  if (phone && (rest.orientation ?? "horizontal") === "horizontal") {
+    return <PhoneSplit className={clsx(styles.group, className)}>{rest.children}</PhoneSplit>;
+  }
   return (
     <SplitResetContext.Provider value={resetHandle}>
       <Group
@@ -119,8 +138,81 @@ export function SplitGroup({
   );
 }
 
-export function SplitPanel({ className, ...rest }: PanelProps) {
+export interface SplitPanelProps extends PanelProps {
+  /** The panel's name where panels take turns (a phone): defaults to its `id`, capitalised. */
+  title?: string;
+}
+
+export function SplitPanel({ className, title: _title, ...rest }: SplitPanelProps) {
   return <Panel className={clsx(styles.panel, className)} {...rest} />;
+}
+
+/** The `SplitPanel`s among `children`, through fragments and conditionals. */
+function panelsOf(children: ReactNode): ReactElement<SplitPanelProps>[] {
+  const out: ReactElement<SplitPanelProps>[] = [];
+  Children.forEach(children, (child) => {
+    if (!isValidElement(child)) return;
+    if (child.type === Fragment) out.push(...panelsOf((child.props as { children?: ReactNode }).children));
+    // By name rather than identity: a hot-reloaded module has a new `SplitPanel`.
+    else if (typeof child.type === "function" && child.type.name === SplitPanel.name)
+      out.push(child as ReactElement<SplitPanelProps>);
+  });
+  return out;
+}
+
+function panelTitle(p: SplitPanelProps, index: number): string {
+  if (p.title) return tx(p.title);
+  const id = p.id ?? `${index + 1}`;
+  return tx(id.charAt(0).toUpperCase() + id.slice(1).replace(/[-_]/g, " "));
+}
+
+/**
+ * Side-by-side panels on a phone: one at a time, the others a tab away. Choosing an item in a
+ * list (a branch, a commit) goes on to the next panel, as a phone's list → detail screens do.
+ */
+function PhoneSplit({ className, children }: { className?: string; children?: ReactNode }) {
+  const panels = panelsOf(children);
+  const [active, setActive] = useState(0);
+  const shown = Math.min(active, Math.max(0, panels.length - 1));
+  const advance = (e: MouseEvent) => {
+    const target = e.target instanceof Element ? e.target : null;
+    const item = target?.closest('[role="option"], [role="treeitem"], [role="row"]');
+    if (!item || item.hasAttribute("aria-expanded")) return;
+    if (target?.closest("button, input, textarea, select, a, [contenteditable]")) return;
+    // After the list's own click handling has selected the item.
+    window.setTimeout(() => setActive(shown + 1), 0);
+  };
+  return (
+    <div className={clsx(className, styles.phoneSplit)}>
+      {panels.length > 1 && (
+        <div role="tablist" className={styles.phoneTabs}>
+          {panels.map((p, i) => (
+            <button
+              key={p.props.id ?? i}
+              type="button"
+              role="tab"
+              aria-selected={i === shown}
+              className={styles.phoneTab}
+              onClick={() => setActive(i)}
+            >
+              {panelTitle(p.props, i)}
+            </button>
+          ))}
+        </div>
+      )}
+      {panels.map((p, i) => (
+        <div
+          key={p.props.id ?? i}
+          className={clsx(styles.phonePanel, p.props.className)}
+          style={p.props.style}
+          hidden={i !== shown}
+          onClick={i === shown && i < panels.length - 1 ? advance : undefined}
+        >
+          {p.props.children}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 export interface SplitHandleProps extends SeparatorProps {

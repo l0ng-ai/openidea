@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "src-tauri"]
+members = ["crates/*", "src-tauri", "mobile"]
 # Plugins and the guest SDK build for wasm32-wasip2 in their own workspaces.
 exclude = ["sdk", "plugins"]
 
@@ -21,6 +21,7 @@ ide-index = { path = "crates/ide-index" }
 ide-syntax = { path = "crates/ide-syntax" }
 ide-search = { path = "crates/ide-search" }
 ide-jsonrpc = { path = "crates/ide-jsonrpc" }
+ide-pair = { path = "crates/ide-pair" }
 ide-lsp = { path = "crates/ide-lsp" }
 ide-dap = { path = "crates/ide-dap" }
 ide-vcs = { path = "crates/ide-vcs" }

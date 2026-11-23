@@ -1,5 +1,15 @@
-import { useContext, useEffect, useLayoutEffect, useRef, useState, type PointerEvent, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type PointerEvent,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
+import { useFormFactor } from "@/platform/formFactor";
 import clsx from "clsx";
 import { usePlatform } from "@/platform/platformInfo";
 import { Button, IconButton } from "./Button";
@@ -93,6 +103,74 @@ export function DialogButtons({
           {given(b.label)}
         </Button>
       ))}
+    </div>
+  );
+}
+
+/** What a phone dialog's content shows in its header instead: a way back and a title (a sub-page). */
+export interface SheetNav {
+  back: () => void;
+  backLabel: string;
+  title?: ReactNode;
+}
+
+const SheetNavContext = createContext<(nav: SheetNav | null) => void>(() => {});
+
+/** A dialog's content at a sub-page: on a phone the header's Cancel becomes `‹ backLabel`. */
+export function useSheetNav(nav: SheetNav | null) {
+  const set = useContext(SheetNavContext);
+  useEffect(() => {
+    set(nav);
+    return () => set(null);
+  }, [set, nav]);
+}
+
+/** A phone dialog's header: Cancel (or Close) or a way back, the title, and the default button. */
+function SheetHeader({
+  title,
+  buttons,
+  nav,
+  onClose,
+}: {
+  title?: ReactNode;
+  buttons?: readonly DialogButton[];
+  nav: SheetNav | null;
+  onClose: () => void;
+}) {
+  const given = useGivenTx();
+  const cancel = buttons?.find((b) => b.role === "cancel");
+  const done = buttons?.find((b) => b.role === "default");
+  return (
+    <div className={styles.sheetHeader} data-dialog-titlebar="">
+      {nav ? (
+        <button type="button" className={styles.sheetRound} aria-label={given(nav.backLabel)} onClick={nav.back}>
+          <Icon name="chevron-left" size={18} />
+        </button>
+      ) : (
+        <button
+          type="button"
+          className={styles.sheetRound}
+          aria-label={given(cancel?.label ?? "Cancel")}
+          onClick={cancel?.onClick ?? onClose}
+        >
+          <Icon name="close" size={16} />
+        </button>
+      )}
+      <span className={styles.sheetTitle}>{nav?.title ?? title}</span>
+      {done ? (
+        <button
+          type="button"
+          className={clsx(styles.sheetRound, styles.sheetDone)}
+          aria-label={given(done.label)}
+          disabled={done.disabled}
+          data-dialog-default=""
+          onClick={done.onClick}
+        >
+          <Icon name="check" size={18} />
+        </button>
+      ) : (
+        <span className={styles.sheetSpacer} aria-hidden="true" />
+      )}
     </div>
   );
 }
@@ -244,6 +322,9 @@ function DialogInner({
   const given = useGivenTx();
   if (typeof title === "string") title = given(title);
   const popup = asPopup || position === "top" || (title == null && !icon);
+  // A phone shows a dialog as a full-screen page: Cancel and the default button in its header.
+  const sheet = useFormFactor((s) => s.formFactor === "phone") && !icon;
+  const [sheetNav, setSheetNav] = useState<SheetNav | null>(null);
   const onCloseRef = useRef(onClose);
   const buttonsRef = useRef(buttons);
   const restoreFocusRef = useRef(restoreFocus);
@@ -302,14 +383,17 @@ function DialogInner({
     let previous = document.activeElement as HTMLElement | null;
     const el = ref.current;
     // Content first (an alert's checkbox is not content), then the default button; never the title bar's close button.
+    // On a phone focusing a field would open the keyboard over the page: the dialog itself takes focus.
     const target =
-      el?.querySelector<HTMLElement>("[data-autofocus]") ??
-      (el?.hasAttribute("data-alert")
-        ? null
-        : el?.querySelector<HTMLElement>(`[data-dialog-body] :is(${FOCUSABLE})`)) ??
-      el?.querySelector<HTMLElement>("[data-dialog-footer] [data-dialog-default]:not([disabled])") ??
-      el?.querySelector<HTMLElement>(`[data-dialog-footer] :is(${FOCUSABLE})`) ??
-      el;
+      useFormFactor.getState().formFactor === "phone" && !el?.hasAttribute("data-alert")
+        ? el
+        : (el?.querySelector<HTMLElement>("[data-autofocus]") ??
+          (el?.hasAttribute("data-alert")
+            ? null
+            : el?.querySelector<HTMLElement>(`[data-dialog-body] :is(${FOCUSABLE})`)) ??
+          el?.querySelector<HTMLElement>("[data-dialog-footer] [data-dialog-default]:not([disabled])") ??
+          el?.querySelector<HTMLElement>(`[data-dialog-footer] :is(${FOCUSABLE})`) ??
+          el);
     let lastFocused = target;
     const onFocusIn = (e: FocusEvent) => {
       const focused = e.target;
@@ -390,7 +474,9 @@ function DialogInner({
 
   const label = aria["aria-label"] ?? (typeof title === "string" ? title : undefined);
   const hasFooter = !!(buttons?.length || footerStart || onHelp || footer);
-  const canResize = resizable === "both";
+  const canResize = resizable === "both" && !sheet;
+  const sheetExtras = buttons?.filter((b) => b.role !== "default" && b.role !== "cancel") ?? [];
+  const hasSheetFooter = !!(sheetExtras.length || footerStart || footer);
 
   const resize = (e: PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
@@ -432,7 +518,12 @@ function DialogInner({
 
   return createPortal(
     <div
-      className={clsx(styles.backdrop, position === "top" && styles.top, overlayTitleBar && styles.belowTitleBar)}
+      className={clsx(
+        styles.backdrop,
+        position === "top" && styles.top,
+        overlayTitleBar && styles.belowTitleBar,
+        sheet && styles.sheetBackdrop,
+      )}
       onPointerDown={(e) => {
         if ((dismissOnBackdrop ?? popup) && e.target === e.currentTarget) onClose();
       }}
@@ -446,16 +537,22 @@ function DialogInner({
         data-platform={platform}
         data-alert={icon ? "" : undefined}
         data-inactive={active ? undefined : ""}
-        className={clsx(styles.dialog, popup ? styles.popup : styles.window, className)}
-        onPointerDown={drag}
-        style={{
-          width: size ? size.w : width,
-          height: size?.h,
-          maxHeight: !size && maxHeight ? `min(${maxHeight}px, 100%)` : undefined,
-          translate: offset.x || offset.y ? `${offset.x}px ${offset.y}px` : undefined,
-        }}
+        className={clsx(styles.dialog, sheet ? styles.sheet : popup ? styles.popup : styles.window, className)}
+        onPointerDown={sheet ? undefined : drag}
+        style={
+          sheet
+            ? undefined
+            : {
+                width: size ? size.w : width,
+                height: size?.h,
+                maxHeight: !size && maxHeight ? `min(${maxHeight}px, 100%)` : undefined,
+                translate: offset.x || offset.y ? `${offset.x}px ${offset.y}px` : undefined,
+              }
+        }
       >
-        {icon ? null : popup ? (
+        {sheet ? (
+          <SheetHeader title={title ?? label} buttons={buttons} nav={sheetNav} onClose={onClose} />
+        ) : icon ? null : popup ? (
           title != null && (
             <div className={styles.popupHeader} data-dialog-drag="">
               <span className={styles.title}>{title}</span>
@@ -501,7 +598,7 @@ function DialogInner({
           </div>
         ) : (
           <div className={styles.body} data-dialog-body="">
-            {children}
+            <SheetNavContext.Provider value={setSheetNav}>{children}</SheetNavContext.Provider>
           </div>
         )}
         {icon
@@ -510,7 +607,7 @@ function DialogInner({
                 <DialogButtons buttons={buttons} onCancel={onClose} platform={platform} />
               </div>
             )
-          : hasFooter && (
+          : (sheet ? hasSheetFooter : hasFooter) && (
               <div className={styles.footer} data-dialog-footer="">
                 {onHelp && (
                   <button type="button" className={styles.help} aria-label={tx("Help")} onClick={onHelp}>
@@ -519,7 +616,11 @@ function DialogInner({
                 )}
                 {footerStart && <div className={styles.footerStart}>{footerStart}</div>}
                 {footer}
-                {!!buttons?.length && <DialogButtons buttons={buttons} onCancel={onClose} platform={platform} />}
+                {sheet
+                  ? !!sheetExtras.length && (
+                      <DialogButtons buttons={sheetExtras} onCancel={onClose} platform={platform} />
+                    )
+                  : !!buttons?.length && <DialogButtons buttons={buttons} onCancel={onClose} platform={platform} />}
               </div>
             )}
         {canResize && (
