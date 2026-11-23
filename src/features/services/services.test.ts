@@ -46,6 +46,7 @@ import {
 import {
   bytesToUnits,
   formatCreatedDetailed,
+  formatDockerCommand,
   parseContainerInspect,
   parseImageInspect,
   parseNetworkInspect,
@@ -731,6 +732,70 @@ describe("docker compose detection and targets", () => {
   });
 });
 
+describe("formatDockerCommand", () => {
+  it("returns null when entrypoint, cmd, and fallback are empty", () => {
+    expect(formatDockerCommand([], [])).toBeNull();
+    expect(formatDockerCommand([], [], "   \n  ")).toBeNull();
+  });
+
+  it("keeps simple single-line entrypoint and cmd compact on one line", () => {
+    const formatted = formatDockerCommand(["docker-entrypoint.sh"], ["postgres", "-c", "max_connections=200"]);
+    expect(formatted).toEqual({
+      preview: "docker-entrypoint.sh postgres -c max_connections=200",
+      entrypoint: "docker-entrypoint.sh",
+      args: "postgres -c max_connections=200",
+      fullText: "docker-entrypoint.sh postgres -c max_connections=200",
+      copyText: "docker-entrypoint.sh postgres -c max_connections=200",
+      lineCount: 1,
+    });
+  });
+
+  it("separates multi-line shell entrypoints from command arguments and builds a single-line preview", () => {
+    const script = [
+      "mkdir -p /persist/slots",
+      "while true; do",
+      "  if flock -n 99; then break; fi",
+      "done",
+      'exec /entrypoint.sh "$@"',
+      "",
+    ].join("\n");
+    const formatted = formatDockerCommand(
+      ["/bin/bash", "-ec", script, "--"],
+      ["./bin/Runner.Listener", "run", "--startuptype", "service"],
+    )!;
+
+    expect(formatted.preview).toBe(
+      "/bin/bash -ec 'mkdir -p /persist/slots ↵ while true; do ↵ if flock -n 99; then break; fi ↵ done ↵ exec /entrypoint.sh \"$@\"' -- ./bin/Runner.Listener run --startuptype service",
+    );
+    expect(formatted.entrypoint).toBe(
+      [
+        "/bin/bash -ec '",
+        "mkdir -p /persist/slots",
+        "while true; do",
+        "  if flock -n 99; then break; fi",
+        "done",
+        'exec /entrypoint.sh "$@"',
+        "' --",
+      ].join("\n"),
+    );
+    expect(formatted.args).toBe("./bin/Runner.Listener run --startuptype service");
+    expect(formatted.lineCount).toBe(7);
+    expect(formatted.copyText).toBe(`${formatted.entrypoint} ${formatted.args}`);
+  });
+
+  it("quotes empty tokens and embedded single quotes and handles multi-line fallback strings", () => {
+    const quoted = formatDockerCommand(["sh", "-c", "echo 'hi'", ""], [])!;
+    expect(quoted.entrypoint).toBe("sh -c 'echo '\\''hi'\\''' ''");
+    expect(quoted.args).toBe("");
+    expect(quoted.lineCount).toBe(1);
+
+    const fallback = formatDockerCommand([], [], "set -e\r\n  npm start\r\n")!;
+    expect(fallback.preview).toBe("set -e ↵ npm start");
+    expect(fallback.fullText).toBe("set -e\n  npm start");
+    expect(fallback.lineCount).toBe(2);
+  });
+});
+
 describe("composeSource", () => {
   it("resolves absolute, relative, Windows, and default Compose file paths", () => {
     expect(hasComposeSource({ composeProject: "shop", composeWorkingDir: "/work/shop", composeFiles: [] })).toBe(true);
@@ -803,6 +868,13 @@ describe("composeSource", () => {
       col: 6,
     });
 
+    // The service target always lands on the declaration
+    expect(locateComposeServiceCommand(compose, "github-runner", "service")).toEqual({
+      kind: "service",
+      line: 3,
+      col: 2,
+    });
+
     expect(locateComposeServiceCommand(compose, "missing")).toBeNull();
     expect(locateComposeServiceCommand(compose, null)).toEqual({ kind: "services", line: 0, col: 0 });
   });
@@ -850,6 +922,14 @@ describe("composeSource", () => {
     });
 
     // Neither file defines command/entrypoint for `db`, so base file's service declaration wins
+    // The service target prefers the first file that declares the service
+    expect(pickComposeCommandLocation(files, "worker", "service")).toEqual({
+      path: "/work/compose.yaml",
+      kind: "service",
+      line: 4,
+      col: 2,
+    });
+
     expect(pickComposeCommandLocation(files, "db")).toEqual({
       path: "/work/compose.yaml",
       kind: "service",

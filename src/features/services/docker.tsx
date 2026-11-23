@@ -59,7 +59,7 @@ import {
   VolumeDashboard,
 } from "./dashboard";
 import { openContainerLogInEditor } from "./logEditor";
-import { hasComposeSource, jumpToComposeProjectSource, jumpToContainerComposeCommand } from "./composeSource";
+import { hasComposeSource, jumpToComposeProjectSource, jumpToContainerComposeSource } from "./composeSource";
 import {
   canRemove,
   canRestart,
@@ -587,7 +587,7 @@ export const dockerProvider: ServiceProviderContribution = {
   jumpToSource: (item) => {
     const t = resolveTarget(item.key);
     if (t?.node.kind === "container" && hasComposeSource(t.node.container)) {
-      void jumpToContainerComposeCommand(t.node.container);
+      void jumpToContainerComposeSource(t.node.container);
       return;
     }
     if (t?.node.kind === "compose" && t.node.containers[0] && hasComposeSource(t.node.containers[0])) {

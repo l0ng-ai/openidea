@@ -7,7 +7,7 @@ import type { MenuItem } from "@/ui";
 import { confirm, confirmChecked } from "@/workbench/messages";
 import { promptText } from "./dialogs";
 import { openContainerLogInEditor } from "./logEditor";
-import { hasComposeSource, jumpToComposeProjectSource, jumpToContainerComposeCommand } from "./composeSource";
+import { hasComposeSource, jumpToComposeProjectSource, jumpToContainerComposeSource } from "./composeSource";
 import { isRunning, nodeContainers, nodeLabel, shortId, type DockerTarget, type ServiceNode } from "./model";
 import {
   busyOp,
@@ -266,7 +266,7 @@ export function nodeMenu(t: DockerTarget): MenuItem[] {
               label: "Jump to Source",
               icon: "autoscroll-to-source",
               shortcut: "F4",
-              run: () => void jumpToContainerComposeCommand(n.container),
+              run: () => void jumpToContainerComposeSource(n.container),
             },
           ]
         : []),

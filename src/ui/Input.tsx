@@ -95,6 +95,8 @@ export interface SearchFieldProps extends Omit<InputHTMLAttributes<HTMLInputElem
    * text, plus a New Line button (⇧⌘↵ / ⇧Ctrl↵ inserts one too).
    */
   multiline?: boolean;
+  /** How many lines of a search query stay visible before the field scrolls. */
+  maxRows?: number;
   /** Turns the leading magnifier into IDEA's search-history button (magnifier ▾). */
   onHistory?: () => void;
 }
@@ -132,6 +134,7 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(functi
     className,
     placeholder,
     multiline,
+    maxRows = 5,
     onHistory,
     "aria-label": ariaLabel,
     ...rest
@@ -227,7 +230,7 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(functi
         <textarea
           ref={setRef as Ref<HTMLTextAreaElement>}
           className={clsx(styles.searchInput, styles.searchArea, lines === 1 && styles.searchAreaSingle)}
-          rows={Math.min(lines, 5)}
+          rows={Math.min(lines, maxRows)}
           wrap="off"
           value={value}
           spellCheck={false}

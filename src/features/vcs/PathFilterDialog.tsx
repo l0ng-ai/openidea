@@ -1,11 +1,13 @@
-import { useState } from "react";
-import { Checkbox, Dialog, Icon, SearchField, Tree, fileIconName } from "@/ui";
+import { useId, useState } from "react";
+import { Button, Checkbox, Dialog, Icon, Popup, T, Tree, fileIconName } from "@/ui";
 import { projectFs } from "@/features/project-tree/fs";
 import { openDialog } from "./dialogs";
 import { dirName, relTo, stripSlash } from "./model";
 import { repoName, repoOf } from "./store";
 import { call, commands } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
+import { isImeKey } from "@/platform/ime";
+import { formatBinding, hasPrimaryModifier, isMacHost } from "@/platform/keymap";
 import { ipcPath, isSameOrInside } from "@/platform/paths";
 import styles from "./PathFilterDialog.module.css";
 
@@ -31,42 +33,33 @@ export function chooseLogPaths(roots: string[], initial: string[], readOnly = fa
   });
 }
 
-export function editLogPaths(roots: string[], initial: string[]): Promise<string[] | null> {
+function commonRoot(roots: string[]): string | undefined {
   let base = roots[0];
   while (base && !roots.every((root) => isSameOrInside(root, base!))) {
     const parent = dirName(base);
     base = parent || (base.startsWith("/") && base !== "/" ? "/" : undefined);
   }
-  return new Promise((resolve) => {
-    const close = openDialog(() => (
-      <LogPathsEditor
-        roots={roots}
-        initial={initial}
-        base={base}
-        onDone={(value) => {
-          close();
-          resolve(value);
-        }}
-      />
-    ));
-  });
+  return base;
 }
 
-function LogPathsEditor({
+export function LogPathsEditor({
+  anchor,
   roots,
   initial,
-  base,
   onDone,
 }: {
+  anchor: HTMLElement;
   roots: string[];
   initial: string[];
-  base?: string;
   onDone: (value: string[] | null) => void;
 }) {
+  const [base] = useState(() => commonRoot(roots));
   const [text, setText] = useState(() =>
     initial.map((path) => (base ? (path === base ? "." : relTo(stripSlash(base), path)) : path)).join("\n"),
   );
   const [error, setError] = useState(false);
+  const hint = useId();
+  const shortcut = formatBinding(isMacHost() ? "Meta+Enter" : "Ctrl+Enter");
   const apply = () => {
     const paths = text
       .split("\n")
@@ -88,30 +81,62 @@ function LogPathsEditor({
     onDone([...new Set(paths)]);
   };
   return (
-    <Dialog
+    <Popup
       open
-      title="Filter by Paths"
-      width={560}
+      anchor={anchor}
+      aria-label={tx("Filter by Paths")}
+      className={styles.editor}
+      initialSize={{ w: 432, h: 200 }}
+      resizable="both"
+      minWidth={200}
+      minHeight={110}
+      trapFocus
       onClose={() => onDone(null)}
-      buttons={[
-        { label: "OK", role: "default", onClick: apply },
-        { label: "Cancel", role: "cancel" },
-      ]}
     >
-      <SearchField
+      <textarea
         data-autofocus
-        multiline
-        leadingIcon={null}
+        className={styles.pathInput}
+        spellCheck={false}
         value={text}
-        onChange={(value) => {
-          setText(value);
+        onChange={(event) => {
+          setText(event.target.value);
           setError(false);
         }}
-        aria-label="Paths"
-        placeholder="One path per line"
+        onKeyDown={(event) => {
+          if (
+            event.key !== "Enter" ||
+            !hasPrimaryModifier(event) ||
+            event.shiftKey ||
+            event.altKey ||
+            isImeKey(event.nativeEvent)
+          ) {
+            return;
+          }
+          event.preventDefault();
+          event.stopPropagation();
+          apply();
+        }}
+        aria-label={tx("Paths")}
+        aria-describedby={hint}
+        aria-invalid={error || undefined}
       />
-      {error && <div role="alert">{tx("Choose a path inside a repository.")}</div>}
-    </Dialog>
+      {error && (
+        <div className={styles.editorError} role="alert">
+          <T>Choose a path inside a repository.</T>
+        </div>
+      )}
+      <div className={styles.editorFooter}>
+        <span id={hint}>
+          <T>One path per line</T>
+        </span>
+        <span className={styles.apply}>
+          <kbd>{shortcut}</kbd>
+          <Button onClick={apply} size="small" variant="primary">
+            OK
+          </Button>
+        </span>
+      </div>
+    </Popup>
   );
 }
 

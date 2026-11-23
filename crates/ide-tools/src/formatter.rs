@@ -81,6 +81,12 @@ fn npm_package(tool: &str) -> &str {
 }
 
 impl Tools {
+    /// The IDE's own installation of `tool` outside `node_modules` (Ruff's private virtualenv).
+    fn managed_executable(&self, tool: &str) -> Option<PathBuf> {
+        let spec = crate::registry::find(tool)?;
+        self.exe_in(&crate::managed_bin_dir(&self.root, spec, self.platform)?, spec.commands[0])
+    }
+
     /// Explicit executable/script, then the nearest project package, then managed tools and PATH.
     pub fn formatter_command(&self, tool: &str, file: &Path, custom: Option<&Path>) -> IdeResult<Command> {
         self.resolve_formatter_command(tool, file, custom).map_err(|e| e.with_tool(tool))
@@ -100,6 +106,8 @@ impl Tools {
             (package_bin(manifest.parent().unwrap(), tool)?, true)
         } else if self.root.join(&manifest).is_file() {
             (package_bin(&self.root.join(&package), tool)?, true)
+        } else if let Some(path) = self.managed_executable(tool) {
+            (path, false)
         } else {
             (self.which(tool).ok_or_else(|| IdeError::missing_tool(tool))?, false)
         };
@@ -239,6 +247,20 @@ mod tests {
         let custom = tools.formatter_command("prettier", &file, Some(&dir.path().join("absent-prettier"))).unwrap();
         let failure = run("prettier", custom, "text", &Default::default()).unwrap_err();
         assert_eq!(failure.data, Some(ErrorData::Tool { tool: "prettier".into(), missing: false }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_formatter_the_ide_installed_in_its_virtualenv_is_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let tools = Tools::with_paths(dir.path().join("tools"), OsString::new(), crate::platform::Platform::current());
+        let file = dir.path().join("main.py");
+        assert!(tools.formatter_command("ruff", &file, None).is_err());
+        let bin = dir.path().join("tools/ruff/venv/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("ruff"), "").unwrap();
+        let command = tools.formatter_command("ruff", &file, None).unwrap();
+        assert_eq!(Path::new(command.get_program()), bin.join("ruff"));
     }
 
     #[cfg(unix)]

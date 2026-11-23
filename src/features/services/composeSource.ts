@@ -1,15 +1,17 @@
 /**
  * Jump to Source for Docker Compose services and containers: resolves the
  * container's `composeFiles` / `composeWorkingDir` and opens the Compose YAML
- * file with the caret placed on `services.<service>.command` (or `entrypoint`
- * when `command` is absent, else the service declaration).
+ * file at the service declaration, or (from the dashboard's Command row) at
+ * `services.<service>.command`, else `entrypoint`, else the declaration.
  */
 import { editorsFor } from "@/editor/api";
-import { docBackend } from "@/editor/core/backend";
 import { tx } from "@/platform/i18n";
-import { call, commands, isTauri, type DockerContainer } from "@/platform/ipc";
+import { call, commands, type DockerContainer } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { editorService, notifications } from "@/workbench/contributions";
+
+/** Where to land in a service: its `command` (else `entrypoint`), or its declaration. */
+export type ComposeTarget = "command" | "service";
 
 export interface ComposeCommandLocation {
   kind: "command" | "entrypoint" | "service" | "services" | "file";
@@ -137,7 +139,11 @@ function valuePositionAt(
  * or the `services.<service>` declaration in a Compose YAML document.
  * When `service` is null, locates the top-level `services:` section.
  */
-export function locateComposeServiceCommand(text: string, service: string | null): ComposeCommandLocation | null {
+export function locateComposeServiceCommand(
+  text: string,
+  service: string | null,
+  at: ComposeTarget = "command",
+): ComposeCommandLocation | null {
   const lines = text.split("\n");
   let inServices = false;
   let serviceIndent: number | null = null;
@@ -170,6 +176,7 @@ export function locateComposeServiceCommand(text: string, service: string | null
     const rawToken = svcMatch[2]!;
     const svcCol = svcMatch[1]!.length + (rawToken.startsWith('"') || rawToken.startsWith("'") ? 1 : 0);
     const serviceLoc: ComposeCommandLocation = { kind: "service", line: i, col: svcCol };
+    if (at === "service") return serviceLoc;
 
     let propIndent: number | null = null;
     let commandLoc: ComposeCommandLocation | null = null;
@@ -209,6 +216,7 @@ export function locateComposeServiceCommand(text: string, service: string | null
 export function pickComposeCommandLocation(
   files: ReadonlyArray<{ path: string; text: string }>,
   service: string | null,
+  at: ComposeTarget = "command",
 ): (ComposeCommandLocation & { path: string }) | null {
   if (!files.length) return null;
   if (!service) {
@@ -218,7 +226,7 @@ export function pickComposeCommandLocation(
     }
     return { path: files[0]!.path, kind: "file", line: 0, col: 0 };
   }
-  for (let i = files.length - 1; i >= 0; i--) {
+  for (let i = files.length - 1; at === "command" && i >= 0; i--) {
     const f = files[i]!;
     const loc = locateComposeServiceCommand(f.text, service);
     if (loc && (loc.kind === "command" || loc.kind === "entrypoint")) {
@@ -226,7 +234,7 @@ export function pickComposeCommandLocation(
     }
   }
   for (const f of files) {
-    const loc = locateComposeServiceCommand(f.text, service);
+    const loc = locateComposeServiceCommand(f.text, service, at);
     if (loc) return { path: f.path, ...loc };
   }
   return { path: files[0]!.path, kind: "file", line: 0, col: 0 };
@@ -235,15 +243,11 @@ export function pickComposeCommandLocation(
 async function readComposeFileText(path: string): Promise<string | null> {
   const open = editorsFor(path)[0];
   if (open) return open.view.state.doc.toString();
-  if (isTauri()) {
-    try {
-      return await call(commands.fsReadText(path));
-    } catch {
-      // Fall back to in-memory backend in plain-browser / e2e harnesses.
-    }
+  try {
+    return await call(commands.fsReadText(path));
+  } catch {
+    return null;
   }
-  const memFiles = (docBackend() as { files?: Map<string, string> }).files;
-  return memFiles?.get(path) ?? null;
 }
 
 async function loadReadableComposeFiles(
@@ -261,9 +265,12 @@ async function loadReadableComposeFiles(
   return loaded.filter((x): x is { path: string; text: string } => x !== null);
 }
 
-export async function jumpToContainerComposeCommand(container: DockerContainer): Promise<void> {
+export async function jumpToContainerComposeSource(
+  container: DockerContainer,
+  at: ComposeTarget = "service",
+): Promise<void> {
   const files = await loadReadableComposeFiles(container.composeFiles, container.composeWorkingDir);
-  const target = pickComposeCommandLocation(files, container.composeService);
+  const target = pickComposeCommandLocation(files, container.composeService, at);
   if (!target) {
     notifications().notify({
       group: "run",
