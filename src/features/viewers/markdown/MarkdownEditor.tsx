@@ -29,7 +29,16 @@ import { useMarkdownPreviewFontSize, useMarkdownPreviewLayout } from "@/platform
 import { maybeEditorService, registerFontZoomSurface, useEditorShown } from "@/workbench/contributions";
 import { editorsFor, setShownLine } from "@/editor/api";
 import { highlightInto } from "@/editor/lsp/markdown";
-import { FloatingToolbar, Spinner, SplitGroup, SplitHandle, SplitPanel, selectableText } from "@/ui";
+import {
+  FloatingToolbar,
+  Scrollbar,
+  Spinner,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
+  hideNativeScrollbar,
+  selectableText,
+} from "@/ui";
 import {
   FIND_CURRENT_HIGHLIGHT,
   FIND_HIGHLIGHT,
@@ -313,6 +322,7 @@ function MarkdownPreview({ path, tabId, sync }: { path: string; tabId: string; s
   const theme = useSyncExternalStore(subscribeTheme, themeKey, () => "");
   const diagrams = useRef<Node[]>([]);
   const [diagramsDrawn, setDiagramsDrawn] = useState(0);
+  const [contentHeight, setContentHeight] = useState(0);
   const seenCaret = useRef(caretSeq);
   const seenFindMatch = useRef<number | null>(null);
   /** scrollTop set by navigation, whose scroll event isn't the user's. */
@@ -512,6 +522,15 @@ function MarkdownPreview({ path, tabId, sync }: { path: string; tabId: string; s
       root.removeAttribute("data-constrain-blocks");
     };
   }, [html]);
+
+  useLayoutEffect(() => {
+    const root = ref.current;
+    if (!root) return;
+    const measure = () => setContentHeight(root.scrollHeight);
+    measure();
+    root.addEventListener("toggle", measure, true);
+    return () => root.removeEventListener("toggle", measure, true);
+  }, [html, diagramsDrawn, fontZoom, fontSize]);
 
   // Restore Preview Only after a mode change or eviction from the kept tabs.
   useEffect(() => {
@@ -775,21 +794,24 @@ function MarkdownPreview({ path, tabId, sync }: { path: string; tabId: string; s
   };
 
   return (
-    <div
-      ref={ref}
-      className={clsx(styles.preview, selectableText)}
-      style={
-        {
-          "--markdown-preview-font-size": `${fontSize}px`,
-          "--markdown-font-zoom": `${fontZoom}px`,
-          "--markdown-zoom-scale": String(zoomScale),
-        } as CSSProperties
-      }
-      tabIndex={-1}
-      role="document"
-      aria-label={tx("Markdown preview")}
-      onClick={onClick}
-      onScroll={onScroll}
-    />
+    <div className={styles.previewPane}>
+      <div
+        ref={ref}
+        className={clsx(styles.preview, hideNativeScrollbar, selectableText)}
+        style={
+          {
+            "--markdown-preview-font-size": `${fontSize}px`,
+            "--markdown-font-zoom": `${fontZoom}px`,
+            "--markdown-zoom-scale": String(zoomScale),
+          } as CSSProperties
+        }
+        tabIndex={-1}
+        role="document"
+        aria-label={tx("Markdown preview")}
+        onClick={onClick}
+        onScroll={onScroll}
+      />
+      <Scrollbar target={ref} contentHeight={contentHeight} />
+    </div>
   );
 }
