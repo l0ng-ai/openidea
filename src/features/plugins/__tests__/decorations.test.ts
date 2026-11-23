@@ -203,6 +203,7 @@ it("renders a Markdown hover card instead of the native tooltip", async () => {
   await vi.advanceTimersByTimeAsync(400);
   const card = document.querySelector(".cm-tooltip .cm-lsp-hover");
   expect(card?.textContent).toContain("model");
+  expect(card?.querySelector('[role="region"]')?.getAttribute("aria-label")).toBe("Hover card");
   vi.useRealTimers();
 });
 
@@ -341,16 +342,16 @@ function resizePointer(target: EventTarget, type: string, x: number, y: number, 
 }
 
 it.each([
-  ["n", 0, -60, 400, 300],
-  ["e", 80, 0, 480, 240],
-  ["s", 0, 60, 400, 300],
-  ["w", -80, 0, 480, 240],
-  ["se", 80, 60, 480, 300],
-] as const)("resizes the model hover by its %s edge", async (edge, dx, dy, width, height) => {
+  ["n", 0, -60, 400, 300, "Resize hover card from the top"],
+  ["e", 80, 0, 480, 240, "Resize hover card from the right"],
+  ["s", 0, 60, 400, 300, "Resize hover card from the bottom"],
+  ["w", -80, 0, 480, 240, "Resize hover card from the left"],
+  ["se", 80, 60, 480, 300, "Resize hover card from the corner"],
+] as const)("resizes the hover card by its %s edge", async (edge, dx, dy, width, height, label) => {
   const card = await openResizeHover();
   const handle = card.querySelector<HTMLButtonElement>(`button[data-edge="${edge}"]`);
   expect(handle).not.toBeNull();
-  expect(handle!.getAttribute("aria-label")).toBeTruthy();
+  expect(handle!.getAttribute("aria-label")).toBe(label);
   resizePointer(handle!, "pointerdown", 300, 220);
   resizePointer(window, "pointermove", 300 + dx, 220 + dy);
   expect(card.style.width).toBe(`${width}px`);
