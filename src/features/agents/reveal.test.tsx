@@ -1,4 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
+import type { ReactNode } from "react";
+import { EditorShownProvider } from "@/workbench/contributions";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { REVEAL_HORIZON_MS, revealBoundary, revealStep, useRevealedText, withoutBrokenTail } from "./reveal";
 
@@ -100,5 +102,27 @@ describe("useRevealedText", () => {
     expect(result.current).toBe("Hi there");
     rerender({ text: "Other", live: true });
     expect(result.current).toBe("Other");
+  });
+
+  it("paints no frames while hidden, and shows what arrived meanwhile whole when shown again", () => {
+    let shown = true;
+    const { result, rerender } = renderHook(({ text }) => useRevealedText(text, true), {
+      initialProps: { text: "Hi" },
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <EditorShownProvider value={shown}>{children}</EditorShownProvider>
+      ),
+    });
+    shown = false;
+    rerender({ text: "Hi there" });
+    rerender({ text: `Hi there${"x".repeat(100)}` });
+    expect(result.current).toBe(`Hi there${"x".repeat(100)}`);
+    expect(frames).toHaveLength(0);
+    shown = true;
+    rerender({ text: `Hi there${"x".repeat(200)}` });
+    expect(result.current).toBe(`Hi there${"x".repeat(200)}`);
+    rerender({ text: `Hi there${"x".repeat(300)}` });
+    expect(result.current).toBe(`Hi there${"x".repeat(200)}`);
+    frame(200);
+    expect(result.current).toBe(`Hi there${"x".repeat(300)}`);
   });
 });

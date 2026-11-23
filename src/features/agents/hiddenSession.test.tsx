@@ -6,6 +6,7 @@ import { EditorShownProvider } from "@/workbench/contributions";
 import { SessionEditor } from "./SessionEditor";
 import { SESSION_KIND, sessionKey } from "./model";
 import { extractSessionAssets } from "./sessionAssetsModel";
+import { caretOf, textOf, typeIn } from "./composerTesting";
 import { connect, disconnect, useAgents } from "./store";
 
 const backend = vi.hoisted(() => ({
@@ -142,5 +143,23 @@ describe("a kept-alive session hidden behind another tab", () => {
       assetScans: vi.mocked(extractSessionAssets).mock.calls.length,
       revealFrames: frames.mock.calls.length,
     }).toEqual({ commits: 0, assetScans: 0, revealFrames: 0 });
+  });
+
+  it("shows the whole reply and the draft at once when it is shown again", async () => {
+    const view = render(session(true));
+    expect(await screen.findByText("Answer 29")).toBeInTheDocument();
+    const message = screen.getByRole("textbox", { name: "Message" });
+    typeIn(message, "Draft to keep", 3);
+    view.rerender(session(false));
+
+    stream(20);
+    await settle();
+    expect(screen.queryByText(/chunk 19 of the reply/)).not.toBeInTheDocument();
+
+    view.rerender(session(true));
+    // No frame has run: the unseen text isn't paced in.
+    expect(screen.getByText(new RegExp(`${streamed}$`.replace(/\./g, "\\.")))).toBeInTheDocument();
+    expect(textOf(screen.getByRole("textbox", { name: "Message" }))).toBe("Draft to keep");
+    expect(caretOf(screen.getByRole("textbox", { name: "Message" }))).toBe(3);
   });
 });
