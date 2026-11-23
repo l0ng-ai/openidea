@@ -50,6 +50,7 @@ import { MarkdownLayoutActions } from "./MarkdownLayoutActions";
 import {
   ANCHOR_PREFIX,
   createMarkdownRenderer,
+  headingLine,
   previewLineAtOffset,
   previewOffsetForLine,
   resolveLink,
@@ -74,6 +75,18 @@ function imageUrl(path: string): Promise<string> {
     imageCache.set(path, p);
   }
   return p;
+}
+
+/**
+ * Line of the heading `anchor` in the Markdown file `path`, from an open editor's text (unsaved
+ * edits included) or else the file on disk; undefined when the file is not Markdown, cannot be
+ * read or has no such heading.
+ */
+async function anchorLine(path: string, anchor: string): Promise<number | undefined> {
+  if (!/\.(md|markdown|mdx)$/i.test(path)) return undefined;
+  const open = editorsFor(path)[0];
+  const text = open ? open.view.state.doc.toString() : await call(commands.fsReadText(path)).catch(() => null);
+  return (text === null ? null : headingLine(text, anchor)) ?? undefined;
 }
 
 function openExternal(url: string) {
@@ -555,10 +568,13 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     else if (target.kind === "anchor") scrollTo(target.id);
     else if (target.path === path && target.anchor) scrollTo(target.anchor);
     else
-      void maybeEditorService()?.openFile(target.path, {
-        focus: true,
-        ...(target.line !== undefined ? { selection: { line: target.line, col: 0 } } : {}),
-      });
+      void (async () => {
+        const line = target.line ?? (target.anchor ? await anchorLine(target.path, target.anchor) : undefined);
+        await maybeEditorService()?.openFile(target.path, {
+          focus: true,
+          ...(line !== undefined ? { selection: { line, col: 0 } } : {}),
+        });
+      })();
   };
 
   return (
