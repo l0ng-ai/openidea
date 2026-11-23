@@ -49,22 +49,34 @@ fn black_configured(file: &Path) -> bool {
     black_pyproject(file).is_some_and(|p| ide_sdk::apply::toml_has_table(&p, "tool.black"))
 }
 
-/// Where Ruff and Black look for the user's own configuration (`~/.config/ruff/ruff.toml`,
-/// `~/.config/black`, `~/.black`), whatever the platform's convention.
-fn user_config_dirs() -> Vec<PathBuf> {
+/// The single user configuration directory the formatter searches.
+fn user_config_dir(tool: &str, cwd: &Path) -> Option<PathBuf> {
+    if cfg!(windows) {
+        return if tool == "black" { dirs::home_dir() } else { dirs::config_dir() };
+    }
     let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
-    let home = dirs::home_dir();
-    [xdg, home.as_ref().map(|h| h.join(".config")), dirs::config_dir(), home].into_iter().flatten().collect()
+    xdg_user_config_dir(tool, cwd, xdg.as_deref(), dirs::home_dir().as_deref())
 }
 
-/// Whether the user has their own configuration of `tool` in one of `dirs`.
-fn user_configured(tool: &str, dirs: &[PathBuf]) -> bool {
+fn xdg_user_config_dir(tool: &str, cwd: &Path, xdg: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
+    if let Some(dir) = xdg.filter(|dir| tool == "black" || dir.is_absolute()) {
+        if let Ok(relative) = dir.strip_prefix("~") {
+            return home.map(|home| home.join(relative));
+        }
+        return Some(cwd.join(dir));
+    }
+    home.map(|home| home.join(".config"))
+}
+
+fn user_configured(tool: &str, dir: Option<&Path>) -> bool {
+    let Some(dir) = dir else { return false };
     let names: &[&str] = match tool {
-        "ruff" => &["ruff/ruff.toml", "ruff/.ruff.toml", "ruff/pyproject.toml"],
-        "black" => &["black", ".black"],
+        "ruff" => &["ruff/.ruff.toml", "ruff/ruff.toml", "ruff/pyproject.toml"],
+        "black" if cfg!(windows) => &[".black"],
+        "black" => &["black"],
         _ => &[],
     };
-    dirs.iter().any(|d| names.iter().any(|n| d.join(n).is_file()))
+    names.iter().any(|name| dir.join(name).is_file())
 }
 
 /// Whether Ruff finds a configuration of the project for `file`: `ruff.toml`, `.ruff.toml` or a
@@ -86,15 +98,15 @@ fn python_style_for(
     configured: bool,
     settings: &Settings,
     editorconfig: Option<&ide_workspace::editorconfig::EditorConfigProps>,
-    user_dirs: &[PathBuf],
+    user_dir: Option<&Path>,
 ) -> formatter::PythonStyle {
     let has_config = configured
         || match tool {
-            "ruff" => ruff_project_configured(file) || user_configured("ruff", user_dirs),
+            "ruff" => ruff_project_configured(file) || user_configured("ruff", user_dir),
             // Black reads the user's configuration only when its project root has no pyproject.toml.
             "black" => match black_pyproject(file) {
                 Some(pyproject) => ide_sdk::apply::toml_has_table(&pyproject, "tool.black"),
-                None => user_configured("black", user_dirs),
+                None => user_configured("black", user_dir),
             },
             _ => true,
         };
@@ -540,21 +552,25 @@ async fn provider_edits(
         } else {
             None
         };
-        let editorconfig = style_settings
-            .editor
-            .code_style
-            .editorconfig
-            .then(|| documents.editorconfig().resolve(&snap.path))
-            .flatten();
-        let style = python_style_for(
-            tool,
-            &snap.path,
-            config_file.is_some(),
-            &style_settings,
-            editorconfig.as_ref(),
-            &user_config_dirs(),
-        );
         let dir = snap.path.parent().ok_or_else(|| IdeError::invalid(format!("{name}: file has no directory")))?;
+        let style = if matches!(selected, ExternalFormatter::Ruff | ExternalFormatter::Black) {
+            let editorconfig = style_settings
+                .editor
+                .code_style
+                .editorconfig
+                .then(|| documents.editorconfig().resolve(&snap.path))
+                .flatten();
+            python_style_for(
+                tool,
+                &snap.path,
+                config_file.is_some(),
+                &style_settings,
+                editorconfig.as_ref(),
+                user_config_dir(tool, dir).as_deref(),
+            )
+        } else {
+            formatter::PythonStyle::default()
+        };
         let run = |range| {
             let mut command = tools.formatter_command(tool, &snap.path, custom.as_deref())?;
             command.current_dir(dir);
@@ -675,18 +691,46 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
+    fn an_xdg_override_hides_fallback_python_formatter_configs() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path();
+        let home = cwd.join("home");
+        let fallback = home.join(".config");
+        let xdg = cwd.join("config override");
+        for (tool, name) in [("ruff", "ruff/ruff.toml"), ("black", "black")] {
+            let config = fallback.join(name);
+            std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+            std::fs::write(config, "").unwrap();
+            let probe = |xdg| xdg_user_config_dir(tool, cwd, xdg, Some(&home));
+            assert!(user_configured(tool, probe(None).as_deref()), "{tool} should find its default config");
+            assert!(!user_configured(tool, probe(Some(&xdg)).as_deref()), "{tool} should skip its default config");
+
+            let config = xdg.join(name);
+            std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+            std::fs::write(config, "").unwrap();
+            assert!(user_configured(tool, probe(Some(&xdg)).as_deref()), "{tool} should find its XDG config");
+        }
+
+        let relative = Some(Path::new("config override"));
+        assert_eq!(xdg_user_config_dir("ruff", cwd, relative, Some(&home)), Some(fallback));
+        assert_eq!(xdg_user_config_dir("black", cwd, relative, Some(&home)), Some(xdg));
+        assert_eq!(xdg_user_config_dir("black", cwd, Some(Path::new("~/alt")), Some(&home)), Some(home.join("alt")));
+    }
+
+    #[test]
     fn code_style_reaches_ruff_and_black_only_without_their_configuration() {
         use ide_workspace::editorconfig::{EditorConfigProps, IndentStyle};
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("repo");
-        let user = [dir.path().join("user config")];
+        let user = dir.path().join("user config");
         std::fs::create_dir_all(root.join("app/src")).unwrap();
         std::fs::create_dir_all(root.join(".git")).unwrap();
-        std::fs::create_dir_all(user[0].join("ruff")).unwrap();
+        std::fs::create_dir_all(user.join("ruff")).unwrap();
         let file = root.join("app/src/main.py");
         let mut settings = Settings::default();
         let style = |tool, settings: &Settings, editorconfig: Option<&EditorConfigProps>| {
-            python_style_for(tool, &file, false, settings, editorconfig, &user)
+            python_style_for(tool, &file, false, settings, editorconfig, Some(&user))
         };
         let none = formatter::PythonStyle::default();
         // Nothing set: the tools keep their defaults.
@@ -700,7 +744,7 @@ mod tests {
         let set = formatter::PythonStyle { line_length: Some(100), indent_width: Some(2), use_tabs: None };
         assert_eq!(style("ruff", &settings, None), set);
         assert_eq!(style("black", &settings, None), set);
-        assert_eq!(python_style_for("ruff", &file, true, &settings, None, &user), none);
+        assert_eq!(python_style_for("ruff", &file, true, &settings, None, Some(&user)), none);
         // The file's .editorconfig wins over the page, as in the editor.
         let editorconfig =
             EditorConfigProps { indent_size: Some(4), indent_style: Some(IndentStyle::Space), ..Default::default() };
@@ -709,13 +753,17 @@ mod tests {
 
         // The user's configurations: Ruff's always counts, Black's only when the project root
         // (here the repository) has no pyproject.toml.
-        std::fs::write(user[0].join("black"), "[tool.black]\n").unwrap();
+        let (black_config, ignored_black_config) =
+            if cfg!(windows) { (".black", "black") } else { ("black", ".black") };
+        std::fs::write(user.join(ignored_black_config), "[tool.black]\n").unwrap();
+        assert_eq!(style("black", &settings, None), set);
+        std::fs::write(user.join(black_config), "[tool.black]\n").unwrap();
         assert_eq!(style("black", &settings, None), none);
         std::fs::write(root.join("pyproject.toml"), "[project]\nname = \"repo\"\n").unwrap();
         assert_eq!(style("black", &settings, None), set);
-        std::fs::write(user[0].join("ruff/ruff.toml"), "").unwrap();
+        std::fs::write(user.join("ruff/ruff.toml"), "").unwrap();
         assert_eq!(style("ruff", &settings, None), none);
-        std::fs::remove_file(user[0].join("ruff/ruff.toml")).unwrap();
+        std::fs::remove_file(user.join("ruff/ruff.toml")).unwrap();
 
         // The project's configurations.
         std::fs::write(root.join("app/pyproject.toml"), "[project]\nname = \"app\"\n").unwrap();
