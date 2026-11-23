@@ -2589,6 +2589,7 @@
   "Rust File": "Rust File",
   "TypeScript File": "TypeScript File",
   "React Component": "React Component",
+  "Svelte Component": "Svelte Component",
   "JavaScript File": "JavaScript File",
   "Python File": "Python File",
   "Go File": "Go File",

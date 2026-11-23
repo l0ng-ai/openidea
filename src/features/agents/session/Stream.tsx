@@ -147,7 +147,7 @@ function useOffscreenRows(
   }, [ref, visible, enabled, fitWindowWidth, fontZoom]);
   // Keep independent of `visible`: when a kept-alive tab hides, `data-selection` must stay until
   // the selection leaves and WebKit clears off-screen rows' highlights before skipping again.
-  useSelectionVisibility(ref, enabled);
+  useSelectionVisibility(ref, enabled, `.${styles.conversationRow}`);
 }
 
 interface StreamProps {
@@ -215,7 +215,7 @@ export function Stream({
   const restored = useRef(false);
   const previousLength = useRef(entries?.length ?? 0);
   /** Scrolled away from the end: offer one click back to the latest message. */
-  const [away, setAway] = useState(() => positions.get(key)?.stick === false);
+  const [away, setAway] = useState(false);
   // Opened at the end, the last entries come first and the earlier ones follow in batches:
   // reopening a long conversation paints at once. A kept offset needs them all.
   const [shown, setShown] = useState(() => (positions.get(key)?.stick === false ? Infinity : ENTRY_BATCH));
@@ -244,10 +244,17 @@ export function Stream({
       if (!position.current.stick) return;
       position.current = { top: el.scrollTop, stick: false };
       positions.set(key, position.current);
-      setAway(true);
     },
     [key, positions],
   );
+  const updateJumpVisibility = useCallback((el: HTMLElement) => {
+    // An upward gesture releases following before anything moves. Only offer a jump
+    // when there is actual content below the viewport, excluding the fold spacer.
+    setAway(
+      !position.current.stick &&
+        el.scrollHeight - el.clientHeight - el.scrollTop > (parseFloat(getComputedStyle(el).paddingBottom) || 0) + 1,
+    );
+  }, []);
   // Earlier entries are prepended above the view: remember where the first painted row is
   // so the content stays put and the scrollbar doesn't jump under the pointer.
   const anchor = useRef<{ el: Element; top: number } | null>(null);
@@ -322,8 +329,10 @@ export function Stream({
   /** A diagram that drew after the last streamed chunk grows the conversation: keep following. */
   const onDiagramDrawn = useCallback(() => {
     const el = ref.current;
-    if (el && position.current.stick && !dragging.current) el.scrollTop = el.scrollHeight;
-  }, []);
+    if (!el) return;
+    if (position.current.stick && !dragging.current) el.scrollTop = el.scrollHeight;
+    updateJumpVisibility(el);
+  }, [updateJumpVisibility]);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el || entries === null || !visible) return;
@@ -353,6 +362,7 @@ export function Stream({
       if (!dragging.current) el.scrollTop = el.scrollHeight;
     } else if (!restored.current) el.scrollTop = position.current.top;
     restored.current = true;
+    updateJumpVisibility(el);
   });
   useLayoutEffect(() => {
     // Prepending earlier entries moved the first painted row down: follow it, so the same
@@ -363,6 +373,7 @@ export function Stream({
     anchor.current = null;
     if (position.current.stick || !from.el.isConnected) return;
     scroller.scrollTop += from.el.getBoundingClientRect().top - from.top;
+    updateJumpVisibility(scroller);
   });
   useLayoutEffect(() => {
     const el = ref.current;
@@ -370,13 +381,14 @@ export function Stream({
     const observer = new ResizeObserver(() => {
       trimSlack();
       if (position.current.stick && !dragging.current) el.scrollTop = el.scrollHeight;
+      updateJumpVisibility(el);
     });
     observer.observe(el);
     return () => {
       observer.disconnect();
       if (restored.current) positions.set(key, { ...position.current, top: el.scrollTop });
     };
-  }, [key, positions, trimSlack]);
+  }, [key, positions, trimSlack, updateJumpVisibility]);
   /**
    * The wheel scrolls the innermost container under the pointer, and only that one: a run of
    * calls from its headers, a tool output from its text, the conversation elsewhere. A container
@@ -431,10 +443,10 @@ export function Stream({
       if (position.current.stick && el.scrollHeight - el.scrollTop - el.clientHeight >= 1) {
         position.current = { top: el.scrollTop, stick: false };
         positions.set(key, position.current);
-        setAway(true);
       }
+      updateJumpVisibility(el);
     },
-    [key, positions, setSlack, trimSlack],
+    [key, positions, setSlack, trimSlack, updateJumpVisibility],
   );
   /** Back to the end of the stream; following resumes from there. */
   const jumpToLatest = useCallback(() => {
@@ -569,7 +581,7 @@ export function Stream({
               if (stick && !atEnd && !dragging.current) el.scrollTop = el.scrollHeight;
               position.current = { top: el.scrollTop, stick };
               positions.set(key, position.current);
-              setAway(!position.current.stick);
+              updateJumpVisibility(el);
               // Reached the top of what is painted: fetch the earlier entries, but only
               // once the drag has settled.
               if (loadTimer.current !== null) window.clearTimeout(loadTimer.current);
