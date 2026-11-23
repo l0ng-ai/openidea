@@ -2529,7 +2529,7 @@ describe("import sessions dialog", () => {
     backend.external = sessions;
     open();
     await listed("Login fix");
-    expect(screen.getByRole("dialog", { name: "Import Sessions from Other Apps" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Import Sessions" })).toBeInTheDocument();
   });
 
   it("imports the selected session and opens it", async () => {
