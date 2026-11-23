@@ -54,12 +54,12 @@ pub fn java_version_of(pid: u32) -> Option<JavaVersion> {
 }
 
 #[cfg(target_os = "linux")]
-fn exe_path(pid: u32) -> Option<PathBuf> {
+pub(crate) fn exe_path(pid: u32) -> Option<PathBuf> {
     std::fs::read_link(format!("/proc/{pid}/exe")).ok()
 }
 
 #[cfg(target_os = "macos")]
-fn exe_path(pid: u32) -> Option<PathBuf> {
+pub(crate) fn exe_path(pid: u32) -> Option<PathBuf> {
     use std::{ffi::c_void, os::unix::ffi::OsStringExt};
 
     let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];

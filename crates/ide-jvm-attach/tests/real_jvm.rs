@@ -8,9 +8,9 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use ide_jvm_attach::{
-    AttachError, HeapDumpReply, agent_properties, find_jvm_by_jdwp_port, has_listener, heap_dump, heap_dump_command,
-    histogram_safe_while_suspended, java_version_of, jcmd, jdwp_port, parse_class_histogram, parse_heap_dump_reply,
-    parse_release, vm_flags,
+    AttachError, HeapDumpReply, LISTENER_START_TIMEOUT, agent_properties, ensure_listener, find_jvm_by_jdwp_port,
+    has_listener, heap_dump, heap_dump_command, histogram_safe_while_suspended, is_hotspot, java_version_of, jcmd,
+    jdwp_port, parse_class_histogram, parse_heap_dump_reply, parse_release, temp_dir, vm_flags,
 };
 
 const MAIN_JAVA: &str = r#"
@@ -309,4 +309,31 @@ fn dumps_while_suspended() {
     jdwp_command(&mut jdwp, 2, 1, 9); // VirtualMachine.Resume
     assert!(guard.0.try_wait().unwrap().is_none(), "the JVM exited after resume");
     vm_flags(pid, Duration::from_secs(10)).expect("the attach listener answers after resume");
+}
+
+#[test]
+#[ignore = "needs a real JDK >= 8: set OPENIDEA_TEST_JAVA to its bin/java"]
+fn ensure_listener_starts_a_listener_on_demand() {
+    let Some(java) = std::env::var_os("OPENIDEA_TEST_JAVA").map(PathBuf::from) else {
+        eprintln!("OPENIDEA_TEST_JAVA is not set; skipping");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut guard = launch_main(&java, dir.path(), &[]);
+    let pid = guard.0.id();
+    wait_for_ready(&output_lines(&mut guard.0));
+    assert!(!has_listener(pid), "the JVM opened its listener without being asked");
+    assert!(is_hotspot(pid));
+
+    let started = Instant::now();
+    ensure_listener(pid, LISTENER_START_TIMEOUT).unwrap();
+    eprintln!("on-demand listener for pid {pid} in {:?}", started.elapsed());
+    assert!(has_listener(pid));
+    jcmd(pid, "VM.version", Duration::from_secs(10)).expect("the new listener answers");
+
+    let trigger = format!(".attach_pid{pid}");
+    for parent in [temp_dir(), dir.path().to_path_buf()] {
+        assert!(!parent.join(&trigger).exists(), "trigger file left in {parent:?}");
+    }
+    ensure_listener(pid, LISTENER_START_TIMEOUT).expect("an open listener is accepted as is");
 }

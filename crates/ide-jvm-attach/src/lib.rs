@@ -2,6 +2,7 @@ mod discover;
 mod heap_dump;
 mod histogram;
 mod jvm;
+mod listener;
 mod properties;
 mod socket;
 
@@ -12,5 +13,6 @@ pub use jvm::{
     JavaVersion, START_LISTENER_FLAG, histogram_safe_while_suspended, java_version_of, parse_release, parse_vm_version,
     wants_listener_flag,
 };
+pub use listener::{LISTENER_START_TIMEOUT, ensure_listener, is_hotspot};
 pub use properties::{jdwp_port, parse_properties};
 pub use socket::{AttachError, MAX_OUTPUT, agent_properties, has_listener, jcmd, temp_dir};

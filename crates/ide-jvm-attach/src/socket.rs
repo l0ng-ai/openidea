@@ -28,6 +28,10 @@ pub enum AttachError {
     Unsupported,
     #[error("the JVM has no attach listener")]
     NoListener,
+    #[error("the process is not a HotSpot JVM")]
+    NotAJvm,
+    #[error("the JVM did not open its attach listener; it may run with -XX:+DisableAttachMechanism")]
+    ListenerDidNotStart,
     #[error("the attach socket is not private to the current user")]
     ForeignListener,
     #[error("the attach listener refused the connection")]
