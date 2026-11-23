@@ -5,6 +5,7 @@ import type { Sdk } from "@/bindings";
 const mocks = vi.hoisted(() => ({
   detect: vi.fn(),
   createVenv: vi.fn(),
+  hatchEnvs: vi.fn(),
   interpreter: vi.fn(),
   choosePath: vi.fn(),
 }));
@@ -17,6 +18,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       ...real.commands,
       sdkDetect: mocks.detect,
       sdkPythonCreateVenv: mocks.createVenv,
+      sdkPythonHatchEnvs: mocks.hatchEnvs,
       sdkPythonInterpreter: mocks.interpreter,
       cancelRequest: vi.fn(),
     },
@@ -50,6 +52,7 @@ beforeEach(() => {
   Object.assign(window, { __TAURI_INTERNALS__: { transformCallback: () => 1 } });
   mocks.detect.mockResolvedValue(ok([VENV, SYSTEM]));
   mocks.createVenv.mockResolvedValue(new Promise(() => {}));
+  mocks.hatchEnvs.mockResolvedValue(ok(["default", "docs"]));
   mocks.interpreter.mockResolvedValue(ok(null));
   useSdks.setState({ byKind: {}, loading: {}, errors: {} });
 });
@@ -67,7 +70,13 @@ describe("Add Python Interpreter", () => {
   it("lists the environment types PyCharm offers", async () => {
     open();
     await waitFor(() => expect(mocks.detect).toHaveBeenCalled());
-    for (const label of ["Virtualenv Environment", "Conda Environment", "uv Environment", "Poetry Environment"]) {
+    for (const label of [
+      "Virtualenv Environment",
+      "Conda Environment",
+      "uv Environment",
+      "Poetry Environment",
+      "Hatch Environment",
+    ]) {
       expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
     }
   });
@@ -130,6 +139,49 @@ describe("Add Python Interpreter", () => {
       expect.anything(),
       expect.anything(),
     );
+  });
+
+  it("creates the Hatch environment picked from the project's own", async () => {
+    let finish: (v: unknown) => void = () => {};
+    mocks.createVenv.mockImplementation(() => new Promise((r) => (finish = r)));
+    open();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Base interpreter" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Hatch Environment" }));
+    // Hatch decides where the environment goes: its name travels as `<project>/<name>`.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Hatch environment" })).toHaveTextContent("default"));
+    expect(screen.queryByLabelText("Location:")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    expect(mocks.createVenv).toHaveBeenLastCalledWith(
+      "hatch",
+      "/usr/bin/python3",
+      "/project/default",
+      expect.anything(),
+      expect.anything(),
+    );
+    await act(async () => finish(ok(VENV)));
+    fireEvent.click(screen.getByRole("button", { name: "Hatch environment" }));
+    fireEvent.click(await screen.findByRole("option", { name: "docs" }));
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    expect(mocks.createVenv).toHaveBeenLastCalledWith(
+      "hatch",
+      "/usr/bin/python3",
+      "/project/docs",
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it("says that Hatch is missing instead of offering to create", async () => {
+    mocks.hatchEnvs.mockResolvedValue({
+      status: "error",
+      error: { kind: "unavailable", message: "Hatch is not installed (install it from https://hatch.pypa.io)" },
+    });
+    open();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Base interpreter" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Hatch Environment" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Hatch is not installed");
+    expect(screen.getByRole("button", { name: "Hatch environment" })).toHaveTextContent("No environments");
+    expect(screen.getByRole("button", { name: "OK" })).toBeDisabled();
   });
 
   it("adds an existing interpreter without creating anything", async () => {

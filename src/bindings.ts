@@ -1641,10 +1641,12 @@ export const commands = {
 	 *  with the Maven / Gradle dependency jars of the build model.
 	 */
 	sdkProjectLibraries: (request: RequestId, onGroups: Channel<LibraryGroup[]>) => typedError<LibraryGroup[], IdeError>(__TAURI_INVOKE("sdk_project_libraries", { request, onGroups })),
-	/**  Creates a Python environment with `tool` (`venv` / `uv` / `poetry`); output streams through `on_output`. */
+	/**  Creates a Python environment with `tool` (`venv` / `uv` / `poetry` / `hatch`); output streams through `on_output`. */
 	sdkPythonCreateVenv: (tool: VenvTool, base: string, location: string, request: RequestId, onOutput: Channel<string>) => typedError<Sdk, IdeError>(__TAURI_INVOKE("sdk_python_create_venv", { tool, base, location, request, onOutput })),
 	/**  The interpreter the project uses: the configured one, else its virtualenv. */
 	sdkPythonEffective: (near: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_effective", { near })),
+	/**  The environments the window's project defines for Hatch, `default` first (hatch must be on PATH). */
+	sdkPythonHatchEnvs: (request: RequestId) => typedError<string[], IdeError>(__TAURI_INVOKE("sdk_python_hatch_envs", { request })),
 	/**  An existing Python executable or virtualenv folder as an SDK; `None` if Python cannot run. */
 	sdkPythonInterpreter: (path: string) => typedError<{
 	/**
@@ -13757,7 +13759,9 @@ export type VenvTool =
 /**  `poetry env use <base>` in the project, then `poetry env info --path`. */
 "poetry" | 
 /**  `conda create -n <name> -y` for a bare name, else `-p <location>` (conda must be on PATH). */
-"conda";
+"conda" | 
+/**  `hatch env create <env>` in the project (hatch must be on PATH). */
+"hatch";
 
 /**  What a view or custom editor shows. */
 export type View = {

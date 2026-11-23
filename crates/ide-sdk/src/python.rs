@@ -28,10 +28,13 @@ pub enum VenvTool {
     Poetry,
     /// `conda create -n <name> -y` for a bare name, else `-p <location>` (conda must be on PATH).
     Conda,
+    /// `hatch env create <env>` in the project (hatch must be on PATH).
+    Hatch,
 }
 
 /// Creates a virtualenv at `location` with `tool` and returns its interpreter.
-/// `base` is the interpreter uv / venv build on, or the one poetry's env uses.
+/// `base` is the interpreter uv / venv build on, or the one poetry's / hatch's env uses.
+/// For Hatch, `location` is `<project>/<environment name>`: Hatch decides where the environment goes.
 pub fn create_venv(
     tool: VenvTool,
     base: &Path,
@@ -86,7 +89,81 @@ pub(crate) fn create_venv_with(
         }
         VenvTool::Poetry => create_poetry_env(base, location, &which, cancel, on_line),
         VenvTool::Conda => create_conda_env(base, location, &which, cancel, on_line),
+        VenvTool::Hatch => create_hatch_env(base, location, &which, cancel, on_line),
     }
+}
+
+const HATCH_MISSING: &str = "Hatch is not installed (install it from https://hatch.pypa.io)";
+
+/// Hatch's own environments (`hatch-build`, `hatch-test.py3.12`, `hatch-static-analysis`, …).
+fn is_internal_hatch_env(name: &str) -> bool {
+    name.starts_with("hatch-")
+}
+
+/// The environments the project at `root` defines for Hatch (`hatch env show --json`), `default`
+/// first, without Hatch's internal ones. Every project has `default`, configured or not.
+pub fn hatch_envs(root: &Path, cancel: &CancellationToken) -> IdeResult<Vec<String>> {
+    hatch_envs_with(root, which, cancel)
+}
+
+pub(crate) fn hatch_envs_with(
+    root: &Path,
+    which: impl Fn(&str) -> Option<PathBuf>,
+    cancel: &CancellationToken,
+) -> IdeResult<Vec<String>> {
+    let hatch = which("hatch").ok_or_else(|| IdeError::unavailable(HATCH_MISSING))?;
+    let args = ["--no-color", "--no-interactive", "env", "show", "--json"].map(str::to_owned);
+    let out = stream(&hatch, &args, Some(root), &[], cancel, &|_| {})?;
+    parse_hatch_envs(&out)
+}
+
+pub(crate) fn parse_hatch_envs(out: &str) -> IdeResult<Vec<String>> {
+    // Skip anything Hatch prints before the JSON object (warnings, the echoed command line).
+    let json = out.lines().find(|l| l.trim_start().starts_with('{')).unwrap_or("{}");
+    let envs: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(json).map_err(|e| IdeError::internal(format!("unexpected hatch output: {e}")))?;
+    let mut names: Vec<String> = envs.into_iter().map(|(name, _)| name).filter(|n| !is_internal_hatch_env(n)).collect();
+    names.sort_by_key(|name| name != "default");
+    Ok(names)
+}
+
+/// `hatch env create <env>` in the project directory, with `base` as the Python the environment
+/// is built on (`HATCH_PYTHON`; an environment that pins its own `python` keeps it). Then
+/// `hatch run` in it prints its prefix, after bringing an environment that already existed up to
+/// date: one left half-made by an interrupted creation has no dependencies yet.
+fn create_hatch_env(
+    base: &Path,
+    location: &Path,
+    which: &dyn Fn(&str) -> Option<PathBuf>,
+    cancel: &CancellationToken,
+    on_line: &dyn Fn(String),
+) -> IdeResult<Sdk> {
+    let hatch = which("hatch").ok_or_else(|| IdeError::unavailable(HATCH_MISSING))?;
+    let project = location
+        .parent()
+        .filter(|p| p.is_dir())
+        .ok_or_else(|| IdeError::invalid("Hatch environments need an open project directory"))?;
+    let env = location
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .ok_or_else(|| IdeError::invalid("select a Hatch environment"))?;
+    let hatch_python = [("HATCH_PYTHON".to_owned(), base.to_string_lossy().into_owned())];
+    let run = |args: &[&str]| {
+        let args: Vec<String> =
+            ["--no-color", "--no-interactive"].iter().chain(args).map(|a| (*a).to_owned()).collect();
+        stream(&hatch, &args, Some(project), &hatch_python, cancel, on_line)
+    };
+    run(&["env", "create", &env])?;
+    let out = run(&["--env", &env, "run", "python", "-c", "import sys; print(sys.prefix)"])?;
+    let home = out
+        .lines()
+        .rev()
+        .map(|line| PathBuf::from(line.trim()))
+        .find(|home| home.join("pyvenv.cfg").is_file())
+        .ok_or_else(|| IdeError::internal("hatch created no environment".to_owned()))?;
+    let python = home.join(bin_dir()).join(exe("python"));
+    crate::discover::python_sdk(&python, "venv", Some(project))
+        .ok_or_else(|| IdeError::internal(format!("{} was not created", python.display())))
 }
 
 /// `poetry env use <base>` in the project directory (the parent of `location`, which the

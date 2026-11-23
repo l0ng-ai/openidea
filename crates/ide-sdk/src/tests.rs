@@ -1511,6 +1511,18 @@ fn env_tools_are_reported_missing_before_they_run() {
     )
     .unwrap_err();
     assert!(conda.message.contains("conda is not installed"), "{}", conda.message);
+    let hatch = crate::python::create_venv_with(
+        crate::python::VenvTool::Hatch,
+        &base,
+        &location,
+        none,
+        &Default::default(),
+        &|_| {},
+    )
+    .unwrap_err();
+    assert!(hatch.message.contains("Hatch is not installed"), "{}", hatch.message);
+    let listed = crate::python::hatch_envs_with(dir.path(), none, &Default::default()).unwrap_err();
+    assert!(listed.message.contains("Hatch is not installed"), "{}", listed.message);
     // An existing environment is refused before any tool runs.
     std::fs::create_dir_all(&location).unwrap();
     std::fs::write(location.join("pyvenv.cfg"), "home = /python").unwrap();
@@ -1599,6 +1611,63 @@ fn a_named_conda_environment_is_found_where_conda_put_it() {
     assert_eq!(&*sdk.path, root.join("envs/ds/bin/python").as_path());
     let again = create().unwrap_err();
     assert!(again.message.contains("named ds already exists"), "{}", again.message);
+}
+
+#[test]
+fn hatch_lists_the_projects_own_environments_default_first() {
+    use crate::python::parse_hatch_envs;
+    let out = r#"{"docs":{"type":"virtual"},"default":{"type":"virtual"},"hatch-build":{"builder":true},"hatch-test.py3.12":{"python":"3.12"},"test.py3.12":{"python":"3.12"}}"#;
+    assert_eq!(parse_hatch_envs(out).unwrap(), ["default", "docs", "test.py3.12"]);
+    assert_eq!(parse_hatch_envs(&format!("a warning\n{out}\n")).unwrap().len(), 3);
+    assert!(parse_hatch_envs("not json").unwrap().is_empty());
+    assert!(parse_hatch_envs("{broken").is_err());
+}
+
+#[test]
+#[cfg(unix)]
+fn hatch_creates_the_selected_environment_on_the_base_interpreter() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("shop");
+    std::fs::create_dir_all(&project).unwrap();
+    let storage = tmp.path().join("data/env/virtual/shop/abcdefgh");
+    let python = tmp.path().join("python");
+    std::fs::write(&python, "#!/bin/sh\necho 'Python 3.12.1'\n").unwrap();
+    std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // `env create <name>` builds the environment with $HATCH_PYTHON in Hatch's data directory (the
+    // default one is named after the project); `--env <name> run` installs what it lacks and runs in it.
+    let hatch = tmp.path().join("hatch");
+    std::fs::write(
+        &hatch,
+        format!(
+            "#!/bin/sh\nwhile [ \"${{1#--}}\" != \"$1\" ]; do [ \"$1\" = --env ] && {{ name=$2; shift; }}; shift; done\n\
+             [ \"$1 $2\" = 'env create' ] && name=$3\nhome='{storage}'/$name\n\
+             [ \"$name\" = default ] && home='{storage}'/shop\n\
+             if [ \"$1\" = run ]; then echo 'Syncing dependencies'; : > \"$home/synced\"; echo \"$home\"; exit 0; fi\n\
+             [ \"$1 $2\" = 'env create' ] || exit 2\nmkdir -p \"$home/bin\"\ncp \"$HATCH_PYTHON\" \"$home/bin/python\"\n\
+             : > \"$home/pyvenv.cfg\"\necho \"Creating environment: $name\"\n",
+            storage = storage.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&hatch, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let which = |tool: &str| (tool == "hatch").then(|| hatch.clone());
+    let create = |env: &str| {
+        crate::python::create_venv_with(
+            crate::python::VenvTool::Hatch,
+            &python,
+            &project.join(env),
+            which,
+            &Default::default(),
+            &|_| {},
+        )
+        .unwrap()
+    };
+    let sdk = create("default");
+    assert_eq!(&*sdk.path, storage.join("shop/bin/python").as_path());
+    assert_eq!((sdk.name.as_str(), sdk.source.as_str()), ("Python 3.12 (Hatch: default)", "hatch"));
+    assert_eq!(create("docs").name, "Python 3.12 (Hatch: docs)");
+    assert!(storage.join("docs/synced").is_file());
 }
 
 #[test]

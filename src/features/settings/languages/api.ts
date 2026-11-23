@@ -122,7 +122,7 @@ function streamed<T>(
 }
 
 /** Tool that creates a new Python environment (`VenvTool` in `ide-sdk`). */
-export type VenvTool = "venv" | "uv" | "poetry" | "conda";
+export type VenvTool = "venv" | "uv" | "poetry" | "conda" | "hatch";
 
 export function createVenv(
   tool: VenvTool,
@@ -131,6 +131,11 @@ export function createVenv(
   onLine: (line: string) => void,
 ): Streamed<Sdk> {
   return streamed((req, ch) => call(commands.sdkPythonCreateVenv(tool, base, location, req, ch)), onLine);
+}
+
+/** The environments the open project defines for Hatch, `default` first; fails when hatch is not installed. */
+export function hatchEnvs(): Promise<string[]> {
+  return call(commands.sdkPythonHatchEnvs(nextRequestId()));
 }
 
 /** Resolves an interpreter picked by hand ("Existing environment") into an SDK like the detected ones. */

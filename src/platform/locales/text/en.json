@@ -3716,5 +3716,10 @@
   "Previous Columns": "Previous Columns",
   "Next Columns": "Next Columns",
   "View Options": "View Options",
-  "Visible columns": "Visible columns"
+  "Visible columns": "Visible columns",
+  "Hatch Environment": "Hatch Environment",
+  "Environment:": "Environment:",
+  "Hatch environment": "Hatch environment",
+  "No environments": "No environments",
+  "Runs “hatch env create <environment>” in the project; Hatch keeps the environment in its own data directory.": "Runs “hatch env create <environment>” in the project; Hatch keeps the environment in its own data directory."
 }

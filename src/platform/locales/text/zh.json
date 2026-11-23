@@ -9953,5 +9953,10 @@
   "Previous Rows": "上一组行",
   "Next Rows": "下一组行",
   "Previous Columns": "上一组列",
-  "Next Columns": "下一组列"
+  "Next Columns": "下一组列",
+  "Hatch Environment": "Hatch 环境",
+  "Environment:": "环境：",
+  "Hatch environment": "Hatch 环境",
+  "No environments": "没有环境",
+  "Runs “hatch env create <environment>” in the project; Hatch keeps the environment in its own data directory.": "在项目中运行“hatch env create <environment>”；Hatch 会将环境保存在其自己的数据目录下。"
 }

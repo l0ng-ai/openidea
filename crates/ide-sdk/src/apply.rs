@@ -66,9 +66,10 @@ pub fn ruff_configuration(root: &Path, configured: &str) -> IdeResult<Option<Pat
 
 /// The project interpreter: the configured one, else a project virtualenv
 /// (`.venv`, `venv`, …) or pixi environment (`.pixi/envs/<env>`) in the project
-/// root, else the Python the project pins for mise / asdf. A configured
-/// interpreter whose executable is gone (uninstalled, moved) is skipped like
-/// PyCharm's "Invalid" SDKs, so runs fall back instead of failing on a dead path.
+/// root, else the project's `default` Hatch environment, else the Python the project
+/// pins for mise / asdf. A configured interpreter whose executable is gone (uninstalled,
+/// moved) is skipped like PyCharm's "Invalid" SDKs, so runs fall back instead of
+/// failing on a dead path.
 /// `None` when the project interpreter is a run target's (see [`crate::container_python`]).
 pub fn python_interpreter(root: &Path, s: &Settings) -> Option<PathBuf> {
     if s.languages.python.run_target().is_some() {

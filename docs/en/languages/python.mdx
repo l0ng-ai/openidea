@@ -43,9 +43,10 @@ The project interpreter is chosen in this order:
 
 1. The interpreter set in **Settings › Languages & Frameworks › Python Interpreter**.
 2. A virtualenv in the project: `.venv`, `venv`, `env` or `.env` (a folder with `pyvenv.cfg`), or a pixi environment in `.pixi/envs/`.
-3. The Python version the project pins for mise or asdf (`mise.toml`, `.tool-versions` and the other mise config files).
+3. The project's `default` Hatch environment, once Hatch has created it.
+4. The Python version the project pins for mise or asdf (`mise.toml`, `.tool-versions` and the other mise config files).
 
-The interpreter list on that page also shows what the IDE detects on the machine: the active `VIRTUAL_ENV`, virtualenvs made by virtualenvwrapper, pipenv and Poetry, pyenv versions, Pythons installed by uv, mise and asdf installs, conda environments (Miniconda, Anaconda, Miniforge, Mambaforge, micromamba, and every env that `conda env list` shows), and the `python` executables on `PATH`.
+The interpreter list on that page also shows what the IDE detects on the machine: the active `VIRTUAL_ENV`, virtualenvs made by virtualenvwrapper, pipenv and Poetry, Hatch environments, pyenv versions, Pythons installed by uv, mise and asdf installs, conda environments (Miniconda, Anaconda, Miniforge, Mambaforge, micromamba, and every env that `conda env list` shows), and the `python` executables on `PATH`.
 
 The selected interpreter is passed to basedpyright and Pyright (`python.pythonPath`), and its virtualenv is set as `VIRTUAL_ENV` for the language server and for run configurations.
 
@@ -69,6 +70,7 @@ On **Settings › Languages & Frameworks › Python Interpreter**, choose **Add 
 - **Virtualenv Environment**: `python -m venv` from the base interpreter you pick.
 - **uv Environment**: `uv venv <location> --python <base>` (uv must be on `PATH`).
 - **Poetry Environment**: `poetry env use <base>` in the project.
+- **Hatch Environment**: `hatch env create <environment>` in the project (hatch must be on `PATH`). Pick one of the environments the project defines; the base interpreter is passed as `HATCH_PYTHON`. Hatch environments are found in Hatch's data directory; one moved with Hatch's `dirs.env` setting or an environment's `path` option is listed as a plain virtualenv.
 - **Conda Environment**: `conda create -n <name>` in conda's envs directory, with the chosen Python version.
 
 You can also select an existing interpreter or environment folder. The new interpreter becomes the project interpreter.

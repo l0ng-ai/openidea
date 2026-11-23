@@ -4846,6 +4846,7 @@ dependencies = [
 name = "ide-sdk"
 version = "0.1.50"
 dependencies = [
+ "base64 0.22.1",
  "dirs 6.0.0",
  "dunce",
  "flate2",
@@ -4857,6 +4858,7 @@ dependencies = [
  "quick-xml 0.42.0",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "specta",
  "tar",
  "tempfile",

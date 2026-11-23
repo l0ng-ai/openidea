@@ -1,12 +1,12 @@
 /**
  * PyCharm's "Add Python Interpreter" (local): generate a new environment with a
- * tool (virtualenv / uv / Poetry) or select an existing interpreter.
+ * tool (virtualenv / conda / uv / Poetry / Hatch) or select an existing interpreter.
  */
 import { isCancelled } from "@/platform/ipc";
-import { useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { Dialog, IconButton, Input, Select, Spinner, type SelectOption, T } from "@/ui";
 import { Icon, type IconName } from "@/ui/icons";
-import { createVenv, pythonInterpreter, rememberSdk, type Sdk, type VenvTool } from "./api";
+import { createVenv, hatchEnvs, pythonInterpreter, rememberSdk, type Sdk, type VenvTool } from "./api";
 import { choosePath } from "@/platform/choosePath";
 import { tildify, useDetected } from "./components";
 import styles from "./Sdk.module.css";
@@ -20,6 +20,7 @@ const KINDS: { tool: VenvTool; label: string; missing: string; icon: IconName }[
   { tool: "conda", label: "Conda Environment", missing: "conda is not installed", icon: "python-conda" },
   { tool: "uv", label: "uv Environment", missing: "uv is not installed", icon: "python-uv" },
   { tool: "poetry", label: "Poetry Environment", missing: "Poetry is not installed", icon: "python-poetry" },
+  { tool: "hatch", label: "Hatch Environment", missing: "Hatch is not installed", icon: "python-hatch" },
 ];
 
 export function AddInterpreterDialog({
@@ -34,11 +35,14 @@ export function AddInterpreterDialog({
   const { list, loading } = useDetected("python");
   const [kind, setKind] = useState<VenvTool>("venv");
   const [mode, setMode] = useState<Mode>("new");
-  const bases = useMemo(() => list.filter((s) => s.source !== "venv"), [list]);
+  const bases = useMemo(() => list.filter((s) => s.source !== "venv" && s.source !== "hatch"), [list]);
   const [base, setBase] = useState<string | null>(null);
   const [location, setLocation] = useState(`${root}/.venv`);
   // Conda keeps named environments in its own envs directory, so only a name is asked for.
   const [envName, setEnvName] = useState(() => root.replaceAll("\\", "/").split("/").filter(Boolean).at(-1) ?? "env");
+  // Hatch keeps environments in its data directory: the project's environment to create is asked for.
+  const [hatchNames, setHatchNames] = useState<string[] | null>(null);
+  const [hatchEnv, setHatchEnv] = useState<string | null>(null);
   const [existing, setExisting] = useState<string | null>(null);
   const [browsed, setBrowsed] = useState<Sdk[]>([]);
   const [busy, setBusy] = useState<{ cancel: () => void } | null>(null);
@@ -94,7 +98,24 @@ export function AddInterpreterDialog({
       });
   };
 
-  const target = (kind === "conda" ? envName : location).trim();
+  useEffect(() => {
+    if (kind !== "hatch") return;
+    let live = true;
+    hatchEnvs()
+      .then((names) => live && setHatchNames(names))
+      .catch((e: unknown) => {
+        if (!live) return;
+        setHatchNames([]);
+        setError(String((e as Error)?.message ?? e));
+      });
+    return () => {
+      live = false;
+    };
+  }, [kind]);
+  const hatchEnvValue = hatchEnv ?? hatchNames?.[0] ?? null;
+  const hatchTarget = hatchEnvValue ? `${root}/${hatchEnvValue}` : "";
+
+  const target = (kind === "conda" ? envName : kind === "hatch" ? hatchTarget : location).trim();
   const ok = () => {
     if (busy) return;
     setError(null);
@@ -128,6 +149,9 @@ export function AddInterpreterDialog({
     uv: tx("Runs “uv venv <location> --python <base>”; the new interpreter becomes the project interpreter."),
     poetry: tx(
       "Runs “poetry env use <base>” in the project; poetry keeps the environment under its own cache directory.",
+    ),
+    hatch: tx(
+      "Runs “hatch env create <environment>” in the project; Hatch keeps the environment in its own data directory.",
     ),
   }[kind];
 
@@ -200,6 +224,20 @@ export function AddInterpreterDialog({
                     <T>Name:</T>
                   </label>
                   <Input id={ids.location} value={envName} onChange={(e) => setEnvName(e.target.value)} />
+                </>
+              ) : kind === "hatch" ? (
+                <>
+                  <label htmlFor={ids.location}>
+                    <T>Environment:</T>
+                  </label>
+                  <Select
+                    id={ids.location}
+                    value={hatchEnvValue}
+                    options={(hatchNames ?? []).map((name) => ({ value: name, label: name, verbatim: true }))}
+                    onChange={setHatchEnv}
+                    placeholder={hatchNames ? "No environments" : "Detecting…"}
+                    aria-label="Hatch environment"
+                  />
                 </>
               ) : (
                 <>

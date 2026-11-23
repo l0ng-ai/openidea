@@ -55,7 +55,7 @@ fn tool_of(kind: SdkKind) -> Option<Tool> {
 fn pinned_first(sdks: &mut Vec<Sdk>, kind: SdkKind, root: &Path) {
     let Some((dir, _)) = tool_of(kind).and_then(|t| pinned::pinned_install(root, t)) else { return };
     let Some(i) = sdks.iter().position(|s| s.path.starts_with(&dir)) else { return };
-    let at = sdks.iter().take_while(|s| s.source == "venv").count().min(i);
+    let at = sdks.iter().take_while(|s| matches!(s.source.as_str(), "venv" | "hatch")).count().min(i);
     let sdk = sdks.remove(i);
     sdks.insert(at, sdk);
 }
@@ -81,7 +81,8 @@ fn dedupe_by_real_path(paths: Vec<(PathBuf, &'static str)>) -> Vec<(PathBuf, &'s
 /// Project-local virtualenv directories checked by auto-detection, in order.
 pub(crate) const PROJECT_VENVS: [&str; 4] = [".venv", "venv", "env", ".env"];
 
-/// `<root>/<venv>/bin/python` of the first project virtualenv or pixi environment.
+/// `<root>/<venv>/bin/python` of the first project virtualenv or pixi environment, else the
+/// interpreter of the project's `default` Hatch environment.
 pub(crate) fn project_venv_python(root: &Path) -> Option<PathBuf> {
     PROJECT_VENVS
         .iter()
@@ -93,6 +94,11 @@ pub(crate) fn project_venv_python(root: &Path) -> Option<PathBuf> {
             subdirs(&root.join(".pixi/envs")).iter().find_map(|env| {
                 [env.join(exe("python")), env.join("bin").join(exe("python"))].into_iter().find(|p| p.is_file())
             })
+        })
+        .or_else(|| {
+            hatch_env_pythons(root)
+                .into_iter()
+                .find(|p| venv_of(p).is_some_and(|v| hatch_env_name(&v) == Some(DEFAULT_HATCH_ENV.into())))
         })
 }
 
@@ -182,6 +188,78 @@ fn poetry_venv_dirs(host: Host, home: &Path, env: impl Fn(&str) -> Option<OsStri
     var("POETRY_VIRTUALENVS_PATH").into_iter().chain([cache.join("virtualenvs")]).collect()
 }
 
+/// Hatch's name for the environment every project has.
+const DEFAULT_HATCH_ENV: &str = "default";
+
+/// Where Hatch keeps virtual environments: `env/virtual` in its data directory, which is
+/// `HATCH_DATA_DIR`, else `%LOCALAPPDATA%\hatch` (Windows), `~/Library/Application Support/hatch`
+/// (macOS) or `$XDG_DATA_HOME/hatch` / `~/.local/share/hatch`.
+fn hatch_env_dir(host: Host, home: &Path, env: impl Fn(&str) -> Option<OsString>) -> PathBuf {
+    let var = |key: &str| env(key).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let data = var("HATCH_DATA_DIR").unwrap_or_else(|| match host {
+        Host::Windows => var("LOCALAPPDATA").unwrap_or_else(|| home.join("AppData").join("Local")).join("hatch"),
+        Host::Mac => home.join("Library/Application Support/hatch"),
+        Host::Unix => var("XDG_DATA_HOME").unwrap_or_else(|| home.join(".local/share")).join("hatch"),
+    });
+    data.join("env").join("virtual")
+}
+
+/// The folder name Hatch derives from a project's path: the first 8 characters of the URL-safe
+/// base64 SHA-256 of the path, which it lower-cases on Windows and macOS.
+fn hatch_project_id(host: Host, root: &Path) -> String {
+    use base64::Engine;
+    use sha2::Digest;
+    let path = root.to_string_lossy();
+    let path = if matches!(host, Host::Unix) { path.into_owned() } else { path.to_lowercase() };
+    let mut id = base64::engine::general_purpose::URL_SAFE.encode(sha2::Sha256::digest(path.as_bytes()));
+    id.truncate(8);
+    id
+}
+
+/// The Hatch environment a virtualenv is, told by where it lives:
+/// `…/env/virtual/<project name>/<project id>/<environment>`, the `default` environment
+/// being the one named after the project.
+fn hatch_env_name(venv: &Path) -> Option<String> {
+    let project = venv.parent()?.parent()?;
+    if !project.parent()?.ends_with("env/virtual") {
+        return None;
+    }
+    let name = venv.file_name()?;
+    Some(if Some(name) == project.file_name() {
+        DEFAULT_HATCH_ENV.to_owned()
+    } else {
+        name.to_string_lossy().into_owned()
+    })
+}
+
+/// Interpreters of the Hatch environments that exist for the project at `root`, found without
+/// starting Hatch. `ponytail:` only Hatch's own data directory is searched; environments moved
+/// with `dirs.env` in Hatch's config or an environment's `path` option need `hatch env find`.
+fn hatch_env_pythons(root: &Path) -> Vec<PathBuf> {
+    // Hatch treats any folder as a project, but one without either file has no environments worth a lookup.
+    if !root.join("pyproject.toml").is_file() && !root.join("hatch.toml").is_file() {
+        return Vec::new();
+    }
+    let Some(home) = home_dir() else { return Vec::new() };
+    hatch_envs_in(root, &hatch_env_dir(Host::current(), &home, |key| host_var_os(key)), Host::current())
+}
+
+fn hatch_envs_in(root: &Path, storage: &Path, host: Host) -> Vec<PathBuf> {
+    // Hatch hashes the path it was started in, which may or may not have its symlinks resolved.
+    let mut ids: Vec<String> = [Some(root.to_path_buf()), dunce::canonicalize(root).ok()]
+        .into_iter()
+        .flatten()
+        .map(|path| hatch_project_id(host, &path))
+        .collect();
+    ids.dedup();
+    subdirs(storage)
+        .iter()
+        .flat_map(|project| ids.iter().flat_map(|id| subdirs(&project.join(id))))
+        .map(|env| env.join(bin_dir()).join(exe("python")))
+        .filter(|python| python.is_file())
+        .collect()
+}
+
 /// Where uv installs Pythons (`uv python dir`): `UV_PYTHON_INSTALL_DIR`, else `python` in its
 /// data dir — `%APPDATA%\uv` on Windows (`%APPDATA%\uv\data` when an older uv made it), else
 /// `$XDG_DATA_HOME/uv` / `~/.local/share/uv` (older uv on macOS: `~/Library/Application Support/uv`).
@@ -223,6 +301,7 @@ fn python(root: Option<&Path>) -> Vec<Sdk> {
                 found.push((python, "pixi"));
             }
         }
+        found.extend(hatch_env_pythons(root).into_iter().map(|p| (p, "venv")));
     }
     if let Ok(venv) = std::env::var("VIRTUAL_ENV") {
         found.push((Path::new(&venv).join(bin_dir()).join(exe("python")), "venv"));
@@ -239,6 +318,12 @@ fn python(root: Option<&Path>) -> Vec<Sdk> {
         let pyenv = std::env::var_os("PYENV_ROOT").map(PathBuf::from).unwrap_or_else(|| home.join(".pyenv"));
         for v in subdirs(&pyenv.join("versions")) {
             found.push((v.join(bin_dir()).join(exe("python")), "pyenv"));
+        }
+        // Hatch environments of every project: `<project name>/<project id>/<environment>`.
+        for project in subdirs(&hatch_env_dir(Host::current(), &home, var)) {
+            for env in subdirs(&project).iter().flat_map(|id| subdirs(id)) {
+                found.push((env.join(bin_dir()).join(exe("python")), "venv"));
+            }
         }
         for dir in uv_python_dirs(Host::current(), &home, var) {
             found.extend(subdirs(&dir).iter().filter_map(|v| uv_python(v)).map(|p| (p, "uv")));
@@ -370,7 +455,10 @@ pub(crate) fn python_sdk(path: &Path, source: &str, root: Option<&Path>) -> Opti
 fn python_sdk_with_version(path: &Path, source: &str, root: Option<&Path>, version: String) -> Sdk {
     let short = version.split('.').take(2).collect::<Vec<_>>().join(".");
     let venv = venv_of(path);
+    let hatch = venv.as_deref().filter(|_| source == "venv").and_then(hatch_env_name);
+    let source = if hatch.is_some() { "hatch" } else { source };
     let label = match (&venv, source) {
+        (_, "hatch") => format!("Python {short} (Hatch: {})", hatch.unwrap_or_default()),
         (Some(home), _) => {
             let dir = home.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             // `.venv` inside a project reads better as the folder that holds it (the project,
@@ -1120,6 +1208,53 @@ mod pixi_tests {
 }
 
 #[cfg(test)]
+mod hatch_tests {
+    use super::*;
+
+    fn venv(home: &Path) -> PathBuf {
+        let python = home.join(bin_dir()).join(exe("python"));
+        std::fs::create_dir_all(python.parent().unwrap()).unwrap();
+        std::fs::write(&python, "").unwrap();
+        std::fs::write(home.join("pyvenv.cfg"), "version = 3.12.1\n").unwrap();
+        python
+    }
+
+    #[test]
+    fn the_project_id_is_hatchs_hash_of_the_path() {
+        // `base64.urlsafe_b64encode(sha256(path)).decode()[:8]`, the path lower-cased on Windows and macOS.
+        let root = Path::new("/Users/Me/Shop");
+        assert_eq!(hatch_project_id(Host::Unix, root), "nrZdKLu1");
+        assert_eq!(hatch_project_id(Host::Mac, root), "6jvy1__M");
+        assert_eq!(hatch_project_id(Host::Windows, root), "6jvy1__M");
+    }
+
+    #[test]
+    fn a_projects_environments_are_the_ones_under_its_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (shop, other) = (tmp.path().join("shop"), tmp.path().join("elsewhere").join("shop"));
+        std::fs::create_dir_all(&shop).unwrap();
+        let storage = tmp.path().join("data").join("env").join("virtual");
+        let id = hatch_project_id(Host::current(), &dunce::canonicalize(&shop).unwrap());
+        let ours = storage.join("shop").join(id);
+        // Another project of the same name keeps its environments under its own id.
+        let theirs = storage.join("shop").join(hatch_project_id(Host::current(), &other));
+        let (default, docs) = (venv(&ours.join("shop")), venv(&ours.join("docs")));
+        venv(&theirs.join("shop"));
+        std::fs::create_dir_all(ours.join("half-made")).unwrap();
+
+        assert_eq!(hatch_envs_in(&shop, &storage, Host::current()), [docs.clone(), default.clone()]);
+        assert!(hatch_envs_in(&other, &tmp.path().join("missing"), Host::current()).is_empty());
+
+        let sdk = python_sdk(&default, "venv", Some(&shop)).unwrap();
+        assert_eq!((sdk.name.as_str(), sdk.source.as_str()), ("Python 3.12 (Hatch: default)", "hatch"));
+        assert_eq!(python_sdk(&docs, "venv", None).unwrap().name, "Python 3.12 (Hatch: docs)");
+        // A virtualenv that merely sits three folders deep is no Hatch environment.
+        let plain = venv(&tmp.path().join("a").join("b").join("c"));
+        assert_eq!(python_sdk(&plain, "venv", None).unwrap().source, "venv");
+    }
+}
+
+#[cfg(test)]
 mod conda_tests {
     use super::*;
 
@@ -1258,6 +1393,29 @@ mod env_manager_dir_tests {
         assert_eq!(
             poetry_venv_dirs(Host::Unix, home, env(&[("XDG_CACHE_HOME", "/xdg/cache")])),
             vec![Path::new("/xdg/cache").join("pypoetry").join("virtualenvs")]
+        );
+    }
+
+    #[test]
+    fn hatch_environments_follow_each_platforms_data_dir() {
+        let home = Path::new("/home/me");
+        let virtual_in = |data: PathBuf| data.join("env").join("virtual");
+        assert_eq!(
+            hatch_env_dir(Host::Windows, home, env(&[("LOCALAPPDATA", "C:/Users/me/AppData/Local")])),
+            virtual_in(Path::new("C:/Users/me/AppData/Local").join("hatch"))
+        );
+        assert_eq!(
+            hatch_env_dir(Host::Mac, home, env(&[])),
+            virtual_in(home.join("Library").join("Application Support").join("hatch"))
+        );
+        assert_eq!(hatch_env_dir(Host::Unix, home, env(&[])), virtual_in(home.join(".local/share").join("hatch")));
+        assert_eq!(
+            hatch_env_dir(Host::Unix, home, env(&[("XDG_DATA_HOME", "/xdg/data")])),
+            virtual_in(Path::new("/xdg/data").join("hatch"))
+        );
+        assert_eq!(
+            hatch_env_dir(Host::Mac, home, env(&[("HATCH_DATA_DIR", "/hatch"), ("XDG_DATA_HOME", "/xdg/data")])),
+            virtual_in(PathBuf::from("/hatch"))
         );
     }
 
