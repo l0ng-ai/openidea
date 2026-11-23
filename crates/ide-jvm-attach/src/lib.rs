@@ -5,6 +5,7 @@ mod jvm;
 mod listener;
 mod properties;
 mod socket;
+mod threads;
 
 pub use discover::find_jvm_by_jdwp_port;
 pub use heap_dump::{HeapDumpReply, dump_timeout, heap_dump, heap_dump_command, parse_heap_dump_reply, vm_flags};
@@ -16,3 +17,4 @@ pub use jvm::{
 pub use listener::{LISTENER_START_TIMEOUT, ensure_listener, is_hotspot};
 pub use properties::{jdwp_port, parse_properties};
 pub use socket::{AttachError, MAX_OUTPUT, agent_properties, has_listener, jcmd, temp_dir};
+pub use threads::{ProcEntry, RUN_TOKEN_PROPERTY, THREAD_DUMP_TIMEOUT, process_table, select_run_jvm, thread_print};
