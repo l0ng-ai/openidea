@@ -666,7 +666,10 @@ mod tests {
         let url = format!("http://127.0.0.1:{port}/a.oiplugin");
         let err = read_url(&url, 1 << 20).unwrap_err();
         assert_eq!(err.matches(&url).count(), 1, "{err}");
-        assert!(err.to_lowercase().contains("refused"), "{err}");
+        // The cause follows the URL. Its wording is the OS's, and localised: assert that it is
+        // there rather than spelling out any one language's phrase for a refused connection.
+        let cause = err.strip_prefix(&url).unwrap_or_default().trim_start_matches([':', ' ']);
+        assert!(cause.len() > 1, "the failure says nothing beyond the URL: {err}");
     }
 
     #[test]
