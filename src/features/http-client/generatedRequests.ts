@@ -2,22 +2,17 @@ import { EditorView } from "@codemirror/view";
 import { activeEditor, editorsFor, useEditorRegistry, type TextEditorHandle } from "@/editor/api";
 import { tx } from "@/platform/i18n";
 import { call, commands, emitLocalIdeEvent, IpcError } from "@/platform/ipc";
-import { appDataDir } from "@/platform/platformInfo";
+import { scratchesDir } from "@/platform/scratchesDir";
 import { editorService } from "@/workbench/contributions";
 import { appendRequests } from "./spring/request";
 
 export const GENERATED_REQUESTS = "generated-requests.http";
 
 async function scratchFile(): Promise<{ path: string; created: boolean }> {
-  const dir = `${await appDataDir()}/scratches`;
-  const ignoreExisting = (e: unknown) => {
-    if (!(e instanceof IpcError && e.kind === "alreadyExists")) throw e;
-  };
-  await call(commands.fsCreateDir(dir)).catch(ignoreExisting);
-  const path = `${dir}/${GENERATED_REQUESTS}`;
+  const path = `${await scratchesDir()}/${GENERATED_REQUESTS}`;
   let created = true;
   await call(commands.fsCreateFile(path)).catch((e) => {
-    ignoreExisting(e);
+    if (!(e instanceof IpcError && e.kind === "alreadyExists")) throw e;
     created = false;
   });
   return { path, created };

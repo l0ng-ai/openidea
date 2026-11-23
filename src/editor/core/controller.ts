@@ -52,7 +52,8 @@ import { call, commands, isErrorKind, isTauri } from "@/platform/ipc";
 import { openLightweightEditor } from "./openLightweightEditor";
 import { windowBackgroundHex } from "@/workbench/theme";
 import { hoverActionsAt } from "@/platform/hoverActions";
-import { save as saveFileDialog, type DialogFilter as SaveDialogFilter } from "@/platform/dialog";
+import { chooseSavePath } from "@/platform/choosePath";
+import type { DialogFilter as SaveDialogFilter } from "@/platform/dialog";
 import { isUntitledUri, untitledTitle } from "@/platform/virtualDocs";
 import { isRemoteWindow } from "@/platform/remote";
 import { auxiliaryWindow } from "@/platform/auxWindow";
@@ -1299,7 +1300,7 @@ export class EditorController implements SlotHost {
    * every tab showing it becomes a file tab.
    */
   private async saveUntitled(model: import("./model/document").DocModel): Promise<boolean> {
-    const path = await saveFileDialog({
+    const path = await chooseSavePath({
       title: tx("Save As"),
       defaultPath: this.saveAsSuggestion(model),
       filters: await languageFilters(),
@@ -2324,6 +2325,9 @@ export class EditorController implements SlotHost {
                       },
                     ] as MenuItem[])
                   : []),
+                // The links the project view and the editor chooser offer (features/vcs: GitHub Link).
+                { kind: "separator" },
+                ...menuGroupItems("copyPath", { paths: [path] }),
               ],
             },
             { kind: "separator" },
