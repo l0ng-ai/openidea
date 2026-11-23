@@ -2,7 +2,7 @@
  * A streamed chunk changes the last message only: the rows of the history above it must
  * not render again, however long the conversation is.
  */
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentEntry, AgentEvent, AgentTask } from "@/bindings";
 import { useProject } from "@/platform/project";
@@ -153,7 +153,7 @@ function history(turns: number): AgentEntry[] {
 const send = (event: AgentEvent) => act(() => harness.channel!.onmessage(event));
 
 /** Opens a conversation of `turns` finished turns and a new one whose reply starts streaming. */
-async function openStreaming(turns: number): Promise<{ stream: (chunks: number) => string }> {
+async function openStreaming(turns: number): Promise<{ stream: (chunks: number) => string; at: number }> {
   const entries = [...history(turns), user("Now?")];
   harness.tasks = [task];
   harness.tauri = true;
@@ -171,6 +171,8 @@ async function openStreaming(turns: number): Promise<{ stream: (chunks: number) 
   });
   let text = "";
   return {
+    /** Index of the streaming reply: what comes next in the conversation follows it. */
+    at: entries.length,
     stream(chunks) {
       for (let i = 0; i < chunks; i++) {
         const chunk = `word${i} `;
@@ -219,7 +221,7 @@ describe("streaming into a long conversation", () => {
       harness.replies.clear();
       harness.folds.clear();
 
-      const text = stream(20).trimEnd();
+      const text = stream(20);
       await screen.findByText(/word19$/);
 
       const renders = (counts: Map<string, number>, keep: (key: string) => boolean) =>
@@ -230,6 +232,87 @@ describe("streaming into a long conversation", () => {
       }).toEqual({ earlierReplies: [], folds: [] });
       // The message that grows does render for every chunk: the counters see renders at all.
       expect(harness.replies.get(text)).toBeGreaterThan(0);
+    },
+  );
+
+  it("still shows what a new turn changes in the turns above it", async () => {
+    useProject.setState({ settings: { agents: { smoothText: false, foldTurns: true } } as never });
+    const { stream, at } = await openStreaming(3);
+    stream(3);
+    send({
+      type: "entry",
+      task: task.id,
+      subagent: null,
+      index: at + 1,
+      entry: {
+        type: "tool",
+        id: "late",
+        title: "Read late.ts",
+        kind: "read",
+        status: "completed",
+        locations: [],
+        output: null,
+        diffs: [],
+      },
+    });
+    send({
+      type: "entry",
+      task: task.id,
+      subagent: null,
+      index: at + 2,
+      entry: { type: "agent", text: "Final answer" },
+    });
+    const copies = () => screen.getAllByRole("button", { name: "Copy Markdown" }).length;
+    // The turn in progress has no actions yet; the three before it do, and its work is open.
+    expect(copies()).toBe(3);
+    expect(harness.folds.has(`turn:${at - 1}`)).toBe(false);
+
+    send({ type: "entry", task: task.id, subagent: null, index: at + 3, entry: user("Next?") });
+
+    // The turn that began mid-stream has ended: its reply has actions and its work is folded.
+    expect(copies()).toBe(4);
+    expect(harness.folds.has(`turn:${at - 1}`)).toBe(true);
+    expect(screen.getByText("Final answer")).toBeInTheDocument();
+    expect(screen.getByText("Next?")).toBeInTheDocument();
+  });
+
+  it.each([{ foldTurns: true }, { foldTurns: false }])(
+    "still shows an earlier edit that arrives while a reply streams (fold turns: $foldTurns)",
+    async ({ foldTurns }) => {
+      useProject.setState({ settings: { agents: { smoothText: false, foldTurns } } as never });
+      const { stream } = await openStreaming(3);
+      stream(3);
+      const added = () => within(document.body).queryAllByText("+7").length;
+      expect(added()).toBe(0);
+
+      // Turn 1's edit (index 8) is rewritten, and so is the reply of turn 2 (index 14).
+      send({
+        type: "entry",
+        task: task.id,
+        subagent: null,
+        index: 8,
+        entry: {
+          type: "tool",
+          id: "edit-1",
+          title: "Edit src/file1.ts",
+          kind: "edit",
+          status: "completed",
+          locations: [],
+          output: null,
+          diffs: [{ path: "/project/src/file1.ts", added: 7, removed: 1 }],
+        },
+      });
+      send({
+        type: "entry",
+        task: task.id,
+        subagent: null,
+        index: 14,
+        entry: { type: "agent", text: "Reply 2, revised" },
+      });
+
+      expect(await screen.findByText("Reply 2, revised")).toBeInTheDocument();
+      expect(added()).toBe(1);
+      expect(screen.getByText("Reply 1")).toBeInTheDocument();
     },
   );
 });
