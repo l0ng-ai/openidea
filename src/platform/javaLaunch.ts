@@ -14,6 +14,7 @@ import {
   type RequestId,
 } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
+import { projectFolder, relativePath, useProject } from "@/platform/project";
 import { useBuildPresentation } from "@/platform/projectPresentation";
 import { isRemoteWindow } from "@/platform/remote";
 
@@ -198,6 +199,7 @@ export async function findJavaModule(config: RunConfig): Promise<string | null> 
 
 /** Module directories (as {@link jvmModuleDir}) of the project's sources declaring the class `binaryName`. */
 export async function classModules(binaryName: string): Promise<string[]> {
+  const root = useProject.getState().project?.root;
   const outer = binaryName.split("$")[0]!;
   const simple = outer.slice(outer.lastIndexOf(".") + 1);
   const pkg = outer.slice(0, Math.max(0, outer.lastIndexOf(".")));
@@ -210,7 +212,7 @@ export async function classModules(binaryName: string): Promise<string[]> {
   for (const file of matches) {
     const text = await call(commands.fsReadText(file.path));
     const sourcePackage = /^\s*package\s+([\w.]+)\s*[;\r\n]/m.exec(text)?.[1] ?? "";
-    if (sourcePackage === pkg) modules.add(jvmModuleDir(file.relPath, configs));
+    if (sourcePackage === pkg) modules.add(jvmModuleDir(root ? relativePath(root, file.path) : file.relPath, configs));
   }
   return [...modules];
 }
@@ -291,5 +293,12 @@ export async function prepareJavaLaunch(config: RunConfig, preparation: JavaPrep
   }
   if (parsed.classpath && !info.classPaths.length)
     throw new Error(tx("The classpath is empty: is the module imported by the Java language server?"));
-  return { module, info, resolved: resolveJavaCommand(config, info) };
+  const resolved = resolveJavaCommand({ ...config, module }, info);
+  const project = useProject.getState().project;
+  if (resolved.cwd == null && project?.workspace) {
+    const path = /^(?:[A-Za-z]:)?\//.test(module) ? module : `${project.root}/${module}`;
+    const owner = projectFolder(project, path);
+    if (owner && owner.root !== project.root) resolved.cwd = path;
+  }
+  return { module, info, resolved };
 }
