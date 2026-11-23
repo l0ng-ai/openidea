@@ -1,4 +1,6 @@
 //! Database and MCP calls through a real sandboxed API 1.4 component.
+mod common;
+
 use ide_core::{CancellationToken, IdeEvent, event::McpUiRequest};
 use ide_host::{
     Host, HostConfig,
@@ -37,18 +39,12 @@ impl Harness {
         let events = Arc::new(Mutex::new(vec![]));
         let out = events.clone();
         let host = Arc::new(Host::new(HostConfig {
-            config_dir: tmp.path().join("config"),
-            data_dir: tmp.path().join("data"),
-            local_data_dir: tmp.path().join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
             sink_for: Box::new(move |w| {
                 let (w, out) = (w.to_owned(), out.clone());
                 Arc::new(move |e| out.lock().unwrap().push((w.clone(), e)))
             }),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
+            local_data_dir: tmp.path().join("local"),
+            ..common::host_config(tmp.path())
         }));
         std::fs::write(root.join("db.sqlite"), "").unwrap();
         host.open_project("main", &root).unwrap();

@@ -1,3 +1,5 @@
+mod common;
+
 use ide_core::{CancellationToken, ChangeSet, Diagnostic, IdeEvent, Pos, Range, Severity, TextChange};
 use ide_host::mcp::{BackgroundProjects, FileProblems, FocusedEditor, Registry};
 use ide_host::{Host, HostConfig};
@@ -25,18 +27,12 @@ impl Harness {
         let events = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = events.clone();
         let host = Arc::new(Host::new(HostConfig {
-            config_dir: tmp.path().join("config"),
-            data_dir: tmp.path().join("data"),
-            local_data_dir: tmp.path().join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
             sink_for: Box::new(move |_| {
                 let events = sink.clone();
                 Arc::new(move |e| events.lock().unwrap().push(e))
             }),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
+            local_data_dir: tmp.path().join("local"),
+            ..common::host_config(tmp.path())
         }));
         host.open_project("main", &root).unwrap();
         Self { host, root, tmp, events }

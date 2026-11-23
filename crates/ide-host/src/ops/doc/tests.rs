@@ -28,18 +28,11 @@ impl Fixture {
         let events = Arc::new(Mutex::new(Vec::new()));
         let captured = events.clone();
         let host = Host::new(HostConfig {
-            config_dir: base.join("config"),
-            data_dir: base.join("data"),
-            local_data_dir: base.join("data"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
             sink_for: Box::new(move |_| {
                 let events = captured.clone();
                 Arc::new(move |event| events.lock().push(event))
             }),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
+            ..HostConfig::for_test(&base)
         });
         let project = host.open_project("main", &root).unwrap();
         Self { _temp: temp, host, project, events, path, outside }
