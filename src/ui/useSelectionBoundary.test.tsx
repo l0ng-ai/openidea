@@ -1,7 +1,7 @@
 import { useRef } from "react";
 import { cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
-import { selectReadingPane, useSelectionBoundary } from "./useSelectionBoundary";
+import { selectReadingPane, useSelectionBoundary, useSelectionVisibility } from "./useSelectionBoundary";
 
 afterEach(() => {
   window.getSelection()?.removeAllRanges();
@@ -144,4 +144,53 @@ it("ends Select All in the pane's last selectable text, not on its edge before t
   expect(range.endContainer).toBe(view.text("Last message"));
   expect(range.endOffset).toBe("Last message".length);
   expect(window.getSelection()!.toString()).not.toContain("Reply to the agent");
+});
+
+function TrackedVisibilityPane() {
+  const ref = useRef<HTMLDivElement>(null);
+  useSelectionVisibility(ref);
+  return (
+    <div ref={ref} data-testid="tracked">
+      <p>Tracked line</p>
+    </div>
+  );
+}
+
+it("keeps data-selection for one rendered frame after the selection leaves", () => {
+  const frames: FrameRequestCallback[] = [];
+  const prevRaf = window.requestAnimationFrame;
+  const prevCancel = window.cancelAnimationFrame;
+  window.requestAnimationFrame = (cb) => frames.push(cb);
+  window.cancelAnimationFrame = () => {
+    frames.length = 0;
+  };
+  try {
+    const view = render(
+      <>
+        <TrackedVisibilityPane />
+        <p>Outside line</p>
+      </>,
+    );
+    const tracked = view.getByTestId("tracked");
+    const inside = view.getByText("Tracked line").firstChild!;
+    const outside = view.getByText("Outside line").firstChild!;
+    const selection = window.getSelection()!;
+
+    selection.setBaseAndExtent(inside, 0, inside, 7);
+    document.dispatchEvent(new Event("selectionchange"));
+    expect(tracked).toHaveAttribute("data-selection");
+
+    selection.setBaseAndExtent(outside, 0, outside, 7);
+    document.dispatchEvent(new Event("selectionchange"));
+    expect(tracked).toHaveAttribute("data-selection");
+
+    frames.shift()?.(performance.now());
+    expect(tracked).toHaveAttribute("data-selection");
+
+    frames.shift()?.(performance.now());
+    expect(tracked).not.toHaveAttribute("data-selection");
+  } finally {
+    window.requestAnimationFrame = prevRaf;
+    window.cancelAnimationFrame = prevCancel;
+  }
 });

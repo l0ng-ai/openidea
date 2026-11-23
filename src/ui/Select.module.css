@@ -113,6 +113,9 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.emphasized {
+  font-weight: 600;
+}
 /* The label keeps its width (up to most of the row); a long detail (a path) is cut instead. */
 .withDetail {
   flex-shrink: 0;

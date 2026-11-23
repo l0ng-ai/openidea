@@ -1,4 +1,64 @@
 import { doubleShift, expect, stubDesktop, test } from "./fixtures";
+
+test("Search Everywhere keeps line numbers visible beside long Text result filenames", async ({ workbench: page }) => {
+  const relPath = "config/InternationalSettlementReconciliationEndpointsForStagingEnvironments.ts";
+  const query = "settlementEndpoint";
+  const text = `const ${query} = "/staging/settlement";`;
+  await stubDesktop(page);
+  await page.evaluate(
+    ({ relPath, text, query }) => {
+      window.__ipc.handlers.search_start = (args) => {
+        setTimeout(() => {
+          const matches = [12344, 12345].map((line) => ({
+            line,
+            text,
+            ranges: [[6, 6 + query.length]],
+            textOffset: 0,
+          }));
+          window.__ipc.send(args.onEvent, {
+            type: "file",
+            file: { path: `/dev/acme-api/${relPath}`, relPath, matches },
+          });
+          window.__ipc.send(args.onEvent, {
+            type: "done",
+            summary: { files: 1, matches: 2, limitHit: false, cancelled: false, elapsedMs: 4 },
+          });
+        }, 20);
+        return null;
+      };
+    },
+    { relPath, text, query },
+  );
+
+  await doubleShift(page);
+  const dialog = page.getByRole("dialog", { name: "Search Everywhere" });
+  await dialog.getByRole("tab", { name: "Text", exact: true }).click();
+  const search = dialog.getByRole("combobox", { name: "Search query" });
+  await search.fill(query);
+  const rows = dialog.getByRole("option");
+  await expect(rows).toHaveCount(2);
+  for (const width of [920, 440]) {
+    await page.setViewportSize({ width, height: 640 });
+    for (const line of [12345, 12346]) {
+      const row = rows.filter({ hasText: String(line) });
+      await expect(row.locator("mark")).toHaveText(query);
+      expect(
+        await row.evaluate((el) => {
+          const location = el.lastElementChild!;
+          const lineText = location.lastChild!;
+          const range = document.createRange();
+          range.selectNodeContents(lineText);
+          const bounds = range.getBoundingClientRect();
+          const clip = location.getBoundingClientRect();
+          return bounds.width > 0 && bounds.left >= clip.left && bounds.right <= clip.right + 1;
+        }),
+      ).toBe(true);
+      await expect(row.getByText(relPath.split("/").at(-1)!, { exact: true })).toHaveAttribute("title", relPath);
+    }
+  }
+  await search.press("ArrowDown");
+  await expect(rows.nth(1)).toHaveAttribute("aria-selected", "true");
+});
 import type { Page } from "@playwright/test";
 
 test("action names stay readable beside shortcuts and categories", async ({ workbench: page }) => {
