@@ -41,7 +41,7 @@ type = "sdk"
 sdk = "dotnet"
 version = true
 min = "8.0"
-hint = "Pinned in global.json; later patches and feature bands of the same .NET version also qualify. Automatic uses the newest installed SDK."
+hint = "Pinned in global.json; later patches and feature bands of the same .NET version also qualify. Automatic lets dotnet choose the SDK."
 
 [[fields]]
 id = "solution"
@@ -58,23 +58,27 @@ pattern = '^[^/\\:*?"<>|.\s][^/\\:*?"<>|]*$'
 default = "{{name}}"
 visible = { solution = "true" }
 
-# First, so that `dotnet new` itself runs on the pinned SDK and targets its framework.
-[[steps]]
-label = "Pinning the .NET SDK"
-program = "dotnet"
-# Without a roll-forward policy the pin needs that exact feature band (`latestPatch`).
-args = ["new", "globaljson", "--sdk-version", "{{sdk}}", "--roll-forward", "latestFeature"]
+# Write the pin before the SDK resolver runs, even under an incompatible parent global.json.
+[[files]]
+path = "global.json"
 if-set = "sdk"
-env = { DOTNET_CLI_TELEMETRY_OPTOUT = "1", DOTNET_NOLOGO = "1" }
+content = '''
+{
+  "sdk": {
+    "version": "{{sdk|json}}",
+    "rollForward": "latestFeature"
+  }
+}
+'''
 
-[[steps]]
+[[after]]
 label = "Creating the solution"
 program = "dotnet"
 args = ["new", "sln", "--name", "{{solution-name}}"]
 when = { solution = "true" }
 env = { DOTNET_CLI_TELEMETRY_OPTOUT = "1", DOTNET_NOLOGO = "1" }
 
-[[steps]]
+[[after]]
 label = "Running dotnet new"
 program = "dotnet"
 args = [
@@ -85,7 +89,7 @@ args = [
 ]
 env = { DOTNET_CLI_TELEMETRY_OPTOUT = "1", DOTNET_NOLOGO = "1" }
 
-[[steps]]
+[[after]]
 label = "Adding the project to the solution"
 program = "dotnet"
 args = ["sln", "add", "{{name}}"]

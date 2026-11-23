@@ -169,8 +169,16 @@ pub(crate) struct FileDef {
     pub content: String,
     #[serde(default)]
     pub when: When,
+    #[serde(default, rename = "if-set")]
+    pub if_set: Option<String>,
     #[serde(default)]
     pub executable: bool,
+}
+
+impl FileDef {
+    pub fn applies(&self, values: &Values) -> bool {
+        is_set(self.if_set.as_deref(), values) && crate::template::matches(&self.when, values)
+    }
 }
 
 #[derive(Debug, Deserialize)]

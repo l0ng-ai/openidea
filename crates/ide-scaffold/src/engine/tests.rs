@@ -142,21 +142,62 @@ fn conditional_arguments() {
 #[test]
 fn dotnet_pins_the_sdk_and_creates_a_solution() {
     let def = def("dotnet").unwrap();
-    let lines = |pairs: &[(&str, &str)]| {
+    assert!(def.steps.is_empty(), "dotnet commands must run after writing global.json");
+    let render = |pairs: &[(&str, &str)]| {
         let given = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         let values = with_defaults(def, "Shop", &given);
-        def.steps.iter().filter(|s| s.applies(&values)).map(|s| argv(s, &values).join(" ")).collect::<Vec<_>>()
+        let project = tempfile::tempdir().unwrap();
+        write_files(def, &values, project.path()).unwrap();
+        let pin = std::fs::read_to_string(project.path().join("global.json"))
+            .ok()
+            .map(|text| serde_json::from_str::<serde_json::Value>(&text).unwrap());
+        let lines =
+            def.after.iter().filter(|s| s.applies(&values)).map(|s| argv(s, &values).join(" ")).collect::<Vec<_>>();
+        (pin, lines)
     };
+    let (pin, lines) = render(&[("sdk", "8.0.404"), ("solution-name", "Store")]);
+    assert_eq!(pin, Some(serde_json::json!({"sdk": {"version": "8.0.404", "rollForward": "latestFeature"}})));
     assert_eq!(
-        lines(&[("sdk", "8.0.404"), ("solution-name", "Store")]),
+        lines,
         [
-            "dotnet new globaljson --sdk-version 8.0.404 --roll-forward latestFeature",
             "dotnet new sln --name Store",
             "dotnet new console --name Shop --output Shop --language C#",
             "dotnet sln add Shop",
+            "dotnet new gitignore",
         ]
     );
-    assert_eq!(lines(&[("solution", "false")]), ["dotnet new console --name Shop --output . --language C#"]);
+    let (pin, lines) = render(&[("solution", "false")]);
+    assert_eq!(pin, None);
+    assert_eq!(lines, ["dotnet new console --name Shop --output . --language C#", "dotnet new gitignore"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn dotnet_templates_see_the_selected_sdk_before_running() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let inherited = r#"{"sdk":{"version":"8.0.100","rollForward":"disable"}}"#;
+    let parent_pin = tmp.path().join("global.json");
+    std::fs::write(&parent_pin, inherited).unwrap();
+    let tool = tmp.path().join("fake-dotnet");
+    std::fs::write(
+        &tool,
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 10.0.400; exit 0; fi\ngrep -q '10.0.400' global.json\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let mut def = source_def("dotnet");
+    def.requires[0].program = tool.to_string_lossy().into_owned();
+    for step in def.steps.iter_mut().chain(&mut def.after) {
+        step.program = def.requires[0].program.clone();
+    }
+    let req = request("dotnet", tmp.path(), "Shop", &[("sdk", "10.0.400")]);
+    let project = create_with(&def, &req, &CancellationToken::new(), &|_| {}).unwrap();
+    let pin: serde_json::Value = serde_json::from_slice(&std::fs::read(project.join("global.json")).unwrap()).unwrap();
+    assert_eq!(pin["sdk"]["version"], "10.0.400");
+    assert_eq!(std::fs::read_to_string(parent_pin).unwrap(), inherited);
 }
 
 /// `dotnet` of a runtime-only install: `--version` fails ("No .NET SDKs were found").

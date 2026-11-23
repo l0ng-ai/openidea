@@ -296,7 +296,7 @@ fn hoist_single_dir(dir: &Path) -> IdeResult<()> {
 }
 
 fn write_files(def: &Def, values: &Values, project: &Path) -> IdeResult<()> {
-    for file in def.files.iter().filter(|f| matches(&f.when, values)) {
+    for file in def.files.iter().filter(|f| f.applies(values)) {
         let rel = render(&file.path, values);
         let rel = Path::new(&rel);
         if rel.is_absolute() || rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
@@ -442,7 +442,7 @@ pub(crate) fn create_with(
     if !project.is_dir() {
         return Err(IdeError::internal(format!("the generator did not create {}", project.display())));
     }
-    if !def.files.is_empty() {
+    if def.files.iter().any(|f| f.applies(&values)) {
         emit(ScaffoldEvent::Step { text: "Writing files".into() });
     }
     write_files(def, &values, &project)?;
