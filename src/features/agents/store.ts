@@ -531,6 +531,7 @@ async function refreshProviderModels(
 export async function connect(): Promise<void> {
   if (!isTauri()) return;
   const gen = ++generation;
+  clearChangeRefreshes();
   const channel = new Channel<AgentEvent>();
   channel.onmessage = (e) => {
     if (gen === generation) onEvent(e);
@@ -616,8 +617,6 @@ const CACHED_CLOSED_TASKS = 5;
 
 /** Recent closed-task ids kept in memory so reopening a just-closed tab avoids refetching. */
 const closedTaskMru: string[] = [];
-/** Bumped when a task's cache is dropped, so a fetch started before that doesn't refill it. */
-const cacheDrops = new Map<string, number>();
 
 function isTaskKey(key: string, taskId: string): boolean {
   return key === taskId || key.startsWith(`${taskId}/`);
@@ -639,11 +638,9 @@ function clearTaskMaps(taskId: string, clearStreaming = false) {
     if (isTaskKey(key, taskId)) positions.delete(key);
   }
   if (clearStreaming) streamingReply.delete(taskId);
-  const timer = pendingChanges.get(taskId);
-  if (timer !== undefined) {
-    clearTimeout(timer);
-    pendingChanges.delete(taskId);
-  }
+  cancelScheduledChanges(taskId);
+  const last = changeRefreshes.get(taskId);
+  if (last) last.cache.dropped = true;
 }
 
 function withoutTaskCache(s: AgentsState, taskId: string): Partial<AgentsState> | null {
@@ -682,8 +679,6 @@ function withoutTaskCache(s: AgentsState, taskId: string): Partial<AgentsState> 
 
 function dropTaskCache(taskId: string) {
   clearTaskMaps(taskId);
-  // A deleted task needs no marker: fetches already discard results for tasks that are gone.
-  if (useAgents.getState().tasks.has(taskId)) cacheDrops.set(taskId, (cacheDrops.get(taskId) ?? 0) + 1);
   useAgents.setState((s) => withoutTaskCache(s, taskId) ?? s);
 }
 
@@ -726,9 +721,7 @@ export function disconnect() {
   streamingReply.clear();
   modelFlights.clear();
   closedTaskMru.length = 0;
-  cacheDrops.clear();
-  for (const timer of pendingChanges.values()) clearTimeout(timer);
-  pendingChanges.clear();
+  clearChangeRefreshes();
   resetAllAgentFontZoom();
   useAgents.setState({
     loaded: false,
@@ -780,7 +773,6 @@ function onEvent(e: AgentEvent) {
     }
     case "removed": {
       clearTaskMaps(e.id, true);
-      cacheDrops.delete(e.id);
       const tasks = new Map(s.tasks);
       tasks.delete(e.id);
       const composers = new Map(s.composers);
@@ -921,17 +913,49 @@ export async function loadEntries(task: string, subagent: string | null = null):
   }
 }
 
-export async function refreshChanges(task: string): Promise<void> {
-  // Discard a result that arrives after a project switch, the task's deletion, or its cache being dropped.
+const pendingChanges = new Map<string, ReturnType<typeof setTimeout>>();
+/** Last pass for each task. The active and trailing pass share a cache lifetime until eviction. */
+const changeRefreshes = new Map<string, { done: Promise<void>; started: boolean; cache: { dropped: boolean } }>();
+
+function cancelScheduledChanges(task: string) {
+  clearTimeout(pendingChanges.get(task));
+  pendingChanges.delete(task);
+}
+
+function clearChangeRefreshes() {
+  for (const timer of pendingChanges.values()) clearTimeout(timer);
+  pendingChanges.clear();
+  changeRefreshes.clear();
+}
+
+/** Waits for the first read that starts after this request, not for the queue to go idle. */
+export function refreshChanges(task: string): Promise<void> {
+  if (!useAgents.getState().tasks.has(task)) return Promise.resolve();
+  const last = changeRefreshes.get(task);
+  const current = last && !last.cache.dropped ? last : undefined;
+  if (current && !current.started) return current.done;
+
   const gen = generation;
-  const drops = cacheDrops.get(task);
-  const stillWanted = () =>
-    gen === generation && useAgents.getState().tasks.has(task) && cacheDrops.get(task) === drops;
-  // The whole task's changes are read in either scope: the session's summary counts them.
-  await Promise.all([
-    refreshTaskChanges(task, stillWanted),
-    useChangesOptions.getState().scope === "turn" && refreshTurnChanges(task, stillWanted),
-  ]);
+  const pass = { done: Promise.resolve(), started: false, cache: current?.cache ?? { dropped: false } };
+  const stillWanted = () => gen === generation && !pass.cache.dropped && useAgents.getState().tasks.has(task);
+  const read = async () => {
+    pass.started = true;
+    try {
+      if (!stillWanted()) return;
+      cancelScheduledChanges(task); // This read covers notifications still waiting on the timer.
+      // The session summary needs the whole task even when the pane shows just its last turn.
+      await Promise.all([
+        refreshTaskChanges(task, stillWanted),
+        useChangesOptions.getState().scope === "turn" && refreshTurnChanges(task, stillWanted),
+      ]);
+    } finally {
+      if (changeRefreshes.get(task) === pass) changeRefreshes.delete(task);
+    }
+  };
+  changeRefreshes.set(task, pass);
+  // A reopened tab can't cancel the obsolete IPC either; wait for it before starting a fresh read.
+  pass.done = last ? last.done.then(read, read) : read();
+  return pass.done;
 }
 
 async function refreshTurnChanges(task: string, stillWanted: () => boolean): Promise<void> {
@@ -995,7 +1019,6 @@ export async function acceptChanges(task: string, relPaths: string[] | null): Pr
   }
 }
 
-const pendingChanges = new Map<string, ReturnType<typeof setTimeout>>();
 /** Reloads the task's changes after a short pause (tool diffs, commits landing). */
 export function scheduleChanges(task: string) {
   if (pendingChanges.has(task)) return;
