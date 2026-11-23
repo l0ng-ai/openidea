@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   detect: vi.fn(),
   createVenv: vi.fn(),
   hatchEnvs: vi.fn(),
+  cancel: vi.fn(),
   interpreter: vi.fn(),
   choosePath: vi.fn(),
 }));
@@ -20,7 +21,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       sdkPythonCreateVenv: mocks.createVenv,
       sdkPythonHatchEnvs: mocks.hatchEnvs,
       sdkPythonInterpreter: mocks.interpreter,
-      cancelRequest: vi.fn(),
+      cancelRequest: mocks.cancel,
     },
   };
 });
@@ -169,6 +170,18 @@ describe("Add Python Interpreter", () => {
       expect.anything(),
       expect.anything(),
     );
+  });
+
+  it("stops listing Hatch environments when another type is picked", async () => {
+    mocks.hatchEnvs.mockReturnValue(new Promise(() => {}));
+    open();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Base interpreter" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Hatch Environment" }));
+    await waitFor(() => expect(mocks.hatchEnvs).toHaveBeenCalled());
+    const [request] = mocks.hatchEnvs.mock.calls[0] as [unknown];
+    expect(mocks.cancel).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "uv Environment" }));
+    expect(mocks.cancel).toHaveBeenCalledWith(request);
   });
 
   it("says that Hatch is missing instead of offering to create", async () => {

@@ -101,15 +101,17 @@ export function AddInterpreterDialog({
   useEffect(() => {
     if (kind !== "hatch") return;
     let live = true;
-    hatchEnvs()
+    const job = hatchEnvs();
+    job.promise
       .then((names) => live && setHatchNames(names))
       .catch((e: unknown) => {
-        if (!live) return;
+        if (!live || isCancelled(e)) return;
         setHatchNames([]);
         setError(String((e as Error)?.message ?? e));
       });
     return () => {
       live = false;
+      job.cancel();
     };
   }, [kind]);
   const hatchEnvValue = hatchEnv ?? hatchNames?.[0] ?? null;

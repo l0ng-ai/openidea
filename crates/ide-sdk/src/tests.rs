@@ -12,6 +12,7 @@ use ide_language::LanguageServerConfig;
 use ide_run::RunConfig;
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::time::Duration;
 
 fn fake_venv(root: &Path, name: &str) -> std::path::PathBuf {
     let venv = root.join(name);
@@ -1521,7 +1522,8 @@ fn env_tools_are_reported_missing_before_they_run() {
     )
     .unwrap_err();
     assert!(hatch.message.contains("Hatch is not installed"), "{}", hatch.message);
-    let listed = crate::python::hatch_envs_with(dir.path(), none, &Default::default()).unwrap_err();
+    let listed =
+        crate::python::hatch_envs_with(dir.path(), none, Duration::from_secs(5), &Default::default()).unwrap_err();
     assert!(listed.message.contains("Hatch is not installed"), "{}", listed.message);
     // An existing environment is refused before any tool runs.
     std::fs::create_dir_all(&location).unwrap();
@@ -1625,12 +1627,30 @@ fn hatch_lists_the_projects_own_environments_default_first() {
 
 #[test]
 #[cfg(unix)]
+fn listing_hatch_environments_gives_up_after_the_timeout() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    // Stuck installing an environment plugin, say.
+    let hatch = tmp.path().join("hatch");
+    std::fs::write(&hatch, "#!/bin/sh\nsleep 30\n").unwrap();
+    std::fs::set_permissions(&hatch, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let which = |tool: &str| (tool == "hatch").then(|| hatch.clone());
+    let started = std::time::Instant::now();
+    let err =
+        crate::python::hatch_envs_with(tmp.path(), which, Duration::from_millis(300), &Default::default()).unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::TimedOut, "{}", err.message);
+    assert!(started.elapsed() < Duration::from_secs(10));
+}
+
+#[test]
+#[cfg(unix)]
 fn hatch_creates_the_selected_environment_on_the_base_interpreter() {
     use std::os::unix::fs::PermissionsExt;
     let tmp = tempfile::tempdir().unwrap();
     let project = tmp.path().join("shop");
     std::fs::create_dir_all(&project).unwrap();
     let storage = tmp.path().join("data/env/virtual/shop/abcdefgh");
+    std::fs::create_dir_all(&storage).unwrap();
     let python = tmp.path().join("python");
     std::fs::write(&python, "#!/bin/sh\necho 'Python 3.12.1'\n").unwrap();
     std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1643,9 +1663,11 @@ fn hatch_creates_the_selected_environment_on_the_base_interpreter() {
             "#!/bin/sh\nwhile [ \"${{1#--}}\" != \"$1\" ]; do [ \"$1\" = --env ] && {{ name=$2; shift; }}; shift; done\n\
              [ \"$1 $2\" = 'env create' ] && name=$3\nhome='{storage}'/$name\n\
              [ \"$name\" = default ] && home='{storage}'/shop\n\
+             [ \"$1 $2\" = 'env find' ] && {{ [ \"$3\" = default ] && echo '{storage}'/shop || echo '{storage}'/$3; exit 0; }}\n\
              if [ \"$1\" = run ]; then echo 'Syncing dependencies'; : > \"$home/synced\"; echo \"$home\"; exit 0; fi\n\
-             [ \"$1 $2\" = 'env create' ] || exit 2\nmkdir -p \"$home/bin\"\ncp \"$HATCH_PYTHON\" \"$home/bin/python\"\n\
-             : > \"$home/pyvenv.cfg\"\necho \"Creating environment: $name\"\n",
+             [ \"$1 $2\" = 'env create' ] || exit 2\necho \"$name\" >> '{storage}'/created\n[ -d \"$home\" ] && exit 0\n\
+             mkdir -p \"$home/bin\"\ncp \"$HATCH_PYTHON\" \"$home/bin/python\"\n\
+             echo 'version = 3.12.1' > \"$home/pyvenv.cfg\"\necho \"Creating environment: $name\"\n",
             storage = storage.display()
         ),
     )
@@ -1661,13 +1683,19 @@ fn hatch_creates_the_selected_environment_on_the_base_interpreter() {
             &Default::default(),
             &|_| {},
         )
-        .unwrap()
     };
-    let sdk = create("default");
+    let sdk = create("default").unwrap();
     assert_eq!(&*sdk.path, storage.join("shop/bin/python").as_path());
-    assert_eq!((sdk.name.as_str(), sdk.source.as_str()), ("Python 3.12 (Hatch: default)", "hatch"));
-    assert_eq!(create("docs").name, "Python 3.12 (Hatch: docs)");
+    assert_eq!((sdk.name.as_str(), sdk.source.as_str()), ("Python 3.12 (Hatch: shop)", "hatch"));
+    assert_eq!(create("docs").unwrap().name, "Python 3.12 (Hatch: shop:docs)");
     assert!(storage.join("docs/synced").is_file());
+    // Hatch keeps an existing environment whatever `HATCH_PYTHON` says: one on another Python
+    // version is refused before anything runs, rather than reported as created.
+    std::fs::write(storage.join("docs/pyvenv.cfg"), "version = 3.11.4\n").unwrap();
+    let err = create("docs").unwrap_err();
+    assert!(err.message.contains("Python 3.11 environment, not Python 3.12"), "{}", err.message);
+    assert!(err.message.contains("hatch env remove docs"), "{}", err.message);
+    assert_eq!(std::fs::read_to_string(storage.join("created")).unwrap(), "default\ndocs\n");
 }
 
 #[test]

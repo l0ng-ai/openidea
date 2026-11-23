@@ -103,18 +103,36 @@ fn is_internal_hatch_env(name: &str) -> bool {
 /// The environments the project at `root` defines for Hatch (`hatch env show --json`), `default`
 /// first, without Hatch's internal ones. Every project has `default`, configured or not.
 pub fn hatch_envs(root: &Path, cancel: &CancellationToken) -> IdeResult<Vec<String>> {
-    hatch_envs_with(root, which, cancel)
+    // Hatch first installs the environment plugins the project requires, which can take a while.
+    hatch_envs_with(root, which, Duration::from_secs(120), cancel)
 }
 
 pub(crate) fn hatch_envs_with(
     root: &Path,
     which: impl Fn(&str) -> Option<PathBuf>,
+    timeout: Duration,
     cancel: &CancellationToken,
 ) -> IdeResult<Vec<String>> {
     let hatch = which("hatch").ok_or_else(|| IdeError::unavailable(HATCH_MISSING))?;
     let args = ["--no-color", "--no-interactive", "env", "show", "--json"].map(str::to_owned);
-    let out = stream(&hatch, &args, Some(root), &[], cancel, &|_| {})?;
-    parse_hatch_envs(&out)
+    // Cancelled when the caller cancels, or when `timeout` passes first.
+    let token = cancel.child_token();
+    let (done, finished) = std::sync::mpsc::channel::<()>();
+    let watchdog = token.clone();
+    std::thread::spawn(move || {
+        if finished.recv_timeout(timeout) == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+            watchdog.cancel();
+        }
+    });
+    let out = stream(&hatch, &args, Some(root), &[], &token, &|_| {});
+    drop(done);
+    match out {
+        Err(_) if token.is_cancelled() && !cancel.is_cancelled() => Err(IdeError::new(
+            ide_core::error::ErrorKind::TimedOut,
+            format!("`hatch env show` did not finish within {} seconds", timeout.as_secs()),
+        )),
+        out => parse_hatch_envs(&out?),
+    }
 }
 
 pub(crate) fn parse_hatch_envs(out: &str) -> IdeResult<Vec<String>> {
@@ -127,10 +145,31 @@ pub(crate) fn parse_hatch_envs(out: &str) -> IdeResult<Vec<String>> {
     Ok(names)
 }
 
+/// An environment that already exists is reused rather than rebuilt. If `base` is another
+/// Python version than the environment's, nothing is changed and the error says how to go on.
+fn reuse_existing_env(home: &Path, base: &Path, remove: &str) -> IdeResult<()> {
+    let short = |version: &str| version.split('.').take(2).collect::<Vec<_>>().join(".");
+    let existing = crate::discover::pyvenv_version(&home.join(bin_dir()).join(exe("python")));
+    let wanted = query_in(base, &["--version"], None, &[], Duration::from_secs(15))
+        .and_then(|v| v.strip_prefix("Python ").map(str::to_owned));
+    match (existing.as_deref().map(short), wanted.as_deref().map(short)) {
+        (Some(existing), Some(wanted)) if existing != wanted => Err(IdeError::new(
+            ide_core::error::ErrorKind::AlreadyExists,
+            format!(
+                "{} already holds a Python {existing} environment, not Python {wanted} like the base interpreter. \
+                 Select it under Existing environment, or remove it first with `{remove}`.",
+                home.display()
+            ),
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// `hatch env create <env>` in the project directory, with `base` as the Python the environment
-/// is built on (`HATCH_PYTHON`; an environment that pins its own `python` keeps it). Then
-/// `hatch run` in it prints its prefix, after bringing an environment that already existed up to
-/// date: one left half-made by an interrupted creation has no dependencies yet.
+/// is built on (`HATCH_PYTHON`; an environment that pins its own `python` keeps it). Hatch keeps
+/// an environment that exists, whatever `base` is: one on another Python version is refused
+/// instead. Then `hatch run` in it prints its prefix, after bringing an environment that already
+/// existed up to date: one left half-made by an interrupted creation has no dependencies yet.
 fn create_hatch_env(
     base: &Path,
     location: &Path,
@@ -153,6 +192,11 @@ fn create_hatch_env(
             ["--no-color", "--no-interactive"].iter().chain(args).map(|a| (*a).to_owned()).collect();
         stream(&hatch, &args, Some(project), &hatch_python, cancel, on_line)
     };
+    let existing = query_in_cancellable(&hatch, &["env", "find", &env], project, &[], Duration::from_secs(30), cancel)
+        .and_then(|out| out.lines().map(PathBuf::from).find(|home| home.join("pyvenv.cfg").is_file()));
+    if let Some(home) = existing {
+        reuse_existing_env(&home, base, &format!("hatch env remove {env}"))?;
+    }
     run(&["env", "create", &env])?;
     let out = run(&["--env", &env, "run", "python", "-c", "import sys; print(sys.prefix)"])?;
     let home = out

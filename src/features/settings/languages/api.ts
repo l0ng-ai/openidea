@@ -133,9 +133,16 @@ export function createVenv(
   return streamed((req, ch) => call(commands.sdkPythonCreateVenv(tool, base, location, req, ch)), onLine);
 }
 
-/** The environments the open project defines for Hatch, `default` first; fails when hatch is not installed. */
-export function hatchEnvs(): Promise<string[]> {
-  return call(commands.sdkPythonHatchEnvs(nextRequestId()));
+/**
+ * The environments the open project defines for Hatch, `default` first; fails when hatch is not
+ * installed. Hatch may install plugins first, so the caller cancels it when it no longer needs it.
+ */
+export function hatchEnvs(): Streamed<string[]> {
+  const request = nextRequestId();
+  return {
+    promise: call(commands.sdkPythonHatchEnvs(request)),
+    cancel: () => void commands.cancelRequest(request),
+  };
 }
 
 /** Resolves an interpreter picked by hand ("Existing environment") into an SDK like the detected ones. */
