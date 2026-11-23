@@ -3679,6 +3679,8 @@
   "Installing package requirements": "Installing package requirements",
   "Cannot install package requirements": "Cannot install package requirements",
   "Install requirement": "Install requirement",
+  "Convert to f-string literal": "Convert to f-string literal",
+  "Replace with str.format() call": "Replace with str.format() call",
   "Install all missing requirements": "Install all missing requirements",
   "Package {name} is not installed": "Package {name} is not installed",
   "Requirement {requirement} is not satisfied: {installed} is installed": "Requirement {requirement} is not satisfied: {installed} is installed",
