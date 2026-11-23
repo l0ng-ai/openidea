@@ -2,7 +2,9 @@
 
 use std::collections::HashMap;
 
-use crate::model::{BoxKind, DistinctDrop, Link, Record, StepKind, TraceValue};
+#[cfg(test)]
+use crate::model::DistinctDrop;
+use crate::model::{BoxKind, Link, Record, StepKind, TraceValue};
 
 /// What a reordering step preserves: the primitive's value for boxes (each `peek`
 /// re-boxes, so their ids say nothing), the object id otherwise.
@@ -22,6 +24,7 @@ fn identity_key(value: &TraceValue) -> Key<'_> {
 }
 
 /// Value equality that needs no debuggee call; `None` when only `equals` can tell.
+#[cfg(test)]
 fn equality_key(value: &TraceValue) -> Option<EqKey<'_>> {
     match value {
         TraceValue::Null => Some(EqKey::Null),
@@ -31,6 +34,7 @@ fn equality_key(value: &TraceValue) -> Option<EqKey<'_>> {
     }
 }
 
+#[cfg(test)]
 #[derive(PartialEq, Eq, Hash)]
 enum EqKey<'a> {
     Null,
@@ -90,6 +94,7 @@ pub fn sorted_pass_through(records: &[Record], step: u16) -> bool {
 /// Elements of `step - 1` that produced nothing at `step`, each with the earliest kept
 /// element of that step it equals. Objects and truncated strings get `None`: only the
 /// user's `equals` can compare them.
+#[cfg(test)]
 pub fn distinct_drops(records: &[Record], links: &[Link], step: u16) -> Vec<DistinctDrop> {
     let Some(previous) = step.checked_sub(1) else {
         return Vec::new();

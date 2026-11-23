@@ -1,8 +1,10 @@
 //! Replace All when the search hit its match limit (#4083): every match in the
 //! scope is replaced, not just the listed ones.
 
-use ide_core::{NullSink, Pos, RequestId};
-use ide_host::{Host, HostConfig, ops};
+mod common;
+
+use ide_core::{Pos, RequestId};
+use ide_host::{Host, ops};
 use ide_search::{ReplaceEvent, ReplaceSummary, ReplaceTarget, SearchQuery};
 use std::sync::{Arc, Mutex};
 
@@ -95,17 +97,7 @@ async fn replace_all_covers_matches_past_the_limit() {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, text).unwrap();
         }
-        let host = Host::new(HostConfig {
-            config_dir: base.join("config"),
-            data_dir: base.join("data"),
-            local_data_dir: base.join("data"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(NullSink)),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(common::host_config(&base));
         host.trust.decide(&root, true, false).unwrap();
         host.open_project("main", &root).unwrap();
         let targets = case
@@ -158,17 +150,7 @@ async fn replace_all_saves_open_buffers_without_unsaved_changes() {
     for name in ["previewed.txt", "edited.txt", "closed.txt"] {
         std::fs::write(root.join(name), "TOKEN\n").unwrap();
     }
-    let host = Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    });
+    let host = Host::new(common::host_config(&base));
     host.trust.decide(&root, true, false).unwrap();
     host.open_project("main", &root).unwrap();
     let project = host.project("main").unwrap();
@@ -218,17 +200,7 @@ async fn replace_all_past_the_limit_keeps_to_the_search_context() {
         let root = base.join("project");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("lib.rs"), &original).unwrap();
-        let host = Host::new(HostConfig {
-            config_dir: base.join("config"),
-            data_dir: base.join("data"),
-            local_data_dir: base.join("data"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(NullSink)),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(common::host_config(&base));
         host.trust.decide(&root, true, false).unwrap();
         host.open_project("main", &root).unwrap();
         ops::search::replace_in_files(

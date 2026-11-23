@@ -183,23 +183,12 @@ pub fn term_available_shells() -> Vec<String> {
 mod tests {
     use super::*;
     use crate::HostConfig;
-    use ide_core::{NullSink, error::ErrorKind};
-    use std::sync::Arc;
+    use ide_core::error::ErrorKind;
 
     #[tokio::test]
     async fn image_size_limit_is_checked_before_storage() {
         let root = tempfile::tempdir().unwrap();
-        let host = Host::new(HostConfig {
-            config_dir: root.path().join("config"),
-            data_dir: root.path().join("data"),
-            local_data_dir: root.path().join("data"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(NullSink)),
-            owner: |window| window,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(HostConfig::for_test(root.path()));
         let id = TerminalId::next();
         let error =
             term_store_image(&host, id, vec![0; MAX_IMAGE_BYTES + 1].into(), "image/png".into()).await.unwrap_err();

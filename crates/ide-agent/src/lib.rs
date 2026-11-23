@@ -647,12 +647,8 @@ impl AgentManager {
         Self { shared, tasks: RwLock::new(tasks) }
     }
 
-    /// Routes events to `sink` (replacing the previous subscriber); returns every task.
-    pub fn subscribe(&self, sink: AgentSink) -> Vec<AgentTask> {
-        self.subscribe_as("", sink)
-    }
-
-    /// Routes events to `sink` too, replacing only the sink `subscriber` (a view of the project) had.
+    /// Routes events to `sink`, replacing only the sink `subscriber` (a view of the project) had;
+    /// returns every task.
     pub fn subscribe_as(&self, subscriber: &str, sink: AgentSink) -> Vec<AgentTask> {
         self.shared.sinks.write().insert(subscriber.to_owned(), sink);
         let mut tasks: Vec<AgentTask> = self.tasks.read().values().map(|t| t.state.lock().snapshot()).collect();
