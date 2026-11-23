@@ -348,7 +348,19 @@ function ownSession(id: DebugSessionId, event: DebugEvent): DebugSession | null 
   }
   if (pendingStarts === 0) return null;
   provisional.add(id);
-  return event.kind === "started" ? adoptSession(id, { name: event.name, adapter: event.adapter }) : adoptSession(id);
+  // The new root session takes the tab it replaces now, not once `debugStart` returns.
+  const replaced = pendingReplacements[0];
+  const slot = replaced ? { tabOrder: replaced.tabOrder, pinned: replaced.pinned } : {};
+  const s =
+    event.kind === "started"
+      ? adoptSession(id, { name: event.name, adapter: event.adapter, ...slot })
+      : adoptSession(id, slot);
+  if (replaced) {
+    takeReplacement(replaced);
+    useDebug.setState({ active: id });
+    publishContext();
+  }
+  return s;
 }
 
 /**
@@ -380,10 +392,26 @@ function settleStart(id: DebugSessionId | null, discard = false) {
 
 /** The session being rerun: its tab is the one the new session takes, pinned or not. */
 let rerunOf: DebugSessionId | null = null;
+/** Sessions whose Rerun is in progress: their tab stays selected when they terminate. */
+const rerunning = new Set<DebugSessionId>();
 
 interface ReplacedTab {
   pinned?: boolean;
   tabOrder?: number;
+  /** The finished tab, kept until the new session takes its place (`defer`). */
+  session?: DebugSessionId;
+}
+
+/** Finished tabs whose starting replacements have no session yet, oldest start first. */
+const pendingReplacements: ReplacedTab[] = [];
+
+/** The new session is shown: the finished tab it replaces gives way. */
+function takeReplacement(r: ReplacedTab | undefined) {
+  if (!r) return;
+  const i = pendingReplacements.indexOf(r);
+  if (i >= 0) pendingReplacements.splice(i, 1);
+  if (r.session != null && useDebug.getState().sessions[r.session]) removeSession(r.session);
+  r.session = undefined;
 }
 
 /**
@@ -392,17 +420,20 @@ interface ReplacedTab {
  * then the selected one; other finished tabs stay. The returned slot lets the new backend
  * session keep the tab where the replaced one was.
  */
-function replaceFinished(name: string, configId?: string): ReplacedTab {
+function replaceFinished(name: string, configId?: string, defer = false): ReplacedTab {
   const { sessions, active } = useDebug.getState();
   const own = rerunOf != null ? sessions[rerunOf] : undefined;
   rerunOf = null;
   // Rerun's Stop waits for the adapter, even if this window has not handled its terminated event yet.
   if (own) {
     const tabOrder = tabOrderOf(own);
+    if (defer) return { pinned: own.pinned, tabOrder, session: own.id };
     removeSession(own.id);
     return { pinned: own.pinned, tabOrder };
   }
-  const finished = sessionsInTabOrder(sessions).filter((s) => s.parent == null && !isLive(s) && !s.pinned);
+  const finished = sessionsInTabOrder(sessions).filter(
+    (s) => s.parent == null && !isLive(s) && !s.pinned && !pendingReplacements.some((r) => r.session === s.id),
+  );
   const selected = active != null ? sessions[active] : undefined;
   const ordered =
     selected && finished.includes(selected) ? [selected, ...finished.filter((s) => s !== selected)] : finished;
@@ -413,6 +444,7 @@ function replaceFinished(name: string, configId?: string): ReplacedTab {
   const pinned = workflowSettings().run.pinTabs || undefined;
   if (!reused) return { pinned };
   const tabOrder = tabOrderOf(reused);
+  if (defer) return { pinned, tabOrder, session: reused.id };
   removeSession(reused.id);
   return { pinned, tabOrder };
 }
@@ -856,7 +888,10 @@ export async function startSession(
   // Attaching to a JVM that may be gone: the finished session stays until the attach succeeds.
   const afterDetach = justDetached(options.process);
   const previousActive = useDebug.getState().active;
-  let replaced = !afterDetach && !options.preparation ? replaceFinished(launch.name, options.runConfig?.id) : undefined;
+  // The finished tab stays in place until the new session appears there.
+  let replaced =
+    !afterDetach && !options.preparation ? replaceFinished(launch.name, options.runConfig?.id, true) : undefined;
+  if (replaced?.session != null) pendingReplacements.push(replaced);
   try {
     if (options.show !== false && workflowSettings().run.showOnStart) toolWindowService().show("debug");
   } catch {
@@ -879,6 +914,7 @@ export async function startSession(
       return null;
     }
     flushConsoleOutput();
+    takeReplacement(replaced);
     const preparation = options.preparation && useDebug.getState().sessions[options.preparation.id];
     useDebug.setState((s) => {
       const cur = s.sessions[id] ?? blank(id, { status: "running" });
@@ -922,6 +958,7 @@ export async function startSession(
     void syncSpecial();
     return id;
   } catch (e) {
+    takeReplacement(replaced);
     settleStart(null, afterDetach);
     if (afterDetach) {
       // The JVM that announced the port ended as its previous debugger detached.
@@ -1077,16 +1114,18 @@ export async function rerunSession(id: DebugSessionId, options: { show?: boolean
   const root = rootOf(s);
   const launch = root.launch;
   if (!root.runConfig && !launch) return;
-  if (isLive(root)) await stopSession(root.id);
-  rerunOf = root.id;
-  // A session debugged in place from Services reruns there too.
-  const show = options.show ?? (root.inPlace ? false : undefined);
+  rerunning.add(root.id);
   try {
+    if (isLive(root)) await stopSession(root.id);
+    rerunOf = root.id;
+    // A session debugged in place from Services reruns there too.
+    const show = options.show ?? (root.inPlace ? false : undefined);
     if (root.runConfig)
       await executeAction("run.debugConfig", show === false ? { config: root.runConfig, show: false } : root.runConfig);
     else await startSession(launch!, { show });
   } finally {
     rerunOf = null;
+    rerunning.delete(root.id);
   }
 }
 
@@ -1135,7 +1174,7 @@ function markTerminated(id: DebugSessionId) {
   if (serverPages.delete(id) && page != null) void stopSession(page);
   patch(id, { status: "terminated", endedAt: Date.now(), frames: [], selectedFrame: null, stoppedThread: null });
   const st = useDebug.getState();
-  if (st.active === id) {
+  if (st.active === id && !rerunning.has(id)) {
     // Prefer another live session (e.g. the parent of a finished child).
     const other = sessionsInTabOrder(st.sessions).find(isLive);
     if (other) useDebug.setState({ active: other.id });

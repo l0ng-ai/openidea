@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { choosePaths } from "@/platform/choosePath";
 import { call, commands, type DbJdbcDriver } from "@/platform/ipc";
 import { useTx } from "@/platform/i18n";
 import { Button, Dialog, IconButton, Input, Select, T } from "@/ui";
@@ -85,14 +86,12 @@ export function JdbcDriverProfiles({
     setBusy(true);
     setError(null);
     try {
-      const { open } = await import("@/platform/dialog");
-      const files = await open({
+      const files = await choosePaths({
         title: tx("Choose JDBC Driver and Dependency JARs"),
-        multiple: true,
         directory: false,
         filters: [{ name: tx("Java archives"), extensions: ["jar"] }],
       });
-      if (files && draft) {
+      if (files.length && draft) {
         const jars = [...new Set([...draft.jars, ...files])];
         set({ jars });
         const names = await call(commands.dbJdbcDriverClasses(jars));

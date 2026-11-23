@@ -412,11 +412,12 @@ describe("terminalFont", () => {
   it("prefers the terminal's fallback over the editor's", () => {
     const font = terminalFont(
       { ...t, fallbackFontFamily: "Sarasa Mono SC" },
-      { ...editor, fallbackFont: "PingFang SC" },
+      { ...editor, fallbackFont: "Source Code Pro" },
       BASE,
     );
     expect(font.family).toContain('"Sarasa Mono SC"');
-    expect(font.family).not.toContain("PingFang SC");
+    // The CJK faces are always named (see the test below), so the editor's pick must not be one.
+    expect(font.family).not.toContain("Source Code Pro");
   });
 
   it("follows the editor's Typography Settings weights with Use editor font", () => {
@@ -445,6 +446,13 @@ describe("terminalFont", () => {
   it("turns the column width into letter spacing", () => {
     expect(terminalFont({ ...t, useEditorFont: false }, editor, BASE).letterSpacing).toBe(0);
     expect(terminalFont({ ...t, useEditorFont: false, columnWidth: 1.5 }, editor, BASE).letterSpacing).toBe(3);
+  });
+  it("names CJK faces after the icon fonts so a wide character keeps two cells", () => {
+    const { family } = terminalFont(t, editor, BASE);
+    // After the icon fonts: they must win their own glyphs, and only CJK falls through to these.
+    expect(family.indexOf('"Microsoft YaHei"')).toBeGreaterThan(family.indexOf('"Symbols Nerd Font"'));
+    expect(family).toContain('"PingFang SC", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC"');
+    expect(family.endsWith(', "Source Han Sans SC", monospace')).toBe(true);
   });
 });
 

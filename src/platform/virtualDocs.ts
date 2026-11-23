@@ -185,3 +185,10 @@ export function libraryEntryPaths(uri: string, archives: readonly string[] = [])
   if (jar.endsWith("/jrt-fs.jar")) return [`${parentDir(jar)}/src.zip!/${module}/${stem}.java`];
   return jarCandidates(jar, stem, archives);
 }
+
+/** The archive root (`<jar>!`) containing a library document, when it has one. */
+export function libraryArchiveRoot(uri: string): string | null {
+  const entry = libraryEntryPaths(uri)[0];
+  const separator = entry?.indexOf("!/") ?? -1;
+  return entry && separator > 0 ? `${entry.slice(0, separator)}!` : null;
+}

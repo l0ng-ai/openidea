@@ -160,24 +160,27 @@ describe("computeGraph lane slots", () => {
   });
 });
 
-describe("presentLogGraph", () => {
+describe.each([true, false])("presentLogGraph (refs: %s)", (withRefs) => {
   const optionCombinations: GraphOptions[] = [false, true].flatMap((collapseLinear) =>
     [false, true].flatMap((linearizeMerges) =>
       [false, true].map((longEdges) => ({ collapseLinear, linearizeMerges, longEdges })),
     ),
   );
 
-  it.each([true, false])("keeps every option and fragment combination unchanged (refs: %s)", (withRefs) => {
-    const commits = history(2400, withRefs);
-    const head = new Set([commitKey(commits[0]!)]);
-    const variants = fragmentVariants(commits);
-    for (const options of optionCombinations)
+  const commits = history(2400, withRefs);
+  const head = new Set([commitKey(commits[0]!)]);
+  const variants = fragmentVariants(commits);
+
+  it.each(optionCombinations)(
+    "keeps fragments equivalent (collapseLinear: $collapseLinear, linearizeMerges: $linearizeMerges, longEdges: $longEdges)",
+    (options) => {
       for (const [name, fragments] of Object.entries(variants)) {
         vi.mocked(computeGraph).mockImplementation(real);
         const got = presentLogGraph(commits, options, fragments, head);
         vi.mocked(computeGraph).mockImplementation(referenceComputeGraph);
         const want = presentLogGraph(commits, options, fragments, head);
-        expect(got, `${JSON.stringify(options)} ${name}`).toEqual(want);
+        expect(got, name).toEqual(want);
       }
-  });
+    },
+  );
 });

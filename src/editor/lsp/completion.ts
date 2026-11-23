@@ -16,7 +16,6 @@ import {
   moveCompletionSelection,
   pickedCompletion,
   selectedCompletion,
-  snippet,
   startCompletion,
   type Completion,
   type CompletionContext,
@@ -53,6 +52,7 @@ import {
   typeColumnText,
   withoutDuplicates,
 } from "./completionItems";
+import { applySnippet } from "@/editor/core/cm/linkedSnippet";
 import { lspSnippetToCm, lspSnippetToPlainWithCaret, snippetVariables } from "./snippet";
 import { docOf, isUnavailable, lspDoc, lspRequest, reportLspError } from "./lsp";
 import { offsetToPos, posToOffset, textEditsToChanges } from "./positions";
@@ -296,7 +296,8 @@ export function applyLspCompletion(
       start = tr.changes.mapPos(start, 1);
       end = tr.changes.mapPos(end, 1);
     }
-    snippet(lspSnippetToCm(item.insertText, snippetVariables(req.path)))(view, completion, start, end);
+    const source = lspSnippetToCm(item.insertText, snippetVariables(req.path));
+    applySnippet(view, [{ from: start, to: end, snippet: source }], completion);
     // A call snippet without a stop (`ArrayList<>()`): the caret goes inside until
     // signature help says there is nothing to pass.
     const head = view.state.selection.main.head;

@@ -1008,17 +1008,66 @@ pub fn build_for_launches(
         if plan.system == BuildSystem::Maven
             && let Some(m) = &model.maven
         {
-            maven_launch_projects(root, m, module, test)
-                .iter()
-                .flat_map(|p| {
-                    launch_class_dirs(plan.system, &subdir(root, &p.dir), test && subdir(root, &p.dir) == module)
-                })
-                .collect()
+            maven_launch_output_dirs(root, m, module, test).into_iter().filter(|dir| dir.is_dir()).collect()
         } else {
             launch_class_dirs(plan.system, module, test)
         }
     };
     Ok(modules.iter().map(|m| LaunchBuild { class_dirs: class_dirs(m), failure: failure.clone() }).collect())
+}
+
+/// Maven output directories for a launch, including directories that have yet to be created.
+pub fn maven_launch_output_dirs(root: &Path, model: &maven::MavenModel, module: &Path, test: bool) -> Vec<PathBuf> {
+    maven_launch_projects(root, model, module, test)
+        .into_iter()
+        .flat_map(|p| {
+            let dir = subdir(root, &p.dir);
+            maven_output_dirs(&dir, test && dir == module)
+        })
+        .collect()
+}
+
+/// The class directories of a Maven launch that must hold classes after its build: those of
+/// the launch projects with sources in a conventional JVM source root. One that is missing
+/// or holds no class was caught mid-rewrite, e.g. cleaned by a concurrent `mvn` (#5404).
+pub fn launch_required_class_dirs(root: &Path, model: &BuildModel, module: &Path, test: bool) -> Vec<PathBuf> {
+    fn has_sources(dir: &Path, depth: u32) -> bool {
+        let Ok(entries) = std::fs::read_dir(dir) else { return false };
+        entries.flatten().any(|e| {
+            let p = e.path();
+            if p.is_dir() {
+                depth > 0 && has_sources(&p, depth - 1)
+            } else {
+                // A package-info.java without annotations compiles to nothing.
+                p.file_name() != Some("package-info.java".as_ref())
+                    && p.extension().is_some_and(|x| x == "java" || x == "kt" || x == "groovy" || x == "scala")
+            }
+        })
+    }
+    let compiles = |dir: &Path, set: &str| {
+        ["java", "kotlin", "groovy", "scala"].iter().any(|lang| has_sources(&dir.join("src").join(set).join(lang), 32))
+    };
+    let Some(m) = &model.maven else { return Vec::new() };
+    let mut dirs = Vec::new();
+    for p in maven_launch_projects(root, m, module, test) {
+        let dir = subdir(root, &p.dir);
+        if test && dir == module && compiles(&dir, "test") {
+            dirs.push(subdir(&dir, "target/test-classes"));
+        }
+        if compiles(&dir, "main") {
+            dirs.push(subdir(&dir, "target/classes"));
+        }
+    }
+    dirs
+}
+
+fn maven_output_dirs(module: &Path, test: bool) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if test {
+        dirs.push(subdir(module, "target/test-classes"));
+    }
+    dirs.push(subdir(module, "target/classes"));
+    dirs
 }
 
 fn launch_class_dirs(system: BuildSystem, module: &Path, test: bool) -> Vec<PathBuf> {
@@ -1031,8 +1080,7 @@ fn launch_class_dirs(system: BuildSystem, module: &Path, test: bool) -> Vec<Path
                     .map(|d| subdir(module, &format!("build/{d}/{s}")))
             })
             .collect(),
-        BuildSystem::Maven if test => vec![subdir(module, "target/test-classes"), subdir(module, "target/classes")],
-        BuildSystem::Maven => vec![subdir(module, "target/classes")],
+        BuildSystem::Maven => maven_output_dirs(module, test),
         _ => Vec::new(),
     };
     dirs.into_iter().filter(|d| d.is_dir()).collect()

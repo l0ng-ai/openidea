@@ -1007,11 +1007,16 @@ impl Session {
         let mut updates = Vec::new();
         let mut finished = None;
         let mut read_title = false;
+        let mut refresh_usage = false;
         {
             let mut st = self.st.lock();
             let st = &mut *st;
             match kind {
                 "system" => match msg.get("subtype").and_then(Value::as_str) {
+                    Some("compact_boundary") => {
+                        refresh_usage = msg.pointer("/compact_metadata/post_tokens").is_none_or(Value::is_null);
+                        updates.extend(st.tr.on_message(&msg));
+                    }
                     Some("init") => {
                         st.terminal_only = strings(msg.get("terminal_slash_commands"));
                     }
@@ -1115,6 +1120,31 @@ impl Session {
         if read_title {
             self.read_title();
         }
+        if refresh_usage {
+            self.refresh_usage();
+        }
+    }
+
+    /// Sends what the context holds after a compaction that didn't report it, as Claude Code
+    /// counts it (`get_context_usage`); until then the meter would show the count from before.
+    fn refresh_usage(self: &Arc<Self>) {
+        let me = self.clone();
+        tokio::spawn(async move {
+            let Some(proc) = me.st.lock().proc.clone() else { return };
+            let usage = match proc.control(json!({ "subtype": "get_context_usage" })).await {
+                Ok(usage) => usage,
+                Err(e) => {
+                    tracing::debug!("reading claude context usage after compaction: {e}");
+                    return;
+                }
+            };
+            let n = |k: &str| usage.get(k).and_then(Value::as_u64);
+            let (Some(used), Some(size)) = (n("totalTokens"), n("maxTokens").filter(|m| *m > 0)) else { return };
+            let update = me.st.lock().tr.on_context_usage(used, size);
+            if let Some(shim) = me.shim() {
+                shim.notify(vec![update]);
+            }
+        });
     }
 
     /// Sends the session's title once it has one: the one in its transcript, or else one
