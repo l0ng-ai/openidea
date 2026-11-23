@@ -3046,7 +3046,7 @@ describe("last turn changes", () => {
     const pane = await screen.findByRole("complementary", { name: "Changes" });
     expect(await within(pane).findByText("a.ts")).toBeInTheDocument();
 
-    fireEvent.click(within(pane).getByRole("radio", { name: "Last Turn" }));
+    fireEvent.click(within(pane).getByRole("tab", { name: "Last Turn" }));
     await waitFor(() => expect(within(pane).queryByText("a.ts")).toBeNull());
     expect(within(pane).getByText("b.ts")).toBeInTheDocument();
     expect(within(pane).getByText("Since the last turn started")).toBeInTheDocument();
@@ -3059,7 +3059,7 @@ describe("last turn changes", () => {
     backend.turnChanges = [];
     fireEvent.click(within(pane).getByRole("button", { name: "Refresh" }));
     expect(await within(pane).findByText("The last turn changed no files")).toBeInTheDocument();
-    fireEvent.click(within(pane).getByRole("radio", { name: "Whole Task" }));
+    fireEvent.click(within(pane).getByRole("tab", { name: "Whole Task" }));
     expect(await within(pane).findByText("a.ts")).toBeInTheDocument();
   });
 });
