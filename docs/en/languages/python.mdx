@@ -53,6 +53,10 @@ The selected interpreter is passed to basedpyright and Pyright (`python.pythonPa
 
 The **Python Interpreter** item in the status bar shows the current interpreter. Click it to switch, or to open **Add New Interpreter…** and **Interpreter Settings…**.
 
+### Interpreter paths
+
+**Settings › Languages & Frameworks › Python › All Interpreters › Show Paths for Selected Interpreter** lists the interpreter's `sys.path` and lets you add folders outside the project to it, such as a checkout of a shared library. The added folders are saved per interpreter in the IDE settings, so they apply to every project that uses it. basedpyright and Pyright get them as `extraPaths`, runs, debug sessions, tests and the Python Console get them on `PYTHONPATH`, and they are listed under **External Libraries**. At run time they are searched before the interpreter's own entries. A folder that no longer exists is marked as missing and skipped, and so is one that `PYTHONPATH` cannot hold (not absolute, or with its separator in the name). A folder inside the project is not listed under External Libraries, so its files stay editable. The interpreter's own entries cannot be removed, and a Docker or Compose run target has no paths of its own to edit.
+
 ### A Docker or Compose run target as the interpreter
 
 When the project's dependencies are installed only in an image, choose a Docker or Docker Compose [run target](/en/guide/remote/containers#docker-and-docker-compose-run-targets) as the interpreter: the interpreter list and the status bar item show those targets next to the local interpreters.
@@ -79,7 +83,7 @@ You can also select an existing interpreter or environment folder. The new inter
 
 ### Packages
 
-The same page lists the installed packages of the selected interpreter. You can search them, **Install** a package by name, **Upgrade** and **Uninstall**. The IDE uses the interpreter's pip, or `uv pip` for environments without pip (uv creates them that way).
+The same page lists the installed packages of the selected interpreter. You can search them, **Install** a package by name, **Upgrade** and **Uninstall**. The IDE uses the interpreter's pip, or `uv pip` for environments without pip (uv creates them that way). The **Latest** column marks the packages that have a newer release: after the list loads, the IDE asks the same tool (`pip list --outdated`, or `uv pip list --outdated`), so the answer comes from the index that tool is configured to use (pip's configuration for pip, uv's for uv) and is the newest release that the interpreter can install. When the index cannot be reached for every package, or the check takes more than two minutes, the page says the check failed rather than show a list that may be missing upgrades.
 
 Other options on the page:
 
@@ -89,6 +93,8 @@ Other options on the page:
 ### Formatting
 
 **Reformat Code** (`⌘⌥L` / `Ctrl+Alt+L`) uses Ruff. In **Settings › Languages & Frameworks › Ruff** you can set the Ruff path, a configuration directory, the **Formatting provider** (**Automatic (language server first)** or Ruff), and **Run on save**. Without a configuration directory, Ruff reads the nearest `pyproject.toml` (`[tool.ruff]`), `ruff.toml` or `.ruff.toml`.
+
+**Rearrange Code** (Find Action, or the Code menu) orders the methods of every class in the file: `__new__`, `__init__` and `__post_init__`, other dunder methods, public methods, `_protected`, then `__private` ones, each group in its original order. The docstring and class attributes before the first method stay put; a method moves with its decorators and the comment lines directly above it, and definitions sharing a name (a property and its setter, `@overload` stubs) move together. A class is left as it is when moving could change it: other statements, standalone comments or `# region` / `# fmt: off` markers among its methods, or a decorator, default value or annotation that names another of its methods. Files with syntax errors are not rearranged.
 
 ## Run and test
 

@@ -52,7 +52,7 @@ import {
 import { FindBar } from "./FindBar";
 import { KeepFoldHeader, OpenFolds } from "./Folds";
 import { Entry } from "./messages";
-import { ProcessRun, TurnFold } from "./ProcessRows";
+import { ProcessRun, RowRenderer, TurnFold } from "./ProcessRows";
 import { type QuestionAnswer } from "./QuestionForm";
 import { providerName } from "./shared";
 import { WorkingRow } from "./WorkingRow";
@@ -514,13 +514,7 @@ export function Stream({
   );
   const renderConversationRow = (row: ConversationRow): ReactNode =>
     row.kind === "turn" ? (
-      <TurnFold row={row} entries={entries ?? []}>
-        {row.rows.map((inner) => (
-          <div key={inner.index} className={styles.conversationRow}>
-            {renderConversationRow(inner)}
-          </div>
-        ))}
-      </TurnFold>
+      <TurnFold row={row} />
     ) : row.kind === "process" ? (
       <ProcessRun
         row={row}
@@ -636,35 +630,37 @@ export function Stream({
             ) : entries.length === 0 && !busy && !loadError ? (
               <EmptyState title="No conversation history" />
             ) : (
-              rows.map((row) => {
-                const images = toolImages(row);
-                return (
-                  <div
-                    key={row.index}
-                    className={styles.conversationRow}
-                    data-message={
-                      (row.kind === "entry" && (row.entry.type === "user" || row.entry.type === "agent")) || undefined
-                    }
-                    data-process={row.kind !== "entry" || row.entry.type !== "user" || undefined}
-                    data-author={authorHeaders.has(row.index) || undefined}
-                  >
-                    {authorHeaders.has(row.index) && (
-                      <div className={styles.agentAuthor}>
-                        <div className={styles.role}>
-                          <Icon name={providerIcon(task.provider)} size={13} />
-                          <span>{providerName(task.provider)}</span>
+              <RowRenderer.Provider value={renderConversationRow}>
+                {rows.map((row) => {
+                  const images = toolImages(row);
+                  return (
+                    <div
+                      key={row.index}
+                      className={styles.conversationRow}
+                      data-message={
+                        (row.kind === "entry" && (row.entry.type === "user" || row.entry.type === "agent")) || undefined
+                      }
+                      data-process={row.kind !== "entry" || row.entry.type !== "user" || undefined}
+                      data-author={authorHeaders.has(row.index) || undefined}
+                    >
+                      {authorHeaders.has(row.index) && (
+                        <div className={styles.agentAuthor}>
+                          <div className={styles.role}>
+                            <Icon name={providerIcon(task.provider)} size={13} />
+                            <span>{providerName(task.provider)}</span>
+                          </div>
                         </div>
-                      </div>
-                    )}
-                    {renderConversationRow(row)}
-                    {images.length > 0 && (
-                      <div className={styles.toolImages}>
-                        <ImageStrip images={images} />
-                      </div>
-                    )}
-                  </div>
-                );
-              })
+                      )}
+                      {renderConversationRow(row)}
+                      {images.length > 0 && (
+                        <div className={styles.toolImages}>
+                          <ImageStrip images={images} />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </RowRenderer.Provider>
             )}
             <WorkingRow task={task} entries={entries} subagent={subagent} />
           </div>
