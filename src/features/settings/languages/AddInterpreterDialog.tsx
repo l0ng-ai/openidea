@@ -1,12 +1,12 @@
 /**
  * PyCharm's "Add Python Interpreter" (local): generate a new environment with a
- * tool (virtualenv / uv / Poetry) or select an existing interpreter.
+ * tool (virtualenv / conda / uv / Poetry / Pipenv / Hatch) or select an existing interpreter.
  */
 import { isCancelled } from "@/platform/ipc";
-import { useId, useMemo, useState } from "react";
-import { Dialog, IconButton, Input, Select, Spinner, type SelectOption, T } from "@/ui";
+import { useEffect, useId, useMemo, useState } from "react";
+import { Checkbox, Dialog, IconButton, Input, Select, Spinner, type SelectOption, T } from "@/ui";
 import { Icon, type IconName } from "@/ui/icons";
-import { createVenv, pythonInterpreter, rememberSdk, type Sdk, type VenvTool } from "./api";
+import { createVenv, hatchEnvs, pythonInterpreter, rememberSdk, type Sdk, type VenvTool } from "./api";
 import { choosePath } from "@/platform/choosePath";
 import { tildify, useDetected } from "./components";
 import styles from "./Sdk.module.css";
@@ -20,7 +20,12 @@ const KINDS: { tool: VenvTool; label: string; missing: string; icon: IconName }[
   { tool: "conda", label: "Conda Environment", missing: "conda is not installed", icon: "python-conda" },
   { tool: "uv", label: "uv Environment", missing: "uv is not installed", icon: "python-uv" },
   { tool: "poetry", label: "Poetry Environment", missing: "Poetry is not installed", icon: "python-poetry" },
+  { tool: "pipenv", label: "Pipenv Environment", missing: "Pipenv is not installed", icon: "file-pipenv" },
+  { tool: "hatch", label: "Hatch Environment", missing: "Hatch is not installed", icon: "python-hatch" },
 ];
+
+/** Tools that keep the environment in a directory of their own: the location is not asked for. */
+const OWN_LOCATION: ReadonlySet<VenvTool> = new Set(["poetry", "pipenv"]);
 
 export function AddInterpreterDialog({
   root,
@@ -34,11 +39,14 @@ export function AddInterpreterDialog({
   const { list, loading } = useDetected("python");
   const [kind, setKind] = useState<VenvTool>("venv");
   const [mode, setMode] = useState<Mode>("new");
-  const bases = useMemo(() => list.filter((s) => s.source !== "venv"), [list]);
+  const bases = useMemo(() => list.filter((s) => !["venv", "pipenv", "hatch"].includes(s.source)), [list]);
   const [base, setBase] = useState<string | null>(null);
   const [location, setLocation] = useState(`${root}/.venv`);
   // Conda keeps named environments in its own envs directory, so only a name is asked for.
   const [envName, setEnvName] = useState(() => root.replaceAll("\\", "/").split("/").filter(Boolean).at(-1) ?? "env");
+  const [installPackages, setInstallPackages] = useState(true);
+  const [hatch, setHatch] = useState<{ root: string; names: string[]; error?: string }>();
+  const [hatchEnv, setHatchEnv] = useState<string | null>(null);
   const [existing, setExisting] = useState<string | null>(null);
   const [browsed, setBrowsed] = useState<Sdk[]>([]);
   const [busy, setBusy] = useState<{ cancel: () => void } | null>(null);
@@ -94,21 +102,48 @@ export function AddInterpreterDialog({
       });
   };
 
-  const target = (kind === "conda" ? envName : location).trim();
+  useEffect(() => {
+    let live = true;
+    const job = hatchEnvs();
+    void job.promise
+      .then((names) => live && setHatch({ root, names }))
+      .catch((e: unknown) => {
+        if (live && !isCancelled(e)) setHatch({ root, names: [], error: String((e as Error)?.message ?? e) });
+      })
+      .finally(() => {
+        live = false;
+      });
+    return () => {
+      if (live) job.cancel();
+      live = false;
+    };
+  }, [root]);
+  const hatchForRoot = hatch?.root === root ? hatch : undefined;
+  const hatchNames = hatchForRoot?.names ?? [];
+  const hatchEnvValue = hatchEnv && hatchNames.includes(hatchEnv) ? hatchEnv : (hatchNames[0] ?? null);
+  const hatchTarget = hatchEnvValue ? `${root}/${hatchEnvValue}` : "";
+  const formError = error ?? (kind === "hatch" && mode === "new" ? hatchForRoot?.error : undefined);
+
+  // Poetry and pipenv work on the project itself; the location is only shown, as a hint.
+  const shownLocation = OWN_LOCATION.has(kind) ? `${root}/.venv` : location;
+  const target = (kind === "conda" ? envName : kind === "hatch" ? hatchTarget : shownLocation).trim();
   const ok = () => {
     if (busy) return;
     setError(null);
     if (mode === "existing") {
       if (existing)
         checkExisting(existing, (sdk) => {
-          rememberSdk("python", sdk);
+          const detected = list.find((known) => known.source === "hatch" && known.path === sdk.path);
+          rememberSdk("python", detected ?? sdk);
           onAdded(sdk.path);
         });
       return;
     }
     if (!baseValue || !target) return;
     setLog([]);
-    const job = createVenv(kind, baseValue, target, (line) => setLog((l) => [...l.slice(-200), line]));
+    const job = createVenv(kind, baseValue, target, kind === "pipenv" && installPackages, (line) =>
+      setLog((l) => [...l.slice(-200), line]),
+    );
     setBusy({ cancel: job.cancel });
     job.promise
       .then((sdk) => {
@@ -129,6 +164,10 @@ export function AddInterpreterDialog({
     poetry: tx(
       "Runs “poetry env use <base>” in the project; poetry keeps the environment under its own cache directory.",
     ),
+    pipenv: tx(
+      "Runs “pipenv --python <base>” in the project, which writes a Pipfile (from requirements.txt if there is one) when the project has none. Pipenv chooses where to store the environment and reuses an existing one.",
+    ),
+    hatch: tx("Runs “hatch env create <environment>” in the project. Hatch decides where to store the environment."),
   }[kind];
 
   return (
@@ -150,7 +189,7 @@ export function AddInterpreterDialog({
     >
       <div className={styles.dialogBody}>
         <ul className={styles.kinds} aria-label={tx("Interpreter type")}>
-          {KINDS.map((k) => (
+          {KINDS.filter((k) => k.tool !== "hatch" || hatchNames.length > 0 || hatchForRoot?.error).map((k) => (
             <li key={k.tool}>
               <button
                 type="button"
@@ -164,7 +203,7 @@ export function AddInterpreterDialog({
                 }}
               >
                 <Icon name={k.icon} size={16} />
-                {k.label}
+                <T>{k.label}</T>
               </button>
             </li>
           ))}
@@ -201,6 +240,20 @@ export function AddInterpreterDialog({
                   </label>
                   <Input id={ids.location} value={envName} onChange={(e) => setEnvName(e.target.value)} />
                 </>
+              ) : kind === "hatch" ? (
+                <>
+                  <label htmlFor={ids.location}>
+                    <T>Environment:</T>
+                  </label>
+                  <Select
+                    id={ids.location}
+                    value={hatchEnvValue}
+                    options={hatchNames.map((name) => ({ value: name, label: name, verbatim: true }))}
+                    onChange={setHatchEnv}
+                    placeholder="No environments"
+                    aria-label={tx("Hatch environment")}
+                  />
+                </>
               ) : (
                 <>
                   <label htmlFor={ids.location}>
@@ -210,15 +263,15 @@ export function AddInterpreterDialog({
                     <Input
                       id={ids.location}
                       className={styles.pathInput}
-                      value={location}
+                      value={shownLocation}
                       onChange={(e) => setLocation(e.target.value)}
-                      disabled={kind === "poetry"}
+                      disabled={OWN_LOCATION.has(kind)}
                     />
                     <IconButton
                       icon="folder-open"
                       size="small"
                       title="Browse…"
-                      disabled={kind === "poetry"}
+                      disabled={OWN_LOCATION.has(kind)}
                       onClick={async () => {
                         const p = await choosePath({
                           directory: true,
@@ -253,6 +306,14 @@ export function AddInterpreterDialog({
                   />
                 )}
               </div>
+              {kind === "pipenv" && (
+                <Checkbox
+                  checked={installPackages}
+                  onChange={setInstallPackages}
+                  disabled={!!busy}
+                  label={tx("Install packages from Pipfile")}
+                />
+              )}
               <div className={styles.note}>{note}</div>
             </>
           ) : (
@@ -292,9 +353,9 @@ export function AddInterpreterDialog({
               </div>
             </>
           )}
-          {error && (
+          {formError && (
             <div className={styles.error} role="alert">
-              {error}
+              <T>{formError}</T>
             </div>
           )}
           {log.length > 0 && <pre className={styles.log}>{log.join("\n")}</pre>}

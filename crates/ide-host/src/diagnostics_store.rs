@@ -66,9 +66,6 @@ impl EventSink for RecordingSink {
     }
 }
 
-/// A sink whose diagnostics are recorded; the store outlives every project.
-pub type RecordSinkFactory = Box<dyn Fn(&str) -> SharedSink + Send + Sync>;
-
 /// Wraps a sink factory so every sink it creates records diagnostics.
 pub fn recording_sink_factory(store: Arc<DiagnosticsStore>, inner: crate::SinkFactory) -> crate::SinkFactory {
     Box::new(move |window| {

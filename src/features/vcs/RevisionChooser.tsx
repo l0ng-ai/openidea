@@ -32,7 +32,7 @@ export interface ChooseRevisionOptions {
   tags?: boolean;
   branchesOnly?: boolean;
   placeholder?: string;
-  repositories?: string[];
+  repositories?: (string | null)[];
   commonOnly?: boolean;
 }
 

@@ -11,7 +11,7 @@
  * of the file in batches; results are cached per document text, and markers
  * follow their lines in between.
  * The cache outlives the editor view (switching tabs remounts it) until other
- * files change or a language server settles: on some servers (jdtls) every
+ * files change, a language server settles or its classpath changes: on some servers (jdtls) every
  * implementation search walks the whole workspace, so asking again is costly.
  * Library sources ask no inheritors from the server (`isLibrarySource`).
  */
@@ -25,6 +25,7 @@ import { isNavigating, onNavigation } from "@/editor/lsp/foreground";
 import { readManyFileLines, withDocument } from "@/editor/lsp/files";
 import { locationItems, navigateTo, pinToFind } from "@/editor/lsp/navigation";
 import { openPopup } from "@/editor/lsp/popupStore";
+import type { DeclarationTarget } from "@/editor/lsp/syntaxFallback";
 import {
   commands,
   isCancelled,
@@ -118,11 +119,15 @@ function watchChanges() {
     // documents: re-render them instead of waiting for an edit or a settling server.
     for (const plugin of live) plugin.refreshSoon();
   });
-  // Answers (outlines too) given while a server was starting or indexing may be incomplete.
-  onServerSettled(() => {
+  // Answers (outlines too) given while a server was starting or importing may be incomplete.
+  const refreshCaches = () => {
     docMarkers.clear();
     forgetInheritanceGraph();
     for (const plugin of live) plugin.refreshSoon();
+  };
+  onServerSettled(refreshCaches);
+  onIdeEvent("lspRefresh", (e) => {
+    if (e.kind === "inheritance") refreshCaches();
   });
   // Go to Declaration and the like go first: in-flight marker requests are cancelled and
   // asked again once the navigation is done.
@@ -542,13 +547,32 @@ async function markerTargets(marker: LineMarker, doc: DocId | null): Promise<Loc
   }
 }
 
-/** Opens the single target, or the chooser over several. */
+/** Resolves each declaration's targets before opening the shared chooser. */
 export async function openMarkerTargets(
-  marker: LineMarker,
+  markers: readonly [LineMarker, ...LineMarker[]],
   anchor: { x: number; y: number },
   doc: DocId | null = null,
 ) {
-  const targets = await markerTargets(marker, doc);
+  const [first] = markers;
+  const merged = markers.length > 1;
+  let targets: DeclarationTarget[] = (
+    await Promise.all(
+      markers.map(async (marker) => {
+        const locations = await markerTargets(marker, doc);
+        // Generated methods can share a source location. Keep their names visible in the chooser.
+        return merged && marker.method ? locations.map((target) => ({ ...target, name: marker.name })) : locations;
+      }),
+    )
+  ).flat();
+  if (merged) {
+    const seen = new Set<string>();
+    targets = targets.filter(({ path, range, name }) => {
+      const key = JSON.stringify([path, range.start.line, range.start.col, name]);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
   if (targets.length === 1) {
     await navigateTo(targets[0]!);
     return;
@@ -556,9 +580,9 @@ export async function openMarkerTargets(
   openPopup({
     kind: "list",
     anchor,
-    title: marker.chooserTitle,
+    title: merged ? tx`Choose Inheritance Target (${targets.length} found)` : first.chooserTitle,
     items: await locationItems(targets),
-    pin: pinToFind(marker.name, targets),
+    pin: pinToFind([...new Set(markers.map((m) => m.name))].join(", "), targets),
   });
 }
 
@@ -587,41 +611,50 @@ function place(doc: Text, markers: readonly LineMarker[]): PlacedMarker[] {
 }
 
 const sameMarkers = (a: readonly PlacedMarker[], b: readonly PlacedMarker[]) =>
-  a.length === b.length &&
-  a.every(
-    (m, i) => m.pos === b[i]!.pos && m.marker.kind === b[i]!.marker.kind && m.marker.tooltip === b[i]!.marker.tooltip,
-  );
+  a.length === b.length && a.every((m, i) => m.pos === b[i]!.pos && m.marker === b[i]!.marker);
 
 class InheritanceMarker extends GutterMarker {
-  constructor(readonly marker: LineMarker) {
+  readonly kind: LineMarker["kind"];
+  readonly tooltip: string;
+
+  constructor(readonly markers: readonly [LineMarker, ...LineMarker[]]) {
     super();
+    const [first] = markers;
+    this.kind = first.kind;
+    this.tooltip =
+      markers.length === 1 ? first.tooltip : [...new Set(markers.map((m) => `${m.name} — ${m.tooltip}`))].join("\n");
   }
+
   override eq(other: GutterMarker): boolean {
-    return (
-      other instanceof InheritanceMarker &&
-      other.marker.kind === this.marker.kind &&
-      other.marker.tooltip === this.marker.tooltip
-    );
+    return other instanceof InheritanceMarker && other.kind === this.kind && other.tooltip === this.tooltip;
   }
+
   override toDOM(): Node {
     const el = document.createElement("div");
-    el.className = `${styles.marker} cm-openidea-lineMarker-${this.marker.kind}`;
-    el.dataset.kind = this.marker.kind;
-    el.title = this.marker.tooltip;
+    el.className = `${styles.marker} cm-openidea-lineMarker-${this.kind}`;
+    el.dataset.kind = this.kind;
+    el.title = this.tooltip;
     el.setAttribute("role", "button");
-    el.setAttribute("aria-label", this.marker.tooltip);
-    el.innerHTML = gutterIconMarkup(MARKER_ICONS[this.marker.kind]) ?? "";
+    el.setAttribute("aria-label", this.tooltip);
+    el.innerHTML = gutterIconMarkup(MARKER_ICONS[this.kind]) ?? "";
     return el;
   }
 }
 
-const gutterMarkers = new WeakMap<readonly PlacedMarker[], RangeSet<GutterMarker>>();
+const gutterMarkers = new WeakMap<readonly PlacedMarker[], RangeSet<InheritanceMarker>>();
 
-function markerSet(placed: readonly PlacedMarker[]): RangeSet<GutterMarker> {
+function markerSet(placed: readonly PlacedMarker[]): RangeSet<InheritanceMarker> {
   let set = gutterMarkers.get(placed);
   if (!set) {
+    const groups = new Map<string, { pos: number; markers: [LineMarker, ...LineMarker[]] }>();
+    for (const { pos, marker } of placed) {
+      const key = `${pos}:${marker.kind}`;
+      const group = groups.get(key);
+      if (group) group.markers.push(marker);
+      else groups.set(key, { pos, markers: [marker] });
+    }
     set = RangeSet.of(
-      placed.map((m) => new InheritanceMarker(m.marker).range(m.pos)),
+      [...groups.values()].map(({ pos, markers }) => new InheritanceMarker(markers).range(pos)),
       true,
     );
     gutterMarkers.set(placed, set);
@@ -829,10 +862,14 @@ export function markerDeps(
   };
 }
 
-function markerAt(view: EditorView, lineFrom: number, el: Element | null): LineMarker | null {
-  const onLine = view.state.field(markersField).filter((m) => m.pos === lineFrom);
-  const kind = (el?.closest(`.${styles.marker}`) as HTMLElement | null)?.dataset.kind;
-  return (onLine.find((m) => m.marker.kind === kind) ?? (onLine.length === 1 ? onLine[0] : null))?.marker ?? null;
+function markerAt(view: EditorView, lineFrom: number, kind: string | undefined): InheritanceMarker | undefined {
+  let match: InheritanceMarker | undefined;
+  markerSet(view.state.field(markersField)).between(lineFrom, lineFrom, (pos, _to, marker) => {
+    if (pos !== lineFrom || marker.kind !== kind) return;
+    match = marker;
+    return false;
+  });
+  return match;
 }
 
 export function implementationGutter(ctx: EditorDocContext): Extension {
@@ -846,13 +883,13 @@ export function implementationGutter(ctx: EditorDocContext): Extension {
       markers: (view) => markerSet(view.state.field(markersField)),
       mousedown: (view, block, e) => {
         if (e.button !== 0) return false;
-        const target = e.target instanceof Element ? e.target : null;
-        if (!target?.closest(`.${styles.marker}`)) return false;
-        const marker = markerAt(view, block.from, target);
+        const target = e.target instanceof Element ? e.target.closest<HTMLElement>(`.${styles.marker}`) : null;
+        if (!target) return false;
+        const marker = markerAt(view, block.from, target.dataset.kind);
         if (!marker) return false;
         e.preventDefault();
-        const rect = (target.closest(`.${styles.marker}`) ?? target).getBoundingClientRect();
-        void openMarkerTargets(marker, { x: rect.left, y: rect.bottom + 2 }, ctx.doc);
+        const rect = target.getBoundingClientRect();
+        void openMarkerTargets(marker.markers, { x: rect.left, y: rect.bottom + 2 }, ctx.doc);
         return true;
       },
     }),

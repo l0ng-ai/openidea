@@ -1,7 +1,7 @@
 use super::Channel;
 use crate::{Host, Project};
 use ide_command::command;
-use ide_core::{IdeError, IdeResult, RequestId};
+use ide_core::{IdeError, IdeResult, IpcBytes, RequestId};
 use ide_vfs::FileEntry;
 use ide_workspace::DeletionUndo;
 use std::path::{Path, PathBuf};
@@ -209,7 +209,7 @@ pub fn fs_create_file(host: &Host, window: &str, path: PathBuf) -> IdeResult<()>
 }
 
 #[command(trust = always)]
-pub async fn fs_create_file_bytes(host: &Host, window: &str, path: PathBuf, data: Vec<u8>) -> IdeResult<()> {
+pub async fn fs_create_file_bytes(host: &Host, window: &str, path: PathBuf, data: IpcBytes) -> IdeResult<()> {
     let project = host.project(window).ok();
     host.blocking(move || {
         ide_vfs::create_file_bytes(&path, &data)?;
@@ -226,6 +226,15 @@ pub async fn fs_create_file_bytes(host: &Host, window: &str, path: PathBuf, data
 #[command(trust = always)]
 pub fn fs_create_dir(path: PathBuf) -> IdeResult<()> {
     ide_vfs::create_dir(&path)
+}
+
+/// The scratch files' folder of this host (`<data dir>/scratches`), created. A remote window
+/// keeps its scratches on the server, where its file commands run.
+#[command(trust = always)]
+pub fn fs_scratches_dir(host: &Host) -> IdeResult<ide_core::IpcPath> {
+    let dir = host.data_dir.join("scratches");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir.into())
 }
 
 /// Toggle Read-only Attribute: sets the writable bit (and the open document's
@@ -383,6 +392,7 @@ ide_command::domain!(
     fs_read_dir,
     fs_read_text,
     fs_rename,
+    fs_scratches_dir,
     fs_set_writable,
     fs_synchronize_directories,
     fs_undo_delete,

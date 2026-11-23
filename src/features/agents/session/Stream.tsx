@@ -1,4 +1,4 @@
-import type { AgentEntry, AgentTask } from "@/bindings";
+import type { AgentEntry, AgentImage, AgentTask } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import {
@@ -27,6 +27,7 @@ import {
   type RefObject,
 } from "react";
 import { useAgentSettings } from "../agentSettings";
+import { ImageStrip } from "../ImageStrip";
 import {
   entriesKey,
   isBusy,
@@ -51,7 +52,7 @@ import {
 import { FindBar } from "./FindBar";
 import { KeepFoldHeader, OpenFolds } from "./Folds";
 import { Entry } from "./messages";
-import { ProcessRun, TurnFold } from "./ProcessRows";
+import { ProcessRun, RowRenderer, TurnFold } from "./ProcessRows";
 import { type QuestionAnswer } from "./QuestionForm";
 import { providerName } from "./shared";
 import { WorkingRow } from "./WorkingRow";
@@ -148,6 +149,13 @@ function useOffscreenRows(
   // Keep independent of `visible`: when a kept-alive tab hides, `data-selection` must stay until
   // the selection leaves and WebKit clears off-screen rows' highlights before skipping again.
   useSelectionVisibility(ref, enabled, `.${styles.conversationRow}`);
+}
+
+/** Images remain visible beside the work's folded summary, without duplicating them when it opens. */
+function toolImages(row: ConversationRow): AgentImage[] {
+  if (row.kind === "turn") return row.rows.flatMap(toolImages);
+  const entries = row.kind === "process" ? row.entries.map(({ entry }) => entry) : [row.entry];
+  return entries.flatMap((entry) => (entry.type === "tool" ? (entry.images ?? []) : []));
 }
 
 interface StreamProps {
@@ -506,13 +514,7 @@ export function Stream({
   );
   const renderConversationRow = (row: ConversationRow): ReactNode =>
     row.kind === "turn" ? (
-      <TurnFold row={row} entries={entries ?? []}>
-        {row.rows.map((inner) => (
-          <div key={inner.index} className={styles.conversationRow}>
-            {renderConversationRow(inner)}
-          </div>
-        ))}
-      </TurnFold>
+      <TurnFold row={row} />
     ) : row.kind === "process" ? (
       <ProcessRun
         row={row}
@@ -628,27 +630,37 @@ export function Stream({
             ) : entries.length === 0 && !busy && !loadError ? (
               <EmptyState title="No conversation history" />
             ) : (
-              rows.map((row) => (
-                <div
-                  key={row.index}
-                  className={styles.conversationRow}
-                  data-message={
-                    (row.kind === "entry" && (row.entry.type === "user" || row.entry.type === "agent")) || undefined
-                  }
-                  data-process={row.kind !== "entry" || row.entry.type !== "user" || undefined}
-                  data-author={authorHeaders.has(row.index) || undefined}
-                >
-                  {authorHeaders.has(row.index) && (
-                    <div className={styles.agentAuthor}>
-                      <div className={styles.role}>
-                        <Icon name={providerIcon(task.provider)} size={13} />
-                        <span>{providerName(task.provider)}</span>
-                      </div>
+              <RowRenderer.Provider value={renderConversationRow}>
+                {rows.map((row) => {
+                  const images = toolImages(row);
+                  return (
+                    <div
+                      key={row.index}
+                      className={styles.conversationRow}
+                      data-message={
+                        (row.kind === "entry" && (row.entry.type === "user" || row.entry.type === "agent")) || undefined
+                      }
+                      data-process={row.kind !== "entry" || row.entry.type !== "user" || undefined}
+                      data-author={authorHeaders.has(row.index) || undefined}
+                    >
+                      {authorHeaders.has(row.index) && (
+                        <div className={styles.agentAuthor}>
+                          <div className={styles.role}>
+                            <Icon name={providerIcon(task.provider)} size={13} />
+                            <span>{providerName(task.provider)}</span>
+                          </div>
+                        </div>
+                      )}
+                      {renderConversationRow(row)}
+                      {images.length > 0 && (
+                        <div className={styles.toolImages}>
+                          <ImageStrip images={images} />
+                        </div>
+                      )}
                     </div>
-                  )}
-                  {renderConversationRow(row)}
-                </div>
-              ))
+                  );
+                })}
+              </RowRenderer.Provider>
             )}
             <WorkingRow task={task} entries={entries} subagent={subagent} />
           </div>

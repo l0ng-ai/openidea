@@ -17,6 +17,7 @@ import { commitKey, graphCommit, mergeRepoLogs, type RepoCommit } from "../multi
 import { buildRepositoryBranchTree } from "../branches";
 import {
   emptyFilters,
+  goToRefRepositories,
   installGitLog,
   loadMore,
   openLogTab,
@@ -216,6 +217,13 @@ describe("multi-root Git log", () => {
     );
     expect(toggleRepository(repositories, "/project/front")).toEqual(["/project/back"]);
     expect(toggleRepository(["/project/back"], "/project/back")).toEqual([]);
+  });
+
+  it("offers Go to Hash/Branch/Tag every repository when the Repository filter is cleared", () => {
+    useGitLog.setState({ filters: { ...emptyFilters(), repositories: [] } });
+    expect(goToRefRepositories()).toEqual(["/project/front", "/project/back"]);
+    useGitLog.setState({ filters: { ...emptyFilters(), repositories: ["/project/back"] } });
+    expect(goToRefRepositories()).toEqual(["/project/back"]);
   });
 
   it("groups identical local and remote names under distinct repository nodes", () => {
