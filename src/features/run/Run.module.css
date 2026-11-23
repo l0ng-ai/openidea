@@ -1134,16 +1134,46 @@
   gap: var(--space-2);
   padding: 12px 16px;
 }
-.exportFormats {
+.exportReport {
   display: flex;
-  align-items: center;
-  gap: var(--space-4);
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4) var(--space-1);
+  font-size: var(--fs-ui);
 }
-.exportField {
+
+.exportFormats,
+.exportOutput {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.exportReport legend {
+  margin-block-end: var(--space-2);
+  padding: 0;
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+
+.exportFormats {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  justify-items: start;
+  gap: var(--space-1);
+}
+
+.exportOutput {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
   align-items: center;
   gap: var(--space-2);
+}
+
+.exportOutput > label {
+  max-inline-size: 120px;
+  overflow-wrap: anywhere;
+  color: var(--fg);
 }
 
 /* Folded console lines ("<N internal lines>"). */
