@@ -24,8 +24,8 @@ fn remember_codex_modes(data: &Path, root: &Path) {
     std::fs::write(data.join("agents/models.json"), modes.to_string()).unwrap();
 }
 
-fn codex_mode(host: &Host) -> Option<String> {
-    let providers = ide_host::ops::agent::agent_providers(host, "main").unwrap();
+async fn codex_mode(host: &Host) -> Option<String> {
+    let providers = ide_host::ops::agent::agent_providers(host, "main").await.unwrap();
     let codex = providers.into_iter().find(|p| p.id == "codex").expect("codex is listed");
     codex.config.into_iter().find(|o| o.id == "mode").and_then(|o| o.current)
 }
@@ -54,10 +54,10 @@ async fn new_tasks_start_asking_for_approval_when_the_user_chose_so() {
     }));
     host.trust.decide(&root, true, false).unwrap();
     host.open_project("main", &root).unwrap();
-    assert_eq!(codex_mode(&host).as_deref(), Some("ask"));
+    assert_eq!(codex_mode(&host).await.as_deref(), Some("ask"));
 
     // The default keeps starting new tasks without approvals.
     std::fs::remove_file(config.join("settings.toml")).unwrap();
     host.project("main").unwrap().settings.reload();
-    assert_eq!(codex_mode(&host).as_deref(), Some("full-access"));
+    assert_eq!(codex_mode(&host).await.as_deref(), Some("full-access"));
 }

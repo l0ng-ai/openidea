@@ -9,7 +9,8 @@ import { splitCommandLine } from "@/platform/commandLine";
 import type { RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { onWorkflowSettingsChange, workflowSettings, type ExternalToolValid } from "@/platform/workflowSettings";
-import { notifications } from "@/workbench/contributions";
+import { isVirtualUri } from "@/platform/virtualDocs";
+import { notifications, projectViewContextLead } from "@/workbench/contributions";
 import { promptValue } from "./dialogs";
 import { startRun, useRun } from "./store";
 
@@ -73,14 +74,27 @@ export function expandMacros(text: string, ctx: MacroContext, prompt = ""): stri
   return text.replace(MACRO_RE, (all, name: string) => (name === "Prompt" ? prompt : (macroValue(name, ctx) ?? all)));
 }
 
+/**
+ * The file macros resolve against, as IDEA's data context: the Project view's file while the
+ * tree is the user's context (it hands the context back on editor focus or a tab switch), else
+ * the editor's file.
+ */
+function contextFile(editorPath: string | null): string | null {
+  const lead = projectViewContextLead();
+  if (lead && !lead.dir && !isVirtualUri(lead.path)) return lead.path;
+  return editorPath;
+}
+
 function currentContext(): MacroContext | null {
   const project = useProject.getState().project;
   if (!project) return null;
   const ed = activeEditor();
+  const filePath = contextFile(ed?.ctx.path ?? null);
   let line: number | null = null;
   let column: number | null = null;
   let selectedText = "";
-  if (ed) {
+  // The caret macros describe the editor, so only when it shows the file the macros use.
+  if (ed && ed.ctx.path === filePath) {
     const state = ed.view.state;
     const sel = state.selection.main;
     const l = state.doc.lineAt(sel.head);
@@ -91,7 +105,7 @@ function currentContext(): MacroContext | null {
   return {
     projectRoot: project.root,
     projectName: project.name,
-    filePath: ed?.ctx.path ?? null,
+    filePath,
     line,
     column,
     selectedText,

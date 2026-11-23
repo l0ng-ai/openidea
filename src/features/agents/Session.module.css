@@ -202,6 +202,8 @@
   overflow-x: hidden;
   overflow-anchor: none;
   padding: var(--space-3);
+  /* Room below the end that keeps the header of a section folded there in place (`Stream`). */
+  padding-bottom: calc(var(--space-3) + var(--stream-slack, 0px));
   display: flex;
   flex-direction: column;
   font-size: var(--agent-fs-ui, var(--fs-ui));
@@ -229,7 +231,7 @@
   content-visibility: auto;
 }
 /* WebKit leaves a stale selection highlight on rows that skipped rendering (`useOffscreenRows`). */
-.stream[data-selection] > .conversationRow[data-measured] {
+.conversationRow[data-measured][data-selection] {
   content-visibility: visible;
 }
 /* Keep turns distinct and the work within a turn close to its author. Not `* + *`: a
@@ -1274,7 +1276,7 @@
 }
 .changesScope {
   flex: none;
-  padding: 6px 10px 2px;
+  padding: 0 4px;
 }
 .changesSummary {
   flex: none;

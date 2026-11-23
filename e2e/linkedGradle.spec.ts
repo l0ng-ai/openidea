@@ -83,6 +83,10 @@ test("links independent Gradle roots, runs identical task paths in their own bui
   });
   const tasks = tree.getByRole("treeitem", { name: /^assemble\b/ });
   await expect(tasks).toHaveCount(2);
+  expect(await tasks.allTextContents()).toEqual(["assemble", "assemble"]);
+  for (const task of await tasks.all()) {
+    await expect(task).toHaveAccessibleDescription("Assembles this project");
+  }
   await page.screenshot({ path: info.outputPath("gradle-two-roots.png"), animations: "disabled" });
 
   await tasks.nth(0).dblclick();

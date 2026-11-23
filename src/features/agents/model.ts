@@ -7,15 +7,15 @@ export const HOME_KEY = "agent:new";
 export const TOOL_WINDOW = "agents";
 /** MIME of a dragged agent task (a tree row or the docked conversation bar): the payload is the task id. */
 export const TASK_DRAG = "application/x-openidea-agent-task";
-/** Settings › Agents › Coding Agents: the agents this machine runs. */
+/** Settings › Agents › Agent Setup. */
 export const REGISTRY_PAGE = "agents.list";
 /** The Settings folder holding the agent pages. */
 export const AGENTS_GROUP = "Agents";
-/** Settings › Agents › External MCP Servers: User and Workspace MCP configurations. */
+/** Settings › Agents › MCP Connections. */
 export const MCP_PAGE = "agents.mcpServers";
 /** Settings › Agents › Skills: every CLI's SKILL.md folders and their modes. */
 export const SKILLS_PAGE = "agents.skills";
-/** Settings › Agents › Command Permissions. */
+/** Settings › Agents › Command Rules. */
 export const POLICY_PAGE = "agents.policy";
 
 export const sessionKey = (task: string) => `agent:${task}`;

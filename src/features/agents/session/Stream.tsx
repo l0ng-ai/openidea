@@ -11,6 +11,7 @@ import {
   showContextMenu,
   Spinner,
   useSelectionBoundary,
+  useSelectionVisibility,
 } from "@/ui";
 import { useEditorShown } from "@/workbench/contributions";
 import clsx from "clsx";
@@ -48,7 +49,7 @@ import {
   type EntryRow,
 } from "./conversationRows";
 import { FindBar } from "./FindBar";
-import { OpenFolds, RevealFold } from "./Folds";
+import { KeepFoldHeader, OpenFolds } from "./Folds";
 import { Entry } from "./messages";
 import { ProcessRun, TurnFold } from "./ProcessRows";
 import { type QuestionAnswer } from "./QuestionForm";
@@ -144,39 +145,9 @@ function useOffscreenRows(
       resize.disconnect();
     };
   }, [ref, visible, enabled, fitWindowWidth, fontZoom]);
-  // WebKit never clears the selection highlight of a row that skips rendering: once the
-  // selection moves, rows it covered off screen still show it when scrolled back. While the
-  // stream holds a selection every row renders (`data-selection`), and keeps rendering until
-  // the frame after it goes, when WebKit applies the change.
-  useEffect(() => {
-    const el = ref.current;
-    if (!el || !enabled || !visible) return;
-    let frame = 0;
-    const selected = () => {
-      const sel = window.getSelection();
-      return !!sel && !sel.isCollapsed && sel.rangeCount > 0 && sel.getRangeAt(0).intersectsNode(el);
-    };
-    const update = () => {
-      cancelAnimationFrame(frame);
-      if (selected()) {
-        el.setAttribute("data-selection", "");
-        return;
-      }
-      if (!el.hasAttribute("data-selection")) return;
-      frame = requestAnimationFrame(() => {
-        frame = requestAnimationFrame(() => {
-          if (!selected()) el.removeAttribute("data-selection");
-        });
-      });
-    };
-    update();
-    document.addEventListener("selectionchange", update);
-    return () => {
-      cancelAnimationFrame(frame);
-      document.removeEventListener("selectionchange", update);
-      el.removeAttribute("data-selection");
-    };
-  }, [ref, visible, enabled]);
+  // Keep independent of `visible`: when a kept-alive tab hides, `data-selection` must stay until
+  // the selection leaves and WebKit clears off-screen rows' highlights before skipping again.
+  useSelectionVisibility(ref, enabled, `.${styles.conversationRow}`);
 }
 
 interface StreamProps {
@@ -198,14 +169,30 @@ interface StreamProps {
 /** Entries rendered at a time when a conversation opens at its end. */
 const ENTRY_BATCH = 40;
 
-function scrollsInside(target: EventTarget | null, root: HTMLElement): boolean {
+function scrollsY(el: Element): boolean {
+  if (el.scrollHeight - el.clientHeight <= 1) return false;
+  const overflow = getComputedStyle(el).overflowY;
+  return overflow === "auto" || overflow === "scroll";
+}
+
+/** The innermost container under `target` that scrolls vertically: a tool output, a run of calls, or `root`. */
+function scrollOwner(target: EventTarget | null, root: HTMLElement): HTMLElement {
   for (let el = target instanceof Element ? target : null; el && el !== root; el = el.parentElement) {
-    if (el.scrollTop <= 0) continue;
-    const overflow = getComputedStyle(el).overflowY;
-    if (overflow === "auto" || overflow === "scroll") return true;
+    if (el instanceof HTMLElement && scrollsY(el)) return el;
+  }
+  return root;
+}
+
+/** Whether a container inside `root` under `target` can still scroll up. */
+function scrollsUpInside(target: EventTarget | null, root: HTMLElement): boolean {
+  for (let el = target instanceof Element ? target : null; el && el !== root; el = el.parentElement) {
+    if (el.scrollTop > 0 && scrollsY(el)) return true;
   }
   return false;
 }
+
+/** A wheel gesture's events arrive closer together than this; a pause starts a new one. */
+const WHEEL_GESTURE_MS = 150;
 
 export function Stream({
   loadError,
@@ -228,7 +215,7 @@ export function Stream({
   const restored = useRef(false);
   const previousLength = useRef(entries?.length ?? 0);
   /** Scrolled away from the end: offer one click back to the latest message. */
-  const [away, setAway] = useState(() => positions.get(key)?.stick === false);
+  const [away, setAway] = useState(false);
   // Opened at the end, the last entries come first and the earlier ones follow in batches:
   // reopening a long conversation paints at once. A kept offset needs them all.
   const [shown, setShown] = useState(() => (positions.get(key)?.stick === false ? Infinity : ENTRY_BATCH));
@@ -252,15 +239,22 @@ export function Stream({
   const stopFollowing = useCallback(
     (target: EventTarget | null) => {
       const el = ref.current;
-      if (!el || el.scrollHeight <= el.clientHeight || scrollsInside(target, el)) return;
+      if (!el || el.scrollHeight <= el.clientHeight || scrollsUpInside(target, el)) return;
       scrollingUp.current = true;
       if (!position.current.stick) return;
       position.current = { top: el.scrollTop, stick: false };
       positions.set(key, position.current);
-      setAway(true);
     },
     [key, positions],
   );
+  const updateJumpVisibility = useCallback((el: HTMLElement) => {
+    // An upward gesture releases following before anything moves. Only offer a jump
+    // when there is actual content below the viewport, excluding the fold spacer.
+    setAway(
+      !position.current.stick &&
+        el.scrollHeight - el.clientHeight - el.scrollTop > (parseFloat(getComputedStyle(el).paddingBottom) || 0) + 1,
+    );
+  }, []);
   // Earlier entries are prepended above the view: remember where the first painted row is
   // so the content stays put and the scrollbar doesn't jump under the pointer.
   const anchor = useRef<{ el: Element; top: number } | null>(null);
@@ -314,11 +308,31 @@ export function Stream({
   const visible = useEditorShown();
   const { foldTurns, toolCalls, fitWindowWidth } = useAgentSettings();
   useOffscreenRows(ref, visible, !finding, fitWindowWidth, fontZoom);
+  /**
+   * Blank space after the conversation that lets a section folded near the end keep its header
+   * in place. It is only ever what the view shows below the content: scrolling up or new rows
+   * take it back without moving anything.
+   */
+  const slack = useRef(0);
+  const setSlack = useCallback((px: number) => {
+    slack.current = px;
+    if (px) ref.current?.style.setProperty("--stream-slack", `${px}px`);
+    else ref.current?.style.removeProperty("--stream-slack");
+  }, []);
+  const trimSlack = useCallback(() => {
+    const el = ref.current;
+    if (!el || slack.current === 0) return;
+    const content = el.scrollHeight - slack.current;
+    const next = Math.max(0, Math.min(slack.current, Math.ceil(el.scrollTop + el.clientHeight - content)));
+    if (next !== slack.current) setSlack(next);
+  }, [setSlack]);
   /** A diagram that drew after the last streamed chunk grows the conversation: keep following. */
   const onDiagramDrawn = useCallback(() => {
     const el = ref.current;
-    if (el && position.current.stick && !dragging.current) el.scrollTop = el.scrollHeight;
-  }, []);
+    if (!el) return;
+    if (position.current.stick && !dragging.current) el.scrollTop = el.scrollHeight;
+    updateJumpVisibility(el);
+  }, [updateJumpVisibility]);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el || entries === null || !visible) return;
@@ -343,10 +357,12 @@ export function Stream({
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el || entries === null || !visible) return;
+    trimSlack();
     if (position.current.stick) {
       if (!dragging.current) el.scrollTop = el.scrollHeight;
     } else if (!restored.current) el.scrollTop = position.current.top;
     restored.current = true;
+    updateJumpVisibility(el);
   });
   useLayoutEffect(() => {
     // Prepending earlier entries moved the first painted row down: follow it, so the same
@@ -357,52 +373,80 @@ export function Stream({
     anchor.current = null;
     if (position.current.stick || !from.el.isConnected) return;
     scroller.scrollTop += from.el.getBoundingClientRect().top - from.top;
+    updateJumpVisibility(scroller);
   });
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
     const observer = new ResizeObserver(() => {
+      trimSlack();
       if (position.current.stick && !dragging.current) el.scrollTop = el.scrollHeight;
+      updateJumpVisibility(el);
     });
     observer.observe(el);
     return () => {
       observer.disconnect();
       if (restored.current) positions.set(key, { ...position.current, top: el.scrollTop });
     };
-  }, [key, positions]);
-  // How far the end was below the view when a section was toggled, before its content renders.
-  const gapAtToggle = useRef(Infinity);
+  }, [key, positions, trimSlack, updateJumpVisibility]);
+  /**
+   * The wheel scrolls the innermost container under the pointer, and only that one: a run of
+   * calls from its headers, a tool output from its text, the conversation elsewhere. A container
+   * at its edge doesn't hand the rest to the conversation; a gesture stays with the container
+   * it started in.
+   */
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const toggled = () => {
-      gapAtToggle.current = el.scrollHeight - el.scrollTop - el.clientHeight;
+    let gesture: { owner: HTMLElement; at: number } | null = null;
+    const onWheel = (e: WheelEvent) => {
+      if (e.defaultPrevented || e.ctrlKey || e.metaKey) return;
+      if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+      const now = performance.now();
+      const latched = gesture && now - gesture.at < WHEEL_GESTURE_MS && gesture.owner.isConnected;
+      const owner = latched ? gesture!.owner : scrollOwner(e.target, el);
+      gesture = { owner, at: now };
+      if (owner !== el) {
+        const room = e.deltaY < 0 ? owner.scrollTop : owner.scrollHeight - owner.clientHeight - owner.scrollTop;
+        if (room <= 1) e.preventDefault();
+        return;
+      }
+      markUserScroll();
+      if (e.deltaY < 0) stopFollowing(e.target);
+      else if (e.deltaY > 0) scrollingUp.current = false;
     };
-    el.addEventListener("toggle", toggled, true);
-    return () => el.removeEventListener("toggle", toggled, true);
-  }, []);
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [markUserScroll, stopFollowing]);
   /**
-   * An opened section grew the conversation below its header: with the end in view, stay at
-   * it; otherwise bring what it shows into view. Either way its header stays on screen, and
-   * following stops when that leaves the end out of view.
+   * The reader opened or closed a section: put its header back where it was, in the run or
+   * output that scrolls it and then in the conversation. Following stops when that leaves any
+   * of the end out of view, so the next chunk doesn't pull the header away.
    */
-  const revealFold = useCallback(
-    (fold: HTMLElement) => {
+  const keepFoldHeader = useCallback(
+    (header: HTMLElement, top: number) => {
       const el = ref.current;
-      if (!el || dragging.current) return;
-      const view = el.getBoundingClientRect();
-      const box = fold.getBoundingClientRect();
-      const atEnd = position.current.stick || gapAtToggle.current < 40;
-      gapAtToggle.current = Infinity;
-      const below = atEnd ? el.scrollHeight - el.scrollTop - el.clientHeight : box.bottom - view.bottom;
-      if (below > 0) el.scrollTop += Math.max(0, Math.min(below, box.top - view.top));
-      if (atEnd && el.scrollHeight - el.scrollTop - el.clientHeight >= 40) {
+      if (!el?.contains(header)) return;
+      // Opened, the section fills the room left by an earlier fold first.
+      trimSlack();
+      for (let s = header.parentElement; s; s = s.parentElement) {
+        const moved = header.getBoundingClientRect().top - top;
+        if (Math.abs(moved) < 1) break;
+        if (s === el) {
+          const short = Math.ceil(el.scrollTop + moved + el.clientHeight - el.scrollHeight);
+          if (short > 0) setSlack(slack.current + short);
+          el.scrollTop += moved;
+          break;
+        }
+        if (scrollsY(s)) s.scrollTop += moved;
+      }
+      if (position.current.stick && el.scrollHeight - el.scrollTop - el.clientHeight >= 1) {
         position.current = { top: el.scrollTop, stick: false };
         positions.set(key, position.current);
-        setAway(true);
       }
+      updateJumpVisibility(el);
     },
-    [key, positions],
+    [key, positions, setSlack, trimSlack, updateJumpVisibility],
   );
   /** Back to the end of the stream; following resumes from there. */
   const jumpToLatest = useCallback(() => {
@@ -483,7 +527,7 @@ export function Stream({
     );
   return (
     <OpenFolds.Provider value={openFolds}>
-      <RevealFold.Provider value={revealFold}>
+      <KeepFoldHeader.Provider value={keepFoldHeader}>
         <div className={styles.streamArea}>
           {finding && <FindBar streamRef={ref} focus={findFocus} onClose={onCloseFind} />}
           <div
@@ -491,12 +535,6 @@ export function Stream({
             // The conversation is read and copied like a document; focusable so ⌘F reaches it.
             className={clsx(styles.stream, selectableText)}
             tabIndex={-1}
-            onWheel={(e) => {
-              if (e.defaultPrevented) return;
-              markUserScroll();
-              if (e.deltaY < 0 && !e.ctrlKey && !e.metaKey) stopFollowing(e.target);
-              else if (e.deltaY > 0 && !e.ctrlKey && !e.metaKey) scrollingUp.current = false;
-            }}
             onTouchStart={(e) => {
               touchY.current = e.touches.length === 1 ? e.touches[0]!.clientY : null;
             }}
@@ -526,6 +564,7 @@ export function Stream({
             }}
             onScroll={(e) => {
               const el = e.currentTarget;
+              trimSlack();
               const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
               const laidOut =
                 el.scrollHeight !== seenHeight.current.content || el.clientHeight !== seenHeight.current.view;
@@ -542,7 +581,7 @@ export function Stream({
               if (stick && !atEnd && !dragging.current) el.scrollTop = el.scrollHeight;
               position.current = { top: el.scrollTop, stick };
               positions.set(key, position.current);
-              setAway(!position.current.stick);
+              updateJumpVisibility(el);
               // Reached the top of what is painted: fetch the earlier entries, but only
               // once the drag has settled.
               if (loadTimer.current !== null) window.clearTimeout(loadTimer.current);
@@ -615,7 +654,7 @@ export function Stream({
           </div>
           {away && !!entries?.length && <JumpToLatest onJump={jumpToLatest} />}
         </div>
-      </RevealFold.Provider>
+      </KeepFoldHeader.Provider>
     </OpenFolds.Provider>
   );
 }

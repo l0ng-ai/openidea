@@ -1,6 +1,6 @@
 .view {
   --coverage-metrics: 2;
-  --coverage-metric-width: min(29cqi, 128px);
+  --coverage-tracks: minmax(0, 1fr) var(--coverage-lines-width) var(--coverage-branches-width);
   --coverage-column-gap: var(--space-2);
   container-type: inline-size;
   height: 100%;
@@ -10,6 +10,7 @@
 }
 .noBranches {
   --coverage-metrics: 1;
+  --coverage-tracks: minmax(0, 1fr) var(--coverage-lines-width);
 }
 .tabs {
   min-width: 0;
@@ -25,7 +26,7 @@
 .header,
 .row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) repeat(var(--coverage-metrics), var(--coverage-metric-width));
+  grid-template-columns: var(--coverage-tracks);
   align-items: center;
   column-gap: var(--coverage-column-gap);
   font-size: var(--fs-ui);
@@ -44,9 +45,16 @@
 .header::-webkit-scrollbar {
   width: 10px;
 }
+.heading {
+  position: relative;
+  min-width: 0;
+  height: 100%;
+}
 .headerCell {
-  display: inline-flex;
+  display: flex;
   align-items: center;
+  width: 100%;
+  height: 100%;
   gap: var(--space-0-5);
   min-width: 0;
   padding: 0;
@@ -63,13 +71,33 @@
 .headerCell svg {
   flex: none;
 }
+.divider {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: calc(-1 * var(--coverage-column-gap));
+  width: var(--coverage-column-gap);
+  cursor: col-resize;
+  touch-action: none;
+}
+.divider::after {
+  position: absolute;
+  inset: var(--space-1) 50% var(--space-1) auto;
+  width: 1px;
+  background: var(--border);
+  content: "";
+}
+.divider:hover::after,
+.divider:focus-visible::after,
+.divider:active::after {
+  background: var(--accent);
+}
 .tree {
   flex: 1;
   min-height: 0;
   /* Keep the chevron and icon in the name column at deeper levels. */
   --coverage-max-row-inset: max(
     4px,
-    calc(100% - var(--coverage-metrics) * (var(--coverage-metric-width) + var(--coverage-column-gap)) - 72px)
+    calc(100% - var(--coverage-stats-width) - var(--coverage-metrics) * var(--coverage-column-gap) - 72px)
   );
 }
 .row {
@@ -99,16 +127,15 @@
 @container (width < 360px) {
   .header,
   .tree {
-    --coverage-metric-width: min(23cqi, 65px);
     --coverage-column-gap: var(--space-1);
   }
-  .count {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-  }
+}
+.compactCount {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
 }
 .link {
   padding: 0;

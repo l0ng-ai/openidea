@@ -1,7 +1,7 @@
 /**
  * Per-session MCP picker for the New Task and Session composers: shows inherited IDE, Project,
  * Global, and Agent-Native CLI MCP servers, lets the user toggle servers for this session only,
- * reset session overrides, or jump to Settings › Agents › External MCP Servers.
+ * reset session overrides, or jump to Settings › Agents › MCP Connections.
  */
 import { useMemo, useState } from "react";
 import type { McpExternalSource, McpServer } from "@/bindings";
@@ -110,7 +110,7 @@ export function McpPicker({
       }}
       triggerAriaLabel={tx("MCP servers")}
       popupTitle={tx("Session MCP Servers")}
-      settingsTitle={tx("External MCP Servers…")}
+      settingsTitle={tx("MCP Connections…")}
       settingsPage={MCP_PAGE}
       counts={{ active: resolved.activeCount, total: resolved.totalCount, overrides: resolved.overrideCount }}
       search={{ placeholder: tx("Filter MCP servers…"), ariaLabel: tx("Filter MCP servers"), shown: totalRows > 5 }}
