@@ -1376,6 +1376,46 @@ async fn steers_through_session_steering() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn stale_queue_actions_refresh_the_queue_without_starting_another_turn() {
+    use ide_core::error::ErrorKind;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let task = mgr
+        .create(NewAgentTask { provider: "claude".into(), prompt: text("ask"), ..Default::default() })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    mgr.prompt(&task.id, text("again"), false).await.unwrap();
+    let handle = mgr.task(&task.id).unwrap();
+    let queued = handle.state.lock().task.queue[0].id.clone();
+    let permission = *handle.permissions.lock().keys().next().unwrap();
+    let (tx, mut updates) = tokio::sync::mpsc::unbounded_channel();
+    let weak = Arc::downgrade(&handle);
+    mgr.subscribe(Arc::new(move |event| {
+        if let AgentEvent::Task { task } = event
+            && task.queue.is_empty()
+            && let Some(handle) = weak.upgrade()
+        {
+            let _ = tx.send(handle.turns.load(Ordering::Acquire));
+        }
+    }));
+    mgr.respond(&task.id, permission, Some("yes".into())).unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    assert_eq!(updates.try_recv().unwrap(), 1, "publish the dequeue before starting the second turn");
+    while updates.try_recv().is_ok() {}
+
+    for error in
+        [mgr.unqueue(&task.id, &queued).unwrap_err(), mgr.send_queued_now(&task.id, &queued).await.unwrap_err()]
+    {
+        assert_eq!(error.kind, ErrorKind::OutOfSync);
+        assert_eq!(updates.try_recv().unwrap(), 2, "a stale action gets the current queue");
+    }
+    assert!(!handle.state.lock().busy);
+    assert_eq!(mgr.unqueue("missing-task", &queued).unwrap_err().kind, ErrorKind::NotFound);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn messages_sent_while_busy_are_queued_and_send_now_interrupts() {
     let tmp = tempfile::tempdir().unwrap();
     let agent = Arc::new(FakeAgent::default());
