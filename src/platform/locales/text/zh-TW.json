@@ -143,7 +143,7 @@
   "Unpin ({count})": "取消固定（{count}）",
   "New Group": "新增群組",
   "Rename Group": "重新命名群組",
-  "Remove from Group": "從群組中移除",
+  "No Group": "不分組",
   "Remove “{name}”? Its tasks move back to their status groups.": "移除「{name}」？其中的任務將回到各自的狀態分組。",
   "Copy Link Address": "複製連結地址",
   "Pin Agent Tasks": "固定 Agent 任務",
