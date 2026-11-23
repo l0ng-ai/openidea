@@ -286,6 +286,7 @@ fs_read_range                                always             project_host bin
 fs_read_text                                 always             project_host bindings async
 fs_rename                                    always             project_host bindings async
 fs_resolve_reference                         always             project_host bindings async
+fs_scratches_dir                             always             project_host bindings sync
 fs_set_writable                              always             project_host bindings sync
 fs_synchronize_directories                   always             project_host bindings async
 fs_undo_delete                               always             project_host bindings async
@@ -601,6 +602,8 @@ sdk_python_interpreter                       outside_restricted project_host bin
 sdk_python_packages                          outside_restricted project_host bindings async
 sdk_python_pip                               outside_restricted project_host bindings async
 sdk_python_project_interpreters              outside_restricted project_host bindings async
+sdk_python_sys_path                          outside_restricted project_host bindings async
+sdk_python_user_path_problems                outside_restricted project_host bindings async
 search_start                                 always             project_host bindings async
 search_validate                              always             project_host bindings sync
 set_recent_project_groups                    always             desktop      bindings sync

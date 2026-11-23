@@ -13,7 +13,7 @@ export function activate(): () => void {
     trackSession(),
     onIdeEvent("windowGroupsChanged", () => void loadRecent()),
     provideWelcomeView(WelcomeView),
-    provideProjectPopup(lazyComponent(() => import("./ProjectPopup").then((m) => m.ProjectPopup))),
+    provideProjectPopup(lazyComponent(() => import("./ProjectPopup").then((m) => m.ProjectPopup), { prefetch: true })),
     registerOverlay({ id: "welcome.recentProjects", component: RecentProjectsPopup }),
     registerActions([
       {

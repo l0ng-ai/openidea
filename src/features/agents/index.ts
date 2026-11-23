@@ -117,7 +117,7 @@ export function activate(): () => void {
       icon: "toolwindow-agents",
       anchor: "right",
       order: 0.5,
-      component: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsView)),
+      component: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsView), { prefetch: true }),
       headerMenu: useAgentsHeaderMenu,
       plainTitle: true,
       headerActions: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsHeaderActions)),
@@ -137,7 +137,7 @@ export function activate(): () => void {
     }),
     registerEditorKind({
       kind: SESSION_KIND,
-      component: lazyComponent(() => import("./SessionEditor").then((m) => m.SessionEditor)),
+      component: lazyComponent(() => import("./SessionEditor").then((m) => m.SessionEditor), { prefetch: true }),
       title: (input) => {
         const data = input.data as { task: string; title?: string };
         return useAgents.getState().tasks.get(data.task)?.title ?? data.title ?? "Agent Task";
@@ -166,7 +166,7 @@ export function activate(): () => void {
     }),
     registerEditorKind({
       kind: HOME_KIND,
-      component: lazyComponent(() => import("./HomeEditor").then((m) => m.HomeEditor)),
+      component: lazyComponent(() => import("./HomeEditor").then((m) => m.HomeEditor), { prefetch: true }),
       title: () => "New Agent Task",
       icon: (input) => {
         const task = useAgents.getState().tasks.get((input.data as { task: string }).task);

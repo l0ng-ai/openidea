@@ -459,6 +459,37 @@ describe("process folding", () => {
   });
 });
 
+describe("tool result images", () => {
+  it.each([
+    ["grouped", true],
+    ["grouped", false],
+    ["each", true],
+    ["each", false],
+  ] as const)("keeps tool images visible with %s tools and folded turns=%s", async (toolCalls, foldTurns) => {
+    useProject.setState({ settings: { agents: { toolCalls, foldTurns } } as never });
+    const image = { mimeType: "image/png", data: "aW1hZ2U=", name: null };
+    backend.entries.set("A", [
+      { type: "user", text: "Render a preview", attachments: [], steered: false, sentMs: 1000, doneMs: 2000 },
+      { type: "thought", text: "Rendering" },
+      tool("preview", { images: [image] }),
+      tool("inspect", { output: "Preview ready" }),
+      { type: "agent", text: "Here is the result." },
+    ]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Here is the result.");
+    const preview = screen.getByRole("img", { name: "Image" });
+    expect(preview).toHaveAttribute("src", "data:image/png;base64,aW1hZ2U=");
+    expect(preview.closest("details")).toBeNull();
+    fireEvent.click(preview.closest("button")!);
+    const dialog = await screen.findByRole("dialog", { name: "Image" });
+    expect(within(dialog).getByRole("img")).toHaveAttribute("src", "data:image/png;base64,aW1hZ2U=");
+    fireEvent.click(within(dialog).getByText("Close", { selector: "button" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getAllByRole("img", { name: "Image" })).toHaveLength(1);
+  });
+});
+
 describe("turn folding", () => {
   it("folds a finished turn's work under its message and keeps the reply", async () => {
     backend.entries.set("A", [
@@ -1094,12 +1125,7 @@ describe("scrolling", () => {
   it("defers prepending during a pointer drag and preserves the first row's viewport position", async () => {
     const entries = Array.from({ length: 90 }, (_, i): AgentEntry => ({ type: "agent", text: `History ${i}` }));
     useAgents.setState({ entries: new Map([["A", entries]]) });
-    // Mount hidden so the initial batch hasn't yet restored the bottom offset.
-    const view = render(
-      <EditorShownProvider value={false}>
-        <SessionEditor input={input("A")} />
-      </EditorShownProvider>,
-    );
+    const view = render(<SessionEditor input={input("A")} />);
     const el = stream();
     Object.defineProperty(el, "scrollHeight", {
       configurable: true,
