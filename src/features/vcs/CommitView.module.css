@@ -89,6 +89,9 @@
 .groupLabel {
   color: var(--fg-strong);
 }
+.stageGroupLabel {
+  font-weight: 600;
+}
 .detail {
   flex: 0 10000 auto;
   min-width: 0;
@@ -488,14 +491,13 @@
 .checkProblemLink:hover {
   text-decoration: underline;
 }
-/* Staging area: Stage / Unstage on the hovered or selected row, as a hover icon at the row's end. */
 .stageButton {
   flex: none;
   margin-left: auto;
   visibility: hidden;
 }
 [role="treeitem"]:hover .stageButton,
-[role="treeitem"][aria-selected="true"] .stageButton {
+.stageButtonLead {
   visibility: visible;
 }
 .inspectionFix {

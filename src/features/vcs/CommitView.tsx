@@ -591,7 +591,7 @@ export function stageOperation(n: ChangeNode): { label: string; icon: "plus" | "
   return null;
 }
 
-function StageButton({ node }: { node: ChangeNode }) {
+function StageButton({ node, leadSelected }: { node: ChangeNode; leadSelected: boolean }) {
   const op = stageOperation(node);
   if (!op) return null;
   const { label, icon, paths } = op;
@@ -601,7 +601,7 @@ function StageButton({ node }: { node: ChangeNode }) {
       icon={icon}
       title={label}
       size="small"
-      className={styles.stageButton}
+      className={clsx(styles.stageButton, leadSelected && styles.stageButtonLead)}
       onMouseDown={(e) => e.stopPropagation()}
       onDoubleClick={(e) => e.stopPropagation()}
       onClick={(e) => {
@@ -1162,6 +1162,7 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
                 className={clsx(
                   styles.label,
                   n.type === "group" && styles.groupLabel,
+                  staging && n.type === "group" && styles.stageGroupLabel,
                   n.type === "group" && n.changelist && !n.active && styles.inactiveList,
                 )}
                 style={n.type === "file" && n.kind ? { color: KIND_COLOR[n.kind] } : undefined}
@@ -1269,7 +1270,7 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
                 )}
                 {n.detail && n.detailIcon && <Icon name={n.detailIcon} size={14} className={styles.detailIcon} />}
                 {n.detail && <span className={styles.detail}>{n.detail}</span>}
-                {staging && <StageButton node={n} />}
+                {staging && <StageButton node={n} leadSelected={st.selected && st.lead} />}
               </span>
             );
           }}
