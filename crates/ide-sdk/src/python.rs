@@ -31,18 +31,25 @@ pub enum VenvTool {
     Poetry,
     /// `conda create -n <name> -y` for a bare name, else `-p <location>` (conda must be on PATH).
     Conda,
+    /// `pipenv --python <base>` in the project (pipenv must be on PATH).
+    Pipenv,
+    /// `hatch env create <env>` in the project (hatch must be on PATH).
+    Hatch,
 }
 
 /// Creates a virtualenv at `location` with `tool` and returns its interpreter.
-/// `base` is the interpreter uv / venv build on, or the one poetry's env uses.
+/// `base` is the interpreter uv / venv build on, or the one poetry's / pipenv's / hatch's env uses.
+/// `install` also installs the packages the project declares, for the tool that reads them (pipenv).
+/// For Hatch, `location` is `<project>/<environment name>`: Hatch decides where the environment goes.
 pub fn create_venv(
     tool: VenvTool,
     base: &Path,
     location: &Path,
+    install: bool,
     cancel: &CancellationToken,
     on_line: &dyn Fn(String),
 ) -> IdeResult<Sdk> {
-    create_venv_with(tool, base, location, which, cancel, on_line)
+    create_venv_with(tool, base, location, install, which, cancel, on_line)
 }
 
 /// [`create_venv`] with the tool lookup injectable (tests fake `uv` / `poetry`).
@@ -50,6 +57,7 @@ pub(crate) fn create_venv_with(
     tool: VenvTool,
     base: &Path,
     location: &Path,
+    install: bool,
     which: impl Fn(&str) -> Option<PathBuf>,
     cancel: &CancellationToken,
     on_line: &dyn Fn(String),
@@ -89,7 +97,156 @@ pub(crate) fn create_venv_with(
         }
         VenvTool::Poetry => create_poetry_env(base, location, &which, cancel, on_line),
         VenvTool::Conda => create_conda_env(base, location, &which, cancel, on_line),
+        VenvTool::Pipenv => create_pipenv_env(base, location, install, &which, cancel, on_line),
+        VenvTool::Hatch => create_hatch_env(base, location, &which, cancel, on_line),
     }
+}
+
+const HATCH_MISSING: &str = "Hatch is not installed (install it from https://hatch.pypa.io)";
+const HATCH_SHOW_ARGS: [&str; 5] = ["--no-color", "--no-interactive", "env", "show", "--json"];
+
+/// Hatch's own environments (`hatch-build`, `hatch-test.py3.12`, `hatch-static-analysis`, …).
+fn is_internal_hatch_env(name: &str) -> bool {
+    name.starts_with("hatch-")
+}
+
+/// The environments the project at `root` defines for Hatch (`hatch env show --json`), `default`
+/// first, without Hatch's internal ones. Unconfigured projects return an empty list.
+pub fn hatch_envs(root: &Path, cancel: &CancellationToken) -> IdeResult<Vec<String>> {
+    // Hatch first installs the environment plugins the project requires, which can take a while.
+    hatch_envs_with(root, which, Duration::from_secs(120), cancel)
+}
+
+pub(crate) fn hatch_envs_with(
+    root: &Path,
+    which: impl Fn(&str) -> Option<PathBuf>,
+    timeout: Duration,
+    cancel: &CancellationToken,
+) -> IdeResult<Vec<String>> {
+    let Some((project, _)) = crate::discover::hatch_project_config(root) else { return Ok(Vec::new()) };
+    let hatch = which("hatch").ok_or_else(|| IdeError::unavailable(HATCH_MISSING))?;
+    let args = HATCH_SHOW_ARGS.map(str::to_owned);
+    // Cancelled when the caller cancels, or when `timeout` passes first.
+    let token = cancel.child_token();
+    let (done, finished) = std::sync::mpsc::channel::<()>();
+    let watchdog = token.clone();
+    std::thread::spawn(move || {
+        if finished.recv_timeout(timeout) == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+            watchdog.cancel();
+        }
+    });
+    let out = stream(&hatch, &args, Some(&project), &[], &token, &|_| {});
+    drop(done);
+    match out {
+        Err(_) if token.is_cancelled() && !cancel.is_cancelled() => Err(IdeError::new(
+            ide_core::error::ErrorKind::TimedOut,
+            format!("`hatch env show` did not finish within {} seconds", timeout.as_secs()),
+        )),
+        out => parse_hatch_envs(&out?),
+    }
+}
+
+fn hatch_find_args(name: &str) -> [&str; 6] {
+    ["--no-color", "--no-interactive", "env", "find", "--", name]
+}
+
+fn hatch_output_home(output: &str) -> Option<PathBuf> {
+    output
+        .lines()
+        .rev()
+        .map(|line| PathBuf::from(line.trim()))
+        .find(|home| home.is_absolute() && home.join("pyvenv.cfg").is_file())
+}
+
+/// Existing project virtualenvs, including custom locations resolved by Hatch itself.
+pub(crate) fn hatch_env_paths(root: &Path, hatch: &Path) -> Option<Vec<(PathBuf, String)>> {
+    const TIMEOUT: Duration = Duration::from_secs(4);
+    let output = query_in(hatch, &HATCH_SHOW_ARGS, Some(root), &[], TIMEOUT)?;
+    let names = parse_hatch_envs(&output).ok()?;
+    Some(
+        names
+            .chunks(4)
+            .flat_map(|names| {
+                crate::discover::par_map(names, |name| {
+                    let output = query_in(hatch, &hatch_find_args(name), Some(root), &[], TIMEOUT)?;
+                    let python = hatch_output_home(&output)?.join(bin_dir()).join(exe("python"));
+                    python.is_file().then(|| (python, name.clone()))
+                })
+            })
+            .collect(),
+    )
+}
+
+pub(crate) fn parse_hatch_envs(out: &str) -> IdeResult<Vec<String>> {
+    // Skip anything Hatch prints before the JSON object (warnings, the echoed command line).
+    let json = out.lines().find(|l| l.trim_start().starts_with('{')).unwrap_or("{}");
+    let envs: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(json).map_err(|e| IdeError::internal(format!("unexpected hatch output: {e}")))?;
+    let mut names: Vec<String> = envs.into_iter().map(|(name, _)| name).filter(|n| !is_internal_hatch_env(n)).collect();
+    names.sort_by_key(|name| name != "default");
+    Ok(names)
+}
+
+/// An environment that already exists is reused rather than rebuilt. If `base` is another
+/// Python version than the environment's, nothing is changed and the error says how to go on.
+fn reuse_existing_env(home: &Path, base: &Path, remove: &str) -> IdeResult<()> {
+    let short = |version: &str| version.split('.').take(2).collect::<Vec<_>>().join(".");
+    let existing = crate::discover::pyvenv_version(&home.join(bin_dir()).join(exe("python")));
+    let wanted = query_in(base, &["--version"], None, &[], Duration::from_secs(15))
+        .and_then(|v| v.strip_prefix("Python ").map(str::to_owned));
+    match (existing.as_deref().map(short), wanted.as_deref().map(short)) {
+        (Some(existing), Some(wanted)) if existing != wanted => Err(IdeError::new(
+            ide_core::error::ErrorKind::AlreadyExists,
+            format!(
+                "{} already holds a Python {existing} environment, not Python {wanted} like the base interpreter. \
+                 Select it under Existing environment, or remove it first with `{remove}`.",
+                home.display()
+            ),
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// `hatch env create <env>` in the project directory, with `base` as the Python the environment
+/// is built on (`HATCH_PYTHON`; an environment that pins its own `python` keeps it). Hatch keeps
+/// an environment that exists, whatever `base` is: one on another Python version is refused
+/// instead. Then `hatch run` in it prints its prefix, after bringing an environment that already
+/// existed up to date: one left half-made by an interrupted creation has no dependencies yet.
+fn create_hatch_env(
+    base: &Path,
+    location: &Path,
+    which: &dyn Fn(&str) -> Option<PathBuf>,
+    cancel: &CancellationToken,
+    on_line: &dyn Fn(String),
+) -> IdeResult<Sdk> {
+    let project = location
+        .parent()
+        .filter(|p| p.is_dir())
+        .ok_or_else(|| IdeError::invalid("Hatch environments need an open project directory"))?;
+    let (project, _) = crate::discover::hatch_project_config(project)
+        .ok_or_else(|| IdeError::invalid("This project has no Hatch configuration"))?;
+    let hatch = which("hatch").ok_or_else(|| IdeError::unavailable(HATCH_MISSING))?;
+    let env = location
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .ok_or_else(|| IdeError::invalid("select a Hatch environment"))?;
+    let hatch_python = [("HATCH_PYTHON".to_owned(), base.to_string_lossy().into_owned())];
+    let run = |args: &[&str]| {
+        let args: Vec<String> =
+            ["--no-color", "--no-interactive"].iter().chain(args).map(|a| (*a).to_owned()).collect();
+        stream(&hatch, &args, Some(&project), &hatch_python, cancel, on_line)
+    };
+    let existing = query_in_cancellable(&hatch, &hatch_find_args(&env), &project, &[], Duration::from_secs(30), cancel)
+        .and_then(|out| hatch_output_home(&out));
+    if let Some(home) = existing {
+        reuse_existing_env(&home, base, &format!("hatch env remove {env}"))?;
+    }
+    run(&["env", "create", &env])?;
+    let out = run(&["--env", &env, "run", "python", "-c", "import sys; print(sys.prefix)"])?;
+    let home = hatch_output_home(&out).ok_or_else(|| IdeError::internal("hatch created no environment".to_owned()))?;
+    let python = home.join(bin_dir()).join(exe("python"));
+    crate::discover::hatch_sdk(&python, &project, &env)
+        .ok_or_else(|| IdeError::internal(format!("{} was not created", python.display())))
 }
 
 /// `poetry env use <base>` in the project directory (the parent of `location`, which the
@@ -121,6 +278,58 @@ fn create_poetry_env(
         .ok_or_else(|| IdeError::internal("poetry created no environment".to_owned()))?;
     let python = home.join(bin_dir()).join(exe("python"));
     crate::discover::python_sdk(&python, "venv", Some(project))
+        .ok_or_else(|| IdeError::internal(format!("{} was not created", python.display())))
+}
+
+/// Pipenv's environment for the project (`location` is a hint inside it, as for Poetry: pipenv
+/// keeps its envs under `WORKON_HOME`). `pipenv --python <base>` creates it when `pipenv --venv`
+/// finds none, writing a `Pipfile` (from `requirements.txt` if there is one) when the project
+/// has none. `install` then runs `pipenv install --dev` for the packages of the `Pipfile`.
+fn create_pipenv_env(
+    base: &Path,
+    location: &Path,
+    install: bool,
+    which: &dyn Fn(&str) -> Option<PathBuf>,
+    cancel: &CancellationToken,
+    on_line: &dyn Fn(String),
+) -> IdeResult<Sdk> {
+    let pipenv = which("pipenv")
+        .ok_or_else(|| IdeError::unavailable("Pipenv is not installed (install it from https://pipenv.pypa.io)"))?;
+    let project = location
+        .parent()
+        .filter(|p| p.is_dir())
+        .ok_or_else(|| IdeError::invalid("Pipenv environments need an open project directory"))?;
+    // No prompts or spinner, and the project's own environment even when the IDE was
+    // started from inside another virtualenv.
+    const ENV: [(&str, &str); 3] = [("PIPENV_YES", "1"), ("PIPENV_NOSPIN", "1"), ("PIPENV_IGNORE_VIRTUALENVS", "1")];
+    let env = ENV.map(|(k, v)| (k.to_owned(), v.to_owned()));
+    let venv = || {
+        query_in_cancellable(&pipenv, &["--venv"], project, &ENV, Duration::from_secs(30), cancel)
+            .map(PathBuf::from)
+            .filter(|home| home.join("pyvenv.cfg").is_file())
+    };
+    match venv() {
+        Some(home) => reuse_existing_env(&home, base, "pipenv --rm")?,
+        None => {
+            let args = ["--python".to_owned(), base.to_string_lossy().into_owned()];
+            stream(&pipenv, &args, Some(project), &env, cancel, on_line)?;
+        }
+    }
+    // Decided after creation: pipenv may just have written the `Pipfile`, or found one above the project.
+    let pipfile_dir = crate::discover::pipfile_dir(project);
+    if install && pipfile_dir.is_some() {
+        stream(&pipenv, &["install".to_owned(), "--dev".to_owned()], Some(project), &env, cancel, on_line)?;
+    }
+    let home = venv().ok_or_else(|| IdeError::internal("pipenv created no environment".to_owned()))?;
+    // Pipenv records the project only when it creates the environment: one it reuses after an
+    // interrupted creation has no `.project`, and detection would not know whose it is.
+    let record = home.join(".project");
+    if !record.exists() {
+        let owner = pipfile_dir.as_deref().unwrap_or(project);
+        let _ = std::fs::write(record, owner.to_string_lossy().as_bytes());
+    }
+    let python = home.join(bin_dir()).join(exe("python"));
+    crate::discover::python_sdk(&python, "pipenv", Some(project))
         .ok_or_else(|| IdeError::internal(format!("{} was not created", python.display())))
 }
 
@@ -278,6 +487,11 @@ pub fn list_packages(python: &Path, outdated: bool, cancel: &CancellationToken) 
         return Err(IdeError::not_found(format!("{} does not exist", python.display())));
     }
     let installer = installer(python)?;
+    let mut env = pip_env(python);
+    if matches!(installer, Installer::Pip) {
+        // Quiet mode suppresses the JSON package list, including with --format json.
+        env.push(("PIP_QUIET".into(), "0".into()));
+    }
     let mut sub = vec!["list", "--format", "json"];
     if outdated {
         sub.push("--outdated");
@@ -289,14 +503,13 @@ pub fn list_packages(python: &Path, outdated: bool, cancel: &CancellationToken) 
     }
     let (program, args) = pip_command(python, &installer, &sub);
     let dir = neutral_dir();
-    let run = |cancel: &CancellationToken| {
-        stream(&program, &args, dir.as_ref().map(|d| d.path()), &pip_env(python), cancel, &|_| {})
-    };
+    let run =
+        |cancel: &CancellationToken| stream(&program, &args, dir.as_ref().map(|d| d.path()), &env, cancel, &|_| {});
     let out = if outdated { with_deadline(cancel, OUTDATED_LIMIT, run)? } else { run(cancel)? };
-    let mut packages = parse_pip_list(&out)?;
     if outdated && pip_request_failed(&out) {
         return Err(IdeError::unavailable("pip could not reach the package index for every package"));
     }
+    let mut packages = parse_pip_list(&out)?;
     packages.sort_by_key(|p| p.name.to_lowercase());
     Ok(packages)
 }
@@ -344,7 +557,10 @@ pub(crate) fn parse_pip_list(out: &str) -> IdeResult<Vec<PythonPackage>> {
         latest_version: Option<String>,
     }
     // Skip the echoed command line and any warnings before the JSON array.
-    let json = out.lines().find(|l| l.trim_start().starts_with('[')).unwrap_or("[]");
+    let json = out
+        .lines()
+        .find(|l| l.trim_start().starts_with('['))
+        .ok_or_else(|| IdeError::internal("unexpected pip output: missing package list"))?;
     let listed: Vec<Listed> =
         serde_json::from_str(json).map_err(|e| IdeError::internal(format!("unexpected pip output: {e}")))?;
     Ok(listed

@@ -43,13 +43,19 @@ The project interpreter is chosen in this order:
 
 1. The interpreter set in **Settings › Languages & Frameworks › Python Interpreter**.
 2. A virtualenv in the project: `.venv`, `venv`, `env` or `.env` (a folder with `pyvenv.cfg`), or a pixi environment in `.pixi/envs/`.
-3. The Python version the project pins for mise or asdf (`mise.toml`, `.tool-versions` and the other mise config files).
+3. The Pipenv environment for the nearest `Pipfile`, including one selected by a `.venv` file or `PIPENV_CUSTOM_VENV_NAME`.
+4. The `default` environment of a project with Hatch configuration, once Hatch has created it.
+5. The Python version the project pins for mise or asdf (`mise.toml`, `.tool-versions` and the other mise config files).
 
-The interpreter list on that page also shows what the IDE detects on the machine: the active `VIRTUAL_ENV`, virtualenvs made by virtualenvwrapper, pipenv and Poetry, pyenv versions, Pythons installed by uv, mise and asdf installs, conda environments (Miniconda, Anaconda, Miniforge, Mambaforge, micromamba, and every env that `conda env list` shows), and the `python` executables on `PATH`.
+The interpreter list on that page also shows what the IDE detects on the machine: the active `VIRTUAL_ENV`, virtualenvs made by virtualenvwrapper, pipenv and Poetry, Hatch environments, pyenv versions, Pythons installed by uv, mise and asdf installs, conda environments (Miniconda, Anaconda, Miniforge, Mambaforge, micromamba, and every env that `conda env list` shows), and the `python` executables on `PATH`.
 
 The selected interpreter is passed to basedpyright and Pyright (`python.pythonPath`), and its virtualenv is set as `VIRTUAL_ENV` for the language server and for run configurations.
 
 The **Python Interpreter** item in the status bar shows the current interpreter. Click it to switch, or to open **Add New Interpreter…** and **Interpreter Settings…**.
+
+### Interpreter paths
+
+**Settings › Languages & Frameworks › Python › All Interpreters › Show Paths for Selected Interpreter** lists the interpreter's `sys.path` and lets you add folders outside the project to it, such as a checkout of a shared library. The added folders are saved per interpreter in the IDE settings, so they apply to every project that uses it. basedpyright and Pyright get them as `extraPaths`, runs, debug sessions, tests and the Python Console get them on `PYTHONPATH`, and they are listed under **External Libraries**. At run time they are searched before the interpreter's own entries. A folder that no longer exists is marked as missing and skipped, and so is one that `PYTHONPATH` cannot hold (not absolute, or with its separator in the name). A folder inside the project is not listed under External Libraries, so its files stay editable. The interpreter's own entries cannot be removed, and a Docker or Compose run target has no paths of its own to edit.
 
 ### A Docker or Compose run target as the interpreter
 
@@ -69,6 +75,8 @@ On **Settings › Languages & Frameworks › Python Interpreter**, choose **Add 
 - **Virtualenv Environment**: `python -m venv` from the base interpreter you pick.
 - **uv Environment**: `uv venv <location> --python <base>` (uv must be on `PATH`).
 - **Poetry Environment**: `poetry env use <base>` in the project.
+- **Pipenv Environment**: `pipenv --python <base>` in the project (pipenv must be on `PATH`). Pipenv writes a `Pipfile` when the project has none, importing `requirements.txt` if there is one. With **Install packages from Pipfile** it then runs `pipenv install --dev`. An environment the project already has is reused; if it was built on another Python version than the base interpreter, nothing is changed and the dialog says so (remove it with `pipenv --rm` to start over).
+- **Hatch Environment** is available when the project has `hatch.toml` or a `[tool.hatch]` table in `pyproject.toml`. Pick an environment to run `hatch env create <environment>` in the project. Hatch must be on `PATH` and receives the base interpreter as `HATCH_PYTHON`. Hatch reuses an existing environment. If its Python version differs from the base interpreter, the dialog reports the mismatch. Remove the environment with `hatch env remove <environment>` to recreate it. The interpreter list shows `Hatch: <project>` for `default` and `Hatch: <project>:<environment>` for the others, including environments at custom paths reported by `hatch env find`.
 - **Conda Environment**: `conda create -n <name>` in conda's envs directory, with the chosen Python version.
 
 You can also select an existing interpreter or environment folder. The new interpreter becomes the project interpreter.
@@ -87,6 +95,10 @@ Other options on the page:
 ### Formatting
 
 **Reformat Code** (`⌘⌥L` / `Ctrl+Alt+L`) uses Ruff. In **Settings › Languages & Frameworks › Ruff** you can set the Ruff path, a configuration directory, the **Formatting provider** (**Automatic (language server first)** or Ruff), and **Run on save**. Without a configuration directory, Ruff reads the nearest `pyproject.toml` (`[tool.ruff]`), `ruff.toml` or `.ruff.toml`.
+
+**Optimize Imports** (`⌃⌥O` / `Ctrl+Alt+O`) sorts the imports. Below a Ruff configuration the Ruff server does it and leaves unused imports alone (Ruff's fix-all removes them). Elsewhere the IDE runs `ruff check --extend-select I --fixable I,F401 --fix` on the file, which also removes unused imports unless your Ruff rules leave out F401; Ruff must be installed. The same goes for Optimize imports on save, before commit and in Code Cleanup.
+
+**Rearrange Code** (Find Action, or the Code menu) orders the methods of every class in the file: `__new__`, `__init__` and `__post_init__`, other dunder methods, public methods, `_protected`, then `__private` ones, each group in its original order. The docstring and class attributes before the first method stay put; a method moves with its decorators and the comment lines directly above it, and definitions sharing a name (a property and its setter, `@overload` stubs) move together. A class is left as it is when moving could change it: other statements, standalone comments or `# region` / `# fmt: off` markers among its methods, or a decorator, default value or annotation that names another of its methods. Files with syntax errors are not rearranged.
 
 ## Run and test
 

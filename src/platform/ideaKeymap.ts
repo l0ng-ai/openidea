@@ -24,7 +24,7 @@ export interface ImportedIdeaKeymap {
   applied: number;
   /** IDEA action ids without an OpenIDEA counterpart. */
   unknownActions: string[];
-  /** Shortcuts that cannot be expressed here (wheel, double click, unknown keys). */
+  /** Shortcuts that cannot be expressed here (double click, unknown keys). */
   skippedShortcuts: number;
 }
 
@@ -90,12 +90,13 @@ export function fromSwingStroke(stroke: string): string | null {
   return name ? [...words.map((w) => SWING_MODS[w.toLowerCase()]), name].join("+") : null;
 }
 
-/** `"meta alt button1"` → `"Meta+Alt+Button1"`; wheel and multi-click gestures → null. */
+/** Converts Swing mouse buttons and wheel directions. */
 function fromMouseStroke(stroke: string): string | null {
   const words = stroke.trim().split(/\s+/);
-  const button = words.pop();
-  if (!button || !/^button\d$/i.test(button) || words.some((w) => !SWING_MODS[w.toLowerCase()])) return null;
-  return [...words.map((w) => SWING_MODS[w.toLowerCase()]), `Button${button.slice(6)}`].join("+");
+  const button = words.pop()?.toLowerCase();
+  if (!button || !/^button(?:\d|14[23])$/.test(button) || words.some((w) => !SWING_MODS[w.toLowerCase()])) return null;
+  const key = button === "button143" ? "WheelUp" : button === "button142" ? "WheelDown" : button;
+  return [...words.map((w) => SWING_MODS[w.toLowerCase()]), key].join("+");
 }
 
 /** Parses an IDEA keymap XML; throws when the file is not a keymap. */

@@ -1,10 +1,12 @@
 package ai.openidea.archives;
 
 import java.lang.reflect.Field;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.ResourcesPlugin;
 import org.eclipse.core.runtime.IPath;
 import org.eclipse.core.runtime.IProgressMonitor;
@@ -16,6 +18,8 @@ import org.eclipse.jdt.core.IPackageFragmentRoot;
 import org.eclipse.jdt.core.JavaCore;
 import org.eclipse.jdt.ls.core.internal.IDelegateCommandHandler;
 import org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin;
+import org.eclipse.jdt.ls.core.internal.ProjectUtils;
+import org.eclipse.lsp4j.TextDocumentIdentifier;
 
 /**
  * Re-reads library archives replaced in place (a SNAPSHOT installed again keeps its path). The
@@ -26,6 +30,17 @@ import org.eclipse.jdt.ls.core.internal.JavaLanguageServerPlugin;
 public final class RefreshArchivesCommand implements IDelegateCommandHandler {
     @Override
     public Object executeCommand(String command, List<Object> arguments, IProgressMonitor monitor) throws Exception {
+        if ("openidea.java.updateProjectConfigurations".equals(command)) {
+            List<TextDocumentIdentifier> files = arguments.stream()
+                    .filter(String.class::isInstance)
+                    .map(uri -> new TextDocumentIdentifier((String) uri))
+                    .toList();
+            Collection<IProject> projects = ProjectUtils.getProjectsFromDocumentIdentifiers(files);
+            if (!projects.isEmpty()) {
+                JavaLanguageServerPlugin.getProjectsManager().updateProjects(projects, true).join(0, monitor);
+            }
+            return null;
+        }
         IJavaModel model = JavaCore.create(ResourcesPlugin.getWorkspace().getRoot());
         model.refreshExternalArchives(null, monitor);
         Set<IPath> archives = new HashSet<>();

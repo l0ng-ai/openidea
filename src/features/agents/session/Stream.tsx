@@ -1,4 +1,4 @@
-import type { AgentEntry, AgentTask } from "@/bindings";
+import type { AgentEntry, AgentImage, AgentTask } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import {
@@ -27,6 +27,7 @@ import {
   type RefObject,
 } from "react";
 import { useAgentSettings } from "../agentSettings";
+import { ImageStrip } from "../ImageStrip";
 import {
   entriesKey,
   isBusy,
@@ -51,7 +52,7 @@ import {
 import { FindBar } from "./FindBar";
 import { KeepFoldHeader, OpenFolds } from "./Folds";
 import { Entry } from "./messages";
-import { ProcessRun, TurnFold } from "./ProcessRows";
+import { ProcessRun, RowRenderer, TurnFold } from "./ProcessRows";
 import { type QuestionAnswer } from "./QuestionForm";
 import { providerName } from "./shared";
 import { WorkingRow } from "./WorkingRow";
@@ -147,7 +148,14 @@ function useOffscreenRows(
   }, [ref, visible, enabled, fitWindowWidth, fontZoom]);
   // Keep independent of `visible`: when a kept-alive tab hides, `data-selection` must stay until
   // the selection leaves and WebKit clears off-screen rows' highlights before skipping again.
-  useSelectionVisibility(ref, enabled);
+  useSelectionVisibility(ref, enabled, `.${styles.conversationRow}`);
+}
+
+/** Images remain visible beside the work's folded summary, without duplicating them when it opens. */
+function toolImages(row: ConversationRow): AgentImage[] {
+  if (row.kind === "turn") return row.rows.flatMap(toolImages);
+  const entries = row.kind === "process" ? row.entries.map(({ entry }) => entry) : [row.entry];
+  return entries.flatMap((entry) => (entry.type === "tool" ? (entry.images ?? []) : []));
 }
 
 interface StreamProps {
@@ -215,7 +223,7 @@ export function Stream({
   const restored = useRef(false);
   const previousLength = useRef(entries?.length ?? 0);
   /** Scrolled away from the end: offer one click back to the latest message. */
-  const [away, setAway] = useState(() => positions.get(key)?.stick === false);
+  const [away, setAway] = useState(false);
   // Opened at the end, the last entries come first and the earlier ones follow in batches:
   // reopening a long conversation paints at once. A kept offset needs them all.
   const [shown, setShown] = useState(() => (positions.get(key)?.stick === false ? Infinity : ENTRY_BATCH));
@@ -244,10 +252,17 @@ export function Stream({
       if (!position.current.stick) return;
       position.current = { top: el.scrollTop, stick: false };
       positions.set(key, position.current);
-      setAway(true);
     },
     [key, positions],
   );
+  const updateJumpVisibility = useCallback((el: HTMLElement) => {
+    // An upward gesture releases following before anything moves. Only offer a jump
+    // when there is actual content below the viewport, excluding the fold spacer.
+    setAway(
+      !position.current.stick &&
+        el.scrollHeight - el.clientHeight - el.scrollTop > (parseFloat(getComputedStyle(el).paddingBottom) || 0) + 1,
+    );
+  }, []);
   // Earlier entries are prepended above the view: remember where the first painted row is
   // so the content stays put and the scrollbar doesn't jump under the pointer.
   const anchor = useRef<{ el: Element; top: number } | null>(null);
@@ -322,8 +337,10 @@ export function Stream({
   /** A diagram that drew after the last streamed chunk grows the conversation: keep following. */
   const onDiagramDrawn = useCallback(() => {
     const el = ref.current;
-    if (el && position.current.stick && !dragging.current) el.scrollTop = el.scrollHeight;
-  }, []);
+    if (!el) return;
+    if (position.current.stick && !dragging.current) el.scrollTop = el.scrollHeight;
+    updateJumpVisibility(el);
+  }, [updateJumpVisibility]);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el || entries === null || !visible) return;
@@ -353,6 +370,7 @@ export function Stream({
       if (!dragging.current) el.scrollTop = el.scrollHeight;
     } else if (!restored.current) el.scrollTop = position.current.top;
     restored.current = true;
+    updateJumpVisibility(el);
   });
   useLayoutEffect(() => {
     // Prepending earlier entries moved the first painted row down: follow it, so the same
@@ -363,6 +381,7 @@ export function Stream({
     anchor.current = null;
     if (position.current.stick || !from.el.isConnected) return;
     scroller.scrollTop += from.el.getBoundingClientRect().top - from.top;
+    updateJumpVisibility(scroller);
   });
   useLayoutEffect(() => {
     const el = ref.current;
@@ -370,13 +389,14 @@ export function Stream({
     const observer = new ResizeObserver(() => {
       trimSlack();
       if (position.current.stick && !dragging.current) el.scrollTop = el.scrollHeight;
+      updateJumpVisibility(el);
     });
     observer.observe(el);
     return () => {
       observer.disconnect();
       if (restored.current) positions.set(key, { ...position.current, top: el.scrollTop });
     };
-  }, [key, positions, trimSlack]);
+  }, [key, positions, trimSlack, updateJumpVisibility]);
   /**
    * The wheel scrolls the innermost container under the pointer, and only that one: a run of
    * calls from its headers, a tool output from its text, the conversation elsewhere. A container
@@ -431,10 +451,10 @@ export function Stream({
       if (position.current.stick && el.scrollHeight - el.scrollTop - el.clientHeight >= 1) {
         position.current = { top: el.scrollTop, stick: false };
         positions.set(key, position.current);
-        setAway(true);
       }
+      updateJumpVisibility(el);
     },
-    [key, positions, setSlack, trimSlack],
+    [key, positions, setSlack, trimSlack, updateJumpVisibility],
   );
   /** Back to the end of the stream; following resumes from there. */
   const jumpToLatest = useCallback(() => {
@@ -494,13 +514,7 @@ export function Stream({
   );
   const renderConversationRow = (row: ConversationRow): ReactNode =>
     row.kind === "turn" ? (
-      <TurnFold row={row} entries={entries ?? []}>
-        {row.rows.map((inner) => (
-          <div key={inner.index} className={styles.conversationRow}>
-            {renderConversationRow(inner)}
-          </div>
-        ))}
-      </TurnFold>
+      <TurnFold row={row} />
     ) : row.kind === "process" ? (
       <ProcessRun
         row={row}
@@ -569,7 +583,7 @@ export function Stream({
               if (stick && !atEnd && !dragging.current) el.scrollTop = el.scrollHeight;
               position.current = { top: el.scrollTop, stick };
               positions.set(key, position.current);
-              setAway(!position.current.stick);
+              updateJumpVisibility(el);
               // Reached the top of what is painted: fetch the earlier entries, but only
               // once the drag has settled.
               if (loadTimer.current !== null) window.clearTimeout(loadTimer.current);
@@ -616,27 +630,37 @@ export function Stream({
             ) : entries.length === 0 && !busy && !loadError ? (
               <EmptyState title="No conversation history" />
             ) : (
-              rows.map((row) => (
-                <div
-                  key={row.index}
-                  className={styles.conversationRow}
-                  data-message={
-                    (row.kind === "entry" && (row.entry.type === "user" || row.entry.type === "agent")) || undefined
-                  }
-                  data-process={row.kind !== "entry" || row.entry.type !== "user" || undefined}
-                  data-author={authorHeaders.has(row.index) || undefined}
-                >
-                  {authorHeaders.has(row.index) && (
-                    <div className={styles.agentAuthor}>
-                      <div className={styles.role}>
-                        <Icon name={providerIcon(task.provider)} size={13} />
-                        <span>{providerName(task.provider)}</span>
-                      </div>
+              <RowRenderer.Provider value={renderConversationRow}>
+                {rows.map((row) => {
+                  const images = toolImages(row);
+                  return (
+                    <div
+                      key={row.index}
+                      className={styles.conversationRow}
+                      data-message={
+                        (row.kind === "entry" && (row.entry.type === "user" || row.entry.type === "agent")) || undefined
+                      }
+                      data-process={row.kind !== "entry" || row.entry.type !== "user" || undefined}
+                      data-author={authorHeaders.has(row.index) || undefined}
+                    >
+                      {authorHeaders.has(row.index) && (
+                        <div className={styles.agentAuthor}>
+                          <div className={styles.role}>
+                            <Icon name={providerIcon(task.provider)} size={13} />
+                            <span>{providerName(task.provider)}</span>
+                          </div>
+                        </div>
+                      )}
+                      {renderConversationRow(row)}
+                      {images.length > 0 && (
+                        <div className={styles.toolImages}>
+                          <ImageStrip images={images} />
+                        </div>
+                      )}
                     </div>
-                  )}
-                  {renderConversationRow(row)}
-                </div>
-              ))
+                  );
+                })}
+              </RowRenderer.Provider>
             )}
             <WorkingRow task={task} entries={entries} subagent={subagent} />
           </div>

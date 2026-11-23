@@ -66,9 +66,10 @@ pub fn ruff_configuration(root: &Path, configured: &str) -> IdeResult<Option<Pat
 
 /// The project interpreter: the configured one, else a project virtualenv
 /// (`.venv`, `venv`, …) or pixi environment (`.pixi/envs/<env>`) in the project
-/// root, else the Python the project pins for mise / asdf. A configured
-/// interpreter whose executable is gone (uninstalled, moved) is skipped like
-/// PyCharm's "Invalid" SDKs, so runs fall back instead of failing on a dead path.
+/// root, else the project's Pipenv environment, else its `default` Hatch environment,
+/// else the Python the project pins for mise / asdf. A configured interpreter whose executable is gone (uninstalled,
+/// moved) is skipped like PyCharm's "Invalid" SDKs, so runs fall back instead of
+/// failing on a dead path.
 /// `None` when the project interpreter is a run target's (see [`crate::container_python`]).
 pub fn python_interpreter(root: &Path, s: &Settings) -> Option<PathBuf> {
     if s.languages.python.run_target().is_some() {
@@ -78,6 +79,72 @@ pub fn python_interpreter(root: &Path, s: &Settings) -> Option<PathBuf> {
         .filter(|p| p.is_file())
         .or_else(|| project_venv_python(root))
         .or_else(|| pinned::pinned_python(root))
+}
+
+/// An absolute or `~/` path from the settings; `None` for anything else.
+pub fn absolute_setting_path(s: &str) -> Option<PathBuf> {
+    setting_path(Path::new(""), s).filter(|p| p.is_absolute())
+}
+
+/// Why a folder added to an interpreter's paths stays off the import path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum UserPathProblem {
+    /// Not an existing folder.
+    Missing,
+    /// Not absolute or `~/`, or it holds the separator of `PYTHONPATH`.
+    Invalid,
+}
+
+/// A folder added to an interpreter's paths (All Interpreters › Show Paths), as it goes on the
+/// import path.
+pub fn user_path(s: &str) -> Result<PathBuf, UserPathProblem> {
+    let path = absolute_setting_path(s).ok_or(UserPathProblem::Invalid)?;
+    // `PYTHONPATH` cannot hold a path with its separator in it: joining would fail every launch.
+    if std::env::join_paths([&path]).is_err() {
+        return Err(UserPathProblem::Invalid);
+    }
+    if !path.is_dir() {
+        return Err(UserPathProblem::Missing);
+    }
+    Ok(path)
+}
+
+/// Whether the settings key `key` names the interpreter `python`. Paths are compared as
+/// written, not through symlinks: a virtualenv's `python` links to its base interpreter, and
+/// the two are different interpreters.
+fn names_interpreter(key: &str, python: &Path) -> bool {
+    let Some(key) = absolute_setting_path(key) else { return false };
+    if cfg!(windows) {
+        let fold = |p: &Path| p.to_string_lossy().replace('\\', "/").to_lowercase();
+        fold(&key) == fold(python)
+    } else {
+        key == python
+    }
+}
+
+/// The folders the user added to `python`'s paths that can be imported from.
+pub fn interpreter_user_paths(python: &Path, s: &Settings) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for (interpreter, paths) in &s.languages.python.interpreter_paths {
+        if !names_interpreter(interpreter, python) {
+            continue;
+        }
+        for path in paths.iter().filter_map(|p| user_path(p).ok()) {
+            if !out.contains(&path) {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
+/// The interpreter a Python language server started for `server_root` analyses with: that
+/// folder's own virtualenv unless an interpreter is configured, else the project interpreter.
+pub fn python_server_interpreter(root: &Path, server_root: &Path, s: &Settings) -> Option<PathBuf> {
+    project_venv_python(server_root)
+        .filter(|_| non_empty(&s.languages.python.interpreter).is_none())
+        .or_else(|| python_interpreter(root, s))
 }
 
 /// An explicit project interpreter wins; otherwise use the closest virtualenv to the file.
@@ -1160,9 +1227,7 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     let name = name.as_str();
 
     if PYTHON_SERVERS.contains(&name) {
-        let python = project_venv_python(server_root)
-            .filter(|_| non_empty(&s.languages.python.interpreter).is_none())
-            .or_else(|| python_interpreter(root, s));
+        let python = python_server_interpreter(root, server_root, s);
         if let Some(python) = python {
             let p = python.to_string_lossy().into_owned();
             match name {
@@ -1688,7 +1753,8 @@ fn configure_angular(cfg: &mut LanguageServerConfig, root: &Path, server_root: &
     }
 }
 
-fn is_python_command(cmd: &str) -> bool {
+/// Whether `cmd` is a Python executable by its name (`python`, `python3.12`, `python.exe`).
+pub fn is_python_command(cmd: &str) -> bool {
     let name = Path::new(cmd).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let name = name.strip_suffix(".exe").unwrap_or(&name);
     name == "python"
@@ -1901,10 +1967,17 @@ pub fn apply_to_run_configs_in(configs: &mut [RunConfig], root: &Path, fallback:
         let mut path_dirs: Vec<PathBuf> = Vec::new();
         match c.kind.as_str() {
             "python" | "pytest" | "django-test" => {
-                let python = toolchain("python", &owner);
+                let command = Path::new(&c.command);
+                let own = !c.detected && command.components().count() > 1 && is_python_command(&c.command);
+                let python = if own {
+                    let cwd = root.join(c.cwd.as_deref().unwrap_or(Path::new("")));
+                    Some(ide_core::project_roots::resolve(&cwd, command))
+                } else {
+                    toolchain("python", &owner)
+                };
                 // The member's explicit interpreter, else the inherited one, else the
                 // member's own venv / pin.
-                if let Some(py) = explicit_python.as_ref().or(inherited_python.as_ref()).or(python.as_ref()) {
+                if !own && let Some(py) = explicit_python.as_ref().or(inherited_python.as_ref()).or(python.as_ref()) {
                     let runner = PY_RUNNERS.contains(&c.command.as_str());
                     if (c.kind == "python" || c.kind == "django-test") && (runner || is_python_command(&c.command)) {
                         if runner && c.args.first().map(String::as_str) == Some("run") {
@@ -2246,6 +2319,81 @@ fn conda_activation(python: &Path, name: &str, conda_exe: Option<PathBuf>, on_pa
             )
         }),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod python_user_path_tests {
+    use super::*;
+
+    fn venv(dir: &Path) -> PathBuf {
+        let python = dir.join(".venv").join(crate::bin_dir()).join(crate::exe("python"));
+        std::fs::create_dir_all(python.parent().unwrap()).unwrap();
+        std::fs::write(&python, "").unwrap();
+        std::fs::write(dir.join(".venv/pyvenv.cfg"), "").unwrap();
+        python
+    }
+
+    fn text(p: &Path) -> String {
+        p.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn user_paths_follow_the_interpreter_and_skip_what_cannot_be_imported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let (lib, other) = (root.join("shared"), root.join("other"));
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let python = venv(&root);
+        let other_python = root.join("other-python");
+
+        let mut s = Settings::default();
+        s.languages.python.interpreter_paths = [
+            // Gone, duplicated, relative and a file: none of them reach the import path.
+            (text(&python), vec![text(&lib), text(&root.join("gone")), text(&lib), "relative".into(), text(&python)]),
+            (text(&other_python), vec![text(&other)]),
+        ]
+        .into();
+        assert_eq!(interpreter_user_paths(&python, &s), std::slice::from_ref(&lib));
+        assert_eq!(interpreter_user_paths(&other_python, &s), [other]);
+        assert!(interpreter_user_paths(&root.join("unknown-python"), &s).is_empty());
+    }
+
+    #[test]
+    fn a_folder_that_stays_off_the_import_path_says_why() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        assert_eq!(user_path(&text(&root)), Ok(root.clone()));
+        assert_eq!(user_path(&text(&root.join("gone"))), Err(UserPathProblem::Missing));
+        assert_eq!(user_path("relative/dir"), Err(UserPathProblem::Invalid));
+        assert_eq!(user_path(" "), Err(UserPathProblem::Invalid));
+        // One entry with the separator in it would make `PYTHONPATH` impossible to build.
+        #[cfg(unix)]
+        {
+            let odd = root.join("libs:v2");
+            std::fs::create_dir(&odd).unwrap();
+            assert_eq!(user_path(&text(&odd)), Err(UserPathProblem::Invalid));
+            let mut s = Settings::default();
+            s.languages.python.interpreter_paths = [("/bin/python".into(), vec![text(&odd), text(&root)])].into();
+            assert_eq!(interpreter_user_paths(Path::new("/bin/python"), &s), [root]);
+        }
+    }
+
+    #[test]
+    fn a_language_server_takes_the_interpreter_of_its_own_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let sub = root.join("services/api");
+        let (python, sub_python) = (venv(&root), venv(&sub));
+        let mut s = Settings::default();
+        assert_eq!(python_server_interpreter(&root, &root, &s), Some(python.clone()));
+        assert_eq!(python_server_interpreter(&root, &sub, &s), Some(sub_python));
+        // A configured interpreter is the one every server of the project uses.
+        s.languages.python.interpreter = text(&python);
+        assert_eq!(python_server_interpreter(&root, &sub, &s), Some(python));
+        s.languages.python.interpreter = "target:docker".into();
+        assert_eq!(python_server_interpreter(&root, &root, &s), None);
     }
 }
 

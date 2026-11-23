@@ -3,7 +3,9 @@
 use crate::Host;
 use ide_core::event::NotifyLevel;
 use ide_core::settings::{BIOME_LANGUAGES, ExternalFormatter, LanguagesSettings, Settings};
-use ide_core::{ChangeSet, DocId, IdeError, IdeEvent, IdeResult, IpcPath, LanguageId, Pos, Range, TextEdit};
+use ide_core::{
+    CancellationToken, ChangeSet, DocId, IdeError, IdeEvent, IdeResult, IpcPath, LanguageId, Pos, Range, TextEdit,
+};
 use ide_language::{LanguageConfig, PhpAlignment, Syntax};
 use ide_lsp::types::FormatOptions;
 use ide_tools::{Tools, formatter};
@@ -27,6 +29,16 @@ fn biome_formats(file: &Path) -> bool {
             .is_some_and(|v| v.pointer("/formatter/enabled") == Some(&serde_json::Value::Bool(false))),
         None => BIOME_MARKERS.iter().any(|name| formatter::find_up(file, Path::new(name)).is_some()),
     }
+}
+
+/// `tool` installed in the environment of the interpreter nearest to `near` (`svc/.venv/bin/ruff`,
+/// or `Scripts` in conda and pixi environments on Windows). A project that pins its own Ruff
+/// formats with it, as its language server runs it, before the IDE's copy.
+fn interpreter_tool(root: &Path, near: Option<&Path>, settings: &Settings, tool: &str) -> Option<PathBuf> {
+    let python = ide_sdk::apply::python_interpreter_near(root, near, settings)?;
+    let dir = python.parent()?;
+    let exe = if cfg!(windows) { format!("{tool}.exe") } else { tool.to_owned() };
+    [dir.join(&exe), dir.join("Scripts").join(&exe)].into_iter().find(|p| p.is_file())
 }
 
 fn supports_external_format(language: &LanguageConfig, tool: ExternalFormatter) -> bool {
@@ -408,7 +420,14 @@ async fn provider_edits(
     let config = language.and_then(|l| l.formatter).expect("external_tool selects languages with a formatter");
     let tool = selected.name();
     let name = formatter::display_name(tool);
-    let custom = ide_sdk::apply::setting_path(&project.root, &tool_settings.path);
+    let mut custom = ide_sdk::apply::setting_path(&project.root, &tool_settings.path);
+    if custom.is_none() && selected == ExternalFormatter::Ruff {
+        let (root, near, settings) =
+            (project.root.clone(), snap.path.parent().map(Path::to_path_buf), settings.clone());
+        custom = tokio::task::spawn_blocking(move || interpreter_tool(&root, near.as_deref(), &settings, "ruff"))
+            .await
+            .map_err(|e| IdeError::internal(e.to_string()))?;
+    }
     let tools = Tools::new(&host.local_data_dir);
     let whole_selection = range.is_some() && !formatter::supports_range(tool, &config);
     let project_root = project.root.clone();
@@ -434,15 +453,7 @@ async fn provider_edits(
             config_file.as_deref(),
         ));
         let formatted = formatter::run(tool, command, &snap.text, &Default::default())?;
-        Ok(text
-            .diff(&formatted)
-            .changes
-            .into_iter()
-            .map(|c| TextEdit {
-                range: Range::new(text.offset_to_pos(c.from), text.offset_to_pos(c.to)),
-                new_text: c.insert,
-            })
-            .collect())
+        Ok(diff_edits(&text, &formatted))
     })
     .await
     .map_err(|e| IdeError::internal(e.to_string()))?;
@@ -458,9 +469,71 @@ async fn provider_edits(
     edits.map(Some).map_err(|e| e.with_tool(tool))
 }
 
+/// The edits that turn `text` into `formatted`, one per changed region.
+fn diff_edits(text: &ide_text::Document, formatted: &str) -> Vec<TextEdit> {
+    text.diff(formatted)
+        .changes
+        .into_iter()
+        .map(|c| TextEdit {
+            range: Range::new(text.offset_to_pos(c.from), text.offset_to_pos(c.to)),
+            new_text: c.insert,
+        })
+        .collect()
+}
+
+/// Optimize Imports for a Python document no language server organizes (the Ruff server starts
+/// only below a Ruff configuration): Ruff's CLI removes the unused imports and sorts the rest, with
+/// the project's Ruff settings when there are any. `None` for other documents and untrusted projects.
+pub async fn python_import_edits(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    cancel: CancellationToken,
+) -> IdeResult<Option<(ide_core::IpcPath, Vec<TextEdit>)>> {
+    let project = host.project(window)?;
+    let snap = project.documents.snapshot(doc)?;
+    if snap.language.as_str() != "python" || snap.read_only || project.require_trust().is_err() {
+        return Ok(None);
+    }
+    let settings = project.settings.effective();
+    let custom = ide_sdk::apply::setting_path(&project.root, &settings.languages.ruff.path);
+    let configured = settings.languages.ruff.configuration_directory.clone();
+    let root = project.root.clone();
+    let tools = Tools::new(&host.local_data_dir);
+    tokio::task::spawn_blocking(move || {
+        let config_file = ide_sdk::apply::ruff_configuration(&root, &configured)?;
+        let custom = custom.or_else(|| interpreter_tool(&root, snap.path.parent(), &settings, "ruff"));
+        let mut command = tools.formatter_command("ruff", &snap.path, custom.as_deref())?;
+        if let Some(dir) = snap.path.parent() {
+            command.current_dir(dir);
+        }
+        command.args(formatter::ruff_organize_imports_arguments(&snap.path, config_file.as_deref()));
+        let fixed = formatter::run("ruff", command, &snap.text, &cancel)?;
+        Ok(Some((snap.path, diff_edits(&ide_text::Document::new(&snap.text), &fixed))))
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ruff_comes_from_the_environment_of_the_files_own_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let bin = root.join(if cfg!(windows) { "svc/.venv/Scripts" } else { "svc/.venv/bin" });
+        std::fs::create_dir_all(&bin).unwrap();
+        let exe = |name: &str| if cfg!(windows) { format!("{name}.exe") } else { name.to_owned() };
+        std::fs::write(bin.join(exe("python")), "").unwrap();
+        std::fs::write(root.join("svc/.venv/pyvenv.cfg"), "").unwrap();
+        let settings = Settings::default();
+        let near = root.join("svc/src");
+        assert_eq!(interpreter_tool(root, Some(&near), &settings, "ruff"), None);
+        std::fs::write(bin.join(exe("ruff")), "").unwrap();
+        assert_eq!(interpreter_tool(root, Some(&near), &settings, "ruff"), Some(bin.join(exe("ruff"))));
+    }
     use ExternalFormatter::{Biome, Oxfmt, Prettier, Ruff};
     use ide_core::LanguageId;
     use ide_language::LanguageRegistry;

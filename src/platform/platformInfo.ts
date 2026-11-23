@@ -41,14 +41,6 @@ export const usePlatform = create<PlatformInfo>(() => {
   };
 });
 
-let dataDir: Promise<string> | undefined;
-
-/** The user data directory (scratches, plugins, Local History), which `OPENIDEA_DATA_DIR` can move. */
-export function appDataDir(): Promise<string> {
-  dataDir ??= commands.appInfo().then((info) => info.dataDir.replace(/\/+$/, ""));
-  return dataDir;
-}
-
 export async function loadPlatformInfo() {
   if (!isTauri()) return;
   try {
