@@ -4180,8 +4180,6 @@ dependencies = [
  "rayon",
  "serde",
  "specta",
- "tracing",
- "tree-sitter",
 ]
 
 [[package]]
@@ -4191,7 +4189,6 @@ dependencies = [
  "ide-core",
  "serde",
  "specta",
- "tempfile",
  "which",
 ]
 
@@ -4278,7 +4275,6 @@ dependencies = [
  "serde_json",
  "specta",
  "tempfile",
- "tracing",
 ]
 
 [[package]]
@@ -4317,7 +4313,6 @@ dependencies = [
  "base64 0.22.1",
  "bb8",
  "blake3",
- "dirs 6.0.0",
  "dunce",
  "flate2",
  "futures",
@@ -4383,7 +4378,6 @@ dependencies = [
  "blake3",
  "dunce",
  "ed25519-dalek",
- "ide-core",
  "parking_lot",
  "semver",
  "serde",
@@ -4438,6 +4432,7 @@ version = "0.1.50"
 dependencies = [
  "criterion",
  "ide-core",
+ "ide-heap",
  "libc",
  "memmap2",
  "proptest",
@@ -4541,7 +4536,6 @@ dependencies = [
  "specta",
  "tempfile",
  "tokio",
- "tracing",
  "uuid",
 ]
 
@@ -4554,6 +4548,7 @@ dependencies = [
  "dunce",
  "globset",
  "ide-core",
+ "ide-index",
  "ide-language",
  "ignore",
  "nucleo-matcher",
@@ -4584,7 +4579,6 @@ name = "ide-jsonrpc"
 version = "0.1.50"
 dependencies = [
  "encoding_rs",
- "futures",
  "ide-core",
  "parking_lot",
  "serde",
@@ -4727,7 +4721,6 @@ dependencies = [
 name = "ide-notebook"
 version = "0.1.50"
 dependencies = [
- "futures",
  "ide-core",
  "ide-vfs",
  "jupyter-protocol",
@@ -4740,7 +4733,6 @@ dependencies = [
  "specta-typescript",
  "tempfile",
  "tokio",
- "tracing",
  "uuid",
  "windows-sys 0.61.2",
  "zeromq",
@@ -4760,7 +4752,6 @@ dependencies = [
  "serde_json",
  "specta",
  "tempfile",
- "thiserror 2.0.21",
  "tokio",
  "tracing",
  "url",
@@ -4847,6 +4838,7 @@ dependencies = [
 name = "ide-sdk"
 version = "0.1.50"
 dependencies = [
+ "base64 0.22.1",
  "dirs 6.0.0",
  "dunce",
  "flate2",
@@ -4858,6 +4850,7 @@ dependencies = [
  "quick-xml 0.42.0",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "specta",
  "tar",
  "tempfile",
@@ -6707,14 +6700,11 @@ dependencies = [
  "dunce",
  "gtk",
  "ide-agent",
- "ide-analysis",
  "ide-android",
- "ide-build",
  "ide-cli",
  "ide-clipboard",
  "ide-command",
  "ide-core",
- "ide-coverage",
  "ide-dap",
  "ide-db",
  "ide-docker",
@@ -6724,24 +6714,16 @@ dependencies = [
  "ide-github",
  "ide-host",
  "ide-http",
- "ide-index",
  "ide-jsonrpc",
  "ide-language",
- "ide-lsp",
  "ide-mcp",
- "ide-notebook",
  "ide-plugin",
  "ide-profiler",
  "ide-remote",
  "ide-run",
- "ide-scaffold",
  "ide-sdk",
- "ide-search",
- "ide-spell",
  "ide-ssh",
- "ide-syntax",
  "ide-terminal",
- "ide-text",
  "ide-tools",
  "ide-vcs",
  "ide-vfs",

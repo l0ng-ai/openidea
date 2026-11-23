@@ -122,7 +122,7 @@ export function activate(): () => void {
       icon: "toolwindow-terminal",
       anchor: "bottom",
       order: 10,
-      component: lazyComponent(() => loadTerminalRuntime().then((rt) => rt.TerminalView)),
+      component: lazyComponent(() => loadTerminalRuntime().then((rt) => rt.TerminalView), { prefetch: true }),
       headerContent: lazyComponent(() => loadTerminalRuntime().then((rt) => rt.TerminalTabs)),
       plainTitle: true,
       headerMenu: [

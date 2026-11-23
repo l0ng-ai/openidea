@@ -2094,6 +2094,8 @@ fn prompts_become_acp_content_blocks() {
     assert_eq!(old["entries"][0]["attachments"], json!([]));
     assert!(old["entries"][1].get("attachments").is_none());
     assert_eq!(title_of(&AgentPrompt { files: p.files.clone(), ..AgentPrompt::default() }), "my file.rs");
+    let pasted = AgentPrompt { text: "```text\n\n  ## Fix the tab title\n```".into(), ..AgentPrompt::default() };
+    assert_eq!(title_of(&pasted), "## Fix the tab title");
     assert!(clean(text(" ")).is_none());
 }
 

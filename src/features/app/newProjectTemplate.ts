@@ -76,6 +76,25 @@ export function isVisible(field: Field, values: Values): boolean {
   return Object.entries(field.visible).every(([id, allowed]) => allowed.includes(values[id] ?? ""));
 }
 
+/** `a` ≥ `b`, comparing the numeric parts of dotted versions (`ide-scaffold`'s `version_at_least`). */
+export function versionAtLeast(a: string, b: string): boolean {
+  const parts = (s: string) => {
+    const out: number[] = [];
+    for (const p of s.split(/[.+-]/)) {
+      const digits = /^\d+/.exec(p);
+      if (!digits) break;
+      out.push(Number(digits[0]));
+    }
+    return out;
+  };
+  const [x, y] = [parts(a), parts(b)];
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (x[i] ?? 0) - (y[i] ?? 0);
+    if (d) return d > 0;
+  }
+  return true;
+}
+
 /** Why `value` is not acceptable for `field`, or null. */
 export function fieldError(field: Field, value: string): string | null {
   if (field.kind.type !== "text" || !field.kind.pattern) return null;

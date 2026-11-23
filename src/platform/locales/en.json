@@ -149,6 +149,7 @@
   "menu.code.parameterInfo": "Parameter Info",
   "menu.code.quickDocumentation": "Quick Documentation",
   "menu.code.reformat": "Reformat Code",
+  "menu.code.rearrange": "Rearrange Code",
   "menu.code.showIntentions": "Show Context Actions",
   "menu.code.shrinkSelection": "Shrink Selection",
   "menu.code.surroundWith": "Surround With…",

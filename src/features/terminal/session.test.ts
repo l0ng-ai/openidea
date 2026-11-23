@@ -389,6 +389,58 @@ describe("terminal restart", () => {
   });
 });
 
+describe("terminal startup size", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("resizes a freshly spawned PTY to the grid reached while startup was pending", async () => {
+    let release: ((value: { id: number; title: string }) => void) | undefined;
+    ipc.commands.termSpawn.mockImplementationOnce(
+      () =>
+        new Promise<{ id: number; title: string }>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const session = new TerminalSession({ key: "s-start-size", cwd: "/repo", onChange() {}, onFocus() {} });
+    try {
+      session.term.resize(80, 24);
+      const starting = session.start();
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      expect(ipc.commands.termSpawn).toHaveBeenCalledWith(
+        expect.objectContaining({ cols: 80, rows: 24 }),
+        expect.anything(),
+      );
+      // Resize while startup is still pending.
+      session.term.resize(100, 30);
+      release!({ id: 12, title: "zsh" });
+      await starting;
+      expect(ipc.commands.termResize).toHaveBeenCalledWith(12, 100, 30);
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("leaves the PTY alone when the grid did not change during startup", async () => {
+    let release: ((value: { id: number; title: string }) => void) | undefined;
+    ipc.commands.termSpawn.mockImplementationOnce(
+      () =>
+        new Promise<{ id: number; title: string }>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const session = new TerminalSession({ key: "s-start-same", cwd: "/repo", onChange() {}, onFocus() {} });
+    try {
+      session.term.resize(80, 24);
+      const starting = session.start();
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      release!({ id: 13, title: "zsh" });
+      await starting;
+      expect(ipc.commands.termResize).not.toHaveBeenCalled();
+    } finally {
+      session.dispose();
+    }
+  });
+});
+
 describe("terminal open", () => {
   afterEach(() => vi.useRealTimers());
 

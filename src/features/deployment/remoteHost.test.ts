@@ -19,7 +19,9 @@ vi.mock("@/ui", () => ({ copyText: vi.fn() }));
 vi.mock("@/workbench/inputDialogs", () => ({ promptInput: vi.fn() }));
 vi.mock("@/workbench/messages", () => ({ confirm: vi.fn() }));
 vi.mock("@/platform/dialog", () => ({ open: (...args: unknown[]) => ipc.openDialog(...args) }));
-vi.mock("@/platform/project", () => ({ useProject: { getState: () => ({ project: { root: "/project" } }) } }));
+vi.mock("@/platform/project", () => ({
+  useProject: { getState: () => ({ project: { root: "/project" } }), subscribe: vi.fn() },
+}));
 vi.mock("@/workbench/contributions", () => ({
   notifications: () => ({ notify: ipc.notify }),
   projectViewSelection: () => ipc.selection(),
@@ -27,6 +29,7 @@ vi.mock("@/workbench/contributions", () => ({
 }));
 vi.mock("@/platform/ipc", async (original) => ({
   ...(await original<typeof import("@/platform/ipc")>()),
+  isTauri: () => true,
   commands: {
     deployServerRoot: ipc.root,
     remoteList: ipc.list,

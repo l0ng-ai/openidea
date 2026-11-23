@@ -200,7 +200,12 @@ impl Host {
                 // resolve imports into them. A container target already supplies its own
                 // `extraPaths` (the site-packages snapshot); don't mix local sources into it.
                 if !container_python {
-                    ide_sdk::apply::configure_python_extra_paths(cfg, &python_dependency_roots(&effective, root));
+                    let mut paths = python_dependency_roots(&effective, root);
+                    // The folders added to the paths of the interpreter this server analyses with.
+                    if let Some(python) = ide_sdk::apply::python_server_interpreter(root, server_root, &effective) {
+                        paths.extend(ide_sdk::apply::interpreter_user_paths(&python, &effective));
+                    }
+                    ide_sdk::apply::configure_python_extra_paths(cfg, &paths);
                 }
                 if cfg.name == "jdtls" {
                     // A workspace member keeps its build model under its own key (Build Project).
@@ -1197,11 +1202,6 @@ impl Project {
     /// `with_log_repo_of` through the backend-agnostic Changes-view surface.
     pub fn with_log_backend_of<T>(&self, path: &Path, f: impl FnOnce(&dyn Backend) -> IdeResult<T>) -> IdeResult<T> {
         self.with_log_repo_of(path, |r| f(r as &dyn Backend))
-    }
-
-    /// `with_repo` through the backend-agnostic Changes-view surface.
-    pub fn with_backend<T>(&self, f: impl FnOnce(&dyn Backend) -> IdeResult<T>) -> IdeResult<T> {
-        self.with_backend_at(None, f)
     }
 
     /// `with_repo_recorded` through the backend-agnostic Changes-view surface.
