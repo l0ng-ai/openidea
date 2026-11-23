@@ -487,6 +487,45 @@ test("Markdown preview highlights ⌘F matches, selected words and scales diagra
   expect(reset.excalidraw).toBeCloseTo(base.excalidraw, 1);
 });
 
+for (const mode of ["Preview Only", "Editor and Preview"]) {
+  test(`Markdown ${mode} reveals a cross-file heading on first open`, async ({ workbench: page }) => {
+    const path = "/dev/acme-api/linked-heading.md";
+    const heading = "5.2 状态机";
+    const spacer = Array.from({ length: 80 }, (_, i) => `Paragraph ${i}.`).join("\n\n");
+    const target = `# Destination\n\n${spacer}\n\n## ${heading}\n\n${spacer}`;
+    const editor = await openFromTree(page, "README.md");
+    await page.evaluate(
+      async ({ path, target }) => {
+        const backendModule = "/src/editor/core/backend.ts";
+        const routeModule = "/src/platform/tauriCore.ts";
+        const { docBackend } = await import(/* @vite-ignore */ backendModule);
+        const { setInvokeRoute } = await import(/* @vite-ignore */ routeModule);
+        docBackend().files.set(path, target);
+        setInvokeRoute((cmd: string, args?: Record<string, unknown>) =>
+          cmd === "fs_read_text" && args?.path === path ? Promise.resolve(target) : null,
+        );
+      },
+      { path, target },
+    );
+
+    await editor.locator(".cm-content").focus();
+    await page.keyboard.press("Meta+a");
+    await page.keyboard.insertText("[Linked heading](linked-heading.md#52-%E7%8A%B6%E6%80%81%E6%9C%BA)");
+    if (mode === "Preview Only") await page.getByRole("button", { name: mode, exact: true }).click();
+
+    const destinationTab = page.getByRole("tab", { name: "linked-heading.md", exact: true });
+    const preview = page.getByRole("document", { name: "Markdown preview" });
+    await expect(destinationTab).toHaveCount(0);
+    await preview.getByRole("link", { name: "Linked heading" }).click();
+    await expect(destinationTab).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("button", { name: mode, exact: true })).toHaveAttribute("aria-pressed", "true");
+    await expect(preview.getByRole("heading", { name: heading })).toBeInViewport({ ratio: 1 });
+    if (mode === "Editor and Preview") {
+      await expect(editor.locator(".cm-line", { hasText: heading })).toBeInViewport({ ratio: 1 });
+    }
+  });
+}
+
 test("Markdown preview keeps following find and edits after scrolling the source", async ({ workbench: page }) => {
   const editor = await openFromTree(page, "README.md");
   const content = editor.locator(".cm-content");

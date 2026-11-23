@@ -10,7 +10,7 @@ import { useMemo, useRef, useState, type MouseEvent } from "react";
 import clsx from "clsx";
 import { allActions, useActions, type Action } from "@/platform/actions";
 import { defaultPreset, formatBinding, type Keymap, PRESET_TITLES, PRESETS } from "@/platform/keymap";
-import { call, commands } from "@/platform/ipc";
+import { readDesktopText, writeDesktopText } from "@/platform/desktopFiles";
 import { notifications } from "@/workbench/contributions";
 import { ask, confirm, showError } from "@/workbench/messages";
 import {
@@ -257,7 +257,7 @@ export function KeymapPage() {
     if (!path) return;
     let parsed;
     try {
-      parsed = parseIdeaKeymap(await call(commands.fsReadText(path)));
+      parsed = parseIdeaKeymap(await readDesktopText(path));
     } catch (e) {
       await showError(tx("Import Keymap"), e instanceof Error ? e.message : String(e));
       return;
@@ -298,9 +298,7 @@ export function KeymapPage() {
       draft,
     );
     try {
-      // The save dialog already confirmed replacing an existing file.
-      await call(commands.fsDelete(path)).catch(() => {});
-      await call(commands.fsCreateFileBytes(path, Array.from(new TextEncoder().encode(json))));
+      await writeDesktopText(path, json);
       notifications().notify({
         level: "info",
         title: tx("Keymap exported"),

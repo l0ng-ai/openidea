@@ -2017,11 +2017,17 @@ fn partial_commit_of_chosen_hunks_leaves_worktree_and_index_alone() {
 #[test]
 fn pending_changes_show_what_the_commit_would_hold_without_touching_the_index() {
     let fx = Fixture::new();
+    fx.git(&["config", "core.checkStat", "minimal"]);
+    fx.git(&["config", "core.trustctime", "false"]);
+    let same_tick = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+    let set_mtime =
+        |path| std::fs::File::options().write(true).open(fx.path(path)).unwrap().set_modified(same_tick).unwrap();
     let base = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n";
     fx.write("f.txt", base);
     fx.write("staged.txt", "s\n");
     fx.write("old.txt", "moved\nfile\nwith\nlines\n");
     fx.write("bin.dat", "\0\x01");
+    set_mtime("bin.dat");
     fx.commit_all("base");
     let repo = fx.repo();
     let utf8 = |_: &Path| -> ide_core::IdeResult<&encoding_rs::Encoding> { Ok(encoding_rs::UTF_8) };
@@ -2032,6 +2038,9 @@ fn pending_changes_show_what_the_commit_would_hold_without_touching_the_index() 
     fx.git(&["add", "staged.txt"]);
     fx.git(&["mv", "old.txt", "new.txt"]);
     fx.write("bin.dat", "\0\x02");
+    // Git must recheck a same-size edit made on the same clock tick as the index.
+    set_mtime("bin.dat");
+    set_mtime(".git/index");
     fx.write("added.txt", "new\n");
     let index_before = std::fs::read(fx.dir.join(".git/index")).unwrap();
 

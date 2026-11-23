@@ -35,7 +35,7 @@ import {
 } from "@/ui";
 import { executeAction } from "@/platform/actions";
 import { bindingsFor, normalizeBinding, registerKeyClaim, shortcutLabel } from "@/platform/keymap";
-import { choosePath } from "@/platform/choosePath";
+import { choosePath, chooseSavePath } from "@/platform/choosePath";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { notifications } from "@/workbench/contributions";
 import { ask } from "@/workbench/messages";
@@ -165,8 +165,7 @@ export function showCreatePatchForShelf(entry: ShelvedChangeList, path?: string)
 
 async function browseSave(current: string): Promise<string | null> {
   try {
-    const { save } = await import("@/platform/dialog");
-    return (await save({ defaultPath: current, filters: [{ name: "Patch", extensions: ["patch", "diff"] }] })) ?? null;
+    return await chooseSavePath({ defaultPath: current, filters: [{ name: "Patch", extensions: ["patch", "diff"] }] });
   } catch {
     return null;
   }
@@ -414,14 +413,11 @@ export async function showApplyPatch(from: "file" | "clipboard", path?: string) 
     } else {
       let file = path ?? null;
       if (!file) {
-        const { open } = await import("@/platform/dialog");
-        const picked = await open({
-          multiple: false,
+        file = await choosePath({
           directory: false,
           defaultPath: useVcs.getState().root ?? undefined,
           filters: [{ name: "Patch", extensions: ["patch", "diff"] }],
         });
-        file = typeof picked === "string" ? picked : null;
       }
       if (!file) return;
       sourcePath = file;

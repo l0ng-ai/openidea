@@ -173,6 +173,8 @@ export interface LanguagesValid {
     hideOtherProjectInterpreters: boolean;
     /** Show each interpreter's path under its name on the interpreters page. */
     showInterpreterPaths: boolean;
+    /** Folders added to an interpreter's `sys.path`, by interpreter executable. */
+    interpreterPaths: Record<string, string[]>;
   };
   ruby: { interpreter: string };
   zig: { zig: string };
@@ -304,6 +306,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
     hiddenInterpreters: [],
     hideOtherProjectInterpreters: false,
     showInterpreterPaths: true,
+    interpreterPaths: {},
   },
   ruby: { interpreter: "" },
   zig: { zig: "" },
@@ -453,6 +456,9 @@ export function validateLanguages(raw: unknown): LanguagesValid {
       hiddenInterpreters: strings(py.hiddenInterpreters),
       hideOtherProjectInterpreters: bool(py.hideOtherProjectInterpreters, d.python.hideOtherProjectInterpreters),
       showInterpreterPaths: bool(py.showInterpreterPaths, d.python.showInterpreterPaths),
+      interpreterPaths: Object.fromEntries(
+        Object.entries(obj(py.interpreterPaths)).map(([python, paths]) => [python, strings(paths)]),
+      ),
     },
     ruby: { interpreter: text(ruby.interpreter, d.ruby.interpreter) },
     zig: { zig: text(zig.zig, d.zig.zig) },

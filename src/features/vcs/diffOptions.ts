@@ -130,8 +130,11 @@ interface DiffInsights {
 }
 
 const insights = new WeakMap<readonly Chunk[], DiffInsights>();
+const lineChanges = new WeakMap<readonly Chunk[], readonly LineFragment[]>();
 const NO_INSIGHTS: DiffInsights = { moves: [], whitespaceOnly: false };
 export const getDiffInsights = (chunks: readonly Chunk[]): DiffInsights => insights.get(chunks) ?? NO_INSIGHTS;
+export const getDiffLineChanges = (chunks: readonly Chunk[]): readonly LineFragment[] | undefined =>
+  lineChanges.get(chunks);
 
 /**
  * Whether the chunk has IDEA's inner fragments (its words were compared):
@@ -155,7 +158,7 @@ function toChunks(a: Text, b: Text, idea: IdeaDiff): readonly Chunk[] {
     });
     return chunks;
   };
-  let compared: LineFragment[];
+  let compared: ReturnType<typeof compareTexts>;
   try {
     compared = compareTexts(textA, textB, idea);
   } catch (error) {
@@ -165,7 +168,7 @@ function toChunks(a: Text, b: Text, idea: IdeaDiff): readonly Chunk[] {
     const coarse = build.call(Chunk, a, b, { scanLimit: 500 });
     return remember(coarse.map((c) => new Chunk([], c.fromA, c.toA, c.fromB, c.toB, c.precise)));
   }
-  const chunks = compared.map((f) => {
+  const chunks = compared.fragments.map((f) => {
     // `to` is one past the last line's end, past the document for its last line.
     const toA = f.startLine1 === f.endLine1 ? f.startOffset1 : f.endLine1 === a.lines ? a.length + 1 : f.endOffset1;
     const toB = f.startLine2 === f.endLine2 ? f.startOffset2 : f.endLine2 === b.lines ? b.length + 1 : f.endOffset2;
@@ -176,6 +179,7 @@ function toChunks(a: Text, b: Text, idea: IdeaDiff): readonly Chunk[] {
     fragments.set(chunk, f);
     return chunk;
   });
+  lineChanges.set(chunks, compared.lineChanges);
   return remember(chunks);
 }
 

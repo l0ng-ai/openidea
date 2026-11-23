@@ -1404,6 +1404,9 @@ pub struct PythonSettings {
     pub hide_other_project_interpreters: bool,
     /// Show each interpreter's path under its name on the interpreters page.
     pub show_interpreter_paths: bool,
+    /// Folders the user added to an interpreter's `sys.path` (All Interpreters › Show Paths),
+    /// by interpreter executable; absolute or `~/`.
+    pub interpreter_paths: BTreeMap<String, Vec<String>>,
 }
 
 impl Default for PythonSettings {
@@ -1415,6 +1418,7 @@ impl Default for PythonSettings {
             hidden_interpreters: Vec::new(),
             hide_other_project_interpreters: false,
             show_interpreter_paths: true,
+            interpreter_paths: BTreeMap::new(),
         }
     }
 }

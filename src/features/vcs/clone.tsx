@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Channel } from "@tauri-apps/api/core";
 import { tx } from "@/platform/i18n";
-import { call, commands, isCancelled, isTauri, nextRequestId } from "@/platform/ipc";
+import { callDesktop, commands, isCancelled, isTauri, nextRequestId } from "@/platform/ipc";
 import { openProject } from "@/platform/project";
 import { Checkbox, Dialog, Icon, IconButton, Input, ProgressBar, Select, T, showContextMenu } from "@/ui";
 import { cloneSourceList, notifications, useCloneSources } from "@/workbench/contributions";
@@ -183,8 +183,9 @@ function CloneDialog({ onClose, initialUrl }: { onClose: () => void; initialUrl:
   };
 
   const cancel = () => {
-    if (request.current !== null) void commands.cancelRequest(request.current);
-    else onClose();
+    const id = request.current;
+    if (id === null) onClose();
+    else void callDesktop("cancel_request", { id });
   };
 
   const clone = async (picked?: string) => {
@@ -201,7 +202,7 @@ function CloneDialog({ onClose, initialUrl }: { onClose: () => void; initialUrl:
       if (text) setProgress({ line: text, fraction: progressFraction(text) });
     };
     try {
-      await call(commands.vcsClone(id, cloneUrl.trim(), target, depth, channel));
+      await callDesktop("vcs_clone", { request: id, url: cloneUrl.trim(), dest: target, depth, onOutput: channel });
       writeParent(parentOf(target));
       rememberUrl(cloneUrl.trim());
       onClose();
