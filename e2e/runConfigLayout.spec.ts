@@ -98,6 +98,32 @@ test("long run target names leave room for configuration names in the sidebar", 
   await expect(dialog.getByRole("textbox", { name: "Name", exact: true })).toHaveValue("Payments development server");
 });
 
+test("the configuration type list scrolls below its search field in a short window", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 780, height: 370 });
+  await openConfigurations(page);
+  const dialog = page.getByRole("dialog", { name: "Run/Debug Configurations", exact: true });
+  await dialog.getByRole("button", { name: "Add New Configuration", exact: true }).click();
+  const chooser = page.getByRole("dialog", { name: "Add New Configuration", exact: true });
+  const search = chooser.getByRole("textbox", { name: "Search configuration types" });
+  const list = chooser.getByRole("listbox", { name: "Configuration types" });
+  await expect(search).toBeFocused();
+  expect(await chooser.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeLessThanOrEqual(1);
+  expect(await list.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeGreaterThan(0);
+
+  await search.press("End");
+  const active = list.getByRole("option", { selected: true });
+  await expect(active).toBeInViewport({ ratio: 0.98 });
+  expect(await list.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+  await expect(active.locator("svg")).toHaveAttribute("width", "16");
+  await expect(search).toBeInViewport({ ratio: 1 });
+
+  await search.fill("Tomcat");
+  await expect(list.getByRole("option", { name: "Tomcat Server", selected: true })).toBeVisible();
+  await search.press("Enter");
+  await expect(chooser).toBeHidden();
+  await expect(dialog.getByRole("tab", { name: "Server", exact: true })).toBeVisible();
+});
+
 test("run configuration sidebar resizes with mouse and keyboard and remembers the layout", async ({
   workbench: page,
 }) => {
