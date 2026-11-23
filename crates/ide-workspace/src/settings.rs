@@ -113,7 +113,13 @@ fn restrict_project_layer(below: &Json, layer: &mut Json) {
     // The IDE-wide interpreter list, its view options and the project interpreters of
     // other projects belong to the user's settings, not to one project.
     if let Some(python) = layer.get_mut("languages").and_then(|l| l.get_mut("python")).and_then(Json::as_object_mut) {
-        for key in ["interpreters", "hiddenInterpreters", "hideOtherProjectInterpreters", "showInterpreterPaths"] {
+        for key in [
+            "interpreters",
+            "hiddenInterpreters",
+            "hideOtherProjectInterpreters",
+            "showInterpreterPaths",
+            "interpreterPaths",
+        ] {
             python.remove(key);
         }
     }
@@ -730,6 +736,8 @@ mod tests {
         let store = SettingsStore::load(&cfg, Some(&proj));
         store.set(SettingsScope::Global, "languages.python.interpreters", json!(["/envs/a/bin/python"])).unwrap();
         store.set(SettingsScope::Global, "languages.python.showInterpreterPaths", json!(false)).unwrap();
+        let paths = json!({ "/envs/a/bin/python": ["/shared/lib"] });
+        store.set(SettingsScope::Global, "languages.python.interpreterPaths", paths).unwrap();
         let loaded = SettingsStore::load(&cfg, Some(&proj)).effective();
         assert_eq!(loaded.languages.python.interpreters, ["/envs/a/bin/python"]);
         assert!(!loaded.languages.python.show_interpreter_paths);
@@ -739,10 +747,12 @@ mod tests {
             proj.join(".openidea/settings.toml"),
             "[languages.python]\ninterpreters = [\"/proj/bin/python\"]\n\
              hiddenInterpreters = [\"/envs/a/bin/python\"]\nhideOtherProjectInterpreters = true\n\
-             showInterpreterPaths = true\n",
+             showInterpreterPaths = true\n\
+             [languages.python.interpreterPaths]\n\"/envs/a/bin/python\" = [\"/proj/evil\"]\n",
         )
         .unwrap();
         let loaded = SettingsStore::load(&cfg, Some(&proj)).effective();
+        assert_eq!(loaded.languages.python.interpreter_paths["/envs/a/bin/python"], ["/shared/lib"]);
         assert_eq!(loaded.languages.python.interpreters, ["/envs/a/bin/python"]);
         assert!(loaded.languages.python.hidden_interpreters.is_empty());
         assert!(!loaded.languages.python.hide_other_project_interpreters);

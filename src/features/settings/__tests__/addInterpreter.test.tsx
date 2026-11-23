@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, cleanup } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Sdk } from "@/bindings";
+import { setLocale } from "@/platform/i18n";
 
 const mocks = vi.hoisted(() => ({
   detect: vi.fn(),
@@ -64,10 +65,26 @@ const open = (onAdded = vi.fn()) => {
 };
 
 describe("Add Python Interpreter", () => {
+  it("translates the Pipenv environment type", async () => {
+    await setLocale("zh");
+    try {
+      open();
+      expect(screen.getByRole("button", { name: "Pipenv 环境" })).toBeInTheDocument();
+    } finally {
+      await act(() => setLocale("en"));
+    }
+  });
+
   it("lists the environment types PyCharm offers", async () => {
     open();
     await waitFor(() => expect(mocks.detect).toHaveBeenCalled());
-    for (const label of ["Virtualenv Environment", "Conda Environment", "uv Environment", "Poetry Environment"]) {
+    for (const label of [
+      "Virtualenv Environment",
+      "Conda Environment",
+      "uv Environment",
+      "Poetry Environment",
+      "Pipenv Environment",
+    ]) {
       expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
     }
   });
@@ -82,6 +99,7 @@ describe("Add Python Interpreter", () => {
       "venv",
       "/usr/bin/python3",
       "/project/.venv",
+      false,
       expect.anything(),
       expect.anything(),
     );
@@ -105,6 +123,7 @@ describe("Add Python Interpreter", () => {
         tool,
         "/usr/bin/python3",
         target,
+        false,
         expect.anything(),
         expect.anything(),
       );
@@ -116,6 +135,7 @@ describe("Add Python Interpreter", () => {
       "conda",
       "/usr/bin/python3",
       "ds",
+      false,
       expect.anything(),
       expect.anything(),
     );
@@ -127,9 +147,31 @@ describe("Add Python Interpreter", () => {
       "poetry",
       "/usr/bin/python3",
       "/project/.venv",
+      false,
       expect.anything(),
       expect.anything(),
     );
+    await act(async () => finish(ok(VENV)));
+    // Pipenv keeps its own location too, and installs the Pipfile's packages unless told not to.
+    // A location typed for another tool does not move it out of the project.
+    fireEvent.click(screen.getByRole("button", { name: "Virtualenv Environment" }));
+    fireEvent.change(screen.getByLabelText("Location:"), { target: { value: "/elsewhere/env" } });
+    fireEvent.click(screen.getByRole("button", { name: "Pipenv Environment" }));
+    await waitFor(() => expect(screen.getByLabelText("Location:")).toBeDisabled());
+    expect(screen.getByLabelText("Location:")).toHaveValue("/project/.venv");
+    for (const install of [true, false]) {
+      fireEvent.click(screen.getByRole("button", { name: "OK" }));
+      expect(mocks.createVenv).toHaveBeenLastCalledWith(
+        "pipenv",
+        "/usr/bin/python3",
+        "/project/.venv",
+        install,
+        expect.anything(),
+        expect.anything(),
+      );
+      await act(async () => finish(ok(VENV)));
+      fireEvent.click(screen.getByRole("checkbox", { name: "Install packages from Pipfile" }));
+    }
   });
 
   it("adds an existing interpreter without creating anything", async () => {
