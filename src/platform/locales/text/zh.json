@@ -9931,6 +9931,8 @@
   "Installing package requirements": "正在安装依赖包",
   "Cannot install package requirements": "无法安装依赖包",
   "Install requirement": "安装此依赖",
+  "Convert to f-string literal": "转换为 f-string 字面量",
+  "Replace with str.format() call": "替换为 str.format() 调用",
   "Install all missing requirements": "安装所有缺失的依赖",
   "Package {name} is not installed": "未安装软件包 {name}",
   "Requirement {requirement} is not satisfied: {installed} is installed": "未满足依赖 {requirement}：已安装 {installed}",
