@@ -281,8 +281,9 @@ describe("Agents docked view", () => {
     ]);
   });
 
-  it("lists Import Sessions from Other Apps in Find Action", () => {
+  it("lists Import Sessions in Find Action", () => {
     const action = taskActions.find((a) => a.id === "agents.importSessions");
+    expect(action?.title).toBe("Import Sessions…");
     expect(action?.hidden).toBeFalsy();
     expect(action?.when).toBe("projectOpen");
     act(() => void action?.run({} as never));
