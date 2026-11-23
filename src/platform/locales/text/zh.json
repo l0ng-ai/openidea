@@ -8960,6 +8960,7 @@
   "Rust File": "Rust 文件",
   "TypeScript File": "TypeScript 文件",
   "React Component": "React 组件",
+  "Svelte Component": "Svelte 组件",
   "JavaScript File": "JavaScript 文件",
   "Python File": "Python 文件",
   "Go File": "Go 文件",
