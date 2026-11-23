@@ -86,6 +86,8 @@ export async function saveImage(
 function imageBytes(blob: Blob | string): Promise<string> {
   if ((typeof blob === "string" ? blob.length * 0.75 : blob.size) > MAX_IMAGE_BYTES)
     return Promise.reject(new Error(tx("Image exceeds 16 MB.")));
+  // The data URL from fs_read_image already contains standard base64.
+  if (typeof blob === "string") return Promise.resolve(blob.slice(blob.indexOf(",") + 1));
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL("./imageBytes.worker.ts", import.meta.url), { type: "module" });
     worker.onmessage = (event: MessageEvent<{ data: string; error?: string }>) => {

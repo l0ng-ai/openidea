@@ -1,7 +1,5 @@
 //! Binary command arguments over the remote protocol: base64 strings, not arrays of numbers.
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
 use ide_core::{IpcBytes, NullSink};
 use ide_host::rpc::{self, Dispatcher, Invoke};
 use ide_host::{Host, HostConfig};
@@ -46,9 +44,10 @@ async fn file_bytes_cross_the_protocol_as_base64() {
 
     let args = json!({ "path": path, "data": IpcBytes(bytes.clone()) });
     assert!(args["data"].is_string());
-    // The request body is the base64 text plus a short envelope, not 3.6 times the bytes.
+    // Measure the envelope separately so the assertion is independent of the temp directory.
+    let envelope = serde_json::to_vec(&json!({ "path": path, "data": "" })).unwrap();
     let body = serde_json::to_vec(&args).unwrap();
-    assert!(body.len() <= STANDARD.encode(&bytes).len() + 100, "{} bytes for {}", body.len(), bytes.len());
+    assert_eq!(body.len(), envelope.len() + bytes.len().div_ceil(3) * 4);
 
     let call = Invoke { window: "main".into(), cmd: "fs_create_file_bytes".into(), args };
     peer.request::<_, Value>("invoke", call, None).await.map_err(rpc::error_from_reply).unwrap();

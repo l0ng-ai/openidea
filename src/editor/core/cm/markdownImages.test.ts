@@ -3,6 +3,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { history, undo } from "@codemirror/commands";
 import { IpcError, commands } from "@/platform/ipc";
+import { handleFileDrop } from "@/workbench/fileDrop";
 import { imageName, imageTarget, markdownImages, relativeImagePath, saveImage } from "./markdownImages";
 
 const views: EditorView[] = [];
@@ -97,6 +98,20 @@ describe("Markdown images", () => {
     await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
     expect(create.mock.calls[0]![0]).toMatch(hasFile ? /assets\/image\.png$/ : /assets\/image-\d{8}-\d{6}\.png$/);
     expect(create.mock.calls[0]![1]).toBe("iVBORw==");
+  });
+
+  it("writes the base64 from a native image drop directly", async () => {
+    const invoke = vi.fn().mockResolvedValue("data:image/png;base64,AP8=");
+    vi.stubGlobal("__TAURI_INTERNALS__", { invoke });
+    const create = vi.spyOn(commands, "fsCreateFileBytes").mockResolvedValue({ status: "ok", data: null });
+    const editor = view();
+    vi.spyOn(editor, "posAtCoords").mockReturnValue(7);
+
+    await handleFileDrop(["/source/photo.png"], 0, 0);
+
+    expect(invoke).toHaveBeenCalledWith("fs_read_image", { path: "/source/photo.png" }, undefined);
+    await vi.waitFor(() => expect(create).toHaveBeenCalledWith("/project/docs/assets/photo.png", "AP8="));
+    expect(editor.state.doc.toString()).toBe("before ![](assets/photo.png)after");
   });
 
   it("inserts a paste as one isolated undo step and tracks edits during saving", async () => {
