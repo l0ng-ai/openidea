@@ -3695,6 +3695,8 @@
   "Add type annotation '{annotation}'": "Add type annotation '{annotation}'",
   "Add return type annotation '{annotation}'": "Add return type annotation '{annotation}'",
   "Add type hints for function '{name}'": "Add type hints for function '{name}'",
+  "Convert to f-string literal": "Convert to f-string literal",
+  "Replace with str.format() call": "Replace with str.format() call",
   "Install all missing requirements": "Install all missing requirements",
   "Package {name} is not installed": "Package {name} is not installed",
   "Requirement {requirement} is not satisfied: {installed} is installed": "Requirement {requirement} is not satisfied: {installed} is installed",
