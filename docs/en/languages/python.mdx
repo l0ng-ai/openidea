@@ -86,7 +86,7 @@ Other options on the page:
 
 **Reformat Code** (`⌘⌥L` / `Ctrl+Alt+L`) uses Ruff. In **Settings › Languages & Frameworks › Ruff** you can set the Ruff path, a configuration directory, the **Formatting provider** (**Automatic (language server first)** or Ruff), and **Run on save**. Without a configuration directory, Ruff reads the nearest `pyproject.toml` (`[tool.ruff]`), `ruff.toml` or `.ruff.toml`.
 
-Black formats instead of Ruff below a `pyproject.toml` with a `[tool.black]` table, or everywhere when **Formatting provider** is set to Black in **Settings › Languages & Frameworks › Black formatter**. Black reads its `[tool.black]` options itself. The IDE runs the `black` of the project interpreter's environment, else the one in its tools folder or on `PATH`; when none is installed, Reformat Code offers to install it. **Reformat with Black** in Find Action formats with Black whatever the project uses.
+Black formats instead of Ruff below a `pyproject.toml` with a `[tool.black]` table, or everywhere when **Formatting provider** is set to Black in **Settings › Languages & Frameworks › Black formatter**. Black reads its `[tool.black]` options itself. The IDE runs the `black` of the project interpreter's environment, else the one in its tools folder or on `PATH`; when none is installed, Reformat Code offers to install it. **Reformat with Black** in Find Action formats with Black whatever the project uses. Black runs on save when its own **Run on save** or the editor's **Format on save** is on. Files Black's configuration excludes (`force-exclude`) are left unchanged, and Black before 23.11 formats the whole file instead of a selection.
 
 ## Run and test
 

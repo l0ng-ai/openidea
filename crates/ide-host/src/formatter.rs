@@ -36,11 +36,19 @@ fn black_configured(file: &Path) -> bool {
         .is_some_and(|p| ide_sdk::apply::toml_has_table(&p, "tool.black"))
 }
 
-/// Black in the project interpreter's environment (`.venv/bin/black`), next to its Python.
-fn interpreter_black(root: &Path, settings: &Settings) -> Option<PathBuf> {
-    let python = ide_sdk::apply::python_interpreter(root, settings)?;
-    let black = python.parent()?.join(if cfg!(windows) { "black.exe" } else { "black" });
-    black.is_file().then_some(black)
+/// Black in the environment of the interpreter for `near` (`svc/.venv/bin/black`), next to its
+/// Python, or in `Scripts` for conda and pixi environments on Windows.
+fn interpreter_black(root: &Path, near: Option<&Path>, settings: &Settings) -> Option<PathBuf> {
+    let python = ide_sdk::apply::python_interpreter_near(root, near, settings)?;
+    let dir = python.parent()?;
+    let exe = if cfg!(windows) { "black.exe" } else { "black" };
+    [dir.join(exe), dir.join("Scripts").join(exe)].into_iter().find(|p| p.is_file())
+}
+
+/// Formatters print nothing for a file their configuration excludes (Black's `force-exclude`):
+/// that output must not replace the file.
+fn excluded_output(text: &str, formatted: &str) -> bool {
+    formatted.is_empty() && !text.trim().is_empty()
 }
 
 fn supports_external_format(language: &LanguageConfig, tool: ExternalFormatter) -> bool {
@@ -419,7 +427,10 @@ async fn provider_edits(
             .map_err(|e| IdeError::internal(e.to_string()));
     };
     let tool_settings = settings.languages.formatter(selected);
-    if options.on_save && !tool_settings.run_on_save {
+    // Black takes over from the language server in its projects, so Format on save runs it too.
+    let runs_on_save =
+        tool_settings.run_on_save || (selected == ExternalFormatter::Black && settings.editor.format_on_save);
+    if options.on_save && !runs_on_save {
         return Ok(None);
     }
     host.require_trust(window)?;
@@ -431,16 +442,17 @@ async fn provider_edits(
     let name = formatter::display_name(tool);
     let mut custom = ide_sdk::apply::setting_path(&project.root, &tool_settings.path);
     if custom.is_none() && selected == ExternalFormatter::Black {
-        let (root, settings) = (project.root.clone(), settings.clone());
-        custom = tokio::task::spawn_blocking(move || interpreter_black(&root, &settings))
+        let (root, near, settings) =
+            (project.root.clone(), snap.path.parent().map(Path::to_path_buf), settings.clone());
+        custom = tokio::task::spawn_blocking(move || interpreter_black(&root, near.as_deref(), &settings))
             .await
             .map_err(|e| IdeError::internal(e.to_string()))?;
     }
     let tools = Tools::new(&host.local_data_dir);
-    let whole_selection = range.is_some() && !formatter::supports_range(tool, &config);
+    let unsupported_range = range.is_some() && !formatter::supports_range(tool, &config);
     let project_root = project.root.clone();
     let configuration_directory = settings.languages.ruff.configuration_directory.clone();
-    let edits: IdeResult<Vec<TextEdit>> = tokio::task::spawn_blocking(move || {
+    let result: IdeResult<(Vec<TextEdit>, bool, bool)> = tokio::task::spawn_blocking(move || {
         let text = ide_text::Document::new(&snap.text);
         let range = range.map(|range| format_range(&text, range));
         let config_file = if tool == "ruff" {
@@ -448,20 +460,34 @@ async fn provider_edits(
         } else {
             None
         };
-        let mut command = tools.formatter_command(tool, &snap.path, custom.as_deref())?;
         let dir = snap.path.parent().ok_or_else(|| IdeError::invalid(format!("{name}: file has no directory")))?;
-        command.current_dir(dir);
-        command.args(formatter::arguments(
-            tool,
-            &config,
-            &snap.path,
-            options.tab_size,
-            options.insert_spaces,
-            range,
-            config_file.as_deref(),
-        ));
-        let formatted = formatter::run(tool, command, &snap.text, &Default::default())?;
-        Ok(text
+        let run = |range| {
+            let mut command = tools.formatter_command(tool, &snap.path, custom.as_deref())?;
+            command.current_dir(dir);
+            command.args(formatter::arguments(
+                tool,
+                &config,
+                &snap.path,
+                options.tab_size,
+                options.insert_spaces,
+                range,
+                config_file.as_deref(),
+            ));
+            formatter::run(tool, command, &snap.text, &Default::default())
+        };
+        let mut old_black = false;
+        let formatted = match run(range) {
+            // Black before 23.11 has no `--line-ranges`: format the whole file instead.
+            Err(e) if tool == "black" && range.is_some() && e.message.contains("--line-ranges") => {
+                old_black = true;
+                run(None)?
+            }
+            result => result?,
+        };
+        if excluded_output(&snap.text, &formatted) {
+            return Ok((Vec::new(), false, true));
+        }
+        let edits = text
             .diff(&formatted)
             .changes
             .into_iter()
@@ -469,18 +495,33 @@ async fn provider_edits(
                 range: Range::new(text.offset_to_pos(c.from), text.offset_to_pos(c.to)),
                 new_text: c.insert,
             })
-            .collect())
+            .collect();
+        Ok((edits, old_black, false))
     })
     .await
     .map_err(|e| IdeError::internal(e.to_string()))?;
-    if edits.is_ok() && whole_selection {
+    let (edits, old_black, excluded) = match result {
+        Ok((edits, old_black, excluded)) => (Ok(edits), old_black, excluded),
+        Err(e) => (Err(e), false, false),
+    };
+    // Notification titles are translated, and the catalog has "Black" as the colour.
+    let title = if selected == ExternalFormatter::Black { "Black formatter" } else { name };
+    if excluded && !options.on_save {
         project.sink.emit(IdeEvent::Notify {
             level: NotifyLevel::Info,
-            title: name.into(),
-            body: Some(format!(
-                "{name} does not support selection formatting for this language; formatted the whole file"
-            )),
+            title: title.into(),
+            body: Some(format!("{name} left the file unchanged: its configuration excludes it")),
         });
+    }
+    let whole_selection = if old_black {
+        Some("This Black cannot format a selection (Black 23.11 or later can); formatted the whole file".to_owned())
+    } else {
+        (edits.is_ok() && unsupported_range).then(|| {
+            format!("{name} does not support selection formatting for this language; formatted the whole file")
+        })
+    };
+    if let Some(body) = whole_selection {
+        project.sink.emit(IdeEvent::Notify { level: NotifyLevel::Info, title: title.into(), body: Some(body) });
     }
     edits.map(Some).map_err(|e| e.with_tool(tool))
 }
@@ -536,6 +577,29 @@ mod tests {
         assert_eq!(tool(Some(Black), "python", file, &settings).unwrap(), Some(Black));
         let black = tool(Some(Black), "typescript", Path::new("/project/app.ts"), &settings).unwrap_err();
         assert_eq!(black.message, "Black cannot format TypeScript files");
+    }
+
+    #[test]
+    fn empty_output_for_a_file_with_code_is_an_exclusion_not_an_empty_file() {
+        assert!(excluded_output("x = 1\n", ""));
+        assert!(!excluded_output("\n\n", ""));
+        assert!(!excluded_output("x = 1\n", "x = 1\n"));
+    }
+
+    #[test]
+    fn black_comes_from_the_environment_of_the_files_own_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let bin = root.join(if cfg!(windows) { "svc/.venv/Scripts" } else { "svc/.venv/bin" });
+        std::fs::create_dir_all(&bin).unwrap();
+        let exe = |name: &str| if cfg!(windows) { format!("{name}.exe") } else { name.to_owned() };
+        std::fs::write(bin.join(exe("python")), "").unwrap();
+        std::fs::write(root.join("svc/.venv/pyvenv.cfg"), "").unwrap();
+        std::fs::write(root.join("svc/pyproject.toml"), "[tool.black]\n").unwrap();
+        let settings = Settings::default();
+        assert_eq!(interpreter_black(root, Some(&root.join("svc/src")), &settings), None);
+        std::fs::write(bin.join(exe("black")), "").unwrap();
+        assert_eq!(interpreter_black(root, Some(&root.join("svc/src")), &settings), Some(bin.join(exe("black"))));
     }
 
     #[test]

@@ -9956,5 +9956,8 @@
   "Black path": "Black 路径",
   "Auto: the project interpreter's environment, managed installation, then PATH. An explicit path overrides auto detection.": "自动：依次查找项目解释器的环境、托管安装和 PATH。明确指定的路径优先于自动检测。",
   "Black formats Python instead of Ruff below a pyproject.toml with [tool.black], or when it is the selected provider.": "在含 [tool.black] 的 pyproject.toml 所在目录及其子目录中，或选择 Black 作为格式化工具时，Black 将代替 Ruff 格式化 Python。",
-  "Run Black on save for enabled languages when it is the selected formatting provider.": "对已启用的语言，在选择 Black 作为格式化工具时于保存时运行。"
+  "Run Black on save for enabled languages when it is the selected formatting provider. Reformat code in Actions on Save also runs it.": "对已启用的语言，在选择 Black 作为格式化工具时于保存时运行。保存时操作中的“重新格式化代码”也会运行它。",
+  "Automatic (projects with [tool.black])": "自动（含 [tool.black] 的项目）",
+  "{name} left the file unchanged: its configuration excludes it": "{name} 未修改文件：它的配置排除了此文件",
+  "This Black cannot format a selection (Black 23.11 or later can); formatted the whole file": "此版本的 Black 不能格式化选区（Black 23.11 及以上版本可以），已格式化整个文件"
 }

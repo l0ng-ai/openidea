@@ -3717,5 +3717,8 @@
   "Black path": "Black path",
   "Auto: the project interpreter's environment, managed installation, then PATH. An explicit path overrides auto detection.": "Auto: the project interpreter's environment, managed installation, then PATH. An explicit path overrides auto detection.",
   "Black formats Python instead of Ruff below a pyproject.toml with [tool.black], or when it is the selected provider.": "Black formats Python instead of Ruff below a pyproject.toml with [tool.black], or when it is the selected provider.",
-  "Run Black on save for enabled languages when it is the selected formatting provider.": "Run Black on save for enabled languages when it is the selected formatting provider."
+  "Run Black on save for enabled languages when it is the selected formatting provider. Reformat code in Actions on Save also runs it.": "Run Black on save for enabled languages when it is the selected formatting provider. Reformat code in Actions on Save also runs it.",
+  "Automatic (projects with [tool.black])": "Automatic (projects with [tool.black])",
+  "{name} left the file unchanged: its configuration excludes it": "{name} left the file unchanged: its configuration excludes it",
+  "This Black cannot format a selection (Black 23.11 or later can); formatted the whole file": "This Black cannot format a selection (Black 23.11 or later can); formatted the whole file"
 }
