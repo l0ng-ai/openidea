@@ -30,12 +30,16 @@ export interface CreateFix {
 const PASS = "pass";
 const indentOf = (doc: Text, pos: number) => /^\s*/.exec(doc.lineAt(pos).text)![0];
 
-/** Parameter names for the arguments of `args` (an ArgList), in an order a `def` accepts. */
-export function paramsFor(args: SyntaxNode | null, doc: Text): string[] {
+/**
+ * Parameter names for the arguments of `args` (an ArgList), in an order a `def` accepts.
+ * Keyword names are kept, since callers pass them by name; `reserved` (the receiver) and
+ * the keywords are never reused by a positional or starred parameter.
+ */
+export function paramsFor(args: SyntaxNode | null, doc: Text, reserved: readonly string[] = []): string[] {
   if (!args) return [];
   const groups: SyntaxNode[][] = [[]];
   for (let c = args.firstChild; c; c = c.nextSibling) {
-    if (c.name === "(" || c.name === ")") continue;
+    if (c.name === "(" || c.name === ")" || c.name === "Comment") continue;
     if (c.name === ",") groups.push([]);
     else groups[groups.length - 1]!.push(c);
   }
@@ -52,16 +56,19 @@ export function paramsFor(args: SyntaxNode | null, doc: Text): string[] {
     else if (g.length === 1 && first.name === "VariableName") positional.push(doc.sliceString(first.from, first.to));
     else positional.push("");
   }
-  const names = [...positional, ...(star ? ["*args"] : []), ...keyword, ...(starStar ? ["**kwargs"] : [])];
-  const used = new Set<string>();
+  const used = new Set([...reserved, ...keyword]);
   let next = 0;
-  return names.map((n) => {
+  const unique = (n: string) => {
     const base = n === "" ? `param${++next}` : n;
     let name = base;
     for (let i = 1; used.has(name); i++) name = `${base}${i}`;
     used.add(name);
     return name;
-  });
+  };
+  const named = positional.map(unique);
+  const args_ = star ? [`*${unique("args")}`] : [];
+  const kwargs = starStar ? [`**${unique("kwargs")}`] : [];
+  return [...named, ...args_, ...keyword, ...kwargs];
 }
 
 function topLevel(node: SyntaxNode): SyntaxNode | null {
@@ -98,7 +105,8 @@ export function createForName(tree: Tree, doc: Text, from: number, unit: string)
     const f = functionText(name, params, "", unit);
     fixes.push({ kind: "function", name, insert: { from: at, text: f.text + gap }, body: f.body });
   }
-  const init = call && params.length ? functionText("__init__", ["self", ...params], unit, unit) : null;
+  const initParams = paramsFor(call?.getChild("ArgList") ?? null, doc, ["self"]);
+  const init = call && initParams.length ? functionText("__init__", ["self", ...initParams], unit, unit) : null;
   const head = `class ${name}:\n`;
   const cls = init
     ? { text: head + init.text, body: head.length + init.body }
@@ -123,11 +131,16 @@ export function createForAttribute(tree: Tree, doc: Text, from: number, unit: st
   const first = fn.getChild("ParamList")?.getChild("VariableName");
   const self = doc.sliceString(receiver.from, receiver.to);
   if (!first || doc.sliceString(first.from, first.to) !== self) return [];
+  // The new method is of the kind of the one calling it; a static method has no receiver.
+  const decorators = (holder === fn ? [] : holder!.getChildren("Decorator")).map(
+    (d) => /^@\s*([\w.]+)/.exec(doc.sliceString(d.from, d.to))?.[1],
+  );
+  if (decorators.includes("staticmethod")) return [];
   const name = doc.sliceString(property.from, property.to);
   const owner = doc.sliceString(cls.getChild("VariableName")!.from, cls.getChild("VariableName")!.to);
   const indent = indentOf(doc, holder!.from);
-  const decorator = self === "cls" ? `${indent}@classmethod\n` : "";
-  const f = functionText(name, [self, ...paramsFor(call.getChild("ArgList"), doc)], indent, unit, decorator);
+  const decorator = decorators.includes("classmethod") ? `${indent}@classmethod\n` : "";
+  const f = functionText(name, [self, ...paramsFor(call.getChild("ArgList"), doc, [self])], indent, unit, decorator);
   const body = cls.getChild("Body")!;
   const end = doc.lineAt(body.from + doc.sliceString(body.from, body.to).trimEnd().length).to;
   return [{ kind: "method", name, owner, insert: { from: end, text: `\n\n${f.text}` }, body: 2 + f.body }];

@@ -69,4 +69,32 @@ describe("Python create from usage", () => {
     expect(createForAttribute(tree, doc, at(source, "g()"), "    ")).toEqual([]);
     expect(createForAttribute(tree, doc, at(source, "h\n"), "    ")).toEqual([]);
   });
+
+  it("never repeats a name: the receiver and keywords win, positional and starred names are renamed", async () => {
+    const source =
+      "def run():\n    f(args, *rest)\n    g(kwargs, **o)\n    h(x, x=1)\n    k(a,  # note\n      label=1)\n" +
+      "    panel = Panel(self)\n";
+    const { doc, tree } = await parse(source);
+    const head = (needle: string, kind = 0) =>
+      createForName(tree, doc, at(source, needle), "    ")[kind]!.insert.text.split("\n")[0];
+    expect(head("f(")).toBe("def f(args, *args1):");
+    expect(head("g(")).toBe("def g(kwargs, **kwargs1):");
+    expect(head("h(")).toBe("def h(x1, x):");
+    expect(head("k(")).toBe("def k(a, label):");
+    expect(createForName(tree, doc, at(source, "Panel"), "    ")[1]!.insert.text).toMatch(
+      /^class Panel:\n {4}def __init__\(self, self1\):/,
+    );
+  });
+
+  it("follows the calling method's decorators, not the receiver's name", async () => {
+    const source =
+      "class A:\n    def f(self):\n        self.register(self)\n\n    @classmethod\n    def make(klass):\n" +
+      "        return klass.build()\n\n    @staticmethod\n    def s(x):\n        x.g()\n";
+    const { doc, tree } = await parse(source);
+    const text = (needle: string) =>
+      createForAttribute(tree, doc, at(source, needle), "    ").map((f) => f.insert.text);
+    expect(text("register")).toEqual(["\n\n    def register(self, self1):\n        pass"]);
+    expect(text("build")).toEqual(["\n\n    @classmethod\n    def build(klass):\n        pass"]);
+    expect(text("g()")).toEqual([]);
+  });
 });
