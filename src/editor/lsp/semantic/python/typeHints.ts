@@ -119,8 +119,25 @@ export function requiredMinor(pyproject: readonly string[]): number {
 }
 
 /** The newest syntax the file's evaluated annotations may use (99: anything, under the future import). */
-async function annotationMinor(text: Text): Promise<number> {
-  if (/^from __future__ import [^\n]*\bannotations\b/m.test(text.toString())) return 99;
+async function annotationMinor(tree: Tree, text: Text): Promise<number> {
+  const top = tree.topNode;
+  const imports = [top, ...top.getChildren("StatementGroup")].flatMap((node) => node.getChildren("ImportStatement"));
+  for (const statement of imports) {
+    const from = statement.firstChild;
+    const module = from?.nextSibling;
+    if (
+      from?.name !== "from" ||
+      module?.name !== "VariableName" ||
+      module.nextSibling?.name !== "import" ||
+      text.sliceString(module.from, module.to) !== "__future__"
+    )
+      continue;
+    const features = statement.getChildren("VariableName").slice(1);
+    const annotations = features.some(
+      (name) => name.prevSibling?.name !== "as" && text.sliceString(name.from, name.to) === "annotations",
+    );
+    if (annotations) return 99;
+  }
   const root = useProject.getState().project?.root;
   const lines = root ? await readFileLines(`${root}/pyproject.toml`).catch(() => null) : null;
   return lines ? requiredMinor(lines) : 0;
@@ -156,7 +173,7 @@ export function builtinHoverType(markdown: string): string | null {
 function hintAt(doc: Text, hints: readonly InlayHint[], offset: number, prefix: string): InlayHint | undefined {
   return hints.find(
     (h) =>
-      h.kind === "type" && h.textEdits.length && h.label.startsWith(prefix) && posToOffset(doc, h.position) === offset,
+      h.kind === "type" && h.textEdits?.length && h.label.startsWith(prefix) && posToOffset(doc, h.position) === offset,
   );
 }
 
@@ -187,7 +204,8 @@ export async function pythonTypeHintIntentions(view: EditorView, signal: AbortSi
   const selection = view.state.selection.main;
   if (doc?.uiMode !== "Python" || !selection.empty) return [];
   const state = view.state;
-  const target = annotationTarget(syntaxTree(state), state.doc, selection.head);
+  const tree = syntaxTree(state);
+  const target = annotationTarget(tree, state.doc, selection.head);
   if (!target) return [];
   await whenSynced(view);
   const line = state.doc.lineAt(selection.head);
@@ -196,7 +214,7 @@ export async function pythonTypeHintIntentions(view: EditorView, signal: AbortSi
     commands.lspInlayHints(doc.doc, offsetsToRange(state.doc, span.from, span.to)),
   ).catch(() => [] as InlayHint[]);
   const evaluated = target.kind === "function" || target.evaluated;
-  const minor = evaluated ? await annotationMinor(state.doc) : 99;
+  const minor = evaluated ? await annotationMinor(tree, state.doc) : 99;
   if (signal.aborted || view.state.doc !== state.doc) return [];
   const usable = (a: Annotation | null): Annotation | null => (a && minorNeeded(a.label) <= minor ? a : null);
   const fromHint = (h: InlayHint | undefined): Annotation | null =>
