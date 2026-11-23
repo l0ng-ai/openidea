@@ -28,6 +28,7 @@ import { AgentsStatus } from "./AgentsStatus";
 import { activateSettingsPages } from "./settingsPages";
 import { HOME_KIND, MCP_PAGE, REGISTRY_PAGE, SESSION_KIND, TASK_DRAG, TOOL_WINDOW, providerIcon } from "./model";
 import { sendPaths, sendSelection, trackEditorCopies } from "./references";
+import { copyAgentReferenceActions, registerCopyAgentReference } from "./copyReference";
 import { diagnoseTestFailure, isTestFailure } from "./testFailure";
 import { focusedSession, inputSession } from "./sessionFocus";
 import { cycleFocusedEffort } from "./effortFocus";
@@ -79,6 +80,8 @@ export function activate(): () => void {
     trackPromptHistory(),
     activateSettingsPages(),
     trackEditorCopies(),
+    registerActions(copyAgentReferenceActions),
+    registerCopyAgentReference(),
     registerAgentContextSource({
       id: "changes",
       title: "Changes",

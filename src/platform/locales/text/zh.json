@@ -7892,6 +7892,8 @@
   "This clears the entire conversation and starts a fresh agent session with this message. Files the agent changed stay as they are.": "这会清空整个对话，并使用此消息启动全新的智能体会话。智能体已修改的文件保持不变。",
   "Path From Source Root": "相对于源根的路径",
   "Path From Repository Root": "相对于仓库根的路径",
+  "Agent Reference": "智能体引用",
+  "Copy Agent Reference": "复制智能体引用",
   "Paste preview": "粘贴预览",
   "Filter clipboard history": "筛选剪贴板历史",
   "Add Imports": "添加导入",
