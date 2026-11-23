@@ -5,6 +5,8 @@ mod jvm;
 mod listener;
 mod properties;
 mod socket;
+#[cfg(all(test, unix))]
+mod test_serial;
 mod threads;
 
 pub use discover::find_jvm_by_jdwp_port;

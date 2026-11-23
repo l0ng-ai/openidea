@@ -261,12 +261,14 @@ mod tests {
 
     #[test]
     fn is_hotspot_false_for_sleep() {
+        let _serial = crate::test_serial::hold();
         let sleep = spawn_sleep();
         assert!(!is_hotspot(sleep.0.id()));
     }
 
     #[test]
     fn ensure_listener_refuses_a_non_jvm() {
+        let _serial = crate::test_serial::hold();
         let sleep = spawn_sleep();
         let pid = sleep.0.id();
         let result = ensure_listener(pid, Duration::from_millis(500));
@@ -277,6 +279,7 @@ mod tests {
 
     #[test]
     fn foreign_socket_is_refused_without_a_signal() {
+        let _serial = crate::test_serial::hold();
         use std::os::unix::{fs::PermissionsExt, net::UnixListener};
 
         let dir = tempfile::tempdir().unwrap();
