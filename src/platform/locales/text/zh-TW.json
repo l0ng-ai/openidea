@@ -2690,7 +2690,6 @@
   "Runs Optimize Imports when the file has no errors, unless it would change the caret line.": "檔案沒有錯誤時執行「最佳化匯入」，除非這會更改游標所在行。",
   "Runs npm scripts and Node-based language servers (vtsls, eslint, pyright…).": "執行 npm 指令碼和基於 Node 的語言伺服器（vtsls、eslint、pyright…）。",
   "Runs sync, builds and Maven run configurations. A chosen home is used instead of the project's mvnw. Bypassed while the Maven daemon is enabled.": "用於同步、建置和 Maven 執行組態。選定後將代替專案的 mvnw。啟用 Maven daemon 時將被繞過。",
-  "Runs the language server's Organize Imports action.": "執行語言伺服器的「整理匯入」操作。",
   "Runs the language server's formatter before an explicit save (Actions on Save).": "在顯式儲存前執行語言伺服器的格式化程式（儲存時操作）。",
   "Search history": "搜尋歷史",
   "Search history ({previous} / {next})": "搜尋歷史（{previous} / {next}）",

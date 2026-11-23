@@ -87,7 +87,8 @@ impl Tools {
         self.exe_in(&crate::managed_bin_dir(&self.root, spec, self.platform)?, spec.commands[0])
     }
 
-    /// Explicit executable/script, then the nearest project package, then managed tools and PATH.
+    /// Explicit executable/script (for Ruff, also the project environment's copy), then the nearest
+    /// project package, then managed tools and PATH.
     pub fn formatter_command(&self, tool: &str, file: &Path, custom: Option<&Path>) -> IdeResult<Command> {
         self.resolve_formatter_command(tool, file, custom).map_err(|e| e.with_tool(tool))
     }
@@ -197,6 +198,23 @@ pub fn arguments(
             args.extend(["--ignore-path".into(), path.into_os_string()]);
         }
     }
+    args
+}
+
+/// `ruff check` that sorts the imports (I) of the text on stdin and removes the unused ones (F401)
+/// and prints the result, for Optimize Imports where the Ruff server isn't running. Only those two
+/// are fixed, and F401 only where the project's rules check it (it is in Ruff's defaults; an
+/// `ignore` or `select` without it keeps the imports). Fixes that remain (unsafe ones, such as
+/// re-exports in `__init__.py`) are not errors.
+pub fn ruff_organize_imports_arguments(file: &Path, config_file: Option<&Path>) -> Vec<OsString> {
+    let mut args: Vec<OsString> =
+        ["check", "--extend-select", "I", "--fixable", "I,F401", "--fix", "--exit-zero", "--quiet"]
+            .map(OsString::from)
+            .into();
+    if let Some(config_file) = config_file {
+        args.extend(["--config".into(), config_file.as_os_str().to_owned()]);
+    }
+    args.extend(["--stdin-filename".into(), file.as_os_str().to_owned(), "-".into()]);
     args
 }
 
@@ -424,5 +442,33 @@ mod tests {
         );
         assert!(supports_range("ruff", &config));
         assert!(!args.iter().any(|arg| arg == "--stdin-filepath"));
+    }
+
+    #[test]
+    fn ruff_organizes_imports_of_stdin_without_failing_on_what_it_cannot_fix() {
+        let file = Path::new("/project/src/example.py");
+        let args = |config: Option<&Path>| -> Vec<String> {
+            ruff_organize_imports_arguments(file, config)
+                .into_iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+        assert_eq!(
+            args(None),
+            [
+                "check",
+                "--extend-select",
+                "I",
+                "--fixable",
+                "I,F401",
+                "--fix",
+                "--exit-zero",
+                "--quiet",
+                "--stdin-filename",
+                "/project/src/example.py",
+                "-"
+            ]
+        );
+        assert_eq!(args(Some(Path::new("/shared/ruff.toml")))[8..10], ["--config", "/shared/ruff.toml"]);
     }
 }
