@@ -4751,7 +4751,6 @@
   "Show commit time rather than author time": "Mostrar fecha y hora de la confirmación en lugar de la del autor",
   "Show references on the left": "Mostrar referencias a la izquierda",
   "Visible columns": "Columnas visibles",
-  "Visible columns:": "Columnas visibles:",
   "Get from Revision": "Obtener de la revisión",
   "Replace '{path}' with its content from the revision? Local changes to it are lost.": "¿Reemplazar '{path}' con su contenido de la revisión? Los cambios locales se perderán.",
   "Replace {length} files with their content from the revision? Local changes to them are lost.": "¿Reemplazar {length} archivos con su contenido de la revisión? Los cambios locales en ellos se perderán.",

@@ -6227,7 +6227,6 @@
   "Show commit time rather than author time": "显示提交时间而非作者时间",
   "Show references on the left": "在左侧显示引用",
   "Visible columns": "可见列",
-  "Visible columns:": "可见列:",
   "Get from Revision": "从修订获取",
   "Replace '{path}' with its content from the revision? Local changes to it are lost.": "用修订中的内容替换“{path}”？其本地更改将丢失。",
   "Replace {length} files with their content from the revision? Local changes to them are lost.": "用修订中的内容替换 {length} 个文件？它们的本地更改将丢失。",
