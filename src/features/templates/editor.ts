@@ -4,13 +4,11 @@
  * application / field navigation.
  */
 import {
-  clearSnippet,
   closeCompletion,
   completionStatus,
   nextSnippetField,
   pickedCompletion,
   prevSnippetField,
-  snippet,
   snippetKeymap,
   startCompletion,
   type Completion,
@@ -18,16 +16,7 @@ import {
   type CompletionResult,
   type CompletionSource,
 } from "@codemirror/autocomplete";
-import {
-  EditorSelection,
-  EditorState,
-  Facet,
-  Prec,
-  StateEffect,
-  StateField,
-  type Extension,
-  type Transaction,
-} from "@codemirror/state";
+import { EditorSelection, EditorState, Facet, Prec, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { EditorView, keymap, type Command } from "@codemirror/view";
 import { executeAction, getAction } from "@/platform/actions";
 import { useProject } from "@/platform/project";
@@ -50,14 +39,7 @@ import { showChooser, type ChooserItem } from "./popup/store";
 import { expandEmmetAtCaret } from "./emmet/editor";
 import { hasEmmet, loadEmmet } from "./emmet/model";
 import { readClipboardPlainText } from "@/platform/clipboard";
-import {
-  applyMulticaretSnippet,
-  clearMulticaretSnippet,
-  hasMulticaretSnippet,
-  moveMulticaretField,
-  multicaretFieldMoved,
-  multicaretSnippetExtension,
-} from "./multicaretSnippet";
+import { applySnippet, escapeSnippet, nextLiveSnippetField, snippetFieldMoved } from "@/editor/core/cm/linkedSnippet";
 
 export interface TemplateDocInfo {
   path: string;
@@ -141,7 +123,7 @@ function expansionAt(
 
 async function expandAtSites(
   view: EditorView,
-  t: Pick<LiveTemplate, "body" | "variables"> & Partial<Pick<LiveTemplate, "id">>,
+  t: Pick<LiveTemplate, "body" | "variables">,
   sites: readonly TemplateSite[],
   opts: ExpandOptions = {},
 ): Promise<void> {
@@ -158,23 +140,10 @@ async function expandAtSites(
     }
   }
   const exp = expansions[0]!;
-  const linkedField = t.id === "java.fori" ? exp.fields.indexOf("I") : -1;
-  if (sites.length === 1 && linkedField < 0) {
-    const { from, to } = sites[0]!;
-    clearMulticaretSnippet(view);
-    snippet(exp.snippet)(view, null, from, to);
-  } else {
-    const { main } = state.selection;
-    applyMulticaretSnippet(
-      view,
-      sites.map(({ from, to }, i) => ({
-        from,
-        to: sites.length === 1 && to === main.from ? main.to : to,
-        snippet: expansions[i]!.snippet,
-      })),
-      linkedField,
-    );
-  }
+  applySnippet(
+    view,
+    sites.map((site, i) => ({ ...site, snippet: expansions[i]!.snippet })),
+  );
   if (view.state.field(fieldCompletion, false) !== undefined)
     view.dispatch({ effects: setFieldCompletion.of(exp.completing) });
   if (exp.completeFirst) setTimeout(() => startCompletion(view), 0);
@@ -198,55 +167,21 @@ const fieldCompletion = StateField.define<readonly boolean[]>({
   update: (value, tr) => tr.effects.find((e) => e.is(setFieldCompletion))?.value ?? value,
 });
 
-/**
- * The snippet field a transaction moves to. CodeMirror doesn't expose it; its
- * snippet-state effect carries the active snippet (`{ ranges, active }`).
- */
-function movedToField(tr: Transaction): number | null {
-  for (const e of tr.effects) {
-    const v = e.value as { active?: unknown; ranges?: unknown } | null;
-    if (v && typeof v === "object" && typeof v.active === "number" && Array.isArray(v.ranges)) return v.active;
-  }
-  return null;
-}
-
 /** Moving to a field that asks for completion opens it, as IDEA does. */
 const completeOnFieldMove = EditorView.updateListener.of((u) => {
   if (u.docChanged) return;
   const flags = u.state.field(fieldCompletion);
-  const field = u.transactions.map((tr) => multicaretFieldMoved(tr) ?? movedToField(tr)).findLast((i) => i !== null);
+  const field = u.transactions.map((tr) => snippetFieldMoved(tr)).findLast((i) => i !== undefined);
   if (field == null || !flags[field]) return;
   setTimeout(() => {
     if (u.view.state.selection === u.state.selection) startCompletion(u.view);
   }, 0);
 });
 
-/**
- * Esc in a template, as in IDEA: first drops the selection (closing the lookup)
- * or closes the lookup; only with neither does it leave the template.
- */
-export const escapeTemplate: Command = (view) => {
-  const sel = view.state.selection;
-  if (sel.ranges.some((r) => !r.empty)) {
-    closeCompletion(view);
-    view.dispatch({
-      selection: EditorSelection.create(
-        sel.ranges.map((r) => EditorSelection.cursor(r.head)),
-        sel.mainIndex,
-      ),
-    });
-    return true;
-  }
-  if (completionStatus(view.state) === "active") return closeCompletion(view);
-  return clearMulticaretSnippet(view) || clearSnippet(view);
-};
-
 const unlessLookup =
   (cmd: Command): Command =>
   (view) =>
     completionStatus(view.state) === "active" ? false : cmd(view);
-
-const nextMulticaretField = moveMulticaretField(1);
 
 /**
  * Whether the active snippet came from a live template or Emmet, where Enter moves to the
@@ -254,7 +189,7 @@ const nextMulticaretField = moveMulticaretField(1);
  */
 const templateSnippet = StateField.define<boolean>({
   create: () => false,
-  update: (value, tr) => (movedToField(tr) === 0 && tr.docChanged ? !tr.annotation(pickedCompletion) : value),
+  update: (value, tr) => (snippetFieldMoved(tr) === 0 && tr.docChanged ? !tr.annotation(pickedCompletion) : value),
 });
 
 /** Tab moves to the next field; Enter too in templates (the lookup's while it is open). */
@@ -264,7 +199,7 @@ const templateFieldKeys = snippetKeymap.of([
     key: "Enter",
     run: unlessLookup((view) => view.state.field(templateSnippet, false) === true && nextSnippetField(view)),
   },
-  { key: "Escape", run: escapeTemplate },
+  { key: "Escape", run: escapeSnippet },
 ]);
 
 // ---------------------------------------------------------------------------
@@ -681,7 +616,6 @@ export function templateEditorExtension(ctx: EditorDocContext): Extension {
     fieldCompletion,
     templateSnippet,
     completeOnFieldMove,
-    multicaretSnippetExtension,
     templateFieldKeys,
     templateLookup,
     endTemplateLookup,
@@ -694,14 +628,11 @@ export function templateEditorExtension(ctx: EditorDocContext): Extension {
     ]),
     Prec.high(
       keymap.of([
-        { key: "Enter", run: unlessLookup(nextMulticaretField) },
-        { key: "Escape", run: (view) => hasMulticaretSnippet(view.state) && escapeTemplate(view) },
+        { key: "Enter", run: unlessLookup(nextLiveSnippetField) },
         {
           key: "Tab",
-          shift: moveMulticaretField(-1),
           run: (view) => {
             if (view.state.readOnly || completionStatus(view.state) === "active") return false;
-            if (nextMulticaretField(view)) return true;
             if (expandPostfixAtCaret(view)) return true;
             if (useLiveTemplateOptions.getState().expandWithTab && expandLiveTemplateAtCaret(view)) return true;
             return expandEmmetAtCaret(view, ctx.language);

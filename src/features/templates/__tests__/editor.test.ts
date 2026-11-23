@@ -4,6 +4,7 @@ import { EditorSelection, EditorState, type Extension } from "@codemirror/state"
 import { EditorView, keymap, runScopeHandlers } from "@codemirror/view";
 import { cursorCharRight, history, redo, standardKeymap, undo } from "@codemirror/commands";
 import { nextOccurrence, occurrenceSearch } from "@/editor/core/cm/editing";
+import { hasLinkedSnippetField } from "@/editor/core/cm/linkedSnippet";
 import { completedSyntaxState } from "@/test/syntax";
 import { languages } from "@codemirror/language-data";
 import {
@@ -331,8 +332,8 @@ describe("template fields", () => {
     carets(v, doc.indexOf("fori") + 4, doc.lastIndexOf("fori") + 4);
     const before = v.state.selection;
     expect(tab(v)).toBe(true);
-    expect(v.state.selection.ranges.map((r) => v.state.sliceDoc(r.from, r.to))).toEqual(Array(6).fill("i"));
-    expect(v.state.selection.mainIndex).toBe(3);
+    expect(v.state.selection.ranges.map((r) => v.state.sliceDoc(r.from, r.to))).toEqual(["i", "i"]);
+    expect(v.state.selection.mainIndex).toBe(1);
     expect(v.state.doc.line(3).text).toBe("    ");
     expect(v.state.doc.line(8).text).toBe("      ");
 
@@ -342,7 +343,7 @@ describe("template fields", () => {
     expect(v.state.selection.ranges).toHaveLength(2);
     expect(v.state.selection.ranges.every((r) => v.state.sliceDoc(r.head, r.head + 7) === ".length")).toBe(true);
     expect(runScopeHandlers(v, new KeyboardEvent("keydown", { key: "Tab", shiftKey: true }), "editor")).toBe(true);
-    expect(v.state.selection.ranges).toHaveLength(6);
+    expect(v.state.selection.ranges).toHaveLength(2);
     expect(tab(v)).toBe(true);
     expect(tab(v)).toBe(true);
     expect(v.state.selection.ranges.map((r) => r.head)).toEqual([v.state.doc.line(3).to, v.state.doc.line(8).to]);
@@ -406,9 +407,9 @@ describe("template fields", () => {
     await tick();
     expect(press(v, "Escape")).toBe(true);
     expect(v.state.selection.main.empty).toBe(true);
-    expect(hasNextSnippetField(v.state)).toBe(true);
+    expect(hasLinkedSnippetField(v.state, 1)).toBe(true);
     expect(press(v, "Escape")).toBe(true);
-    expect(hasNextSnippetField(v.state)).toBe(false);
+    expect(hasLinkedSnippetField(v.state, 1)).toBe(false);
     // Outside a template Enter and Esc are left to the editor.
     expect(press(v, "Escape")).toBe(false);
   });
