@@ -231,7 +231,7 @@ fn library_project_roots(root: &Path, cancel: &CancellationToken) -> Vec<PathBuf
             members.extend(expand_members(&dir, &patterns, "Cargo.toml"));
         }
         if let Ok(work) = std::fs::read_to_string(dir.join("go.work")) {
-            members.extend(ide_run::go::work_modules(&work).into_iter().map(|path| dir.join(path)));
+            members.extend(ide_core::go::work_modules(&work).into_iter().map(|path| dir.join(path)));
         }
         roots.extend(
             members
@@ -941,7 +941,7 @@ fn go_groups(root: &Path, project: &Path, s: &Settings, cancel: &CancellationTok
         return Vec::new();
     }
     if let Ok(work) = std::fs::read_to_string(root.join("go.work")) {
-        for module in ide_run::go::work_modules(&work) {
+        for module in ide_core::go::work_modules(&work) {
             files.extend([root.join(&module).join("go.mod"), root.join(&module).join("go.sum")]);
         }
     }

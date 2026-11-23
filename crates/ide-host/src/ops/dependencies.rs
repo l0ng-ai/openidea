@@ -4,7 +4,7 @@ use ide_command::command;
 use ide_core::{CancellationToken, DocId, IdeError, IdeResult, RequestId};
 use ide_workspace::dependencies::{
     DependencyVersionSource, DependencyVersions, PythonRequirements, UnsatisfiedRequirement, cargo, go, maven, npm,
-    python,
+    pypi, python,
 };
 use std::collections::BTreeMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -301,11 +301,39 @@ pub async fn python_requirements(
     result
 }
 
+/// A project on pypi.org by its exact name; `None` when PyPI has no such project.
+#[command(trust = outside_restricted)]
+pub async fn pypi_package(
+    host: &Host,
+    window: &str,
+    name: String,
+    request: RequestId,
+) -> IdeResult<Option<pypi::PypiPackage>> {
+    let url = pypi::project_url(name.trim()).ok_or_else(|| IdeError::invalid("not a package name"))?;
+    let cancel = host.begin_project_read_request(window, request);
+    let result = host
+        .blocking(move || {
+            let search_path = std::env::var_os("PATH").unwrap_or_default();
+            let text = ide_tools::Http::new(&search_path)?.https_only().get_text_limited_or_empty_on_404(
+                &url,
+                16 * 1024 * 1024,
+                &cancel,
+            )?;
+            // The helper's body for a 404.
+            if text == "[]" {
+                return Ok(None);
+            }
+            pypi::parse_project(&text).map(Some).ok_or_else(|| IdeError::internal("invalid PyPI response"))
+        })
+        .await;
+    host.end_request(request);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::HostConfig;
-    use std::sync::Arc;
 
     struct Source;
     impl DependencyVersionSource for Source {
@@ -326,17 +354,7 @@ mod tests {
         let text = "# 中文 😀\n[dependencies]\ntokio = { version = \"0.2\", features = [\"full\"] }\nserde = \"1.0.100\"\nlocal = { path = \"../x\", version = \"0.2\" }\n";
         let path = root.join("Cargo.toml");
         std::fs::write(&path, text).unwrap();
-        let host = Host::new(HostConfig {
-            config_dir: base.join("config"),
-            data_dir: base.join("data"),
-            local_data_dir: base.join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(|_| {})),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(HostConfig { local_data_dir: base.join("local"), ..HostConfig::for_test(&base) });
         let project = host.open_project("main", &root).unwrap();
         let info = project.documents.open(&path).unwrap();
         for package in ["tokio", "serde"] {
@@ -382,17 +400,7 @@ mod tests {
         let text = "# 中文\nopenidea-missing-xyz>=1\n-r other.txt\n";
         let path = root.join("requirements.txt");
         std::fs::write(&path, text).unwrap();
-        let host = Host::new(HostConfig {
-            config_dir: base_dir.join("config"),
-            data_dir: base_dir.join("data"),
-            local_data_dir: base_dir.join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(|_| {})),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(HostConfig { local_data_dir: base_dir.join("local"), ..HostConfig::for_test(&base_dir) });
         let project = host.open_project("main", &root).unwrap();
         let info = project.documents.open(&path).unwrap();
         // Restricted Mode never runs the interpreter.
@@ -432,17 +440,7 @@ mod tests {
         let text = "{\n  \"devDependencies\": { \"@types/node\": \"^20\" }\n}\n";
         let path = root.join("package.json");
         std::fs::write(&path, text).unwrap();
-        let host = Host::new(HostConfig {
-            config_dir: base.join("config"),
-            data_dir: base.join("data"),
-            local_data_dir: base.join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(|_| {})),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(HostConfig { local_data_dir: base.join("local"), ..HostConfig::for_test(&base) });
         let project = host.open_project("main", &root).unwrap();
         let info = project.documents.open(&path).unwrap();
         host.dependency_versions.versions(&CachedNpm, "@types/node", &CancellationToken::new()).unwrap();
@@ -458,4 +456,4 @@ mod tests {
     }
 }
 
-ide_command::domain!(dependencies: dependency_versions, python_requirements);
+ide_command::domain!(dependencies: dependency_versions, python_requirements, pypi_package);

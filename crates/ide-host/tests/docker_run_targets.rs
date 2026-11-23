@@ -2,8 +2,9 @@
 //! (`OPENIDEA_DOCKER`) that prints what it was given.
 #![cfg(unix)]
 
-use ide_core::NullSink;
-use ide_host::{Host, HostConfig, ops};
+mod common;
+
+use ide_host::{Host, ops};
 use ide_run::{OutputChunk, RunConfig};
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
@@ -13,17 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 fn host(base: &Path) -> Arc<Host> {
-    Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    }))
+    Arc::new(Host::new(common::host_config(base)))
 }
 
 fn config(target: &str, root: &Path) -> RunConfig {

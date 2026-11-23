@@ -2,8 +2,9 @@
 //! and leaves the other windows' processes alone.
 #![cfg(unix)]
 
-use ide_core::NullSink;
-use ide_host::{Host, HostConfig, ops};
+mod common;
+
+use ide_host::{Host, ops};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -27,17 +28,7 @@ fn closing_a_project_closes_its_terminals_and_keeps_other_windows() {
     std::fs::create_dir_all(&root).unwrap();
     let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
     runtime.block_on(async {
-        let host = Arc::new(Host::new(HostConfig {
-            config_dir: tmp.path().join("config"),
-            data_dir: tmp.path().join("data"),
-            local_data_dir: tmp.path().join("data"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(NullSink)),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        }));
+        let host = Arc::new(Host::new(common::host_config(tmp.path())));
         host.trust.decide(&root, true, false).unwrap();
         host.open_project("main", &root).unwrap();
         let project_shell = ops::term::term_spawn(&host, "main", options(&root), ops::Channel::new(|_| {}))
@@ -67,17 +58,7 @@ fn detached_close_returns_while_runtime_workers_wait_for_the_closing_thread() {
     std::fs::create_dir_all(&root).unwrap();
     let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
     let _guard = runtime.enter();
-    let host = Arc::new(Host::new(HostConfig {
-        config_dir: tmp.path().join("config"),
-        data_dir: tmp.path().join("data"),
-        local_data_dir: tmp.path().join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: runtime.handle().clone(),
-        project_environment: false,
-    }));
+    let host = Arc::new(Host::new(common::host_config(tmp.path())));
     host.trust.decide(&root, true, false).unwrap();
     host.open_project("main", &root).unwrap();
 

@@ -58,6 +58,27 @@ pub struct HostConfig {
     pub project_environment: bool,
 }
 
+#[cfg(test)]
+impl HostConfig {
+    /// A host under `base` for unit tests: `config`, `data` and `data` again for the machine-local
+    /// directory, built-in languages, no grammars, a sink that drops events, the window as its own
+    /// owner, the current tokio runtime and no project environment. Override fields with
+    /// `HostConfig { sink_for: .., ..HostConfig::for_test(base) }`. Call it inside a runtime.
+    pub(crate) fn for_test(base: &Path) -> Self {
+        Self {
+            config_dir: base.join("config"),
+            data_dir: base.join("data"),
+            local_data_dir: base.join("data"),
+            languages: Arc::new(LanguageRegistry::load(None).unwrap()),
+            syntax: Arc::default(),
+            sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
+            owner: |w| w,
+            runtime: tokio::runtime::Handle::current(),
+            project_environment: false,
+        }
+    }
+}
+
 pub struct Host {
     pub(crate) mcp_executable: Arc<RwLock<Option<PathBuf>>>,
     pub mcp: mcp::McpService,
@@ -622,17 +643,7 @@ mod tests {
         let root = base.join("project");
         std::fs::create_dir(&root).unwrap();
         std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
-        let host = Host::new(HostConfig {
-            config_dir: base.join("config"),
-            data_dir: base.join("data"),
-            local_data_dir: base.join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(|_| {})),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(HostConfig { local_data_dir: base.join("local"), ..HostConfig::for_test(&base) });
         let project = Arc::downgrade(&host.open_project("main", &root).unwrap());
         host.close_project_detached("main");
         assert!(host.project("main").is_err());

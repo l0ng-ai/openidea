@@ -1,7 +1,8 @@
 //! Repository-scoped patch operations must never fall back to the primary root.
-use ide_core::NullSink;
-use ide_host::{Host, HostConfig, ops::vcs};
-use std::{path::Path, process::Command, sync::Arc, time::Duration};
+mod common;
+
+use ide_host::{Host, ops::vcs};
+use std::{path::Path, process::Command, time::Duration};
 
 fn git(root: &Path, args: &[&str]) -> String {
     let output = Command::new("git").current_dir(root).args(args).output().unwrap();
@@ -33,17 +34,7 @@ async fn patches_read_and_write_the_requested_repository() {
         git(root, &["commit", "-am", "change"]);
         revisions.push(git(root, &["rev-parse", "HEAD"]));
     }
-    let host = Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    });
+    let host = Host::new(common::host_config(&base));
     host.trust.decide(&project_root, true, false).unwrap();
     let project = host.open_project("main", &project_root).unwrap();
     for _ in 0..500 {
@@ -521,17 +512,7 @@ async fn add_to_ignore_accepts_the_repositories_of_attached_projects() {
     std::fs::write(&own, "x").unwrap();
     std::fs::write(&attached, "x").unwrap();
 
-    let host = Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    });
+    let host = Host::new(common::host_config(&base));
     host.trust.decide(&project_root, true, false).unwrap();
     host.trust.decide(&attached_root, true, false).unwrap();
     let project = host.open_project("main", &project_root).unwrap();

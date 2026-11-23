@@ -1390,6 +1390,16 @@ export const commands = {
 	 *  edited (not yet applied); the response status, or why there was none.
 	 */
 	proxyCheckConnection: (proxy: ProxySettings, url: string) => typedError<string, IdeError>(__TAURI_INVOKE("proxy_check_connection", { proxy, url })),
+	/**  A project on pypi.org by its exact name; `None` when PyPI has no such project. */
+	pypiPackage: (name: string, request: RequestId) => typedError<{
+	/**  The name as PyPI spells it. */
+	name: string,
+	summary: string,
+	/**  The newest release that is not a pre-release; empty when every release is yanked. */
+	latest: string,
+	/**  Releases with files to install, most recently uploaded first; yanked ones left out. */
+	versions: string[],
+} | null, IdeError>(__TAURI_INVOKE("pypi_package", { name, request })),
 	/**
 	 *  The requirements of a `requirements*.txt` / `pyproject.toml` the project's interpreter
 	 *  doesn't satisfy; `None` for other files, or with no local interpreter to ask.
@@ -1680,6 +1690,8 @@ export const commands = {
 	/**  Rust standard library sources, Go default GOPATH. */
 	extra: IpcPath | null,
 } | null, IdeError>(__TAURI_INVOKE("sdk_python_interpreter", { path })),
+	/**  A package index other than PyPI that installing from `python` uses; `None` for PyPI. */
+	sdkPythonPackageIndex: (python: string, request: RequestId) => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_package_index", { python, request })),
 	sdkPythonPackages: (python: string, outdated: boolean, request: RequestId) => typedError<PythonPackage[], IdeError>(__TAURI_INVOKE("sdk_python_packages", { python, outdated, request })),
 	/**  Installs (`uninstall = false`) or removes a package; output streams through `on_output`. */
 	sdkPythonPip: (python: string, requirement: string, uninstall: boolean, upgrade: boolean, request: RequestId, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("sdk_python_pip", { python, requirement, uninstall, upgrade, request, onOutput })),
@@ -2601,10 +2613,10 @@ form?: AgentForm | null;
 /**  Name of the chosen option, or `None` while pending. Cancelled requests read "Cancelled". */
 chosen: string | null } | { type: "error"; message: string };
 
-/**  Streamed to the window that subscribed (`AgentManager::subscribe`). */
+/**  Streamed to the window that subscribed (`AgentManager::subscribe_as`). */
 export type AgentEvent = AgentEvent_Serialize | AgentEvent_Deserialize;
 
-/**  Streamed to the window that subscribed (`AgentManager::subscribe`). */
+/**  Streamed to the window that subscribed (`AgentManager::subscribe_as`). */
 export type AgentEvent_Deserialize = 
 /**  A task was created or its metadata changed. */
 ({ type: "task"; task: AgentTask_Deserialize }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; text?: never } | ({ type: "removed"; id: string }) & { catalog?: never; entry?: never; eventId?: never; from?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
@@ -2626,7 +2638,7 @@ export type AgentEvent_Deserialize =
 /**  The task needs attention once (finished turn, explicit input, or failure). */
 ({ type: "attention"; task: string; eventId: string; reason: AgentAttentionReason }) & { catalog?: never; entry?: never; from?: never; id?: never; index?: never; length?: never; limits?: never; provider?: never; subagent?: never; text?: never };
 
-/**  Streamed to the window that subscribed (`AgentManager::subscribe`). */
+/**  Streamed to the window that subscribed (`AgentManager::subscribe_as`). */
 export type AgentEvent_Serialize = 
 /**  A task was created or its metadata changed. */
 ({ type: "task"; task: AgentTask_Serialize }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; text?: never } | ({ type: "removed"; id: string }) & { catalog?: never; entry?: never; eventId?: never; from?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
@@ -11342,6 +11354,16 @@ export type PushTargetChoices = {
 };
 
 export type PushTargetState = "ready" | "diverged" | "fetchRequired";
+
+export type PypiPackage = {
+	/**  The name as PyPI spells it. */
+	name: string,
+	summary: string,
+	/**  The newest release that is not a pre-release; empty when every release is yanked. */
+	latest: string,
+	/**  Releases with files to install, most recently uploaded first; yanked ones left out. */
+	versions: string[],
+};
 
 /**  A class definition and the methods it declares. */
 export type PythonClassFacts = {

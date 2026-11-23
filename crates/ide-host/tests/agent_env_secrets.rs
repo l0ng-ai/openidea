@@ -1,7 +1,8 @@
 //! Values of agents' environment variables live in the credential store; agent files keep only their names.
 
-use ide_core::NullSink;
-use ide_host::{Host, HostConfig};
+mod common;
+
+use ide_host::Host;
 use ide_ssh::secrets::testing::{files_containing, use_memory_store};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -10,17 +11,7 @@ use std::sync::Arc;
 const VALUE: &str = "agent-env-value-5b2d81";
 
 fn host(dir: &Path) -> Arc<Host> {
-    Arc::new(Host::new(HostConfig {
-        config_dir: dir.join("config"),
-        data_dir: dir.join("data"),
-        local_data_dir: dir.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    }))
+    Arc::new(Host::new(common::host_config(dir)))
 }
 
 fn open(host: &Host, tmp: &tempfile::TempDir) {

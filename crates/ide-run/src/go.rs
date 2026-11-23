@@ -275,8 +275,6 @@ pub fn prepare_test_file(root: &Path, config: &mut RunConfig) -> IdeResult<()> {
     Ok(())
 }
 
-pub use ide_core::go::work_modules;
-
 #[cfg(test)]
 mod test_scope_tests {
     use super::*;

@@ -1,3 +1,5 @@
+mod common;
+
 use ide_core::{CancellationToken, ChangeSet, Diagnostic, IdeEvent, Pos, Range, Severity, TextChange};
 use ide_host::mcp::{BackgroundProjects, FileProblems, FocusedEditor, Registry};
 use ide_host::{Host, HostConfig};
@@ -25,18 +27,12 @@ impl Harness {
         let events = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = events.clone();
         let host = Arc::new(Host::new(HostConfig {
-            config_dir: tmp.path().join("config"),
-            data_dir: tmp.path().join("data"),
-            local_data_dir: tmp.path().join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
             sink_for: Box::new(move |_| {
                 let events = sink.clone();
                 Arc::new(move |e| events.lock().unwrap().push(e))
             }),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
+            local_data_dir: tmp.path().join("local"),
+            ..common::host_config(tmp.path())
         }));
         host.open_project("main", &root).unwrap();
         Self { host, root, tmp, events }
@@ -114,7 +110,16 @@ impl Harness {
         let discovery = ide_mcp::discovery_path(self.tmp.path());
         let registry = Arc::new(Registry::new(self.host.clone()));
         let runtime = tokio::runtime::Handle::current();
-        (ide_mcp::McpServer::start(registry, Some(discovery.clone()), &runtime).unwrap(), discovery)
+        (
+            ide_mcp::McpServer::start_with(
+                registry,
+                Some(discovery.clone()),
+                &runtime,
+                ide_mcp::ServerOptions::default(),
+            )
+            .unwrap(),
+            discovery,
+        )
     }
 }
 impl Drop for Harness {
@@ -265,10 +270,11 @@ async fn project_path_argument_routes_to_another_open_project() {
     std::fs::write(second.join("unique.txt"), "second project").unwrap();
     h.host.open_project("second", &second).unwrap();
     let discovery = ide_mcp::discovery_path(h.tmp.path());
-    let _server = ide_mcp::McpServer::start(
+    let _server = ide_mcp::McpServer::start_with(
         Arc::new(Registry::new(h.host.clone())),
         Some(discovery.clone()),
         &tokio::runtime::Handle::current(),
+        ide_mcp::ServerOptions::default(),
     )
     .unwrap();
     let request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","arguments":{

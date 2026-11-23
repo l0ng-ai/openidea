@@ -10,13 +10,12 @@ import { useCallback, useEffect, useMemo, useState, type KeyboardEvent, type Mou
 import clsx from "clsx";
 import { Button, Icon, IconButton, Input, Spinner, showContextMenu, T } from "@/ui";
 import { useProject } from "@/platform/project";
+import { usePythonPackages } from "@/platform/pythonPackages";
 import { Section, Toggle } from "../components/Form";
 import {
   containerPython,
   effectivePython,
   interpreterTarget,
-  listPackages,
-  outdatedPackages,
   pip,
   refreshContainerPython,
   targetChoices,
@@ -42,62 +41,6 @@ interface Job {
 export function filterPackages(packages: readonly PythonPackage[], query: string): PythonPackage[] {
   const q = query.trim().toLowerCase();
   return q ? packages.filter((p) => p.name.toLowerCase().includes(q)) : [...packages];
-}
-
-function usePackages(python: string | null) {
-  const [tick, setTick] = useState(0);
-  const [result, setResult] = useState<{
-    key: string;
-    python: string;
-    packages: PythonPackage[] | null;
-    error: string | null;
-  } | null>(null);
-  // Newer releases by package name; `null` when the check failed.
-  const [newer, setNewer] = useState<{ key: string; python: string; versions: Map<string, string> | null } | null>(
-    null,
-  );
-  useEffect(() => {
-    if (!python) return;
-    let live = true;
-    let check: ReturnType<typeof outdatedPackages> | undefined;
-    const key = `${python}#${tick}`;
-    listPackages(python)
-      .then((packages) => {
-        if (!live) return;
-        setResult({ key, python, packages, error: null });
-        // The list shows first: this asks the package index.
-        check = outdatedPackages(python);
-        check.promise
-          .then(
-            (outdated) =>
-              live &&
-              setNewer({ key, python, versions: new Map(outdated.map((p) => [p.name, p.latestVersion ?? p.version])) }),
-            () => live && setNewer({ key, python, versions: null }),
-          )
-          .finally(() => (check = undefined));
-      })
-      .catch(
-        (e: unknown) => live && setResult({ key, python, packages: null, error: String((e as Error)?.message ?? e) }),
-      );
-    return () => {
-      live = false;
-      check?.cancel();
-    };
-  }, [python, tick]);
-  const reload = useCallback(() => setTick((t) => t + 1), []);
-  // While reloading the same interpreter, keep showing its previous list.
-  const same = !!python && result?.python === python;
-  const key = `${python}#${tick}`;
-  const listed = same && result.key === key && !!result.packages;
-  return {
-    packages: same ? result.packages : null,
-    error: same ? result.error : null,
-    loading: !!python && result?.key !== key,
-    newer: same && newer?.python === python ? newer.versions : null,
-    checking: listed && newer?.key !== key,
-    checkFailed: listed && newer?.key === key && !newer.versions,
-    reload,
-  };
 }
 
 /** The snapshot of a run target interpreter; polled while one is being taken. */
@@ -209,7 +152,7 @@ export function PythonInterpreterPage() {
 
   // Without a configured interpreter the project's virtualenv is used (like run configurations).
   const python = target ? null : interpreter || auto;
-  const local = usePackages(python);
+  const local = usePythonPackages(python);
   const { newer, checking, checkFailed } = local;
   const { packages, error, loading, reload } = target
     ? {
@@ -243,10 +186,13 @@ export function PythonInterpreterPage() {
           setInstalling(false);
         }
         if (op === "uninstall") setSelected(null);
-        reload();
       })
       .catch((e: unknown) => setJobError(isCancelled(e) ? null : String((e as Error)?.message ?? e)))
-      .finally(() => setJob(null));
+      .finally(() => {
+        setJob(null);
+        // A failed or cancelled run can still have installed some of the packages.
+        reload();
+      });
   };
 
   const menu = (e: MouseEvent, pkg: PythonPackage) => {
