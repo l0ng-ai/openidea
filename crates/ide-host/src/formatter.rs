@@ -50,11 +50,21 @@ fn black_configured(file: &Path) -> bool {
 }
 
 /// Where Ruff and Black look for the user's own configuration (`~/.config/ruff/ruff.toml`,
-/// `~/.config/black`), whatever the platform's convention.
+/// `~/.config/black`, `~/.black`), whatever the platform's convention.
 fn user_config_dirs() -> Vec<PathBuf> {
     let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
     let home = dirs::home_dir();
-    [xdg, home.as_ref().map(|h| h.join(".config")), dirs::config_dir()].into_iter().flatten().collect()
+    [xdg, home.as_ref().map(|h| h.join(".config")), dirs::config_dir(), home].into_iter().flatten().collect()
+}
+
+/// Whether the user has their own configuration of `tool` in one of `dirs`.
+fn user_configured(tool: &str, dirs: &[PathBuf]) -> bool {
+    let names: &[&str] = match tool {
+        "ruff" => &["ruff/ruff.toml", "ruff/.ruff.toml", "ruff/pyproject.toml"],
+        "black" => &["black", ".black"],
+        _ => &[],
+    };
+    dirs.iter().any(|d| names.iter().any(|n| d.join(n).is_file()))
 }
 
 /// Whether Ruff finds a configuration of the project for `file`: `ruff.toml`, `.ruff.toml` or a
@@ -67,31 +77,40 @@ fn ruff_project_configured(file: &Path) -> bool {
     })
 }
 
-/// The Code Style › Python values for `tool`, unless a configuration of the project or the user
-/// decides them (or the Ruff configuration directory is set).
-fn python_style_for(tool: &str, file: &Path, configured: bool, settings: &Settings) -> formatter::PythonStyle {
-    let user = |names: &[&str]| user_config_dirs().iter().any(|d| names.iter().any(|n| d.join(n).is_file()));
+/// The indentation and line length for `tool`, unless a configuration of the project or the user
+/// decides them (or the Ruff configuration directory is set): the file's `.editorconfig`, then
+/// what was set on the Code Style › Python page, as the editor indents.
+fn python_style_for(
+    tool: &str,
+    file: &Path,
+    configured: bool,
+    settings: &Settings,
+    editorconfig: Option<&ide_workspace::editorconfig::EditorConfigProps>,
+    user_dirs: &[PathBuf],
+) -> formatter::PythonStyle {
     let has_config = configured
         || match tool {
-            "ruff" => {
-                ruff_project_configured(file) || user(&["ruff/ruff.toml", "ruff/.ruff.toml", "ruff/pyproject.toml"])
-            }
-            "black" => {
-                black_configured(file)
-                    || user(&["black"])
-                    || dirs::home_dir().is_some_and(|h| h.join(".black").is_file())
-            }
+            "ruff" => ruff_project_configured(file) || user_configured("ruff", user_dirs),
+            // Black reads the user's configuration only when its project root has no pyproject.toml.
+            "black" => match black_pyproject(file) {
+                Some(pyproject) => ide_sdk::apply::toml_has_table(&pyproject, "tool.black"),
+                None => user_configured("black", user_dirs),
+            },
             _ => true,
         };
     if has_config {
         return formatter::PythonStyle::default();
     }
-    // Only what was set on the page: the global hard wrap (120) is not Ruff's or Black's default (88).
-    let style = settings.editor.code_style.languages.get("python");
+    // Only what was set: the global hard wrap (120) is not Ruff's or Black's default (88).
+    let page = settings.editor.code_style.languages.get("python");
+    let ec = editorconfig;
     formatter::PythonStyle {
-        line_length: style.and_then(|s| s.hard_wrap_at),
-        indent_width: style.and_then(|s| s.indent.or(s.tab_size)),
-        use_tabs: style.and_then(|s| s.use_tab),
+        line_length: ec.and_then(|e| e.max_line_length).or(page.and_then(|s| s.hard_wrap_at)),
+        indent_width: ec.and_then(|e| e.indent_size.or(e.tab_width)).or(page.and_then(|s| s.indent.or(s.tab_size))),
+        use_tabs: ec
+            .and_then(|e| e.indent_style)
+            .map(|style| style == ide_workspace::editorconfig::IndentStyle::Tab)
+            .or(page.and_then(|s| s.use_tab)),
     }
 }
 
@@ -512,6 +531,7 @@ async fn provider_edits(
     let project_root = project.root.clone();
     let configuration_directory = settings.languages.ruff.configuration_directory.clone();
     let style_settings = settings.clone();
+    let documents = project.documents.clone();
     let result: IdeResult<(Vec<TextEdit>, bool, bool)> = tokio::task::spawn_blocking(move || {
         let text = ide_text::Document::new(&snap.text);
         let range = range.map(|range| format_range(&text, range));
@@ -520,7 +540,20 @@ async fn provider_edits(
         } else {
             None
         };
-        let style = python_style_for(tool, &snap.path, config_file.is_some(), &style_settings);
+        let editorconfig = style_settings
+            .editor
+            .code_style
+            .editorconfig
+            .then(|| documents.editorconfig().resolve(&snap.path))
+            .flatten();
+        let style = python_style_for(
+            tool,
+            &snap.path,
+            config_file.is_some(),
+            &style_settings,
+            editorconfig.as_ref(),
+            &user_config_dirs(),
+        );
         let dir = snap.path.parent().ok_or_else(|| IdeError::invalid(format!("{name}: file has no directory")))?;
         let run = |range| {
             let mut command = tools.formatter_command(tool, &snap.path, custom.as_deref())?;
@@ -642,32 +675,56 @@ mod tests {
     }
 
     #[test]
-    fn code_style_reaches_ruff_and_black_only_without_their_project_configuration() {
+    fn code_style_reaches_ruff_and_black_only_without_their_configuration() {
+        use ide_workspace::editorconfig::{EditorConfigProps, IndentStyle};
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
+        let root = dir.path().join("repo");
+        let user = [dir.path().join("user config")];
         std::fs::create_dir_all(root.join("app/src")).unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(user[0].join("ruff")).unwrap();
         let file = root.join("app/src/main.py");
         let mut settings = Settings::default();
+        let style = |tool, settings: &Settings, editorconfig: Option<&EditorConfigProps>| {
+            python_style_for(tool, &file, false, settings, editorconfig, &user)
+        };
         let none = formatter::PythonStyle::default();
-        // Nothing set on the page: the tools keep their defaults.
-        assert_eq!(python_style_for("ruff", &file, false, &settings), none);
-        let style = ide_core::editor_settings::LanguageCodeStyle {
+        // Nothing set: the tools keep their defaults.
+        assert_eq!(style("ruff", &settings, None), none);
+        let page = ide_core::editor_settings::LanguageCodeStyle {
             hard_wrap_at: Some(100),
             tab_size: Some(2),
             ..Default::default()
         };
-        settings.editor.code_style.languages.insert("python".into(), style);
+        settings.editor.code_style.languages.insert("python".into(), page);
         let set = formatter::PythonStyle { line_length: Some(100), indent_width: Some(2), use_tabs: None };
-        assert_eq!(python_style_for("ruff", &file, false, &settings), set);
-        assert_eq!(python_style_for("black", &file, false, &settings), set);
-        assert_eq!(python_style_for("ruff", &file, true, &settings), none);
+        assert_eq!(style("ruff", &settings, None), set);
+        assert_eq!(style("black", &settings, None), set);
+        assert_eq!(python_style_for("ruff", &file, true, &settings, None, &user), none);
+        // The file's .editorconfig wins over the page, as in the editor.
+        let editorconfig =
+            EditorConfigProps { indent_size: Some(4), indent_style: Some(IndentStyle::Space), ..Default::default() };
+        let indented = formatter::PythonStyle { line_length: Some(100), indent_width: Some(4), use_tabs: Some(false) };
+        assert_eq!(style("ruff", &settings, Some(&editorconfig)), indented);
+
+        // The user's configurations: Ruff's always counts, Black's only when the project root
+        // (here the repository) has no pyproject.toml.
+        std::fs::write(user[0].join("black"), "[tool.black]\n").unwrap();
+        assert_eq!(style("black", &settings, None), none);
+        std::fs::write(root.join("pyproject.toml"), "[project]\nname = \"repo\"\n").unwrap();
+        assert_eq!(style("black", &settings, None), set);
+        std::fs::write(user[0].join("ruff/ruff.toml"), "").unwrap();
+        assert_eq!(style("ruff", &settings, None), none);
+        std::fs::remove_file(user[0].join("ruff/ruff.toml")).unwrap();
+
+        // The project's configurations.
         std::fs::write(root.join("app/pyproject.toml"), "[project]\nname = \"app\"\n").unwrap();
-        assert_eq!(python_style_for("ruff", &file, false, &settings), set);
-        std::fs::write(root.join("app/pyproject.toml"), "[tool.black]\n").unwrap();
-        assert_eq!(python_style_for("black", &file, false, &settings), none);
-        assert_eq!(python_style_for("ruff", &file, false, &settings), set);
+        assert_eq!(style("ruff", &settings, None), set);
+        std::fs::write(root.join("pyproject.toml"), "[tool.black]\n").unwrap();
+        assert_eq!(style("black", &settings, None), none);
+        assert_eq!(style("ruff", &settings, None), set);
         std::fs::write(root.join(".ruff.toml"), "").unwrap();
-        assert_eq!(python_style_for("ruff", &file, false, &settings), none);
+        assert_eq!(style("ruff", &settings, None), none);
     }
 
     #[test]
