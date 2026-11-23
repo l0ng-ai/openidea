@@ -15,7 +15,7 @@ import { expressionTypeInfo } from "./typeInfo";
 import { gotoHighlightedUsage, gotoTargets, highlightUsages } from "./navigation";
 import { gotoDiagnostic, showErrorDescription } from "./diagnostics";
 import { applyKindSilently, applyQuickFix, runKindAction, showIntentions } from "./intentions";
-import { docOf } from "./lsp";
+import { docOf, reportLspError } from "./lsp";
 import { languageSemantics } from "./semantic";
 import { workflowSettings, type ActionsOnSaveValid } from "@/platform/workflowSettings";
 import { startRename } from "./rename";
@@ -29,6 +29,8 @@ import {
   startHierarchyRefactoring,
 } from "@/editor/refactor";
 import { evaluateWhen } from "@/platform/context";
+import { isolateHistory } from "@codemirror/commands";
+import { textEditsToChanges } from "./positions";
 import { tx } from "@/platform/i18n";
 
 /** Editor actions apply to the active text editor unless a tool window or popup owns the keyboard. */
@@ -136,6 +138,30 @@ const optimizeImports = async (v: EditorView) => {
     label: "Optimize Imports",
   });
 };
+
+/** Rearrange Code: class members in arrangement order (Python), as one undo step. */
+async function rearrange(view: EditorView) {
+  const doc = docOf(view);
+  if (!doc || doc.readOnly) return;
+  await whenSynced(view);
+  const state = view.state;
+  let edits;
+  try {
+    edits = await call(commands.docRearrange(doc.doc));
+  } catch (e) {
+    reportLspError(view, e, true);
+    return;
+  }
+  if (view.state.doc !== state.doc) return showHint(view, "The file changed while rearranging; try again");
+  if (!edits.length)
+    return showHint(view, "Nothing to rearrange: members are in order, or moving them could change the class");
+  view.dispatch({
+    changes: textEditsToChanges(state.doc, edits),
+    userEvent: "format.rearrange",
+    annotations: isolateHistory.of("full"),
+    scrollIntoView: false,
+  });
+}
 
 export interface CleanupOptions {
   fixAll?: boolean;
@@ -313,6 +339,10 @@ export function registerLspActions(): () => void {
     }),
     editorAction("code.fixStylelintProblems", "Fix Stylelint Problems", "Code", fixStylelintProblems, {
       keywords: ["stylelint", "lint", "css", "fix all"],
+    }),
+    editorAction("code.rearrange", "Rearrange Code", "Code", rearrange, {
+      when: `${EDITOR_WHEN} && editorLangId == python`,
+      keywords: ["arrange", "sort", "members", "methods", "order"],
     }),
     editorAction("code.optimizeImports", "Optimize Imports", "Code", optimizeImports, {
       keywords: ["organize imports"],

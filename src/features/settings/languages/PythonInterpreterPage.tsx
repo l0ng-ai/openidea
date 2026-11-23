@@ -8,7 +8,7 @@
 import { isCancelled } from "@/platform/ipc";
 import { useCallback, useEffect, useMemo, useState, type KeyboardEvent, type MouseEvent } from "react";
 import clsx from "clsx";
-import { Button, IconButton, Input, Spinner, showContextMenu, T } from "@/ui";
+import { Button, Icon, IconButton, Input, Spinner, showContextMenu, T } from "@/ui";
 import { useProject } from "@/platform/project";
 import { Section, Toggle } from "../components/Form";
 import {
@@ -16,6 +16,7 @@ import {
   effectivePython,
   interpreterTarget,
   listPackages,
+  outdatedPackages,
   pip,
   refreshContainerPython,
   targetChoices,
@@ -51,26 +52,50 @@ function usePackages(python: string | null) {
     packages: PythonPackage[] | null;
     error: string | null;
   } | null>(null);
+  // Newer releases by package name; `null` when the check failed.
+  const [newer, setNewer] = useState<{ key: string; python: string; versions: Map<string, string> | null } | null>(
+    null,
+  );
   useEffect(() => {
     if (!python) return;
     let live = true;
+    let check: ReturnType<typeof outdatedPackages> | undefined;
     const key = `${python}#${tick}`;
     listPackages(python)
-      .then((packages) => live && setResult({ key, python, packages, error: null }))
+      .then((packages) => {
+        if (!live) return;
+        setResult({ key, python, packages, error: null });
+        // The list shows first: this asks the package index.
+        check = outdatedPackages(python);
+        check.promise
+          .then(
+            (outdated) =>
+              live &&
+              setNewer({ key, python, versions: new Map(outdated.map((p) => [p.name, p.latestVersion ?? p.version])) }),
+            () => live && setNewer({ key, python, versions: null }),
+          )
+          .finally(() => (check = undefined));
+      })
       .catch(
         (e: unknown) => live && setResult({ key, python, packages: null, error: String((e as Error)?.message ?? e) }),
       );
     return () => {
       live = false;
+      check?.cancel();
     };
   }, [python, tick]);
   const reload = useCallback(() => setTick((t) => t + 1), []);
   // While reloading the same interpreter, keep showing its previous list.
   const same = !!python && result?.python === python;
+  const key = `${python}#${tick}`;
+  const listed = same && result.key === key && !!result.packages;
   return {
     packages: same ? result.packages : null,
     error: same ? result.error : null,
-    loading: !!python && result?.key !== `${python}#${tick}`,
+    loading: !!python && result?.key !== key,
+    newer: same && newer?.python === python ? newer.versions : null,
+    checking: listed && newer?.key !== key,
+    checkFailed: listed && newer?.key === key && !newer.versions,
     reload,
   };
 }
@@ -185,6 +210,7 @@ export function PythonInterpreterPage() {
   // Without a configured interpreter the project's virtualenv is used (like run configurations).
   const python = target ? null : interpreter || auto;
   const local = usePackages(python);
+  const { newer, checking, checkFailed } = local;
   const { packages, error, loading, reload } = target
     ? {
         packages: container.info?.version ? container.info.packages : null,
@@ -333,7 +359,12 @@ export function PythonInterpreterPage() {
             onClick={reload}
           />
           <span className={styles.spacer} />
-          {(loading || job) && <Spinner size={14} label={job ? `${job.op} ${job.target}` : "Loading packages"} />}
+          {(loading || job || checking) && (
+            <Spinner
+              size={14}
+              label={job ? `${job.op} ${job.target}` : loading ? "Loading packages" : "Checking for newer versions"}
+            />
+          )}
           <Input
             className={styles.search}
             value={query}
@@ -379,6 +410,11 @@ export function PythonInterpreterPage() {
                 <th scope="col">
                   <T>Version</T>
                 </th>
+                {!target && (
+                  <th scope="col">
+                    <T>Latest</T>
+                  </th>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -394,6 +430,7 @@ export function PythonInterpreterPage() {
                 >
                   <td>{p.name}</td>
                   <td className={styles.versionCell}>{p.version}</td>
+                  {!target && <td className={styles.versionCell}>{latestCell(p, newer)}</td>}
                 </tr>
               ))}
             </tbody>
@@ -419,6 +456,11 @@ export function PythonInterpreterPage() {
         </div>
       </div>
 
+      {checkFailed && (
+        <div className={styles.note}>
+          <T>Could not check for newer versions of the packages.</T>
+        </div>
+      )}
       {target && (
         <div className={styles.note}>
           <T>
@@ -472,6 +514,18 @@ export function PythonInterpreterPage() {
         />
       )}
     </div>
+  );
+}
+
+/** The newer release of `pkg`, marked as an upgrade; nothing for a package that is up to date. */
+function latestCell(pkg: PythonPackage, newer: Map<string, string> | null) {
+  const latest = newer?.get(pkg.name);
+  if (!latest || latest === pkg.version) return null;
+  return (
+    <span className={styles.upgradable} title={tx`Upgrade available: ${latest}`}>
+      <Icon name="arrow-up" size={12} />
+      {latest}
+    </span>
   );
 }
 

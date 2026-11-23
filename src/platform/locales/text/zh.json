@@ -9991,5 +9991,12 @@
   "Automatic (projects with [tool.black])": "自动（含 [tool.black] 的项目）",
   "{name} left the file unchanged: its configuration excludes it": "{name} 未修改文件：它的配置排除了此文件",
   "This Black cannot format a selection (Black 23.11 or later can); formatted the whole file": "此版本的 Black 不能格式化选区（Black 23.11 及以上版本可以），已格式化整个文件",
-  "Ruff formats with the indent, tab character and hard wrap set here, and Black with the hard wrap, when no Ruff or Black configuration of the project or user applies. A file's .editorconfig values come first, as in the editor.": "项目和用户都没有 Ruff 或 Black 配置时，Ruff 按这里设置的缩进、制表符和硬换行格式化，Black 按这里的硬换行格式化。与编辑器一样，文件的 .editorconfig 设置优先。"
+  "Ruff formats with the indent, tab character and hard wrap set here, and Black with the hard wrap, when no Ruff or Black configuration of the project or user applies. A file's .editorconfig values come first, as in the editor.": "项目和用户都没有 Ruff 或 Black 配置时，Ruff 按这里设置的缩进、制表符和硬换行格式化，Black 按这里的硬换行格式化。与编辑器一样，文件的 .editorconfig 设置优先。",
+  "Latest": "最新版本",
+  "Checking for newer versions": "正在检查新版本",
+  "Could not check for newer versions of the packages.": "无法检查软件包的新版本。",
+  "Upgrade available: {latest}": "可升级到 {latest}",
+  "Rearrange Code": "重新排列代码",
+  "Nothing to rearrange: members are in order, or moving them could change the class": "无需重新排列：成员已按顺序排列，或移动它们可能改变类的行为",
+  "The file changed while rearranging; try again": "重新排列期间文件已更改，请重试"
 }
