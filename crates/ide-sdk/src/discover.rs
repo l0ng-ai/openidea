@@ -31,6 +31,7 @@ pub fn detect(kind: SdkKind, root: Option<&Path>) -> Vec<Sdk> {
         SdkKind::Maven => maven(),
         SdkKind::Ruby => crate::ruby::detect(root),
         SdkKind::Zig => zig(),
+        SdkKind::Dotnet => dotnet(),
     };
     if let Some(root) = root {
         pinned_first(&mut out, kind, root);
@@ -47,7 +48,7 @@ fn tool_of(kind: SdkKind) -> Option<Tool> {
         SdkKind::Maven => Some(Tool::Maven),
         SdkKind::Ruby => Some(Tool::Ruby),
         SdkKind::Zig => Some(Tool::Zig),
-        SdkKind::Php | SdkKind::PackageManager | SdkKind::Rust | SdkKind::TypeScript => None,
+        SdkKind::Php | SdkKind::PackageManager | SdkKind::Rust | SdkKind::TypeScript | SdkKind::Dotnet => None,
     }
 }
 
@@ -1122,6 +1123,47 @@ fn zig() -> Vec<Sdk> {
             extra: None,
         })
     })
+}
+
+/// The SDKs `dotnet --list-sdks` reports, newest first: only the `dotnet` that runs
+/// `dotnet new` can use them.
+fn dotnet() -> Vec<Sdk> {
+    let Some(dotnet) = which("dotnet") else { return Vec::new() };
+    dotnet_sdks(&query(&dotnet, &["--list-sdks"], VERSION_TIMEOUT).unwrap_or_default())
+}
+
+/// `10.0.401 [/usr/local/share/dotnet/sdk]` lines, oldest first, as SDKs newest first.
+fn dotnet_sdks(list: &str) -> Vec<Sdk> {
+    list.lines()
+        .filter_map(|line| {
+            let (version, root) = line.trim().split_once(" [")?;
+            let dir = Path::new(root.strip_suffix(']')?).join(version);
+            let channel: Vec<&str> = version.split(['.', '-']).take(2).collect();
+            Some(Sdk {
+                path: dir.into(),
+                name: format!(".NET {}", channel.join(".")),
+                version: Some(version.to_owned()),
+                source: "dotnet".into(),
+                home: None,
+                extra: None,
+            })
+        })
+        .rev()
+        .collect()
+}
+
+#[cfg(test)]
+mod dotnet_tests {
+    #[test]
+    fn lists_sdks_newest_first() {
+        let sdks = super::dotnet_sdks(
+            "8.0.404 [/usr/local/share/dotnet/sdk]\n10.0.100-rc.2.25502.107 [/usr/local/share/dotnet/sdk]\n\nnot an sdk\n",
+        );
+        let shown: Vec<_> = sdks.iter().map(|s| (s.name.as_str(), s.version.as_deref().unwrap())).collect();
+        assert_eq!(shown, [(".NET 10.0", "10.0.100-rc.2.25502.107"), (".NET 8.0", "8.0.404")]);
+        assert!(sdks[1].path.ends_with("sdk/8.0.404"));
+        assert!(super::dotnet_sdks("").is_empty());
+    }
 }
 
 #[cfg(test)]

@@ -6785,8 +6785,11 @@ export type Field = {
 };
 
 export type FieldKind = { type: "text"; pattern: string | null; placeholder: string } | { type: "choice"; options: ChoiceOption[]; segmented: boolean } | { type: "checkbox" } | 
-/**  An installed SDK of this kind (`jdk`); the value is its home, empty = automatic. */
-{ type: "sdk"; sdk: string } | 
+/**
+ *  An installed SDK of this kind (`jdk`); the value is its home (its version when
+ *  `version`), empty = automatic. SDKs older than `min` are not offered.
+ */
+{ type: "sdk"; sdk: string; version: boolean; min: string | null } | 
 /**  Several ids out of grouped items; the value is comma-separated. */
 { type: "dependencies"; groups: DependencyGroup[] };
 
@@ -12247,7 +12250,9 @@ export type SdkKind = "python" | "node" |
 /**  Maven homes. */
 "maven" | "ruby" | 
 /**  Zig toolchain directories. */
-"zig";
+"zig" | 
+/**  .NET SDKs of the `dotnet` on the search path; `version` is what `global.json` pins. */
+"dotnet";
 
 /**
  *  IDEA's search context: matches anywhere, only in, or outside comments and

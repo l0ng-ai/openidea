@@ -16,7 +16,9 @@ django:
   - uv add django
   - uv run django-admin startproject my_app .
 dotnet:
-  - "dotnet new console --name my-app --output . --language C#"
+  - dotnet new sln --name my-app
+  - "dotnet new console --name my-app --output my-app --language C#"
+  - dotnet sln add my-app
   - dotnet new gitignore
 elixir:
   - mix new . --app my_app
