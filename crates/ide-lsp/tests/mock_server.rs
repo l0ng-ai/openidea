@@ -3166,7 +3166,7 @@ async fn open_java_files_are_checked_again_after_a_project_update() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_project_update_refreshes_java_semantic_tokens() {
+async fn a_project_update_refreshes_java_tokens_and_inheritance() {
     let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
     let _ = h.open("A.java", "class A { private String name; }");
     h.wait_status("jdtls", ServerStatus::Ready).await;
@@ -3175,20 +3175,22 @@ async fn a_project_update_refreshes_java_semantic_tokens() {
         h.events
             .lock()
             .iter()
-            .filter(|e| matches!(e, IdeEvent::LspRefresh { kind: LspRefreshKind::SemanticTokens, .. }))
-            .count()
+            .filter_map(|e| match e {
+                IdeEvent::LspRefresh { kind, .. } => Some(*kind),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
     };
     state
         .peer()
         .notify("language/status", json!({ "type": "Message", "message": "Updating project configurations..." }))
         .unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(refreshes(), 0);
+    assert!(refreshes().is_empty());
 
-    // jdtls answers with no tokens for a file outside any project and sends no
-    // `workspace/semanticTokens/refresh` once a later import takes it in.
+    // A later import may add tokens and implementation targets to open editors.
     state.peer().notify("language/status", json!({ "type": "ProjectStatus", "message": "OK" })).unwrap();
-    eventually(|| refreshes() == 1).await;
+    eventually(|| refreshes() == [LspRefreshKind::SemanticTokens, LspRefreshKind::Inheritance]).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

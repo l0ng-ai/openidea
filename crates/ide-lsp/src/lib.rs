@@ -280,7 +280,7 @@ pub struct LspManager {
     virtual_docs: Mutex<HashMap<String, VirtualDocument>>,
     /// Modification time of the archive behind a cached library class, so a jar
     /// replaced in place (a SNAPSHOT installed again) is read again.
-    virtual_stamps: Mutex<HashMap<String, std::time::SystemTime>>,
+    virtual_stamps: Mutex<HashMap<String, virtual_doc::ArchiveStamp>>,
     injections: injections::State,
     /// Open notebooks by path. Locked before `docs` when both are.
     notebooks: Mutex<HashMap<PathBuf, notebook::NotebookState>>,
@@ -3629,6 +3629,16 @@ impl LspManager {
         archives.sort();
         archives.dedup();
         archives
+    }
+
+    /// Drop cached text after JDT LS reopens the archives. A request could have
+    /// read the old attachment while the binary already had its new timestamp.
+    pub fn invalidate_library_archives(&self, archives: &std::collections::HashSet<PathBuf>) {
+        if !archives.is_empty() {
+            self.virtual_docs
+                .lock()
+                .retain(|uri, _| !virtual_doc::archive(uri).is_some_and(|archive| archives.contains(&archive)));
+        }
     }
 
     /// Contents of a virtual document, from the server that owns `uri`:

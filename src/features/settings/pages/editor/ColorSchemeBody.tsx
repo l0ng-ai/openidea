@@ -46,7 +46,7 @@ import { Row, Select } from "../../components/Form";
 import { useSetting } from "../../components/context";
 import styles from "./Editor.module.css";
 import { executeAction, registerActions } from "@/platform/actions";
-import { call, commands } from "@/platform/ipc";
+import { readDesktopText, writeDesktopText } from "@/platform/desktopFiles";
 import { ask, confirm, showError } from "@/workbench/messages";
 import { useContributions } from "@/workbench/contributions";
 import { parseIcls, SchemeParseError, importScheme, deleteScheme, exportIcls } from "@/platform/icls";
@@ -1727,7 +1727,7 @@ export function ColorSchemePage({
             .split(/[\\/]/)
             .at(-1)
             ?.replace(/\.[^.]+$/, "") || "Imported scheme";
-        const parsed = parseIcls(await call(commands.fsReadText(path)), fallbackName);
+        const parsed = parseIcls(await readDesktopText(path), fallbackName);
         let overwrite = false;
         if (schemes.some((s) => s.name === parsed.scheme.name)) {
           const canOverwrite = Object.values(customs).some((s) => s.name === parsed.scheme.name);
@@ -1758,10 +1758,7 @@ export function ColorSchemePage({
             filters: [{ name: tx("IntelliJ Color Scheme"), extensions: ["icls"] }],
           }));
         if (!path) return;
-        const bytes = Array.from(new TextEncoder().encode(exportIcls(id, customs, mine)));
-        // The save dialog already confirmed replacing an existing file.
-        await call(commands.fsDelete(path)).catch(() => {});
-        await call(commands.fsCreateFileBytes(path, bytes));
+        await writeDesktopText(path, exportIcls(id, customs, mine));
         setReport(tx("Scheme exported."));
       },
       delete: async () => {

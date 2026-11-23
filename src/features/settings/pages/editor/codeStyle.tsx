@@ -10,6 +10,7 @@
 import { useId, useState } from "react";
 import { Button, Checkbox, Input, type SelectOption, T } from "@/ui";
 import { commands, isTauri, type LanguageInfo_Serialize as LanguageInfo } from "@/platform/ipc";
+import { choosePath } from "@/platform/choosePath";
 import { ENCODING_CHOICES, lineCommentDefaults, type LanguageCodeStyle } from "@/platform/editorSettings";
 import { NATIVE_TO_ASCII_ACTION } from "../../nativeToAscii";
 import { FormGroup, NumberInput, Row, Select, Toggle } from "../../components/Form";
@@ -300,9 +301,8 @@ function JavaFormatter({
 }) {
   const id = useId();
   const browse = async () => {
-    const { open } = await import("@/platform/dialog");
-    const path = await open({
-      multiple: false,
+    const path = await choosePath({
+      directory: false,
       title: tx("Eclipse formatter XML"),
       filters: [{ name: "XML", extensions: ["xml"] }],
     });

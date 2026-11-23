@@ -146,7 +146,7 @@ function trackCommitWindow(): () => void {
         icon: "toolwindow-commit",
         anchor: "left",
         order: 1,
-        component: lazyComponent(() => import("./CommitView").then((m) => m.CommitToolWindow)),
+        component: lazyComponent(() => import("./CommitView").then((m) => m.CommitToolWindow), { prefetch: true }),
         headerContent: lazyComponent(() => import("./CommitView").then((m) => m.CommitTabs)),
         tabsReplaceTitle: true,
         useBadge: () => {
@@ -284,7 +284,7 @@ export function activate(): () => void {
       icon: "toolwindow-git",
       anchor: "bottom",
       order: 5,
-      component: lazyComponent(() => import("./GitLog").then((m) => m.GitToolWindow)),
+      component: lazyComponent(() => import("./GitLog").then((m) => m.GitToolWindow), { prefetch: true }),
       headerContent: lazyComponent(() => import("./GitLog").then((m) => m.GitTabs)),
     }),
     registerEditorKind({

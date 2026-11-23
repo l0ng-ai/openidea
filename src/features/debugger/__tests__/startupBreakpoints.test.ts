@@ -365,3 +365,29 @@ it("prefers the same configuration over another selected tab with the same name"
   expect(tabIds()).toEqual([1, 3]);
   expect(useDebug.getState().sessions[3]?.runConfig?.id).toBe("b");
 });
+
+it("keeps a rerun tab in place and selected while its adapter starts", async () => {
+  ipc.debugStart.mockResolvedValueOnce({ status: "ok", data: 1 }).mockResolvedValueOnce({ status: "ok", data: 2 });
+  await startSession({ ...config("launch"), name: "main.c" });
+  await startSession({ ...config("launch"), name: "layout.c" });
+  useDebug.setState({ active: 1 });
+
+  let respond!: (r: { status: "ok"; data: number }) => void;
+  ipc.debugStart.mockImplementationOnce(() => new Promise((resolve) => (respond = resolve)) as never);
+  const rerun = rerunSession(1);
+  await vi.advanceTimersByTimeAsync(0);
+  handleDebugEvent(1, { kind: "terminated" });
+  // Stopped, the old tab still holds its place and the selection.
+  expect(tabIds()).toEqual([1, 2]);
+  expect(useDebug.getState().active).toBe(1);
+
+  // The adapter announces the new session before `debugStart` returns: it takes the tab at once.
+  handleDebugEvent(3, { kind: "started", name: "main.c", adapter: "lldb", parent: null } as never);
+  expect(tabIds()).toEqual([3, 2]);
+  expect(useDebug.getState().active).toBe(3);
+
+  respond({ status: "ok", data: 3 });
+  await rerun;
+  expect(tabIds()).toEqual([3, 2]);
+  expect(useDebug.getState().active).toBe(3);
+});

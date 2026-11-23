@@ -153,8 +153,8 @@ const route: InvokeRoute = (cmd, args, options) => {
  */
 export function enableRemote(session: RemoteSession) {
   routed = new Set(session.commands);
-  useRemote.setState({ session, lost: null, reconnecting: false });
   setInvokeRoute(route);
+  useRemote.setState({ session, lost: null, reconnecting: false });
 }
 
 export function disableRemote() {

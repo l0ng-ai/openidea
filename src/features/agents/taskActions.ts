@@ -213,11 +213,11 @@ export function groupMenu(group: OrganizeGroup): MenuItem[] {
 export const taskActions: Action[] = [
   {
     id: "agents.importSessions",
-    title: "Import Sessions from Other Apps…",
+    title: "Import Sessions…",
     category: "Agents",
     icon: "download",
     when: "projectOpen",
-    keywords: ["import", "claude", "codex", "history", "transcript"],
+    keywords: ["import", "other apps", "claude", "codex", "history", "transcript"],
     run: showImportSessions,
   },
   {

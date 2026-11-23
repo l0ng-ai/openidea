@@ -64,7 +64,7 @@ openidea-server --stdio | --mcp-stdio [--project <path>] | --connect <host> <por
 | 通知 `plugin`        | 服务端 → 客户端 | `{ window, event }`：远程项目中代码插件发出的事件                                                                 |
 | 请求 `plugin_secret` | 服务端 → 客户端 | `{ plugin, name }` → `string` 或 `null`：从桌面端钥匙串取密钥                                                     |
 
-协议版本是 `rpc.rs` 中的 `PROTOCOL_VERSION`。错误是以 JSON 形式放在 JSON-RPC 错误消息里的 `IdeError`，所以前端看到的 `kind` / `message` 与本地命令完全一样。
+协议版本是 `rpc.rs` 中的 `PROTOCOL_VERSION`；桌面端会拒绝使用其他版本协议的服务端。已有命令的参数或结果形态改变时要修改它。二进制参数使用 `IpcBytes`（JSON 中是 base64 字符串，绑定中是 `string`），不要用 `Vec<u8>`——它会变成体积约 3.6 倍的数字数组。错误是以 JSON 形式放在 JSON-RPC 错误消息里的 `IdeError`，所以前端看到的 `kind` / `message` 与本地命令完全一样。
 
 ## 命令路由
 

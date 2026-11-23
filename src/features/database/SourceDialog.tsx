@@ -21,6 +21,7 @@ import {
   type DbTxMode,
 } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
+import { choosePath } from "@/platform/choosePath";
 import { tx, txPart, useTx, useTxTemplate } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { sshLabel as configLabel } from "@/platform/remoteSettings";
@@ -259,9 +260,7 @@ function blank(): DataSource {
 }
 
 async function pickFile(title: string): Promise<string | null> {
-  const { open } = await import("@/platform/dialog");
-  const file = await open({ multiple: false, directory: false, title });
-  return typeof file === "string" ? file : null;
+  return choosePath({ directory: false, title });
 }
 
 /** A path field with Browse…. */

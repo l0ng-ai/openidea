@@ -136,7 +136,7 @@ interface AgentsState {
   external: ExternalSession[];
   /** Why the external sessions could not be listed. */
   externalError: string | null;
-  /** The Import Sessions from Other Apps dialog is open. */
+  /** The Import Sessions dialog is open. */
   importOpen: boolean;
   /** External sessions being imported (`provider:sessionId`), so none is imported twice. */
   importing: ReadonlySet<string>;
