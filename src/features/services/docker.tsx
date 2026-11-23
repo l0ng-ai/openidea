@@ -467,7 +467,12 @@ function DockerDetail({ item }: { item: ServiceTreeItem }) {
   if (node.kind === "compose") {
     return (
       <div className={styles.detailPane}>
-        <ComposeProjectDashboard conn={parsed.conn} project={node.project} containers={node.containers} />
+        <ComposeProjectDashboard
+          conn={parsed.conn}
+          project={node.project}
+          containers={node.containers}
+          snapshot={snapshot}
+        />
       </div>
     );
   }

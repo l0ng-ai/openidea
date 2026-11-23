@@ -7567,6 +7567,7 @@
   "Destination": "目標路徑",
   "Mode": "模式",
   "No mounts": "無掛載",
+  "No named volumes": "無命名磁碟區",
   "Networks": "網路",
   "No environment variables": "無環境變數",
   "Container is not running": "容器未執行",

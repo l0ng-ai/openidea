@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import { expect, test } from "./fixtures";
+import { expect, ipcCalls, stubDesktop, test } from "./fixtures";
 
 /** Supply detected configurations without launching desktop processes. */
 async function configure(page: Page, extra = 0) {
@@ -240,4 +240,166 @@ test("the Services detail pane adds no second scrollbar over a console", async (
   expect(result.overflowY).toBe("hidden");
   expect(result.scrollers.filter((c) => c.includes("detailPane") || c.includes("_panel_"))).toEqual([]);
   expect(result.scrollers.length).toBeGreaterThan(0);
+});
+
+test("Docker Compose dashboard shows per-service resource usage and named project volumes", async ({
+  workbench: page,
+}) => {
+  await stubDesktop(page);
+  await page.evaluate(async () => {
+    (window as unknown as { __cpuPerc: string }).__cpuPerc = "6.25%";
+    const anonName = "37cc33a7d603260a82a378d7d3eeb835b748b5712614e2e5b4a3d6572f5e1e71";
+    const snapshot = {
+      availability: { kind: "ready", clientVersion: "28.0.1", serverVersion: "28.0.1", context: null },
+      executable: "/usr/bin/docker",
+      containers: [
+        {
+          id: "db-1",
+          name: "shop-db-1",
+          image: "postgres:16",
+          command: "postgres",
+          state: "running",
+          status: "Up 15 minutes",
+          ports: "127.0.0.1:5432->5432/tcp",
+          createdAt: "2026-04-20T05:00:00Z",
+          composeProject: "shop",
+          composeService: "db",
+          composeWorkingDir: "/work/shop",
+          composeFiles: ["/work/shop/docker-compose.yml"],
+          mounts: ["shop_pgdata"],
+          networks: ["shop_default"],
+        },
+        {
+          id: "api-1",
+          name: "shop-api-1",
+          image: "node:22",
+          command: "node server.js",
+          state: "exited",
+          status: "Exited (0) 2 minutes ago",
+          ports: "",
+          createdAt: "2026-04-20T05:00:00Z",
+          composeProject: "shop",
+          composeService: "api",
+          composeWorkingDir: "/work/shop",
+          composeFiles: ["/work/shop/docker-compose.yml"],
+          mounts: [],
+          networks: ["shop_default"],
+        },
+      ],
+      images: [],
+      volumes: [
+        {
+          name: anonName,
+          driver: "local",
+          mountpoint: `/var/lib/docker/volumes/${anonName}/_data`,
+          composeProject: "shop",
+          scope: "local",
+          labels: { "com.docker.volume.anonymous": "" },
+        },
+        {
+          name: "shop_pgdata",
+          driver: "local",
+          mountpoint: "/var/lib/docker/volumes/shop_pgdata/_data",
+          composeProject: "shop",
+          scope: "local",
+          labels: {
+            "com.docker.compose.project": "shop",
+            "com.docker.compose.volume": "pgdata",
+          },
+        },
+        {
+          name: "other_cache",
+          driver: "local",
+          mountpoint: "/var/lib/docker/volumes/other_cache/_data",
+          composeProject: "other",
+          scope: "local",
+          labels: {
+            "com.docker.compose.project": "other",
+            "com.docker.compose.volume": "cache",
+          },
+        },
+      ],
+      networks: [{ id: "net-1", name: "shop_default", driver: "bridge", scope: "local", composeProject: "shop" }],
+      errors: [],
+    };
+
+    window.__ipc.handlers.docker_settings = () => ({
+      connections: [{ id: "default", name: "Docker", endpoint: { kind: "default" } }],
+      registries: [],
+    });
+    window.__ipc.handlers.docker_snapshot = () => snapshot;
+    window.__ipc.handlers.docker_events = () => new Promise(() => {});
+    window.__ipc.handlers.docker_inspect = () => "[]";
+    window.__ipc.handlers.docker_container_stats = ({ id }) => {
+      if (id !== "db-1") throw { kind: "notFound", message: "container not running", detail: null };
+      return {
+        cpuPerc: (window as unknown as { __cpuPerc: string }).__cpuPerc,
+        memUsage: "128MiB / 2GiB",
+        memPerc: "6.25%",
+        netIo: "2.4MB / 980kB",
+        blockIo: "12MB / 4.1MB",
+        pids: "17",
+      };
+    };
+
+    const storeMod = "/src/features/services/store.ts";
+    const treeMod = "/src/features/services/tree.ts";
+    const { useServices } = await import(/* @vite-ignore */ storeMod);
+    const { useServicesTree } = await import(/* @vite-ignore */ treeMod);
+    useServices.setState({
+      settings: { connections: [{ id: "default", name: "Docker", endpoint: { kind: "default" } }], registries: [] },
+      conns: { default: { snapshot, loading: false, error: null } },
+    });
+    useServicesTree.setState({
+      expanded: new Set(["docker:default"]),
+      selectedKey: "docker:default:compose:shop",
+      selectedKeys: new Set(["docker:default:compose:shop"]),
+    });
+  });
+
+  await page.keyboard.press("Meta+8");
+  const services = page.getByRole("region", { name: "Services", exact: true });
+  const detail = services.locator("[data-panel][id=services-detail]");
+  await expect(detail.getByText("Compose project 'shop'")).toBeVisible();
+
+  const dbRow = detail.locator("tr", { hasText: "shop-db-1" });
+  const apiRow = detail.locator("tr", { hasText: "shop-api-1" });
+  await expect(dbRow).toContainText("6.25%");
+  await expect(dbRow).toContainText("128MiB / 2GiB (6.25%)");
+  await expect(dbRow).toContainText("2.4MB / 980kB");
+  await expect(dbRow).toContainText("12MB / 4.1MB");
+  await expect(dbRow).toContainText("17");
+  await expect(apiRow).toContainText("Exited (0) 2 minutes ago");
+
+  // Stopped service container is never queried for live stats, and no manual Refresh button is shown.
+  const queriedIds = (await ipcCalls(page, "docker_container_stats")).map((c) => c.id);
+  expect(new Set(queriedIds)).toEqual(new Set(["db-1"]));
+  await expect(detail.getByRole("button", { name: "Refresh", exact: true })).toHaveCount(0);
+
+  // Running service metrics auto-refresh in place without user action.
+  await page.evaluate(() => {
+    (window as unknown as { __cpuPerc: string }).__cpuPerc = "18.50%";
+  });
+  await expect(dbRow).toContainText("18.50%", { timeout: 5000 });
+
+  // Named Compose volume appears with logical name + driver; anonymous and other-project volumes do not.
+  const volumeButton = detail.getByRole("button", { name: /shop_pgdata/ });
+  await expect(volumeButton).toContainText("pgdata · local");
+  await expect(detail.getByText("other_cache")).toHaveCount(0);
+  await expect(detail.getByText(/37cc33a7/)).toHaveCount(0);
+
+  // Clicking the named volume opens its Volume dashboard and links back to the Compose project.
+  await volumeButton.click();
+  await expect(detail.getByText("Volume Overview")).toBeVisible();
+  await detail.getByRole("button", { name: "shop", exact: true }).click();
+  await expect(detail.getByText("Compose project 'shop'")).toBeVisible();
+
+  // Clicking a service in the table navigates to its Container dashboard, which auto-refreshes live stats.
+  await detail.getByRole("button", { name: "shop-db-1", exact: true }).click();
+  await expect(detail.getByText("Container Overview")).toBeVisible();
+  await expect(detail).toContainText("18.50%");
+  await page.evaluate(() => {
+    (window as unknown as { __cpuPerc: string }).__cpuPerc = "27.40%";
+  });
+  await expect(detail).toContainText("27.40%", { timeout: 5000 });
 });

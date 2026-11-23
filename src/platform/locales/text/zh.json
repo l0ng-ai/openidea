@@ -8082,6 +8082,7 @@
   "Destination": "目标路径",
   "Mode": "模式",
   "No mounts": "无挂载",
+  "No named volumes": "无命名卷",
   "Networks": "网络",
   "No environment variables": "无环境变量",
   "Container is not running": "容器未运行",

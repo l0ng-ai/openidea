@@ -34,6 +34,7 @@ import {
   findImageForContainer,
   findNode,
   imageTagsForId,
+  isAnonymousVolume,
   isUntaggedImage,
   nodeDetail,
   nodeIcon,
@@ -41,6 +42,7 @@ import {
   parseTreeKey,
   rootNodes,
   treeKey,
+  volumesInComposeProject,
   type ServiceNode,
 } from "./model";
 import {
@@ -447,6 +449,55 @@ describe("phase 1: filters, cross-references and dashboard parsers", () => {
       "shop-db-1",
       "shop-api-1",
     ]);
+
+    const anonHex = "37cc33a7d603260a82a378d7d3eeb835b748b5712614e2e5b4a3d6572f5e1e71";
+    const snapWithComposeVolumes: DockerSnapshot = {
+      ...richSnapshot,
+      volumes: [
+        {
+          name: "shop_redis",
+          driver: "local",
+          mountpoint: "/var/lib/docker/volumes/shop_redis/_data",
+          composeProject: "shop",
+          labels: { "com.docker.compose.project": "shop", "com.docker.compose.volume": "redis" },
+        },
+        ...richSnapshot.volumes,
+        {
+          name: anonHex,
+          driver: "local",
+          mountpoint: `/var/lib/docker/volumes/${anonHex}/_data`,
+          composeProject: "shop",
+          labels: { "com.docker.volume.anonymous": "" },
+        },
+        {
+          name: anonHex.replace(/^37/, "aa"),
+          driver: "local",
+          mountpoint: "/var/lib/docker/volumes/legacy/_data",
+          composeProject: "shop",
+        },
+        {
+          name: "other_data",
+          driver: "local",
+          mountpoint: "/var/lib/docker/volumes/other_data/_data",
+          composeProject: "other",
+          labels: { "com.docker.compose.project": "other", "com.docker.compose.volume": "data" },
+        },
+        {
+          name: "standalone_vol",
+          driver: "local",
+          mountpoint: "/var/lib/docker/volumes/standalone_vol/_data",
+          composeProject: null,
+        },
+      ],
+    };
+    expect(isAnonymousVolume(snapWithComposeVolumes.volumes[0]!)).toBe(false);
+    expect(isAnonymousVolume(snapWithComposeVolumes.volumes[2]!)).toBe(true);
+    expect(isAnonymousVolume(snapWithComposeVolumes.volumes[3]!)).toBe(true);
+    expect(volumesInComposeProject(snapWithComposeVolumes, "shop").map((v) => v.name)).toEqual([
+      "shop_pgdata",
+      "shop_redis",
+    ]);
+    expect(volumesInComposeProject(snapWithComposeVolumes, "missing")).toEqual([]);
   });
 
   it("parses units, usage pairs, timestamps, ports, layers and inspect payloads", () => {

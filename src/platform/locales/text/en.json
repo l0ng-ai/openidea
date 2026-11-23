@@ -1640,6 +1640,7 @@
   "Destination": "Destination",
   "Mode": "Mode",
   "No mounts": "No mounts",
+  "No named volumes": "No named volumes",
   "Networks": "Networks",
   "No environment variables": "No environment variables",
   "Container is not running": "Container is not running",
