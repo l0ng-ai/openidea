@@ -1574,11 +1574,6 @@ impl Runtime {
         })
     }
 
-    /// The component exports `providers`.
-    pub fn has_providers(&self) -> bool {
-        self.exports.providers.is_some()
-    }
-
     fn provider_call<R>(
         &mut self,
         timeout: Duration,
@@ -1863,11 +1858,6 @@ impl Runtime {
             r
         })?;
         result.map_err(|e| CallError::Guest(e.into()))
-    }
-
-    /// The component exports `view-provider`.
-    pub fn has_views(&self) -> bool {
-        self.exports.views.is_some()
     }
 
     /// Content of a view or custom editor (`invocation.editor`: its document).
@@ -2905,9 +2895,6 @@ impl Runtime {
         };
         let result = self.language_feature_call(timeout, |p, s| p.call_gutter_actions(s, &d))?;
         Ok(result.into_iter().take(10000).map(gutter_action_from).collect())
-    }
-    pub fn has_hover_actions(&self) -> bool {
-        self.exports.hover_actions.is_some()
     }
 
     pub fn language_hover_actions(
