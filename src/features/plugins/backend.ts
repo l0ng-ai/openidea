@@ -39,6 +39,7 @@ import type {
   Viewport,
   WorkbenchEvent,
 } from "@/bindings";
+import { toBase64 } from "@/platform/base64";
 import { tx } from "@/platform/i18n";
 import { useRemote } from "@/platform/remote";
 import { call, commands, IpcError, isCancelled, isTauri, nextRequestId } from "@/platform/ipc";
@@ -195,12 +196,6 @@ export interface FileFilter {
 export function webSchemeUrl(path: string, windows = /windows/i.test(navigator.userAgent)): string {
   const encoded = path.split("/").map(encodeURIComponent).join("/");
   return windows ? `http://openidea-plugin.localhost/${encoded}` : `openidea-plugin://localhost/${encoded}`;
-}
-
-function toBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(binary);
 }
 
 function fromBase64(b64: string): Uint8Array {

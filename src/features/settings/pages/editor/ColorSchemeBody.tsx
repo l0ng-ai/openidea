@@ -46,6 +46,7 @@ import { Row, Select } from "../../components/Form";
 import { useSetting } from "../../components/context";
 import styles from "./Editor.module.css";
 import { executeAction, registerActions } from "@/platform/actions";
+import { toBase64 } from "@/platform/base64";
 import { call, commands } from "@/platform/ipc";
 import { ask, confirm, showError } from "@/workbench/messages";
 import { useContributions } from "@/workbench/contributions";
@@ -1758,7 +1759,7 @@ export function ColorSchemePage({
             filters: [{ name: tx("IntelliJ Color Scheme"), extensions: ["icls"] }],
           }));
         if (!path) return;
-        const bytes = Array.from(new TextEncoder().encode(exportIcls(id, customs, mine)));
+        const bytes = toBase64(new TextEncoder().encode(exportIcls(id, customs, mine)));
         // The save dialog already confirmed replacing an existing file.
         await call(commands.fsDelete(path)).catch(() => {});
         await call(commands.fsCreateFileBytes(path, bytes));

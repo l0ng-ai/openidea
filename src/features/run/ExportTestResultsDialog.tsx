@@ -4,6 +4,7 @@
  */
 import { useId, useState } from "react";
 import { executeAction } from "@/platform/actions";
+import { toBase64 } from "@/platform/base64";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { Checkbox, Dialog, IconButton, Input, Radio, T } from "@/ui";
@@ -96,7 +97,7 @@ export async function writeTestReport(path: string, text: string, confirmed: boo
         return false;
       await call(commands.fsDelete(path));
     }
-    await call(commands.fsCreateFileBytes(path, Array.from(new TextEncoder().encode(text))));
+    await call(commands.fsCreateFileBytes(path, toBase64(new TextEncoder().encode(text))));
     return true;
   } catch (e) {
     notifications().notify({

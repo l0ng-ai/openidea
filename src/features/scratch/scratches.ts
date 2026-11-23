@@ -3,6 +3,7 @@
  * project, like IDEA's config-dir scratches. Creating one picks the next free
  * `scratch[_n].<ext>` name and opens it as a normal document.
  */
+import { toBase64 } from "@/platform/base64";
 import { IpcError, call, commands, emitLocalIdeEvent, isTauri } from "@/platform/ipc";
 import { appDataDir } from "@/platform/platformInfo";
 import { editorService, notifications } from "@/workbench/contributions";
@@ -24,7 +25,7 @@ export const tauriScratchBackend: ScratchBackend = {
   createDir: async (dir) => void (await call(commands.fsCreateDir(dir))),
   createFile: async (path, text) =>
     void (await call(
-      text ? commands.fsCreateFileBytes(path, [...new TextEncoder().encode(text)]) : commands.fsCreateFile(path),
+      text ? commands.fsCreateFileBytes(path, toBase64(new TextEncoder().encode(text))) : commands.fsCreateFile(path),
     )),
   languages: async () => scratchLanguages(await commands.languages()),
   open: (path, caret) => editorService().openFile(path, { focus: true, ...(caret && { selection: caret }) }),
