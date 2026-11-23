@@ -8498,6 +8498,13 @@
   "Install the .NET SDK: https://dotnet.microsoft.com/download": "请安装 .NET SDK: https://dotnet.microsoft.com/download",
   "Running dotnet new": "正在运行 dotnet new",
   "Adding a .gitignore": "正在添加 .gitignore",
+  "SDK version:": "SDK 版本：",
+  "Pinned in global.json; later patches and feature bands of the same .NET version also qualify. Automatic lets dotnet choose the SDK.": "写入 global.json 固定版本；同一 .NET 版本更新的补丁和功能区段也可使用。选择“自动”会让 dotnet 自行选择 SDK。",
+  "Create solution": "创建解决方案",
+  "As in Visual Studio: the solution file at the top, the project in its own folder.": "与 Visual Studio 相同：解决方案文件在顶层，项目放在单独的文件夹中。",
+  "Solution name:": "解决方案名称：",
+  "Creating the solution": "正在创建解决方案",
+  "Adding the project to the solution": "正在将项目添加到解决方案",
   "An Elixir project from mix new.": "用 mix new 创建的 Elixir 项目。",
   "Application name:": "应用名:",
   "Supervision tree": "监督树",
@@ -9993,5 +10000,11 @@
   "Upgrade available: {latest}": "可升级到 {latest}",
   "Rearrange Code": "重新排列代码",
   "Nothing to rearrange: members are in order, or moving them could change the class": "无需重新排列：成员已按顺序排列，或移动它们可能改变类的行为",
-  "The file changed while rearranging; try again": "重新排列期间文件已更改，请重试"
+  "The file changed while rearranging; try again": "重新排列期间文件已更改，请重试",
+  "Hatch Environment": "Hatch 环境",
+  "This project has no Hatch configuration": "此项目没有 Hatch 配置",
+  "Environment:": "环境：",
+  "Hatch environment": "Hatch 环境",
+  "No environments": "没有环境",
+  "Runs “hatch env create <environment>” in the project. Hatch decides where to store the environment.": "在项目中运行“hatch env create <environment>”。环境的存放位置由 Hatch 决定。"
 }
