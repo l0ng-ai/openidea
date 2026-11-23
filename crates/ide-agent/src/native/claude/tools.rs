@@ -138,6 +138,12 @@ pub(super) fn result_fields(name: &str, input: &Value, block: &Value, structured
             }
         }
     }
+    if failed && content.is_empty() {
+        let t = result_text(block);
+        if !t.is_empty() {
+            content.push(text(&t));
+        }
+    }
     if let Some(blocks) = block.get("content").and_then(Value::as_array) {
         for block in blocks {
             if block.get("type").and_then(Value::as_str) != Some("image") {
@@ -152,12 +158,6 @@ pub(super) fn result_fields(name: &str, input: &Value, block: &Value, structured
             if !data.is_empty() && mime.starts_with("image/") {
                 content.push(json!({"type": "content", "content": {"type": "image", "mimeType": mime, "data": data}}));
             }
-        }
-    }
-    if failed && content.is_empty() {
-        let t = result_text(block);
-        if !t.is_empty() {
-            content.push(text(&t));
         }
     }
     let mut out = json!({ "status": if failed { "failed" } else { "completed" } });
@@ -265,6 +265,22 @@ mod tests {
                 {"type": "content", "content": {"type": "image", "mimeType": "image/png", "data": "aW1hZ2U="}}
             ])
         );
+    }
+
+    #[test]
+    fn failed_shell_tool_images_keep_fallback_error_text() {
+        let result = result_fields(
+            "Bash",
+            &json!({}),
+            &json!({"is_error": true, "content": [
+                {"type": "text", "text": "Preview command failed"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "aW1hZ2U="}}
+            ]}),
+            Some(&json!({"stdout": "", "stderr": ""})),
+        );
+        assert_eq!(result["status"], "failed");
+        assert_eq!(result["content"][0], text("Preview command failed"));
+        assert_eq!(result["content"][1]["content"]["type"], "image");
     }
 
     #[test]
