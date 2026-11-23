@@ -708,6 +708,11 @@ export const commands = {
 	/**  The existing file or directory a path written in `from` names (`href`, `url()`, a string literal). */
 	fsResolveReference: (from: IpcPath, value: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("fs_resolve_reference", { from, value })),
 	/**
+	 *  The scratch files' folder of this host (`<data dir>/scratches`), created. A remote window
+	 *  keeps its scratches on the server, where its file commands run.
+	 */
+	fsScratchesDir: () => typedError<IpcPath, IdeError>(__TAURI_INVOKE("fs_scratches_dir")),
+	/**
 	 *  Toggle Read-only Attribute: sets the writable bit (and the open document's
 	 *  state). Returns whether the file is read-only now.
 	 */
