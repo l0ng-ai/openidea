@@ -291,6 +291,7 @@ describe("Gradle test runs", () => {
 
 describe("Gradle launch routing", () => {
   const boot = {
+    id: "boot",
     kind: "gradle",
     command: "./gradlew",
     args: [":module:bootRun"],
@@ -320,6 +321,18 @@ describe("Gradle launch routing", () => {
     }
     expect(boot.args).toEqual([":module:bootRun"]);
     expect(test.args).toEqual([":module:test"]);
+  });
+
+  it("marks the forked BootRun JVM with a stable per-configuration token", async () => {
+    const named = { ...boot, id: "boot app/1" } as RunConfig;
+    const first = await gradleBootLaunch(named);
+    expect(first.args.filter((a) => a.startsWith(DELEGATED_TOKEN))).toEqual([`${DELEGATED_TOKEN}boot_app_1`]);
+    expect((await gradleBootLaunch(named)).args).toEqual(first.args);
+    // Debug adds its flag after the token; the token stays and is not repeated.
+    const debug = jdwpLaunch(first)!;
+    expect(debug.args).toContain(DELEGATED_DEBUG);
+    expect(debug.args.filter((a) => a.startsWith(DELEGATED_TOKEN))).toHaveLength(1);
+    expect((await gradleBootLaunch(first)).args.filter((a) => a.startsWith(DELEGATED_TOKEN))).toHaveLength(1);
   });
 });
 

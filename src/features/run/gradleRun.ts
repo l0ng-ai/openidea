@@ -152,7 +152,11 @@ export async function gradleTestLaunch<T extends RunConfig>(config: T): Promise<
 export async function gradleBootLaunch<T extends RunConfig>(config: T): Promise<T> {
   if (!isTauri() || !isGradleCommand(config) || !config.args.some((a) => /(^|:)bootRun$/.test(a))) return config;
   try {
-    return withTestEvents(config, await writeScript("openidea-gradle-boot", BOOT_SCRIPT));
+    const marked = withTestEvents(config, await writeScript("openidea-gradle-boot", BOOT_SCRIPT));
+    // The forked bootRun JVM is outside the run's process tree; the init script hands the token on.
+    return marked.args.some((a) => a.startsWith(DELEGATED_TOKEN))
+      ? marked
+      : { ...marked, args: [...marked.args, `${DELEGATED_TOKEN}${runJvmToken(config)}`] };
   } catch (e) {
     console.warn("Gradle BootRun init script not written", e);
     return config;

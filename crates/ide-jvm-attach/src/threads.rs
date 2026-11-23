@@ -45,7 +45,7 @@ fn parse_ps_line(line: &str) -> Option<ProcEntry> {
     Some(ProcEntry { pid: pid.parse().ok()?, ppid: ppid.parse().ok()?, command: command.trim().to_string() })
 }
 
-/// The JVM that runs a run configuration: the one carrying `token` when any does, else the
+/// The JVM that runs a run configuration: the one carrying `token` when any does (not Gradle's own), else the
 /// deepest HotSpot JVM below `root` that is not Gradle's own (a Maven `spring-boot:run` forks
 /// the application under the Maven JVM). Ties go to the highest pid.
 pub fn select_run_jvm(
@@ -58,7 +58,12 @@ pub fn select_run_jvm(
         let wanted = format!("{RUN_TOKEN_PROPERTY}{token}");
         let tagged = table
             .iter()
-            .filter(|entry| entry.command.split_whitespace().any(|arg| arg == wanted) && is_hotspot(entry.pid))
+            // The Gradle client carries the token too: a delegated run passes it on its command line.
+            .filter(|entry| {
+                entry.command.split_whitespace().any(|arg| arg == wanted)
+                    && !is_gradle_jvm(&entry.command)
+                    && is_hotspot(entry.pid)
+            })
             .map(|entry| entry.pid)
             .max();
         if tagged.is_some() {
@@ -66,6 +71,10 @@ pub fn select_run_jvm(
         }
     }
     deepest_jvm_in_tree(table, root, &is_hotspot)
+}
+
+fn is_gradle_jvm(command: &str) -> bool {
+    GRADLE_JVM_MARKERS.iter().any(|marker| command.contains(marker))
 }
 
 fn deepest_jvm_in_tree(table: &[ProcEntry], root: u32, is_hotspot: &dyn Fn(u32) -> bool) -> Option<u32> {
@@ -79,10 +88,7 @@ fn deepest_jvm_in_tree(table: &[ProcEntry], root: u32, is_hotspot: &dyn Fn(u32) 
     let mut queue = VecDeque::from([(root, 0usize)]);
     let mut best: Option<(usize, u32)> = None;
     while let Some((pid, depth)) = queue.pop_front() {
-        let is_app_jvm = by_pid
-            .get(&pid)
-            .is_some_and(|entry| !GRADLE_JVM_MARKERS.iter().any(|marker| entry.command.contains(marker)))
-            && is_hotspot(pid);
+        let is_app_jvm = by_pid.get(&pid).is_some_and(|entry| !is_gradle_jvm(&entry.command)) && is_hotspot(pid);
         if is_app_jvm && best.is_none_or(|found| (depth, pid) > found) {
             best = Some((depth, pid));
         }
@@ -125,6 +131,29 @@ mod tests {
         let table = gradle_run();
         assert_eq!(select_run_jvm(&table, 10, Some("cfg-1"), not_the_shell), Some(50));
         assert_eq!(select_run_jvm(&table, 10, Some("cfg-2"), not_the_shell), None);
+    }
+
+    #[test]
+    fn select_skips_the_gradle_client_that_carries_the_token() {
+        let client = |pid| {
+            entry(
+                pid,
+                10,
+                "/jdk/bin/java -Dopenidea.run.token=cfg-1 -classpath wrapper.jar org.gradle.wrapper.GradleWrapperMain run",
+            )
+        };
+        let app = entry(50, 40, "/jdk/bin/java -Dopenidea.run.token=cfg-1 -cp app Main");
+        for client_pid in [11, 99] {
+            let table = vec![entry(10, 1, "/bin/zsh"), client(client_pid), app.clone()];
+            assert_eq!(select_run_jvm(&table, 10, Some("cfg-1"), not_the_shell), Some(50), "client {client_pid}");
+        }
+        // Only the client carries it: the tree rules apply, which skip the client too.
+        let table = vec![entry(10, 1, "/bin/zsh"), client(11), entry(12, 11, "/jdk/bin/java -cp app Main")];
+        assert_eq!(select_run_jvm(&table, 10, Some("cfg-1"), not_the_shell), Some(12));
+        let alone = vec![entry(10, 1, "/bin/zsh"), client(11)];
+        assert_eq!(select_run_jvm(&alone, 10, Some("cfg-1"), not_the_shell), None);
+        let launcher = entry(13, 10, "java -Dopenidea.run.token=cfg-1 org.gradle.launcher.GradleMain run");
+        assert_eq!(select_run_jvm(&[entry(10, 1, "sh"), launcher], 10, Some("cfg-1"), not_the_shell), None);
     }
 
     #[test]
