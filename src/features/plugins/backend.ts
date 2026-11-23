@@ -40,6 +40,7 @@ import type {
   WorkbenchEvent,
 } from "@/bindings";
 import { toBase64 } from "@/platform/base64";
+import { choosePath } from "@/platform/choosePath";
 import { tx } from "@/platform/i18n";
 import { useRemote } from "@/platform/remote";
 import { call, commands, IpcError, isCancelled, isTauri, nextRequestId } from "@/platform/ipc";
@@ -222,11 +223,7 @@ export const tauriPluginsBackend: PluginsBackend = {
     return chosen;
   },
   program: (id, program, scope) => call(commands.pluginProgram(id, program, scope)),
-  pickProgram: async () => {
-    const { open } = await import("@/platform/dialog");
-    const picked = await open({ directory: false, multiple: false, title: tx("Choose plugin executable") });
-    return (Array.isArray(picked) ? picked[0] : picked) ?? null;
-  },
+  pickProgram: () => choosePath({ directory: false, title: tx("Choose plugin executable") }),
   setCapability: (id, capability, granted) => call(commands.pluginSetCapability(id, capability, granted)),
   revokeNetHost: (id, host) => call(commands.pluginRevokeNetHost(id, host)),
   assets: (pluginId, prefix) => call(commands.pluginAssets(pluginId, prefix)),
