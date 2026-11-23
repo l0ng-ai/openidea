@@ -16,6 +16,7 @@ import { diffInput, hasGitlink, openDiff, withChain, type DiffData } from "./dif
 import { loadDiffOptions, saveDiffOptions } from "./diffOptions";
 import { useGitDiffEntries, type DiffEntriesCache } from "./gitDiffEntries";
 import { KIND_COLOR, KIND_LABEL, baseName, fileCount } from "./model";
+import { ownedStagedDocument } from "./stagedDocument";
 import styles from "./CombinedDiff.module.css";
 
 type Kind = "added" | "deleted" | "modified";
@@ -128,7 +129,8 @@ function Block({
       </div>
       {/* Collapsing hides the diff instead of unmounting it, so expanding it doesn't load it again.
           A block scrolled away does unmount: its unsaved working-tree edits stay open in their
-          document (saved first with autosave on), and staged edits are saved to the index. */}
+          document (saved first with autosave on). Unmounting saves staged edits to the index, so
+          with autosave off a block holding some stays mounted (`rangeExtractor`). */}
       {loaded && (
         <div ref={bodyRef} className={styles.body} hidden={collapsed} style={hold ? { minHeight: hold } : undefined}>
           <ResolvedDiffEditor
@@ -154,14 +156,22 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
   // A partially staged file is listed twice (staged and unstaged), so blocks go by diff, not path.
   const keys = useMemo(() => items.map((item) => diffInput(item).key), [items]);
 
-  // The block holding the keyboard focus stays mounted when scrolled away, so typing still reaches it.
-  const rangeExtractor = useCallback((range: Range) => {
-    const shown = defaultRangeExtractor(range);
-    const active = document.activeElement;
-    const slot = scrollRef.current?.contains(active) ? active?.closest<HTMLElement>("[data-index]") : null;
-    const focused = slot ? Number(slot.dataset.index) : -1;
-    return focused < 0 || shown.includes(focused) ? shown : [...shown, focused].sort((a, b) => a - b);
-  }, []);
+  // Blocks that stay mounted when scrolled away: the one holding the keyboard focus, so typing still
+  // reaches it, and with autosave off those with unsaved staged edits, which unmounting would save.
+  const rangeExtractor = useCallback(
+    (range: Range) => {
+      const shown = new Set(defaultRangeExtractor(range));
+      const active = document.activeElement;
+      const slot = scrollRef.current?.contains(active) ? active?.closest<HTMLElement>("[data-index]") : null;
+      if (slot) shown.add(Number(slot.dataset.index));
+      if (useProject.getState().settings?.files?.autoSave === false)
+        keys.forEach((key, index) => {
+          if (ownedStagedDocument(combinedDiffDocumentOwner(input.key, key))?.dirty) shown.add(index);
+        });
+      return [...shown].sort((a, b) => a - b);
+    },
+    [keys, input.key],
+  );
   const virtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => scrollRef.current,

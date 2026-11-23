@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, waitFor } from "@testing-library/react";
 import { EditorView } from "@codemirror/view";
 
+const savedStaged: unknown[][] = [];
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
   const ok = (data: unknown) => Promise.resolve({ status: "ok", data });
@@ -13,6 +14,11 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       vcsFileAt: () => ok("one\ntwo\n"),
       vcsFileMode: () => ok("100644"),
       fsProbe: () => ok({ size: 8, binary: false, tooLarge: false }),
+      vcsStagedText: () => ok({ text: "one\ntwo\n", version: "v1" }),
+      vcsSaveStagedText: (...args: unknown[]) => {
+        savedStaged.push(args);
+        return ok("v2");
+      },
     },
   };
 });
@@ -76,9 +82,12 @@ afterEach(() => {
 
 const block = (path: string) => document.querySelector<HTMLElement>(`[data-combined-block="${path}"]`);
 async function editablePane(path: string): Promise<EditorView> {
+  return editableSide(path, "b");
+}
+async function editableSide(path: string, side: "a" | "b"): Promise<EditorView> {
   let view: EditorView | null = null;
   await waitFor(() => {
-    const content = block(path)?.querySelector<HTMLElement>(".cm-merge-b .cm-content");
+    const content = block(path)?.querySelector<HTMLElement>(`.cm-merge-${side} .cm-content`);
     expect(content?.textContent).toContain("two");
     view = EditorView.findFromDOM(content!);
     expect(view?.state.readOnly).toBe(false);
@@ -114,5 +123,30 @@ describe("the all-in-one diff, autosave off", () => {
     const again = await editablePane(paths[0]!);
     expect(again.state.doc.toString()).toBe("EDIT one\ntwo\n");
     expect(manager.byPath.get(paths[0]!)?.getMeta().dirty).toBe(true);
+  });
+});
+
+describe("the all-in-one diff, staged edits", () => {
+  const staged: DiffData[] = items.map((item) => ({ ...item, right: { type: "rev", rev: ":0" } }));
+  const editAndScrollAway = async (autoSave: boolean) => {
+    savedStaged.length = 0;
+    useProject.setState({ settings: { files: { autoSave } } as never });
+    render(<CombinedDiffTab input={combinedDiffInput({ items: staged })} />);
+    const view = await editableSide(paths[0]!, "b");
+    act(() => view.dispatch({ changes: { from: 0, insert: "EDIT " }, userEvent: "input" }));
+    scrollTo(15 * 600);
+    await act(() => new Promise((r) => setTimeout(r, 20)));
+  };
+
+  it("with autosave off, keeps them out of the index while scrolled away", async () => {
+    await editAndScrollAway(false);
+    expect(savedStaged).toEqual([]);
+    expect(block(paths[0]!)).not.toBeNull();
+  });
+
+  it("with autosave on, saves them to the index once scrolled away", async () => {
+    await editAndScrollAway(true);
+    expect(block(paths[0]!)).toBeNull();
+    expect(savedStaged.map((args) => args[2])).toEqual(["EDIT one\ntwo\n"]);
   });
 });
