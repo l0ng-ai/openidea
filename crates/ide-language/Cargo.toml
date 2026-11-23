@@ -21,6 +21,7 @@ memchr = "2"
 regex-lite = "0.1"
 blake3.workspace = true
 tree-sitter-language = "0.1"
+unicode-normalization = "0.1"
 
 # Bundled grammars (all built on `tree-sitter-language`, ABI <= 15).
 tree-sitter-rust = "0.24.2"
