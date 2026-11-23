@@ -224,20 +224,11 @@ fn first_existing(root: &Path, names: &[&str]) -> Option<PathBuf> {
     names.iter().map(|n| root.join(n)).find(|p| p.is_file())
 }
 
-/// Sorted immediate subdirectories, skipping hidden and vendored ones.
-fn subdirs(dir: &Path) -> Vec<PathBuf> {
-    ide_core::project_roots::children(dir)
-}
-
 fn relative(root: &Path, dir: &Path) -> PathBuf {
     dir.strip_prefix(root).map(Path::to_path_buf).unwrap_or_else(|_| dir.to_path_buf())
 }
 
 // ---------------------------------------------------------------- node
-
-pub(crate) fn package_manager(root: &Path, _pkg: &Json) -> &'static str {
-    ide_core::project_roots::package_manager(root)
-}
 
 pub(crate) fn is_test_script(name: &str) -> bool {
     matches!(name, "test" | "vitest" | "jest") || name.starts_with("test:")
@@ -345,7 +336,7 @@ fn detect_node(root: &Path, out: &mut Vec<RunConfig>) {
             continue;
         }
         let Some(pkg) = read_json(&dir.join("package.json")) else { continue };
-        let pm = package_manager(&dir, &pkg);
+        let pm = ide_core::project_roots::package_manager(&dir);
         let rel = relative(root, &dir);
         let label = ide_core::ipc_path::to_ipc(&rel);
         let prefix = (dir != root).then_some(label.as_str());
@@ -528,7 +519,7 @@ fn wrapper(root: &Path, unix: &str, windows: &str, fallback: &str) -> String {
 /// Root build file plus one level of subproject build files.
 fn collect_texts(root: &Path, names: &[&str]) -> Option<String> {
     let mut text = names.iter().find_map(|n| read(&root.join(n)))?;
-    for dir in subdirs(root) {
+    for dir in ide_core::project_roots::children(root) {
         for name in names {
             if let Some(t) = read(&dir.join(name)) {
                 text.push('\n');
@@ -552,10 +543,6 @@ fn applies_application_plugin(text: &str) -> bool {
                 .iter()
                 .any(|p| compact.contains(p))
     })
-}
-
-fn build_dirs(root: &Path, markers: &[&str]) -> Vec<PathBuf> {
-    ide_core::project_roots::discover(root, markers)
 }
 
 /// Ids, names and working directory of the configurations of a build nested in
@@ -588,7 +575,7 @@ const GRADLE_BUILDS: &[&str] = &["build.gradle.kts", "build.gradle"];
 
 fn detect_gradle(root: &Path, out: &mut Vec<RunConfig>) {
     let markers: Vec<&str> = GRADLE_SETTINGS.iter().chain(GRADLE_BUILDS).copied().collect();
-    for dir in build_dirs(root, &markers) {
+    for dir in ide_core::project_roots::discover(root, &markers) {
         detect_gradle_build(root, &dir, out);
     }
 }
@@ -618,7 +605,7 @@ fn detect_gradle_build(root: &Path, dir: &Path, out: &mut Vec<RunConfig>) {
 
 fn collect_texts_from_subdirs(root: &Path, names: &[&str]) -> String {
     let mut text = String::new();
-    for dir in subdirs(root) {
+    for dir in ide_core::project_roots::children(root) {
         for name in names {
             if let Some(t) = read(&dir.join(name)) {
                 text.push_str(&t);
@@ -630,7 +617,7 @@ fn collect_texts_from_subdirs(root: &Path, names: &[&str]) -> String {
 }
 
 fn detect_maven(root: &Path, excluded_poms: &[PathBuf], out: &mut Vec<RunConfig>) {
-    for dir in build_dirs(root, &["pom.xml"]) {
+    for dir in ide_core::project_roots::discover(root, &["pom.xml"]) {
         let pom = dir.join("pom.xml");
         let relative = pom.strip_prefix(root).unwrap_or(&pom);
         if !excluded_poms.iter().any(|excluded| excluded == relative) {
@@ -683,7 +670,8 @@ fn spring_boot_apps(root: &Path, build: &Path, out: &mut Vec<RunConfig>) {
     let mut modules = vec![build.to_path_buf()];
     let mut level = vec![build.to_path_buf()];
     for _ in 0..ide_core::project_roots::SEARCH_DEPTH {
-        level = level.iter().flat_map(|d| subdirs(d)).filter(|d| !d.ends_with("src")).collect();
+        level =
+            level.iter().flat_map(|d| ide_core::project_roots::children(d)).filter(|d| !d.ends_with("src")).collect();
         modules.extend(level.iter().cloned());
     }
     let mut annotations = BootAnnotations::new(&modules);
@@ -976,7 +964,7 @@ fn is_go_main_package(dir: &Path) -> bool {
 fn detect_go(root: &Path, out: &mut Vec<RunConfig>) {
     if let Some(work) = read(&root.join("go.work")) {
         let mut seen = HashSet::new();
-        for member in crate::go::work_modules(&work) {
+        for member in ide_core::go::work_modules(&work) {
             let dir = root.join(member);
             let dir = dunce::canonicalize(&dir).unwrap_or(dir);
             if dir.join("go.mod").is_file() && seen.insert(dir.clone()) {
@@ -1009,7 +997,7 @@ fn detect_go_module(dir: &Path, rel: Option<PathBuf>, out: &mut Vec<RunConfig>) 
     if is_go_main_package(dir) {
         out.push(config(id("go:run"), name("go run ."), "go", "go", &["run", "."]).in_dir(rel.clone()).debug("delve"));
     }
-    for sub in subdirs(&dir.join("cmd")) {
+    for sub in ide_core::project_roots::children(&dir.join("cmd")) {
         if is_go_main_package(&sub) {
             let cmd = sub.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let target = format!("./cmd/{cmd}");
@@ -1222,7 +1210,7 @@ fn detect_python(top: &Path, root: &Path, out: &mut Vec<RunConfig>) {
     }
     let mut modules = Vec::new();
     for base in [root.to_path_buf(), root.join("src")] {
-        for dir in subdirs(&base) {
+        for dir in ide_core::project_roots::children(&base) {
             let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let ident = !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_');
             if ident && !matches!(name.as_str(), "venv" | "tests" | "test") && dir.join("__main__.py").is_file() {
@@ -1594,7 +1582,9 @@ fn detect_rebar(root: &Path, out: &mut Vec<RunConfig>) {
             .flatten()
             .any(|e| e.file_name().to_string_lossy().ends_with("_SUITE.erl"))
     };
-    let mut apps = subdirs(&root.join("apps")).into_iter().chain(subdirs(&root.join("lib")));
+    let mut apps = ide_core::project_roots::children(&root.join("apps"))
+        .into_iter()
+        .chain(ide_core::project_roots::children(&root.join("lib")));
     if suites(&root.join("test")) || apps.any(|app| suites(&app.join("test"))) {
         out.push(config("rebar3:ct", "rebar3 ct", "rebar3", &rebar, &["ct"]).test());
     }

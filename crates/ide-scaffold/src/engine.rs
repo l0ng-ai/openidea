@@ -93,8 +93,9 @@ fn requirement(r: &RequireDef, values: &Values, search: &OsString) -> Requiremen
         }
         let mut cmd = Command::new(path);
         cmd.args(&r.version_args).env("PATH", search);
-        let (_, out) = run_quiet(cmd, std::time::Duration::from_secs(20))?;
-        Some(parse_version(&out).unwrap_or_default())
+        let (ok, out) = run_quiet(cmd, std::time::Duration::from_secs(20))?;
+        // A failing version command (`dotnet` without an SDK) reports no version.
+        Some(if ok { parse_version(&out).unwrap_or_default() } else { String::new() })
     });
     let satisfied = match (&found, &min) {
         (None, _) => false,
@@ -295,7 +296,7 @@ fn hoist_single_dir(dir: &Path) -> IdeResult<()> {
 }
 
 fn write_files(def: &Def, values: &Values, project: &Path) -> IdeResult<()> {
-    for file in def.files.iter().filter(|f| matches(&f.when, values)) {
+    for file in def.files.iter().filter(|f| f.applies(values)) {
         let rel = render(&file.path, values);
         let rel = Path::new(&rel);
         if rel.is_absolute() || rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
@@ -425,11 +426,11 @@ pub(crate) fn create_with(
     let project = staging.0.join(name);
 
     download_service(def, &values, &staging.0, &project, cancel, emit)?;
-    let creates_dir = def.steps.iter().any(|s| s.cwd == Cwd::Parent && matches(&s.when, &values));
+    let creates_dir = def.steps.iter().any(|s| s.cwd == Cwd::Parent && s.applies(&values));
     if !creates_dir {
         std::fs::create_dir_all(&project)?;
     }
-    for step in def.steps.iter().filter(|s| matches(&s.when, &values)) {
+    for step in def.steps.iter().filter(|s| s.applies(&values)) {
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
         }
@@ -441,12 +442,12 @@ pub(crate) fn create_with(
     if !project.is_dir() {
         return Err(IdeError::internal(format!("the generator did not create {}", project.display())));
     }
-    if !def.files.is_empty() {
+    if def.files.iter().any(|f| f.applies(&values)) {
         emit(ScaffoldEvent::Step { text: "Writing files".into() });
     }
     write_files(def, &values, &project)?;
     write_settings(def, &values, &project)?;
-    for step in def.after.iter().filter(|s| matches(&s.when, &values)) {
+    for step in def.after.iter().filter(|s| s.applies(&values)) {
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
         }

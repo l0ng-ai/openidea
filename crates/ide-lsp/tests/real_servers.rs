@@ -939,7 +939,7 @@ async fn angular_language_server_end_to_end() {
     assert_eq!((edited_lines(&edit, &app_ts), edited_lines(&edit, &app_html)), (vec![7], vec![0]), "{edit:?}");
     // Its usage in the template, the declaration left out, from either file.
     for (doc, pos) in [(ts, title), (html, Pos::new(0, 8))] {
-        let refs = mgr.references(doc, pos, false, false, Default::default()).await.unwrap();
+        let refs = mgr.references_streaming(doc, pos, false, false, true, Default::default(), None).await.unwrap();
         let found: Vec<(std::path::PathBuf, u32)> =
             refs.locations.iter().map(|l| (l.path.to_path_buf(), l.range.start.line)).collect();
         assert_eq!(found, [(app_html.clone(), 0)]);

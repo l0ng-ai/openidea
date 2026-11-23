@@ -14,6 +14,7 @@ import {
   useFrozenWhileWindowResizes,
 } from "@/ui";
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
+import { useSelectionVisibility } from "@/ui/useSelectionBoundary";
 import { spanStyle } from "@/ui/ansi";
 import clsx from "clsx";
 import { useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -34,6 +35,7 @@ import { LogScope } from "./LogScope";
 import {
   closeLogTab,
   initLogBranchFilter,
+  isLogTab,
   logState,
   refsSignature,
   reloadLog,
@@ -85,6 +87,15 @@ export function GitToolWindow() {
   // window drag; they follow the window once it stops.
   const root = useRef<HTMLDivElement>(null);
   useFrozenWhileWindowResizes(root);
+  // The last log tab shown stays mounted (hidden, keeping its layout) while another tab is shown,
+  // so switching back to it neither rebuilds its rows, graph and branch tree nor reloads it.
+  const logTabs = useGitLog((s) => s.logTabs);
+  const logShown = isLogTab(shown, logTabs);
+  const [lastLog, setLastLog] = useState<string | null>(null);
+  if (logShown && lastLog !== shown) setLastLog(shown);
+  const keptLog = logShown ? shown : lastLog && isLogTab(lastLog, logTabs) ? lastLog : null;
+  const logHost = useRef<HTMLDivElement>(null);
+  useSelectionVisibility(logHost, !!keptLog && (available || external));
   if (!available && !external)
     return (
       <EmptyState title="Version control is not configured">
@@ -107,11 +118,14 @@ export function GitToolWindow() {
         <ConsoleView />
       ) : shown === "worktrees" ? (
         <WorktreesPanel className={styles.worktrees} listClassName={styles.worktreeList} />
-      ) : (
-        // Each log tab has its own view (its filters and commits are swapped into the store).
-        <LogScope id={shown}>
-          <LogView key={shown} />
-        </LogScope>
+      ) : null}
+      {keptLog && (
+        <div ref={logHost} className={clsx(styles.logHost, !logShown && styles.logHidden)} inert={!logShown}>
+          {/* Each log tab has its own view (its filters and commits are swapped into the store). */}
+          <LogScope id={keptLog}>
+            <LogView key={keptLog} />
+          </LogScope>
+        </div>
       )}
     </div>
   );
