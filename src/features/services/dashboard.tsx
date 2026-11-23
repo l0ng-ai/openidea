@@ -51,6 +51,7 @@ import {
   targetBusy,
 } from "./ops";
 import { openContainerLogInEditor } from "./logEditor";
+import { hasComposeSource, jumpToContainerComposeCommand, openComposeFile } from "./composeSource";
 import { containerOp, endpointOf, errorMessage, useServices } from "./store";
 import { useServicesTree } from "./tree";
 import styles from "./Services.module.css";
@@ -832,11 +833,21 @@ export function ContainerDashboard({
           {formatCreatedDetailed(inspect?.startedAt)}
         </PropRow>
         <PropRow label={<T>Command</T>} hidden={!container.command && !inspect?.cmd.length}>
-          <code className={styles.codeInline}>
-            {inspect && (inspect.entrypoint.length || inspect.cmd.length)
-              ? [...inspect.entrypoint, ...inspect.cmd].join(" ")
-              : container.command}
-          </code>
+          <span className={styles.inlineRow}>
+            <code className={styles.codeInline}>
+              {inspect && (inspect.entrypoint.length || inspect.cmd.length)
+                ? [...inspect.entrypoint, ...inspect.cmd].join(" ")
+                : container.command}
+            </code>
+            {hasComposeSource(container) && (
+              <IconButton
+                icon="autoscroll-to-source"
+                size="small"
+                title="Jump to Source"
+                onClick={() => void jumpToContainerComposeCommand(container)}
+              />
+            )}
+          </span>
         </PropRow>
         <PropRow label={<T>Working directory</T>} hidden={!inspect?.workingDir}>
           <span className={styles.mono}>{inspect?.workingDir}</span>
@@ -1619,7 +1630,18 @@ export function ComposeProjectDashboard({
           <span className={styles.mono}>{first?.composeWorkingDir}</span>
         </PropRow>
         <PropRow label={<T>Compose files</T>} hidden={!first?.composeFiles.length}>
-          <span className={styles.mono}>{first?.composeFiles.join(", ")}</span>
+          <span className={styles.inlineRow}>
+            {first?.composeFiles.map((file) => (
+              <button
+                key={file}
+                type="button"
+                className={styles.link}
+                onClick={() => void openComposeFile(file, first.composeWorkingDir)}
+              >
+                <span className={styles.mono}>{file}</span>
+              </button>
+            ))}
+          </span>
         </PropRow>
       </div>
 

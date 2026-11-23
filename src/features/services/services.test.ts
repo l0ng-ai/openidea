@@ -56,6 +56,12 @@ import {
   unitsToBytes,
 } from "./dashboard";
 import { endpointFrom, sshConfigForUrl, sshConfigUrl } from "./dialogs";
+import {
+  hasComposeSource,
+  locateComposeServiceCommand,
+  pickComposeCommandLocation,
+  resolveComposeFilePaths,
+} from "./composeSource";
 import { dockerItems } from "./docker";
 import { setDockerFilters, useServices } from "./store";
 import { addServiceMenu, expandableKeys, indexTree, setProviderRoots, useServicesTree } from "./tree";
@@ -722,5 +728,133 @@ describe("docker compose detection and targets", () => {
     const svcDecl = resolveComposeReferenceAt(state, svcRefOffset);
     expect(svcDecl?.name).toBe("starrocks");
     expect(svcDecl?.line).toBe(8);
+  });
+});
+
+describe("composeSource", () => {
+  it("resolves absolute, relative, Windows, and default Compose file paths", () => {
+    expect(hasComposeSource({ composeProject: "shop", composeWorkingDir: "/work/shop", composeFiles: [] })).toBe(true);
+    expect(hasComposeSource({ composeProject: null, composeWorkingDir: null, composeFiles: [] })).toBe(false);
+
+    expect(
+      resolveComposeFilePaths(["./compose.yaml", "/work/shop/compose.override.yaml", "compose.yaml"], "/work/shop/"),
+    ).toEqual(["/work/shop/compose.yaml", "/work/shop/compose.override.yaml"]);
+
+    expect(resolveComposeFilePaths(["docker\\compose.yml"], null, "C:\\repo")).toEqual(["C:/repo/docker/compose.yml"]);
+
+    expect(resolveComposeFilePaths([], "/work/shop")).toEqual([
+      "/work/shop/compose.yaml",
+      "/work/shop/compose.yml",
+      "/work/shop/docker-compose.yaml",
+      "/work/shop/docker-compose.yml",
+    ]);
+  });
+
+  it("locates inline commands, block scalars, block sequences, entrypoints, and service fallbacks", () => {
+    const compose = [
+      "services:",
+      "  postgres:",
+      "    image: postgres:16",
+      "  github-runner:",
+      "    image: myoung34/github-runner:latest",
+      "    entrypoint:",
+      "      - /bin/bash",
+      "      - -ec",
+      "      - |",
+      "        mkdir -p /persist/slots",
+      '    command: ["./bin/Runner.Listener", "run", "--startuptype", "service"]',
+      "  worker:",
+      "    image: python:3.12",
+      "    entrypoint: |",
+      "      # Initialize worker environment",
+      "      python -m app.worker",
+      "  compact-seq:",
+      "    command:",
+      "    - |",
+      "      npm run start",
+      "",
+    ].join("\n");
+
+    // Service without command or entrypoint falls back to the service declaration
+    expect(locateComposeServiceCommand(compose, "postgres")).toEqual({
+      kind: "service",
+      line: 1,
+      col: 2,
+    });
+
+    // Service with both entrypoint and command lands on command's value
+    expect(locateComposeServiceCommand(compose, "github-runner")).toEqual({
+      kind: "command",
+      line: 10,
+      col: 13,
+    });
+
+    // Service with only a literal block-scalar entrypoint lands on the first script line (preserving `#` comments)
+    expect(locateComposeServiceCommand(compose, "worker")).toEqual({
+      kind: "entrypoint",
+      line: 14,
+      col: 6,
+    });
+
+    // Compact sequence item using `- |` lands on the first script line inside the item
+    expect(locateComposeServiceCommand(compose, "compact-seq")).toEqual({
+      kind: "command",
+      line: 19,
+      col: 6,
+    });
+
+    expect(locateComposeServiceCommand(compose, "missing")).toBeNull();
+    expect(locateComposeServiceCommand(compose, null)).toEqual({ kind: "services", line: 0, col: 0 });
+  });
+
+  it("gives later override files precedence when resolving multi-file Compose commands", () => {
+    const base = [
+      "services:",
+      "  api:",
+      "    image: node:22",
+      "    command: npm run start",
+      "  worker:",
+      "    image: node:22",
+      "    command: node worker.js",
+      "  db:",
+      "    image: postgres:16",
+    ].join("\n");
+    const override = [
+      "services:",
+      "  api:",
+      "    ports:",
+      '      - "3000:3000"',
+      "  worker:",
+      "    command: npm run worker:dev",
+    ].join("\n");
+
+    const files = [
+      { path: "/work/compose.yaml", text: base },
+      { path: "/work/compose.override.yaml", text: override },
+    ];
+
+    // Override does not redefine `api.command`, so base file's `command` wins
+    expect(pickComposeCommandLocation(files, "api")).toEqual({
+      path: "/work/compose.yaml",
+      kind: "command",
+      line: 3,
+      col: 13,
+    });
+
+    // Override redefines `worker.command`, so override file's `command` wins
+    expect(pickComposeCommandLocation(files, "worker")).toEqual({
+      path: "/work/compose.override.yaml",
+      kind: "command",
+      line: 5,
+      col: 13,
+    });
+
+    // Neither file defines command/entrypoint for `db`, so base file's service declaration wins
+    expect(pickComposeCommandLocation(files, "db")).toEqual({
+      path: "/work/compose.yaml",
+      kind: "service",
+      line: 7,
+      col: 2,
+    });
   });
 });

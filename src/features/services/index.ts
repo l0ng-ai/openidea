@@ -37,6 +37,7 @@ import { gutterActions, registerDockerRunTypes } from "./runTypes";
 import { ServicesDialogHost } from "./dialogs";
 import { dockerProvider, selectedTarget } from "./docker";
 import { DOCKER_LOG_EDITOR_KIND, DockerLogEditor, dockerLogEditorTitle, openContainerLogInEditor } from "./logEditor";
+import { hasComposeSource, jumpToComposeProjectSource, jumpToContainerComposeCommand } from "./composeSource";
 import {
   canRemove,
   canStart,
@@ -233,6 +234,22 @@ export function activate(): () => void {
         run: () => {
           const t = selectedTarget();
           if (t?.node.kind === "container") openContainerLogInEditor(t.conn, t.node.container);
+        },
+      },
+      {
+        id: "docker.jumpToSource",
+        title: "Jump to Source",
+        category: "Docker",
+        icon: "autoscroll-to-source",
+        when: PROJECT,
+        run: () => {
+          const t = selectedTarget();
+          if (t?.node.kind === "container" && hasComposeSource(t.node.container)) {
+            return jumpToContainerComposeCommand(t.node.container);
+          }
+          if (t?.node.kind === "compose" && t.node.containers[0] && hasComposeSource(t.node.containers[0])) {
+            return jumpToComposeProjectSource(t.node.project, t.node.containers);
+          }
         },
       },
       {
