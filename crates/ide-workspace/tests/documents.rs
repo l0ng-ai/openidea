@@ -1600,7 +1600,13 @@ fn editorconfig_charset_decodes_a_legacy_file_over_the_project_encoding() {
     project_encoding(&f, "gbk");
     latin9_editorconfig(&f);
     let path = f.root.join("A.java");
-    fs::write(&path, b"// a\xe7\xe3o \xa4\n").unwrap();
+    let bytes = b"// a\xe7\xe3o \xa4\n";
+    fs::write(&path, bytes).unwrap();
+
+    assert_eq!(f.docs.detect_encoding(&path, bytes), encoding_rs::ISO_8859_15);
+    for loaded in [f.docs.load_file(&path).unwrap(), f.docs.load_file_bounded(&path, 1024).unwrap()] {
+        assert_eq!((loaded.text.as_str(), loaded.encoding.as_str()), ("// ação €\n", "iso-8859-15"));
+    }
 
     let doc = f.docs.open(&path).unwrap();
 
@@ -1657,6 +1663,64 @@ fn utf16_text_without_a_bom_keeps_utf16_under_a_utf8_charset() {
     let doc = f.docs.open(&path).unwrap();
 
     assert_eq!((doc.text.as_str(), doc.encoding.as_str()), ("class A {}\n", "utf-16le"));
+}
+
+#[test]
+fn valid_utf8_text_keeps_utf8_under_a_legacy_charset() {
+    let f = fixture();
+    latin9_editorconfig(&f);
+    let path = f.root.join("A.java");
+    fs::write(&path, "// ação\n").unwrap();
+
+    assert_eq!(f.docs.open(&path).unwrap().encoding, "utf-8");
+}
+
+#[test]
+fn editorconfig_utf8_charset_survives_a_reload_from_disk() {
+    let f = fixture();
+    latin_project(&f);
+    fs::write(f.root.join(".editorconfig"), "root = true\n[*.java]\ncharset = utf-8\n").unwrap();
+    let path = f.root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+    let doc = f.docs.open(&path).unwrap();
+
+    fs::write(&path, b"class A { int changed; }\n").unwrap();
+    f.docs.sync_from_disk();
+
+    let reloaded = f.docs.snapshot(doc.id).unwrap();
+    assert_eq!((reloaded.text.as_str(), reloaded.encoding.as_str()), ("class A { int changed; }\n", "utf-8"));
+}
+
+#[test]
+fn editorconfig_charset_wins_over_the_properties_encoding() {
+    let f = fixture();
+    fs::write(f.root.join(".editorconfig"), "root = true\n[*.properties]\ncharset = iso-8859-15\n").unwrap();
+    let path = f.root.join("messages.properties");
+    fs::write(&path, b"price=10 \xa4\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+
+    assert_eq!((doc.text.as_str(), doc.encoding.as_str()), ("price=10 €\n", "iso-8859-15"));
+    assert_eq!(f.docs.detect_encoding(&path, b"price=10\n"), encoding_rs::ISO_8859_15);
+    assert_eq!(f.docs.detect_encoding(&f.root.join("unmatched.txt"), b"price=10\n"), encoding_rs::UTF_8);
+}
+
+#[test]
+fn switching_editorconfig_support_off_stops_the_charset_on_reload() {
+    let f = fixture();
+    project_encoding(&f, "gbk");
+    latin9_editorconfig(&f);
+    let path = f.root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+    let doc = f.docs.open(&path).unwrap();
+    let mut defaults = f.docs.file_defaults();
+    defaults.editorconfig = false;
+    f.docs.set_file_defaults(defaults);
+
+    fs::write(&path, b"class A { int changed; }\n").unwrap();
+    f.docs.sync_from_disk();
+
+    assert_eq!(f.docs.snapshot(doc.id).unwrap().encoding, "gbk");
 }
 
 #[test]

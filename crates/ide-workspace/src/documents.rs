@@ -381,11 +381,19 @@ impl Documents {
         self.editorconfig.resolve(&absolute(path))
     }
 
+    /// Fallback encoding for closed-file search; ASCII relabelling does not affect its text.
+    pub fn configured_encoding_for(&self, path: &Path) -> Option<String> {
+        let defaults = self.file_defaults();
+        let editorconfig = self.editorconfig_for(path, &defaults);
+        configured_fallback(&defaults, path, editorconfig.as_ref()).map(|f| f.encoding.to_owned())
+    }
+
     /// Bounded closed-file snapshots use the same project defaults as open documents.
     pub fn load_file_bounded(&self, path: &Path, max_bytes: usize) -> IdeResult<ide_vfs::LoadedText> {
         let defaults = self.file_defaults();
         let editorconfig = self.editorconfig_for(path, &defaults);
-        let mut loaded = ide_vfs::load_text_bounded(path, configured_fallback(&defaults, path, editorconfig.as_ref()), max_bytes)?;
+        let mut loaded =
+            ide_vfs::load_text_bounded(path, configured_fallback(&defaults, path, editorconfig.as_ref()), max_bytes)?;
         if !loaded.binary && defaults.native_to_ascii_for(path) {
             loaded.text = ide_vfs::decode_properties_escapes(&loaded.text);
         }

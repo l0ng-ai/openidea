@@ -421,9 +421,9 @@ mod tests {
         assert!(create_file(&ec, &r.join("new.txt")).is_err(), "never truncates");
     }
 
-    /// The labels Settings › Editor › File Encodings offers (`ENCODING_CHOICES`).
+    /// The labels of `ENCODING_CHOICES` in `src/platform/editorSettings.ts`, copied by hand.
     #[test]
-    fn charset_accepts_the_encodings_the_ui_lists() {
+    fn charset_maps_the_listed_encodings() {
         let tmp = tempfile::tempdir().unwrap();
         let r = tmp.path().canonicalize().unwrap();
         let listed = [
