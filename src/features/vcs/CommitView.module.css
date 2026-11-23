@@ -309,7 +309,7 @@
 }
 /* Commit Options popup (gear next to Commit). */
 .options {
-  width: 340px;
+  width: 384px;
   max-height: min(560px, 80vh);
   overflow: auto;
   padding: 4px 16px 12px;
@@ -350,29 +350,35 @@
   flex: 1;
   min-width: 0;
 }
-.optField {
-  display: flex;
+.optIdentity {
+  container-type: inline-size;
+}
+.optIdentityFields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1) var(--space-2);
   color: var(--fg);
+  font-size: var(--fs-ui);
 }
-.optField > :last-child {
-  flex: 1;
-  min-width: 0;
+.optIdentityFields > label {
+  overflow-wrap: anywhere;
 }
-.optDate {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  color: var(--fg);
+@container (min-width: 328px) {
+  .optIdentityFields {
+    grid-template-columns: fit-content(32%) minmax(0, 1fr);
+    row-gap: var(--space-1-5);
+  }
 }
 .optDateInput {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: var(--space-1);
 }
 .optDateInput input {
-  flex: 1;
+  flex: 1 1 min(100%, 212px);
   min-width: 0;
 }
 .optLink {

@@ -85,6 +85,66 @@ test("⌘K commits the checked changes with the typed message", async ({ workben
   await expect(changes.getByRole("checkbox", { name: "Include build.gradle.kts in commit" })).toBeHidden();
 });
 
+test("commit options align author fields and keep the date editable in a narrow dialog", async ({
+  workbench: page,
+}) => {
+  await stubRepository(page);
+  await page.setViewportSize({ width: 1040, height: 700 });
+  await page.keyboard.press("Meta+k");
+  const panel = page.getByRole("region", { name: "Commit", exact: true });
+  await panel.getByRole("button", { name: "Commit Options", exact: true }).click();
+  const popup = page.getByRole("dialog", { name: "Commit Options", exact: true });
+  const author = popup.getByRole("textbox", { name: "Author", exact: true });
+  const date = popup.getByLabel("Author date", { exact: true });
+  const clear = popup.getByRole("button", { name: "Clear author date", exact: true });
+  const name = "Regional Ledger Review <review@example.invalid>";
+  const time = "2024-06-04T13:20:21";
+  await author.fill(name);
+  await date.fill(time);
+  const authorBox = (await author.boundingBox())!;
+  const dateBox = (await date.boundingBox())!;
+  const dateLabel = (await popup.getByText("Author date", { exact: true }).boundingBox())!;
+  const clearBox = (await clear.boundingBox())!;
+  expect(authorBox.x).toBeCloseTo(dateBox.x, 0);
+  expect(dateLabel.y).toBeGreaterThanOrEqual(dateBox.y);
+  expect(dateLabel.y).toBeLessThan(dateBox.y + dateBox.height);
+  expect(clearBox.x + clearBox.width).toBeCloseTo(authorBox.x + authorBox.width, 0);
+  await expect(clear).toBeInViewport({ ratio: 1 });
+
+  await page.keyboard.press("Escape");
+  await expect(popup).toBeHidden();
+  await page.evaluate(async () => {
+    const projectModule = "/src/platform/project.ts";
+    const { useProject } = await import(/* @vite-ignore */ projectModule);
+    const { settings } = useProject.getState();
+    useProject.setState({
+      settings: { ...settings, vcs: { ...settings?.vcs, commit: { ...settings?.vcs?.commit, nonModal: false } } },
+    });
+  });
+  await page.setViewportSize({ width: 650, height: 650 });
+  await page.keyboard.press("Meta+k");
+  const dialog = page.getByRole("dialog", { name: "Commit Changes", exact: true });
+  const options = dialog.getByRole("group", { name: "Commit Options", exact: true });
+  const compactAuthor = options.getByRole("textbox", { name: "Author", exact: true });
+  const compactDate = options.getByLabel("Author date", { exact: true });
+  const compactClear = options.getByRole("button", { name: "Clear author date", exact: true });
+  await expect(compactAuthor).toHaveValue(name);
+  await expect(compactDate).toHaveValue(time);
+  const labelBox = (await options.getByText("Author:", { exact: true }).boundingBox())!;
+  const inputBox = (await compactAuthor.boundingBox())!;
+  expect(inputBox.x).toBeCloseTo(labelBox.x, 0);
+  expect(inputBox.y).toBeGreaterThanOrEqual(labelBox.y + labelBox.height);
+  const box = (await compactDate.boundingBox())!;
+  const buttonBox = (await compactClear.boundingBox())!;
+  expect(box.width).toBeCloseTo(inputBox.width, 0);
+  expect(buttonBox.y).toBeGreaterThanOrEqual(box.y + box.height);
+  expect(await options.evaluate((node) => node.scrollWidth - node.clientWidth)).toBeLessThanOrEqual(1);
+  await compactClear.click();
+  await expect(compactDate).toHaveValue("");
+  await expect(compactClear).toBeHidden();
+  await expect(compactAuthor).toHaveValue(name);
+});
+
 test("the Commit window gives its message preferred focus", async ({ workbench: page }) => {
   await stubRepository(page);
   const stripe = page.locator('[data-stripe-button="commit"]');
