@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SSH_CONFIG, type SshConfigValid } from "@/platform/remoteSettings";
-import { answerAskpass, askpassAnswer, dropAskpass, enqueueAskpass, useAskpass } from "./askpass";
+import { answerAskpass, askpassAnswer, askpassTitle, dropAskpass, enqueueAskpass, useAskpass } from "./askpass";
 import { type ConnectDeps, openSshTerminal, sessionItems, sshRemedy } from "./session";
 
 describe("askpass queue", () => {
@@ -37,6 +37,18 @@ describe("askpass queue", () => {
     expect(askpassAnswer("confirm", { confirm: false })).toBe("no");
     expect(askpassAnswer("secret", null)).toBeNull();
     expect(askpassAnswer("confirm", null)).toBeNull();
+  });
+});
+
+describe("askpass title", () => {
+  it("names git HTTPS credentials without calling them SSH", () => {
+    expect(askpassTitle({ kind: "secret", prompt: "Password for 'https://cnb@cnb.cool': " })).toBe("Password");
+    expect(askpassTitle({ kind: "text", prompt: "Username for 'https://cnb.cool': " })).toBe("Username");
+  });
+
+  it("keeps the SSH titles for ssh prompts", () => {
+    expect(askpassTitle({ kind: "secret", prompt: "dev@host's password: " })).toBe("SSH Password");
+    expect(askpassTitle({ kind: "text", prompt: "Enter passphrase for key '/home/u/.ssh/id_ed25519': " })).toBe("SSH");
   });
 });
 
