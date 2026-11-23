@@ -488,14 +488,17 @@ async fn start_inner(
     }
     // A Python configuration pointing at a missing interpreter fails in the depth of
     // process spawn otherwise; name the cause and the fix like PyCharm's "Invalid SDK".
-    if matches!(config.kind.as_str(), "python" | "pytest" | "django-test")
-        && !Path::new(&config.command).is_file()
-        && Path::new(&config.command).components().count() > 1
-    {
-        return Err(IdeError::invalid(format!(
-            "The configured Python interpreter does not exist: {}\nSelect a working interpreter in Settings › Languages & Frameworks › Python Interpreter.",
-            config.command
-        )));
+    let is_python = matches!(config.kind.as_str(), "python" | "pytest" | "django-test");
+    if is_python && Path::new(&config.command).components().count() > 1 {
+        let cwd = project.root.join(config.cwd.as_deref().unwrap_or(Path::new("")));
+        let executable = ide_core::project_roots::resolve(&cwd, Path::new(&config.command));
+        if !executable.is_file() {
+            return Err(IdeError::invalid(format!(
+                "The configured Python interpreter does not exist: {}\nSelect a working interpreter in Settings › Languages & Frameworks › Python Interpreter.",
+                config.command
+            )));
+        }
+        config.command = ide_core::ipc_path::to_ipc(&executable);
     }
     if config.kind == "tomcat" {
         if host.processes.list().iter().any(|r| r.running && r.config_id == config.id) {
@@ -518,10 +521,21 @@ async fn start_inner(
             })
             .await?;
     }
+    let mut python_paths = if *root != project.root { vec![root.clone()] } else { super::python::paths(&project) };
+    if is_python {
+        let near = ide_run::scope::owner(&project.root, &config);
+        python_paths = super::python::with_user_paths(
+            python_paths,
+            &host.config_dir,
+            &project,
+            Some(&config.command),
+            Some(&near),
+        );
+    }
     let encoding = settings.console.encoding;
     let options = StartOptions {
         encoding: Some(encoding).filter(|e| !e.trim().is_empty()),
-        python_paths: if *root != project.root { vec![root.clone()] } else { super::python::paths(&project) },
+        python_paths,
         ruby_reporter: ruby_reporter_dir(host, &config),
     };
     project.require_trust()?;

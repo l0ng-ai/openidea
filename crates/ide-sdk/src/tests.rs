@@ -579,6 +579,31 @@ fn run_configs_use_selected_interpreter_and_package_manager() {
 }
 
 #[test]
+fn saved_python_configs_keep_their_explicit_interpreter() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let default = fake_venv(root, ".venv");
+    let override_python = fake_venv(&root.join("member"), ".override");
+    let relative_python = override_python.strip_prefix(root.join("member")).unwrap();
+    let mut settings = Settings::default();
+    settings.languages.python.interpreter = default.to_string_lossy().into_owned();
+
+    for command in [&override_python, relative_python] {
+        for kind in ["python", "pytest", "django-test"] {
+            let command = command.to_string_lossy();
+            let mut config = run(kind, &command, &["main.py"]);
+            config.detected = false;
+            config.cwd = Some(Path::new("member").into());
+            apply_to_run_configs(std::slice::from_mut(&mut config), root, &settings);
+            assert_eq!(config.command, command);
+            assert_eq!(config.env["VIRTUAL_ENV"], root.join("member/.override").to_string_lossy());
+            let saved = without_derived(&config, root, &settings);
+            assert_eq!(saved.command, command);
+        }
+    }
+}
+
+#[test]
 fn npm_config_runs_on_its_own_node_interpreter() {
     if cfg!(windows) {
         return; // Unix paths

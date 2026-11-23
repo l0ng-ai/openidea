@@ -1678,6 +1678,13 @@ export const commands = {
 	sdkPythonPip: (python: string, requirement: string, uninstall: boolean, upgrade: boolean, request: RequestId, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("sdk_python_pip", { python, requirement, uninstall, upgrade, request, onOutput })),
 	/**  The Python interpreters of the recently opened projects, each with its project. */
 	sdkPythonProjectInterpreters: () => typedError<ProjectInterpreter[], IdeError>(__TAURI_INVOKE("sdk_python_project_interpreters")),
+	/**  `sys.path` of the interpreter `python`, for All Interpreters › Show Paths. */
+	sdkPythonSysPath: (python: string, request: RequestId) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("sdk_python_sys_path", { python, request })),
+	/**
+	 *  For each folder added to an interpreter's paths, why it stays off the import path
+	 *  (`None`: it is used). The folders may not be saved yet.
+	 */
+	sdkPythonUserPathProblems: (paths: string[]) => typedError<(UserPathProblem | null)[], IdeError>(__TAURI_INVOKE("sdk_python_user_path_problems", { paths })),
 	/**
 	 *  Find in Files. Results stream through `on_event`; ends with `Done`.
 	 *  Cancel with `cancel_request(request)`.
@@ -11388,6 +11395,11 @@ export type PythonSettings = {
 	hideOtherProjectInterpreters?: boolean,
 	/**  Show each interpreter's path under its name on the interpreters page. */
 	showInterpreterPaths?: boolean,
+	/**
+	 *  Folders the user added to an interpreter's `sys.path` (All Interpreters › Show Paths),
+	 *  by interpreter executable; absolute or `~/`.
+	 */
+	interpreterPaths?: { [key in string]: string[] },
 };
 
 /**  Color Scheme › Language Defaults › Rainbow brackets: which delimiters are coloured. */
@@ -13669,6 +13681,13 @@ export type UpstreamTracking = {
 	remote: string,
 	branch: string,
 };
+
+/**  Why a folder added to an interpreter's paths stays off the import path. */
+export type UserPathProblem = 
+/**  Not an existing folder. */
+"missing" | 
+/**  Not absolute or `~/`, or it holds the separator of `PYTHONPATH`. */
+"invalid";
 
 export type Variable = Variable_Serialize | Variable_Deserialize;
 

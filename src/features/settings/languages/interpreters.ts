@@ -113,6 +113,12 @@ export function sameInterpreterPath(a: string, b: string, root: string | null): 
   return false;
 }
 
+/** `user` plus `picked`, unless it is already there or on the interpreter's `own` paths. */
+export function addUserPath(user: readonly string[], own: readonly string[], picked: string): string[] {
+  const key = interpreterPathKey(picked);
+  return [...own, ...user].some((path) => interpreterPathKey(path) === key) ? [...user] : [...user, picked];
+}
+
 export interface BuildInterpreters {
   detected: readonly Sdk[];
   /** Interpreters other projects use, with their roots. */
