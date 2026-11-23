@@ -228,6 +228,15 @@ pub fn fs_create_dir(path: PathBuf) -> IdeResult<()> {
     ide_vfs::create_dir(&path)
 }
 
+/// The scratch files' folder of this host (`<data dir>/scratches`), created. A remote window
+/// keeps its scratches on the server, where its file commands run.
+#[command(trust = always)]
+pub fn fs_scratches_dir(host: &Host) -> IdeResult<ide_core::IpcPath> {
+    let dir = host.data_dir.join("scratches");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir.into())
+}
+
 /// Toggle Read-only Attribute: sets the writable bit (and the open document's
 /// state). Returns whether the file is read-only now.
 #[command(trust = always)]
@@ -383,6 +392,7 @@ ide_command::domain!(
     fs_read_dir,
     fs_read_text,
     fs_rename,
+    fs_scratches_dir,
     fs_set_writable,
     fs_synchronize_directories,
     fs_undo_delete,

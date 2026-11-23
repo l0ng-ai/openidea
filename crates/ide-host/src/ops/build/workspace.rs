@@ -1,10 +1,31 @@
 use super::*;
 use std::path::PathBuf;
 
-pub(super) struct Scope {
+pub(in crate::ops) struct Scope {
     pub root: PathBuf,
     pub cache: PathBuf,
     pub settings: Settings,
+}
+
+pub(in crate::ops) fn scope_for(project: &Project, path: &Path) -> IdeResult<Scope> {
+    let workspace = ide_workspace::workspace::Workspace::load(&project.root)?;
+    let root = workspace
+        .as_ref()
+        .and_then(|w| w.projects.iter().filter(|p| path.starts_with(p)).max_by_key(|p| p.components().count()))
+        .unwrap_or(&project.root);
+    Ok(Scope {
+        cache: cache_at(&project.root, &project.build_cache_dir(), root),
+        settings: if root == &project.root {
+            project.settings.effective()
+        } else {
+            project.settings.for_project(root).effective()
+        },
+        root: root.clone(),
+    })
+}
+
+pub(super) fn cache_at(window_root: &Path, cache: &Path, root: &Path) -> PathBuf {
+    if root == window_root { cache.to_owned() } else { cache.join(crate::project::project_key(root)) }
 }
 
 pub(super) fn scopes(project: &Project, config: &Path) -> IdeResult<Vec<Scope>> {
@@ -19,11 +40,7 @@ fn scopes_at(root: &Path, cache: &Path, config: &Path, settings: Settings) -> Id
             .into_iter()
             .filter(|p| p.is_dir())
             .map(|root| Scope {
-                cache: if root == window_root {
-                    cache.to_owned()
-                } else {
-                    cache.join(crate::project::project_key(&root))
-                },
+                cache: cache_at(window_root, cache, &root),
                 settings: ide_workspace::SettingsStore::load(config, Some(&root)).effective(),
                 root,
             })
