@@ -3,7 +3,7 @@
  * file pattern, saved per project (`@/platform/search`) and offered wherever
  * named scopes are (Find in Files, the analyses' Specify Scope).
  */
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
 import { tx, txTemplate, useTx, useTxTemplate } from "@/platform/i18n";
@@ -88,6 +88,10 @@ function ScopesDialog() {
     const select = useScopesDialog.getState().select;
     return Math.max(0, select ? scopes.findIndex((s) => s.name === select) : 0);
   });
+  const selectedRow = useRef<HTMLButtonElement>(null);
+  useLayoutEffect(() => {
+    selectedRow.current?.scrollIntoView({ block: "nearest" });
+  }, [index, scopes.length]);
   const current = scopes[index] ?? null;
   const patternError = usePatternError(current?.pattern ?? "");
   const problem = scopesProblem(scopes);
@@ -124,7 +128,7 @@ function ScopesDialog() {
     >
       <div className={styles.body}>
         <div className={styles.side}>
-          <div className={styles.toolbar}>
+          <div className={styles.toolbar} role="toolbar" aria-label={tr("Scopes actions")}>
             <IconButton icon="plus" title="Add Scope" size="small" onClick={add} />
             <IconButton icon="minus" title="Remove Scope" size="small" disabled={!current} onClick={remove} />
           </div>
@@ -134,11 +138,13 @@ function ScopesDialog() {
                 <li key={i}>
                   <button
                     type="button"
+                    ref={i === index ? selectedRow : undefined}
                     className={clsx(styles.item, i === index && styles.itemOn)}
                     aria-current={i === index || undefined}
+                    title={s.name}
                     onClick={() => setIndex(i)}
                   >
-                    {s.name || tr("Unnamed")}
+                    <span>{s.name || tr("Unnamed")}</span>
                   </button>
                 </li>
               ))}

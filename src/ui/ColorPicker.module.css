@@ -1,13 +1,12 @@
 .popup {
-  width: 340px;
+  width: 304px;
   max-width: calc(100vw - 12px);
-  padding: 0 0 12px;
   max-height: calc(100vh - 12px);
   overflow: auto;
 }
 
 .opaque .control:global(.react-colorful) {
-  grid-template-rows: minmax(0, 1fr) 54px;
+  grid-template-rows: var(--saturation-height) 48px;
 }
 
 .opaque .control :global(.react-colorful__hue) {
@@ -23,25 +22,30 @@
 }
 
 .control:global(.react-colorful) {
+  --saturation-height: clamp(104px, 36vh, 152px);
+
   display: grid;
-  grid-template-columns: 104px minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr) 27px 27px;
+  grid-template-columns: 88px minmax(0, 1fr);
+  grid-template-rows: var(--saturation-height) 24px 24px;
+  align-items: center;
   width: 100%;
-  height: 262px;
+  height: auto;
   border-radius: 0;
 }
 
 .control :global(.react-colorful__saturation) {
   grid-column: 1 / -1;
   grid-row: 1;
+  align-self: stretch;
+  overflow: hidden;
   border-radius: 0;
 }
 
 .control :global(.react-colorful__hue),
 .control :global(.react-colorful__alpha) {
   grid-column: 2;
-  height: 14px;
-  margin: 6px 14px 7px 2px;
+  height: 12px;
+  margin-inline-end: var(--space-3);
   border-radius: var(--radius-small);
 }
 
@@ -53,6 +57,12 @@
   grid-row: 3;
 }
 
+.control :global(.react-colorful__hue-pointer),
+.control :global(.react-colorful__alpha-pointer) {
+  width: var(--h-control-small);
+  height: var(--h-control-small);
+}
+
 .sampleRow {
   position: absolute;
   left: 0;
@@ -60,14 +70,14 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  width: 104px;
-  height: 54px;
-  padding: 0 10px;
+  width: 88px;
+  height: 48px;
+  padding-inline: var(--space-2);
 }
 
 .preview {
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   border: 1px solid var(--border-strong);
   border-radius: 50%;
   overflow: hidden;
@@ -84,8 +94,8 @@
 .fields {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(78px, 1.65fr);
-  gap: 7px;
-  padding: 0 12px;
+  gap: var(--space-1);
+  padding-inline: var(--space-3);
 }
 
 .field {
@@ -101,13 +111,14 @@
 .field input {
   width: 100%;
   min-width: 0;
-  height: 28px;
+  height: var(--h-control);
   border: 1px solid var(--border-input, var(--border));
   border-radius: var(--radius-small);
   padding: 0 3px;
   background: var(--bg-input);
   color: var(--fg-strong);
-  font: inherit;
+  font-family: inherit;
+  font-size: var(--fs-ui);
   font-variant-numeric: tabular-nums;
   text-align: center;
   outline: none;
@@ -122,24 +133,29 @@
 }
 
 .actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
   display: flex;
   justify-content: flex-end;
   gap: var(--space-2);
-  padding: var(--space-3) var(--space-3) 0;
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  background: var(--bg-popup);
 }
 
 .recent {
   display: grid;
-  grid-template-columns: repeat(10, minmax(0, 1fr));
-  gap: var(--space-2) 5px;
-  margin: 12px 12px 0;
-  padding-top: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(24px, 1fr));
+  justify-items: center;
+  gap: var(--space-1);
+  margin: var(--space-2) var(--space-3) 0;
+  padding-top: var(--space-2);
   border-top: 1px solid var(--border);
 }
 
 .recentColor {
-  width: 25px;
-  height: 25px;
+  width: 24px;
+  height: 24px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-small);
   padding: 0;

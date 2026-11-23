@@ -137,6 +137,16 @@
 .unpin {
   color: var(--fg-muted);
 }
+.pinModified {
+  position: absolute;
+  top: calc(50% - 7px);
+  inset-inline-end: 1px;
+  width: var(--space-1);
+  height: var(--space-1);
+  border-radius: 50%;
+  background: var(--accent);
+  pointer-events: none;
+}
 .tab:hover .close,
 .tab:where([data-context-menu-open]) .close,
 .selected .close,
@@ -301,7 +311,7 @@
   width: auto;
   margin: 0;
 }
-.editor:not(.vertical) .close {
+.editor:not(.vertical) :is(.close, .unpin) {
   width: 16px;
 }
 .editor:not(.vertical) .closeSlot .modified {

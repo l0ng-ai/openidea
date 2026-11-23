@@ -317,14 +317,12 @@ function NodeRow({ node, state }: { node: BuildNode; state: TreeRowState }) {
         ? `(${node.dependency.scope}${node.dependency.optional ? ", optional" : ""})`
         : node.kind === "dependency" && node.dependency.optional
           ? "(optional)"
-          : node.kind === "task"
-            ? node.task.description
-            : null;
+          : null;
   const skipped =
     (mavenSkipTests && node.kind === "phase" && node.phase === "test") ||
     (gradleSkipTests && node.kind === "task" && node.task.name === "test");
   return (
-    <span className={styles.row} title={node.kind === "task" ? (node.task.description ?? undefined) : undefined}>
+    <span className={styles.row}>
       <Icon name={nodeIcon(node)} size={16} className={styles.icon} />
       <span className={clsx(styles.label, state.selected && styles.selectedLabel, skipped && styles.skippedGoal)}>
         {nodeLabel(node)}
@@ -475,6 +473,7 @@ function BuildToolView({ tool }: { tool: BuildTool }) {
           roots={roots}
           getKey={(n) => n.key}
           getLabel={nodeLabel}
+          getTooltip={(n) => (n.kind === "task" ? (n.task.description ?? undefined) : undefined)}
           getChildren={getChildren}
           isExpandable={(n) => !!getChildren(n)?.length}
           expanded={expanded}

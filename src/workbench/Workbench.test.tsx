@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { emitLocalIdeEvent } from "@/platform/ipc";
 import { setLocale } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
+import { ContextMenuHost, hideContextMenu } from "@/ui/Menu";
 import { registerStatusItem, registerToolWindow, type StatusItemContribution } from "./contributions";
 import { orderStatusItems, StatusBar, TaskStatus } from "./StatusBar";
 import { orderTitleItems } from "./TitleBar";
@@ -18,6 +19,7 @@ import {
 } from "./notificationStore";
 import { installTaskEvents, useTasks } from "./tasks";
 import { ToolWindowLayout, ToolWindowStripe } from "./toolwindows/ToolWindows";
+import { installToolWindowActions } from "./toolwindows/actions";
 import {
   isToolWindowVisible,
   loadToolWindowLayout,
@@ -277,6 +279,54 @@ describe("notifications", () => {
 });
 
 describe("tool window stripe", () => {
+  it("moves More Tool Windows to an empty right stripe and back", () => {
+    const disposeActions = installToolWindowActions();
+    const disposeWindow = registerToolWindow({
+      id: "hidden-tool",
+      title: "Hidden Tool",
+      icon: "folder",
+      anchor: "left",
+      stripe: "onUse",
+      requiresProject: false,
+      component: () => null,
+    });
+    loadToolWindowLayout("/stripe-more");
+    const { unmount } = render(
+      <>
+        <ToolWindowLayout editor={null} />
+        <ContextMenuHost />
+      </>,
+    );
+    const button = () => screen.getByRole("button", { name: "More Tool Windows" });
+    const move = (label: string) => {
+      fireEvent.contextMenu(button());
+      fireEvent.click(screen.getByRole("menuitem", { name: label }));
+    };
+    try {
+      expect(button().closest("[data-stripe-side]")).toHaveAttribute("data-stripe-side", "left");
+      expect(screen.queryByRole("toolbar", { name: "Right tool windows" })).not.toBeInTheDocument();
+      move("Move to Right");
+      expect(button().closest("[data-stripe-side]")).toHaveAttribute("data-stripe-side", "right");
+      expect(screen.queryByRole("toolbar", { name: "Tool windows" })).not.toBeInTheDocument();
+      fireEvent.click(button());
+      const menu = screen.getByRole("menu", { name: "Tool windows" });
+      fireEvent.click(within(menu).getByRole("menuitem", { name: "Hidden Tool" }));
+      expect(isToolWindowVisible("hidden-tool")).toBe(true);
+      expect(screen.getByRole("button", { name: "Hidden Tool" }).closest("[data-stripe-side]")).toHaveAttribute(
+        "data-stripe-side",
+        "left",
+      );
+      move("Move to Left");
+      expect(button().closest("[data-stripe-side]")).toHaveAttribute("data-stripe-side", "left");
+      expect(screen.queryByRole("toolbar", { name: "Right tool windows" })).not.toBeInTheDocument();
+    } finally {
+      unmount();
+      hideContextMenu();
+      disposeWindow();
+      disposeActions();
+    }
+  });
+
   it("renders left + bottom windows on the left stripe and toggles on click", () => {
     const C = () => null;
     const disposers = [

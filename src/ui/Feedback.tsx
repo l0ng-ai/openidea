@@ -117,24 +117,22 @@ export function Toast({
       onPointerLeave={onPointerLeave}
     >
       <Icon name={LEVEL_ICON[level]} size={16} className={clsx(styles.toastIcon, styles[`level-${level}`])} />
-      <div className={styles.toastMain}>
-        <div className={styles.toastHead}>
-          <span className={clsx(styles.toastTitle, selectableText)}>
-            {typeof title === "string" ? <Given>{title}</Given> : title}
-          </span>
-          {meta && <span className={styles.toastMeta}>{meta}</span>}
-        </div>
-        {body && <div className={styles.toastBody}>{typeof body === "string" ? <Given>{body}</Given> : body}</div>}
-        {actions && actions.length > 0 && (
-          <div className={styles.toastActions}>
-            {actions.map((a) => (
-              <button key={a.label} type="button" className={styles.link} onClick={a.run}>
-                <Given>{a.label}</Given>
-              </button>
-            ))}
-          </div>
-        )}
+      <div className={styles.toastHead}>
+        <span className={clsx(styles.toastTitle, selectableText)}>
+          {typeof title === "string" ? <Given>{title}</Given> : title}
+        </span>
+        {meta && <span className={styles.toastMeta}>{meta}</span>}
       </div>
+      {body && <div className={styles.toastBody}>{typeof body === "string" ? <Given>{body}</Given> : body}</div>}
+      {actions && actions.length > 0 && (
+        <div className={styles.toastActions}>
+          {actions.map((a) => (
+            <button key={a.label} type="button" className={styles.link} onClick={a.run}>
+              <Given>{a.label}</Given>
+            </button>
+          ))}
+        </div>
+      )}
       {onClose && (
         <IconButton
           icon="close"

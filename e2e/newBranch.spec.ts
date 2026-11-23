@@ -11,7 +11,7 @@ async function openNewBranchDialog(
   page: Page,
   from?: string,
   mergeBase = "1111111",
-  blocked = false,
+  blocked: boolean | string = false,
   withPrefix = false,
 ) {
   await stubDesktop(page);
@@ -43,7 +43,10 @@ async function openNewBranchDialog(
       ];
       h.vcs_create_branch = ({ options }) =>
         blocked && (options as { mode?: string } | null)?.mode === "normal"
-          ? { checkout: { kind: "localChanges", files: ["dirty.txt"] }, created: null }
+          ? {
+              checkout: { kind: "localChanges", files: [typeof blocked === "string" ? blocked : "dirty.txt"] },
+              created: null,
+            }
           : { checkout: { kind: "done" }, created: { tip: "2222222", previousTip: null } };
       h.vcs_merge_base = () => mergeBase;
       const vcsModule = "/src/features/vcs/store.ts";
@@ -150,6 +153,36 @@ for (const [button, mode] of [
       );
   });
 }
+
+test("local changes review keeps file names and checkout choices visible", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 1040, height: 740 });
+  const folder = "services/international-payments/regional-settlement/weekly-close/adjustments";
+  const path = `${folder}/ReceiptPolicy.ts`;
+  const { dialog, input } = await openNewBranchDialog(page, "2".repeat(40), "1111111", path);
+  await input.fill("topic");
+  await dialog.getByRole("button", { name: "Create", exact: true }).click();
+  const review = page.getByRole("dialog", { name: "Git Checkout Problem" });
+  const force = review.getByRole("button", { name: "Force Checkout", exact: true });
+  const smart = review.getByRole("button", { name: "Smart Checkout", exact: true });
+  const cancel = review.getByRole("button", { name: "Don't Checkout", exact: true });
+  await expect(force).toBeVisible();
+  expect((await force.boundingBox())!.x - (await review.boundingBox())!.x).toBeLessThan(24);
+
+  await page.setViewportSize({ width: 420, height: 480 });
+  const tree = review.getByRole("tree", { name: "Changed files" });
+  const row = tree.getByRole("treeitem", { name: `ReceiptPolicy.ts ${folder}`, exact: true });
+  await expect(row.getByTitle(path, { exact: true })).toBeVisible();
+  const file = row.getByText("ReceiptPolicy.ts", { exact: true });
+  await expect(file).toBeInViewport({ ratio: 1 });
+  expect(await file.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+  await expect(row.getByText(folder, { exact: true })).toHaveCSS("font-size", "12px");
+  const restoreHint = review.getByText(/Smart Checkout .* your changes and restores them/);
+  expect((await restoreHint.boundingBox())!.y).toBeLessThan((await tree.boundingBox())!.y);
+  for (const button of [force, smart, cancel]) await expect(button).toBeInViewport({ ratio: 1 });
+  await cancel.click();
+  await expect(review).toBeHidden();
+  expect(await ipcCalls(page, "vcs_create_branch")).toHaveLength(1);
+});
 
 test("pasted text has its spaces replaced", async ({ workbench: page }) => {
   const { dialog, input } = await openNewBranchDialog(page);

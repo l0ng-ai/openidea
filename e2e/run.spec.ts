@@ -581,3 +581,54 @@ test("CMake builds the selected target in Build before starting only the applica
   await expect(run.getByRole("tab", { name: "hello [Release, release]" })).toBeVisible();
   await expect(run.getByText("COMPILER_OUTPUT", { exact: true })).toHaveCount(0);
 });
+
+test("test report export separates the format and destination in a narrow window", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 410, height: 500 });
+  await stubRun(
+    page,
+    [
+      {
+        kind: "stdout",
+        text: '{"Package":"example.com/checkout","Action":"pass","Test":"TestReceipt","Elapsed":0.1}\n',
+      },
+    ],
+    0,
+    { id: "go:report-tests", name: "Checkout tests", kind: "go", command: "go", args: ["test", "-json"], isTest: true },
+  );
+  await page.evaluate(() => {
+    window.__ipc.handlers.fs_entry_kind = () => {
+      throw { kind: "NotFound", message: "Not found" };
+    };
+    window.__ipc.handlers.fs_create_file_bytes = () => null;
+  });
+
+  await page.keyboard.press("Control+r");
+  const results = page.getByRole("toolbar", { name: "Test results" });
+  await results.getByRole("button", { name: "More Actions" }).click();
+  const exportItem = page.getByRole("menuitem", { name: "Export Test Results…" });
+  await expect(exportItem).toBeEnabled();
+  await exportItem.click();
+
+  const dialog = page.getByRole("dialog", { name: "Export Test Results" });
+  const html = dialog.getByRole("radio", { name: "HTML", exact: true });
+  const xml = dialog.getByRole("radio", { name: "XML", exact: true });
+  await expect(html).toBeVisible();
+  expect((await xml.boundingBox())!.y).toBeGreaterThan((await html.boundingBox())!.y);
+  const file = dialog.getByLabel("File name", { exact: true });
+  const folder = dialog.getByLabel("Folder", { exact: true });
+  const browse = dialog.getByRole("button", { name: "Browse…" });
+  await expect(file).toBeFocused();
+  await expect(file).toHaveValue("Test Results - Checkout tests.html");
+  await expect(folder).toHaveValue("/dev/acme-api");
+  await expect(browse).toBeInViewport({ ratio: 1 });
+  expect((await folder.boundingBox())!.width).toBeGreaterThan(180);
+  await file.fill("receipts.html");
+  await folder.fill("reports");
+  await xml.check();
+  await expect(file).toHaveValue("receipts.xml");
+  await expect(dialog.getByRole("checkbox", { name: "Open exported file in browser" })).toBeDisabled();
+  await dialog.getByRole("button", { name: "OK", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  const [write] = await ipcCalls(page, "fs_create_file_bytes");
+  expect(write).toMatchObject({ path: "/dev/acme-api/reports/receipts.xml" });
+});
