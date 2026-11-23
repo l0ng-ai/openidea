@@ -9967,5 +9967,5 @@
   "Next Columns": "下一组列",
   "Pipenv Environment": "Pipenv 环境",
   "Install packages from Pipfile": "安装 Pipfile 中的软件包",
-  "Runs “pipenv --python <base>” in the project; pipenv keeps the environment under its own virtualenvs directory.": "在项目中运行“pipenv --python <base>”；Pipenv 会将环境保存在其自己的 virtualenvs 目录下。"
+  "Runs “pipenv --python <base>” in the project, which writes a Pipfile (from requirements.txt if there is one) when the project has none; pipenv keeps the environment under its own virtualenvs directory and reuses one that exists.": "在项目中运行“pipenv --python <base>”；项目没有 Pipfile 时它会写入一个（有 requirements.txt 时从中导入）。Pipenv 会将环境保存在其自己的 virtualenvs 目录下，已有的环境会被复用。"
 }

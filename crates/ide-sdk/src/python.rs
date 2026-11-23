@@ -127,10 +127,31 @@ fn create_poetry_env(
         .ok_or_else(|| IdeError::internal(format!("{} was not created", python.display())))
 }
 
-/// `pipenv --python <base>` in the project directory (the parent of `location`, a hint as
-/// for Poetry: pipenv keeps its envs under `WORKON_HOME`), or `pipenv install --dev --python
-/// <base>` to also install the packages of an existing `Pipfile`; then `pipenv --venv` for
-/// the interpreter it made or reused. Pipenv writes a `Pipfile` when the project has none.
+/// An environment that already exists is reused rather than rebuilt: the tools replace one
+/// built on another Python without asking, losing its packages. If `base` is another Python
+/// version than the environment's, nothing is changed and the error says how to go on.
+fn reuse_existing_env(home: &Path, base: &Path, remove: &str) -> IdeResult<()> {
+    let short = |version: &str| version.split('.').take(2).collect::<Vec<_>>().join(".");
+    let existing = crate::discover::pyvenv_version(&home.join(bin_dir()).join(exe("python")));
+    let wanted = query_in(base, &["--version"], None, &[], Duration::from_secs(15))
+        .and_then(|v| v.strip_prefix("Python ").map(str::to_owned));
+    match (existing.as_deref().map(short), wanted.as_deref().map(short)) {
+        (Some(existing), Some(wanted)) if existing != wanted => Err(IdeError::new(
+            ide_core::error::ErrorKind::AlreadyExists,
+            format!(
+                "{} already holds a Python {existing} environment, not Python {wanted} like the base interpreter. \
+                 Select it under Existing environment, or remove it first with `{remove}`.",
+                home.display()
+            ),
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Pipenv's environment for the project (`location` is a hint inside it, as for Poetry: pipenv
+/// keeps its envs under `WORKON_HOME`). `pipenv --python <base>` creates it when `pipenv --venv`
+/// finds none, writing a `Pipfile` (from `requirements.txt` if there is one) when the project
+/// has none. `install` then runs `pipenv install --dev` for the packages of the `Pipfile`.
 fn create_pipenv_env(
     base: &Path,
     location: &Path,
@@ -148,21 +169,31 @@ fn create_pipenv_env(
     // No prompts or spinner, and the project's own environment even when the IDE was
     // started from inside another virtualenv.
     const ENV: [(&str, &str); 3] = [("PIPENV_YES", "1"), ("PIPENV_NOSPIN", "1"), ("PIPENV_IGNORE_VIRTUALENVS", "1")];
-    let mut args = vec!["--python".to_owned(), base.to_string_lossy().into_owned()];
-    if install && project.join("Pipfile").is_file() {
-        args.splice(0..0, ["install".to_owned(), "--dev".to_owned()]);
-    }
     let env = ENV.map(|(k, v)| (k.to_owned(), v.to_owned()));
-    stream(&pipenv, &args, Some(project), &env, cancel, on_line)?;
-    let home = query_in(&pipenv, &["--venv"], Some(project), &ENV, Duration::from_secs(30))
-        .map(PathBuf::from)
-        .filter(|home| home.is_dir())
-        .ok_or_else(|| IdeError::internal("pipenv created no environment".to_owned()))?;
+    let venv = || {
+        query_in_cancellable(&pipenv, &["--venv"], project, &ENV, Duration::from_secs(30), cancel)
+            .map(PathBuf::from)
+            .filter(|home| home.join("pyvenv.cfg").is_file())
+    };
+    match venv() {
+        Some(home) => reuse_existing_env(&home, base, "pipenv --rm")?,
+        None => {
+            let args = ["--python".to_owned(), base.to_string_lossy().into_owned()];
+            stream(&pipenv, &args, Some(project), &env, cancel, on_line)?;
+        }
+    }
+    // Decided after creation: pipenv may just have written the `Pipfile`, or found one above the project.
+    let pipfile_dir = crate::discover::pipfile_dir(project);
+    if install && pipfile_dir.is_some() {
+        stream(&pipenv, &["install".to_owned(), "--dev".to_owned()], Some(project), &env, cancel, on_line)?;
+    }
+    let home = venv().ok_or_else(|| IdeError::internal("pipenv created no environment".to_owned()))?;
     // Pipenv records the project only when it creates the environment: one it reuses after an
     // interrupted creation has no `.project`, and detection would not know whose it is.
     let record = home.join(".project");
     if !record.exists() {
-        let _ = std::fs::write(record, project.to_string_lossy().as_bytes());
+        let owner = pipfile_dir.as_deref().unwrap_or(project);
+        let _ = std::fs::write(record, owner.to_string_lossy().as_bytes());
     }
     let python = home.join(bin_dir()).join(exe("python"));
     crate::discover::python_sdk(&python, "venv", Some(project))
