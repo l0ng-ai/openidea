@@ -4416,7 +4416,8 @@ fn tool_event(
     i: usize,
     entry: &AgentEntry,
 ) -> Option<AgentEvent> {
-    let AgentEntry::Tool { id, title, kind, status, locations, output, diffs, started_ms, ended_ms } = entry else {
+    let AgentEntry::Tool { id, title, kind, status, locations, images, output, diffs, started_ms, ended_ms } = entry
+    else {
         return None;
     };
     let call = AgentEntry::Tool {
@@ -4425,6 +4426,7 @@ fn tool_event(
         kind: kind.clone(),
         status: *status,
         locations: locations.clone(),
+        images: images.clone(),
         output: None,
         diffs: diffs.clone(),
         started_ms: *started_ms,

@@ -3627,6 +3627,7 @@ fn a_running_tools_output_is_sent_as_appends() {
         kind: "execute".into(),
         status,
         locations: Vec::new(),
+        images: Vec::new(),
         output: output.map(str::to_owned),
         diffs: Vec::new(),
         started_ms: Some(1.0),
@@ -3673,6 +3674,19 @@ fn a_running_tools_output_is_sent_as_appends() {
     }
     let on = event(&mut streamed, None, 2, &titled).unwrap();
     assert!(matches!(&on, AgentEvent::ToolOutput { from: 20, text, .. } if text == "more"), "{on:?}");
+
+    // An image the tool returned is not part of the appended text: it goes with the whole entry.
+    let mut shown = titled.clone();
+    if let AgentEntry::Tool { images, output, .. } = &mut shown {
+        images.push(AgentImage { mime_type: "image/png".into(), data: "AAAA".into(), name: None });
+        output.as_mut().unwrap().push('!');
+    }
+    let imaged = event(&mut streamed, None, 2, &shown).unwrap();
+    assert!(
+        matches!(&imaged, AgentEvent::Entry { entry: AgentEntry::Tool { images, .. }, .. } if images.len() == 1),
+        "{imaged:?}"
+    );
+    titled = shown;
 
     // Output the call replaced rather than extended goes whole.
     let make = |output: &str| {
