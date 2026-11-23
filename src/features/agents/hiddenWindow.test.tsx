@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import type { AgentEntry, AgentTask } from "@/bindings";
 import { useProject } from "@/platform/project";
 import { EditorShownProvider } from "@/workbench/contributions";
@@ -47,6 +47,7 @@ const task = (id: string): AgentTask => ({
   createdMs: 0,
   updatedMs: 0,
   config: [],
+  capabilities: { rollback: true },
   commands: [],
   usage: null,
   queue: [],
@@ -113,6 +114,43 @@ afterEach(() => {
 });
 
 describe("a kept-alive session tab that stays hidden", () => {
+  it("keeps an unsent edit to an earlier message even after returning to the end", async () => {
+    const view = render(session(true));
+    await settle("Reply 59");
+    layOut(stream());
+    const edit = screen.getAllByRole("button", { name: "Edit" })[0]!;
+    fireEvent.click(edit);
+    const draft = within(stream()).getByRole("textbox", { name: "Message" });
+    fireEvent.change(draft, { target: { value: "Unsent revision" } });
+    draft.blur();
+    stream().scrollTop = stream().scrollHeight - stream().clientHeight;
+    fireEvent.scroll(stream());
+
+    vi.useFakeTimers();
+    view.rerender(session(false));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(LONG_HIDDEN_MS);
+    });
+    view.rerender(session(true));
+    expect(within(stream()).getByRole("textbox", { name: "Message" })).toHaveValue("Unsent revision");
+  });
+
+  it("keeps a text selection in the earlier rows while hidden", async () => {
+    const view = render(session(true));
+    await settle("Reply 59");
+    const selection = window.getSelection()!;
+    selection.selectAllChildren(screen.getByText("Request 0"));
+
+    vi.useFakeTimers();
+    view.rerender(session(false));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(LONG_HIDDEN_MS);
+    });
+    view.rerender(session(true));
+    expect(selection.toString()).toBe("Request 0");
+    selection.removeAllRanges();
+  });
+
   it("gives back the history it painted behind the tail and is at the latest message when shown again", async () => {
     const view = render(session(true));
     await settle("Reply 59");
