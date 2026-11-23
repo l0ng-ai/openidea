@@ -7428,7 +7428,6 @@
   "Show commit time rather than author time": "Yazar zamanı yerine commit zamanını göster",
   "Show references on the left": "Başvuruları solda göster",
   "Visible columns": "Görünür sütunlar",
-  "Visible columns:": "Görünür sütunlar:",
   "Get from Revision": "Revizyondan Al",
   "Replace '{path}' with its content from the revision? Local changes to it are lost.": "'{path}' dosyası revizyondaki içeriğiyle değiştirilsin mi? Yerel değişiklikleri kaybolacak.",
   "Replace {length} files with their content from the revision? Local changes to them are lost.": "{length} dosya revizyondaki içerikleriyle değiştirilsin mi? Yerel değişiklikleri kaybolacak.",

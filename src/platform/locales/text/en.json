@@ -970,6 +970,10 @@
   "Tag value": "Tag value",
   "Attribute": "Attribute",
   "Contents differ only in line separators": "Contents differ only in line separators",
+  "Line Separator": "Line Separator",
+  "Windows (\\r\\n)": "Windows (\\r\\n)",
+  "Unix and macOS (\\n)": "Unix and macOS (\\n)",
+  "Classic Mac OS (\\r)": "Classic Mac OS (\\r)",
   "Cannot remove a worktree containing the open project.": "Cannot remove a worktree containing the open project.",
   "Delete Remote Branches": "Delete Remote Branches",
   "Delete the {length} branches '{names}' on the remote? The remote-tracking branches are removed as well.": "Delete the {length} branches '{names}' on the remote? The remote-tracking branches are removed as well.",
@@ -3703,5 +3707,7 @@
   "Previous Rows": "Previous Rows",
   "Next Rows": "Next Rows",
   "Previous Columns": "Previous Columns",
-  "Next Columns": "Next Columns"
+  "Next Columns": "Next Columns",
+  "View Options": "View Options",
+  "Visible columns": "Visible columns"
 }

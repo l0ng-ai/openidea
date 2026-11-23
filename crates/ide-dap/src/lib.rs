@@ -1752,9 +1752,7 @@ impl DebugManager {
         let body = session.conn.request_timeout("continue", json!({ "threadId": thread_id }), REQUEST_TIMEOUT).await?;
         // DAP: a response without the flag continued every thread.
         let all = body.get("allThreadsContinued").and_then(Value::as_bool).unwrap_or(true);
-        session.suspended.resumed(ticket, thread_id, all);
-        stream_trace::release_done(&session);
-        session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: all });
+        session.finish_resume(ticket, thread_id, all);
         Ok(())
     }
 
@@ -1801,9 +1799,7 @@ impl DebugManager {
         let sent = session.conn.request_timeout(command, json!({ "threadId": thread_id }), REQUEST_TIMEOUT).await;
         step_settled(&session, sent)?;
         // A step runs its thread; other threads stopped by their own events stay stopped.
-        session.suspended.resumed(ticket, thread_id, false);
-        stream_trace::release_done(&session);
-        session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: false });
+        session.finish_resume(ticket, thread_id, false);
         Ok(())
     }
 
@@ -1913,9 +1909,7 @@ impl DebugManager {
             .request_timeout("stepIn", json!({ "threadId": thread_id, "targetId": target_id }), REQUEST_TIMEOUT)
             .await;
         step_settled(&session, sent)?;
-        session.suspended.resumed(ticket, thread_id, false);
-        stream_trace::release_done(&session);
-        session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: false });
+        session.finish_resume(ticket, thread_id, false);
         Ok(())
     }
 

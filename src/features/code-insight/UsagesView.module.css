@@ -159,7 +159,7 @@
   flex-direction: column;
   font-family: var(--font-mono);
   font-size: var(--fs-code);
-  line-height: 1.45;
+  line-height: var(--lh-code);
 }
 .sourcePreview .sourceText[role="region"] {
   font: inherit;

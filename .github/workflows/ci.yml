@@ -102,24 +102,44 @@ jobs:
     name: Rust (${{ matrix.os }})
     needs: changes
     if: needs.changes.outputs.rust == 'true'
+    permissions:
+      contents: read
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         os: [macos-latest, ubuntu-22.04, windows-latest]
-    runs-on: ${{ matrix.os }}
+    # Self-hosted runners (scripts/selfhost-runner) only for trusted events, and only while the
+    # SELFHOSTED_RUNNERS repository variable is 'true': runs-on cannot fall back when none is online.
+    runs-on: ${{ matrix.os == 'ubuntu-22.04' && vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || matrix.os }}
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v5
         with: { version: 11 }
       - uses: actions/setup-node@v5
-        with: { node-version: 22, cache: pnpm }
+        with:
+          node-version: 22
+          cache: ${{ runner.environment != 'self-hosted' && 'pnpm' || '' }}
+          package-manager-cache: ${{ runner.environment != 'self-hosted' }}
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "clippy, rustfmt" }
-      # Only main saves the cache (saving takes minutes on Windows); PRs restore main's.
+      # Self-hosted runners keep persistent local Cargo caches; GitHub-hosted runners use Actions cache
+      # (only main saves it because saving takes minutes on Windows; PRs restore main's).
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment != 'self-hosted'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The persistent target dir makes incremental builds pay off; cap its size so it can't fill the disk.
+      - name: Persistent Cargo target dir
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          echo "CARGO_INCREMENTAL=1" >> "$GITHUB_ENV"
+          size=$(du -sm "$CARGO_TARGET_DIR" 2>/dev/null | cut -f1 || true)
+          if [ "${size:-0}" -gt 40000 ]; then
+            echo "$CARGO_TARGET_DIR is ${size} MB; clearing it"
+            rm -rf "$CARGO_TARGET_DIR"
+          fi
       - uses: taiki-e/install-action@nextest
       - name: Linux deps
         if: runner.os == 'Linux'
