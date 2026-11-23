@@ -11366,6 +11366,8 @@ export type PythonStubLinks = {
 	/**  The stub of a `.py` document, the implementation of a `.pyi` one. */
 	counterpart: IpcPath | null,
 	links: StubLink[],
+	/**  Every place the counterpart was looked for: a change to one of them may change the answer. */
+	candidates: IpcPath[],
 };
 
 /**  Color Scheme › Language Defaults › Rainbow brackets: which delimiters are coloured. */

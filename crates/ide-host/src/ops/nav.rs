@@ -1,5 +1,7 @@
 use super::doc::blocking;
-use super::python_stubs::{PythonStubLinks, counterpart_candidates, match_declarations};
+use super::python_stubs::{
+    PythonStubLinks, counterpart_candidates, match_declarations, module_name, site_packages, stub_path,
+};
 use crate::Host;
 use crate::Project;
 use ide_command::command;
@@ -396,19 +398,35 @@ pub async fn nav_python_stubs(host: &Host, window: &str, doc: DocId) -> IdeResul
             return Ok(PythonStubLinks::default());
         }
         let path = PathBuf::from(snap.path.clone());
-        let module = super::refactor::python_module(&project.root, &project.roots(), &path, false);
-        let typings = project.root.join("typings");
-        let Some(counterpart) =
-            counterpart_candidates(&path, &typings, module.as_deref(), &super::python::paths(&project))
-                .into_iter()
-                .find(|p| p.is_file() || project.documents.text_of(p).is_some())
+        // Modules are found in the project's Python roots and its virtualenv's site-packages.
+        let mut search = super::python::paths(&project);
+        let settings = project.settings.effective();
+        if let Some(venv) =
+            ide_sdk::apply::python_interpreter(&project.root, &settings).and_then(|p| ide_sdk::venv_of(&p))
+        {
+            search.extend(site_packages(&venv));
+        }
+        let module = module_name(&path, &search);
+        let candidates = counterpart_candidates(&path, &stub_path(&project.root), module.as_deref(), &search);
+        let watched = candidates.iter().cloned().map(IpcPath::from).collect();
+        let Some(counterpart) = candidates.into_iter().find(|p| project.documents.text_of(p).is_some() || p.is_file())
         else {
-            return Ok(PythonStubLinks::default());
+            return Ok(PythonStubLinks { candidates: watched, ..Default::default() });
         };
-        let other = project.text_of(&counterpart)?;
-        let links =
-            match_declarations(&syntax.outline(&snap.language, &snap.text), &syntax.outline(&snap.language, &other));
-        Ok(PythonStubLinks { counterpart: Some(IpcPath::from(counterpart)), links })
+        // A counterpart too large to parse still opens; it just gets no markers.
+        let other = match project.documents.text_of(&counterpart) {
+            Some(text) => Some(text).filter(|t| t.len() as u64 <= ide_vfs::LARGE_FILE_THRESHOLD),
+            None => std::fs::metadata(&counterpart)
+                .is_ok_and(|m| m.len() <= ide_vfs::LARGE_FILE_THRESHOLD)
+                .then(|| project.text_of(&counterpart))
+                .transpose()?,
+        };
+        let links = other
+            .map(|other| {
+                match_declarations(&syntax.outline(&snap.language, &snap.text), &syntax.outline(&snap.language, &other))
+            })
+            .unwrap_or_default();
+        Ok(PythonStubLinks { counterpart: Some(IpcPath::from(counterpart)), links, candidates: watched })
     })
     .await
 }

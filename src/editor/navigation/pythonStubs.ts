@@ -57,12 +57,14 @@ interface StubMark {
 interface StubMarks {
   counterpart: string | null;
   marks: StubMark[];
+  /** Where the counterpart was looked for; a change to one of them refreshes the markers. */
+  candidates: ReadonlySet<string>;
 }
 
 const setStubMarks = StateEffect.define<StubMarks>();
 
 const stubMarksField = StateField.define<StubMarks>({
-  create: () => ({ counterpart: null, marks: [] }),
+  create: () => ({ counterpart: null, marks: [], candidates: new Set() }),
   update(value, tr) {
     for (const effect of tr.effects) if (effect.is(setStubMarks)) return effect.value;
     if (!tr.docChanged || !value.marks.length) return value;
@@ -73,13 +75,22 @@ const stubMarksField = StateField.define<StubMarks>({
 class StubMarker extends GutterMarker {
   constructor(
     readonly title: string,
-    readonly open: () => void,
+    readonly path: string,
+    readonly target: StubLink["target"]["start"],
   ) {
     super();
   }
 
+  // The DOM is kept while this holds, so the target is part of it: a moved or other counterpart
+  // must render a new button.
   override eq(other: GutterMarker): boolean {
-    return other instanceof StubMarker && other.title === this.title;
+    return (
+      other instanceof StubMarker &&
+      other.title === this.title &&
+      other.path === this.path &&
+      other.target.line === this.target.line &&
+      other.target.col === this.target.col
+    );
   }
 
   override toDOM(): Node {
@@ -98,7 +109,7 @@ class StubMarker extends GutterMarker {
     button.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      this.open();
+      void openCodeLocation(this.path, { line: this.target.line, col: this.target.col });
     });
     return button;
   }
@@ -107,6 +118,26 @@ class StubMarker extends GutterMarker {
 function markerTitle(stub: boolean, name: string, counterpart: string): string {
   const file = basename(counterpart);
   return stub ? tx`Implementation of ${name} in ${file}` : tx`Stub of ${name} in ${file}`;
+}
+
+/** Marker sets by field value: the icon area asks on every view update (caret moves, scrolling). */
+const markerSets = new WeakMap<StubMarks, RangeSet<GutterMarker>>();
+
+function stubMarkers(value: StubMarks, stub: boolean): RangeSet<GutterMarker> {
+  let set = markerSets.get(value);
+  if (!set) {
+    const { counterpart, marks } = value;
+    set = counterpart
+      ? RangeSet.of(
+          marks.map(({ pos, link }) =>
+            new StubMarker(markerTitle(stub, link.name, counterpart), counterpart, link.target.start).range(pos),
+          ),
+          true,
+        )
+      : RangeSet.empty;
+    markerSets.set(value, set);
+  }
+  return set;
 }
 
 export function pythonStubGutter(ctx: EditorDocContext): Extension {
@@ -122,13 +153,13 @@ export function pythonStubGutter(ctx: EditorDocContext): Extension {
 
         constructor(readonly view: EditorView) {
           this.schedule(0);
-          // The counterpart's unsaved edits and files created, moved or removed on disk.
+          // Edits to the counterpart, and files created, changed or removed where it may be.
+          const watched = (path: string) => this.view.state.field(stubMarksField).candidates.has(path);
           const offEditor = onEditorEvent((e) => {
-            if ((e.type === "docChanged" || e.type === "docSaved") && e.path !== ctx.path && isPythonFile(e.path))
-              this.schedule(500);
+            if ((e.type === "docChanged" || e.type === "docSaved") && watched(e.path)) this.schedule(500);
           });
           const offFiles = onIdeEvent("fsChanged", (e) => {
-            if ([...e.created, ...e.modified, ...e.removed].some(isPythonFile)) this.schedule(500);
+            if ([...e.created, ...e.modified, ...e.removed].some(watched)) this.schedule(500);
           });
           this.off = () => {
             offEditor();
@@ -161,7 +192,8 @@ export function pythonStubGutter(ctx: EditorDocContext): Extension {
               seen.add(line);
               marks.push({ pos: current.line(line + 1).from, link });
             }
-            this.view.dispatch({ effects: setStubMarks.of({ counterpart: found.counterpart, marks }) });
+            const candidates = new Set(found.candidates);
+            this.view.dispatch({ effects: setStubMarks.of({ counterpart: found.counterpart, marks, candidates }) });
           } catch (e) {
             if (!isCancelled(e) && generation === this.generation) console.debug("[Python stubs]", e);
           }
@@ -176,18 +208,7 @@ export function pythonStubGutter(ctx: EditorDocContext): Extension {
     ),
     iconAreaSource.of({
       order: 55,
-      markers: (view) => {
-        const { counterpart, marks } = view.state.field(stubMarksField);
-        if (!counterpart) return RangeSet.empty;
-        return RangeSet.of(
-          marks.map(({ pos, link }) =>
-            new StubMarker(markerTitle(stub, link.name, counterpart), () => {
-              void openCodeLocation(counterpart, { line: link.target.start.line, col: link.target.start.col });
-            }).range(pos),
-          ),
-          true,
-        );
-      },
+      markers: (view) => stubMarkers(view.state.field(stubMarksField), stub),
     }),
   ];
 }

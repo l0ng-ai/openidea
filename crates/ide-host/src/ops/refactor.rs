@@ -50,7 +50,7 @@ fn is_python(path: &Path) -> bool {
 
 /// The dotted name of a Python module file or package folder, from its project's Python roots
 /// (`src/a/b.py` → `a.b` in a `src` layout).
-pub(super) fn python_module(root: &Path, roots: &ProjectRoots, path: &Path, is_dir: bool) -> Option<String> {
+fn python_module(root: &Path, roots: &ProjectRoots, path: &Path, is_dir: bool) -> Option<String> {
     let rel = path.strip_prefix(root).ok()?.to_string_lossy().replace('\\', "/");
     let base = roots
         .root_for(&rel)
