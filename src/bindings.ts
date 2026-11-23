@@ -6702,9 +6702,9 @@ export type ExternalDiffSide = {
 };
 
 /**  A formatter that runs outside the language servers, with its own settings group. */
-export type ExternalFormatter = "prettier" | "oxfmt" | "biome" | "ruff";
+export type ExternalFormatter = "prettier" | "oxfmt" | "biome" | "ruff" | "black";
 
-/**  An external formatter (Prettier, oxfmt, Biome, Ruff) and the languages it formats. */
+/**  An external formatter (Prettier, oxfmt, Biome, Ruff, Black) and the languages it formats. */
 export type ExternalFormatterSettings = {
 	/**  Empty path: project node_modules (Prettier/oxfmt/Biome), managed installation, then PATH. */
 	path?: string,
@@ -8875,6 +8875,7 @@ export type LanguagesSettings = {
 	oxfmt?: ExternalFormatterSettings,
 	biome?: ExternalFormatterSettings,
 	ruff?: ExternalFormatterSettings,
+	black?: ExternalFormatterSettings,
 	java?: JavaSettings,
 	ruby?: RubySettings,
 	markdown?: MarkdownSettings,
