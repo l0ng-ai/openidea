@@ -161,7 +161,7 @@
   "Unpin ({count})": "Sabitlemeyi Kaldır ({count})",
   "New Group": "Yeni Grup",
   "Rename Group": "Grubu Yeniden Adlandır",
-  "Remove from Group": "Gruptan Kaldır",
+  "No Group": "Grup Yok",
   "Remove “{name}”? Its tasks move back to their status groups.": "“{name}” kaldırılsın mı? Görevleri durum gruplarına geri taşınacaktır.",
   "Copy Link Address": "Bağlantı Adresini Kopyala",
   "Pin Agent Tasks": "Ajan Görevlerini Sabitle",
