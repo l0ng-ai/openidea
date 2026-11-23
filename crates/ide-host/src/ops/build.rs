@@ -1,6 +1,6 @@
 //! Maven / Gradle tool windows (the build model and its background sync) and
 //! Build › Build Project (compiling with the project's build system).
-mod workspace;
+pub(super) mod workspace;
 
 use super::dependencies::{MavenCentralArtifacts, MavenCentralGroups, MavenCentralVersions};
 use crate::ops::Channel;
@@ -9,13 +9,16 @@ use ide_command::command;
 
 use ide_build::compile::{self, BuildEvent, BuildKind, BuildResult};
 use ide_build::maven::completion::{PomCompletion, PomCompletionOption};
+use ide_build::maven::sources;
 use ide_build::maven::{PomGoto, PomManagedDeclaration, PomNavigationOptions};
 use ide_build::pom_edit::{ArtifactKey, Exclusion};
 use ide_build::{BuildModel, BuildTool, SyncOptions, SyncProgress};
 use ide_core::settings::Settings;
-use ide_core::{DocId, FileEdit, IdeError, IdeEvent, IdeResult, Location, Pos, Range, RequestId, WorkspaceEdit};
-use std::collections::HashMap;
-use std::path::Path;
+use ide_core::{
+    CancellationToken, DocId, FileEdit, IdeError, IdeEvent, IdeResult, Location, Pos, Range, RequestId, WorkspaceEdit,
+};
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -181,7 +184,7 @@ fn prepare_plan(mut plan: compile::BuildPlan, root: &Path, settings: &Settings) 
 
 /// `model` building with the Maven profiles of the last sync (`-P`), as Maven runs from
 /// the tool window do.
-fn with_profiles(mut model: BuildModel, cache: &Path) -> BuildModel {
+pub(super) fn with_profiles(mut model: BuildModel, cache: &Path) -> BuildModel {
     let profiles = ide_build::maven_profiles(cache);
     if let (Some(m), false) = (&mut model.maven, profiles.is_empty()) {
         for p in &mut m.projects {
@@ -281,6 +284,35 @@ pub async fn gradle_unlink_projects(host: &Host, window: &str, paths: Vec<String
     set_gradle_projects(host, window, paths, false).await
 }
 
+struct MavenSourceRefresh {
+    root: PathBuf,
+    repository: PathBuf,
+    candidates: Vec<(usize, sources::Artifact)>,
+}
+
+fn cached_maven_sources(
+    model: &BuildModel,
+    scopes: Vec<workspace::Scope>,
+    window_root: &Path,
+    build_dir: Option<&str>,
+) -> Vec<MavenSourceRefresh> {
+    let Some(maven) = &model.maven else { return Vec::new() };
+    scopes
+        .into_iter()
+        .filter(|scope| workspace::selected(scope, window_root, BuildTool::Maven, build_dir))
+        .filter_map(|scope| {
+            let repository = ide_sdk::apply::maven_local_repository(&scope.root, &scope.settings)
+                .or_else(ide_build::maven::default_local_repo)?;
+            let projects = maven.projects.iter().enumerate().filter(|(_, project)| {
+                Path::new(project.project_root.as_deref().unwrap_or_default()) == scope.root
+                    || (project.project_root.is_none() && scope.root == window_root)
+            });
+            let candidates = sources::cached_snapshots(&repository, projects);
+            (!candidates.is_empty()).then_some(MavenSourceRefresh { root: scope.root, repository, candidates })
+        })
+        .collect()
+}
+
 /// Runs Maven (`help:effective-pom dependency:tree`) or Gradle (`tasks --all`) in the
 /// background, reporting progress on `on_progress`; cancellable with `cancel_request(request)`.
 /// Returns the refreshed model; a failed build is reported in its `syncError`.
@@ -377,72 +409,122 @@ pub async fn build_sync(
         let scopes = workspace::scopes(&p, &config)?;
         let model = workspace::load_scopes(&p.root, &scopes);
         let updates = workspace::update_files(&p.root, &scopes, &model, tool);
-        Ok::<_, IdeError>((model, profiles_changed, offline_changed, updates))
+        let snapshots = if tool == BuildTool::Maven && !offline {
+            cached_maven_sources(&model, scopes, &p.root, build_dir.as_deref())
+        } else {
+            Vec::new()
+        };
+        Ok::<_, IdeError>((model, profiles_changed || offline_changed, updates, snapshots))
     })
     .await
     .map_err(join_err);
-    host.end_request(request);
-    let (model, profiles_changed, offline_changed, updates) = result??;
-    if completion_token.is_cancelled() {
-        return Err(IdeError::cancelled());
-    }
-    // Gradle may report project folders outside the project (`includeFlat`), and a Maven
-    // reactor may have gained or dropped modules beside it: index and list them.
-    project.refresh_index_scope();
-    let p = project.clone();
-    tokio::task::spawn_blocking(move || p.refresh_repositories());
-    // New source folders and dependency versions: the Project view and External Libraries reload.
-    project.sink.emit(ide_core::IdeEvent::ProjectRootsChanged { root: project.root.clone().into() });
-    if tool == BuildTool::Maven
-        && model.maven.is_some()
-        && let Some(bridge) = &project.kotlin_bridge
-    {
-        bridge.configure_maven(offline, bridge_profiles);
-    }
-    // jdtls re-imports on pom changes but misses artifacts added to ~/.m2
-    // meanwhile ("missing artifact" stays until Invalidate Caches); asking it
-    // to update the project configurations re-resolves them (#436). The same
-    // holds for Gradle: it reuses its cached classpath on restart, so a
-    // dependency added to `build.gradle` stays unresolved until told to sync.
-    let lsp = project.lsp.clone();
-    let documents = project.documents.clone();
-    tokio::spawn(async move {
-        if profiles_changed || offline_changed {
-            // jdtls takes the profiles and offline mode from its Maven settings (see `ide_sdk::maven_profiles`).
-            lsp.reconfigure().await;
+    let result = async {
+        let (mut model, reconfigure, updates, snapshots) = result??;
+        if completion_token.is_cancelled() {
+            return Err(IdeError::cancelled());
         }
-        let first = updates.first().cloned();
-        for file in updates {
-            let uri = ide_lsp::path_to_uri_string(&file);
-            if let Err(e) = lsp.java_update_project_configs(&file, vec![uri]).await {
-                tracing::debug!("java/projectConfigurationsUpdate: {e}");
-            }
-        }
-        let changed = {
-            let lsp = lsp.clone();
-            tokio::task::spawn_blocking(move || lsp.changed_library_archives()).await.unwrap_or_default()
-        };
-        if let Some(file) = first
-            && let Err(e) = lsp.java_refresh_archives(&file, &changed).await
+        // A reactor or Gradle build may have changed its external project folders.
+        project.refresh_index_scope();
+        let p = project.clone();
+        tokio::task::spawn_blocking(move || p.refresh_repositories());
+        project.sink.emit(IdeEvent::ProjectRootsChanged { root: project.root.clone().into() });
+        if tool == BuildTool::Maven
+            && model.maven.is_some()
+            && let Some(bridge) = &project.kotlin_bridge
         {
-            tracing::debug!("openidea.java.refreshArchives: {e}");
+            bridge.configure_maven(offline, bridge_profiles.clone());
         }
-        refresh_library_classes(&lsp, &documents).await;
-    });
-    Ok(model)
+        let lsp = project.lsp.clone();
+        let documents = project.documents.clone();
+        if snapshots.is_empty() {
+            tokio::spawn(async move {
+                update_java_projects(&lsp, &updates, reconfigure, None).await;
+                refresh_library_archives(&lsp, &documents, &updates, Vec::new()).await;
+            });
+        } else {
+            // JDT LS resolves the binary jars while importing Maven projects.
+            update_java_projects(&lsp, &updates, reconfigure, Some(&completion_token)).await;
+            let cancel = completion_token.clone();
+            let (updated, refreshed) = tokio::task::spawn_blocking(move || {
+                let mut refreshed = Vec::new();
+                if let Some(maven) = &model.maven {
+                    for batch in snapshots {
+                        if cancel.is_cancelled() {
+                            break;
+                        }
+                        refreshed.extend(sources::refresh_snapshots(
+                            &batch.root,
+                            &maven.projects,
+                            &batch.repository,
+                            &batch.candidates,
+                            &bridge_profiles,
+                            &cancel,
+                        ));
+                    }
+                }
+                (model, refreshed)
+            })
+            .await
+            .map_err(join_err)?;
+            model = updated;
+            tokio::spawn(async move {
+                refresh_library_archives(&lsp, &documents, &updates, refreshed).await;
+            });
+        }
+        if completion_token.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        Ok(model)
+    }
+    .await;
+    host.end_request(request);
+    result
 }
 
-/// Open library classes whose jar was replaced in place (a SNAPSHOT installed
-/// again keeps its path) show the new contents, like a reopened one.
-async fn refresh_library_classes(lsp: &Arc<ide_lsp::LspManager>, documents: &Arc<ide_workspace::Documents>) {
+async fn update_java_projects(
+    lsp: &ide_lsp::LspManager,
+    updates: &[PathBuf],
+    reconfigure: bool,
+    wait: Option<&CancellationToken>,
+) {
+    if reconfigure {
+        // jdtls takes the profiles and offline mode from its Maven settings.
+        lsp.reconfigure().await;
+    }
+    // JDT LS caches its classpath and re-imports on build-file changes. Ask it to
+    // re-resolve dependencies even when the build files stayed the same (#436).
+    if let Err(e) = lsp.java_update_project_configs(updates, wait).await {
+        tracing::debug!("Updating Java project configurations: {e}");
+    }
+}
+
+/// Re-read open library classes whose binary or attached sources changed in place.
+async fn refresh_library_archives(
+    lsp: &Arc<ide_lsp::LspManager>,
+    documents: &Arc<ide_workspace::Documents>,
+    updates: &[PathBuf],
+    refreshed: Vec<PathBuf>,
+) {
+    let changed = {
+        let lsp = lsp.clone();
+        tokio::task::spawn_blocking(move || lsp.changed_library_archives()).await.unwrap_or_default()
+    };
+    let archives: HashSet<_> = changed.into_iter().chain(refreshed).collect();
+    if let Err(e) = lsp.java_refresh_archives(updates, &archives).await {
+        tracing::debug!("openidea.java.refreshArchives: {e}");
+    }
     let changed = {
         let (lsp, documents) = (lsp.clone(), documents.clone());
         tokio::task::spawn_blocking(move || {
+            lsp.invalidate_library_archives(&archives);
             documents
                 .open_documents()
                 .into_iter()
                 .filter_map(|doc| Some((doc, documents.virtual_uri(doc).ok().flatten()?)))
-                .filter(|(_, uri)| lsp.library_class_changed(uri))
+                .filter(|(_, uri)| {
+                    lsp.library_class_changed(uri)
+                        || ide_lsp::LspManager::library_archive(uri).is_some_and(|archive| archives.contains(&archive))
+                })
                 .collect::<Vec<_>>()
         })
         .await
@@ -952,16 +1034,18 @@ pub async fn build_run(
                 items: Vec::new(),
             });
         }
+        let mut launch_caches = Vec::new();
         let plan = if let Some(id) = cmake {
+            launch_caches.push(cache.clone());
             let configs = super::run::project_configs(&root, &settings, &config_dir)?;
             cmake_plan(&root, kind, &configs, &id)?
         } else if let Some(workspace) = ide_workspace::workspace::Workspace::load(&root)? {
             let mut combined: Option<compile::BuildPlan> = None;
             for member in workspace.projects.iter().filter(|p| file.as_ref().is_none_or(|f| f.starts_with(p))) {
                 let settings = ide_workspace::SettingsStore::load(&config_dir, Some(member)).effective();
-                let member_cache =
-                    if member == &root { cache.clone() } else { cache.join(crate::project::project_key(member)) };
+                let member_cache = workspace::cache_at(&root, &cache, member);
                 let model = with_profiles(load(member, &member_cache, &settings), &member_cache);
+                launch_caches.push(member_cache);
                 let plan = prepare_plan(
                     compile::plan(
                         member,
@@ -985,6 +1069,7 @@ pub async fn build_run(
             plan
         } else {
             let model = with_profiles(load(&root, &cache, &settings), &cache);
+            launch_caches.push(cache.clone());
             match compile::plan(
                 &root,
                 &model,
@@ -1007,7 +1092,9 @@ pub async fn build_run(
         });
         if kind == BuildKind::Rebuild {
             // The clean removed outputs that earlier launch snapshots still hold.
-            launch_project.java_launch_snapshots.lock().forget_reusable_snapshots();
+            for cache in launch_caches {
+                launch_project.java_launches.for_cache(&cache).snapshots.lock().forget_reusable_snapshots();
+            }
         }
         let result = result?;
         if result.success && single && kind == BuildKind::Build {
@@ -1359,17 +1446,8 @@ mod maven_completion_tests {
         let path = root.join("pom.xml");
         std::fs::write(&path, text).unwrap();
 
-        let host = Host::new(crate::HostConfig {
-            config_dir: base.join("config"),
-            data_dir: base.join("data"),
-            local_data_dir: base.join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(|_| {})),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host =
+            Host::new(crate::HostConfig { local_data_dir: base.join("local"), ..crate::HostConfig::for_test(&base) });
         let project = host.open_project("main", &root).unwrap();
         let info = project.documents.open(&path).unwrap();
 

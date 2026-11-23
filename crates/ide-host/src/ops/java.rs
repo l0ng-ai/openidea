@@ -4,7 +4,7 @@ pub(crate) mod cache;
 use crate::Host;
 use ide_command::command;
 
-use super::build::load;
+use super::build::{load, with_profiles, workspace};
 use ide_build::BuildModel;
 use ide_build::compile;
 use ide_core::error::ErrorKind;
@@ -46,37 +46,44 @@ pub(crate) async fn resolve_launch(
 ) -> IdeResult<JavaLaunchInfo> {
     let started = std::time::Instant::now();
     let project = host.project(window)?;
-    let module = project.root.join(module);
+    let module = ide_core::project_roots::resolve(&project.root, &module);
+    let scope = {
+        let (project, module) = (project.clone(), module.clone());
+        tokio::task::spawn_blocking(move || workspace::scope_for(&project, &module))
+            .await
+            .map_err(|e| IdeError::internal(e.to_string()))??
+    };
     if !project.lsp.java_served_by_jdtls(&module) {
-        return resolve_launch_without_jdtls(host, &project, module, test, policy, cancel).await;
+        return resolve_launch_without_jdtls(host, &project, module, scope, test, policy, cancel).await;
     }
-    let waiting = project.java_launches_waiting.add(module.clone(), test, policy);
-    let settings = project.settings.effective();
+    let scope = std::sync::Arc::new(scope);
+    let launches = project.java_launches.for_cache(&scope.cache);
+    let waiting = launches.waiting.add(module.clone(), test, policy);
+    let prefer_maven = scope.settings.languages.java.maven.delegate_build;
     // A launch builds incrementally unless the configuration asks for Rebuild or NoBuild.
     let build = policy != BuildPolicy::NoBuild;
     let full = policy == BuildPolicy::Rebuild;
     let build_kind = if full { compile::BuildKind::Rebuild } else { compile::BuildKind::Build };
-    let (model, external, mut delegated, prefer_maven, is_maven) = {
-        let project = project.clone();
-        let settings = settings.clone();
+    let (model, external, mut delegated, is_maven) = {
+        let scope = scope.clone();
+        let launches = launches.clone();
         let module = module.clone();
         tokio::task::spawn_blocking(move || {
-            project.java_launch_snapshots.lock().initialize();
-            let model = load(&project.root, &project.build_cache_dir(), &settings);
-            let non_java = build && compile::launch_has_non_java_sources(&project.root, &model, &module, test);
-            let is_maven =
-                model.maven.as_ref().is_some_and(|m| m.projects.iter().any(|p| project.root.join(&p.dir) == module));
-            let prefer_maven = settings.languages.java.maven.delegate_build;
+            launches.snapshots.lock().initialize();
+            let root = &scope.root;
+            let model = load_launch_model(&scope);
+            let non_java = build && compile::launch_has_non_java_sources(root, &model, &module, test);
+            let is_maven = is_maven_module(root, &model, &module);
             let delegated = build
                 && delegates_to_external_build(
                     is_maven,
                     policy,
                     non_java,
-                    cache::has_record(&project.root, &project.build_cache_dir(), &module),
+                    cache::has_record(root, &scope.cache, &module),
                     prefer_maven,
                 );
             let external = non_java || delegated;
-            (model, external, delegated, prefer_maven, is_maven)
+            (model, external, delegated, is_maven)
         })
         .await
         .map_err(|e| IdeError::internal(e.to_string()))?
@@ -101,7 +108,7 @@ pub(crate) async fn resolve_launch(
     }
     let model = std::sync::Arc::new(model);
     let members = if delegated {
-        build_members(&project, &model, &module, test, prefer_maven, &waiting, cancel).await?
+        build_members(&project, &scope, &model, &module, test, &waiting, cancel).await?
     } else {
         Vec::new()
     };
@@ -110,7 +117,8 @@ pub(crate) async fn resolve_launch(
     let cancel = cancel.clone();
     tokio::task::spawn_blocking(move || {
         let _external_build = external_build;
-        let local_repo = ide_sdk::apply::maven_local_repository(&project.root, &settings);
+        let (root, cache, settings) = (&scope.root, &scope.cache, &scope.settings);
+        let local_repo = ide_sdk::apply::maven_local_repository(root, settings);
         // Module outputs the launch runs from a snapshot of: the originals must not come back.
         let mut snapshotted = Vec::new();
         // The modules of the launches sharing this build also share its classpath probe.
@@ -118,8 +126,8 @@ pub(crate) async fn resolve_launch(
             std::iter::once(module.clone()).chain(members.iter().map(|m| m.module.clone())).collect();
         let built = if delegated {
             let rebuild_on_jdt_errors = rebuild_on_jdt_errors(policy, prefer_maven, info.error_count);
-            let outputs = project.java_launch_snapshots.lock().build(
-                &project.root,
+            let outputs = launches.snapshots.lock().build(
+                root,
                 &model,
                 &module,
                 cache::BuildOptions { test, policy, rebuild_on_jdt_errors, members },
@@ -132,7 +140,7 @@ pub(crate) async fn resolve_launch(
             snapshotted = outputs.originals;
             copies
         } else if external {
-            let built = compile::build_for_launch(&project.root, &model, &module, test, build_kind, &cancel)?;
+            let built = compile::build_for_launch(root, &model, &module, test, build_kind, &cancel)?;
             if let Some(failure) = built.failure {
                 if policy != BuildPolicy::MakeAndContinueOnErrors {
                     return Err(IdeError::internal(failure));
@@ -149,24 +157,15 @@ pub(crate) async fn resolve_launch(
             // m2e runs inside jdtls on the server JDK and can resolve a different
             // Maven profile/classifier than the module build. Ask the same Maven
             // process that built the module for its runtime/test dependencies.
-            let maven_cp = compile::module_classpaths(
-                &project.root,
-                &model,
-                &probed,
-                test,
-                local_repo,
-                &project.build_cache_dir(),
-                &cancel,
-            );
+            let maven_cp = compile::module_classpaths(root, &model, &probed, test, local_repo, cache, &cancel);
             merge_maven_launch_classpath(&mut class_paths, &mut info, maven_cp, &snapshotted)?;
         } else {
             append_unique_class_paths(&mut class_paths, std::mem::take(&mut info.class_paths));
         }
         info.class_paths = class_paths;
-        apply_library_classpath(&mut info, &project.root, &settings.project_structure.libraries, test);
+        apply_library_classpath(&mut info, root, &settings.project_structure.libraries, test);
         if build && !delegated {
-            let cache_dir = project.build_cache_dir();
-            match compile::process_launch_resources(&project.root, &model, &cache_dir, &info.class_paths, &cancel) {
+            match compile::process_launch_resources(root, &model, cache, &info.class_paths, &cancel) {
                 Ok(tasks) if !tasks.is_empty() => tracing::info!(?tasks, "Processed launch resources with Gradle"),
                 Ok(_) => {}
                 Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
@@ -177,7 +176,7 @@ pub(crate) async fn resolve_launch(
             }
         }
         let compile_ms = started.elapsed().as_millis() - lsp_ms;
-        finish_launch(&mut info, &project.root, &module, &settings, &model, &data_dir);
+        finish_launch(&mut info, root, &module, settings, &model, &data_dir);
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
         }
@@ -194,28 +193,36 @@ pub(crate) async fn resolve_launch(
     .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
+fn load_launch_model(scope: &workspace::Scope) -> BuildModel {
+    with_profiles(load(&scope.root, &scope.cache, &scope.settings), &scope.cache)
+}
+
+fn is_maven_module(root: &Path, model: &BuildModel, module: &Path) -> bool {
+    model.maven.as_ref().is_some_and(|m| m.projects.iter().any(|p| root.join(&p.dir) == module))
+}
+
 /// A launch of a module jdtls doesn't serve (another Java language server, or none): the
 /// build tool compiles it, and the classpath comes from that server, else from Maven.
 async fn resolve_launch_without_jdtls(
     host: &Host,
     project: &std::sync::Arc<crate::Project>,
     module: PathBuf,
+    scope: workspace::Scope,
     test: bool,
     policy: BuildPolicy,
     cancel: &CancellationToken,
 ) -> IdeResult<JavaLaunchInfo> {
     let started = std::time::Instant::now();
-    let settings = project.settings.effective();
+    let scope = std::sync::Arc::new(scope);
     let kind = if policy == BuildPolicy::Rebuild { compile::BuildKind::Rebuild } else { compile::BuildKind::Build };
     let (model, built) = {
-        let (root, cache, settings, module, cancel) =
-            (project.root.clone(), project.build_cache_dir(), settings.clone(), module.clone(), cancel.clone());
+        let (scope, module, cancel) = (scope.clone(), module.clone(), cancel.clone());
         tokio::task::spawn_blocking(move || {
-            let model = load(&root, &cache, &settings);
+            let model = load_launch_model(&scope);
             let built = if policy == BuildPolicy::NoBuild {
                 None
             } else {
-                Some(compile::build_for_launch(&root, &model, &module, test, kind, &cancel))
+                Some(compile::build_for_launch(&scope.root, &model, &module, test, kind, &cancel))
             };
             (model, built)
         })
@@ -249,9 +256,9 @@ async fn resolve_launch_without_jdtls(
     let build_ms = started.elapsed().as_millis();
     let from_server = project.lsp.java_server_classpath(&module, test, cancel).await?;
     let data_dir = host.local_data_dir.clone();
-    let project = project.clone();
     let cancel = cancel.clone();
     tokio::task::spawn_blocking(move || {
+        let (root, cache, settings) = (&scope.root, &scope.cache, &scope.settings);
         match from_server {
             Some(server) => {
                 info.project_root = server.classpath.project_root;
@@ -260,26 +267,14 @@ async fn resolve_launch_without_jdtls(
                 append_unique_class_paths(&mut class_paths, server.classpath.class_paths);
             }
             None => {
-                let is_maven = model
-                    .maven
-                    .as_ref()
-                    .is_some_and(|m| m.projects.iter().any(|p| project.root.join(&p.dir) == module));
-                if !is_maven {
+                if !is_maven_module(root, &model, &module) {
                     return Err(IdeError::unavailable(
                         "Cannot resolve the classpath: the Java language server does not report it \
                          (java-analyzer/projectClasspath), and the module is not a Maven project",
                     ));
                 }
-                let local_repo = ide_sdk::apply::maven_local_repository(&project.root, &settings);
-                let classpath = compile::module_classpath(
-                    &project.root,
-                    &model,
-                    &module,
-                    test,
-                    local_repo,
-                    &project.build_cache_dir(),
-                    &cancel,
-                )?;
+                let local_repo = ide_sdk::apply::maven_local_repository(root, settings);
+                let classpath = compile::module_classpath(root, &model, &module, test, local_repo, cache, &cancel)?;
                 append_unique_class_paths(
                     &mut class_paths,
                     std::env::split_paths(&classpath).map(|p| p.to_string_lossy().into_owned()),
@@ -287,8 +282,8 @@ async fn resolve_launch_without_jdtls(
             }
         }
         info.class_paths = class_paths;
-        apply_library_classpath(&mut info, &project.root, &settings.project_structure.libraries, test);
-        finish_launch(&mut info, &project.root, &module, &settings, &model, &data_dir);
+        apply_library_classpath(&mut info, root, &settings.project_structure.libraries, test);
+        finish_launch(&mut info, root, &module, settings, &model, &data_dir);
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
         }
@@ -445,10 +440,10 @@ fn apply_library_classpath(
 /// whether its JDT errors call for a clean rebuild (as its own launch would decide).
 async fn build_members(
     project: &std::sync::Arc<crate::Project>,
+    scope: &std::sync::Arc<workspace::Scope>,
     model: &std::sync::Arc<BuildModel>,
     module: &Path,
     test: bool,
-    prefer_maven: bool,
     waiting: &cache::WaitingGuard,
     cancel: &CancellationToken,
 ) -> IdeResult<Vec<cache::Member>> {
@@ -456,10 +451,11 @@ async fn build_members(
     if others.is_empty() {
         return Ok(Vec::new());
     }
+    let prefer_maven = scope.settings.languages.java.maven.delegate_build;
     let joining = {
-        let (project, model, module) = (project.clone(), model.clone(), module.to_path_buf());
+        let (scope, model, module) = (scope.clone(), model.clone(), module.to_path_buf());
         tokio::task::spawn_blocking(move || {
-            joining_launches(&project.root, &project.build_cache_dir(), &model, &module, test, others, prefer_maven)
+            joining_launches(&scope.root, &scope.cache, &model, &module, test, others, prefer_maven)
         })
         .await
         .map_err(|e| IdeError::internal(e.to_string()))?
@@ -500,8 +496,7 @@ fn joining_launches(
     others
         .into_iter()
         .filter(|o| {
-            let is_maven =
-                model.maven.as_ref().is_some_and(|m| m.projects.iter().any(|p| root.join(&p.dir) == o.module));
+            let is_maven = is_maven_module(root, model, &o.module);
             o.test == test
                 && matches!(o.policy, BuildPolicy::Automatic | BuildPolicy::Make)
                 && compile::launch_reactor(root, model, &o.module).as_ref() == Some(&reactor)

@@ -58,7 +58,7 @@ pub use message_requests::answer as answer_message_request;
 pub use notebook::{NotebookCell, NotebookCellDoc, cell_uri};
 pub use plugin_requests::plugin_method_allowed;
 pub use scope::{CandidateFiles, CandidateFn, CandidateQuery, MAX_CANDIDATES};
-pub use uri::{is_virtual_uri, path_to_uri_string, uri_target, uri_to_path};
+pub use uri::{path_to_uri_string, uri_target, uri_to_path};
 
 use caps::{ServerCaps, SyncKind};
 use convert::{Conv, lsp_range};
@@ -280,7 +280,7 @@ pub struct LspManager {
     virtual_docs: Mutex<HashMap<String, VirtualDocument>>,
     /// Modification time of the archive behind a cached library class, so a jar
     /// replaced in place (a SNAPSHOT installed again) is read again.
-    virtual_stamps: Mutex<HashMap<String, std::time::SystemTime>>,
+    virtual_stamps: Mutex<HashMap<String, virtual_doc::ArchiveStamp>>,
     injections: injections::State,
     /// Open notebooks by path. Locked before `docs` when both are.
     notebooks: Mutex<HashMap<PathBuf, notebook::NotebookState>>,
@@ -1232,7 +1232,7 @@ impl LspManager {
         {
             return Some(text);
         }
-        let key = path.to_str().filter(|s| is_virtual_uri(s))?;
+        let key = path.to_str().filter(|s| ide_core::is_virtual_uri(s))?;
         self.virtual_docs.lock().get(key).map(|d| Arc::new(DocText::new(&d.text)))
     }
 
@@ -2073,21 +2073,10 @@ impl LspManager {
     /// References of the symbol at `pos`. With `project_wide`, files outside
     /// the servers' analysis scope that mention the name are opened for the
     /// search (see [`scope`]); without, only what the servers analyse counts
-    /// (cheap, for bulk scans over many symbols).
-    pub async fn references(
-        &self,
-        doc: DocId,
-        pos: Pos,
-        include_declaration: bool,
-        project_wide: bool,
-        cancel: CancellationToken,
-    ) -> IdeResult<References> {
-        self.references_streaming(doc, pos, include_declaration, project_wide, true, cancel, None).await
-    }
-
-    /// [`Self::references`]. Java: without `libraries`, only the workspace's sources
-    /// are searched (`libraries_skipped`); with it and `project_wide`, those found
-    /// there arrive on `partial` before the dependencies and the JDK are searched.
+    /// (cheap, for bulk scans over many symbols). Java: without `libraries`,
+    /// only the workspace's sources are searched (`libraries_skipped`); with
+    /// it and `project_wide`, those found there arrive on `partial` before
+    /// the dependencies and the JDK are searched.
     #[allow(clippy::too_many_arguments)]
     pub async fn references_streaming(
         &self,
@@ -2796,7 +2785,7 @@ impl LspManager {
         })
     }
 
-    /// Renames across the project: like [`Self::references`], files outside the
+    /// Renames across the project: like [`Self::references_streaming`], files outside the
     /// server's analysis scope that mention the name are opened for the request.
     /// Every server that can rename there does: the Angular server adds the
     /// templates to vtsls's edit, whose own edits win where both change the same text.
@@ -3629,6 +3618,16 @@ impl LspManager {
         archives.sort();
         archives.dedup();
         archives
+    }
+
+    /// Drop cached text after JDT LS reopens the archives. A request could have
+    /// read the old attachment while the binary already had its new timestamp.
+    pub fn invalidate_library_archives(&self, archives: &std::collections::HashSet<PathBuf>) {
+        if !archives.is_empty() {
+            self.virtual_docs
+                .lock()
+                .retain(|uri, _| !virtual_doc::archive(uri).is_some_and(|archive| archives.contains(&archive)));
+        }
     }
 
     /// Contents of a virtual document, from the server that owns `uri`:

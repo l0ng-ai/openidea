@@ -1,3 +1,5 @@
+mod common;
+
 use ide_core::{IdeEvent, SharedSink, WorkspaceEdit, error::ErrorKind};
 use ide_host::{Host, HostConfig, ops};
 use parking_lot::Mutex;
@@ -18,15 +20,9 @@ async fn preview_apply_and_grouped_undo_use_the_shared_host_commands() {
         Arc::new(move |event| events.lock().push(event))
     };
     let host = Host::new(HostConfig {
-        config_dir: tmp.path().join("config"),
-        data_dir: tmp.path().join("data"),
         local_data_dir: tmp.path().join("local-data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
         sink_for: Box::new(move |_| sink.clone()),
-        owner: |window| window,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
+        ..common::host_config(tmp.path())
     });
     host.open_light("main", &first).unwrap();
     let info = ops::doc::doc_open(&host, "main", first.clone()).await.unwrap();
@@ -96,15 +92,8 @@ async fn contended_version_reads_do_not_block_the_async_worker() {
         let file = tmp.path().join("main.txt");
         std::fs::write(&file, "old").unwrap();
         let host = Arc::new(Host::new(HostConfig {
-            config_dir: tmp.path().join("config"),
-            data_dir: tmp.path().join("data"),
             local_data_dir: tmp.path().join("local-data"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
-            owner: |window| window,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
+            ..common::host_config(tmp.path())
         }));
         let project = host.open_light("main", &file).unwrap();
         let doc = project.documents.open(&file).unwrap().id;
@@ -182,17 +171,8 @@ async fn code_actions_skip_a_command_no_server_provides_after_their_edit() {
     let tmp = tempfile::tempdir().unwrap();
     let file = tmp.path().join("imports.txt");
     std::fs::write(&file, "unused\nused\n").unwrap();
-    let host = Host::new(HostConfig {
-        config_dir: tmp.path().join("config"),
-        data_dir: tmp.path().join("data"),
-        local_data_dir: tmp.path().join("local-data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(|_| {})),
-        owner: |window| window,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    });
+    let host =
+        Host::new(HostConfig { local_data_dir: tmp.path().join("local-data"), ..common::host_config(tmp.path()) });
     host.open_light("main", &file).unwrap();
     let info = ops::doc::doc_open(&host, "main", file.clone()).await.unwrap();
     // Optimize Imports as vtsls offers it: the edit, then a command its client runs itself.

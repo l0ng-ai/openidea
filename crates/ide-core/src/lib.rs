@@ -4,6 +4,7 @@
 //! feature crates depend on `ide-core` and never on each other's internals.
 //! All IPC-facing types derive `specta::Type`, which generates `src/bindings.ts`.
 
+pub mod cli_process;
 pub mod editor_settings;
 pub mod error;
 pub mod event;
@@ -12,6 +13,7 @@ pub mod ids;
 pub mod ignored;
 pub mod input;
 pub mod inspection_settings;
+pub mod ipc_bytes;
 pub mod ipc_path;
 pub mod java_runtime;
 pub mod jsonc;
@@ -30,6 +32,7 @@ pub mod task;
 pub mod text;
 pub mod tool_path;
 pub mod updates;
+pub mod utf8;
 pub mod version_managers;
 pub mod workflow_settings;
 pub mod wsl;
@@ -37,6 +40,7 @@ pub mod wsl;
 pub use error::{IdeError, IdeResult};
 pub use event::{EventSink, IdeEvent, NullSink, SharedSink};
 pub use ids::*;
+pub use ipc_bytes::IpcBytes;
 pub use ipc_path::IpcPath;
 pub use text::*;
 pub use tokio_util::sync::CancellationToken;

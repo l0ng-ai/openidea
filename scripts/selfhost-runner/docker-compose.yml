@@ -1,0 +1,70 @@
+# Self-hosted GitHub Actions runners (persistent & scalable).
+# See README.md in this directory for setup, security constraints, scaling, and troubleshooting.
+
+services:
+  github-runner:
+    image: myoung34/github-runner:2.338.2-ubuntu-jammy@sha256:9944eb7fe15cff8f31ce6389a1cd39f5fb32627f56bdfa8a21fb27e56e99fa1a
+    restart: unless-stopped
+    deploy:
+      replicas: ${RUNNER_COUNT:-4}
+
+    environment:
+      RUNNER_SCOPE: repo
+      REPO_URL: ${REPO_URL:-https://github.com/l0ng-ai/openidea}
+      # Only needed the first time a new slot registers; registered slots reuse saved credentials.
+      RUNNER_TOKEN: ${RUNNER_TOKEN:-}
+      RUNNER_NAME_PREFIX: ${RUNNER_NAME_PREFIX:-openidea-runner}
+      LABELS: ${RUNNER_LABELS:-openidea-selfhosted}
+      DISABLE_AUTOMATIC_DEREGISTRATION: "true"
+      RUN_AS_ROOT: "false"
+
+    # Claim an exclusive numeric slot (1..N) via flock so each replica gets its own
+    # persistent runner credentials, workspace, Cargo target/home, rustup, pnpm store, and toolcache.
+    entrypoint:
+      - /bin/bash
+      - -ec
+      - |
+        mkdir -p /persist/slots /persist/shared/npm-cache /home/runner
+        SLOT=1
+        while true; do
+          exec 99>"/persist/slots/slot-$${SLOT}.lock"
+          if flock -n 99; then break; fi
+          SLOT=$$((SLOT + 1))
+        done
+        SLOT_DIR="/persist/slot-$${SLOT}"
+        mkdir -p "$${SLOT_DIR}"/{runner-data,work,cargo,cargo-target,rustup,pnpm-store,cache,toolcache}
+        if [[ ! -f "$${SLOT_DIR}/runner-data/.runner" && -z "$${RUNNER_TOKEN:-}" ]]; then
+          echo "ERROR: Slot $${SLOT} ($${RUNNER_NAME_PREFIX:-openidea-runner}-$${SLOT}) is not registered yet; set RUNNER_TOKEN to register it." >&2
+          exit 1
+        fi
+        RUNNER_UID="$$(id -u runner)"
+        RUNNER_GID="$$(id -g runner)"
+        if [[ "$$(stat -c '%u' /persist/shared/npm-cache)" != "$${RUNNER_UID}" ]]; then
+          chown -R "$${RUNNER_UID}:$${RUNNER_GID}" /persist/shared/npm-cache
+        fi
+        if [[ "$$(stat -c '%u' "$${SLOT_DIR}")" != "$${RUNNER_UID}" ]]; then
+          chown -R "$${RUNNER_UID}:$${RUNNER_GID}" "$${SLOT_DIR}"
+        fi
+        chown "$${RUNNER_UID}:$${RUNNER_GID}" /persist/shared "$${SLOT_DIR}" "$${SLOT_DIR}"/{runner-data,work,cargo,cargo-target,rustup,pnpm-store,cache,toolcache}
+        rm -rf /opt/hostedtoolcache /home/runner/.cache
+        ln -s "$${SLOT_DIR}/toolcache" /opt/hostedtoolcache
+        ln -s "$${SLOT_DIR}/cache" /home/runner/.cache
+        chown -h "$${RUNNER_UID}:$${RUNNER_GID}" /opt/hostedtoolcache /home/runner/.cache
+        export CONFIGURED_ACTIONS_RUNNER_FILES_DIR="$${SLOT_DIR}/runner-data"
+        export RUNNER_NAME="$${RUNNER_NAME_PREFIX:-openidea-runner}-$${SLOT}"
+        export RUNNER_WORKDIR="$${SLOT_DIR}/work"
+        export CARGO_HOME="$${SLOT_DIR}/cargo"
+        export RUSTUP_HOME="$${SLOT_DIR}/rustup"
+        export CARGO_TARGET_DIR="$${SLOT_DIR}/cargo-target"
+        export npm_config_store_dir="$${SLOT_DIR}/pnpm-store"
+        export npm_config_cache="/persist/shared/npm-cache"
+        export PATH="$${CARGO_HOME}/bin:$${PATH}"
+        exec /entrypoint.sh "$$@"
+      - --
+    command: ["./bin/Runner.Listener", "run", "--startuptype", "service"]
+
+    volumes:
+      - runner-persist:/persist
+
+volumes:
+  runner-persist:

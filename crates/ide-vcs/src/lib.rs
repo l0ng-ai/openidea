@@ -939,6 +939,7 @@ mod preserve;
 mod push_preview;
 mod push_report;
 mod rebase_editor;
+mod ref_decorations;
 mod worktree_config;
 pub use ops::UNSTAGED_CHANGES_PREVENT_REBASE;
 mod incoming;
@@ -1078,6 +1079,7 @@ pub struct Repo {
     cli_status: std::sync::atomic::AtomicBool,
     automatic_shelf: std::sync::RwLock<Option<shelf::AutomaticShelf>>,
     log_index: std::sync::Mutex<log_index::LogIndex>,
+    ref_decorations: std::sync::Mutex<ref_decorations::RefDecorations>,
     log_signatures: std::sync::Mutex<history::LogSignatureCache>,
     conflict_mutation: std::sync::Mutex<()>,
     amend_recovery: std::sync::Mutex<Option<commit_rewrite::PendingAmend>>,
@@ -1137,11 +1139,9 @@ impl Repo {
     /// dirty-scope refresh after a watcher batch. An empty list is the full status.
     pub fn status_paths(&self, paths: &[PathBuf]) -> IdeResult<Vec<FileStatus>> {
         let _scope = self.execution_scope();
-        // Restricted Mode starts no program of the repository, and the scoped read is `git status`
-        // with a pathspec: answer with the full gitoxide status instead.
-        if !self.execution_allowed.load(std::sync::atomic::Ordering::Acquire) {
-            return status::status(self);
-        }
+        // Restricted Mode reads this through git too: `cli::command` strips what the repository's
+        // config could run, and the status call empties its clean/process filters. The full
+        // gitoxide status it used to answer with walked the whole tree for one changed file.
         if paths.is_empty() {
             return status::status_paths(self, &[]);
         }

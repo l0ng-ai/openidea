@@ -95,4 +95,43 @@ describe("keep-alive editor kinds", () => {
     expect(shown("k2")).toBe(false);
     expect(shown("k6")).toBe(true);
   });
+
+  it("clears a kept tab's selection on hide while keeping data-selection for one frame so WebKit clears the highlight", () => {
+    const frames: FrameRequestCallback[] = [];
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => frames.push(cb));
+    const caf = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {
+      frames.length = 0;
+    });
+    try {
+      const tabs = [tab("a", "kept"), tab("b", "plain")];
+      show(tabs, "a");
+      render(<EditorAreaView />);
+      const node = screen.getByTestId("a").firstChild!;
+      const wrapper = screen.getByTestId("a").parentElement!;
+      const sel = window.getSelection()!;
+      sel.setBaseAndExtent(node, 0, node, 1);
+      act(() => {
+        document.dispatchEvent(new Event("selectionchange"));
+      });
+      expect(wrapper).toHaveAttribute("data-selection");
+
+      show(tabs, "b");
+      expect(shown("a")).toBe(false);
+      expect(sel.rangeCount).toBe(0);
+      expect(wrapper).toHaveAttribute("data-selection");
+
+      act(() => {
+        document.dispatchEvent(new Event("selectionchange"));
+      });
+      expect(wrapper).toHaveAttribute("data-selection");
+      act(() => frames.shift()?.(performance.now()));
+      expect(wrapper).toHaveAttribute("data-selection");
+      act(() => frames.shift()?.(performance.now()));
+      expect(wrapper).not.toHaveAttribute("data-selection");
+    } finally {
+      raf.mockRestore();
+      caf.mockRestore();
+      window.getSelection()?.removeAllRanges();
+    }
+  });
 });

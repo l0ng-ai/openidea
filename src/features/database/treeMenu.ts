@@ -1,4 +1,5 @@
 /** Menus of the Database tool window, laid out like IDEA's (New ▸, Copy/Paste ▸, SQL Scripts ▸ …). */
+import { choosePath } from "@/platform/choosePath";
 import type { MenuItem } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { fileSourceName, parseSourceUrl } from "./model";
@@ -32,8 +33,7 @@ const act = (
 const sep: MenuItem = { kind: "separator" };
 
 async function sqliteFromFile() {
-  const { open } = await import("@/platform/dialog");
-  const file = await open({ multiple: false, directory: false, title: "SQLite Database File" });
+  const file = await choosePath({ directory: false, title: "SQLite Database File" });
   if (typeof file === "string") openSourceDialog(null, { driver: "sqlite", file, name: fileSourceName(file) });
 }
 

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { EditorSelection, EditorState, Prec, type Extension } from "@codemirror/state";
 import { Decoration, EditorView } from "@codemirror/view";
+import { inlineBackground, inlineFramedFallback, inlineFramedModern } from "./inlineBg";
 import { selectionMarks } from "./selectionMarks";
 
 const views: EditorView[] = [];
@@ -53,5 +54,23 @@ describe("selectionMarks", () => {
     expect(v.contentDOM.querySelector(".cm-openidea-selected")).not.toBeNull();
     v.dispatch({ selection: EditorSelection.cursor(3) });
     expect(v.contentDOM.querySelector(".cm-openidea-selected")).toBeNull();
+  });
+
+  it("caps inline highlight backgrounds and 1px frames at 1lh with pre-16.4 fallbacks", () => {
+    expect(inlineBackground("var(--editor-search)")).toEqual({
+      backgroundColor: "var(--editor-search)",
+      background: "linear-gradient(var(--editor-search), var(--editor-search)) center / 100% 1lh no-repeat",
+      WebkitBoxDecorationBreak: "clone",
+      boxDecorationBreak: "clone",
+    });
+    expect(inlineFramedFallback("var(--fill)", "var(--frame)")).toMatchObject({
+      backgroundColor: "var(--fill)",
+      outline: "1px solid var(--frame)",
+      outlineOffset: "-1px",
+    });
+    const modern = inlineFramedModern("var(--fill)", "var(--frame)");
+    expect(modern.outline).toBe("none");
+    expect(modern.background).toContain("100% min(100%, 1lh)");
+    expect(modern.background).toContain("calc(100% - 2px) calc(min(100%, 1lh) - 2px)");
   });
 });

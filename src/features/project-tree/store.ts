@@ -13,6 +13,8 @@ import { libraryEntryPaths } from "@/platform/virtualDocs";
 import { isIgnoredName } from "@/platform/ignoredNames";
 import { tx, txPart } from "@/platform/i18n";
 import { notifications } from "@/workbench/contributions";
+import { editorPrefs } from "@/platform/editorSettings";
+import { useProject } from "@/platform/project";
 import { ipcPath } from "@/platform/paths";
 import {
   DEFAULT_TREE_OPTIONS,
@@ -46,7 +48,7 @@ import {
   type ProjectViewLead,
   type ProjectViewRootContribution,
 } from "@/workbench/contributions";
-import { ancestorsWithin, isInside, isSameOrInside, nameOf, type PackageKind } from "./paths";
+import { ancestorsWithin, insideAnyOf, isInside, isSameOrInside, nameOf, type PackageKind } from "./paths";
 
 export interface ViewOptions extends TreeOptions {
   /** Select the active editor's file in the tree (IDEA: Always Select Opened File). */
@@ -57,8 +59,6 @@ export interface ViewOptions extends TreeOptions {
   singleClickOpen: boolean;
   /** Single click on a folder row expands / collapses it. */
   singleClickExpand: boolean;
-  /** Single click shows files in the preview tab (IDEA's "Enable Preview Tab"). */
-  previewTab: boolean;
   /** Show a file's declarations as expandable rows below it. */
   showMembers: boolean;
   /** Show the location of each project root beside its name. */
@@ -73,8 +73,6 @@ export const DEFAULT_VIEW_OPTIONS: ViewOptions = {
   autoscrollToSource: false,
   singleClickOpen: false,
   singleClickExpand: false,
-  // IDEA's "Enable Preview Tab" is off by default.
-  previewTab: false,
   showMembers: false,
   showRootPaths: true,
   horizontalScroll: true,
@@ -82,6 +80,8 @@ export const DEFAULT_VIEW_OPTIONS: ViewOptions = {
 
 function storedOptions(): ViewOptions {
   const options = { ...DEFAULT_VIEW_OPTIONS, ...readJson<Partial<ViewOptions>>(OPTIONS_KEY) };
+  // Former view-only switch, now the editor's preview tab setting (`previewTabEnabled`).
+  delete (options as { previewTab?: unknown }).previewTab;
   if (!["name", "type", "modified"].includes(options.sortBy)) options.sortBy = "name";
   return options;
 }
@@ -327,6 +327,8 @@ export const currentModel = () => selectModel(get());
 
 let generation = 0;
 const inflight = new Map<string, Promise<void>>();
+/** Listings read by a batch and not applied yet; `reload` marks folders that were loaded when read. */
+const pending = new Map<string, { entries: readonly FileEntry[]; reload: boolean }>();
 let persistTimer: ReturnType<typeof setTimeout> | undefined;
 
 /** Resets the view for a newly opened project, restoring its expansion state. */
@@ -338,6 +340,7 @@ export function initProjectTree(
 ) {
   generation++;
   inflight.clear();
+  pending.clear();
   outlineInflight.clear();
   clearTimeout(persistTimer);
   modeExpanded.clear();
@@ -499,6 +502,22 @@ export function setViewOption<K extends keyof ViewOptions>(key: K, value: ViewOp
   writeJson(OPTIONS_KEY, options);
 }
 
+/** Single click shows files in the preview tab: IDEA's "Enable Preview Tab" is the editor's own setting. */
+export const previewTabEnabled = () => editorPrefs().tabs.previewTab;
+
+export async function setPreviewTabEnabled(on: boolean): Promise<void> {
+  try {
+    const settings = await call(commands.settingsSet("global", "editor.tabs.previewTab", JSON.stringify(on)));
+    useProject.setState({ settings });
+  } catch (e) {
+    notifications().notify({
+      level: "error",
+      title: "Cannot change the setting",
+      body: e instanceof Error ? e.message : String(e),
+    });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Loading
 
@@ -509,25 +528,73 @@ function putListing(path: string, entries: readonly FileEntry[]) {
   set({ listings: new Map(listings).set(path, merged) });
 }
 
+/** Folder reads a batch runs at once; a checkout can change thousands of folders. */
+const READ_SLOTS = 8;
+let readsRunning = 0;
+const readQueue: (() => void)[] = [];
+
+async function withReadSlot<T>(read: () => Promise<T>): Promise<T> {
+  if (readsRunning < READ_SLOTS) readsRunning++;
+  else await new Promise<void>((resolve) => readQueue.push(resolve));
+  try {
+    return await read();
+  } finally {
+    const next = readQueue.shift();
+    if (next) next();
+    else readsRunning--;
+  }
+}
+
+/** Applies the batched listings in one update, so the tree model is built once for all of them. */
+function flushPending() {
+  const { listings } = get();
+  let next: Map<string, readonly FileEntry[]> | undefined;
+  for (const [path, { entries, reload }] of pending) {
+    // A folder dropped while the batch was reading stays dropped.
+    if (reload && !listings.has(path)) continue;
+    const merged = mergeListing(listings.get(path), entries);
+    if (merged !== listings.get(path)) (next ??= new Map(listings)).set(path, merged);
+  }
+  pending.clear();
+  if (next) set({ listings: next });
+}
+
 /** Loads (or reloads) one folder. Concurrent calls for the same folder share a request. */
 export function loadDir(path: string, force = false): Promise<void> {
+  return load(path, force, false);
+}
+
+/**
+ * With `batched`, the listing waits in `pending` for `flushPending` and the read takes one of `READ_SLOTS`;
+ * a later read of the same folder replaces it, so a flush never applies a listing older than one already read.
+ */
+function load(path: string, force: boolean, batched: boolean): Promise<void> {
   const { root, listings } = get();
   if (!root || isGroupKey(path)) return Promise.resolve();
   if (!force && listings.has(path)) return Promise.resolve();
   const running = inflight.get(path);
   if (running) return running;
   const gen = generation;
+  const reload = listings.has(path);
   const p = (async () => {
     try {
-      const entries = await projectFs(root).readDir(path);
+      const read = () => projectFs(root).readDir(path);
+      const entries = await (batched ? withReadSlot(read) : read());
       if (gen !== generation) return;
-      putListing(path, entries);
+      if (batched) pending.set(path, { entries, reload });
+      else {
+        pending.delete(path);
+        putListing(path, entries);
+      }
       // Compact Middle Packages needs to look one level down a single-folder chain.
       const s = get();
       if (treeOptions(s).compact) {
         const visible = visibleEntries(entries, treeOptions(s));
         const only = visible.length === 1 ? visible[0]! : null;
-        if (only && isDirEntry(only) && !only.ignored && !s.listings.has(only.path)) void loadDir(only.path);
+        if (only && isDirEntry(only) && !only.ignored && !s.listings.has(only.path)) {
+          const next = load(only.path, false, batched);
+          if (batched) await next;
+        }
       }
     } catch (e) {
       if (gen !== generation) return;
@@ -550,6 +617,12 @@ export function loadDir(path: string, force = false): Promise<void> {
   return p;
 }
 
+/** Re-reads `paths` as one batch: bounded concurrent reads, one update of the listings. */
+async function reloadDirs(paths: readonly string[]) {
+  await Promise.all(paths.map((p) => load(p, true, true)));
+  flushPending();
+}
+
 /** Applies a backend `fsChanged` event: reloads affected loaded folders only. */
 export async function applyFsChange(event: {
   created: string[];
@@ -563,7 +636,8 @@ export async function applyFsChange(event: {
   if (plan.drop.length) {
     const listings = new Map(s.listings);
     dropListings(listings, plan.drop);
-    const gone = (k: string) => plan.drop.some((d) => isSameOrInside(pathOfKey(k), d));
+    const dropped = insideAnyOf(plan.drop);
+    const gone = (k: string) => dropped(pathOfKey(k));
     const selected = [...s.selected].filter((k) => !gone(k));
     set({
       listings,
@@ -583,18 +657,18 @@ export async function applyFsChange(event: {
       });
     }
   }
-  await Promise.all(plan.reload.map((p) => loadDir(p, true)));
+  await reloadDirs(plan.reload);
   // Member rows go stale when the file changes on disk: drop and refetch.
   if (event.modified.length) dropOutlines(event.modified);
   if (event.removed.length) {
     const outlines = new Map(get().outlines);
+    const inRemoved = insideAnyOf(event.removed);
     let changed = false;
-    for (const p of event.removed)
-      for (const key of [...outlines.keys()])
-        if (isSameOrInside(key, p)) {
-          outlines.delete(key);
-          changed = true;
-        }
+    for (const key of [...outlines.keys()])
+      if (inRemoved(key)) {
+        outlines.delete(key);
+        changed = true;
+      }
     if (changed) set({ outlines });
   }
 }
@@ -602,7 +676,7 @@ export async function applyFsChange(event: {
 /** Re-reads the folders among `dirs` the tree has loaded; the rest stay unread. */
 export async function reloadLoadedDirs(dirs: readonly string[]) {
   const { listings } = get();
-  await Promise.all(dirs.filter((p) => listings.has(p)).map((p) => loadDir(p, true)));
+  await reloadDirs(dirs.filter((p) => listings.has(p)));
 }
 
 /**
@@ -612,13 +686,13 @@ export async function reloadLoadedDirs(dirs: readonly string[]) {
 export async function reloadArchiveDirs() {
   const { listings } = get();
   const inArchive = (p: string) => p.endsWith("!") || p.includes("!/") || p.includes("!\\");
-  await Promise.all([...listings.keys()].filter(inArchive).map((p) => loadDir(p, true)));
+  await reloadDirs([...listings.keys()].filter(inArchive));
 }
 
 /** Re-reads every loaded folder (View › Reload from Disk). */
 export async function reloadAll() {
   const { listings } = get();
-  await Promise.all([...listings.keys()].map((p) => loadDir(p, true)));
+  await reloadDirs([...listings.keys()]);
 }
 
 // ---------------------------------------------------------------------------

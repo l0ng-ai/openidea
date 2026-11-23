@@ -38,6 +38,7 @@ export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
   HighlightUsagesInFile: "find.highlightUsages",
   ReformatCode: "code.reformat",
   OptimizeImports: "code.optimizeImports",
+  RearrangeCode: "code.rearrange",
   CommentByLineComment: "code.commentLine",
   CommentByBlockComment: "code.commentBlock",
   ShowIntentionActions: "code.showIntentions",

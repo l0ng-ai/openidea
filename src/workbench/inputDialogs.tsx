@@ -9,11 +9,13 @@
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { create } from "zustand";
-import { registerHostPathChooser, type ChoosePathOptions } from "@/platform/choosePath";
+import { registerHostPathChooser, type HostPathOptions } from "@/platform/choosePath";
 import { t, tx, VerbatimTextContext } from "@/platform/i18n";
-import { call, commands, type FileEntry } from "@/platform/ipc";
+import { call, commands, isErrorKind, type FileEntry } from "@/platform/ipc";
+import { ipcPath } from "@/platform/paths";
 import { useProject } from "@/platform/project";
 import { Checkbox, Dialog, Given, Icon, IconButton, Input, List, T } from "@/ui";
+import { confirm } from "./messages";
 import styles from "./inputDialogs.module.css";
 
 export interface PromptInputOptions {
@@ -63,7 +65,7 @@ type Request =
   | { kind: "prompt"; id: number; options: PromptInputOptions; resolve: (v: string | null) => void }
   | { kind: "choose"; id: number; options: ChooseItemOptions; resolve: (v: string | null) => void }
   | { kind: "pick"; id: number; options: PickItemsOptions; resolve: (v: string[] | null) => void }
-  | { kind: "path"; id: number; options: ChoosePathOptions; resolve: (v: string | null) => void };
+  | { kind: "path"; id: number; options: HostPathOptions; resolve: (v: string[] | null) => void };
 
 const useInputDialogs = create<{ stack: Request[] }>(() => ({ stack: [] }));
 let seq = 0;
@@ -102,8 +104,8 @@ export function pickItems(options: PickItemsOptions): Promise<string[] | null> {
 }
 
 /** A file or folder on the host this window's commands run on, browsed in the IDE (a remote window's chooser). */
-export function choosePathOnHost(options: ChoosePathOptions): Promise<string | null> {
-  return open<string>((id, resolve) => ({ kind: "path", id, options, resolve }));
+function choosePathOnHost(options: HostPathOptions): Promise<string[] | null> {
+  return open<string[]>((id, resolve) => ({ kind: "path", id, options, resolve }), options.signal);
 }
 
 registerHostPathChooser(choosePathOnHost);
@@ -351,8 +353,10 @@ function PickDialog({ options, done }: { options: PickItemsOptions; done: (v: st
 /** The folder that holds `path` (either separator), or null at a root. */
 export function parentPath(path: string): string | null {
   if (/^(?:[\\/]+|[A-Za-z]:[\\/]*)$/.test(path)) return null;
-  const trimmed = path.length > 1 ? path.replace(/[\\/]+$/, "") : path;
-  const cut = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  const posix = path.startsWith("/") && !path.startsWith("//");
+  const trimmed = path.replace(posix ? /\/+$/ : /[\\/]+$/, "");
+  const slash = trimmed.lastIndexOf("/");
+  const cut = posix ? slash : Math.max(slash, trimmed.lastIndexOf("\\"));
   if (cut < 0) return null;
   const parent = trimmed.slice(0, cut);
   // `/a` → `/`; `C:\a` → `C:\`.
@@ -360,30 +364,44 @@ export function parentPath(path: string): string | null {
   return parent === trimmed ? null : parent;
 }
 
-function PathDialog({ options, done }: { options: ChoosePathOptions; done: (v: string | null) => void }) {
+function PathDialog({ options, done }: { options: HostPathOptions; done: (v: string[] | null) => void }) {
   const root = useProject((s) => s.project?.root ?? null);
+  const title =
+    options.title ?? (options.save ? tx("Save As") : options.directory ? tx("Choose Directory…") : tx("Choose File…"));
   const [dir, setDir] = useState<string | null>(null);
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [active, setActive] = useState(-1);
   const [value, setValue] = useState(options.defaultPath || root || "");
+  const [selected, setSelected] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const request = useRef(0);
 
+  const inDir = (dir: string, name: string) => `${ipcPath(dir).replace(/\/$/, "")}/${name}`;
+  const isAbsolute = (path: string) => /^(?:\/|[A-Za-z]:\/)/.test(ipcPath(path));
   const isDir = (e: FileEntry) => e.kind === "dir" || (e.kind === "symlink" && e.targetKind === "dir");
-  const visit = async (path: string) => {
+  const nameOf = (path: string) => ipcPath(path).split("/").at(-1) ?? "";
+  const accepts = (entry: FileEntry) =>
+    isDir(entry) ||
+    (!options.directory &&
+      (!options.filters?.length ||
+        options.filters.some(({ extensions }) =>
+          extensions.some((ext) => ext === "*" || entry.name.toLowerCase().endsWith(`.${ext.toLowerCase()}`)),
+        )));
+  const visit = async (path: string, filename = "") => {
     const id = ++request.current;
     setLoading(true);
     try {
       const listed = await call(commands.fsReadDir(path));
       if (id !== request.current) return true;
       const shown = listed
-        .filter((e) => !options.directory || isDir(e))
+        .filter(accepts)
         .sort((a, b) => Number(isDir(b)) - Number(isDir(a)) || a.name.localeCompare(b.name));
       setDir(path);
       setEntries(shown);
       setActive(-1);
-      setValue(path);
+      setValue(filename ? inDir(path, filename) : path);
       setError(null);
       return true;
     } catch (e) {
@@ -395,7 +413,12 @@ function PathDialog({ options, done }: { options: ChoosePathOptions; done: (v: s
   };
 
   useEffect(() => {
-    const start = options.defaultPath || root || "/";
+    const initial = options.defaultPath || root || "/";
+    const start = root && !isAbsolute(initial) ? inDir(root, initial) : initial;
+    if (options.save) {
+      void visit(parentPath(start) ?? root ?? "/", nameOf(start));
+      return;
+    }
     // A file path starts in its folder, with the file in the field.
     void visit(start).then((ok) => {
       const parent = parentPath(start);
@@ -404,23 +427,42 @@ function PathDialog({ options, done }: { options: ChoosePathOptions; done: (v: s
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const move = (path: string) => visit(path, options.save && value !== dir ? nameOf(value) : "");
+  const toggle = (path: string) =>
+    setSelected((paths) => (paths.includes(path) ? paths.filter((p) => p !== path) : [...paths, path]));
   const choose = (entry: FileEntry) => {
-    if (isDir(entry)) void visit(entry.path);
-    else done(entry.path);
+    if (isDir(entry)) void move(entry.path);
+    else if (options.multiple) toggle(entry.path);
+    else if (options.save) setValue(entry.path);
+    else done([entry.path]);
   };
   const submit = async () => {
-    const path = value.trim();
-    if (!path) return;
-    let kind: string;
+    const input = value.trim();
+    if (loading || submitting) return;
+    if (options.multiple && selected.length) return done(selected);
+    if (!input) return;
+    const path = dir && !isAbsolute(input) ? inDir(dir, input) : input;
+    setSubmitting(true);
     try {
-      kind = await call(commands.fsEntryKind(path));
-    } catch {
-      return setError(tx("No such file or folder"));
+      const kind = await call(commands.fsEntryKind(path));
+      const folder = kind === "dir";
+      if (options.directory) return folder ? done([path]) : setError(tx("Choose a folder"));
+      if (folder) return void visit(path);
+      if (
+        !options.save ||
+        (await confirm({
+          title,
+          message: tx`File '${nameOf(path)}' already exists. Do you want to overwrite it?`,
+          ok: "Overwrite",
+        }))
+      )
+        done([path]);
+    } catch (e) {
+      if (options.save && isErrorKind(e, "notFound")) done([path]);
+      else setError(options.save && e instanceof Error ? e.message : tx("No such file or folder"));
+    } finally {
+      setSubmitting(false);
     }
-    const folder = kind === "dir";
-    if (options.directory) return folder ? done(path) : setError(tx("Choose a folder"));
-    if (folder) return void visit(path);
-    done(path);
   };
   const up = dir === null ? null : parentPath(dir);
 
@@ -428,11 +470,16 @@ function PathDialog({ options, done }: { options: ChoosePathOptions; done: (v: s
     <Dialog
       open
       blockWorkbenchShortcuts
-      title={options.title}
+      title={title}
       onClose={() => done(null)}
       width={520}
       buttons={[
-        { label: tx("OK"), role: "default", disabled: !value.trim(), onClick: () => void submit() },
+        {
+          label: tx("OK"),
+          role: "default",
+          disabled: loading || submitting || (!value.trim() && !selected.length),
+          onClick: () => void submit(),
+        },
         { label: t("common.cancel"), role: "cancel" },
       ]}
     >
@@ -448,12 +495,12 @@ function PathDialog({ options, done }: { options: ChoosePathOptions; done: (v: s
             icon="arrow-up"
             title={tx("Parent Folder")}
             disabled={!up || loading}
-            onClick={() => up && void visit(up)}
+            onClick={() => up && void move(up)}
           />
           <Input
             data-autofocus
             className={styles.pathInput}
-            aria-label={options.title}
+            aria-label={title}
             value={value}
             invalid={!!error}
             onChange={(e) => {
@@ -469,12 +516,12 @@ function PathDialog({ options, done }: { options: ChoosePathOptions; done: (v: s
           onActiveChange={(i) => {
             setActive(i);
             const entry = entries[i];
-            if (entry) setValue(entry.path);
+            if (entry && (!options.save || !isDir(entry))) setValue(entry.path);
           }}
           // A click selects; a double click or Enter opens the folder or chooses the file.
           onActivate={(entry, _i, e) => (e.type !== "click" || e.detail > 1) && choose(entry)}
           className={styles.pathList}
-          aria-label={dir ?? options.title}
+          aria-label={dir ?? title}
           empty={
             <div className={styles.hint}>
               <T>{loading ? "Loading…" : "Empty folder"}</T>
@@ -483,7 +530,15 @@ function PathDialog({ options, done }: { options: ChoosePathOptions; done: (v: s
           renderItem={(entry, state) => (
             <div className={`${state.active ? styles.activeRow : styles.row} ${styles.entry}`}>
               <Icon name={isDir(entry) ? "folder" : "file"} />
-              <span className={styles.entryName}>{entry.name}</span>
+              {options.multiple && (options.directory || !isDir(entry)) ? (
+                <Checkbox
+                  label={<Given>{entry.name}</Given>}
+                  checked={selected.includes(entry.path)}
+                  onChange={() => toggle(entry.path)}
+                />
+              ) : (
+                <span className={styles.entryName}>{entry.name}</span>
+              )}
             </div>
           )}
         />

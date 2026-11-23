@@ -1,23 +1,14 @@
-use ide_core::NullSink;
+mod common;
+
+use ide_host::Host;
 use ide_host::ops::db;
-use ide_host::{Host, HostConfig};
 use std::sync::Arc;
 
 #[tokio::test]
 async fn new_query_consoles_are_numbered_after_the_default_one() {
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path();
-    let host = Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    }));
+    let host = Arc::new(Host::new(common::host_config(base)));
     let names = |paths: Vec<ide_core::IpcPath>| -> Vec<String> {
         paths.iter().map(|p| p.0.file_name().unwrap().to_string_lossy().into_owned()).collect()
     };
