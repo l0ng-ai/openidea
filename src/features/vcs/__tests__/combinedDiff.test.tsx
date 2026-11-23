@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../DiffEditor", () => ({
   ResolvedDiffEditor: ({ input, fit }: { input: { data: { path: string; mode?: string } }; fit?: boolean }) => (
@@ -134,5 +134,125 @@ describe("the all-in-one diff tab", () => {
     expect(allInOneDiff()).toBe(false);
     expect(openInput.mock.calls[1]![0].kind).toBe("diff");
     expect(closeInput).toHaveBeenCalledWith(input.key);
+  });
+});
+
+describe("the all-in-one diff tab with many files", () => {
+  // jsdom has no layout: every element is 600 px tall (test setup), the scroller too, so one
+  // block fills the view. Scrolling is a `scrollTop` the virtualizer reads on `scroll`.
+  const offsets = new WeakMap<Element, number>();
+  beforeEach(() => {
+    Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+      configurable: true,
+      get() {
+        return offsets.get(this) ?? 0;
+      },
+      set(value: number) {
+        offsets.set(this, value);
+      },
+    });
+    // As tall as its content: the virtualizer clamps where it scrolls to the scroll height.
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+      configurable: true,
+      get() {
+        return (
+          Number.parseFloat((this as HTMLElement).querySelector<HTMLElement>("[style*=height]")?.style.height ?? "") ||
+          0
+        );
+      },
+    });
+    HTMLElement.prototype.scrollTo = function (this: HTMLElement, options?: ScrollToOptions | number) {
+      this.scrollTop = typeof options === "number" ? options : (options?.top ?? 0);
+      this.dispatchEvent(new Event("scroll"));
+    };
+  });
+  afterEach(() => {
+    delete (HTMLElement.prototype as { scrollTop?: number }).scrollTop;
+    delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight;
+  });
+
+  const many = (n: number) => Array.from({ length: n }, (_, i) => diff(`/r/src/File${i}.ts`));
+  const scrollBy = (dy: number) => {
+    const el = document.querySelector<HTMLElement>("[data-combined-scroll]")!;
+    act(() => {
+      el.scrollTop += dy;
+      el.dispatchEvent(new Event("scroll"));
+    });
+  };
+  const mounted = () => screen.queryAllByTestId("block-diff").map((b) => b.dataset.path!);
+
+  it("mounts only the blocks near the view while scrolling, and reaches every file", () => {
+    const files = many(60);
+    render(<CombinedDiffTab input={combinedDiffInput({ items: files })} />);
+    const seen = new Set(mounted());
+    let peak = seen.size;
+    for (let i = 0; i < files.length; i++) {
+      scrollBy(600);
+      mounted().forEach((p) => seen.add(p));
+      peak = Math.max(peak, mounted().length);
+    }
+    // A screenful and four blocks on each side, however many files there are.
+    expect(peak).toBeLessThanOrEqual(12);
+    expect(seen).toEqual(new Set(files.map((f) => f.path)));
+    expect(mounted()).toContain("/r/src/File59.ts");
+    expect(mounted()).not.toContain("/r/src/File0.ts");
+  });
+
+  /** The block at the top of the view: its slot starts where the view does. */
+  const atTop = () => {
+    const el = document.querySelector<HTMLElement>("[data-combined-scroll]")!;
+    const slot = [...el.querySelectorAll<HTMLElement>("[data-index]")].find(
+      (s) => Number.parseFloat(s.style.top) === el.scrollTop,
+    );
+    return slot?.querySelector<HTMLElement>("[data-combined-block]")?.dataset.combinedBlock;
+  };
+
+  it("opens at the file asked for, before any block below the first was measured", async () => {
+    const files = many(60);
+    render(<CombinedDiffTab input={combinedDiffInput({ items: files, reveal: "/r/src/File40.ts" })} />);
+    await act(() => new Promise((r) => setTimeout(r, 50)));
+    expect(atTop()).toBe("/r/src/File40.ts");
+  });
+
+  it("steps to the next and previous file", async () => {
+    render(<CombinedDiffTab input={combinedDiffInput({ items: many(60) })} />);
+    const click = async (name: string) => {
+      fireEvent.click(screen.getByRole("button", { name }));
+      await act(() => new Promise((r) => setTimeout(r, 50)));
+    };
+    await click("Next File");
+    expect(atTop()).toBe("/r/src/File1.ts");
+    await click("Next File");
+    await click("Next File");
+    expect(atTop()).toBe("/r/src/File3.ts");
+    await click("Previous File");
+    expect(atTop()).toBe("/r/src/File2.ts");
+  });
+
+  it("keeps the focused block mounted when it is scrolled away", () => {
+    render(<CombinedDiffTab input={combinedDiffInput({ items: many(30) })} />);
+    act(() => screen.getAllByRole("button", { name: "Collapse File" })[0]!.focus());
+    for (let i = 0; i < 5; i++) scrollBy(600);
+    // Its neighbours went, it stayed, still holding the focus.
+    expect(mounted()).not.toContain("/r/src/File1.ts");
+    expect(mounted()).toContain("/r/src/File0.ts");
+    expect(document.querySelector('[data-combined-block="/r/src/File0.ts"]')).toBe(
+      document.activeElement!.closest("[data-combined-block]"),
+    );
+  });
+
+  it("shows both entries of a partially staged file, each collapsing on its own", () => {
+    const path = "/r/src/Partial.ts";
+    const staged = diff(path, { right: { type: "rev", rev: ":0" } });
+    const unstaged = diff(path, { left: { type: "rev", rev: ":0" } });
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    render(<CombinedDiffTab input={combinedDiffInput({ items: [staged, unstaged] })} />);
+    expect(screen.getAllByTestId("block-diff")).toHaveLength(2);
+    act(() => {
+      fireEvent.click(screen.getAllByRole("button", { name: "Collapse File" })[0]!);
+    });
+    expect(screen.getAllByRole("button", { name: "Expand File" })).toHaveLength(1);
+    expect(error.mock.calls.flat().join(" ")).not.toMatch(/same key/);
+    error.mockRestore();
   });
 });
