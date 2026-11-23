@@ -2497,6 +2497,8 @@
   "e.g. /api/": "e.g. /api/",
   "Part of a request URL": "Part of a request URL",
   "Mouse": "Mouse",
+  "Keyboard Shortcut": "Keyboard Shortcut",
+  "Mouse Shortcut": "Mouse Shortcut",
   "Keyboard": "Keyboard",
   "Form": "Form",
   "Page": "Page",

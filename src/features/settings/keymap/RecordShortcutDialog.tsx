@@ -20,7 +20,7 @@ import { findConflicts, resolveBindings, type Conflict, type KeymapDraft } from 
 import { groupPath } from "./groups";
 import { StrokeRecorder } from "./StrokeRecorder";
 import styles from "./Keymap.module.css";
-import { tx } from "@/platform/i18n";
+import { useTx } from "@/platform/i18n";
 import { usePlatform } from "@/platform/platformInfo";
 
 export interface RecordShortcutDialogProps {
@@ -39,6 +39,8 @@ export function RecordShortcutDialog({ action, actions, draft, onCancel, onSubmi
   const [second, setSecond] = useState("");
   const [useSecond, setUseSecond] = useState(false);
   const os = usePlatform((s) => s.os);
+  const tx = useTx();
+  const actionName = tx(action.title);
   const rectangularSelection = action.id === "editor.createRectangularSelectionOnMouseDrag";
 
   const allowsSecond = !isPageSwipe(first) && !parseDoubleModifier(first);
@@ -76,14 +78,23 @@ export function RecordShortcutDialog({ action, actions, draft, onCancel, onSubmi
     <Dialog
       open
       onClose={onCancel}
-      title={mouse ? tx`Mouse Shortcut: ${action.title}` : tx`Keyboard Shortcut: ${action.title}`}
-      width={440}
+      title={mouse ? "Mouse Shortcut" : "Keyboard Shortcut"}
+      aria-label={mouse ? tx`Mouse Shortcut: ${actionName}` : tx`Keyboard Shortcut: ${actionName}`}
+      width={352}
       buttons={[
         { label: "OK", role: "default", disabled: !binding || already, onClick: () => void ok() },
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div className={styles.recordBody}>
+      <div className={styles.shortcutBody}>
+        <div className={styles.actionSummary}>
+          <div className={styles.actionName}>{actionName}</div>
+          <div className={styles.actionPath}>
+            {groupPath(action)
+              .map((part) => tx(part))
+              .join(" › ")}
+          </div>
+        </div>
         {mouse ? (
           <MouseRecorder value={first} onChange={setFirst} sideButtons={!rectangularSelection} />
         ) : (
@@ -102,23 +113,15 @@ export function RecordShortcutDialog({ action, actions, draft, onCancel, onSubmi
             <T>On Linux, middle-button rectangular selection conflicts with primary selection paste.</T>
           </div>
         )}
-        <div className={styles.conflictsLabel}>
-          <T>Conflicts:</T>
-        </div>
-        <div className={styles.conflicts} aria-live="polite">
+        <div className={styles.shortcutStatus} aria-live="polite">
           {already && (
-            <span className={styles.noConflicts}>
+            <span className={styles.recordHint}>
               <T>The action already has this shortcut</T>
             </span>
           )}
           {!already && binding && conflicts.length === 0 && (
-            <span className={styles.noConflicts}>
+            <span className={styles.recordHint}>
               <T>No conflicts</T>
-            </span>
-          )}
-          {!binding && (
-            <span className={styles.noConflicts}>
-              <T>Press a shortcut</T>
             </span>
           )}
           {conflicts.length > 0 && (
@@ -126,7 +129,7 @@ export function RecordShortcutDialog({ action, actions, draft, onCancel, onSubmi
               <div className={styles.conflictTitle}>
                 <Icon name="warning" size={14} className={styles.conflictIcon} />
                 <span>
-                  <Kbd binding={binding} /> <T>is already assigned to:</T>
+                  <Kbd binding={binding} className={styles.conflictBinding} /> <T>is already assigned to:</T>
                 </span>
               </div>
               <ConflictList conflicts={conflicts} />
@@ -139,21 +142,26 @@ export function RecordShortcutDialog({ action, actions, draft, onCancel, onSubmi
 }
 
 function ConflictList({ conflicts }: { conflicts: readonly Conflict[] }) {
+  const tx = useTx();
   return (
-    <ul className={styles.conflictList}>
+    <ul className={styles.conflictList} aria-label={tx("Conflicts:")}>
       {conflicts.map((c) => (
         <li key={`${c.actionId}|${c.binding}`}>
-          <span className={styles.conflictAction}>{c.title}</span>
-          <span className={styles.conflictCategory}>
-            ({groupPath({ id: c.actionId, category: c.category }).join(" | ")})
-          </span>
-          <span className={styles.spacer} />
-          {c.kind === "prefix" && (
-            <span className={styles.conflictCategory}>
-              <T>chord prefix</T>
+          <div className={styles.conflictAction}>
+            <div>{tx(c.title)}</div>
+            <span className={styles.actionPath}>
+              {groupPath({ id: c.actionId, category: c.category })
+                .map((part) => tx(part))
+                .join(" › ")}
+              {c.kind === "prefix" && (
+                <>
+                  {" "}
+                  · <T>chord prefix</T>
+                </>
+              )}
             </span>
-          )}
-          <Kbd binding={c.binding} />
+          </div>
+          <Kbd binding={c.binding} className={styles.conflictBinding} />
         </li>
       ))}
     </ul>
@@ -171,23 +179,26 @@ interface KeyStrokesProps {
 }
 
 function KeyStrokes({ first, second, useSecond, allowsSecond, setFirst, setSecond, setUseSecond }: KeyStrokesProps) {
+  const tx = useTx();
   return (
     <>
-      <div className={styles.recordRow}>
-        <span className={styles.recordLabel}>
-          <T>First stroke:</T>
-        </span>
-        <StrokeRecorder autoFocus value={first} onChange={setFirst} aria-label="First stroke" />
-      </div>
-      <div className={styles.recordRow}>
+      <StrokeRecorder
+        autoFocus
+        className={styles.shortcutField}
+        value={first}
+        onChange={setFirst}
+        aria-label={tx("First stroke")}
+      />
+      <div className={styles.secondStroke}>
         <Checkbox checked={useSecond} onChange={setUseSecond} disabled={!allowsSecond} label="Second stroke:" />
         <StrokeRecorder
+          className={styles.shortcutField}
           value={second}
           onChange={setSecond}
           disabled={!useSecond}
           allowDoubleModifier={false}
           placeholder={useSecond ? "Press a shortcut" : ""}
-          aria-label="Second stroke"
+          aria-label={tx("Second stroke")}
         />
       </div>
       <div className={styles.recordHint}>
