@@ -1,5 +1,6 @@
 //! Class-table snapshots of a debugged JVM, read over the HotSpot attach listener or, where
-//! that is unavailable, counted by the debugger; and the JVM's objects through the debugger.
+//! that is unavailable, counted by the debugger; the JVM's objects through the debugger; and
+//! its thread dumps.
 
 mod fallback;
 mod heap;
@@ -10,6 +11,7 @@ mod snapshot;
 pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;
+mod threads;
 
 use crate::session::Session;
 use crate::session::Suspension;
@@ -28,6 +30,8 @@ pub(crate) use inspect::{fields, instances, referrers, set_inspector, vm_target,
 pub(crate) use scan::watch_for_attached_jvm;
 pub(crate) use scan::{JvmFinder, attach_target, find_attached_jvm, find_local_jvm, local_jdwp_port};
 use snapshot::{AttachProbe, JdkProbe, take_snapshot};
+pub(crate) use threads::session_thread_dump;
+pub use threads::{JvmThreadDump, JvmThreadsResult, JvmThreadsUnavailable, run_jvm_thread_dump};
 
 pub const JVM_MEMORY_ADAPTERS: &[&str] = &["java-debug", crate::kotlin::ADAPTER, crate::kotlin_lsp::ADAPTER];
 pub const HISTOGRAM_TIMEOUT: Duration = Duration::from_secs(10);

@@ -1967,6 +1967,14 @@ impl DebugManager {
         jvm_memory::session_heap_dump(session, dir, cancel).await
     }
 
+    /// `Thread.print -l` of the session's JVM, taking the session's class-table turn. A JVM the
+    /// debugger holds suspended is asked only when it is 17 or later and its listener already
+    /// runs: otherwise the request would hang until the program resumes.
+    pub async fn jvm_thread_dump(&self, s: DebugSessionId) -> IdeResult<JvmThreadsResult> {
+        let session = self.session(s)?;
+        jvm_memory::session_thread_dump(session).await
+    }
+
     /// Gives the session the backend for [`Self::jvm_memory_instances`] and the debugger's class
     /// counts; the UI is told to reload the session's capabilities.
     pub fn set_jvm_inspector(
