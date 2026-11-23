@@ -45,3 +45,12 @@ export function answerAskpass(
   // on success and drops it again when authentication fails.
   void send(p.id, answer, remember).catch(() => {});
 }
+
+/** The dialog title: git asks for HTTPS credentials (any host, e.g. a token as the password) as well as ssh. */
+export function askpassTitle(
+  p: Pick<AskpassPrompt, "kind" | "prompt">,
+): "Password" | "Username" | "SSH Password" | "SSH" {
+  const https = /\bhttps?:\/\//i.test(p.prompt);
+  if (p.kind === "secret") return https ? "Password" : "SSH Password";
+  return https ? "Username" : "SSH";
+}

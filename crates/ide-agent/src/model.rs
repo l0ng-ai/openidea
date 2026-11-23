@@ -536,6 +536,9 @@ pub enum AgentEntry {
         kind: String,
         status: AgentToolStatus,
         locations: Vec<IpcPath>,
+        /// Images returned by the tool, kept separately from its truncated text.
+        #[serde(default)]
+        images: Vec<AgentImage>,
         /// Text the tool reported (command output…), truncated.
         output: Option<String>,
         diffs: Vec<AgentToolDiff>,

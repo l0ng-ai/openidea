@@ -146,12 +146,14 @@ it("ends Select All in the pane's last selectable text, not on its edge before t
   expect(window.getSelection()!.toString()).not.toContain("Reply to the agent");
 });
 
-function TrackedVisibilityPane() {
+function TrackedVisibilityPane({ rows = false }: { rows?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
-  useSelectionVisibility(ref);
+  useSelectionVisibility(ref, true, rows ? "p" : undefined);
   return (
     <div ref={ref} data-testid="tracked">
       <p>Tracked line</p>
+      <p>Second line</p>
+      <p>Third line</p>
     </div>
   );
 }
@@ -193,4 +195,22 @@ it("keeps data-selection for one rendered frame after the selection leaves", () 
     window.requestAnimationFrame = prevRaf;
     window.cancelAnimationFrame = prevCancel;
   }
+});
+
+it("keeps only the selected conversation rows visible and releases rows the selection leaves", async () => {
+  const view = render(<TrackedVisibilityPane rows />);
+  const tracked = view.getByTestId("tracked");
+  const [first, second, third] = [...tracked.children];
+  const select = (start: Element, end: Element) => {
+    window.getSelection()!.setBaseAndExtent(start.firstChild!, 0, end.firstChild!, 1);
+    document.dispatchEvent(new Event("selectionchange"));
+  };
+  const marked = () => [...tracked.querySelectorAll("[data-selection]")];
+  select(first!, second!);
+  expect(marked()).toEqual([first, second]);
+  select(third!, third!);
+  expect(marked()).toEqual([first, second, third]);
+  await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  expect(marked()).toEqual([third]);
+  expect(tracked).not.toHaveAttribute("data-selection");
 });

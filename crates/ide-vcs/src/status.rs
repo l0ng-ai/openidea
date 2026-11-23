@@ -583,4 +583,60 @@ mod tests {
         cli_status(&repo, &IgnoredNames::default()).unwrap();
         assert!(marker.exists(), "control: git status did not run the filter");
     }
+
+    fn committed_repo(dir: &Path) {
+        git(dir, &["init", "-q"]);
+        git(dir, &["config", "user.name", "Test User"]);
+        git(dir, &["config", "user.email", "test@example.com"]);
+        git(dir, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.join("a.txt"), "same\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "same\n").unwrap();
+        commit_all(dir, "base");
+    }
+
+    /// The dirty-scope refresh in Restricted Mode reads the named paths only: it used to answer
+    /// with the full status, which walks the whole tree for one saved file.
+    #[test]
+    fn restricted_status_paths_reads_only_the_named_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        committed_repo(dir);
+        std::fs::write(dir.join("a.txt"), "changed\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "changed\n").unwrap();
+
+        let repo = Repo::discover(dir).unwrap().expect("repository found");
+        let one = repo.status_paths(&[repo.root().join("a.txt")]).unwrap();
+        assert_eq!(one.iter().map(|s| s.rel_path.as_str()).collect::<Vec<_>>(), ["a.txt"]);
+        assert_eq!(repo.status().unwrap().len(), 2, "the full status still lists both");
+    }
+
+    /// The scoped read is `git status`, which applies the repository's clean filters to compare
+    /// content: Restricted Mode must empty them there as it does for the full read.
+    #[cfg(unix)]
+    #[test]
+    fn restricted_status_paths_does_not_run_repository_filters() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        committed_repo(dir);
+        let marker = dir.join(".git/executed");
+        let script = dir.join(".git/marker.sh");
+        std::fs::write(&script, format!("#!/bin/sh\ntouch '{}'\ncat\n", marker.display())).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        git(dir, &["config", "filter.marker.clean", script.to_str().unwrap()]);
+        std::fs::write(dir.join(".gitattributes"), "*.txt filter=marker\n").unwrap();
+        // Same size, new mtime: git has to read (and clean) the file to tell whether it changed.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(dir.join("a.txt"), "diff\n").unwrap();
+
+        let repo = Repo::discover(dir).unwrap().expect("repository found");
+        let paths = [repo.root().join("a.txt")];
+        let listed = repo.status_paths(&paths).unwrap();
+        assert_eq!(listed.len(), 1, "the change is still listed");
+        assert!(!marker.exists(), "Restricted Mode ran the repository's clean filter");
+        // Control: a trusted run does use the filter, so the fixture is live.
+        repo.set_execution_allowed(true);
+        repo.status_paths(&paths).unwrap();
+        assert!(marker.exists(), "control: git status did not run the filter");
+    }
 }
