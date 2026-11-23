@@ -53,7 +53,7 @@ export function interpreterPathKey(path: string): string {
   return isWindowsPath(normalized) ? normalized.toLowerCase() : normalized;
 }
 
-/** The icon for an interpreter's source: virtualenv / conda / uv / Poetry, version managers, system. */
+/** The icon for an interpreter's source: virtualenv / conda / uv / Poetry / Pipenv, version managers, system. */
 export function interpreterIcon(source: string): IconName {
   switch (source) {
     case "conda":
@@ -62,6 +62,8 @@ export function interpreterIcon(source: string): IconName {
       return "python-uv";
     case "poetry":
       return "python-poetry";
+    case "pipenv":
+      return "file-pipenv";
     case "pyenv":
     case "mise":
     case "asdf":

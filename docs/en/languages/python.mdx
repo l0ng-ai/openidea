@@ -43,7 +43,8 @@ The project interpreter is chosen in this order:
 
 1. The interpreter set in **Settings › Languages & Frameworks › Python Interpreter**.
 2. A virtualenv in the project: `.venv`, `venv`, `env` or `.env` (a folder with `pyvenv.cfg`), or a pixi environment in `.pixi/envs/`.
-3. The Python version the project pins for mise or asdf (`mise.toml`, `.tool-versions` and the other mise config files).
+3. The Pipenv environment for the nearest `Pipfile`, including one selected by a `.venv` file or `PIPENV_CUSTOM_VENV_NAME`.
+4. The Python version the project pins for mise or asdf (`mise.toml`, `.tool-versions` and the other mise config files).
 
 The interpreter list on that page also shows what the IDE detects on the machine: the active `VIRTUAL_ENV`, virtualenvs made by virtualenvwrapper, pipenv and Poetry, pyenv versions, Pythons installed by uv, mise and asdf installs, conda environments (Miniconda, Anaconda, Miniforge, Mambaforge, micromamba, and every env that `conda env list` shows), and the `python` executables on `PATH`.
 
@@ -69,6 +70,7 @@ On **Settings › Languages & Frameworks › Python Interpreter**, choose **Add 
 - **Virtualenv Environment**: `python -m venv` from the base interpreter you pick.
 - **uv Environment**: `uv venv <location> --python <base>` (uv must be on `PATH`).
 - **Poetry Environment**: `poetry env use <base>` in the project.
+- **Pipenv Environment**: `pipenv --python <base>` in the project (pipenv must be on `PATH`). Pipenv writes a `Pipfile` when the project has none, importing `requirements.txt` if there is one. With **Install packages from Pipfile** it then runs `pipenv install --dev`. An environment the project already has is reused; if it was built on another Python version than the base interpreter, nothing is changed and the dialog says so (remove it with `pipenv --rm` to start over).
 - **Conda Environment**: `conda create -n <name>` in conda's envs directory, with the chosen Python version.
 
 You can also select an existing interpreter or environment folder. The new interpreter becomes the project interpreter.
