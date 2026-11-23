@@ -402,6 +402,8 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   useLayoutEffect(() => {
     const root = ref.current;
     if (!root || caretSeq === seenCaret.current) return;
+    // First-open navigation can arrive before the destination's deferred Markdown is rendered.
+    if (!sync && deferred !== text) return;
     seenCaret.current = caretSeq;
     if (sync) return;
     if (find && find.currentMatchIndex >= 0) {
@@ -423,7 +425,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       restoreRetry.current = null;
     }
     setShownLine(path, caretLine);
-  }, [caretSeq, caretLine, sync, path, find]);
+  }, [caretSeq, caretLine, sync, path, find, deferred, text]);
 
   // Search (⌘F) and selection occurrence highlights in the preview.
   useLayoutEffect(() => {
