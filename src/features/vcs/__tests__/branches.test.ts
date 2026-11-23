@@ -6,6 +6,7 @@ import {
   buildBranchRows,
   buildBranchTree,
   buildMergedBranchTree,
+  mergedRefTooltip,
   filterBranchTree,
   isFavoriteBranch,
   preferredBranchRow,
@@ -369,6 +370,22 @@ describe("buildMergedBranchTree", () => {
       [false, ["/a"]],
       [true, ["/b"]],
     ]);
+  });
+
+  it("names each repository of a shared ref in its tooltip", () => {
+    const tree = buildMergedBranchTree(
+      [
+        repo("/b", [b("dev", { upstream: "origin/dev" }), b("origin/dev", { remote: true })], ["v1"]),
+        repo("/a", [b("dev"), b("origin/dev", { remote: true }), b("solo")], ["v1"]),
+      ],
+      null,
+      null,
+    );
+    const name = (root: string) => root.slice(1);
+    expect(mergedRefTooltip(find(tree, "b:dev")!, name)).toBe("a: dev (no tracking branch)\nb: dev → origin/dev");
+    expect(mergedRefTooltip(find(tree, "b:origin/dev")!, name)).toBe("a\nb");
+    expect(mergedRefTooltip(find(tree, "t:v1")!, name)).toBe("a\nb");
+    expect(mergedRefTooltip(find(tree, "b:solo")!, name)).toBeUndefined();
   });
 
   it("merges tags by name", () => {

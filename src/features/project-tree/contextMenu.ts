@@ -378,7 +378,7 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
         "git",
         "Git",
         [
-          act("vcs.commit", undefined, dirs || nodes.length > 1 ? "Commit…" : "Commit File…"),
+          act("vcs.commit", arg, dirs || nodes.length > 1 ? "Commit…" : "Commit File…"),
           act("vcs.addToVcs", arg, "Add"),
           nonRoot.length === nodes.length &&
             nodes.length > 0 &&
@@ -512,6 +512,8 @@ function libraryMenuItems(nodes: ProjectNode[]): MenuItem[] {
           run: () => void copyPaths("absolute", nodes),
         },
         { id: "name", label: "File Name", run: () => void copyPaths("name", nodes) },
+        { kind: "separator" },
+        ...menuGroupItems("copyPath", menuGroupContext(nodes)),
       ],
     },
     { kind: "separator" },

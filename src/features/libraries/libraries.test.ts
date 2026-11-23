@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { isLibraryPath, setLibraryRoots } from "@/editor/api";
-import { librariesRoot, touchesManifest } from "./index";
+import { librariesRoot, openedLibraryGroup, touchesManifest } from "./index";
 import { mergeLibraryGroups } from "@/platform/libraries";
 
 describe("External Libraries", () => {
@@ -114,6 +114,27 @@ describe("External Libraries", () => {
     expect(root.children?.[1]).toMatchObject({ label: "Maven: g:a:1", icon: "maven-project" });
     dispose = setLibraryRoots("test", ["/jdk/lib/src.zip!"]);
     expect(isLibraryPath("/jdk/lib/src.zip!/java.base/java/lang/String.java")).toBe(true);
+  });
+
+  it("adds the classifier jar opened from a library class when the build model omits it", () => {
+    const uri =
+      "jdt://contents/demo-lib-1.0-jdk21.jar/com.example.lib/Helper.class?=demo/%5C/m2%5C/com%5C/example%5C/demo-lib%5C/1.0%5C/demo-lib-1.0-jdk21.jar=/maven.groupId=/com.example=/=/maven.artifactId=/demo-lib=/=/maven.version=/1.0=/=/maven.classifier=/jdk21=/=%3Ccom.example.lib(Helper.class";
+    expect(openedLibraryGroup(uri, [])).toEqual({
+      name: "Maven: com.example:demo-lib:1.0:jdk21",
+      kind: "classpath",
+      roots: [
+        {
+          name: "demo-lib-1.0-jdk21.jar",
+          path: "/m2/com/example/demo-lib/1.0/demo-lib-1.0-jdk21.jar!",
+        },
+      ],
+    });
+  });
+
+  it("does not duplicate an archive the build model already lists", () => {
+    const uri = "jdt://contents/a.jar/p/C.class?=demo/%5C/m2%5C/a.jar%3Cp%28C.class";
+    const group = { name: "a.jar", kind: "maven", roots: [{ name: "a.jar", path: "/m2/a.jar!" }] };
+    expect(openedLibraryGroup(uri, [group])).toBeNull();
   });
 
   it("refreshes on manifest changes outside node_modules", () => {

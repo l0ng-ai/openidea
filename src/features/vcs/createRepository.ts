@@ -1,5 +1,5 @@
 /** VCS › Create Git Repository…: `git init` in a folder chosen under the project. */
-import { open } from "@/platform/dialog";
+import { choosePath } from "@/platform/choosePath";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
@@ -8,7 +8,7 @@ import { discoverRoots } from "./store";
 
 export async function createRepository() {
   const root = useProject.getState().project?.root;
-  const dir = await open({ title: tx("Select Directory for Git Init"), directory: true, defaultPath: root });
+  const dir = await choosePath({ title: tx("Select Directory for Git Init"), directory: true, defaultPath: root });
   if (typeof dir !== "string") return;
   try {
     await call(commands.vcsInit(dir));

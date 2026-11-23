@@ -4844,7 +4844,7 @@
   "More Agents…": "Más agentes…",
   "More agents…": "Más agentes…",
   "Opens Settings › Build, Execution, Deployment › Maven": "Abre Configuración › Compilación, ejecución, despliegue › Maven",
-  "Opens Settings › Tools › Agents: installs, updates or removes agents from the ACP Registry.": "Abre Configuración › Herramientas › Agentes: instala, actualiza o elimina agentes del Registro ACP.",
+  "Install, update, or remove agents from the ACP Registry.": "Instala, actualiza o elimina agentes del Registro ACP.",
   "Search agents": "Buscar agentes",
   "Agents in the ACP Registry are third-party software. They run on this computer with your permissions and can read and change your files. Install only agents you trust.": "Los agentes en el Registro ACP son software de terceros. Se ejecutan en esta computadora con sus permisos y pueden leer y modificar sus archivos. Instale únicamente agentes en los que confíe.",
   "Cannot load the ACP Registry: {error}": "No se puede cargar el Registro ACP: {error}",
