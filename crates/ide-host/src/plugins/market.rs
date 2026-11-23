@@ -11,6 +11,7 @@ use super::{PackageFile, PluginEvent, PluginHost, PluginSource, PluginStatus, Pl
 use ide_core::{IdeError, IdeResult};
 use ide_extension::package::{self, Index, IndexEntry, PackageSignature, PluginIcon, SIGNATURE_FILE};
 use ide_extension::{MANIFEST_FILE, Manifest};
+use ide_tools::mirror;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -237,6 +238,11 @@ impl PluginHost {
         *self.default_market_url.write() = url.filter(|u| !u.trim().is_empty());
     }
 
+    /// Where plugin packages are fetched from first (Tools › Download sources).
+    pub fn set_downloads(&self, downloads: ide_core::settings::ToolDownloadSettings) {
+        *self.downloads.write() = downloads;
+    }
+
     pub fn set_market_url(&self, url: Option<String>) {
         self.state.lock().market_url = url.filter(|u| !u.trim().is_empty());
         self.save_state();
@@ -355,13 +361,36 @@ impl PluginHost {
                 entry.id, entry.version
             )));
         }
-        let bytes = read_url(&download, MAX_PACKAGE).map_err(IdeError::unavailable)?;
+        let candidates = mirror::candidates(&download, &self.downloads.read());
         let downloads = self.plugins_dir.join(DOWNLOADS);
         std::fs::create_dir_all(&downloads)?;
         let archive = downloads.join(format!("{}-{}.{}", entry.id, entry.version, package::PACKAGE_EXTENSION));
-        std::fs::write(&archive, bytes)?;
-        let dir = self.unpack_package(&archive);
-        let _ = std::fs::remove_file(&archive);
+        let mut failures: Vec<String> = Vec::new();
+        for (index, candidate) in candidates.iter().enumerate() {
+            // Bytes a failed source left behind must not be unpacked as the next one's.
+            if index > 0 {
+                let _ = std::fs::remove_file(&archive);
+            }
+            match self.fetch_market_package(&candidate.url, &entry, &archive) {
+                Ok(dir) => return Ok(dir),
+                // A package the mirror served that fails its checks is that mirror's failure:
+                // the official host below still gets its chance.
+                Err(e) if candidate.mirror.is_some() => {
+                    failures.push(format!("{}: {}", candidate.describe(), e.message))
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(IdeError::unavailable(format!("could not download {} ({})", entry.id, failures.join("; "))))
+    }
+
+    /// Fetches the package of `entry` from `url`, unpacks it and checks it against the index:
+    /// its digest, then the publisher's signature. A failure here is that source's failure.
+    fn fetch_market_package(&self, url: &str, entry: &IndexEntry, archive: &Path) -> IdeResult<PathBuf> {
+        let bytes = read_url(url, MAX_PACKAGE).map_err(IdeError::unavailable)?;
+        std::fs::write(archive, bytes)?;
+        let dir = self.unpack_package(archive);
+        let _ = std::fs::remove_file(archive);
         let dir = dir?;
         let manifest = Manifest::load(&dir).map_err(IdeError::invalid)?;
         let files = self.package_files_in(&dir)?;
@@ -586,6 +615,27 @@ mod tests {
         }
         // A local index names what whoever put it there chose.
         assert!(reachable_from("/srv/market/index.json", "/srv/market/a.oiplugin"));
+    }
+
+    #[test]
+    fn a_download_goes_to_the_mirror_first_and_the_official_host_last() {
+        let url = "https://github.com/acme/hello/releases/download/v1/acme.hello-1.0.0.oiplugin";
+        let through = mirror::candidates(
+            url,
+            &ide_core::settings::ToolDownloadSettings { github_mirror: "https://gh-proxy.com/".into() },
+        );
+        assert_eq!(through.len(), 2);
+        assert_eq!(through[0].url, format!("https://gh-proxy.com/{url}"));
+        assert!(through[0].mirror.is_some());
+        assert_eq!((through[1].url.as_str(), through[1].mirror.is_none()), (url, true));
+
+        // A local index's own package is not on GitHub: no prefix may carry it.
+        let local = mirror::candidates(
+            "/srv/market/a.oiplugin",
+            &ide_core::settings::ToolDownloadSettings { github_mirror: "https://gh-proxy.com/".into() },
+        );
+        assert_eq!(local.len(), 1);
+        assert_eq!(local[0].url, "/srv/market/a.oiplugin");
     }
 
     #[test]
