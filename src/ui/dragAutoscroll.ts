@@ -33,31 +33,40 @@ function columnAt(line: string, x: number, width: (text: string) => number): num
  * the further out the pointer is, like IDEA's text fields.
  */
 export function startDragAutoscroll(e: ReactMouseEvent<TextField>) {
-  if (e.button !== 0 || e.detail > 1) return;
   const field = e.currentTarget;
+  if (e.defaultPrevented || e.button !== 0 || e.detail > 1 || field.selectionStart === null) return;
+  // The canvas measures the real value, while the browser draws masking characters.
+  if (field instanceof HTMLInputElement && field.type === "password") return;
+  if (field.scrollWidth <= field.clientWidth || getComputedStyle(field).direction === "rtl") return;
   const width = textWidth(field);
   if (!width) return;
   let pointerX = e.clientX;
+  let pointerY = e.clientY;
   let frame = 0;
   let anchor: number | null = null;
   let focus = 0;
 
   const edges = () => {
     const s = getComputedStyle(field);
-    const left = field.getBoundingClientRect().left + field.clientLeft;
+    const rect = field.getBoundingClientRect();
+    const left = rect.left + field.clientLeft;
     const start = left + parseFloat(s.paddingLeft);
     return {
       start,
       end: left + field.clientWidth - parseFloat(s.paddingRight),
+      top: rect.top,
+      bottom: rect.bottom,
     };
   };
   const overshoot = () => {
-    const { start, end } = edges();
+    const { start, end, top, bottom } = edges();
+    if (field instanceof HTMLTextAreaElement && (pointerY < top || pointerY > bottom)) return 0;
     return pointerX < start ? pointerX - start : pointerX > end ? pointerX - end : 0;
   };
 
   const tick = () => {
     frame = 0;
+    if (!field.isConnected || field.selectionStart === null) return stop();
     const over = overshoot();
     if (!over) {
       anchor = null;
@@ -69,25 +78,33 @@ export function startDragAutoscroll(e: ReactMouseEvent<TextField>) {
       focus = (backward ? field.selectionStart : field.selectionEnd) ?? 0;
     }
     const value = field.value;
-    const lineStart = value.lastIndexOf("\n", focus - 1) + 1;
+    const lineStart = focus > 0 ? value.lastIndexOf("\n", focus - 1) + 1 : 0;
     const newline = value.indexOf("\n", focus);
     const line = value.slice(lineStart, newline < 0 ? value.length : newline);
     const { start, end } = edges();
     const visible = end - start;
     const step = Math.sign(over) * Math.min(Math.max(Math.abs(over) / 2, 2), 40);
-    const x = over < 0 ? field.scrollLeft + step : field.scrollLeft + visible + step;
-    const column = columnAt(line, x, width);
-    focus = lineStart + column;
+    // Scroll by pixels even when the next caret position is more than one step away.
+    const previous = field.scrollLeft;
+    field.scrollLeft = previous + step;
+    const scrolled = field.scrollLeft;
+    focus = lineStart + columnAt(line, scrolled + (over < 0 ? 0 : visible), width);
     field.setSelectionRange(Math.min(anchor, focus), Math.max(anchor, focus), focus < anchor ? "backward" : "forward");
-    const focusX = width(line.slice(0, column));
-    field.scrollLeft = over < 0 ? focusX : focusX - visible;
-    frame = requestAnimationFrame(tick);
+    field.scrollLeft = scrolled;
+    if (scrolled !== previous) frame = requestAnimationFrame(tick);
   };
 
   const move = (ev: MouseEvent) => {
     if (!(ev.buttons & 1)) return stop();
+    if (!field.isConnected) return stop();
     pointerX = ev.clientX;
-    if (!overshoot()) return;
+    pointerY = ev.clientY;
+    if (!overshoot()) {
+      cancelAnimationFrame(frame);
+      frame = 0;
+      anchor = null;
+      return;
+    }
     // Our focus wins over WebKit's, which jumps to the line's start or end.
     ev.preventDefault();
     if (!frame) tick();
@@ -97,9 +114,13 @@ export function startDragAutoscroll(e: ReactMouseEvent<TextField>) {
     frame = 0;
     window.removeEventListener("mousemove", move, true);
     window.removeEventListener("mouseup", stop, true);
+    window.removeEventListener("blur", stop);
     field.removeEventListener("blur", stop);
+    field.removeEventListener("dragstart", stop);
   };
   window.addEventListener("mousemove", move, true);
   window.addEventListener("mouseup", stop, true);
+  window.addEventListener("blur", stop);
   field.addEventListener("blur", stop);
+  field.addEventListener("dragstart", stop);
 }

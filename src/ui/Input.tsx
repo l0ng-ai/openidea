@@ -66,8 +66,8 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
         onFocus?.(e);
       }}
       onMouseDown={(e) => {
-        startDragAutoscroll(e);
         onMouseDown?.(e);
+        startDragAutoscroll(e);
       }}
       className={clsx(styles.input, variant === "bare" ? styles.bare : styles.framed, mono && styles.mono, className)}
       {...rest}
@@ -194,8 +194,8 @@ export const SearchField = forwardRef<HTMLInputElement, SearchFieldProps>(functi
     onBlur?.(e);
   };
   const mouseDown = (e: MouseEvent<HTMLInputElement>) => {
-    startDragAutoscroll(e);
     onMouseDown?.(e);
+    startDragAutoscroll(e);
   };
   const handlers = {
     onKeyDown: keyDown,
