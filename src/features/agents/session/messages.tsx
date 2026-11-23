@@ -7,7 +7,7 @@ import { notifications } from "@/workbench/contributions";
 import clsx from "clsx";
 import { memo, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { AgentReply, MessageActions, ReplyActions } from "../AgentReply";
-import { ImagePreview, imageSrc } from "../ImagePreview";
+import { ImageStrip } from "../ImageStrip";
 import { ReferencedText } from "../ReferenceChip";
 import styles from "../Session.module.css";
 import { SubmitButton } from "../SubmitButton";
@@ -422,40 +422,6 @@ function MessageEditor({
           />
         </span>
       </div>
-    </div>
-  );
-}
-
-/** Image thumbnails; a click opens the full image, `onRemove` adds a remove button to each. */
-function ImageStrip({ images, onRemove }: { images: AgentImage[]; onRemove?: (index: number) => void }) {
-  const tx = useTx();
-  const [open, setOpen] = useState<AgentImage | null>(null);
-  if (images.length === 0) return null;
-  return (
-    <div className={styles.images}>
-      {images.map((img, i) => (
-        <span key={i} className={styles.imageItem}>
-          <button
-            type="button"
-            className={styles.imageButton}
-            title={img.name ?? undefined}
-            onClick={() => setOpen(img)}
-          >
-            <img className={styles.image} src={imageSrc(img)} alt={img.name ?? tx("Image")} />
-          </button>
-          {onRemove && (
-            <IconButton
-              type="button"
-              className={styles.removeImage}
-              aria-label={tx("Remove Image")}
-              onClick={() => onRemove(i)}
-              icon="close"
-              size="small"
-            />
-          )}
-        </span>
-      ))}
-      <ImagePreview image={open} onClose={() => setOpen(null)} />
     </div>
   );
 }

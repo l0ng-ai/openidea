@@ -51,10 +51,8 @@ pub struct Project {
     pub(crate) member_excludes: MemberExcludes,
     /// Per-project cache directory (build tool sync results…).
     pub cache_dir: PathBuf,
-    /// Superseded launch snapshots retained until this project session ends.
-    pub(crate) java_launch_snapshots: Mutex<crate::ops::java::cache::Session>,
-    /// Java launches waiting for their build, which can share one Maven run.
-    pub(crate) java_launches_waiting: crate::ops::java::cache::Waiting,
+    /// Pending launches and retained snapshots, scoped to each workspace project.
+    pub(crate) java_launches: crate::ops::java::cache::Sessions,
     /// Reasons this window was already told why Kotlin is debugged with kotlin-debug-adapter.
     pub(crate) kotlin_debug_notices: Mutex<HashSet<&'static str>>,
     /// Database tool window: data sources and their connections.
@@ -643,10 +641,7 @@ impl Host {
             detected_roots,
             member_excludes,
             cache_dir: self.local_data_dir.join("cache").join(&project_key),
-            java_launch_snapshots: Mutex::new(crate::ops::java::cache::Session::new(
-                self.local_data_dir.join("cache").join(&project_key).join("build"),
-            )),
-            java_launches_waiting: Default::default(),
+            java_launches: Default::default(),
             kotlin_debug_notices: Mutex::default(),
             db,
             http_history,
@@ -893,10 +888,7 @@ impl Host {
             detected_roots: Arc::default(),
             member_excludes: Arc::default(),
             cache_dir: self.local_data_dir.join("cache").join(&project_key),
-            java_launch_snapshots: Mutex::new(crate::ops::java::cache::Session::new(
-                self.local_data_dir.join("cache").join(&project_key).join("build"),
-            )),
-            java_launches_waiting: Default::default(),
+            java_launches: Default::default(),
             kotlin_debug_notices: Mutex::default(),
             db,
             http_history,

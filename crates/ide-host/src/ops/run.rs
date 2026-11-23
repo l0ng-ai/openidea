@@ -242,7 +242,10 @@ fn settings_only(
             .cloned()
     });
     if workspace.as_ref().is_some_and(|w| w.is_container(&project.root)) || member.is_some() {
-        if config.extras.module.is_none() && !matches!(config.kind.as_str(), "application" | "spring-boot") {
+        let jvm = matches!(config.kind.as_str(), "application" | "spring-boot");
+        if jvm && member.is_some() && config.cwd.is_none() {
+            config.cwd = Some(owner.into());
+        } else if config.extras.module.is_none() && !jvm {
             config.extras.module = config.cwd.as_deref().map(ide_core::ipc_path::to_ipc);
         }
         ide_run::scope::rebase(config, &project.root, None);

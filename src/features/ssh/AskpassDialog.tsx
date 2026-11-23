@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { useTx } from "@/platform/i18n";
 import { Checkbox, Dialog, Input } from "@/ui";
-import { answerAskpass, askpassAnswer, useAskpass, type AskpassPrompt } from "./askpass";
+import { answerAskpass, askpassAnswer, askpassTitle, useAskpass, type AskpassPrompt } from "./askpass";
 import styles from "./Ssh.module.css";
 
 export function AskpassHost() {
@@ -39,7 +39,7 @@ function AskpassDialog({ prompt: p }: { prompt: AskpassPrompt }) {
   return (
     <Dialog
       open
-      title={tx(p.kind === "secret" ? "SSH Password" : "SSH")}
+      title={tx(askpassTitle(p))}
       onClose={cancel}
       width={440}
       buttons={[

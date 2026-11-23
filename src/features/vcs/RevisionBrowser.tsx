@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import type { Commit } from "@/bindings";
-import { call, commands, isTauri } from "@/platform/ipc";
+import { call, commands } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { notifications, type EditorInput } from "@/workbench/contributions";
 import {
@@ -26,15 +26,12 @@ import { currentRepoRoot } from "./store";
 import { repositoryPath } from "./repositoryPaths";
 import { firstLineOf, languageFor, viewerBase } from "./cm";
 import styles from "./GitLog.module.css";
-import { choosePath } from "@/platform/choosePath";
+import { choosePaths } from "@/platform/choosePath";
 import { openLogTab } from "./logStore";
 import { openRevisionFile, type RevisionData } from "./revisionInput";
 
 export async function openExternalLog() {
-  const picked = isTauri()
-    ? await (await import("@/platform/dialog")).open({ title: tx("Open Git Log"), directory: true, multiple: true })
-    : await choosePath({ title: "Open Git Log", directory: true });
-  const paths = Array.isArray(picked) ? picked : picked ? [picked] : [];
+  const paths = await choosePaths({ title: tx("Open Git Log"), directory: true });
   if (!paths.length) return;
   try {
     const roots = await Promise.all(paths.map((path) => call(commands.vcsOpenExternalLog(path))));

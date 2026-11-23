@@ -5,6 +5,7 @@
  * batches.
  */
 import { readClipboardPlainText, readClipboardPng, writeClipboardText } from "@/platform/clipboard";
+import { choosePath } from "@/platform/choosePath";
 import { providePluginTestParser, providePluginTestSelector } from "@/workbench/contributions";
 import {
   contentTabData,
@@ -512,16 +513,11 @@ async function askUser(prompt: Prompt, signal: AbortSignal): Promise<string[] | 
     case "pickDirectory": {
       if (signal.aborted) return null;
       try {
-        const { open } = await import("@/platform/dialog");
+        const path = await choosePath(
+          { directory: true, title: prompt.title, defaultPath: prompt.initial ?? undefined },
+          signal,
+        );
         if (signal.aborted) return null;
-        const selected = await open({
-          directory: true,
-          multiple: false,
-          title: prompt.title,
-          defaultPath: prompt.initial ?? undefined,
-        });
-        if (signal.aborted) return null;
-        const path = Array.isArray(selected) ? selected[0] : selected;
         return path ? [ipcPath(path)] : null;
       } catch (error) {
         if (!signal.aborted)
