@@ -10,6 +10,7 @@ export const BINARY_KIND = "binary";
 
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "bmp", "avif"]);
 const MARKDOWN_EXTENSIONS = new Set(["md", "markdown", "mdown", "mkd", "mkdn", "mdwn"]);
+const MARKDOWN_SOURCE_EXTENSIONS = new Set([...MARKDOWN_EXTENSIONS, "mdx", "ronn", "workbook"]);
 
 function extension(path: string): string {
   const name = path.slice(path.lastIndexOf("/") + 1);
@@ -21,12 +22,13 @@ export const isImagePath = (path: string) => IMAGE_EXTENSIONS.has(extension(path
 export const isSvgPath = (path: string) => extension(path) === "svg";
 
 /**
- * Whether `path` gets the Markdown preview, decided synchronously so a tab never opens
- * without it first: Markdown by Settings › File Types.
+ * Whether `path` gets the Markdown preview under Settings › File Types.
+ * The source check also includes Markdown extensions that open in the editor alone.
  */
-export function isMarkdownPath(path: string): boolean {
+export function isMarkdownPath(path: string, mode: "preview" | "source" = "preview"): boolean {
   const { settings, project } = useProject.getState();
-  return hasFileType(path, ["markdown"], MARKDOWN_EXTENSIONS, settings?.files, project?.root ?? null);
+  const extensions = mode === "source" ? MARKDOWN_SOURCE_EXTENSIONS : MARKDOWN_EXTENSIONS;
+  return hasFileType(path, ["markdown"], extensions, settings?.files, project?.root ?? null);
 }
 
 /** Whether the file's name matches one of `patterns` (`*.xlsx`); Windows/macOS match case-insensitively. */

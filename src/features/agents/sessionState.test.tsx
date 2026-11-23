@@ -459,6 +459,37 @@ describe("process folding", () => {
   });
 });
 
+describe("tool result images", () => {
+  it.each([
+    ["grouped", true],
+    ["grouped", false],
+    ["each", true],
+    ["each", false],
+  ] as const)("keeps tool images visible with %s tools and folded turns=%s", async (toolCalls, foldTurns) => {
+    useProject.setState({ settings: { agents: { toolCalls, foldTurns } } as never });
+    const image = { mimeType: "image/png", data: "aW1hZ2U=", name: null };
+    backend.entries.set("A", [
+      { type: "user", text: "Render a preview", attachments: [], steered: false, sentMs: 1000, doneMs: 2000 },
+      { type: "thought", text: "Rendering" },
+      tool("preview", { images: [image] }),
+      tool("inspect", { output: "Preview ready" }),
+      { type: "agent", text: "Here is the result." },
+    ]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Here is the result.");
+    const preview = screen.getByRole("img", { name: "Image" });
+    expect(preview).toHaveAttribute("src", "data:image/png;base64,aW1hZ2U=");
+    expect(preview.closest("details")).toBeNull();
+    fireEvent.click(preview.closest("button")!);
+    const dialog = await screen.findByRole("dialog", { name: "Image" });
+    expect(within(dialog).getByRole("img")).toHaveAttribute("src", "data:image/png;base64,aW1hZ2U=");
+    fireEvent.click(within(dialog).getByText("Close", { selector: "button" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getAllByRole("img", { name: "Image" })).toHaveLength(1);
+  });
+});
+
 describe("turn folding", () => {
   it("folds a finished turn's work under its message and keeps the reply", async () => {
     backend.entries.set("A", [
@@ -738,6 +769,31 @@ describe("the conversation selection", () => {
 });
 
 describe("scrolling", () => {
+  it("hides Jump to Latest while the end is visible even when following has stopped", async () => {
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Answer A");
+    const el = stream();
+    let height = 1000;
+    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    el.style.paddingBottom = "12px";
+    el.scrollTop = 599.75;
+    fireEvent.scroll(el);
+    fireEvent.wheel(el, { deltaY: -2 });
+    const jump = () => screen.queryByRole("button", { name: "Jump to Latest" });
+    expect(jump()).toBeNull();
+    el.scrollTop = 594;
+    fireEvent.scroll(el);
+    expect(jump()).toBeNull();
+    el.scrollTop = 580;
+    fireEvent.scroll(el);
+    expect(jump()).toBeInTheDocument();
+    // The end moves into view when content shrinks, without a downward gesture.
+    height = 980;
+    fireEvent.scroll(el);
+    expect(jump()).toBeNull();
+  });
+
   it("returns to the end when the user sends a message while scrolled up", async () => {
     const reply = { type: "agent", text: "Initial reply" } as AgentEntry;
     useAgents.setState({ entries: new Map([["A", [reply]]]) });
@@ -772,30 +828,26 @@ describe("scrolling", () => {
     expect(screen.queryByRole("button", { name: "Jump to Latest" })).toBeNull();
   });
 
-  it.each([
-    {
-      name: "stays at the end below it",
-      top: 300,
-      bottom: 360,
-      scrolled: 60,
-      away: false,
-    },
-    {
-      name: "keeps its header on screen",
-      top: 50,
-      bottom: 900,
-      scrolled: 50,
-      away: true,
-    },
-    {
-      name: "back at the end without following",
-      top: 300,
-      bottom: 360,
-      scrolled: 60,
-      away: false,
-      released: true,
-    },
-  ])("scrolls a section opened at the end into view: $name", async ({ top, bottom, scrolled, away, released }) => {
+  /** A stream whose height follows its fold and whose offset is clamped like a browser's. */
+  const foldingStream = (openHeight: number) => {
+    const el = stream();
+    const fold = el.querySelector("details")!;
+    const slack = () => parseFloat(el.style.getPropertyValue("--stream-slack")) || 0;
+    const height = () => (fold.children.length > 1 ? 1000 + openHeight : 1000) + slack();
+    let top = 0;
+    Object.defineProperty(el, "scrollHeight", { configurable: true, get: height });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    Object.defineProperty(el, "scrollTop", {
+      configurable: true,
+      get: () => Math.max(0, Math.min(top, height() - 400)),
+      set: (v: number) => {
+        top = Math.max(0, Math.min(v, height() - 400));
+      },
+    });
+    return { el, fold, summary: fold.querySelector("summary")!, slack };
+  };
+
+  it("keeps the header of a section opened at the end in place and stops following", async () => {
     backend.entries.set("A", [
       { type: "thought", text: "Weighing it" },
       { type: "agent", text: "Answer A" },
@@ -803,43 +855,79 @@ describe("scrolling", () => {
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
     await screen.findByText("Answer A");
-    const el = stream();
-    Object.defineProperty(el, "scrollHeight", {
-      configurable: true,
-      value: 1000,
-    });
-    Object.defineProperty(el, "clientHeight", {
-      configurable: true,
-      value: 400,
-    });
-    el.getBoundingClientRect = () => ({ top: 0, bottom: 400 }) as DOMRect;
+    const { el, summary } = foldingStream(500);
+    summary.getBoundingClientRect = () => ({ top: 900 - el.scrollTop }) as DOMRect;
     el.scrollTop = 600;
     fireEvent.scroll(el);
-    if (released) {
-      fireEvent.wheel(el, { deltaY: -50 });
-      el.scrollTop = 550;
-      fireEvent.scroll(el);
-      el.scrollTop = 600;
-      fireEvent.scroll(el);
-      expect(screen.getByRole("button", { name: "Jump to Latest" })).toBeInTheDocument();
-    }
-    const fold = stream().querySelector("details")!;
-    fold.getBoundingClientRect = () => ({ top, bottom }) as DOMRect;
-    // It grows once its content renders.
-    Object.defineProperty(el, "scrollHeight", {
-      configurable: true,
-      get: () => (fold.children.length > 1 ? 1000 + bottom - top : 1000),
-    });
-    fireEvent.pointerDown(fold);
-    fireEvent.pointerUp(fold);
-    fold.open = true;
-    act(() => {
-      fireEvent(fold, new Event("toggle"));
-    });
-    expect(el.scrollTop).toBe(600 + scrolled);
+    fireEvent.click(summary);
+    expect(el.scrollTop).toBe(600);
+    expect(screen.getByRole("button", { name: "Jump to Latest" })).toBeInTheDocument();
+    act(() =>
+      useAgents.setState({
+        entries: new Map([["A", [...backend.entries.get("A")!, { type: "agent", text: "More" }]]]),
+      }),
+    );
+    expect(el.scrollTop).toBe(600);
+  });
+
+  it("keeps the header of a section closed at the end in place", async () => {
+    backend.entries.set("A", [
+      { type: "thought", text: "Weighing it" },
+      { type: "agent", text: "Answer A" },
+    ]);
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Answer A");
+    const { el, fold, summary, slack } = foldingStream(500);
+    summary.getBoundingClientRect = () => ({ top: 1200 - el.scrollTop }) as DOMRect;
+    fireEvent.click(summary);
+    expect(fold.open).toBe(true);
+    el.scrollTop = 1100;
     fireEvent.scroll(el);
-    // With the end out of view, the next chunk doesn't pull the reader away from the section.
-    expect(screen.queryByRole("button", { name: "Jump to Latest" }) !== null).toBe(away);
+    // Closing it would pull the end up to 600: room below keeps the header at 100.
+    fireEvent.click(summary);
+    expect(fold.open).toBe(false);
+    expect(el.scrollTop).toBe(1100);
+    expect(slack()).toBe(500);
+    // Scrolling up takes the room back without moving the content.
+    el.scrollTop = 1000;
+    fireEvent.scroll(el);
+    expect(slack()).toBe(400);
+    expect(el.scrollTop).toBe(1000); // Opened again, the section fills that room first: nothing moves and no blank is left below.
+    fireEvent.click(summary);
+    expect(fold.open).toBe(true);
+    expect(slack()).toBe(0);
+    expect(el.scrollTop).toBe(1000);
+  });
+
+  it("scrolls the innermost container under the wheel and never hands it to the conversation", () => {
+    const transcript: AgentEntry[] = [tool("live", { status: "running", output: "Tool output" })];
+    useAgents.setState({ entries: new Map([["A", transcript]]) });
+    render(<SessionEditor input={input("A")} />);
+    const el = stream();
+    Object.defineProperty(el, "scrollHeight", { configurable: true, value: 1000 });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    el.scrollTop = 600;
+    fireEvent.scroll(el);
+    const output = screen.getByText("Tool output");
+    output.style.overflowY = "auto";
+    Object.defineProperty(output, "scrollHeight", { configurable: true, value: 300 });
+    Object.defineProperty(output, "clientHeight", { configurable: true, value: 100 });
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    // At its top, scrolling up over it stays with it.
+    output.scrollTop = 0;
+    expect(fireEvent.wheel(output, { deltaY: -4 })).toBe(false);
+    now = 1000;
+    output.scrollTop = 100;
+    expect(fireEvent.wheel(output, { deltaY: -4 })).toBe(true);
+    expect(screen.queryByRole("button", { name: "Jump to Latest" })).toBeNull();
+    // A gesture that started in the conversation stays there when the output slides under it.
+    now = 2000;
+    expect(fireEvent.wheel(el, { deltaY: -4 })).toBe(true);
+    now = 2050;
+    output.scrollTop = 0;
+    expect(fireEvent.wheel(output, { deltaY: -4 })).toBe(true);
   });
 
   it("keeps following when the view grows taller and the browser pulls the offset back", () => {
@@ -989,6 +1077,8 @@ describe("scrolling", () => {
       value: 400,
     });
     output.style.overflowY = "auto";
+    Object.defineProperty(output, "scrollHeight", { configurable: true, value: 300 });
+    Object.defineProperty(output, "clientHeight", { configurable: true, value: 100 });
     output.scrollTop = 100;
     el.scrollTop = 600;
     fireEvent.scroll(el);
@@ -2529,7 +2619,7 @@ describe("import sessions dialog", () => {
     backend.external = sessions;
     open();
     await listed("Login fix");
-    expect(screen.getByRole("dialog", { name: "Import Sessions from Other Apps" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Import Sessions" })).toBeInTheDocument();
   });
 
   it("imports the selected session and opens it", async () => {

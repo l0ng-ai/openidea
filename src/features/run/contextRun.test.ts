@@ -3,8 +3,8 @@ import type { RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { menuGroupItems, registerMenuGroup } from "@/workbench/contributions";
 import type { MenuItem } from "@/ui";
-import { canDebugProduced, choiceItems, compiledDebugPlan, contextMenuItems } from "./contextRun";
-import { OPTIMISTIC, produceContextChoices, type ToolEnv } from "./producers";
+import { canDebugProduced, choiceItems, compiledDebugPlan, contextMenuItems, projectContext } from "./contextRun";
+import { OPTIMISTIC, produceContext, produceContextChoices, type ToolEnv } from "./producers";
 import { gutterTestState, markerIcon, targetMenuItems } from "./runGutter";
 import { useRun } from "./store";
 import type { RunTarget } from "./targets";
@@ -113,6 +113,53 @@ describe("run context menu group", () => {
     const items = contextMenuItems("projectView", { paths: [`${ROOT}/src/__tests__`], dirs: [true] });
     expect(items[0]).toMatchObject({ label: "Run 'Tests in '__tests__''", arg: { dir: true } });
     expect(contextMenuItems("projectView", { paths: [`${ROOT}/src/components`], dirs: [true] })).toEqual([]);
+  });
+
+  it("routes an attached Spring Boot main and its tests through the member's Maven build", () => {
+    const member = "/work/spring";
+    const project = useProject.getState().project!;
+    useProject.setState({ project: { ...project, workspace: { version: 1, name: "app", projects: [ROOT, member] } } });
+    const maven: RunConfig = { ...npmTest, kind: "maven", command: "mvn", args: ["test"], debugAdapter: null };
+    useRun.setState({
+      configs: [
+        { ...maven, id: "maven:test" },
+        { ...maven, id: "member:test", cwd: member },
+      ],
+    });
+    const content = [
+      "package demo;",
+      "import org.springframework.boot.SpringApplication;",
+      "import org.springframework.boot.autoconfigure.SpringBootApplication;",
+      "@SpringBootApplication",
+      "public class App {",
+      "  public static void main(String[] args) { SpringApplication.run(App.class, args); }",
+      "}",
+    ].join("\n");
+    const main = { ...projectContext(), path: `${member}/src/main/java/demo/App.java`, content, line: 5 };
+    expect(produceContext(main, OPTIMISTIC)?.config).toMatchObject({
+      kind: "spring-boot",
+      module: member,
+      args: ["-cp", "${classpath}", "demo.App"],
+    });
+    expect(
+      produceContext(
+        {
+          ...main,
+          path: `${member}/src/test/java/demo/AppTest.java`,
+          content: "package demo;\nclass AppTest {\n  @Test\n  void starts() {}\n}",
+          line: 3,
+        },
+        OPTIMISTIC,
+      )?.config,
+    ).toMatchObject({
+      kind: "maven",
+      cwd: member,
+      args: ["test", "-Dtest=demo.AppTest#starts", "-Dsurefire.failIfNoSpecifiedTests=false"],
+    });
+    expect(produceContext({ ...main, path: `${ROOT}/src/main/java/demo/App.java` }, OPTIMISTIC)?.config).toMatchObject({
+      kind: "spring-boot",
+      module: "",
+    });
   });
 
   it("shows nothing when no producer matches or for several paths", () => {

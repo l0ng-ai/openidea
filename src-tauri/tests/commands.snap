@@ -287,6 +287,7 @@ fs_read_range                                always             project_host bin
 fs_read_text                                 always             project_host bindings async
 fs_rename                                    always             project_host bindings async
 fs_resolve_reference                         always             project_host bindings async
+fs_scratches_dir                             always             project_host bindings sync
 fs_set_writable                              always             project_host bindings sync
 fs_synchronize_directories                   always             project_host bindings async
 fs_undo_delete                               always             project_host bindings async
