@@ -90,4 +90,29 @@ describe("Python string formatting conversions", () => {
     expect(await convert(`"%.2d" % h`)).toEqual({});
     expect(await convert(`"%(class)s" % {"class": c}`)).toEqual({ fString: `f"{c}"` });
   });
+
+  it("does not rewrite format expressions with missing or inconsistent field references", async () => {
+    for (const expr of [
+      `"%(name)s" % {"other": value}`,
+      `"%(name)s" % {}`,
+      `"{}{0}".format(a)`,
+      `"{0}{}".format(a, b)`,
+      `"{name}".format(name=)`,
+    ])
+      expect(await convert(expr), expr).toEqual({});
+  });
+
+  it("uses valid Python syntax for field accessors", async () => {
+    expect(await convert(`"{0[001]}".format(items)`)).toEqual({ fString: `f"{items[1]}"` });
+    expect(await convert(`"{0.class}".format(obj)`)).toEqual({});
+  });
+
+  it("keeps the order and evaluation count of arguments with side effects", async () => {
+    expect(await convert(`"{1}-{0}".format(first(), second())`)).toEqual({});
+    expect(await convert(`"{b}-{a}".format(a=first(), b=second())`)).toEqual({});
+    expect(await convert(`"%(name)s" % {"name": first(), "name": second()}`)).toEqual({});
+    expect(await convert(`"%(b)s-%(a)s" % {"a": first(), "b": second()}`)).toEqual({
+      format: `"{b}-{a}".format(a=first(), b=second())`,
+    });
+  });
 });

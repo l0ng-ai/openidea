@@ -207,7 +207,10 @@ function inline(parts: Part[], positional: Arg[], keyword: Map<string, Arg>, quo
       continue;
     }
     if (part.key === null && next < 0) return null;
-    if (typeof part.key === "number") next = -1;
+    if (typeof part.key === "number") {
+      if (next > 0) return null;
+      next = -1;
+    }
     const arg =
       part.key === null
         ? positional[next++]
@@ -223,7 +226,11 @@ function inline(parts: Part[], positional: Arg[], keyword: Map<string, Arg>, quo
     if (text.includes("\n") && quote.length === 1) return null;
     const bare = value !== arg || (arg.node && arg.node.name !== "LambdaExpression" && !text.includes(":="));
     let expr = bare ? text : `(${text})`;
-    if (part.tail) expr = (arg.node && ATOMIC.has(arg.node.name) ? expr : `(${text})`) + part.tail;
+    if (part.tail) {
+      if ([...part.tail.matchAll(/\.(\w+)/g)].some(([, attr]) => KEYWORDS.has(attr!))) return null;
+      const accessors = part.tail.replace(/\[0+(?=\d)/g, "[");
+      expr = (arg.node && ATOMIC.has(arg.node.name) ? expr : `(${text})`) + accessors;
+    }
     if (expr.startsWith("{")) expr = ` ${expr}`;
     out += `{${expr}${part.conv}${part.spec}}`;
   }
@@ -233,6 +240,9 @@ function inline(parts: Part[], positional: Arg[], keyword: Map<string, Arg>, quo
     const n = used.get(arg) ?? 0;
     if (n === 0 || (n > 1 && arg.node?.name !== "VariableName")) return null;
   }
+  // A call or dict evaluates arguments in source order. Inlining follows field order.
+  if (all.some((arg) => arg.node?.name !== "VariableName") && [...used.keys()].some((arg, i) => arg !== all[i]))
+    return null;
   return out;
 }
 
@@ -249,7 +259,7 @@ function percentArgs(doc: Text, rhs: SyntaxNode): { positional: Arg[]; keyword: 
       const [key, colon, ...value] = g;
       if (key?.name !== "String" || colon?.name !== ":" || !value.length) return null;
       const k = /^["']([A-Za-z_]\w*)["']$/.exec(doc.sliceString(key.from, key.to));
-      if (!k) return null;
+      if (!k || keyword.has(k[1]!)) return null;
       keyword.set(k[1]!, argOf(doc, value));
     }
     return { positional: [], keyword };
@@ -266,8 +276,11 @@ function percentConversions(doc: Text, node: SyntaxNode): StringConversion[] {
   if (!lit || !parts || !args) return [];
   const fields = parts.filter((p): p is Field => typeof p !== "string");
   const named = fields.every((f) => f.key !== null);
-  if (fields.some((f) => (f.key !== null) !== named) || (named ? args.positional.length : args.keyword.size)) return [];
-  if (!named && fields.length !== args.positional.length) return [];
+  if (named) {
+    if (args.positional.length || fields.some((f) => typeof f.key !== "string" || !args.keyword.has(f.key))) return [];
+  } else if (args.keyword.size || fields.length !== args.positional.length || fields.some((f) => f.key !== null)) {
+    return [];
+  }
   const out: StringConversion[] = [];
   const inlined = inline(parts, args.positional, args.keyword, lit.quote);
   if (inlined !== null)
@@ -308,9 +321,12 @@ function formatConversion(doc: Text, call: SyntaxNode): StringConversion[] {
   const positional: Arg[] = [];
   const keyword = new Map<string, Arg>();
   for (const g of groups(argList)) {
-    if (g[0]!.name === "*" || g[0]!.name === "**") return [];
-    if (g[1]?.name === "AssignOp") keyword.set(doc.sliceString(g[0]!.from, g[0]!.to), argOf(doc, g.slice(2)));
-    else positional.push(argOf(doc, g));
+    if (g[0]!.name === "*" || g[0]!.name === "**" || g.some((node) => node.type.isError)) return [];
+    if (g[1]?.name === "AssignOp") {
+      const key = doc.sliceString(g[0]!.from, g[0]!.to);
+      if (!g[2] || keyword.has(key)) return [];
+      keyword.set(key, argOf(doc, g.slice(2)));
+    } else positional.push(argOf(doc, g));
   }
   const inlined = inline(parts, positional, keyword, lit.quote);
   return inlined === null
