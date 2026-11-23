@@ -55,6 +55,8 @@ pub enum SdkKind {
     Ruby,
     /// Zig toolchain directories.
     Zig,
+    /// .NET SDKs of the `dotnet` on the search path; `version` is what `global.json` pins.
+    Dotnet,
 }
 
 /// One installed interpreter / toolchain.

@@ -17,6 +17,7 @@ import { IconButton, Input, Spinner, T, showContextMenu } from "@/ui";
 import { useSetting } from "../components/context";
 import { useSettingsDialog } from "../model/staging";
 import { AddInterpreterDialog } from "./AddInterpreterDialog";
+import { InterpreterPathsDialog } from "./InterpreterPathsDialog";
 import { tildify } from "./components";
 import {
   filterInterpreters,
@@ -38,12 +39,14 @@ export function PythonInterpretersPage() {
   const [hidden, setHidden] = useSetting<string[]>("languages.python.hiddenInterpreters");
   const [hideOther, setHideOther] = useSetting<boolean>("languages.python.hideOtherProjectInterpreters");
   const [showPaths, setShowPaths] = useSetting<boolean>("languages.python.showInterpreterPaths");
+  const [userPaths, setUserPaths] = useSetting<Record<string, string[]>>("languages.python.interpreterPaths");
   const [interpreter, setInterpreter] = useSetting<string>("languages.python.interpreter", "project");
   const current = interpreter || null;
 
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [showingPaths, setShowingPaths] = useState<InterpreterRow | null>(null);
 
   const shown = useMemo(
     () => filterInterpreters(rows, { query, hideOther: !!hideOther, currentProject: root }),
@@ -74,6 +77,9 @@ export function PythonInterpretersPage() {
     const same = (path: string) => sameInterpreterPath(path, row.path, null);
     setHidden([...(hidden ?? []).filter((path) => !same(path)), row.path]);
     setAdded((added ?? []).filter((path) => !same(path)));
+    // The folders added to its paths go with it: a hidden interpreter has no dialog to remove them in.
+    const kept = Object.entries(userPaths ?? {}).filter(([path]) => !same(path));
+    if (kept.length !== Object.keys(userPaths ?? {}).length) setUserPaths(Object.fromEntries(kept));
     if (used && canAssign) setInterpreter("");
     setSelected(null);
   };
@@ -85,6 +91,12 @@ export function PythonInterpretersPage() {
         icon: "check",
         disabled: !canAssign || row.invalid || isCurrent(row),
         run: () => selectForProject(row),
+      },
+      {
+        label: "Show Paths for Selected Interpreter",
+        icon: "library",
+        disabled: row.invalid,
+        run: () => setShowingPaths(row),
       },
       { kind: "separator" },
       { label: "Remove Interpreter", icon: "minus", danger: true, run: () => void remove(row) },
@@ -122,6 +134,13 @@ export function PythonInterpretersPage() {
             onClick={() => selectedRow && void remove(selectedRow)}
           />
           <IconButton icon="refresh" size="small" title="Refresh Interpreters" onClick={refresh} />
+          <IconButton
+            icon="library"
+            size="small"
+            title="Show Paths for Selected Interpreter"
+            disabled={!selectedRow || selectedRow.invalid}
+            onClick={() => setShowingPaths(selectedRow)}
+          />
           <span className={styles.spacer} />
           <IconButton
             icon="filter"
@@ -210,6 +229,13 @@ export function PythonInterpretersPage() {
         {canAssign && <T>Double-click an interpreter to use it for this project.</T>}
       </div>
 
+      {showingPaths && (
+        <InterpreterPathsDialog
+          interpreter={showingPaths.path}
+          name={showingPaths.name}
+          onClose={() => setShowingPaths(null)}
+        />
+      )}
       {adding && canAssign && root && (
         <AddInterpreterDialog
           root={root}

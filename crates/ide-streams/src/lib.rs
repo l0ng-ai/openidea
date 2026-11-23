@@ -10,4 +10,6 @@ pub use catalog::{OpRole, SourceFamily, step_kind};
 pub use chain::*;
 pub use model::*;
 pub use real_run::*;
-pub use resolve::{distinct_drops, resolve, sorted_pass_through};
+#[cfg(test)]
+pub use resolve::distinct_drops;
+pub use resolve::{resolve, sorted_pass_through};

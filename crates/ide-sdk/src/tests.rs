@@ -12,6 +12,7 @@ use ide_language::LanguageServerConfig;
 use ide_run::RunConfig;
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::time::Duration;
 
 fn fake_venv(root: &Path, name: &str) -> std::path::PathBuf {
     let venv = root.join(name);
@@ -576,6 +577,31 @@ fn run_configs_use_selected_interpreter_and_package_manager() {
     assert_eq!(configs[5].args, ["manage.py", "test"]);
     assert_eq!(configs[6].command, python);
     assert_eq!(configs[6].args, ["manage.py", "test", "polls"]);
+}
+
+#[test]
+fn saved_python_configs_keep_their_explicit_interpreter() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let default = fake_venv(root, ".venv");
+    let override_python = fake_venv(&root.join("member"), ".override");
+    let relative_python = override_python.strip_prefix(root.join("member")).unwrap();
+    let mut settings = Settings::default();
+    settings.languages.python.interpreter = default.to_string_lossy().into_owned();
+
+    for command in [&override_python, relative_python] {
+        for kind in ["python", "pytest", "django-test"] {
+            let command = command.to_string_lossy();
+            let mut config = run(kind, &command, &["main.py"]);
+            config.detected = false;
+            config.cwd = Some(Path::new("member").into());
+            apply_to_run_configs(std::slice::from_mut(&mut config), root, &settings);
+            assert_eq!(config.command, command);
+            assert_eq!(config.env["VIRTUAL_ENV"], root.join("member/.override").to_string_lossy());
+            let saved = without_derived(&config, root, &settings);
+            assert_eq!(saved.command, command);
+        }
+    }
 }
 
 #[test]
@@ -1445,6 +1471,58 @@ fn pip_list_output_is_parsed() {
     let pkgs = parse_pip_list(out).unwrap();
     assert_eq!(pkgs[0].name, "requests");
     assert_eq!(pkgs[0].version, "2.32.0");
+    assert_eq!(pkgs[0].latest_version, None);
+}
+
+#[test]
+fn outdated_pip_list_carries_the_latest_version() {
+    // pip, then uv (compact JSON after a line about the environment).
+    for out in [
+        "$ python -m pip list --outdated\n[{\"name\": \"six\", \"version\": \"1.15.0\", \"latest_version\": \"1.17.0\", \"latest_filetype\": \"wheel\"}]\n",
+        "Using Python 3.14.7 environment at: /venv\n[{\"name\":\"six\",\"version\":\"1.15.0\",\"latest_version\":\"1.17.0\",\"latest_filetype\":\"wheel\"}]\n",
+    ] {
+        let pkgs = parse_pip_list(out).unwrap();
+        assert_eq!(pkgs.len(), 1, "{out}");
+        assert_eq!(pkgs[0].latest_version.as_deref(), Some("1.17.0"));
+    }
+    assert!(parse_pip_list("$ python -m pip list --outdated\n[]\n").unwrap().is_empty());
+    assert!(parse_pip_list("$ python -m pip list --outdated\n").is_err());
+}
+
+#[test]
+fn pip_retry_warnings_mean_the_check_is_incomplete() {
+    let warning = "WARNING: Retrying (Retry(total=0, connect=None, read=None, redirect=None, status=None)) after connection broken by 'NewConnectionError(…)': /simple/six/";
+    // Offline: nothing listed. Partly offline: some packages listed, others silently left out.
+    for out in [
+        format!("$ python -m pip list --outdated\n{warning}\n[]\n"),
+        format!("{warning}\n[{{\"name\": \"idna\", \"version\": \"3.6\", \"latest_version\": \"3.20\"}}]\n"),
+    ] {
+        assert!(crate::python::pip_request_failed(&out), "{out}");
+    }
+    assert!(!crate::python::pip_request_failed("$ python -m pip list --outdated\n[]\n"));
+}
+
+#[test]
+fn the_outdated_check_stops_at_its_deadline() {
+    let cancel = ide_core::CancellationToken::new();
+    let started = std::time::Instant::now();
+    let result: ide_core::IdeResult<()> =
+        crate::python::with_deadline(&cancel, std::time::Duration::from_millis(100), |token| {
+            while !token.is_cancelled() {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(ide_core::IdeError::cancelled())
+        });
+    assert_eq!(result.unwrap_err().kind, ide_core::error::ErrorKind::TimedOut);
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    // Finishing in time, or being cancelled by the caller, is reported as such.
+    assert!(crate::python::with_deadline(&cancel, std::time::Duration::from_secs(60), |_| Ok(())).is_ok());
+    cancel.cancel();
+    let result: ide_core::IdeResult<()> =
+        crate::python::with_deadline(&cancel, std::time::Duration::from_secs(60), |_| {
+            Err(ide_core::IdeError::cancelled())
+        });
+    assert_eq!(result.unwrap_err().kind, ide_core::error::ErrorKind::Cancelled);
 }
 
 /// A directory whose `typing.py` breaks any interpreter that imports it from there.
@@ -1485,6 +1563,7 @@ fn env_tools_are_reported_missing_before_they_run() {
         crate::python::VenvTool::Uv,
         &base,
         &location,
+        false,
         none,
         &Default::default(),
         &|_| {},
@@ -1495,6 +1574,7 @@ fn env_tools_are_reported_missing_before_they_run() {
         crate::python::VenvTool::Poetry,
         &base,
         &location,
+        false,
         none,
         &Default::default(),
         &|_| {},
@@ -1505,12 +1585,39 @@ fn env_tools_are_reported_missing_before_they_run() {
         crate::python::VenvTool::Conda,
         &base,
         &location,
+        false,
         none,
         &Default::default(),
         &|_| {},
     )
     .unwrap_err();
     assert!(conda.message.contains("conda is not installed"), "{}", conda.message);
+    let pipenv = crate::python::create_venv_with(
+        crate::python::VenvTool::Pipenv,
+        &base,
+        &location,
+        true,
+        none,
+        &Default::default(),
+        &|_| {},
+    )
+    .unwrap_err();
+    assert!(pipenv.message.contains("Pipenv is not installed"), "{}", pipenv.message);
+    std::fs::write(dir.path().join("hatch.toml"), "").unwrap();
+    let hatch = crate::python::create_venv_with(
+        crate::python::VenvTool::Hatch,
+        &base,
+        &location,
+        false,
+        none,
+        &Default::default(),
+        &|_| {},
+    )
+    .unwrap_err();
+    assert!(hatch.message.contains("Hatch is not installed"), "{}", hatch.message);
+    let listed =
+        crate::python::hatch_envs_with(dir.path(), none, Duration::from_secs(5), &Default::default()).unwrap_err();
+    assert!(listed.message.contains("Hatch is not installed"), "{}", listed.message);
     // An existing environment is refused before any tool runs.
     std::fs::create_dir_all(&location).unwrap();
     std::fs::write(location.join("pyvenv.cfg"), "home = /python").unwrap();
@@ -1518,6 +1625,7 @@ fn env_tools_are_reported_missing_before_they_run() {
         crate::python::VenvTool::Uv,
         &base,
         &location,
+        false,
         none,
         &Default::default(),
         &|_| {},
@@ -1540,6 +1648,7 @@ fn an_existing_conda_environment_is_not_recreated() {
         crate::python::VenvTool::Conda,
         &base,
         &location,
+        false,
         none,
         &Default::default(),
         &|_| {},
@@ -1590,6 +1699,7 @@ fn a_named_conda_environment_is_found_where_conda_put_it() {
             crate::python::VenvTool::Conda,
             &base,
             Path::new("ds"),
+            false,
             which,
             &Default::default(),
             &|_| {},
@@ -1599,6 +1709,173 @@ fn a_named_conda_environment_is_found_where_conda_put_it() {
     assert_eq!(&*sdk.path, root.join("envs/ds/bin/python").as_path());
     let again = create().unwrap_err();
     assert!(again.message.contains("named ds already exists"), "{}", again.message);
+}
+
+#[test]
+#[cfg(unix)]
+fn pipenv_creates_the_projects_environment_and_never_replaces_one() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let tmp = dunce::canonicalize(tmp.path()).unwrap();
+    let project = tmp.join("shop");
+    let home = tmp.join("workon/custom-shop");
+    std::fs::create_dir_all(&project).unwrap();
+    let python = tmp.join("python");
+    std::fs::write(&python, "#!/bin/sh\necho 'Python 3.12.1'\n").unwrap();
+    std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // `--venv` fails until the environment exists; `--python` creates it outside the project,
+    // records the project in `.project` and writes a Pipfile.
+    let pipenv = tmp.join("pipenv");
+    std::fs::write(
+        &pipenv,
+        format!(
+            "#!/bin/sh\nhome='{home}'\nif [ \"$1\" = --venv ]; then [ -f \"$home/pyvenv.cfg\" ] || exit 1; echo \"$home\"; exit 0; fi\n\
+             [ \"$PIPENV_YES\" = 1 ] || exit 3\necho \"$@\" >> calls\n[ \"$1\" = --python ] || exit 0\n\
+             mkdir -p \"$home/bin\"\ncp '{python}' \"$home/bin/python\"\necho 'version = 3.12.1' > \"$home/pyvenv.cfg\"\n\
+             touch Pipfile\npwd -P > \"$home/.project\"\n",
+            home = home.display(),
+            python = python.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&pipenv, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let which = |tool: &str| (tool == "pipenv").then(|| pipenv.clone());
+    let create = |install: bool| {
+        crate::python::create_venv_with(
+            crate::python::VenvTool::Pipenv,
+            &python,
+            &project.join(".venv"),
+            install,
+            which,
+            &Default::default(),
+            &|_| {},
+        )
+    };
+    let calls = || std::fs::read_to_string(project.join("calls")).unwrap_or_default();
+    // The project had no Pipfile: the one pipenv writes is installed from, as asked.
+    let sdk = create(true).unwrap();
+    assert_eq!(&*sdk.path, home.join("bin/python").as_path());
+    assert_eq!((sdk.name.as_str(), sdk.source.as_str()), ("Python 3.12 (Pipenv: shop)", "pipenv"));
+    assert_eq!(calls(), format!("--python {}\ninstall --dev\n", python.display()));
+    // An existing environment is reused, never created again with `--python` (which replaces one
+    // of another version); one pipenv left without `.project` is still the project's.
+    std::fs::remove_file(home.join(".project")).unwrap();
+    assert_eq!(create(false).unwrap().source, "pipenv");
+    assert_eq!(calls().lines().count(), 2);
+    // On another Python than the base, nothing runs and the error says what to do.
+    std::fs::write(home.join("pyvenv.cfg"), "version = 3.11.4\n").unwrap();
+    let err = create(true).unwrap_err();
+    assert!(err.message.contains("Python 3.11 environment, not Python 3.12"), "{}", err.message);
+    assert!(err.message.contains("pipenv --rm"), "{}", err.message);
+    assert_eq!(calls().lines().count(), 2);
+}
+
+#[test]
+fn hatch_lists_the_projects_own_environments_default_first() {
+    use crate::python::parse_hatch_envs;
+    let out = r#"{"docs":{"type":"virtual"},"default":{"type":"virtual"},"hatch-build":{"builder":true},"hatch-test.py3.12":{"python":"3.12"},"test.py3.12":{"python":"3.12"}}"#;
+    assert_eq!(parse_hatch_envs(out).unwrap(), ["default", "docs", "test.py3.12"]);
+    assert_eq!(parse_hatch_envs(&format!("a warning\n{out}\n")).unwrap().len(), 3);
+    assert!(parse_hatch_envs("not json").unwrap().is_empty());
+    assert!(parse_hatch_envs("{broken").is_err());
+}
+
+#[test]
+fn hatch_environment_choices_require_hatch_configuration() {
+    use crate::python::hatch_envs_with;
+    let tmp = tempfile::tempdir().unwrap();
+    let pyproject = tmp.path().join("pyproject.toml");
+    let no_lookup = |_: &str| panic!("Hatch must not run for an unconfigured project");
+    let timeout = Duration::from_secs(5);
+    assert!(hatch_envs_with(tmp.path(), no_lookup, timeout, &Default::default()).unwrap().is_empty());
+    std::fs::write(&pyproject, "[build-system]\nbuild-backend = 'hatchling.build'\n").unwrap();
+    assert!(hatch_envs_with(tmp.path(), no_lookup, timeout, &Default::default()).unwrap().is_empty());
+    let missing = |_: &str| None;
+    std::fs::write(&pyproject, "[tool.hatch.envs.docs]\n").unwrap();
+    assert!(hatch_envs_with(tmp.path(), missing, timeout, &Default::default()).is_err());
+    std::fs::remove_file(pyproject).unwrap();
+    std::fs::write(tmp.path().join("hatch.toml"), "[envs.docs]\n").unwrap();
+    assert!(hatch_envs_with(tmp.path(), missing, timeout, &Default::default()).is_err());
+}
+
+#[test]
+#[cfg(unix)]
+fn listing_hatch_environments_gives_up_after_the_timeout() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("hatch.toml"), "").unwrap();
+    // Stuck installing an environment plugin, say.
+    let hatch = tmp.path().join("hatch");
+    std::fs::write(&hatch, "#!/bin/sh\nsleep 30\n").unwrap();
+    std::fs::set_permissions(&hatch, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let which = |tool: &str| (tool == "hatch").then(|| hatch.clone());
+    let started = std::time::Instant::now();
+    let err =
+        crate::python::hatch_envs_with(tmp.path(), which, Duration::from_millis(300), &Default::default()).unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::TimedOut, "{}", err.message);
+    assert!(started.elapsed() < Duration::from_secs(10));
+}
+
+#[test]
+#[cfg(unix)]
+fn hatch_creates_the_selected_environment_on_the_base_interpreter() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("shop");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(project.join("hatch.toml"), "").unwrap();
+    let storage = tmp.path().join("data/env/virtual/shop/abcdefgh");
+    std::fs::create_dir_all(&storage).unwrap();
+    let python = tmp.path().join("python");
+    std::fs::write(&python, "#!/bin/sh\necho 'Python 3.12.1'\n").unwrap();
+    std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // `env create <name>` builds the environment with $HATCH_PYTHON in Hatch's data directory (the
+    // default one is named after the project); `--env <name> run` installs what it lacks and runs in it.
+    let hatch = tmp.path().join("hatch");
+    std::fs::write(
+        &hatch,
+        format!(
+            "#!/bin/sh\nwhile [ \"${{1#--}}\" != \"$1\" ]; do [ \"$1\" = --env ] && {{ name=$2; shift; }}; shift; done\n\
+             [ \"$1 $2\" = 'env create' ] && name=$3\n\
+             [ \"$1 $2\" = 'env find' ] && name=$4\nhome='{storage}'/$name\n\
+             [ \"$name\" = default ] && home='{storage}'/shop\n\
+             [ \"$name\" = docs ] && home='{outside}'\n\
+             [ \"$1 $2\" = 'env find' ] && {{ echo \"$home\"; exit 0; }}\n\
+             if [ \"$1\" = run ]; then echo 'Syncing dependencies'; : > \"$home/synced\"; echo \"$home\"; exit 0; fi\n\
+             [ \"$1 $2\" = 'env create' ] || exit 2\necho \"$name\" >> '{storage}'/created\n[ -d \"$home\" ] && exit 0\n\
+             mkdir -p \"$home/bin\"\ncp \"$HATCH_PYTHON\" \"$home/bin/python\"\n\
+             echo 'version = 3.12.1' > \"$home/pyvenv.cfg\"\necho \"Creating environment: $name\"\n",
+            storage = storage.display(),
+            outside = tmp.path().join("custom docs").display(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&hatch, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let which = |tool: &str| (tool == "hatch").then(|| hatch.clone());
+    let create = |env: &str| {
+        crate::python::create_venv_with(
+            crate::python::VenvTool::Hatch,
+            &python,
+            &project.join(env),
+            false,
+            which,
+            &Default::default(),
+            &|_| {},
+        )
+    };
+    let sdk = create("default").unwrap();
+    assert_eq!(&*sdk.path, storage.join("shop/bin/python").as_path());
+    assert_eq!((sdk.name.as_str(), sdk.source.as_str()), ("Python 3.12 (Hatch: shop)", "hatch"));
+    let docs = create("docs").unwrap();
+    assert_eq!((docs.name.as_str(), docs.source.as_str()), ("Python 3.12 (Hatch: shop:docs)", "hatch"));
+    assert!(tmp.path().join("custom docs/synced").is_file());
+    // Hatch keeps an existing environment whatever `HATCH_PYTHON` says: one on another Python
+    // version is refused before anything runs, rather than reported as created.
+    std::fs::write(tmp.path().join("custom docs/pyvenv.cfg"), "version = 3.11.4\n").unwrap();
+    let err = create("docs").unwrap_err();
+    assert!(err.message.contains("Python 3.11 environment, not Python 3.12"), "{}", err.message);
+    assert!(err.message.contains("hatch env remove docs"), "{}", err.message);
+    assert_eq!(std::fs::read_to_string(storage.join("created")).unwrap(), "default\ndocs\n");
 }
 
 #[test]
@@ -3227,4 +3504,68 @@ fn unsatisfied_requirements_are_judged_by_the_interpreter() {
     let missing = || Some(crate::python::Unsatisfied { installed: None });
     let old = packaging.then(|| crate::python::Unsatisfied { installed: Some("1.0".into()) });
     assert_eq!(found, [None, None, old, missing(), None]);
+}
+
+#[test]
+fn a_custom_package_index_is_found_in_pip_and_uv_configuration() {
+    use crate::python::{pip_config_index, uv_config_index};
+    assert_eq!(
+        pip_config_index(
+            "$ python -m pip config list\nglobal.timeout='60'\nglobal.index-url='https://pypi.acme.dev/simple'\n"
+        )
+        .as_deref(),
+        Some("https://pypi.acme.dev/simple")
+    );
+    assert_eq!(
+        pip_config_index(":env:.extra-index-url='https://a.example/simple https://b.example/simple'\n").as_deref(),
+        Some("https://a.example/simple")
+    );
+    assert_eq!(
+        pip_config_index(
+            "global.index-url='https://pypi.org/simple'\ninstall.extra-index-url='https://pypi.python.org/simple https://a.example/simple'\n"
+        )
+        .as_deref(),
+        Some("https://a.example/simple")
+    );
+    assert_eq!(
+        pip_config_index("global.index-url='https://a.example/https://pypi.org/simple'\n").as_deref(),
+        Some("https://a.example/https://pypi.org/simple")
+    );
+    assert_eq!(pip_config_index("global.timeout='60'\n"), None);
+    assert_eq!(
+        uv_config_index("uv.toml", "index-url = \"https://pypi.acme.dev/simple\"\n").as_deref(),
+        Some("https://pypi.acme.dev/simple")
+    );
+    assert_eq!(
+        uv_config_index(
+            "pyproject.toml",
+            "[project]\nname = \"x\"\n[[tool.uv.index]]\nname = \"acme\"\nurl = \"https://pypi.acme.dev/simple\"\n"
+        )
+        .as_deref(),
+        Some("https://pypi.acme.dev/simple")
+    );
+    assert_eq!(uv_config_index("pyproject.toml", "[project]\nname = \"x\"\n"), None);
+    assert_eq!(uv_config_index("uv.toml", "index-url = \"https://pypi.org/simple\"\n"), None);
+    assert_eq!(
+        uv_config_index(
+            "uv.toml",
+            "index-url = \"https://pypi.org/simple\"\n[[index]]\nurl = \"https://pypi.org/simple\"\n[[index]]\nurl = \"https://a.example/simple\"\n"
+        )
+        .as_deref(),
+        Some("https://a.example/simple")
+    );
+}
+
+#[test]
+fn one_pip_run_at_a_time_per_environment() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("venv/bin")).unwrap();
+    std::fs::write(dir.path().join("venv/pyvenv.cfg"), "home = /usr/bin\n").unwrap();
+    let python = dir.path().join("venv/bin/python");
+    let busy = crate::python::Busy::take(&python).unwrap();
+    // `python3` of the same virtualenv is the same environment.
+    assert!(crate::python::Busy::take(&dir.path().join("venv/bin/python3")).is_err());
+    assert!(crate::python::Busy::take(&dir.path().join("other/python")).is_ok());
+    drop(busy);
+    assert!(crate::python::Busy::take(&python).is_ok());
 }

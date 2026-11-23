@@ -5,6 +5,8 @@
 
 #![cfg(unix)]
 
+mod common;
+
 use ide_core::IdeEvent;
 use ide_host::plugins::remote_host::{
     EVENT_NOTIFICATION, PackageSyncReport, PluginEventMessage, RemotePlugins, SECRET_REQUEST, SYNC_PACKAGES,
@@ -139,15 +141,8 @@ async fn remote_projects_run_the_desktops_code_plugins_on_the_server() {
     let peer_slot = Arc::new(OnceLock::new());
     let sink_peer = peer_slot.clone();
     let host = Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
         sink_for: Box::new(move |w| rpc::event_sink(sink_peer.clone(), Some(w.to_owned()))),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
+        ..common::host_config(&base)
     }));
     let plugins = RemotePlugins::start(&base.join("data"), &host, peer_slot.clone()).unwrap();
     plugins.host().set_program_path(path_var);
@@ -260,15 +255,8 @@ async fn remote_projects_get_plugin_views_and_custom_editors() {
     let peer_slot = Arc::new(OnceLock::new());
     let sink_peer = peer_slot.clone();
     let host = Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
         sink_for: Box::new(move |w| rpc::event_sink(sink_peer.clone(), Some(w.to_owned()))),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
+        ..common::host_config(&base)
     }));
     let plugins = RemotePlugins::start(&base.join("data"), &host, peer_slot.clone()).unwrap();
     plugins.host().set_program_path(path_var);
@@ -382,15 +370,8 @@ async fn api14_remote_calls_keep_browser_listeners_and_secrets_on_the_desktop() 
     let peer_slot = Arc::new(OnceLock::new());
     let sink_peer = peer_slot.clone();
     let host = Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
         sink_for: Box::new(move |w| rpc::event_sink(sink_peer.clone(), Some(w.into()))),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
+        ..common::host_config(&base)
     }));
     let plugins = RemotePlugins::start(&base.join("data"), &host, peer_slot.clone()).unwrap();
     let mut dispatcher = Dispatcher::standard();
@@ -600,15 +581,8 @@ async fn api14_stage3_remote_terminal_pins_and_exit_events_stay_on_the_execution
     let peer_slot = Arc::new(OnceLock::new());
     let sink_peer = peer_slot.clone();
     let host = Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
         sink_for: Box::new(move |w| rpc::event_sink(sink_peer.clone(), Some(w.into()))),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
+        ..common::host_config(&base)
     }));
     let plugins = RemotePlugins::start(&base.join("data"), &host, peer_slot.clone()).unwrap();
     plugins.host().set_program_path(path_var);
@@ -850,15 +824,9 @@ async fn api14_database_sources_credentials_and_disable_lifetime_run_on_the_serv
     let slot = Arc::new(OnceLock::new());
     let sink = slot.clone();
     let host = Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("local"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
         sink_for: Box::new(move |w| rpc::event_sink(sink.clone(), Some(w.into()))),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
+        local_data_dir: base.join("local"),
+        ..common::host_config(&base)
     }));
     let plugins = RemotePlugins::start(&base.join("data"), &host, slot.clone()).unwrap();
     let mut dispatcher = Dispatcher::standard();
@@ -947,17 +915,7 @@ async fn api14_database_sources_credentials_and_disable_lifetime_run_on_the_serv
 async fn command_rpc_fixture() -> (tempfile::TempDir, Arc<RemotePlugins>, Peer, Arc<Client>) {
     let tmp = tempfile::tempdir().unwrap();
     let peer_slot = Arc::new(OnceLock::new());
-    let host = Arc::new(Host::new(HostConfig {
-        config_dir: tmp.path().join("config"),
-        data_dir: tmp.path().join("data"),
-        local_data_dir: tmp.path().join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(|_: IdeEvent| {})),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    }));
+    let host = Arc::new(Host::new(common::host_config(tmp.path())));
     let plugins = RemotePlugins::start(&tmp.path().join("data"), &host, peer_slot.clone()).unwrap();
     plugins.host().install_from_dir(&fixture("misbehave"), &Consent::all()).unwrap();
     plugins.host().install_from_dir(&fixture("jobs"), &Consent::all()).unwrap();

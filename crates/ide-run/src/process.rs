@@ -177,7 +177,7 @@ fn shorten_java(inv: &mut Invocation, config: &RunConfig, cwd: &Path) -> IdeResu
         return Ok(TempFile(None));
     }
     let java = if inv.program.components().count() == 1 {
-        crate::which::find_executable(&inv.program.to_string_lossy(), &crate::wrap::search_path_in(config, cwd))
+        ide_core::process::find_executable(&inv.program.to_string_lossy(), &crate::wrap::search_path_in(config, cwd))
             .unwrap_or_else(|| inv.program.clone())
     } else {
         inv.program.clone()
@@ -302,7 +302,7 @@ fn resolve_program(command: &str, cwd: &Path, config: &RunConfig, windows: bool)
                 return local;
             }
             if path.extension().is_none()
-                && let Some(found) = crate::which::executable_names(command, true, pathext.as_deref())
+                && let Some(found) = ide_core::process::executable_names(command, true, pathext.as_deref())
                     .iter()
                     .map(|name| cwd.join(name))
                     .find(|p| p.is_file())
@@ -310,7 +310,7 @@ fn resolve_program(command: &str, cwd: &Path, config: &RunConfig, windows: bool)
                 return found;
             }
         }
-        if let Some(found) = crate::which::find_executable_in(command, &search, windows, pathext.as_deref()) {
+        if let Some(found) = ide_core::process::find_executable_in(command, &search, windows, pathext.as_deref()) {
             return found;
         }
     }

@@ -38,6 +38,7 @@ Object.assign(window, {
           paddingRight: false,
           tooltip: null,
           parts: [],
+          textEdits: [],
         },
       ]);
     },
