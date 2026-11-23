@@ -262,6 +262,7 @@ export function choiceItems(choices: readonly Produced[], debug: boolean): MenuI
     { kind: "header", label: debug ? "Choose configuration to debug" : "Choose configuration to run" },
     ...choices.map((p): MenuItem => ({
       label: debug ? tx`Debug '${p.name}'` : tx`Run '${p.name}'`,
+      preserveLabelEnd: true,
       verbatim: true,
       icon: debug ? "debug" : "run",
       shortcut: p.detail,

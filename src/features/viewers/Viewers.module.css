@@ -20,12 +20,6 @@
   font-size: var(--fs-small);
   color: var(--fg-secondary);
 }
-.separator {
-  width: 1px;
-  height: 16px;
-  margin: 0 6px;
-  background: var(--border-strong);
-}
 .spacer {
   flex: 1;
 }
@@ -60,6 +54,47 @@
 }
 
 /* --- image viewer ------------------------------------------------------------ */
+
+.imageToolbar {
+  height: auto;
+  min-height: calc(var(--h-control) + var(--space-2));
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  padding: var(--space-1) var(--space-2);
+}
+
+.imageActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.imageActionGroup {
+  display: flex;
+  gap: var(--space-0-5);
+}
+
+.imageActionGroup + .imageActionGroup {
+  border-inline-start: 1px solid var(--border-strong);
+  padding-inline-start: var(--space-1);
+}
+
+.imageToolbar .textButton {
+  white-space: nowrap;
+}
+
+.imageInfo {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-0-5) var(--space-2);
+  margin-inline-start: auto;
+  font-size: var(--fs-ui);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 
 .canvas {
   flex: 1;

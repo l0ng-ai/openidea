@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { commands } from "@/platform/ipc";
-import { ExportTestResultsDialog, defaultExportPath, loadExportOptions } from "./ExportTestResultsDialog";
+import { ExportTestResultsDialog, defaultExportName, loadExportOptions } from "./ExportTestResultsDialog";
 import { TestResults } from "./testing";
 
 const actions = vi.hoisted(() => ({ executeAction: vi.fn(async () => {}) }));
@@ -56,13 +56,15 @@ function open(onClose = vi.fn()) {
   return onClose;
 }
 
-const file = () => screen.getByLabelText("Output file");
+const file = () => screen.getByLabelText("File name");
+const folder = () => screen.getByLabelText("Folder");
 const press = (name: string) => fireEvent.click(screen.getByRole("button", { name }));
 
 describe("ExportTestResultsDialog", () => {
-  it("writes an HTML report to the project folder under IDEA's name and opens it in the browser", async () => {
+  it("writes an HTML report to the project folder and opens it in the browser", async () => {
     const onClose = open();
-    expect(file()).toHaveValue("/work/app/Test Results - go test _calc.html");
+    expect(file()).toHaveValue("Test Results - go test _calc.html");
+    expect(folder()).toHaveValue("/work/app/");
     expect(screen.getByRole("radio", { name: "HTML" })).toBeChecked();
     press("OK");
     await waitFor(() => expect(onClose).toHaveBeenCalled());
@@ -92,7 +94,7 @@ describe("ExportTestResultsDialog", () => {
   it("switches the extension with the format, keeps XML out of the browser, and remembers the choice", async () => {
     const onClose = open();
     fireEvent.click(screen.getByRole("radio", { name: "XML" }));
-    expect(file()).toHaveValue("/work/app/Test Results - go test _calc.xml");
+    expect(file()).toHaveValue("Test Results - go test _calc.xml");
     // Only an HTML report opens in the browser.
     expect(screen.getByRole("checkbox", { name: "Open exported file in browser" })).toBeDisabled();
     press("OK");
@@ -143,18 +145,36 @@ describe("ExportTestResultsDialog", () => {
   });
 
   it("doesn't ask again for a file the save dialog already confirmed", async () => {
-    onDisk["/tmp/picked.html"] = "file";
-    dialog.save.mockResolvedValueOnce("/tmp/picked.html");
+    const path = "C:\\reports\\picked.html";
+    onDisk[path] = "file";
+    dialog.save.mockResolvedValueOnce(path);
     const onClose = open();
     press("Browse…");
-    await waitFor(() => expect(file()).toHaveValue("/tmp/picked.html"));
+    await waitFor(() => expect(file()).toHaveValue("picked.html"));
+    expect(folder()).toHaveValue("C:\\reports\\");
     expect(dialog.save).toHaveBeenCalledWith(
-      expect.objectContaining({ filters: [{ name: "HTML", extensions: ["html"] }] }),
+      expect.objectContaining({
+        defaultPath: "/work/app/Test Results - go test _calc.html",
+        filters: [{ name: "HTML", extensions: ["html"] }],
+      }),
     );
     press("OK");
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(messages.confirm).not.toHaveBeenCalled();
-    expect(written.map((w) => w.path)).toEqual(["/tmp/picked.html"]);
+    expect(written.map((w) => w.path)).toEqual([path]);
+  });
+
+  it("confirms again when the destination changes after using the save dialog", async () => {
+    dialog.save.mockResolvedValueOnce("/tmp/picked.html");
+    onDisk["/work/app/reports/picked.html"] = "file";
+    messages.confirm.mockResolvedValueOnce(false);
+    open();
+    press("Browse…");
+    await waitFor(() => expect(file()).toHaveValue("picked.html"));
+    fireEvent.change(folder(), { target: { value: "reports" } });
+    press("OK");
+    await waitFor(() => expect(messages.confirm).toHaveBeenCalledOnce());
+    expect(written).toHaveLength(0);
   });
 
   it("reports a directory or a failed write and stays open", async () => {
@@ -187,15 +207,11 @@ describe("ExportTestResultsDialog", () => {
   });
 });
 
-describe("defaultExportPath", () => {
+describe("defaultExportName", () => {
   it("replaces characters file systems refuse in the configuration's name", () => {
-    expect(defaultExportPath("C:\\proj\\", 'a/b\\c:d*e?f"g<h>i|j', "xml")).toBe(
-      "C:\\proj/Test Results - a_b_c_d_e_f_g_h_i_j.xml",
-    );
-    expect(defaultExportPath("/p", "go test ./...", "html")).toBe("/p/Test Results - go test.html");
-    expect(defaultExportPath("/p", "Tests in 'com.acme.Cart'", "html")).toBe(
-      "/p/Test Results - Tests in 'com_acme_Cart'.html",
-    );
-    expect(defaultExportPath("/p", "...", "html")).toBe("/p/Test Results - Tests.html");
+    expect(defaultExportName('a/b\\c:d*e?f"g<h>i|j', "xml")).toBe("Test Results - a_b_c_d_e_f_g_h_i_j.xml");
+    expect(defaultExportName("go test ./...", "html")).toBe("Test Results - go test.html");
+    expect(defaultExportName("Tests in 'com.acme.Cart'", "html")).toBe("Test Results - Tests in 'com_acme_Cart'.html");
+    expect(defaultExportName("...", "html")).toBe("Test Results - Tests.html");
   });
 });

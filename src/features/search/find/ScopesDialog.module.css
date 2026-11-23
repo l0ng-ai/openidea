@@ -1,26 +1,32 @@
 .body {
   display: grid;
-  grid-template-columns: 200px 1fr;
-  min-height: 300px;
+  grid-template-columns: 200px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  height: clamp(240px, 55vh, 360px);
   border: 1px solid var(--border);
   border-radius: var(--radius-small);
+  overflow: hidden;
 }
 .side {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  border-right: 1px solid var(--border);
+  min-height: 0;
+  border-inline-end: 1px solid var(--border);
 }
 .toolbar {
   display: flex;
+  flex: none;
   gap: var(--space-0-5);
-  padding: 4px;
+  padding: var(--space-1);
   border-bottom: 1px solid var(--border);
 }
 .list {
   flex: 1;
+  min-height: 0;
   margin: 0;
-  padding: 4px;
+  padding: var(--space-1);
+  scroll-padding-block: var(--space-1);
   list-style: none;
   overflow: auto;
 }
@@ -29,13 +35,16 @@
   align-items: center;
   width: 100%;
   height: var(--h-list-row);
-  padding: 0 8px;
+  padding: 0 var(--space-2);
   border: 0;
   border-radius: var(--radius-row);
   background: none;
   color: var(--fg);
   font-size: var(--fs-ui);
-  text-align: left;
+  text-align: start;
+}
+.item > span {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -47,16 +56,25 @@
   background: var(--bg-list-selected);
 }
 .empty {
-  padding: 8px;
+  padding: var(--space-2);
   color: var(--fg-muted);
   font-size: var(--fs-ui);
 }
 .form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1-5);
-  padding: 10px 14px;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  align-content: start;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-3);
   min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+.form > .error,
+.form > .empty,
+.help {
+  grid-column: 1 / -1;
 }
 .label {
   color: var(--fg-muted);
@@ -65,10 +83,11 @@
 .error {
   color: var(--danger);
   font-size: var(--fs-small);
+  overflow-wrap: anywhere;
 }
 .help {
-  margin: 6px 0 0;
-  padding-left: 16px;
+  margin: 0;
+  padding-inline-start: var(--space-4);
   color: var(--fg-muted);
   font-size: var(--fs-small);
   line-height: 1.6;
@@ -76,4 +95,16 @@
 .help code {
   font-family: var(--font-mono);
   color: var(--fg);
+}
+
+@media (max-width: 540px) {
+  .body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(84px, 1fr) minmax(0, auto);
+    height: clamp(240px, 65vh, 360px);
+  }
+  .side {
+    border-inline-end: 0;
+    border-bottom: 1px solid var(--border);
+  }
 }
