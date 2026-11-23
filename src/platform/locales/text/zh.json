@@ -2,6 +2,8 @@
   "Create function '{name}'": "创建函数 '{name}'",
   "Create class '{name}'": "创建类 '{name}'",
   "Create method '{name}' in '{owner}'": "在 '{owner}' 中创建方法 '{name}'",
+  "Select Methods to Override": "选择要重写的方法",
+  "No methods to override": "没有可重写的方法",
   "Amend commit failed": "修订提交失败",
   "Amending this commit would cause a conflict. You can keep the prepared changes as a separate amend commit.": "修订此提交会产生冲突。可以将已准备好的改动保留为单独的修订提交。",
   "Create Amend Commit Anyway": "仍然创建修订提交",

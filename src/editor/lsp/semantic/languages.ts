@@ -63,6 +63,18 @@ export interface LanguageSemantics {
   asyncIntentions?(view: EditorView, signal: AbortSignal): Promise<ContributedIntention[]>;
   /** Fallback for the Implement Methods action when the server offers no code action. */
   implementMethods?(view: EditorView): Promise<boolean>;
+  /** Fallback for the Override Methods action when the server offers no code action. */
+  overrideMethods?(view: EditorView): Promise<boolean>;
+  /** Generate (⌘N) entries when the server offers no code action. */
+  generate?(view: EditorView): GenerateEntry[];
+}
+
+/** A row of the Generate popup contributed by a language. */
+export interface GenerateEntry {
+  id: string;
+  label: string;
+  icon: string;
+  run: () => unknown;
 }
 
 const registry: Record<string, LanguageSemantics> = {};

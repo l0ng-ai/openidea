@@ -12,7 +12,12 @@ import {
   pythonSyntaxRanges,
   type PythonSymbolKind,
 } from "./highlight";
-import { implementPythonAbstractMethods, pythonMemberIntentions } from "./members";
+import {
+  implementPythonAbstractMethods,
+  overridePythonMethods,
+  pythonGenerateEntries,
+  pythonMemberIntentions,
+} from "./members";
 import { pythonCreateFixes } from "./createFromUsage";
 import { pythonTypeHintIntentions } from "./typeHints";
 import { pythonStringIntentions } from "./stringFormat";
@@ -62,6 +67,8 @@ const pythonSemantics: LanguageSemantics = {
   quickFixes: pythonCreateFixes,
   asyncIntentions: pythonTypeHintIntentions,
   implementMethods: implementPythonAbstractMethods,
+  overrideMethods: overridePythonMethods,
+  generate: pythonGenerateEntries,
 };
 
 registerLanguageSemantics("python", pythonSemantics);

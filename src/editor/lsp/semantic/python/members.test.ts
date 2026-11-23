@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classMembers, enclosingClass, memberStubs } from "./members";
+import { classMembers, enclosingClass, forwardedArgs, memberStubs, overrideText } from "./members";
 
 const src = `from abc import ABC, abstractmethod
 
@@ -68,5 +68,49 @@ describe("python members", () => {
   it("writes stubs at the body's indentation", () => {
     const [name] = classMembers(src, 4);
     expect(memberStubs([name!], "    ", "    ")).toBe("    @property\n    def name(self) -> str:\n        pass");
+  });
+});
+
+describe("python overrides", () => {
+  it("passes the parameters on, keyword-only ones by keyword", () => {
+    expect(forwardedArgs("def f(self, a, b: int = 2, /, c=None, *, d, **kw) -> None:")).toBe("a, b, c, d=d, **kw");
+    expect(forwardedArgs("def g(cls, *args: Any, key: str = 'x') -> int:")).toBe("*args, key=key");
+    expect(forwardedArgs("def h(x: dict[str, int] = {}):")).toBe("x");
+  });
+
+  it("calls the base through super(), without return for __init__ and None", () => {
+    const [area, describe_] = classMembers(src, 4).slice(1);
+    expect(overrideText(area!, "Shape", "    ", "    ")).toBe(
+      "    def area(\n        self, scale: float = 1.0\n    ) -> float:\n        return super().area(scale)",
+    );
+    expect(overrideText(describe_!, "Shape", "    ", "    ")).toBe(
+      "    def describe(self) -> str:\n        return super().describe()",
+    );
+    const init = classMembers(src, 19)[0]!;
+    expect(overrideText(init, "Square", "", "  ")).toBe("def __init__(self, side: float):\n  super().__init__(side)");
+    const [prop, stat, coro] = classMembers(
+      [
+        "class B:",
+        "    @property",
+        "    def name(self) -> str: ...",
+        "    @staticmethod",
+        "    def make(x) -> None: ...",
+        "    async def fetch(self, url: str) -> bytes: ...",
+        "    @overload",
+        "    def get(self, k: int) -> int: ...",
+      ],
+      1,
+    );
+    expect(overrideText(prop!, "B", "", "    ")).toBe("@property\ndef name(self) -> str:\n    return super().name");
+    expect(overrideText(stat!, "B", "", "    ")).toBe("@staticmethod\ndef make(x) -> None:\n    B.make(x)");
+    expect(overrideText(coro!, "B", "", "    ")).toBe(
+      "async def fetch(self, url: str) -> bytes:\n    return await super().fetch(url)",
+    );
+    expect(classMembers(["class B:", "    @overload", "    def get(self) -> int: ..."], 1)[0]!.hidden).toBe(true);
+  });
+
+  it("finds a class without bases when asked", () => {
+    expect(enclosingClass(["class A:", "    x = 1"], 2)).toBeNull();
+    expect(enclosingClass(["class A:", "    x = 1"], 2, true)).toBe(1);
   });
 });
