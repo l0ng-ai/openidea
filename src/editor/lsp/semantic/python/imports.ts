@@ -12,6 +12,9 @@ export function topLevelBindings(lines: readonly string[]): Map<string, Binding>
   for (let i = 0; i < lines.length; i++) {
     let text = lines[i]!;
     if (/^\s/.test(text)) continue;
+    // `from m import a, \` + `b`: one statement.
+    while (text.trimEnd().endsWith("\\") && i + 1 < lines.length)
+      text = text.trimEnd().slice(0, -1) + " " + lines[++i]!;
     const from = /^from\s+(\S+)\s+import\s+(.*)$/.exec(text);
     if (from) {
       let names = from[2]!;
@@ -52,18 +55,18 @@ export function importedFrom(lines: readonly string[], name: string): string | n
 }
 
 /**
- * Import statements for the names in `code` that `current` does not bind and the base file binds
+ * Import statements for `names` that `current` does not bind and the base file binds
  * (`base`); `module` is where the base file's own definitions are imported from ("" for the
  * current file, null when unknown).
  */
 export function neededImports(
-  code: string,
+  names: readonly string[],
   current: ReadonlyMap<string, Binding>,
   base: ReadonlyMap<string, Binding>,
   module: string | null,
 ): string[] {
   const out = new Set<string>();
-  for (const [name] of code.matchAll(/\b[A-Za-z_]\w*\b/g)) {
+  for (const name of names) {
     if (current.has(name)) continue;
     const binding = base.get(name);
     if (!binding) continue;
@@ -85,6 +88,9 @@ export function importLine(lines: readonly string[]): number {
       last = i;
       if (text.includes("(") && !text.includes(")"))
         while (last + 1 < lines.length && !lines[last]!.includes(")")) last++;
+      // `from m import a, \` + `b`: up to its last line.
+      while (lines[last]!.trimEnd().endsWith("\\") && last + 1 < lines.length) last++;
+      i = last;
     }
   }
   if (last >= 0) return last + 1;

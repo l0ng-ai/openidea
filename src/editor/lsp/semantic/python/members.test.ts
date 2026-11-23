@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classMembers, enclosingClass, forwardedArgs, memberStubs, overrideText } from "./members";
+import { classMembers, enclosingClass, forwardedArgs, memberStubs, overrideText, signatureNames } from "./members";
 
 const src = `from abc import ABC, abstractmethod
 
@@ -102,7 +102,7 @@ describe("python overrides", () => {
       1,
     );
     expect(overrideText(prop!, "B", "", "    ")).toBe("@property\ndef name(self) -> str:\n    return super().name");
-    expect(overrideText(stat!, "B", "", "    ")).toBe("@staticmethod\ndef make(x) -> None:\n    B.make(x)");
+    expect(stat!.name).toBe("make");
     expect(overrideText(coro!, "B", "", "    ")).toBe(
       "async def fetch(self, url: str) -> bytes:\n    return await super().fetch(url)",
     );
@@ -112,5 +112,59 @@ describe("python overrides", () => {
   it("finds a class without bases when asked", () => {
     expect(enclosingClass(["class A:", "    x = 1"], 2)).toBeNull();
     expect(enclosingClass(["class A:", "    x = 1"], 2, true)).toBe(1);
+  });
+});
+
+describe("python override review cases", () => {
+  it("splits parameters outside strings and lambdas", () => {
+    expect(forwardedArgs('def f(self, names="a, b", x=1):')).toBe("names, x");
+    expect(forwardedArgs('def f(self, close=")", later=2):')).toBe("close, later");
+    expect(forwardedArgs('def f(self, open="(", y=0):')).toBe("open, y");
+    expect(forwardedArgs("def f(self, key=lambda a, b: a, *, z):")).toBe("key, z=z");
+  });
+
+  it("cuts a one-line method at the colon closing its header", () => {
+    const [go, repr] = classMembers(
+      ["class B:", "    def go(self, x): return x + 1", '    def __repr__(self) -> str: return f"B({1}:{2})"'],
+      1,
+    );
+    expect(go!.lines).toEqual(["def go(self, x):"]);
+    expect(repr!.lines).toEqual(["def __repr__(self) -> str:"]);
+    expect(overrideText(go!, "C", "", "    ")).toBe("def go(self, x):\n    return super().go(x)");
+  });
+
+  it("reads non-ASCII class, method and base names", () => {
+    const src = ["class Größe(basis.Maß, Ünter):", "    def größe(self, wert: int) -> int: ..."];
+    expect(enclosingClass(src, 2)).toBe(1);
+    expect(classMembers(src, 1)[0]!.name).toBe("größe");
+    expect(forwardedArgs("def größe(self, wert: int):")).toBe("wert");
+  });
+
+  it("calls a static method's base through the overriding class", () => {
+    const [stat] = classMembers(["class B:", "    @staticmethod", "    def make(x) -> None: ..."], 1);
+    expect(overrideText(stat!, "Child", "", "    ")).toBe(
+      "@staticmethod\ndef make(x) -> None:\n    super(Child, Child).make(x)",
+    );
+  });
+
+  it("lists the names an override's annotations, defaults and decorators use", () => {
+    const [add] = classMembers(
+      [
+        "class B:",
+        "    @functools.cache",
+        "    def add(self, title: str, p: Priority = Priority.LOW, *, d: 'Date' = None) -> Task: ...",
+      ],
+      1,
+    );
+    expect(signatureNames(add!).sort()).toEqual([
+      "Date",
+      "LOW",
+      "None",
+      "Priority",
+      "Task",
+      "cache",
+      "functools",
+      "str",
+    ]);
   });
 });

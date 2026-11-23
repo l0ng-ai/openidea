@@ -471,7 +471,7 @@ export function registerLspActions(): () => void {
               anchor: caretAnchor(v, v.state.selection.main.head),
               title: tx("Generate"),
               compact: true,
-              items: entries.map((e) => ({ id: e.id, label: e.label, icon: e.icon, run: () => void e.run() })),
+              items: entries.map((e) => ({ id: e.id, label: tx(e.label), icon: e.icon, run: () => void e.run() })),
             });
             return true;
           },

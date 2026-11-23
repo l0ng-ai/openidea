@@ -16,9 +16,14 @@ import { showHint } from "../../hint";
 import { chooseMembers } from "../../memberChooser";
 import { importLine, importedFrom, neededImports, placeImports, topLevelBindings } from "./imports";
 
-const CLASS_HEADER = /^(\s*)class\s+\w+\s*\((.*)\)\s*:/;
+/** A Python identifier (letters of any script). */
+const ID = "[\\p{L}_][\\p{L}\\p{N}_]*";
+const CLASS_HEADER = new RegExp(`^(\\s*)class\\s+${ID}\\s*\\((.*)\\)\\s*:`, "u");
 const CLASS = /^\s*class\s/;
-const DEF = /^\s*(?:async\s+)?def\s+(\w+)/;
+const CLASS_NAME = new RegExp(`class\\s+(${ID})`, "u");
+const DEF = new RegExp(`^\\s*(?:async\\s+)?def\\s+(${ID})`, "u");
+const BASE = new RegExp(`(?:^|,)\\s*(${ID}(?:\\.${ID})*)\\s*(?=,|$|\\[)`, "gu");
+const PARAM = new RegExp(`^(\\*{0,2})(${ID})`, "u");
 
 const indentOf = (line: string) => line.length - line.trimStart().length;
 const isPython = (view: EditorView) => docOf(view)?.uiMode === "Python";
@@ -93,17 +98,22 @@ export function classMembers(lines: readonly string[], header: number): PythonMe
     }
     const def = DEF.exec(text);
     if (def) {
-      // The signature may span lines: up to the `:` closing it.
+      // The signature may span lines: up to the `:` closing it; a body on the same line
+      // (`def f(self) -> int: ...`, `def go(self): return 1`) is left out.
       const sig: string[] = [];
-      let depth = 0;
       for (let m = n; m <= end; m++) {
         const part = lines[m - 1]!;
         sig.push(part.slice(Math.min(memberIndent, indentOf(part))));
-        for (const ch of part) depth += ch === "(" || ch === "[" ? 1 : ch === ")" || ch === "]" ? -1 : 0;
-        if (depth <= 0 && /:\s*(#.*)?$|:\s*\.\.\.\s*$|:\s*\S/.test(part)) break;
+        const joined = sig.join("\n");
+        const colon = headerColon(joined);
+        if (colon >= 0) {
+          sig[sig.length - 1] = sig[sig.length - 1]!.slice(
+            0,
+            colon + 1 - (joined.length - sig[sig.length - 1]!.length),
+          );
+          break;
+        }
       }
-      // `def f(self) -> int: ...` keeps only the signature.
-      sig[sig.length - 1] = sig[sig.length - 1]!.replace(/:\s*(\.\.\.|pass)?\s*(#.*)?$/, ":");
       const abstract = decorators.some((d) => /^@(abc\.)?abstract(method|property)\b/.test(d));
       out.push({
         name: def[1]!,
@@ -128,7 +138,7 @@ function bases(header: string): Array<{ name: string; col: number }> {
   if (!m) return [];
   const start = header.indexOf("(") + 1;
   const out: Array<{ name: string; col: number }> = [];
-  for (const b of m[2]!.matchAll(/(?:^|,)\s*([A-Za-z_][\w.]*)\s*(?=,|$|\[)/g)) {
+  for (const b of m[2]!.matchAll(BASE)) {
     const name = b[1]!;
     if (name === "object" || name.includes("=")) continue;
     // The last segment of `abc.ABC`: that's what Go to Declaration resolves.
@@ -258,7 +268,8 @@ async function ancestors(view: EditorView, header: number): Promise<PythonBase[]
       const lines = await readFileLines(loc.path);
       const target = lines && enclosingClass(lines, loc.range.start.line + 1, true);
       if (!lines || !target) continue;
-      const name = /class\s+(\w+)/.exec(lines[target - 1]!)![1]!;
+      const name = CLASS_NAME.exec(lines[target - 1]!)?.[1];
+      if (!name) continue;
       if (name === "object") continue;
       // Imported in the file naming it, else declared in that file (and imported from where it is).
       const from = importedFrom(cls.lines, base.name);
@@ -270,25 +281,77 @@ async function ancestors(view: EditorView, header: number): Promise<PythonBase[]
   return out;
 }
 
-/** The parameters of `signature` (a `def`, possibly joined from several lines), trimmed; null when unclosed. */
+/** Index of the quote closing the string literal that opens at `i` of `text`, or `text.length`. */
+function skipString(text: string, i: number): number {
+  const quote = text[i]!;
+  for (let j = i + 1; j < text.length; j++) {
+    if (text[j] === "\\") j++;
+    else if (text[j] === quote) return j;
+  }
+  return text.length;
+}
+
+/** Index of the `:` that closes a `def` header in `text` (outside brackets, strings and comments), or -1. */
+export function headerColon(text: string): number {
+  let depth = 0;
+  let opened = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!;
+    if (c === '"' || c === "'") i = skipString(text, i);
+    else if (c === "#") {
+      const nl = text.indexOf("\n", i);
+      if (nl < 0) return -1;
+      i = nl;
+    } else if ("([{".includes(c)) {
+      depth++;
+      opened = true;
+    } else if (")]}".includes(c)) depth--;
+    else if (c === ":" && depth === 0 && opened) return i;
+  }
+  return -1;
+}
+
+/**
+ * The parameters of `signature` (a `def`, possibly joined from several lines), trimmed; null when
+ * unclosed. Commas in strings, brackets and between a `lambda` and its `:` do not split.
+ */
 export function signatureParams(signature: string): string[] | null {
   const open = signature.indexOf("(");
   if (open < 0) return null;
   const params: string[] = [];
   let depth = 0;
   let start = open + 1;
+  let lambda = false;
   for (let i = open; i < signature.length; i++) {
     const c = signature[i]!;
-    if ("([{".includes(c)) depth++;
+    if (c === '"' || c === "'") i = skipString(signature, i);
+    else if ("([{".includes(c)) depth++;
     else if (")]}".includes(c) && --depth === 0) {
       params.push(signature.slice(start, i));
       return params.map((p) => p.trim()).filter(Boolean);
-    } else if (c === "," && depth === 1) {
+    } else if (depth === 1 && /^lambda\b/.test(signature.slice(i, i + 7)) && !/[\p{L}\p{N}_]/u.test(signature[i - 1]!))
+      lambda = true;
+    else if (c === ":" && depth === 1 && lambda) lambda = false;
+    else if (c === "," && depth === 1 && !lambda) {
       params.push(signature.slice(start, i));
       start = i + 1;
     }
   }
   return null;
+}
+
+/**
+ * The names an override copied from `member` uses besides its own and its parameters': in its
+ * decorators, annotations, defaults and return annotation (string annotations included).
+ */
+export function signatureNames(member: PythonMember): string[] {
+  const decorators = member.lines.filter((l) => l.startsWith("@"));
+  const joined = member.lines.filter((l) => !l.startsWith("@")).join(" ");
+  const parts = [...decorators.map((d) => d.slice(1))];
+  for (const p of signatureParams(joined) ?? []) parts.push(p.replace(PARAM, ""));
+  const close = joined.lastIndexOf(")", headerColon(joined));
+  parts.push(joined.slice(close + 1));
+  return [...new Set(parts.join(" ").match(new RegExp(ID, "gu")) ?? [])];
 }
 
 /**
@@ -306,7 +369,7 @@ export function forwardedArgs(signature: string): string | null {
       keyword = true;
       continue;
     }
-    const m = /^(\*{0,2})(\w+)/.exec(raw);
+    const m = PARAM.exec(raw);
     if (!m) continue;
     if (i === 0 && !m[1] && (m[2] === "self" || m[2] === "cls")) continue;
     if (m[1] === "*") keyword = true;
@@ -315,15 +378,21 @@ export function forwardedArgs(signature: string): string | null {
   return args.join(", ");
 }
 
-/** An override of `member` of `base`: its decorators and signature, and a body calling the base. */
-export function overrideText(member: PythonMember, base: string, indent: string, unit: string): string {
+/**
+ * An override of `member` in the class named `owner`: its decorators and signature, and a body
+ * calling the base; null when the signature cannot be read.
+ */
+export function overrideText(member: PythonMember, owner: string, indent: string, unit: string): string | null {
   const decorators = member.lines.filter((l) => l.startsWith("@"));
   const signature = member.lines.filter((l) => !l.startsWith("@"));
   const joined = signature.join(" ");
   const isStatic = decorators.some((d) => /^@(builtins\.)?staticmethod\b/.test(d));
   const isProperty = decorators.some((d) => /^@((builtins|functools)\.)?(property|cached_property)\b/.test(d));
-  const target = isStatic ? base : "super()";
-  const call = isProperty ? `${target}.${member.name}` : `${target}.${member.name}(${forwardedArgs(joined) ?? ""})`;
+  // ponytail: a static method has no `self` for `super()`; a nested class needs `Outer.Owner` here.
+  const target = isStatic ? `super(${owner}, ${owner})` : "super()";
+  const args = forwardedArgs(joined);
+  if (!isProperty && args === null) return null;
+  const call = isProperty ? `${target}.${member.name}` : `${target}.${member.name}(${args})`;
   const awaited = /^\s*async\s/.test(joined) ? `await ${call}` : call;
   const returns = member.name !== "__init__" && !/->\s*None\s*:\s*$/.test(joined);
   return [...member.lines.map((l) => indent + l), `${indent}${unit}${returns ? "return " : ""}${awaited}`].join("\n");
@@ -347,7 +416,8 @@ export async function overridePythonMethods(view: EditorView): Promise<boolean> 
   for (const base of found)
     for (const member of base.members) {
       // `__x` is name-mangled: a subclass cannot override it.
-      if (member.hidden || taken.has(member.name) || /^__\w*[^_]_?$/.test(member.name)) continue;
+      if (member.hidden || taken.has(member.name) || /^__[\p{L}\p{N}_]*[^_]_?$/u.test(member.name)) continue;
+      if (overrideText(member, "C", "", "") === null) continue;
       taken.add(member.name);
       choices.push({ base, member });
     }
@@ -374,13 +444,14 @@ export async function overridePythonMethods(view: EditorView): Promise<boolean> 
   const current = topLevelBindings(lines);
   const imports = new Set<string>();
   for (const { base, member } of chosen)
-    for (const i of neededImports(member.lines.join("\n"), current, topLevelBindings(base.lines), base.module))
+    for (const i of neededImports(signatureNames(member), current, topLevelBindings(base.lines), base.module))
       imports.add(i);
+  const owner = CLASS_NAME.exec(lines[header - 1]!)![1]!;
   insertMembers(
     view,
     lines,
     header,
-    (indent, unit) => chosen.map(({ base, member }) => overrideText(member, base.name, indent, unit)).join("\n\n"),
+    (indent, unit) => chosen.map(({ member }) => overrideText(member, owner, indent, unit)!).join("\n\n"),
     [...imports],
   );
   return true;
@@ -389,22 +460,26 @@ export async function overridePythonMethods(view: EditorView): Promise<boolean> 
 /** Generate (⌘N) in a Python class: Override / Implement Methods. */
 export function pythonGenerateEntries(view: EditorView): GenerateEntry[] {
   if (!isPython(view)) return [];
+  const lines = view.state.doc.toJSON();
   const line = view.state.doc.lineAt(view.state.selection.main.head).number;
-  if (!enclosingClass(view.state.doc.toJSON(), line, true)) return [];
-  return [
+  if (!enclosingClass(lines, line, true)) return [];
+  const entries: GenerateEntry[] = [
     {
       id: "python.overrideMethods",
       label: "Override Methods…",
       icon: "gutter-overridden",
       run: () => overridePythonMethods(view),
     },
-    {
+  ];
+  // Abstract methods come from bases: a class without any has nothing to implement.
+  if (enclosingClass(lines, line))
+    entries.push({
       id: "python.implementMethods",
       label: "Implement Methods…",
       icon: "gutter-implemented",
       run: () => implementPythonAbstractMethods(view),
-    },
-  ];
+    });
+  return entries;
 }
 
 /** The bulb on a Python class header with bases. */

@@ -50,22 +50,20 @@ describe("override imports", () => {
   });
 
   it("imports the names a copied signature needs, as the base module binds them", () => {
-    const sig = "def add(self, title: str, priority: Priority = Priority.NORMAL, due: date | None = None) -> Task:";
+    const sig = ["str", "Priority", "NORMAL", "date", "None", "Task"];
     const current = topLevelBindings(["from tasks.models import TaskList", "from datetime import date"]);
     expect(neededImports(sig, current, topLevelBindings(models), "tasks.models")).toEqual([
       "from tasks.models import Priority",
     ]);
-    expect(neededImports("def f(self, s: slug) -> None:", current, topLevelBindings(models), "tasks.models")).toEqual(
-      [],
-    );
-    expect(neededImports("def f(self, s: slug) -> None:", current, topLevelBindings(models), "")).toEqual([
-      "from .util import slug",
-    ]);
+    expect(neededImports(["slug", "None"], current, topLevelBindings(models), "tasks.models")).toEqual([]);
+    expect(neededImports(["slug", "None"], current, topLevelBindings(models), "")).toEqual(["from .util import slug"]);
     expect(neededImports(sig, new Map(), topLevelBindings(models), null)).toEqual(["from datetime import date"]);
   });
 
   it("puts new imports after the last import, else after the module docstring", () => {
     expect(importLine(models)).toBe(9);
+    expect(importLine(["from x import a, \\", "    b", "", "y = 1"])).toBe(2);
+    expect(topLevelBindings(["from x import a, \\", "    b"]).get("b")).toEqual({ import: "from x import b" });
     expect(importLine(['"""Doc', 'string."""', "# note", "", "class A:", "    pass"])).toBe(4);
     expect(importLine(['"""Doc."""', "x = 1"])).toBe(1);
     expect(importLine(["class A:", "    pass"])).toBe(0);
