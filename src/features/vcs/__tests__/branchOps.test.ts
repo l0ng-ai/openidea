@@ -6,12 +6,20 @@ const mocks = vi.hoisted(() => ({
   notify: vi.fn(),
   removeWorktree: vi.fn(),
   deleteBranch: vi.fn(),
+  deleteTag: vi.fn(),
+  remotes: vi.fn(),
+  remoteOperation: vi.fn(),
   worktrees: vi.fn(),
   restoreBranch: vi.fn(),
   branches: vi.fn(),
+  branchInfo: vi.fn(),
+  mergeBase: vi.fn(),
+  rebases: vi.fn(),
   rename: vi.fn(),
   ask: vi.fn(),
   checkout: vi.fn(),
+  hasCommit: vi.fn(),
+  chooseRevision: vi.fn(),
   executeAction: vi.fn(),
   windowOpenRemote: vi.fn(),
 }));
@@ -24,11 +32,23 @@ vi.mock("@/workbench/messages", async (original) => ({
   ...(await original<typeof import("@/workbench/messages")>()),
   ask: mocks.ask,
 }));
+vi.mock("../RevisionChooser", () => ({ chooseRevision: mocks.chooseRevision }));
 vi.mock("@/platform/actions", async (original) => ({
   ...(await original<typeof import("@/platform/actions")>()),
   executeAction: mocks.executeAction,
 }));
-vi.mock("@/workbench/contributions", () => ({ notifications: () => ({ notify: mocks.notify, expire: vi.fn() }) }));
+vi.mock("@/workbench/contributions", async (original) => ({
+  ...(await original<typeof import("@/workbench/contributions")>()),
+  notifications: () => ({ notify: mocks.notify, expire: vi.fn() }),
+}));
+vi.mock("../ops", async (original) => ({
+  ...(await original<typeof import("../ops")>()),
+  runRemote: mocks.remoteOperation,
+}));
+vi.mock("../branchRebase", async (original) => ({
+  ...(await original<typeof import("../branchRebase")>()),
+  runBranchRebases: mocks.rebases,
+}));
 vi.mock("@/platform/ipc", async (original) => {
   const real = await original<typeof import("@/platform/ipc")>();
   return {
@@ -38,15 +58,31 @@ vi.mock("@/platform/ipc", async (original) => {
       vcsWorktrees: mocks.worktrees,
       vcsRemoveWorktree: mocks.removeWorktree,
       vcsDeleteBranch: mocks.deleteBranch,
+      vcsDeleteTag: mocks.deleteTag,
+      vcsRemotes: mocks.remotes,
       vcsRestoreBranch: mocks.restoreBranch,
       vcsBranches: mocks.branches,
+      vcsBranchInfo: mocks.branchInfo,
+      vcsMergeBase: mocks.mergeBase,
       vcsRenameBranch: mocks.rename,
       vcsCheckout: mocks.checkout,
+      vcsHasCommit: mocks.hasCommit,
       windowOpenRemote: mocks.windowOpenRemote,
     },
   };
 });
-import { checkoutBranch, deleteBranch, deleteBranches, newBranch, newBranchInRepos, renameBranch } from "../branchOps";
+import {
+  checkoutAndRebase,
+  checkoutBranch,
+  checkoutInRepos,
+  checkoutRevision,
+  deleteBranch,
+  deleteBranches,
+  deleteTag,
+  newBranch,
+  newBranchInRepos,
+  renameBranch,
+} from "../branchOps";
 import { useVcs } from "../store";
 import { useProject } from "@/platform/project";
 import { useRemote } from "@/platform/remote";
@@ -80,10 +116,28 @@ beforeEach(() => {
     roots: ["/p/front"],
     branch: branch("feature/ui"),
     branches: [local("feature/ui", true), local("main")],
+    branchesLoaded: true,
     available: false,
   });
   // Cancel: only what the dialog was offered matters here, not its outcome.
   mocks.prompt.mockResolvedValue(null);
+  mocks.branches.mockResolvedValue(ok([]));
+  mocks.branchInfo.mockResolvedValue(ok(branch("feature/ui")));
+});
+
+it("offers remote tag deletion for the captured repository and annotated tag object", async () => {
+  const deleted = { name: "v1", target: "a".repeat(40) };
+  mocks.deleteTag.mockResolvedValue(ok(deleted));
+  mocks.remotes.mockResolvedValue(ok([{ name: "release/empty", url: "/bare/empty" }]));
+
+  await deleteTag("v1", "/p/front");
+  expect(mocks.remotes).toHaveBeenCalledWith("/p/front");
+  const notice = mocks.notify.mock.calls.find(([entry]) => entry.title === "Deleted tag v1")?.[0];
+  const action = notice?.actions.find((item: { label: string }) => item.label === "Delete on Remote");
+  expect(action).toBeDefined();
+  useVcs.setState({ repo: "/p/other" });
+  action.run();
+  expect(mocks.remoteOperation).toHaveBeenCalledWith({ op: "deleteTagOnRemotes", deleted }, "v1", ["/p/front"]);
 });
 
 it("prefills a plain New Branch with the current branch name", async () => {
@@ -99,13 +153,28 @@ it("prefills nothing when HEAD is detached", async () => {
 });
 
 it("still suggests a remote branch's name without the prefix", async () => {
-  await newBranch("origin/main");
+  await newBranch({ name: "origin/main", remote: true });
   expect(mocks.prompt.mock.calls[0]?.[0].initial).toBe("main");
 });
 
 it("prefills the current branch in the multi-repository dialog too", async () => {
   await newBranchInRepos(["/p/front", "/p/back"]);
   expect(mocks.prompt.mock.calls[0]?.[0].initial).toBe("feature/ui");
+});
+
+it("validates a suggested local branch name against the selected repositories", async () => {
+  mocks.branches.mockResolvedValue(ok([local("feature/source"), local("taken"), local("folder/nested")]));
+  await newBranchInRepos(["/p/front", "/p/back"], { name: "feature/source", remote: false });
+
+  const prompt = mocks.prompt.mock.calls[0]?.[0];
+  expect(prompt.initial).toBe("feature/source");
+  expect(prompt.scope.options.map((option: { value: string }) => option.value)).toEqual(["*", "/p/front", "/p/back"]);
+  expect(prompt.validate("taken", false, "*")).toBe("Branch 'taken' already exists (back)");
+  expect(prompt.validate("folder", false, "*")).toBe("Branch name 'folder' conflicts with 'folder/nested' (back)");
+  expect(prompt.validate("taken", false, "/p/front")).toBeNull();
+  expect(prompt.overwriteBranch("taken", "*")).toBe(true);
+  expect(prompt.overwriteBranch("taken", "/p/front")).toBe(false);
+  expect(prompt.validate("taken", true, "*")).toBeNull();
 });
 
 it.each([
@@ -122,6 +191,78 @@ it.each([
 });
 
 const tracked = (name: string, upstream: string, current = false): Branch => ({ ...local(name, current), upstream });
+
+it.each(["local", "drop", "cancel"])("handles the choice for a divergent remote branch (%s)", async (button) => {
+  const remote: Branch = { ...local("origin/topic"), remote: true, commit: "remote-tip" };
+  mocks.branchInfo.mockResolvedValue(ok(branch("main")));
+  mocks.branches.mockResolvedValue(ok([remote, { ...tracked("topic", "origin/topic"), commit: "local-tip" }]));
+  mocks.mergeBase.mockResolvedValue(ok("fork-point"));
+  mocks.ask.mockResolvedValue({ button });
+
+  await checkoutAndRebase({ branch: remote, repos: ["/p/front"] });
+
+  expect(mocks.ask.mock.calls[0]?.[0].buttons.map((item: { label: string }) => item.label)).toEqual([
+    "Use Local Branch",
+    "Drop Local Commits",
+    "Cancel",
+  ]);
+  expect(mocks.checkout).not.toHaveBeenCalled();
+  if (button === "cancel") {
+    expect(mocks.rebases).not.toHaveBeenCalled();
+    return;
+  }
+  expect(mocks.rebases.mock.calls[0]?.[0]).toEqual([
+    {
+      root: "/p/front",
+      state: {
+        original: { branch: "topic", commit: button === "drop" ? "remote-tip" : "local-tip" },
+        onto: "abc1234567890",
+      },
+      operation: {
+        op: "checkoutRebase",
+        plan: {
+          base: { branch: "main", commit: "abc1234567890" },
+          branch: "topic",
+          branchTip: "local-tip",
+          remote: { name: "origin/topic", commit: "remote-tip", dropLocalCommits: button === "drop" },
+        },
+      },
+    },
+  ]);
+});
+
+it("asks for a new local branch name if the remote branch's namesake already tracks another remote", async () => {
+  const remote: Branch = { ...local("origin/topic"), remote: true, commit: "remote-tip" };
+  mocks.branchInfo.mockResolvedValue(ok(branch("main")));
+  mocks.branches.mockResolvedValue(ok([remote, { ...tracked("topic", "upstream/topic"), commit: "local-tip" }]));
+  mocks.prompt.mockResolvedValue({ value: "review", checked: false });
+
+  await checkoutAndRebase({ branch: remote, repos: ["/p/front"] });
+
+  expect(mocks.prompt).toHaveBeenCalledWith(expect.objectContaining({ initial: "topic", validateInitial: true }));
+  expect(mocks.ask).not.toHaveBeenCalled();
+  expect(mocks.rebases.mock.calls[0]?.[0][0]?.operation.plan).toMatchObject({ branch: "review", branchTip: null });
+});
+
+it("uses each repository's starting branch when preparing a batch", async () => {
+  const selected = { ...local("topic"), commit: "topic-tip" };
+  const repos = ["/p/front", "/p/back", "/p/common"];
+  mocks.branchInfo.mockImplementation((repo: string) => Promise.resolve(ok(branch(repo.split("/").at(-1)!))));
+  mocks.branches.mockResolvedValue(ok([selected]));
+
+  await checkoutAndRebase({ branch: selected, repos });
+
+  expect(
+    mocks.rebases.mock.calls[0]?.[0].map((entry: import("../branchRebase").PlannedRebase) => [
+      entry.root,
+      entry.operation.op === "checkoutRebase" && entry.operation.plan.base.branch,
+    ]),
+  ).toEqual([
+    ["/p/front", "front"],
+    ["/p/back", "back"],
+    ["/p/common", "common"],
+  ]);
+});
 
 it("offers to drop the upstream only for a branch that tracks one", async () => {
   await renameBranch(tracked("topic", "origin/topic"));
@@ -193,12 +334,109 @@ it("deletes a worktree holding the branch before deleting it", async () => {
 it("offers to open the worktree that has the branch checked out", async () => {
   mocks.checkout.mockResolvedValue(ok({ kind: "checkedOutInWorktree", branch: "feature/wt", path: "/p/front-wt" }));
   mocks.ask.mockResolvedValue({ button: "open" });
-  await checkoutBranch("feature/wt");
-  expect(mocks.checkout).toHaveBeenCalledWith("/p/front", "feature/wt", false, { mode: "normal", diverged: null });
+  await checkoutBranch(local("feature/wt"));
+  expect(mocks.checkout).toHaveBeenCalledWith(
+    "/p/front",
+    "refs/heads/feature/wt",
+    false,
+    { mode: "normal", diverged: null },
+    null,
+  );
   expect(mocks.ask.mock.calls[0]?.[0].title).toBe("Worktree Conflict");
   expect(mocks.ask.mock.calls[0]?.[0].body).toContain("already checked out in a worktree at:\n/p/front-wt");
   expect(mocks.executeAction).toHaveBeenCalledWith("file.openProjectPath", "/p/front-wt");
   expect(mocks.checkout).toHaveBeenCalledTimes(1);
+});
+
+it("uses the exact remote ref when a local branch has the same display name", async () => {
+  const remote = { ...local("team/ops/topic"), remote: true };
+  useVcs.setState({ branches: [local(remote.name), tracked("topic", remote.name), remote] });
+  mocks.remotes.mockResolvedValue(ok([{ name: "team/ops" }]));
+  mocks.checkout.mockResolvedValue(ok({ kind: "done" }));
+
+  await checkoutBranch(remote);
+
+  expect(mocks.checkout).toHaveBeenCalledExactlyOnceWith(
+    "/p/front",
+    "refs/remotes/team/ops/topic",
+    false,
+    { mode: "normal", diverged: null },
+    null,
+  );
+});
+
+it("checks a revision out detached in the explicitly selected repository", async () => {
+  mocks.chooseRevision.mockImplementation(async () => {
+    useVcs.setState({ repo: "/p/other" });
+    return "refs/heads/main";
+  });
+  mocks.hasCommit.mockResolvedValue(ok(true));
+  mocks.checkout.mockResolvedValue(ok({ kind: "done" }));
+  await checkoutRevision({ repo: "/p/nested" });
+  expect(mocks.chooseRevision).toHaveBeenCalledExactlyOnceWith("Checkout Tag or Revision", {
+    tags: true,
+    commonOnly: true,
+    repositories: ["/p/nested"],
+  });
+  expect(mocks.hasCommit).toHaveBeenCalledExactlyOnceWith("/p/nested", "refs/heads/main");
+  expect(mocks.checkout).toHaveBeenCalledExactlyOnceWith(
+    "/p/nested",
+    "refs/heads/main^{commit}",
+    false,
+    { mode: "normal", diverged: null },
+    null,
+  );
+});
+
+it("checks every affected repository before moving any HEAD", async () => {
+  const repos = ["/p/front", "/p/nested"];
+  mocks.chooseRevision.mockResolvedValue("release");
+  mocks.hasCommit.mockImplementation(async (root) => ok(root === repos[0]));
+  await checkoutRevision({ repos });
+  expect(mocks.hasCommit.mock.calls).toEqual(repos.map((root) => [root, "release"]));
+  expect(mocks.checkout).not.toHaveBeenCalled();
+  expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({ body: "Revision was not found in nested" }));
+
+  mocks.hasCommit.mockResolvedValue(ok(true));
+  mocks.checkout.mockResolvedValue(ok({ kind: "done" }));
+  await checkoutRevision({ repos });
+  expect(mocks.checkout.mock.calls.map(([root, ref]) => [root, ref])).toEqual(
+    repos.map((root) => [root, "release^{commit}"]),
+  );
+});
+
+it("uses one worktree per Git repository when invoking a synchronized checkout without an explicit scope", async () => {
+  useVcs.setState({
+    repo: "/p/front-wt",
+    roots: ["/p/front", "/p/front-wt", "/p/nested"],
+    branchRoots: { "/p/front": "/p/front", "/p/front-wt": "/p/front", "/p/nested": "/p/nested" },
+  });
+  mocks.chooseRevision.mockResolvedValue(null);
+  await checkoutRevision();
+  expect(mocks.chooseRevision).toHaveBeenCalledExactlyOnceWith(
+    "Checkout Tag or Revision",
+    expect.objectContaining({
+      repositories: ["/p/front-wt", "/p/nested"],
+    }),
+  );
+});
+
+it("asks for a branch name before moving any repository when a common remote's namesake tracks elsewhere", async () => {
+  const remote = { ...local("team/ops/topic"), remote: true };
+  useVcs.setState({ branches: [tracked("topic", remote.name), remote] });
+  mocks.remotes.mockResolvedValue(ok([{ name: "team/ops" }]));
+  mocks.branches.mockResolvedValue(ok([tracked("topic", "other/topic"), remote]));
+
+  await checkoutInRepos(remote, ["/p/front", "/p/back"]);
+
+  expect(mocks.checkout).not.toHaveBeenCalled();
+  expect(mocks.prompt).toHaveBeenCalledWith(
+    expect.objectContaining({
+      title: "Create New Branch from team/ops/topic",
+      initial: "topic",
+      scope: expect.objectContaining({ initial: "*" }),
+    }),
+  );
 });
 
 it("checks the branch out anyway when asked, alongside the other worktree", async () => {
@@ -206,25 +444,27 @@ it("checks the branch out anyway when asked, alongside the other worktree", asyn
     .mockResolvedValueOnce(ok({ kind: "checkedOutInWorktree", branch: "feature/wt", path: "/p/front-wt" }))
     .mockResolvedValueOnce(ok({ kind: "done" }));
   mocks.ask.mockResolvedValue({ button: "anyway" });
-  await checkoutBranch("feature/wt");
-  expect(mocks.checkout).toHaveBeenLastCalledWith("/p/front", "feature/wt", false, {
-    mode: "normal",
-    diverged: null,
-    ignoreOtherWorktrees: true,
-  });
+  await checkoutBranch(local("feature/wt"));
+  expect(mocks.checkout).toHaveBeenLastCalledWith(
+    "/p/front",
+    "refs/heads/feature/wt",
+    false,
+    { mode: "normal", diverged: null, ignoreOtherWorktrees: true },
+    null,
+  );
   expect(mocks.executeAction).not.toHaveBeenCalled();
 });
 
 it("does not open the worktree when the checkout offer is declined", async () => {
   mocks.checkout.mockResolvedValue(ok({ kind: "checkedOutInWorktree", branch: "feature/wt", path: "/p/front-wt" }));
   mocks.ask.mockResolvedValue({ button: "cancel" });
-  await checkoutBranch("feature/wt");
+  await checkoutBranch(local("feature/wt"));
   expect(mocks.executeAction).not.toHaveBeenCalled();
 });
 
 it("names the files git would remove when untracked ones block the checkout", async () => {
   mocks.checkout.mockResolvedValue(ok({ kind: "untrackedFiles", files: ["TEST.md"], removed: true }));
-  await checkoutBranch("feature/x");
+  await checkoutBranch(local("feature/x"));
   expect(mocks.checkout).toHaveBeenCalledTimes(1);
   expect(mocks.notify).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -239,7 +479,7 @@ it("names the files git would remove when untracked ones block the checkout", as
 
 it("still says overwritten when untracked files would be overwritten", async () => {
   mocks.checkout.mockResolvedValue(ok({ kind: "untrackedFiles", files: ["dir/new.txt"], removed: false }));
-  await checkoutBranch("feature/x");
+  await checkoutBranch(local("feature/x"));
   expect(mocks.notify).toHaveBeenCalledWith(
     expect.objectContaining({
       level: "error",
@@ -377,8 +617,20 @@ it("refreshes tracking branches in the deletion repository without replacing the
   const focused = [local("main", true)];
   useVcs.setState({ branches: focused });
   mocks.worktrees.mockResolvedValue(ok([]));
-  mocks.deleteBranch.mockResolvedValue(ok({ ...deleted, upstream: "origin/feature/wt" }));
-  mocks.branches.mockResolvedValue(ok([{ ...local("other"), upstream: "origin/feature/wt" }]));
+  mocks.deleteBranch.mockResolvedValue(
+    ok({
+      ...deleted,
+      upstream: "origin/feature/wt",
+      remoteUpstream: { remote: "origin", branch: "feature/wt" },
+    }),
+  );
+  mocks.remotes.mockResolvedValue(ok([{ name: "origin" }]));
+  mocks.branches.mockResolvedValue(
+    ok([
+      { ...local("other"), upstream: "origin/feature/wt" },
+      { ...local("origin/feature/wt"), remote: true },
+    ]),
+  );
   await deleteBranch("feature/wt", "/p/back");
   expect(mocks.worktrees).toHaveBeenCalledWith("/p/back");
   expect(mocks.deleteBranch).toHaveBeenCalledWith("/p/back", "feature/wt");
@@ -407,7 +659,7 @@ it.each(["focused", "failed"])("opens a checked-out SSH branch without retrying 
     );
   mocks.executeAction.mockClear();
   mocks.notify.mockClear();
-  await checkoutBranch("feature/wt");
+  await checkoutBranch(local("feature/wt"));
   expect(mocks.windowOpenRemote).toHaveBeenCalledExactlyOnceWith(target, path, true);
   expect(mocks.checkout).toHaveBeenCalledTimes(1);
   expect(mocks.executeAction).not.toHaveBeenCalledWith("file.openProjectPath", expect.anything());
@@ -421,7 +673,7 @@ it("keeps the local open action when another worktree holds the branch", async (
   useRemote.setState({ session: null });
   mocks.checkout.mockResolvedValue(ok({ kind: "checkedOutInWorktree", branch: "feature/wt", path }));
   mocks.ask.mockResolvedValue({ button: "open" });
-  await checkoutBranch("feature/wt");
+  await checkoutBranch(local("feature/wt"));
   expect(mocks.executeAction).toHaveBeenCalledExactlyOnceWith("file.openProjectPath", path);
   expect(mocks.windowOpenRemote).not.toHaveBeenCalled();
   expect(mocks.checkout).toHaveBeenCalledTimes(1);

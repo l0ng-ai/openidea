@@ -51,10 +51,8 @@ pub struct Project {
     pub(crate) member_excludes: MemberExcludes,
     /// Per-project cache directory (build tool sync results…).
     pub cache_dir: PathBuf,
-    /// Superseded launch snapshots retained until this project session ends.
-    pub(crate) java_launch_snapshots: Mutex<crate::ops::java::cache::Session>,
-    /// Java launches waiting for their build, which can share one Maven run.
-    pub(crate) java_launches_waiting: crate::ops::java::cache::Waiting,
+    /// Pending launches and retained snapshots, scoped to each workspace project.
+    pub(crate) java_launches: crate::ops::java::cache::Sessions,
     /// Reasons this window was already told why Kotlin is debugged with kotlin-debug-adapter.
     pub(crate) kotlin_debug_notices: Mutex<HashSet<&'static str>>,
     /// Database tool window: data sources and their connections.
@@ -202,7 +200,12 @@ impl Host {
                 // resolve imports into them. A container target already supplies its own
                 // `extraPaths` (the site-packages snapshot); don't mix local sources into it.
                 if !container_python {
-                    ide_sdk::apply::configure_python_extra_paths(cfg, &python_dependency_roots(&effective, root));
+                    let mut paths = python_dependency_roots(&effective, root);
+                    // The folders added to the paths of the interpreter this server analyses with.
+                    if let Some(python) = ide_sdk::apply::python_server_interpreter(root, server_root, &effective) {
+                        paths.extend(ide_sdk::apply::interpreter_user_paths(&python, &effective));
+                    }
+                    ide_sdk::apply::configure_python_extra_paths(cfg, &paths);
                 }
                 if cfg.name == "jdtls" {
                     // A workspace member keeps its build model under its own key (Build Project).
@@ -286,6 +289,10 @@ impl Host {
                         lombok.jar(),
                     );
                     ide_sdk::apply::configure_gradle_runtime(cfg, root, server_root, &effective);
+                    let gradle_dirs: Vec<_> = std::iter::once(data_dir.join("gradle"))
+                        .chain(dirs::cache_dir().map(|dir| dir.join("openidea").join("gradle")))
+                        .collect();
+                    ide_sdk::apply::configure_gradle_classpath(cfg, &gradle_dirs);
                     ide_sdk::apply::configure_maven_sources(cfg, &effective);
                     ide_sdk::jdtls::launch_directly(cfg);
                 }
@@ -637,10 +644,7 @@ impl Host {
             detected_roots,
             member_excludes,
             cache_dir: self.local_data_dir.join("cache").join(&project_key),
-            java_launch_snapshots: Mutex::new(crate::ops::java::cache::Session::new(
-                self.local_data_dir.join("cache").join(&project_key).join("build"),
-            )),
-            java_launches_waiting: Default::default(),
+            java_launches: Default::default(),
             kotlin_debug_notices: Mutex::default(),
             db,
             http_history,
@@ -691,6 +695,10 @@ impl Host {
                 roots.extend(crate::mcp::trusted_attachments(&trust, &p.root));
                 roots
             }));
+        }
+        {
+            let weak = Arc::downgrade(&project);
+            project.agents.set_git_executable_hook(Arc::new(move || weak.upgrade()?.git_executable()));
         }
         self.insert_project(window, project.clone());
         for (key, text, dirty) in &carried {
@@ -765,13 +773,20 @@ impl Host {
         let skill_settings = settings.clone();
         let skill_root = root.clone();
         let trust = self.trust.clone();
+        let plugin_host = self.plugin_host.read().clone();
         agents.set_skills_policy_hook(Box::new(move || {
             let layer = |scope| skill_settings.layer(scope).agents.skills.clone();
+            let workspace_trusted = trust.window_trusted(&skill_root).unwrap_or(false);
+            let plugin_dirs = plugin_host
+                .upgrade()
+                .map(|plugins| plugins.skill_dirs(Some(&skill_root), workspace_trusted))
+                .unwrap_or_default();
             ide_agent::SkillsPolicy {
                 user: layer(ide_workspace::settings::SettingsScope::Global),
                 workspace: layer(ide_workspace::settings::SettingsScope::Project),
-                workspace_trusted: trust.window_trusted(&skill_root).unwrap_or(false),
+                workspace_trusted,
                 workspace_roots: crate::ops::agent::workspace_skill_roots(&skill_root),
+                plugin_dirs,
             }
         }));
         agents.set_mcp_servers_hook(Box::new(move || {
@@ -876,10 +891,7 @@ impl Host {
             detected_roots: Arc::default(),
             member_excludes: Arc::default(),
             cache_dir: self.local_data_dir.join("cache").join(&project_key),
-            java_launch_snapshots: Mutex::new(crate::ops::java::cache::Session::new(
-                self.local_data_dir.join("cache").join(&project_key).join("build"),
-            )),
-            java_launches_waiting: Default::default(),
+            java_launches: Default::default(),
             kotlin_debug_notices: Mutex::default(),
             db,
             http_history,
@@ -1062,11 +1074,24 @@ impl Project {
         );
     }
 
+    /// Settings › Version Control › Git › Path to Git executable, this project's value (its own
+    /// layer over the global one); `None` when it is empty or the project is not trusted.
+    /// Every git started for the project runs it: the project's repositories carry it, and work
+    /// that opens repositories of its own (agent worktrees, gh, plugins) passes it to
+    /// [`ide_vcs::with_git_executable`].
+    pub fn git_executable(&self) -> Option<PathBuf> {
+        let git = self.settings.read_effective(|s| s.vcs.git.executable.trim().to_owned());
+        (self.is_trusted() && !git.is_empty()).then(|| PathBuf::from(git))
+    }
+
     /// The project's git repositories.
     pub fn repos(&self) -> Repos {
         let repos = self.repos.read().clone();
+        let trusted = self.is_trusted();
+        let git = self.git_executable();
         for repo in repos.all() {
-            repo.set_execution_allowed(self.is_trusted());
+            repo.set_execution_allowed(trusted);
+            repo.set_git_executable(git.as_deref());
         }
         repos
     }
@@ -1150,11 +1175,13 @@ impl Project {
 
     fn run_in<T>(&self, repo: &Repo, f: impl FnOnce(&Repo) -> IdeResult<T>) -> IdeResult<T> {
         let settings = self.settings.effective();
-        if self.is_trusted() {
-            apply_git_executable(&settings);
-        }
         repo.set_ignored_names(settings.ignored_names());
         repo.set_cli_status(settings.vcs.git.cli_status);
+        repo.set_automatic_shelf(
+            (settings.vcs.git.save_changes_policy == ide_core::workflow_settings::GitSaveChangesPolicy::Shelve)
+                .then(|| ide_core::project_dir::path(&self.root, "shelf")),
+            (!settings.vcs.git.staging_area).then(|| self.root.clone()),
+        );
         f(repo)
     }
 
@@ -1425,12 +1452,22 @@ impl Project {
     /// Use the open document's selected encoding, or the same detection/settings as opening it.
     pub fn vcs_encoding(&self, path: &Path, rev: Option<&str>) -> IdeResult<ide_vcs::TextEncoding> {
         let charset = self.file_encoding(path, rev)?;
+        Ok(self.vcs_text_encoding(path, charset))
+    }
+
+    pub fn staged_file_encoding(&self, path: &Path, bytes: &[u8]) -> ide_vcs::TextEncoding {
+        let defaults = self.documents.file_defaults();
+        let charset = ide_vfs::detect_encoding(bytes, defaults.fallback_for(path));
+        self.vcs_text_encoding(path, charset)
+    }
+
+    fn vcs_text_encoding(&self, path: &Path, charset: &'static encoding_rs::Encoding) -> ide_vcs::TextEncoding {
         let encoding = ide_vcs::TextEncoding::from(charset);
-        Ok(if self.documents.native_to_ascii_for(path) {
+        if self.documents.native_to_ascii_for(path) {
             encoding.with_ascii_conversion(ide_vfs::decode_properties_escapes, ide_vfs::encode_properties_ascii)
         } else {
             encoding
-        })
+        }
     }
 
     fn file_encoding(&self, path: &Path, rev: Option<&str>) -> IdeResult<&'static encoding_rs::Encoding> {
@@ -2166,12 +2203,6 @@ fn notify_transfer(sink: &SharedSink, what: &str, path: &Path, result: IdeResult
         title: format!("{what} failed: {name}"),
         body: Some(body),
     });
-}
-
-/// Settings › Version Control › Git › Path to Git executable (empty = auto-detect).
-pub fn apply_git_executable(settings: &ide_core::settings::Settings) {
-    let exe = settings.vcs.git.executable.trim();
-    ide_vcs::set_git_executable((!exe.is_empty()).then(|| Path::new(exe)));
 }
 
 #[cfg(test)]

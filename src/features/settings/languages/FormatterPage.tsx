@@ -145,6 +145,18 @@ export function OxfmtPage() {
   );
 }
 
+export function BiomePage() {
+  return (
+    <FormatterPage
+      tool="biome"
+      name="Biome"
+      pathLabel="Biome path"
+      providerHint="Biome formats an enabled language instead of Prettier and oxfmt below a Biome configuration file (biome.json, biome.jsonc) or installation, or when it is the selected provider."
+      saveHint="Run Biome on save for enabled languages when it is the selected formatting provider."
+    />
+  );
+}
+
 export function RuffPage() {
   return (
     <FormatterPage

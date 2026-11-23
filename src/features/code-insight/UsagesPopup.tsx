@@ -9,6 +9,7 @@ import clsx from "clsx";
 import { EditorState, StateEffect, StateField } from "@codemirror/state";
 import { Decoration, EditorView } from "@codemirror/view";
 import { codePreviewExtensions } from "@/editor/api";
+import { disambiguateTitles } from "@/editor/core/model/tabTitles";
 import { basename } from "@/platform/project";
 import { shortcutLabel } from "@/platform/keymap";
 import { Icon, IconButton, List, Popup, Select, Spinner, fileIconName, listNavigate } from "@/ui";
@@ -86,6 +87,14 @@ function UsagesPopupInner() {
   const preview = useUsagesPopupPreview((s) => s.preview);
   const rowHeight = useRowHeight(ROW);
   const all = useMemo<Usage[]>(() => groups.flatMap((g) => g.usages), [groups]);
+  const directories = useMemo(
+    () =>
+      disambiguateTitles(
+        groups.map((g) => g.path),
+        basename,
+      ),
+    [groups],
+  );
   const [filter, setFilter] = useState("");
   const accessOptions = useUsageAccessOptions();
   const items = useMemo(
@@ -167,6 +176,7 @@ function UsagesPopupInner() {
             </span>
           </span>
           <div className={styles.actions}>
+            <UsageAccessFilter items={all} />
             {scope && (
               <Select<UsageScope>
                 variant="ghost"
@@ -204,7 +214,6 @@ function UsagesPopupInner() {
             </button>
           </div>
         </div>
-        <UsageAccessFilter items={all} />
         {note && (
           <div className={styles.note} data-testid="usages-note">
             {note}
@@ -233,11 +242,10 @@ function UsagesPopupInner() {
             }
             renderItem={(u) => (
               <div className={styles.row} data-testid="usage-row" data-path={u.path} data-line={u.line}>
-                <span className={styles.file}>
+                <span className={styles.file} title={u.path}>
                   <Icon name={fileIconName(basename(u.path), u.path)} size={16} className={styles.icon} />
-                  <span className={styles.fileName} title={u.path}>
-                    {basename(u.path)}
-                  </span>
+                  <span className={styles.fileName}>{basename(u.path)}</span>
+                  {directories.has(u.path) && <span className={styles.directory}>{directories.get(u.path)}</span>}
                 </span>
                 <span className={styles.line}>{u.line + 1}</span>
                 <UsagePreview usage={u} />

@@ -26,7 +26,7 @@ test("Unstash aligns its controls and restores the selected repository's stash",
           base: "a1234567",
         }),
       );
-    handlers.vcs_stash_apply = () => null;
+    handlers.vcs_stash_apply = () => ({ index: 1, outcome: { kind: "done" } });
     const store = "/src/features/vcs/store.ts";
     const { useVcs } = await import(/* @vite-ignore */ store);
     useVcs.setState({ root, roots: [root, service], repo: root, branch: branchInfo(root), available: true });
@@ -86,5 +86,13 @@ test("Unstash aligns its controls and restores the selected repository's stash",
   await dialog.getByRole("button", { name: "Pop Stash", exact: true }).click();
   await expect
     .poll(() => ipcCalls(page, "vcs_stash_apply"))
-    .toEqual([{ repo: "/dev/acme-api/service", index: 1, pop: true, reinstateIndex: true, branch: null }]);
+    .toEqual([
+      {
+        repo: "/dev/acme-api/service",
+        stash: { index: 1, message: "Review cache changes", timeMs: null, id: "stash-1", base: "a1234567" },
+        pop: true,
+        reinstateIndex: true,
+        branch: null,
+      },
+    ]);
 });

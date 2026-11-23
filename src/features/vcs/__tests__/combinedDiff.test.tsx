@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../DiffEditor", () => ({
-  DiffEditor: ({ input, fit }: { input: { data: { path: string; mode?: string } }; fit?: boolean }) => (
+  ResolvedDiffEditor: ({ input, fit }: { input: { data: { path: string; mode?: string } }; fit?: boolean }) => (
     <div data-testid="block-diff" data-path={input.data.path} data-mode={input.data.mode} data-fit={String(!!fit)} />
   ),
 }));

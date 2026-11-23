@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { emitLocalIdeEvent } from "@/platform/ipc";
 import { installRepeatedDoubleClick } from "@/platform/doubleClick";
 import { getContext, setContext } from "@/platform/context";
@@ -22,13 +22,17 @@ import { beginNew, canPaste } from "./operations";
 import { initProjectTree, selectModel, setSelection, setViewOption, useProjectTree } from "./store";
 import type { OutlineItem } from "@/bindings";
 import { _emitEditorEvent, useEditorRegistry } from "@/editor/api";
-import { ProjectHeaderActions } from "./HeaderActions";
+import { ProjectHeaderActions, useProjectHeaderMenu } from "./HeaderActions";
+import { executeAction, getAction } from "@/platform/actions";
+import { useProject } from "@/platform/project";
+import type { MenuItem } from "@/ui";
 import { loadOutline } from "./store";
 
 const ipc = vi.hoisted(() => ({
   docOpen: vi.fn(),
   docClose: vi.fn(),
   docOutline: vi.fn(),
+  settingsSet: vi.fn(),
 }));
 vi.mock("@/bindings", async (orig) => {
   const real = await orig<typeof import("@/bindings")>();
@@ -58,6 +62,11 @@ const deferred = <T,>() => {
 };
 
 const ROOT = "/w/acme";
+const initialSettings = useProject.getState().settings;
+
+/** Settings › Editor › General › Editor Tabs › Enable preview tab. */
+const previewTabSettings = (on: boolean) => ({ editor: { tabs: { previewTab: on } } });
+const setPreviewTabSetting = (on: boolean) => act(() => useProject.setState({ settings: previewTabSettings(on) }));
 let fs: MemoryFs;
 let openFile: ReturnType<typeof vi.fn>;
 let dispose: () => void;
@@ -98,6 +107,7 @@ beforeEach(() => {
 
 afterEach(() => {
   dispose();
+  useProject.setState({ settings: initialSettings });
   setProjectFsForTests(null);
   uninstallDispatcher?.();
   uninstallDispatcher = null;
@@ -222,6 +232,42 @@ describe("ProjectView", () => {
     }
   });
 
+  it("pastes a copied keyword into the tree's speed search instead of pasting files", async () => {
+    dispatchViaKeymap();
+    // Explorer holds a file, and the user wants to paste a word they copied from somewhere else
+    // into the search they just opened with ⌘F.
+    fs.nodes.set("/elsewhere/Photo.png", { kind: "file", size: 3 });
+    setOsClipboardForTests({
+      files: async () => ["/elsewhere/Photo.png"],
+      hasFiles: async () => true,
+      setFiles: async () => false,
+    });
+    try {
+      const { tree, row, rows } = setup();
+      await waitFor(() => expect(rows()).toContain("README.md"));
+      fireEvent.mouseDown(row("src"));
+      tree.focus();
+      fireEvent.keyDown(tree, { key: "f", code: "KeyF", metaKey: true });
+      fireEvent.paste(tree, {
+        clipboardData: { getData: () => "Read" },
+      } as unknown as ClipboardEventInit);
+      expect(within(tree.parentElement!).getByRole("status")).toHaveTextContent("Read");
+      // The file Paste never ran: give a wrong one the time to land, then check the project.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      });
+      expect([...fs.nodes.keys()].filter((p) => p.startsWith("/w/acme/") && p.endsWith("Photo.png"))).toEqual([]);
+      // Closed, ⌘V is the view's file Paste again.
+      fireEvent.keyDown(tree, { key: "Escape", code: "Escape" });
+      fireEvent.keyDown(tree, { key: "v", code: "KeyV", metaKey: true });
+      await waitFor(() =>
+        expect([...fs.nodes.keys()].some((p) => p.startsWith("/w/acme/") && p.endsWith("Photo.png"))).toBe(true),
+      );
+    } finally {
+      setOsClipboardForTests(null);
+    }
+  });
+
   it("clears cut dimming and disables Paste on focus after the OS clipboard becomes text", async () => {
     dispatchViaKeymap();
     let files: string[] = [];
@@ -257,21 +303,48 @@ describe("ProjectView", () => {
     }
   });
 
-  it("opens files on double click and previews on single click only when enabled", async () => {
+  it("opens files on double click and previews on single click while the editor's preview tab is on", async () => {
     const { row, rows } = setup();
     await waitFor(() => expect(rows()).toContain("README.md"));
     const content = row("README.md").querySelector("[data-project-path]")!;
-    fireEvent.click(content, { detail: 1 });
-    expect(openFile).not.toHaveBeenCalled();
-    fireEvent.doubleClick(row("README.md"));
-    expect(openFile).toHaveBeenLastCalledWith("/w/acme/README.md", { preview: undefined, focus: true });
-    act(() => setViewOption("previewTab", true));
+    // Settings › Editor › General › Editor Tabs › Enable preview tab is on by default.
     fireEvent.click(content, { detail: 1 });
     expect(openFile).toHaveBeenLastCalledWith("/w/acme/README.md", { preview: true, focus: false });
     openFile.mockClear();
     fireEvent.click(content, { detail: 3 });
     expect(openFile).not.toHaveBeenCalled();
-    act(() => setViewOption("previewTab", false));
+    setPreviewTabSetting(false);
+    fireEvent.click(content, { detail: 1 });
+    expect(openFile).not.toHaveBeenCalled();
+    fireEvent.doubleClick(row("README.md"));
+    expect(openFile).toHaveBeenLastCalledWith("/w/acme/README.md", { preview: undefined, focus: true });
+  });
+
+  it("toggles the editor's preview tab setting from the Behavior menu and its action", async () => {
+    ipc.settingsSet.mockImplementation(async (_scope: string, _key: string, value: string) =>
+      ok(previewTabSettings(JSON.parse(value) as boolean)),
+    );
+    const { result } = renderHook(() => useProjectHeaderMenu());
+    type Item = Extract<MenuItem, { id?: string }>;
+    const behavior = () => (result.current[0] as Item).submenu as Item[];
+    const item = () => behavior().find((i) => i.id === "previewTab")!;
+    expect(item().checked).toBe(true);
+    act(() => item().run!());
+    await waitFor(() => expect(item().checked).toBe(false));
+    expect(ipc.settingsSet).toHaveBeenLastCalledWith("global", "editor.tabs.previewTab", "false");
+    const action = getAction("project.option.previewTab")!;
+    expect(action.toggled!()).toBe(false);
+    act(() => void executeAction(action.id));
+    await waitFor(() => expect(item().checked).toBe(true));
+  });
+
+  it("drops the former view-only preview tab option from saved view options", () => {
+    localStorage.setItem("openidea.projectTree.options", JSON.stringify({ previewTab: true, singleClickOpen: true }));
+    vi.resetModules();
+    return import("./store").then(({ useProjectTree: fresh }) => {
+      expect(fresh.getState().options).not.toHaveProperty("previewTab");
+      expect(fresh.getState().options.singleClickOpen).toBe(true);
+    });
   });
 
   it("follows tab switches with Always Select Opened File, hiding Select Opened File", async () => {
@@ -701,17 +774,17 @@ describe("Show Members", () => {
     },
   );
 
-  it("autoscrolls to source without handing files to another application", async () => {
+  it.each([true, false])("autoscrolls to source with preview tabs set to %s", async (preview) => {
     const { rows, row } = setup();
+    setPreviewTabSetting(preview);
     act(() => {
       setViewOption("autoscrollToSource", true);
       setViewOption("singleClickOpen", false);
-      setViewOption("previewTab", false);
     });
     await waitFor(() => expect(rows()).toContain("README.md"));
     fireEvent.mouseDown(row("README.md"));
     await waitFor(() =>
-      expect(openFile).toHaveBeenLastCalledWith("/w/acme/README.md", expect.objectContaining({ external: false })),
+      expect(openFile).toHaveBeenLastCalledWith("/w/acme/README.md", { preview, focus: false, external: false }),
     );
   });
 
@@ -724,14 +797,14 @@ describe("Show Members", () => {
       setViewOption("showMembers", true);
       setViewOption("autoscrollToSource", false);
       setViewOption("singleClickOpen", false);
-      setViewOption("previewTab", false);
+      useProject.setState({ settings: previewTabSettings(false) });
       useProjectTree.setState({ expanded: new Set([ROOT, "/w/acme/src", APP]) });
     });
     await waitFor(() => expect(rows()).toContain("main"));
     const content = () => row("main").querySelector("[data-project-key]")!;
     fireEvent.click(content(), { detail: 1 });
     expect(openFile).not.toHaveBeenCalled();
-    act(() => setViewOption("previewTab", true));
+    setPreviewTabSetting(true);
     fireEvent.click(content(), { detail: 1 });
     expect(openFile).toHaveBeenLastCalledWith(
       APP,

@@ -30,10 +30,6 @@
   min-height: 0;
 }
 
-.dialogTree {
-  height: 340px;
-}
-
 .icon {
   flex: none;
   color: var(--fg-muted);
@@ -87,4 +83,18 @@
 
 .main {
   font-weight: 600;
+}
+
+.kind {
+  flex: none;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+
+.review {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  color: var(--fg-secondary);
 }

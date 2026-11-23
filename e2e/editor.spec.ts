@@ -487,6 +487,45 @@ test("Markdown preview highlights ⌘F matches, selected words and scales diagra
   expect(reset.excalidraw).toBeCloseTo(base.excalidraw, 1);
 });
 
+for (const mode of ["Preview Only", "Editor and Preview"]) {
+  test(`Markdown ${mode} reveals a cross-file heading on first open`, async ({ workbench: page }) => {
+    const path = "/dev/acme-api/linked-heading.md";
+    const heading = "5.2 状态机";
+    const spacer = Array.from({ length: 80 }, (_, i) => `Paragraph ${i}.`).join("\n\n");
+    const target = `# Destination\n\n${spacer}\n\n## ${heading}\n\n${spacer}`;
+    const editor = await openFromTree(page, "README.md");
+    await page.evaluate(
+      async ({ path, target }) => {
+        const backendModule = "/src/editor/core/backend.ts";
+        const routeModule = "/src/platform/tauriCore.ts";
+        const { docBackend } = await import(/* @vite-ignore */ backendModule);
+        const { setInvokeRoute } = await import(/* @vite-ignore */ routeModule);
+        docBackend().files.set(path, target);
+        setInvokeRoute((cmd: string, args?: Record<string, unknown>) =>
+          cmd === "fs_read_text" && args?.path === path ? Promise.resolve(target) : null,
+        );
+      },
+      { path, target },
+    );
+
+    await editor.locator(".cm-content").focus();
+    await page.keyboard.press("Meta+a");
+    await page.keyboard.insertText("[Linked heading](linked-heading.md#52-%E7%8A%B6%E6%80%81%E6%9C%BA)");
+    if (mode === "Preview Only") await page.getByRole("button", { name: mode, exact: true }).click();
+
+    const destinationTab = page.getByRole("tab", { name: "linked-heading.md", exact: true });
+    const preview = page.getByRole("document", { name: "Markdown preview" });
+    await expect(destinationTab).toHaveCount(0);
+    await preview.getByRole("link", { name: "Linked heading" }).click();
+    await expect(destinationTab).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("button", { name: mode, exact: true })).toHaveAttribute("aria-pressed", "true");
+    await expect(preview.getByRole("heading", { name: heading })).toBeInViewport({ ratio: 1 });
+    if (mode === "Editor and Preview") {
+      await expect(editor.locator(".cm-line", { hasText: heading })).toBeInViewport({ ratio: 1 });
+    }
+  });
+}
+
 test("Markdown preview keeps following find and edits after scrolling the source", async ({ workbench: page }) => {
   const editor = await openFromTree(page, "README.md");
   const content = editor.locator(".cm-content");
@@ -526,7 +565,7 @@ test("Markdown preview keeps following find and edits after scrolling the source
   await content.focus();
   await page.keyboard.press("Meta+a");
   await page.keyboard.insertText("- **$`v_0`$ Flat wings.**");
-  await expect(preview.locator("strong .katex annotation")).toHaveText("v_0");
+  await expect(preview.locator("strong [data-math-svg] > svg")).toHaveAttribute("aria-label", "v_0");
 });
 
 test("Markdown preview aligns Mermaid diagrams to their container align attribute", async ({ workbench: page }) => {
@@ -627,6 +666,91 @@ test("single-line selection stays on its own row when font glyphs exceed line he
   expect(selBox).not.toBeNull();
   expect(Math.abs(selBox!.y - lineBox!.y)).toBeLessThanOrEqual(1);
   expect(Math.abs(selBox!.height - lineBox!.height)).toBeLessThanOrEqual(1);
+});
+
+test("find and occurrence highlights stay on their own row when font glyphs exceed line height", async ({
+  workbench: page,
+}) => {
+  await page.evaluate(async () => {
+    const projectModule = "/src/platform/project.ts";
+    const schemaModule = "/src/features/settings/model/schema.ts";
+    const [{ useProject }, { DEFAULT_SETTINGS }] = await Promise.all([
+      import(/* @vite-ignore */ projectModule),
+      import(/* @vite-ignore */ schemaModule),
+    ]);
+    const base = useProject.getState().settings ?? DEFAULT_SETTINGS;
+    useProject.setState({
+      settings: { ...base, editor: { ...base.editor, fontSize: 18, lineHeight: 18 } },
+    });
+    const root = document.documentElement.style;
+    root.setProperty("--bg-editor", "#ffffff");
+    root.setProperty("--bg-current-line", "#ffffff");
+    root.setProperty("--bg-identifier-under-caret", "#cc0000");
+    root.setProperty("--bg-search-match", "#cc00cc");
+    root.setProperty("--bg-search-match-current", "#cc8800");
+    await document.fonts.ready;
+  });
+
+  const editor = await openFromTree(page, "README.md");
+  const content = editor.locator(".cm-content");
+  await content.click();
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.insertText(
+    ["            ", "description", "            ", "description", "            "].join("\n"),
+  );
+
+  const lines = editor.locator(".cm-line");
+  await expect(lines).toHaveCount(5);
+
+  const blankRowsAreUnpainted = async () => {
+    const [editorBox, b0, b2, b4, matchBox] = await Promise.all([
+      editor.boundingBox(),
+      lines.nth(0).boundingBox(),
+      lines.nth(2).boundingBox(),
+      lines.nth(4).boundingBox(),
+      lines.nth(1).boundingBox(),
+    ]);
+    const png = await editor.screenshot();
+    const base64 = png.toString("base64");
+    return page.evaluate(
+      async ({ base64, editorBox, blanks, probeX }) => {
+        const img = new Image();
+        img.src = `data:image/png;base64,${base64}`;
+        await img.decode();
+        const scale = img.width / editorBox!.width;
+        const canvas = document.createElement("canvas");
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext("2d")!;
+        ctx.drawImage(img, 0, 0);
+        const x = Math.round((probeX - editorBox!.x) * scale);
+        for (const row of blanks) {
+          const yStart = Math.ceil((row!.y - editorBox!.y) * scale) + 1;
+          const yEnd = Math.floor((row!.y + row!.height - editorBox!.y) * scale) - 1;
+          for (let y = yStart; y <= yEnd; y++) {
+            const [r, g, b] = ctx.getImageData(x, y, 1, 1).data;
+            if (r !== 255 || g !== 255 || b !== 255) return { ok: false, x, y, rgb: [r, g, b] };
+          }
+        }
+        return { ok: true };
+      },
+      { base64, editorBox, blanks: [b0, b2, b4], probeX: matchBox!.x + 30 },
+    );
+  };
+
+  // Selection match on line 4 (`description`) when line 2 is selected.
+  await lines.nth(1).dblclick();
+  await expect(editor.locator(".cm-selectionMatch")).toHaveCount(1);
+  expect(await blankRowsAreUnpainted()).toEqual({ ok: true });
+
+  // Find matches: line 2 is `.cm-openidea-findMatch-current` (with 1px frame), line 4 is `.cm-openidea-findMatch`.
+  await page.keyboard.press("Meta+f");
+  const find = page.getByRole("textbox", { name: "Find" });
+  await expect(find).toBeFocused();
+  await find.fill("description");
+  await expect(editor.locator(".cm-openidea-findMatch-current")).toHaveCount(1);
+  await expect(editor.locator(".cm-openidea-findMatch")).toHaveCount(2);
+  expect(await blankRowsAreUnpainted()).toEqual({ ok: true });
 });
 
 test("vertical tabs leave a narrow editor group most of its width", async ({ workbench: page }) => {

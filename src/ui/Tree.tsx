@@ -43,6 +43,13 @@ import { useIconRowHeight } from "./iconAppearance";
 
 export type { TreeReorder } from "./treeReorder";
 
+/** The host's native Paste shortcuts. */
+const isPasteStroke = (stroke: string) =>
+  isMacHost() ? stroke === "Meta+V" : stroke === "Ctrl+V" || stroke === "Shift+Insert";
+
+/** Pasted text as one query line: a speed search has no caret and no newlines. */
+const queryLine = (text: string) => text.replace(/[\r\n\u2028\u2029]+/g, " ").trim();
+
 export interface TreeRowState {
   depth: number;
   expanded: boolean;
@@ -93,6 +100,8 @@ export interface TreeProps<T> {
   getIcon?: (node: T, expanded: boolean) => IconName | (string & {}) | undefined;
   /** Muted trailing detail (e.g. a path next to the project root); may include styled content. */
   getDetail?: (node: T) => ReactNode;
+  /** Native tooltip and accessible description for a row. */
+  getTooltip?: (node: T) => string | undefined;
   /** Label colour, e.g. VCS status. */
   getColor?: (node: T) => string | undefined;
   /** Filesystem directory for actions on the focused selection; groups return null. */
@@ -396,19 +405,22 @@ export function Tree<T>(props: TreeProps<T>) {
     pendingScrollToLead.current = null;
   }, [lead, indexOfKey, virtualizer]);
 
-  // Speed search owns Escape while active, and ⌫ with any modifier: the query is edited like a
-  // text field instead of the view's shortcuts running (⌘⌫ is Drop… in the Database view).
+  // While speed search is active, reserve Backspace and the native Paste shortcuts for the query.
+  // The view's shortcuts can drop a database object or paste files into the project.
   useEffect(() => {
     if (!searching) return;
     const release = acquirePopup();
     const unclaim = registerKeyClaim(
-      (e) => e.key === "Backspace" && e.target instanceof Node && !!scrollRef.current?.contains(e.target),
+      (e, stroke) =>
+        e.target instanceof Node &&
+        !!scrollRef.current?.contains(e.target) &&
+        (e.key === "Backspace" || (speedSearch && isPasteStroke(stroke))),
     );
     return () => {
       release();
       unclaim();
     };
-  }, [searching]);
+  }, [searching, speedSearch]);
 
   const setExpanded = (row: Row<T>, open: boolean) => {
     if (!row.expandable || row.expanded === open) return;
@@ -541,6 +553,21 @@ export function Tree<T>(props: TreeProps<T>) {
   const step = (i: number, dir: 1 | -1) => {
     for (let j = i + dir; j >= 0 && j < rows.length; j += dir) if (!rows[j]!.loading) return j;
     return i;
+  };
+
+  /** The active speed search takes pasted text: its query is edited like a text field. */
+  const onPaste = (e: React.ClipboardEvent) => {
+    if (e.defaultPrevented || !speedSearch || !searching) return;
+    // An inline editor (rename, new value) inside a row keeps the native paste.
+    if ((e.target as HTMLElement | null)?.closest?.("input, textarea, [contenteditable]")) return;
+    const text = queryLine(e.clipboardData?.getData("text/plain") ?? "");
+    if (!text) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const q = query + text;
+    setQuery(q);
+    const hit = findMatch(leadIndex, 1, true, q);
+    if (hit >= 0) selectIndex(hit);
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
@@ -726,6 +753,7 @@ export function Tree<T>(props: TreeProps<T>) {
         tabIndex={0}
         className={styles.tree}
         onKeyDown={onKeyDown}
+        onPaste={onPaste}
         onBlur={(e) => {
           if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
           endSearch();
@@ -800,6 +828,7 @@ export function Tree<T>(props: TreeProps<T>) {
                 aria-setsize={positions[v.index]![1]}
                 aria-expanded={row.expandable ? row.expanded : undefined}
                 aria-selected={isSelected}
+                title={props.getTooltip?.(row.node)}
                 className={clsx(
                   styles.row,
                   props.horizontalScroll && styles.wideRow,

@@ -44,7 +44,15 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
         && config.request == "launch"
         && let Ok(project) = host.project(window)
     {
-        super::python::prepare_debug(&mut config, &super::python::paths(&project))?;
+        let python = super::python::debug_python(&config);
+        let paths = super::python::with_user_paths(
+            super::python::paths(&project),
+            &host.config_dir,
+            &project,
+            python.as_deref(),
+            config.cwd.as_deref(),
+        );
+        super::python::prepare_debug(&mut config, &paths)?;
     }
     let label = window;
     let (sink, flush_output) = output::coalescing_sink(host.window_sink(label));

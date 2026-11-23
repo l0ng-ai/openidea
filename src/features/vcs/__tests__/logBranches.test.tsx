@@ -105,7 +105,7 @@ describe("Git Log branches pane", () => {
     );
     fireEvent.contextMenu(screen.getByText("feature"));
     fireEvent.click(await screen.findByRole("menuitem", { name: "New Worktree from 'feature'…" }));
-    expect(execute).toHaveBeenCalledWith("vcs.newWorktree", { repo: "/p", branch: branches[1] });
+    expect(execute).toHaveBeenCalledWith("vcs.newWorktree", { repo: "/p", source: "refs/heads/feature" });
   });
 
   it.each([
@@ -286,6 +286,22 @@ describe("Git Log branches pane with several repositories", () => {
     expect(await screen.findAllByText("a")).not.toHaveLength(0);
     expect(screen.getAllByText("dev")).toHaveLength(2);
     expect(localStorage.getItem("openidea.vcs.branchesPane.groupByRepository")).toBe("true");
+  });
+
+  it("sums merged branch counts and reveals exact counts in the tooltip and grouped rows", async () => {
+    const outgoing = { remote: "fork", branch: "dev", reference: "refs/remotes/fork/dev" };
+    repoData.branches = {
+      "/p/a": [b("dev", { behind: 2, ahead: 55, outgoing: { ...outgoing, count: 60 } })],
+      "/p/b": [b("dev", { behind: 3, ahead: 8, outgoing: { ...outgoing, count: 42 } })],
+    };
+    render(<BranchesPanel />);
+    expect(await screen.findByLabelText("102 outgoing commits in 2 repositories")).toHaveTextContent("99+");
+    expect(screen.getByLabelText("5 incoming commits in 2 repositories")).toHaveTextContent("5");
+    fireEvent.click(screen.getByRole("button", { name: "Group by Repository" }));
+    expect(screen.getByLabelText("60 outgoing commits")).toHaveTextContent("60");
+    expect(screen.getByLabelText("42 outgoing commits")).toHaveTextContent("42");
+    expect(screen.getByLabelText("2 incoming commits")).toHaveTextContent("2");
+    expect(screen.getByLabelText("3 incoming commits")).toHaveTextContent("3");
   });
 
   it("double click filters the log to the repositories that have the branch within the visible scope", async () => {

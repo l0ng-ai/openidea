@@ -8,7 +8,17 @@ import { shortcutLabel } from "@/platform/keymap";
 import { previewColors, tokenSpans, type CodeToken } from "@/editor/lineTokens";
 import { IconButton, Popup, selectableText } from "@/ui";
 import type { PopupAnchor } from "@/ui/Popup";
-import { editorHunks, gotoChange, setHunkPopupHooks, type EditorHunk } from "./gutter";
+import {
+  editableHunk,
+  editorHunks,
+  equivalentStagingHunk,
+  gotoChange,
+  hunkAtPos,
+  rollbackHunks,
+  setHunkPopupHooks,
+  stagingTitle,
+  type EditorHunk,
+} from "./gutter";
 import styles from "./HunkPopup.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -22,11 +32,12 @@ interface PopupState {
 }
 
 let root: Root | null = null;
-let openFor: EditorView | null = null;
+let current: PopupState | null = null;
 let host: HTMLElement | null = null;
 let seq = 0;
 
 function render(state: PopupState | null) {
+  current = state;
   if (!state && !root) return;
   if (!root) {
     host = document.createElement("div");
@@ -38,7 +49,6 @@ function render(state: PopupState | null) {
 }
 
 export function closeHunkPopup() {
-  openFor = null;
   render(null);
 }
 
@@ -61,7 +71,6 @@ export function openHunkPopup(view: EditorView, hunk: EditorHunk, path: string) 
     },
   };
   const width = Math.max(240, view.scrollDOM.getBoundingClientRect().right - anchor.getBoundingClientRect().left);
-  openFor = view;
   render({ view, hunk, path, anchor, width, id: ++seq });
 }
 
@@ -69,7 +78,19 @@ export function installHunkPopup(): () => void {
   setHunkPopupHooks({
     open: openHunkPopup,
     docChanged: (view) => {
-      if (openFor === view) closeHunkPopup();
+      if (current?.view === view) closeHunkPopup();
+    },
+    stagingChanged: (view) => {
+      if (current?.view !== view || !current.hunk.staging) return;
+      const same = equivalentStagingHunk(view, current.hunk);
+      if (same) {
+        render({ ...current, hunk: same });
+        return;
+      }
+      const from = view.state.doc.lineAt(Math.min(current.hunk.from, view.state.doc.length)).from;
+      const next = hunkAtPos(view.state, from);
+      if (next?.staging) openHunkPopup(view, next, current.path);
+      else closeHunkPopup();
     },
   });
   return () => {
@@ -78,12 +99,23 @@ export function installHunkPopup(): () => void {
     host?.remove();
     root = null;
     host = null;
+    current = null;
   };
 }
 
 const KIND_TITLE = { added: "Added lines", modified: "Modified lines", deleted: "Deleted lines" } as const;
 
-function OriginalText({ view, path, text }: { view: EditorView; path: string; text: string }) {
+function OriginalText({
+  view,
+  path,
+  text,
+  label = "Original text",
+}: {
+  view: EditorView;
+  path: string;
+  text: string;
+  label?: string;
+}) {
   const [tokens, setTokens] = useState<CodeToken[] | null>(null);
   const [font] = useState(() => {
     const { fontFamily, fontSize, fontWeight, lineHeight, fontVariantLigatures } = getComputedStyle(view.contentDOM);
@@ -102,7 +134,7 @@ function OriginalText({ view, path, text }: { view: EditorView; path: string; te
   return (
     <pre
       role="region"
-      aria-label={tx("Original text")}
+      aria-label={tx(label)}
       tabIndex={0}
       className={`${styles.preview} ${selectableText}`}
       style={font}
@@ -117,16 +149,20 @@ function HunkPopupView({ state }: { state: PopupState }) {
   const [copied, setCopied] = useState(false);
   const all = editorHunks(view.state);
   const index = all.findIndex((h) => h.start === hunk.start && h.oldStart === hunk.oldStart);
+  const stage = hunk.staging;
+  const title = stage ? stagingTitle(stage) : tx(KIND_TITLE[hunk.kind]);
+  const original = stage?.unstaged ? stage.indexText : hunk.oldText;
+  const canStageEdit = !!stage && editableHunk(view, hunk);
+  const canRollback = !view.state.readOnly && (!stage || (stage.unstaged && canStageEdit));
 
   const rollback = () => {
-    const live = editorHunks(view.state).find((h) => h.start === hunk.start && h.oldStart === hunk.oldStart) ?? hunk;
-    view.dispatch({
-      changes: { from: live.from, to: live.to, insert: live.oldText },
-      userEvent: "input.rollback",
-      scrollIntoView: true,
-    });
-    closeHunkPopup();
-    view.focus();
+    const live = stage
+      ? equivalentStagingHunk(view, hunk)
+      : editorHunks(view.state).find((h) => h.start === hunk.start && h.oldStart === hunk.oldStart);
+    if (live && rollbackHunks({ view, path, hunks: [live] })) {
+      closeHunkPopup();
+      view.focus();
+    }
   };
 
   const step = (dir: 1 | -1) => {
@@ -142,7 +178,7 @@ function HunkPopupView({ state }: { state: PopupState }) {
       placement="bottom-start"
       offset={2}
       onClose={closeHunkPopup}
-      aria-label={tx(KIND_TITLE[hunk.kind])}
+      aria-label={title}
       className={styles.popup}
       style={{ "--hunk-popup-width": `${state.width}px` } as CSSProperties}
       unstyled
@@ -162,32 +198,78 @@ function HunkPopupView({ state }: { state: PopupState }) {
           size="small"
           onClick={() => step(1)}
         />
-        <IconButton icon="undo" title="Rollback" size="small" data-autofocus onClick={rollback} />
+        <IconButton
+          icon="undo"
+          title="Rollback"
+          size="small"
+          disabled={!canRollback}
+          data-autofocus={canRollback || undefined}
+          onClick={rollback}
+        />
         <IconButton
           icon="diff"
           title="Show Diff"
           size="small"
+          disabled={!!stage && !canStageEdit}
           onClick={() => {
             closeHunkPopup();
-            void executeAction("vcs.showDiff", { path, line: hunk.start });
+            if (stage) void executeAction("vcs.showDiffForLines", { view, path, hunks: [hunk] });
+            else void executeAction("vcs.showDiff", { path, line: hunk.start });
           }}
         />
         <IconButton
           icon={copied ? "check" : "copy"}
           title="Copy Original Text"
           size="small"
-          disabled={!hunk.oldText}
+          disabled={!original}
           onClick={() => {
-            void writeClipboardText(hunk.oldText).then(() => setCopied(true));
+            void writeClipboardText(original).then(() => setCopied(true));
           }}
         />
+        {stage?.unstaged && (
+          <IconButton
+            icon="plus"
+            action="vcs.stageGutterChange"
+            actionArg={{ view, path, hunks: [hunk] }}
+            size="small"
+            disabled={!canStageEdit}
+            data-autofocus={(canStageEdit && !canRollback) || undefined}
+          />
+        )}
+        {stage?.staged && (
+          <IconButton
+            icon="minus"
+            action="vcs.unstageGutterChange"
+            actionArg={{ view, path, hunks: [hunk] }}
+            size="small"
+            disabled={!canStageEdit}
+            data-autofocus={(canStageEdit && !stage.unstaged) || undefined}
+          />
+        )}
         <span className={styles.title}>
-          {tx(KIND_TITLE[hunk.kind])}
+          {title}
           {index >= 0 && all.length > 1 && <span className={styles.counter}>{tx`${index + 1} of ${all.length}`}</span>}
         </span>
         <IconButton icon="close" title="Close" size="small" onClick={closeHunkPopup} />
       </div>
-      {hunk.oldText && <OriginalText view={view} path={path} text={hunk.oldText} />}
+      {stage
+        ? ((stage.staged && hunk.oldText) || (stage.unstaged && stage.indexText)) && (
+            <div className={styles.versions}>
+              {stage.staged && hunk.oldText && (
+                <>
+                  <div className={styles.versionLabel}>{tx("HEAD")}</div>
+                  <OriginalText view={view} path={path} text={hunk.oldText} label="HEAD" />
+                </>
+              )}
+              {stage.unstaged && stage.indexText && (
+                <>
+                  <div className={styles.versionLabel}>{tx("Staged (index)")}</div>
+                  <OriginalText view={view} path={path} text={stage.indexText} label="Staged (index)" />
+                </>
+              )}
+            </div>
+          )
+        : hunk.oldText && <OriginalText view={view} path={path} text={hunk.oldText} />}
     </Popup>
   );
 }

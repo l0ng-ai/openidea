@@ -20,6 +20,22 @@
   width: 100%;
 }
 
+.signingForm {
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-4) var(--space-2);
+  overflow-wrap: anywhere;
+}
+
+.signingPicker {
+  width: 100%;
+}
+
+.signingRoot,
+.signingHint {
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+
 .updateMethods {
   display: flex;
   flex-wrap: wrap;

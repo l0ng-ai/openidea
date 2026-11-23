@@ -6,6 +6,14 @@ use ide_core::{IdeError, IdeResult};
 use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
 
+#[derive(serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffEntry {
+    pub mode: String,
+    /// The recorded commit for a gitlink, independent of the parent's object database.
+    pub gitlink: Option<String>,
+}
+
 /// Converts any displayable gitoxide error into an [`IdeError`].
 pub(crate) fn gx(e: impl std::fmt::Display) -> IdeError {
     IdeError::internal(format!("git: {e}"))
@@ -72,13 +80,19 @@ pub(crate) fn discover(path: &Path) -> IdeResult<Option<Repo>> {
     let cache = Cache { stamp: stamp(&files), files, repo: ts, pack_stamp: pack_stamp(&pack_dir), pack_dir };
     Ok(Some(Repo {
         execution_allowed: std::sync::atomic::AtomicBool::new(false),
+        git_executable: std::sync::RwLock::new(crate::opening_git_executable()),
         root,
         git_dir,
         inner: std::sync::Mutex::new(cache),
         ignored: Default::default(),
         cli_status: Default::default(),
+        automatic_shelf: Default::default(),
         log_index: Default::default(),
+        ref_decorations: Default::default(),
         log_signatures: Default::default(),
+        conflict_mutation: Default::default(),
+        amend_recovery: Default::default(),
+        incoming_observations: Default::default(),
     }))
 }
 
@@ -102,7 +116,7 @@ impl Repo {
     /// A thread-local gitoxide handle; reopened when configuration or packed refs change.
     /// gitoxide's packed-ref snapshot only reloads for a newer mtime, which a replacement may preserve.
     pub(crate) fn gix(&self) -> IdeResult<gix::Repository> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         if !self.execution_allowed.load(std::sync::atomic::Ordering::Acquire) {
             return gix::open_opts(&self.git_dir, gix::open::Options::default().filter_config_section(|_| false))
                 .map_err(gx);
@@ -128,7 +142,7 @@ impl Repo {
     /// Repository-relative path with `/` separators. Accepts absolute paths inside the
     /// worktree or paths already relative to it.
     pub(crate) fn rel_path(&self, path: &Path) -> IdeResult<String> {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         Ok(self.index_spelling(self.given_rel_path(path)?))
     }
 
@@ -146,6 +160,41 @@ impl Repo {
             return Ok(Some(bytes));
         }
         blob_at(&repo, &indexed, rev)
+    }
+
+    pub fn diff_entry_at(&self, path: &Path, rev: &str) -> IdeResult<Option<DiffEntry>> {
+        let _scope = self.execution_scope();
+        let repo = self.gix()?;
+        let given = self.given_rel_path(path)?;
+        let indexed = self.index_spelling(given.clone());
+        if rev == "WT" {
+            if let Some(mode) = worktree_mode(self.root(), &indexed)? {
+                return Ok(Some(DiffEntry { mode, gitlink: None }));
+            }
+            let at_index = entry_at(&repo, &indexed, ":0")?.is_some_and(|(mode, _)| mode.is_commit());
+            let at_head =
+                || entry_at(&repo, &given, "HEAD").map(|entry| entry.is_some_and(|(mode, _)| mode.is_commit()));
+            if !at_index && !at_head()? {
+                return Ok(None);
+            }
+            let gitlink = self
+                .initialized_submodule(Path::new(&indexed))
+                .and_then(|path| Self::discover(&path).ok().flatten().filter(|child| child.root() == path))
+                .and_then(|child| child.head().ok()?.1);
+            return Ok(Some(DiffEntry { mode: "160000".into(), gitlink }));
+        }
+        let entry = if !rev.starts_with(':') && indexed != given {
+            match entry_at(&repo, &given, rev)? {
+                Some(entry) => Some(entry),
+                None => entry_at(&repo, &indexed, rev)?,
+            }
+        } else {
+            entry_at(&repo, &indexed, rev)?
+        };
+        Ok(entry.map(|(mode, id)| DiffEntry {
+            mode: format!("{:o}", mode.value()),
+            gitlink: mode.is_commit().then(|| id.to_string()),
+        }))
     }
 
     /// `path` relative to the worktree, spelled as given.
@@ -217,7 +266,7 @@ impl Repo {
 
     /// Absolute path for a repository-relative path.
     pub(crate) fn abs_path(&self, rel: &str) -> PathBuf {
-        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        let _scope = self.execution_scope();
         let mut p = self.root.clone();
         for part in rel.split('/').filter(|s| !s.is_empty()) {
             p.push(part);
@@ -282,6 +331,14 @@ pub(crate) fn worktree_mode(root: &Path, rel: &str) -> IdeResult<Option<String>>
 /// The entry's mode of `rel` at `rev` as git prints it (`100644`, `100755`, `120000`,
 /// `160000`…), `None` when the path is absent there. Same `rev` rules as [`blob_at`].
 pub(crate) fn mode_at(repo: &gix::Repository, rel: &str, rev: &str) -> IdeResult<Option<String>> {
+    Ok(entry_at(repo, rel, rev)?.map(|(mode, _)| format!("{:o}", mode.value())))
+}
+
+fn entry_at(
+    repo: &gix::Repository,
+    rel: &str,
+    rev: &str,
+) -> IdeResult<Option<(gix::objs::tree::EntryMode, gix::ObjectId)>> {
     if let Some(stage) = rev.strip_prefix(':') {
         let stage = match stage {
             "" | "0" => gix::index::entry::Stage::Unconflicted,
@@ -294,16 +351,16 @@ pub(crate) fn mode_at(repo: &gix::Repository, rel: &str, rev: &str) -> IdeResult
         let Some(entry) = index.entry_by_path_and_stage(BStr::new(rel.as_bytes()), stage) else {
             return Ok(None);
         };
-        return Ok(entry.mode.to_tree_entry_mode().map(|m| format!("{:o}", m.value())));
+        return Ok(entry.mode.to_tree_entry_mode().map(|mode| (mode, entry.id)));
     }
     let Some(tree) = tree_of(repo, rev)? else { return Ok(None) };
     let Some(entry) = tree.lookup_entry_by_path(Path::new(rel)).map_err(gx)? else {
         return Ok(None);
     };
-    if !entry.mode().is_blob_or_symlink() {
+    if !entry.mode().is_blob_or_symlink() && !entry.mode().is_commit() {
         return Ok(None);
     }
-    Ok(Some(format!("{:o}", entry.mode().value())))
+    Ok(Some((entry.mode(), entry.oid().to_owned())))
 }
 
 /// Blob content of `rel` at `rev`. `rev` is a revision (`HEAD`, a branch, an id) or
@@ -342,7 +399,7 @@ pub(crate) fn blob_at(repo: &gix::Repository, rel: &str, rev: &str) -> IdeResult
 /// A blob's bytes. Partial clones (`--filter=blob:none`) lack blobs until git
 /// fetches them on demand, which gix doesn't do, so a missing one is read
 /// through the git CLI.
-fn blob_data(repo: &gix::Repository, id: gix::ObjectId) -> IdeResult<Vec<u8>> {
+pub(crate) fn blob_data(repo: &gix::Repository, id: gix::ObjectId) -> IdeResult<Vec<u8>> {
     match repo.find_object(id) {
         Ok(obj) => Ok(obj.detach().data),
         Err(e) => {

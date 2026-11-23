@@ -62,16 +62,31 @@ fn package_bin(package: &Path, tool: &str) -> IdeResult<PathBuf> {
     Ok(path)
 }
 
-/// Prettier and Ruff format ranges for some languages (`config.range`); oxfmt formats whole files only.
+/// Prettier and Ruff format ranges for some languages (`config.range`); oxfmt and Biome format whole files only.
 pub fn supports_range(tool: &str, config: &FormatterConfig) -> bool {
     matches!(tool, "prettier" | "ruff") && config.range
 }
 
 fn is_formatter(tool: &str) -> bool {
-    crate::registry::find(tool).is_some_and(|t| t.kind == crate::ToolKind::Formatter || t.name == "ruff")
+    crate::registry::find(tool)
+        .is_some_and(|t| t.kind == crate::ToolKind::Formatter || matches!(t.name, "ruff" | "biome"))
+}
+
+/// The npm package that provides `tool`'s CLI.
+fn npm_package(tool: &str) -> &str {
+    match tool {
+        "biome" => "@biomejs/biome",
+        _ => tool,
+    }
 }
 
 impl Tools {
+    /// The IDE's own installation of `tool` outside `node_modules` (Ruff's private virtualenv).
+    fn managed_executable(&self, tool: &str) -> Option<PathBuf> {
+        let spec = crate::registry::find(tool)?;
+        self.exe_in(&crate::managed_bin_dir(&self.root, spec, self.platform)?, spec.commands[0])
+    }
+
     /// Explicit executable/script, then the nearest project package, then managed tools and PATH.
     pub fn formatter_command(&self, tool: &str, file: &Path, custom: Option<&Path>) -> IdeResult<Command> {
         self.resolve_formatter_command(tool, file, custom).map_err(|e| e.with_tool(tool))
@@ -81,7 +96,7 @@ impl Tools {
         if !is_formatter(tool) {
             return Err(IdeError::unavailable(format!("Unknown external formatter: {tool}")));
         }
-        let package = Path::new("node_modules").join(tool);
+        let package = Path::new("node_modules").join(npm_package(tool));
         let manifest = package.join("package.json");
         let (path, node) = if let Some(custom) = custom.filter(|p| p.is_dir()) {
             (package_bin(custom, tool)?, true)
@@ -91,6 +106,8 @@ impl Tools {
             (package_bin(manifest.parent().unwrap(), tool)?, true)
         } else if self.root.join(&manifest).is_file() {
             (package_bin(&self.root.join(&package), tool)?, true)
+        } else if let Some(path) = self.managed_executable(tool) {
+            (path, false)
         } else {
             (self.which(tool).ok_or_else(|| IdeError::missing_tool(tool))?, false)
         };
@@ -108,7 +125,7 @@ impl Tools {
 }
 
 /// Every tool resolves its configuration itself. Prettier's project configuration
-/// overrides the editor indentation passed here; oxfmt and Ruff read their own
+/// overrides the editor indentation passed here; oxfmt, Biome and Ruff read their own
 /// configuration files. Ruff also discovers the nearest `pyproject.toml`,
 /// `ruff.toml`, or `.ruff.toml` from the stdin filename.
 pub fn arguments(
@@ -136,6 +153,12 @@ pub fn arguments(
             ]);
         }
         return args;
+    }
+    if tool == "biome" {
+        // Biome finds its `biome.json` and ignore files from the file's path itself.
+        let mut path = OsString::from("--stdin-file-path=");
+        path.push(file);
+        return vec!["format".into(), path];
     }
     if tool == "prettier" {
         let parser = if config.parser == "markdown" && file.extension().is_some_and(|s| s == "mdx") {
@@ -224,6 +247,20 @@ mod tests {
         let custom = tools.formatter_command("prettier", &file, Some(&dir.path().join("absent-prettier"))).unwrap();
         let failure = run("prettier", custom, "text", &Default::default()).unwrap_err();
         assert_eq!(failure.data, Some(ErrorData::Tool { tool: "prettier".into(), missing: false }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_formatter_the_ide_installed_in_its_virtualenv_is_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let tools = Tools::with_paths(dir.path().join("tools"), OsString::new(), crate::platform::Platform::current());
+        let file = dir.path().join("main.py");
+        assert!(tools.formatter_command("ruff", &file, None).is_err());
+        let bin = dir.path().join("tools/ruff/venv/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("ruff"), "").unwrap();
+        let command = tools.formatter_command("ruff", &file, None).unwrap();
+        assert_eq!(Path::new(command.get_program()), bin.join("ruff"));
     }
 
     #[cfg(unix)]
@@ -321,6 +358,38 @@ mod tests {
 
         let unknown = tools.formatter_command("rust-analyzer", &file, None).unwrap_err();
         assert!(unknown.message.contains("Unknown external formatter"), "{}", unknown.message);
+    }
+
+    #[test]
+    fn biome_runs_the_nearest_biomejs_package_with_the_file_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let package = root.join("node_modules/@biomejs/biome");
+        std::fs::create_dir_all(package.join("bin")).unwrap();
+        std::fs::write(package.join("package.json"), r#"{"bin":{"biome":"bin/biome"}}"#).unwrap();
+        std::fs::write(package.join("bin/biome"), "").unwrap();
+        std::fs::write(root.join(".prettierignore"), "dist").unwrap();
+        let file = root.join("packages/web/src/app.ts");
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let tools = Tools::with_paths(root.join("tools"), path, crate::platform::Platform::current());
+
+        let command = tools.formatter_command("biome", &file, None).unwrap();
+        let program = Path::new(command.get_program()).file_stem().unwrap().to_string_lossy().into_owned();
+        assert_eq!(program, "node");
+        let script: Vec<_> = command.get_args().collect();
+        assert_eq!(
+            Path::new(&script[0]).components().collect::<Vec<_>>(),
+            package.join("bin/biome").components().collect::<Vec<_>>()
+        );
+
+        let config = FormatterConfig { tool: "prettier".into(), parser: "typescript".into(), range: true };
+        let range =
+            Some(FormatRange { start_offset: 3, end_offset: 9, start_line: 1, start_col: 1, end_line: 1, end_col: 7 });
+        let mut stdin_path = OsString::from("--stdin-file-path=");
+        stdin_path.push(&file);
+        // No Prettier ignore files or indentation: Biome reads its own configuration.
+        assert_eq!(arguments("biome", &config, &file, 4, false, range, None), ["format".into(), stdin_path]);
+        assert!(!supports_range("biome", &config));
     }
 
     #[test]

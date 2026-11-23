@@ -536,6 +536,9 @@ pub enum AgentEntry {
         kind: String,
         status: AgentToolStatus,
         locations: Vec<IpcPath>,
+        /// Images returned by the tool, kept separately from its truncated text.
+        #[serde(default)]
+        images: Vec<AgentImage>,
         /// Text the tool reported (command output…), truncated.
         output: Option<String>,
         diffs: Vec<AgentToolDiff>,
@@ -898,6 +901,8 @@ pub enum AgentSkillSource {
     Workspace,
     /// The user's `~/.agents/skills` (what `npx skills add` fills).
     User,
+    /// Contributed by an enabled OpenIDEA plugin (`[[contributes.skills]]`).
+    Plugin,
     /// The project's `.claude/skills`.
     ClaudeWorkspace,
     /// `~/.claude/skills`.
@@ -920,7 +925,7 @@ impl AgentSkillSource {
     /// Whether skills of this source are only read, never delivered by OpenIDEA: the CLI
     /// discovers them itself, so "off" holds only where the CLI supports a native disable.
     pub fn discovered(&self) -> bool {
-        !matches!(self, Self::Workspace | Self::User)
+        !matches!(self, Self::Workspace | Self::User | Self::Plugin)
     }
 }
 
@@ -946,6 +951,12 @@ pub struct AgentSkill {
     /// True when frontmatter sets `disable-model-invocation: true` (defaults to `slashOnly`).
     #[serde(default)]
     pub disable_model_invocation: bool,
+    /// True when frontmatter sets `context: fork` (passed through natively to supporting CLIs).
+    #[serde(default)]
+    pub context_fork: bool,
+    /// Optional `paths` / `globs` patterns from frontmatter (passed through natively to supporting CLIs).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
     /// The `SKILL.md` passes validation (`name` matches its folder, `description` present).
     pub valid: bool,
     /// What validation found (`name` mismatch, missing or over-long description…).

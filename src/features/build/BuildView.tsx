@@ -67,13 +67,12 @@ function StatusIcon({ status }: { status: BuildStatus }) {
   return <Icon name={name} size={14} className={styles[`status-${status}`]} />;
 }
 
-function rootDetail(status: BuildStatus, durationMs: number | null, errors: number, warnings: number): string {
+function rootDetail(status: BuildStatus, errors: number, warnings: number): string {
   if (status === "running") return "running…";
   if (status === "cancelled") return "cancelled";
-  const summary = finishSummary({ success: status === "success", errors, warnings, durationMs });
-  return status === "success"
-    ? `finished ${formatDuration(durationMs ?? 0)}`
-    : summary.replace(/^Build failed:?\s*/, "") || "failed";
+  if (status === "success") return tx("Finished");
+  const summary = finishSummary({ success: false, errors, warnings, durationMs: null });
+  return summary.replace(/^Build failed:?\s*/, "") || "failed";
 }
 
 export function BuildHeaderActions() {
@@ -130,15 +129,19 @@ function BuildTree() {
 
   const renderNode = (n: BuildNode, state: TreeRowState) => {
     if (n.kind === "root") {
+      const detail = rootDetail(n.status, n.errors, n.warnings);
+      const elapsed = n.status !== "running" && durationMs != null ? formatDuration(durationMs) : null;
       return (
-        <span className={styles.row}>
+        <span className={styles.row} title={[n.title, detail, elapsed].filter(Boolean).join(" ")}>
           <StatusIcon status={n.status} />
           <span className={styles.strong}>{n.title}</span>
-          <span className={styles.muted}>{rootDetail(n.status, durationMs, n.errors, n.warnings)}</span>
+          <span className={clsx(styles.muted, styles.rootDetail)}>{detail}</span>
+          {elapsed && <span className={clsx(styles.muted, styles.duration)}>{elapsed}</span>}
         </span>
       );
     }
     if (n.kind === "file") {
+      const directory = relativeDir(root, n.path);
       const errors = n.messages.filter((m) => m.severity === "error").length;
       const warnings = n.messages.filter((m) => m.severity === "warning").length;
       const counts = [
@@ -148,13 +151,22 @@ function BuildTree() {
         .filter(Boolean)
         .join(", ");
       return (
-        <span className={styles.row}>
+        <span className={styles.row} title={n.path}>
           <Icon name={fileIconName(basename(n.path), n.path)} size={16} className={styles.fileIcon} />
-          <span className={clsx(styles.strong, errors > 0 && styles.fileError, state.selected && styles.selected)}>
-            {basename(n.path)}
+          <span className={styles.fileLabel}>
+            <span
+              className={clsx(
+                styles.strong,
+                styles.fileName,
+                errors > 0 && styles.fileError,
+                state.selected && styles.selected,
+              )}
+            >
+              {basename(n.path)}
+            </span>
+            {directory && <span className={clsx(styles.muted, styles.directory)}>{directory}</span>}
           </span>
-          <span className={styles.muted}>{relativeDir(root, n.path)}</span>
-          <span className={styles.muted}>{counts}</span>
+          {counts && <span className={styles.muted}>{counts}</span>}
         </span>
       );
     }

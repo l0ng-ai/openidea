@@ -1176,6 +1176,22 @@ pub async fn lsp_prepare_rename(host: &Host, window: &str, doc: DocId, pos: Pos)
     host.project(window)?.lsp.prepare_rename(doc, pos).await
 }
 
+/// The Throwable class the caret at `pos` names, for the exception breakpoint intention.
+#[command(trust = trusted)]
+pub async fn lsp_exception_class_at(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+) -> IdeResult<Option<ExceptionClassRef>> {
+    let project = host.project(window)?;
+    let cancel = host.begin_request(request);
+    let result = project.lsp.exception_class_at(doc, pos, cancel).await;
+    host.end_request(request);
+    result
+}
+
 /// The class at `pos` and the members Pull Members Up / Push Members Down can move.
 #[command(trust = trusted)]
 pub async fn lsp_hierarchy_members(
@@ -1588,6 +1604,62 @@ pub async fn lsp_format(
     options: FormatOptions,
 ) -> IdeResult<Vec<TextEdit>> {
     crate::formatter::format(host, window, doc, range, options).await
+}
+
+#[command(trust = trusted)]
+pub async fn lsp_format_text(
+    host: &Host,
+    window: &str,
+    path: std::path::PathBuf,
+    text: String,
+    options: FormatOptions,
+) -> IdeResult<Vec<TextEdit>> {
+    crate::formatter::format_text(host, window, path, text, options).await
+}
+
+#[command(trust = trusted)]
+pub async fn lsp_source_action_text(
+    host: &Host,
+    window: &str,
+    path: std::path::PathBuf,
+    text: String,
+    kind: String,
+    request: RequestId,
+) -> IdeResult<Vec<TextEdit>> {
+    let project = host.project(window)?;
+    if !path.is_absolute() || path.file_name().is_none() {
+        return Err(IdeError::invalid("a text snapshot requires a file path"));
+    }
+    if text.len() as u64 > ide_vfs::LARGE_FILE_THRESHOLD {
+        return Ok(Vec::new());
+    }
+    let language = project.documents.language_of(&path, text.lines().next()).language;
+    let cancel = host.begin_project_read_request(window, request);
+    let result = project.lsp.source_action_text(&path, &language, &text, &kind, &cancel).await;
+    host.end_request(request);
+    result
+}
+
+#[command(trust = trusted)]
+pub async fn lsp_snapshot_diagnostics(
+    host: &Host,
+    window: &str,
+    path: std::path::PathBuf,
+    text: String,
+    request: RequestId,
+) -> IdeResult<Vec<ide_core::Diagnostic>> {
+    let project = host.project(window)?;
+    if !path.is_absolute() || path.file_name().is_none() {
+        return Err(IdeError::invalid("a text snapshot requires a file path"));
+    }
+    if text.len() as u64 > ide_vfs::LARGE_FILE_THRESHOLD {
+        return Ok(Vec::new());
+    }
+    let language = project.documents.language_of(&path, text.lines().next()).language;
+    let cancel = host.begin_project_read_request(window, request);
+    let result = project.lsp.snapshot_diagnostics(&path, &language, &text, &cancel).await;
+    host.end_request(request);
+    result
 }
 
 #[command(trust = trusted)]
@@ -2786,11 +2858,15 @@ ide_command::domain!(
     lsp_completion,
     lsp_document_highlights,
     lsp_document_links,
+    lsp_exception_class_at,
     lsp_execute_code_action,
     lsp_execute_command,
     lsp_extract_interface,
     lsp_extract_interface_info,
     lsp_format,
+    lsp_format_text,
+    lsp_snapshot_diagnostics,
+    lsp_source_action_text,
     lsp_goto,
     lsp_goto_implementation,
     lsp_hierarchy_members,

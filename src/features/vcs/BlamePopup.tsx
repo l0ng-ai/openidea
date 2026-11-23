@@ -147,7 +147,11 @@ function BlamePopupView({ state }: { state: BlamePopupState }) {
       onClose={() => closeBlamePopup()}
       className={styles.popup}
     >
-      <div onPointerEnter={cancelBlamePopupTimers} onPointerLeave={() => scheduleCloseBlamePopup()}>
+      <div
+        className={styles.content}
+        onPointerEnter={cancelBlamePopupTimers}
+        onPointerLeave={() => scheduleCloseBlamePopup()}
+      >
         <div className={styles.header}>
           <div>
             commit{" "}

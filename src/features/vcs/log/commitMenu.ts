@@ -1,17 +1,19 @@
 import type { Commit } from "@/bindings";
-import { useBookmarkPopups } from "@/features/search/bookmarks/store";
+import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
-import { copyText, type MenuItem } from "@/ui";
+import type { MenuItem } from "@/ui";
 import { branchMenu, inRepo } from "../branchMenu";
-import { commitBookmarkPath } from "../logBookmarks";
-import { loadLogDetails } from "../logDetails";
-import { toggleCommitBookmark, useGitLog } from "../logStore";
 import { commitKey, commitRepo, type RepoCommit } from "../multiRoot";
+import { undoCommitProblem } from "../rebasePlan";
 import { browseRepositoryAt } from "../RevisionBrowser";
-import { useVcs } from "../store";
+import { currentRepoRoot, useVcs } from "../store";
 import type { FileHistoryCommitArg, FileHistoryCommitsArg } from "../historyActions";
 
-/** The commit context menu in Git Log and File History. The selection is ordered newest first. */
+/**
+ * The commit context menu in Git Log and File History, in the order of the IDE's Git Log menu.
+ * The selection is ordered newest first. For several commits, actions that edit one commit are hidden
+ * and the other single-commit actions are disabled.
+ */
 export function commitMenu(c: Commit, selection: Commit[] = [c], fileHistoryTarget?: string | null): MenuItem[] {
   const actionCommit: Commit | FileHistoryCommitArg = fileHistoryTarget
     ? { kind: "file-history-commit", commit: c, target: fileHistoryTarget }
@@ -19,59 +21,68 @@ export function commitMenu(c: Commit, selection: Commit[] = [c], fileHistoryTarg
   if ((c as RepoCommit).readOnly)
     return [
       { kind: "action", action: "vcs.log.copyRevision", arg: c },
-      { label: "Copy Commit Message", run: () => copyCommitMessage(c) },
       { kind: "separator" },
-      { label: "Browse Repository at Revision", run: () => browseRepositoryAt(c) },
+      { label: "Show Repository at Revision", run: () => browseRepositoryAt(c) },
       ...(fileHistoryTarget
         ? [{ kind: "action" as const, action: "vcs.log.showFileAtRevision", arg: actionCommit }]
         : []),
       { kind: "separator" },
-      { kind: "action", action: "vcs.log.goToChild", arg: c },
-      { kind: "action", action: "vcs.log.goToParent", arg: c },
-      { kind: "separator" },
-      ...bookmarkItems(c),
+      { kind: "action", action: "vcs.log.goToChild", arg: c, icon: null },
+      { kind: "action", action: "vcs.log.goToParent", arg: c, icon: null },
     ];
   const many = selection.length > 1 && selection.some((x) => commitKey(x) === commitKey(c));
+  const commits = many ? selection : [c];
   const repo = commitRepo(c);
   const vcs = useVcs.getState();
-  const head = (repo ? vcs.heads[repo]?.head : vcs.branch?.head) ?? null;
-  const { outgoing } = useGitLog.getState();
-  if (many) {
-    const compareArg: Commit[] | FileHistoryCommitsArg = fileHistoryTarget
-      ? { kind: "file-history-commits", commits: selection, target: fileHistoryTarget }
-      : selection;
-    return [
-      { kind: "action", action: "vcs.log.copyRevision", arg: selection, label: "Copy Revision Numbers" },
-      { kind: "action", action: "vcs.log.createPatch", arg: selection },
-      { kind: "separator" },
-      ...(selection.length === 2
-        ? ([
-            { kind: "action", action: "vcs.log.compareVersions", arg: compareArg },
-            { kind: "separator" },
-          ] satisfies MenuItem[])
-        : []),
-      { kind: "action", action: "vcs.log.cherryPick", arg: selection },
-      { kind: "action", action: "vcs.log.revert", arg: selection, label: "Revert Commits" },
-      { kind: "separator" },
-      { kind: "action", action: "vcs.log.squashCommits", arg: selection },
-      { kind: "action", action: "vcs.log.dropCommit", arg: selection, label: "Drop Commits" },
-    ];
-  }
-  // Without an upstream there is no outgoing set: allow pushing up to any commit of HEAD.
-  const canPushHere =
-    !!head &&
-    ((commitRepo(c) === undefined ? !!outgoing : useGitLog.getState().tracked.has(commitRepo(c) ?? ""))
-      ? !!outgoing?.has(commitKey(c))
-      : true);
-  const branches = ((c as RepoCommit).refBranches ?? []).filter((branch) => !branch.current);
-  const branchActions: MenuItem[] = branches.map((branch) => {
-    const menu = branchMenu(branch, head);
-    return {
-      label: tx`Branch '${branch.name}'`,
-      submenu: repo ? inRepo(repo, menu) : menu,
-    };
+  const branchInfo = repo ? vcs.heads[repo] : vcs.branch;
+  const head = branchInfo?.head ?? null;
+  const operation = repo ? vcs.operations[repo] : vcs.branch?.operation;
+  const cannotApply = commits.some((commit) => commit.parents.length > 1 || (commit as RepoCommit).readOnly);
+  const compareArg: Commit[] | FileHistoryCommitsArg = fileHistoryTarget
+    ? { kind: "file-history-commits", commits: selection, target: fileHistoryTarget }
+    : selection;
+  const single = (action: string, extra: Partial<Extract<MenuItem, { kind: "action" }>> = {}): MenuItem => ({
+    kind: "action",
+    action,
+    arg: c,
+    icon: null,
+    ...extra,
+    disabled: many || !!extra.disabled,
   });
-  if (!branchActions.length)
+
+  const branches = ((c as RepoCommit).refBranches ?? []).filter(
+    (branch) => !branch.current && (branch.remote || branch.name !== head),
+  );
+  const local = branches.filter((branch) => !branch.remote).sort((a, b) => a.name.localeCompare(b.name));
+  const revision = c.shortId;
+  const checkoutRepo = repo ?? currentRepoRoot();
+  const checkout: MenuItem[] = many
+    ? []
+    : local.length
+      ? [
+          {
+            label: "Checkout",
+            submenu: [
+              ...local.map((branch): MenuItem => ({
+                label: branch.name,
+                verbatim: true,
+                run: () => void executeAction("vcs.log.checkoutBranch", { branch, repo: checkoutRepo }),
+              })),
+              { kind: "action", action: "vcs.log.checkoutRevision", label: tx`Revision '${revision}'`, arg: c },
+            ],
+          },
+        ]
+      : [{ kind: "action", action: "vcs.log.checkoutRevision", label: tx`Checkout Revision '${revision}'`, arg: c }];
+  const branchActions: MenuItem[] = many
+    ? []
+    : branches.map((branch) => {
+        const menu = branchMenu(branch, head, undefined, { headCommit: branchInfo?.headCommit ?? null });
+        return {
+          label: tx`Branch '${branch.name}'`,
+          submenu: repo ? inRepo(repo, menu) : menu,
+        };
+      });
+  if (!many && !branchActions.length)
     branchActions.push({
       kind: "action",
       action: "vcs.log.rebaseOntoCommit",
@@ -79,58 +90,50 @@ export function commitMenu(c: Commit, selection: Commit[] = [c], fileHistoryTarg
       label: tx`Rebase '${head ?? "HEAD"}' onto Selected Commit`,
       disabled: !head,
     });
+
   return [
-    { kind: "action", action: "vcs.log.copyRevision", arg: c },
-    { label: "Copy Commit Message", run: () => copyCommitMessage(c) },
-    { kind: "action", action: "vcs.log.createPatch", arg: c },
+    { kind: "action", action: "vcs.log.copyRevision", arg: many ? selection : c },
+    { kind: "action", action: "vcs.log.createPatch", arg: many ? selection : c, icon: "patch" },
+    {
+      kind: "action",
+      action: "vcs.log.cherryPick",
+      arg: many ? selection : c,
+      icon: "cherry-pick",
+      disabled: cannotApply,
+    },
     { kind: "separator" },
-    { kind: "action", action: "vcs.log.checkoutRevision", arg: c },
-    { label: "Browse Repository at Revision", run: () => browseRepositoryAt(c) },
-    ...(fileHistoryTarget
-      ? [{ kind: "action" as const, action: "vcs.log.showFileAtRevision", arg: actionCommit }]
+    ...checkout,
+    { label: "Show Repository at Revision", disabled: many, run: () => browseRepositoryAt(c) },
+    ...(fileHistoryTarget ? [single("vcs.log.showFileAtRevision", { arg: actionCommit })] : []),
+    ...(selection.length === 2 && many
+      ? [{ kind: "action" as const, action: "vcs.log.compareVersions", arg: compareArg, icon: null }]
       : []),
-    { kind: "action", action: "vcs.log.compareWithLocal", arg: actionCommit },
+    single("vcs.log.compareWithLocal", { arg: actionCommit }),
     { kind: "separator" },
-    { kind: "action", action: "vcs.log.cherryPick", arg: c },
-    { kind: "action", action: "vcs.log.resetToHere", arg: c },
-    { kind: "action", action: "vcs.log.revert", arg: c },
-    { kind: "action", action: "vcs.log.undoCommit", arg: c },
+    single("vcs.log.resetToHere", { icon: "revert" }),
+    { kind: "action", action: "vcs.log.revert", arg: many ? selection : c, icon: null, disabled: cannotApply },
+    // Editing one commit is hidden, not disabled, for a multiple selection.
+    ...(many
+      ? []
+      : [
+          single("vcs.log.undoCommit", {
+            disabled: !!branchInfo && !!undoCommitProblem(c, { ...branchInfo, operation }),
+          }),
+        ]),
     { kind: "separator" },
-    { kind: "action", action: "vcs.log.editMessage", arg: c },
-    { kind: "action", action: "vcs.log.fixup", arg: c },
-    { kind: "action", action: "vcs.log.squashInto", arg: c },
-    { kind: "action", action: "vcs.log.dropCommit", arg: c },
-    { kind: "action", action: "vcs.log.interactiveRebase", arg: c },
-    { kind: "action", action: "vcs.log.pushUpToHere", arg: c, disabled: !canPushHere },
+    ...(many ? [] : [single("vcs.log.editMessage"), single("vcs.log.fixup"), single("vcs.log.squashInto")]),
+    { kind: "action", action: "vcs.log.dropCommit", arg: many ? selection : c, label: "Drop Commits" },
+    ...(many ? [{ kind: "action" as const, action: "vcs.log.squashCommits", arg: selection }] : []),
+    ...(many ? [] : [single("vcs.log.interactiveRebase")]),
+    single("vcs.log.pushUpToHere"),
     { kind: "separator" },
     ...(branchActions.length > 2 ? [{ label: "Branches", submenu: branchActions }] : branchActions),
-    { kind: "action", action: "vcs.log.newBranch", arg: c },
-    { kind: "action", action: "vcs.log.newTag", arg: c },
+    single("vcs.log.newBranch"),
+    single("vcs.log.newTag"),
     { kind: "separator" },
-    { kind: "action", action: "vcs.log.goToChild", arg: c },
-    { kind: "action", action: "vcs.log.goToParent", arg: c, disabled: !c.parents.length },
+    single("vcs.log.goToChild"),
+    single("vcs.log.goToParent", { disabled: !c.parents.length }),
     { kind: "separator" },
-    ...bookmarkItems(c),
-    { kind: "separator" },
-    { kind: "action", action: "vcs.log.openInBrowser", arg: c },
+    { kind: "action", action: "vcs.log.openInBrowser", arg: c, disabled: many },
   ];
-}
-
-function bookmarkItems(commit: Commit): MenuItem[] {
-  return [
-    {
-      label: useGitLog.getState().bookmarks[commitKey(commit)] ? "Remove Commit Bookmark" : "Bookmark Commit",
-      run: () => toggleCommitBookmark(commit),
-    },
-    {
-      label: "Assign Mnemonic",
-      run: () =>
-        useBookmarkPopups.setState({ chooser: { path: commitBookmarkPath(commit), line: 0, text: commit.summary } }),
-    },
-  ];
-}
-
-async function copyCommitMessage(c: Commit) {
-  const message = c.messageTruncated ? (await loadLogDetails(c)).message : c.message;
-  await copyText(message);
 }

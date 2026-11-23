@@ -4,6 +4,7 @@
  * merge UI), rename and delete.
  */
 import { writeClipboardText } from "@/platform/clipboard";
+import { choosePaths } from "@/platform/choosePath";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
@@ -151,8 +152,8 @@ export async function shelveSilently(paths?: readonly string[]) {
 
 async function shelveFiles(name: string, paths: string[]): Promise<ShelvedChangeList | undefined> {
   const entry = await runOp(tx`Shelve changes “${name}”`, () => call(commands.vcsShelve(name, paths)));
-  if (!entry) return undefined;
   void loadShelves().catch(() => undefined);
+  if (!entry) return undefined;
   notifications().notify({
     group: "vcs",
     level: "info",
@@ -332,17 +333,25 @@ function ShelveDialog({
 }
 
 /** Opens the merge UI for conflicts an apply left, or reports success. */
-export async function reportApply(outcome: ApplyOutcome, what: string) {
+export async function reportApply(
+  outcome: ApplyOutcome,
+  what: string,
+  repositories?: string[],
+  afterRefresh?: () => Promise<void>,
+) {
   await refreshNow();
-  if (outcome.conflicts.length || conflictedFiles().length) {
+  await afterRefresh?.();
+  if (outcome.conflicts.length || (!repositories && conflictedFiles().length)) {
+    const resolve = () =>
+      repositories ? executeAction("vcs.resolveConflicts", { repositories }) : executeAction("vcs.resolveConflicts");
     notifications().notify({
       group: "vcs",
       level: "warning",
       title: `${what}: ${outcome.conflicts.length} file${outcome.conflicts.length === 1 ? "" : "s"} with conflicts`,
       body: outcome.conflicts.slice(0, 3).join(", "),
-      actions: [{ label: "Resolve…", run: () => void executeAction("vcs.resolveConflicts") }],
+      actions: [{ label: "Resolve…", run: () => void resolve() }],
     });
-    void executeAction("vcs.resolveConflicts");
+    void resolve();
     return;
   }
   const n = outcome.applied.length;
@@ -370,12 +379,12 @@ async function applyShelf(entry: ShelvedChangeList, paths: readonly string[], re
   const outcome = await runOp(tx`Unshelve “${entry.name}”`, () => unshelveFiles(entry, paths, remove), {
     refresh: false,
   });
-  if (!outcome) return;
   await refreshNow();
-  const repo = shelfRepository(entry);
-  const rels = [...outcome.applied, ...outcome.conflicts].map((p) => relOf(repositoryPath(repo, p)));
-  updateChangelists((s) => moveFiles(s, rels, target));
   void loadShelves().catch(() => undefined);
+  if (!outcome) return;
+  const base = shelfPathBase(entry);
+  const rels = [...outcome.applied, ...outcome.conflicts].map((p) => relOf(repositoryPath(base, p)));
+  updateChangelists((s) => moveFiles(s, rels, target));
   await reportApply(outcome, `Unshelved “${entry.name}”`);
 }
 
@@ -396,7 +405,7 @@ function UnshelveDialog({ entry, path, onClose }: { entry: ShelvedChangeList; pa
   const lists = useChangelists((s) => s.state);
   const [target, setTarget] = useState(lists.active);
   const [remove, setRemove] = useState(() => workflowSettings().vcs.shelf.removeApplied);
-  const repo = shelfRepository(entry);
+  const base = shelfPathBase(entry);
   const files = useMemo<ChangedFile[]>(() => {
     if (path === undefined) return entry.files;
     const own = entry.files.filter((f) => f.path === path);
@@ -404,7 +413,7 @@ function UnshelveDialog({ entry, path, onClose }: { entry: ShelvedChangeList; pa
   }, [entry, path]);
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set(files.map((f) => f.path)));
   const projectRoot = useVcs((s) => s.root);
-  const root = repo ?? projectRoot ?? "";
+  const root = base ?? projectRoot ?? "";
   const run = async () => {
     const chosen = files.filter((f) => selected.has(f.path)).map((f) => f.path);
     if (!chosen.length) return;
@@ -482,7 +491,7 @@ export async function renameShelf(entry: ShelvedChangeList) {
 
 export async function copyShelfPatch(entry: ShelvedChangeList, path?: string) {
   try {
-    await writeClipboardText(await call(commands.vcsShelfPatch(entry.id, path ?? null)));
+    await writeClipboardText(await call(commands.vcsShelfPatch(entry.id, path ?? null, null)));
     notifications().notify({ group: "vcs", level: "info", title: "Patch copied to the clipboard" });
   } catch (e) {
     logConsole("err", errorMessage(e));
@@ -516,14 +525,14 @@ export function shelfTarget(arg?: unknown): { entry: ShelvedChangeList; path?: s
 }
 
 /** Legacy shelves were created in the primary repository, regardless of the selected one. */
-function shelfRepository(entry?: ShelvedChangeList): string | null {
+function shelfPathBase(entry?: ShelvedChangeList): string | null {
   const state = useVcs.getState();
   return entry?.repo ?? state.roots[0] ?? state.root;
 }
 
 export function shelfDiffs(target: ShelfTarget, local = false): DiffData[] {
   const state = useShelf.getState();
-  const root = shelfRepository(state.shelves.find((entry) => entry.id === target.id));
+  const root = shelfPathBase(state.shelves.find((entry) => entry.id === target.id));
   if (!root) return [];
   return (state.diffs[target.id] ?? [])
     .filter((f) => (!target.path || f.path === target.path) && f.before !== null && f.after !== null)
@@ -573,12 +582,8 @@ export async function showShelfDiff(arg?: unknown, local = false, newTab = false
 export async function importShelfPatches(paths?: string[]) {
   const repo = currentRepo();
   const picked =
-    paths ??
-    (await import("@/platform/dialog").then(({ open }) =>
-      open({ multiple: true, directory: false, filters: [{ name: "Patch", extensions: ["patch", "diff"] }] }),
-    ));
-  if (!picked) return;
-  for (const path of typeof picked === "string" ? [picked] : picked) {
+    paths ?? (await choosePaths({ directory: false, filters: [{ name: "Patch", extensions: ["patch", "diff"] }] }));
+  for (const path of picked) {
     await runOp(
       tx("Import patches"),
       async () => call(commands.vcsShelfImport(repo, baseName(path), await call(commands.fsReadText(path)))),

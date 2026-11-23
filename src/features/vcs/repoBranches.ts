@@ -87,25 +87,31 @@ export interface CommonBranch {
   upstream: boolean;
 }
 
+interface CommonBranchMatch extends CommonBranch {
+  /** Each repository's branch, in the input order. */
+  members: readonly Branch[];
+}
+
 /** Branches present in every repository (by name), local and remote, sorted like the single-repository lists. */
 export function commonBranches(
   branchesByRepo: readonly (readonly Branch[])[],
   favorites: readonly string[] | null = null,
-): { local: CommonBranch[]; remote: CommonBranch[] } {
+): { local: CommonBranchMatch[]; remote: CommonBranchMatch[] } {
   if (!branchesByRepo.length) return { local: [], remote: [] };
-  const pick = (sorted: (list: readonly Branch[]) => Branch[]): CommonBranch[] => {
+  const pick = (sorted: (list: readonly Branch[]) => Branch[]): CommonBranchMatch[] => {
     const [first, ...rest] = branchesByRepo;
     const others = rest.map((list) => new Map(list.map((b) => [`${b.remote}:${b.name}`, b])));
     return sorted(first!).flatMap((b) => {
-      const all = others.map((m) => m.get(`${b.remote}:${b.name}`));
-      if (all.some((x) => !x)) return [];
+      const members = [b, ...others.map((m) => m.get(`${b.remote}:${b.name}`)).filter((x) => x !== undefined)];
+      if (members.length !== branchesByRepo.length) return [];
       return [
         {
           name: b.name,
           remote: b.remote,
-          current: b.current && all.every((x) => x!.current),
+          current: members.every((x) => x.current),
           favorite: isFavoriteBranch(b, favorites),
-          upstream: !!b.upstream || all.some((x) => !!x!.upstream),
+          upstream: members.some((x) => !!x.upstream),
+          members,
         },
       ];
     });
@@ -132,7 +138,7 @@ export type RepoRow =
   | {
       type: "common";
       key: string;
-      branch: CommonBranch;
+      branch: CommonBranchMatch;
       /** Shown name: the last segment inside a folder. */
       label: string;
       depth: number;
@@ -267,8 +273,8 @@ export function buildMultiRepoRows({
           },
     );
   };
-  const commonRows = (list: readonly CommonBranch[], kind: "local" | "remote"): RepoRow[] => {
-    const items = list.flatMap((b): PrefixItem<CommonBranch>[] => {
+  const commonRows = (list: readonly CommonBranchMatch[], kind: "local" | "remote"): RepoRow[] => {
+    const items = list.flatMap((b): PrefixItem<CommonBranchMatch>[] => {
       const m = match(b.name);
       return m === false ? [] : [{ item: b, name: b.name, matches: m, pinned: b.current || b.favorite }];
     });

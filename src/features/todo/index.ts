@@ -4,13 +4,15 @@ import { registerEditorContribution } from "@/editor/api";
 import { registerToolWindow, toolWindowService } from "@/workbench/contributions";
 import { hasIcon } from "@/ui";
 import { activateSettingsPages } from "./settingsPages";
-import { TodoTabs, TodoView, useTodoBadge, useTodoHeaderMenu, useTodoView } from "./TodoView";
+import { installTodoReviews, TodoTabs, TodoView, useTodoBadge, useTodoHeaderMenu, useTodoView } from "./TodoView";
 import { todoEditorExtension } from "./highlight";
-import { installTodoIndex, scanProject, syncTodoSettingsFromStorage } from "./store";
+import { syncTodoSettingsFromStorage } from "@/platform/todo";
+import { installTodoIndex, scanProject } from "./store";
 
 export function activate(): () => void {
   const disposers = [
     installTodoIndex(),
+    installTodoReviews(),
     syncTodoSettingsFromStorage(),
     registerEditorContribution({ id: "todo.highlight", order: 120, extensions: todoEditorExtension }),
     registerToolWindow({

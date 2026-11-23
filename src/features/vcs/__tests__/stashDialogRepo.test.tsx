@@ -3,6 +3,10 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 
 const mocks = vi.hoisted(() => ({
   pushes: [] as Array<{ repo: string | null; message: string | null; paths: string[] | null }>,
+  defaults: vi.fn(),
+  status: vi.fn(),
+  notify: vi.fn(),
+  failRepo: null as string | null,
 }));
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
@@ -12,6 +16,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     ...real,
     commands: {
       ...real.commands,
+      vcsStatus: () => ok(mocks.status()),
       vcsBranchInfo: (repo: string | null) =>
         ok({
           head: repo === "/p/b" ? "dev" : "main",
@@ -24,11 +29,13 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       vcsStashPush: (
         repo: string | null,
         message: string | null,
-        _untracked: boolean,
-        _keepIndex: boolean,
+        untracked: boolean,
+        keepIndex: boolean,
         paths: string[] | null,
       ) => {
         mocks.pushes.push({ repo, message, paths });
+        mocks.defaults(repo, untracked, keepIndex);
+        if (repo && repo === mocks.failRepo) return Promise.reject(new Error("Merge conflict"));
         return ok(null);
       },
       vcsStashes: () => ok([]),
@@ -37,11 +44,17 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 });
 
 import { VcsDialogHost } from "../dialogs";
-import { stashChanges } from "../changeOps";
+import { provideNotificationService } from "@/workbench/contributions";
+import { stashChanges, stashSilently } from "../changeOps";
 import { useVcs } from "../store";
 
 beforeEach(() => {
   mocks.pushes = [];
+  mocks.failRepo = null;
+  mocks.defaults.mockClear();
+  mocks.status.mockReset();
+  mocks.notify.mockClear();
+  provideNotificationService({ notify: mocks.notify });
   useVcs.setState({
     root: "/p",
     roots: ["/p/a", "/p/b"],
@@ -132,4 +145,34 @@ it("stashes nothing when cancelled after picking another repository", async () =
   await done;
   await waitFor(() => expect(screen.queryByRole("button", { name: "Repository" })).toBeNull());
   expect(mocks.pushes).toEqual([]);
+});
+
+it("silently stashes every changed root, skips untracked-only and conflicted roots, and continues after an error", async () => {
+  useVcs.setState({ roots: ["/p/a", "/p/a/nested", "/p/b", "/p/c"], status: [] });
+  mocks.failRepo = "/p/a/nested";
+  mocks.status.mockReturnValue([
+    { path: "/p/a/conflict", staged: "conflicted", unstaged: "conflicted" },
+    { path: "/p/a/edited", staged: null, unstaged: "modified" },
+    { path: "/p/a/nested/staged", staged: "modified", unstaged: null },
+    { path: "/p/b/new", staged: null, unstaged: "untracked" },
+    { path: "/p/c/edited", staged: null, unstaged: "modified" },
+  ]);
+  await stashSilently();
+
+  expect(mocks.pushes).toEqual([
+    { repo: "/p/a/nested", message: null, paths: null },
+    { repo: "/p/c", message: null, paths: null },
+  ]);
+  expect(mocks.defaults.mock.calls).toEqual([
+    ["/p/a/nested", false, false],
+    ["/p/c", false, false],
+  ]);
+  expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({ level: "error", body: "Merge conflict" }));
+  expect(mocks.notify).toHaveBeenCalledWith(
+    expect.objectContaining({
+      title: "Changes stashed",
+      body: "c",
+      actions: [expect.objectContaining({ label: "Show Stashes" })],
+    }),
+  );
 });

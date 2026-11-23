@@ -5,6 +5,10 @@ use std::path::Path;
 #[cfg(windows)]
 use std::process::Stdio;
 use std::process::{Child, Command};
+
+pub const ASKPASS_PORT_ENV: &str = "OPENIDEA_ASKPASS_PORT";
+/// The IDE's askpass helper may answer with saved credentials only.
+pub const ASKPASS_SILENT_ENV: &str = "OPENIDEA_ASKPASS_SILENT";
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 

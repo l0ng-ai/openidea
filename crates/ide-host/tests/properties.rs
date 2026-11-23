@@ -140,7 +140,9 @@ async fn properties_search_git_and_document_coordinates_agree() {
     let selected = &hunks[0];
     let options = ide_vcs::CommitOptions {
         partial: vec![ide_vcs::PartialCommitFile {
+            prepared: None,
             path: path.clone().into(),
+            line_hunks: vec![],
             hunks: vec![ide_vcs::HunkRange {
                 start: selected.start,
                 lines: selected.lines,

@@ -46,6 +46,8 @@ const shared = [
   ["navigate.fileStructure", "db.goToColumn"],
   ["find.replaceInFile", "agents.findInConversation", "vcs.log.goToRef"],
   ["find.next", "find.popup.nextResult"],
+  ["navigate.toggleBookmark", "vcs.log.toggleBookmark"],
+  ["navigate.toggleBookmarkWithMnemonic", "vcs.log.toggleBookmarkWithMnemonic"],
   ["find.previous", "find.popup.previousResult"],
   ["find.usages", "project.findUsages"],
   ["code.quickDocumentation", "db.quickDoc", "debug.setValue", "vcs.changelist.edit"],

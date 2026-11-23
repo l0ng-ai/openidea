@@ -2,10 +2,13 @@
  * IDEA's Export Test Results dialog: HTML or XML, the output file, and whether to
  * open an HTML report in the browser once it is written.
  */
-import { useState } from "react";
+import { useId, useState } from "react";
 import { executeAction } from "@/platform/actions";
+import { toBase64 } from "@/platform/base64";
+import { choosePath } from "@/platform/choosePath";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
+import { isRemoteWindow } from "@/platform/remote";
 import { Checkbox, Dialog, IconButton, Input, Radio, T } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { confirm } from "@/workbench/messages";
@@ -38,13 +41,35 @@ function saveExportOptions(o: ExportOptions) {
   }
 }
 
-/**
- * IDEA's default name, `Test Results - <configuration>.html`. Like IDEA's `PathUtil.suggestFileName`, runs of
- * dots and characters file systems refuse become one `_` (`go test ./...` gives `go test`).
- */
-export function defaultExportPath(dir: string, name: string, format: TestExportFormat): string {
+/** Runs of dots and characters file systems refuse become one `_`. */
+export function defaultExportName(name: string, format: TestExportFormat): string {
   const safe = name.replace(/[/\\:*?"<>|.]+/g, "_").replace(/^[\s_]+|[\s_]+$/g, "");
-  return `${dir.replace(/[\\/]+$/, "")}/Test Results - ${safe || "Tests"}.${format}`;
+  return `Test Results - ${safe || "Tests"}.${format}`;
+}
+
+interface Destination {
+  folder: string;
+  fileName: string;
+  /** The native picker already asked before replacing this exact path. */
+  pickedPath?: string;
+}
+
+function destinationFromPicker(path: string): Destination {
+  const slash = path.lastIndexOf("/");
+  const posix = path.startsWith("/") && !path.startsWith("//");
+  const end = (posix ? slash : Math.max(slash, path.lastIndexOf("\\"))) + 1;
+  return { folder: path.slice(0, end), fileName: path.slice(end), pickedPath: path };
+}
+
+function resolveDestination({ folder, fileName, pickedPath }: Destination, cwd: string): string {
+  if (pickedPath) return pickedPath;
+  const file = fileName.trim();
+  if (!file || isAbsolutePath(file)) return file;
+  const dir = folder.trim();
+  const posix = dir.startsWith("/") && !dir.startsWith("//");
+  const base = dir.replace(posix ? /\/+$/ : /[\\/]+$/, "");
+  const path = dir ? `${base}/${file}` : file;
+  return isAbsolutePath(path) ? path : `${cwd.replace(/[\\/]+$/, "")}/${path}`;
 }
 
 async function exists(path: string): Promise<"file" | "dir" | null> {
@@ -74,7 +99,7 @@ export async function writeTestReport(path: string, text: string, confirmed: boo
         return false;
       await call(commands.fsDelete(path));
     }
-    await call(commands.fsCreateFileBytes(path, Array.from(new TextEncoder().encode(text))));
+    await call(commands.fsCreateFileBytes(path, toBase64(new TextEncoder().encode(text))));
     return true;
   } catch (e) {
     notifications().notify({
@@ -111,44 +136,62 @@ export function ExportTestResultsDialog({
   cwd: string;
   onClose: () => void;
 }) {
+  const fileNameId = useId();
+  const folderId = useId();
   const [options, setOptions] = useState(loadExportOptions);
-  const [path, setPath] = useState(() => defaultExportPath(cwd, name, options.format));
-  // The save dialog already asked before replacing this file.
-  const [picked, setPicked] = useState<string | null>(null);
+  const [destination, setDestination] = useState<Destination>(() => ({
+    folder: cwd,
+    fileName: defaultExportName(name, options.format),
+  }));
   const [busy, setBusy] = useState(false);
   const html = options.format === "html";
+  const { folder, fileName, pickedPath } = destination;
+  const target = resolveDestination(destination, cwd);
 
   const update = (next: Partial<ExportOptions>) => {
     const merged = { ...options, ...next };
     setOptions(merged);
     saveExportOptions(merged);
     // The file follows the format's extension, as in the Export Data dialog.
-    if (next.format) setPath((p) => p.replace(/\.(html|xml)$/i, `.${next.format}`));
+    if (next.format) {
+      const nextName = fileName.replace(/\.(html|xml)$/i, `.${next.format}`);
+      if (nextName !== fileName) setDestination({ folder, fileName: nextName });
+    }
   };
 
   const browse = async () => {
     try {
+      if (isRemoteWindow()) {
+        const current = isAbsolutePath(fileName.trim()) ? destinationFromPicker(fileName.trim()) : destination;
+        const initial = current.folder.trim();
+        const chosen = await choosePath({
+          directory: true,
+          title: "Choose Directory…",
+          defaultPath: !initial
+            ? cwd
+            : isAbsolutePath(initial)
+              ? initial
+              : resolveDestination({ folder: cwd, fileName: initial }, cwd),
+        });
+        if (chosen) setDestination({ folder: chosen, fileName: current.fileName });
+        return;
+      }
       const { save } = await import("@/platform/dialog");
       const chosen = await save({
-        defaultPath: path,
+        defaultPath: target || folder || cwd,
         filters: [{ name: html ? "HTML" : "XML", extensions: [options.format] }],
       });
-      if (chosen) {
-        setPath(chosen);
-        setPicked(chosen);
-      }
+      if (chosen) setDestination(destinationFromPicker(chosen));
     } catch {
       // No dialog (tests): keep typing the path.
     }
   };
 
   const run = async () => {
-    const raw = path.trim();
-    if (!raw) return;
-    const target = isAbsolutePath(raw) ? raw : `${cwd.replace(/[\\/]+$/, "")}/${raw}`;
+    if (!target) return;
     setBusy(true);
     const text = exportTestResults(options.format, results, { name, cwd, date: new Date() });
-    const ok = await writeTestReport(target, text, picked === raw);
+    const ok = await writeTestReport(target, text, pickedPath !== undefined);
     setBusy(false);
     if (!ok) return;
     onClose();
@@ -167,29 +210,46 @@ export function ExportTestResultsDialog({
       open
       title="Export Test Results"
       onClose={onClose}
-      width={520}
+      width={500}
       buttons={[
-        { label: "OK", role: "default", disabled: busy || !path.trim(), onClick: () => void run() },
+        { label: "OK", role: "default", disabled: busy || !target, onClick: () => void run() },
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div className={styles.dialogBody}>
-        <div className={styles.exportFormats} role="radiogroup" aria-label="Export format">
-          <span>
+      <div className={styles.exportReport}>
+        <fieldset className={styles.exportFormats} role="radiogroup">
+          <legend>
             <T>Export format:</T>
-          </span>
+          </legend>
           <Radio name="test-export-format" label="HTML" checked={html} onChange={() => update({ format: "html" })} />
           <Radio name="test-export-format" label="XML" checked={!html} onChange={() => update({ format: "xml" })} />
-        </div>
-        <label className={styles.exportField}>
-          <span>
-            <T>Output file:</T>
-          </span>
+        </fieldset>
+        <fieldset className={styles.exportOutput}>
+          <legend>
+            <T>Output</T>
+          </legend>
+          <label htmlFor={fileNameId}>
+            <T>File name</T>
+          </label>
+          <Input
+            id={fileNameId}
+            autoSelect
+            data-autofocus=""
+            value={fileName}
+            onChange={(e) => setDestination({ folder, fileName: e.target.value })}
+          />
+          <label htmlFor={folderId}>
+            <T>Folder</T>
+          </label>
           <div className={styles.inputWithButton}>
-            <Input mono aria-label="Output file" value={path} onChange={(e) => setPath(e.target.value)} />
+            <Input
+              id={folderId}
+              value={folder}
+              onChange={(e) => setDestination({ folder: e.target.value, fileName })}
+            />
             <IconButton icon="folder" title="Browse…" onClick={() => void browse()} />
           </div>
-        </label>
+        </fieldset>
         <Checkbox
           checked={html && options.openInBrowser}
           disabled={!html}

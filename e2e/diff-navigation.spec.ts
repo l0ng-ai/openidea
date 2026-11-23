@@ -1,6 +1,7 @@
 import type { EditorView } from "@codemirror/view";
 import type { Page } from "@playwright/test";
-import { expect, test } from "./fixtures";
+import type { MemoryBackend } from "../src/editor/core/backend";
+import { expect, stubDesktop, test } from "./fixtures";
 
 async function openChain(page: Page) {
   await page.evaluate(async () => {
@@ -18,6 +19,70 @@ async function openChain(page: Page) {
   await expect(toolbar).toContainText("1 difference");
   return toolbar;
 }
+
+test("includes and excludes original and working lines in a unified diff selection", async ({ workbench: page }) => {
+  await stubDesktop(page);
+  await page.evaluate(async () => {
+    const path = "/dev/acme-api/lines.txt";
+    const before = "start\nold one\nold two\nold three\nend\n";
+    const after = "start\nnew one\nnew two\nnew three\nend\n";
+    const handlers = window.__ipc.handlers;
+    handlers.vcs_file_at = () => before;
+    handlers.vcs_diff_hunks = () => [
+      { kind: "modified", start: 1, lines: 3, oldStart: 1, oldLines: 3, oldText: "old one\nold two\nold three\n" },
+    ];
+    handlers.fs_probe = () => ({ size: after.length, binary: false, tooLarge: false });
+    const backendPath = "/src/editor/core/backend.ts";
+    const { docBackend } = await import(/* @vite-ignore */ backendPath);
+    (docBackend() as MemoryBackend).files.set(path, after);
+    const storePath = "/src/features/vcs/store.ts";
+    const { useVcs } = await import(/* @vite-ignore */ storePath);
+    const status = { path, relPath: "lines.txt", unstaged: "modified", staged: null, renamedFrom: null };
+    useVcs.setState({ status: [status], byPath: new Map([[path, status]]) });
+    const inputPath = "/src/features/vcs/diffInput.ts";
+    const { openDiff } = await import(/* @vite-ignore */ inputPath);
+    await openDiff({ path, left: { type: "rev", rev: "HEAD" }, right: { type: "worktree" }, mode: "unified" });
+  });
+
+  const marker = page.locator(".cm-include-hunk");
+  await expect(marker).toBeChecked();
+  const old = page.locator(".cm-deletedLine").filter({ hasText: "old two" });
+  await old.click({ button: "right", position: { x: 14, y: 8 } });
+  const menu = page.getByRole("menu", { name: "Context menu" });
+  await menu.getByRole("menuitem", { name: "Exclude Selected Lines from Commit" }).click();
+  await expect(marker).toHaveJSProperty("indeterminate", true);
+
+  const start = (await old.boundingBox())!;
+  const end = (await page.locator(".cm-line").filter({ hasText: "new one" }).boundingBox())!;
+  await page.mouse.move(start.x + 1, start.y + start.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(end.x + 48, end.y + end.height / 2, { steps: 12 });
+  await page.mouse.up();
+  await expect(page.locator(".cm-unified-commit-selected")).toHaveText(["old two", "old three", "new one"]);
+  const selectionColors = await page
+    .locator(".cm-unified-commit-selected")
+    .evaluateAll((rows) => rows.map((row) => getComputedStyle(row).backgroundColor));
+  expect(new Set(selectionColors).size).toBe(1);
+  await old.click({ button: "right", position: { x: 16, y: 8 } });
+  await menu.getByRole("menuitem", { name: "Exclude Selected Lines from Commit" }).click();
+
+  const excluded = await page.evaluate(async () => {
+    const storePath = "/src/features/vcs/commitStore.ts";
+    const { useCommit } = await import(/* @vite-ignore */ storePath);
+    const byHunk = useCommit.getState().excludedHunkLines.get("/dev/acme-api/lines.txt");
+    return [...(byHunk?.values() ?? [])].map((lines) => ({ old: [...lines.old], current: [...lines.current] }));
+  });
+  expect(excluded).toEqual([{ old: [1, 2], current: [0] }]);
+  await page.mouse.move(end.x + 48, end.y + end.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(start.x + 1, start.y + start.height / 2, { steps: 12 });
+  await page.mouse.up();
+  await expect(page.locator(".cm-unified-commit-selected")).toHaveText(["old two", "old three", "new one"]);
+  await old.click({ button: "right", position: { x: 16, y: 8 } });
+  await menu.getByRole("menuitem", { name: "Include Selected Lines in Commit" }).click();
+  await expect(marker).toBeChecked();
+  await expect(marker).toHaveJSProperty("indeterminate", false);
+});
 
 test("a narrow diff keeps navigation, settings and the difference count visible", async ({ workbench: page }) => {
   const toolbar = await openChain(page);
@@ -44,6 +109,70 @@ test("a narrow diff keeps navigation, settings and the difference count visible"
   await expect(toolbar.locator("..").locator(".cm-editor")).toHaveCount(1);
   await toolbar.getByRole("button", { name: "Next Difference", exact: true }).click();
   await expect(toolbar).toContainText("1 of 1 differences");
+});
+
+test("revision titles keep both filenames in view when the diff divider moves", async ({ workbench: page }) => {
+  const leftName = "OrderRoutes.ts";
+  const rightName = "OrdersRoutes.ts";
+  const directory = "services/customer-orders/fulfillment/warehouse-routing/primary";
+  await page.setViewportSize({ width: 800, height: 650 });
+  await stubDesktop(page);
+  await page.evaluate(
+    async ({ directory, leftName, rightName }) => {
+      const inputPath = "/src/features/vcs/diffInput.ts";
+      const layoutPath = "/src/workbench/toolwindows/store.ts";
+      const { openDiff } = await import(inputPath);
+      const { hideAllToolWindows } = await import(layoutPath);
+      const leftPath = `/dev/acme-api/${directory}/${leftName}`;
+      const rightPath = `/dev/acme-api/${directory}/${rightName}`;
+      window.__ipc.handlers.vcs_file_at = (args) =>
+        args.rev === "7b70e02c" ? "export const region = 'east';\r\n" : "export const region = 'west';\n";
+      window.__ipc.handlers.vcs_file_mode = () => "100644";
+      hideAllToolWindows();
+      localStorage.setItem("openidea.vcs.diffOptions", JSON.stringify({ mode: "split", alignChanges: false }));
+      await openDiff({
+        path: rightPath,
+        left: { type: "rev", rev: "7b70e02c", path: leftPath },
+        right: { type: "rev", rev: "a8c5f31d", path: rightPath },
+      });
+    },
+    { directory, leftName, rightName },
+  );
+  const left = page.getByTitle(/^7b70e02c .*OrderRoutes\.ts$/);
+  const right = page.getByTitle(/^a8c5f31d .*OrdersRoutes\.ts$/);
+  const filenamesFit = async () => {
+    for (const [title, filename] of [
+      [left, leftName],
+      [right, rightName],
+    ] as const) {
+      await expect(title).toBeVisible();
+      expect(await title.getAttribute("title")).toContain(`${directory}/${filename}`);
+      const text = title.locator("span").filter({ hasText: filename }).last();
+      expect(
+        await text.evaluate((el, filename) => {
+          const node = el.firstChild!;
+          const range = document.createRange();
+          range.setStart(node, (node.textContent ?? "").length - filename.length);
+          range.setEnd(node, (node.textContent ?? "").length);
+          const bounds = range.getBoundingClientRect();
+          const clip = el.getBoundingClientRect();
+          return bounds.left >= clip.left - 1 && bounds.right <= clip.right + 1;
+        }, filename),
+        `${filename} is visible within its revision label`,
+      ).toBe(true);
+    }
+  };
+  await filenamesFit();
+
+  const divider = page.getByRole("separator", { name: "Resize diff panes" });
+  const { x, y, width, height } = (await divider.boundingBox())!;
+  const leftWidth = (await left.boundingBox())!.width;
+  await page.mouse.move(x + width / 2, y + height / 2);
+  await page.mouse.down();
+  await page.mouse.move(x + width / 2 - 96, y + height / 2, { steps: 4 });
+  await page.mouse.up();
+  await expect.poll(async () => (await left.boundingBox())!.width).toBeLessThan(leftWidth - 60);
+  await filenamesFit();
 });
 
 test("a medium-width diff keeps its full status beside the viewer tools", async ({ workbench: page }) => {

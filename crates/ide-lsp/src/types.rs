@@ -261,6 +261,8 @@ pub struct InlayHint {
     /// The label's parts when the server split it (empty for a plain label);
     /// their values concatenate to `label`.
     pub parts: Vec<InlayLabelPart>,
+    /// The edits that turn the hint into code (an annotation and any import it needs).
+    pub text_edits: Vec<TextEdit>,
 }
 
 /// One part of an inlay hint label, e.g. a type name that navigates to its declaration.
@@ -465,6 +467,16 @@ pub struct HierarchyMember {
     pub selected: bool,
     /// Can be declared abstract in the destination (pull up) or kept abstract (push down).
     pub abstractable: bool,
+}
+
+/// The exception class a caret names: a reference to it, its declaration, or a throw of it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ExceptionClassRef {
+    /// The binary name (`app.Outer$Failure`), as exception breakpoints take it.
+    pub qualified_name: String,
+    /// The simple name (`Failure`).
+    pub display_name: String,
 }
 
 /// The class at a position and what can move: pull-up destinations, or the subclasses

@@ -15,7 +15,7 @@ import {
 
 export type { SaveDialogOptions, DialogFilter };
 import { call, commands } from "@/platform/ipc";
-import { choosePath } from "@/platform/choosePath";
+import { choosePath, choosePaths, chooseSavePath } from "@/platform/choosePath";
 import { isWebMode } from "@/platform/webBridge";
 
 let needsGtk: boolean | undefined;
@@ -65,12 +65,17 @@ async function gtkPick(options: {
 
 export async function open<T extends OpenDialogOptions>(options: T = {} as T): Promise<OpenDialogReturn<T>> {
   if (isWebMode()) {
-    const picked = await choosePath({
+    const base = {
       directory: options.directory ?? false,
       title: options.title ?? (options.directory ? "Open Folder" : "Open File"),
       defaultPath: options.defaultPath,
-    });
-    return (options.multiple ? (picked ? [picked] : null) : picked) as OpenDialogReturn<T>;
+      filters: options.filters,
+    };
+    if (options.multiple) {
+      const paths = await choosePaths(base);
+      return (paths.length ? paths : null) as OpenDialogReturn<T>;
+    }
+    return (await choosePath(base)) as OpenDialogReturn<T>;
   }
   if (needsGtk === false || !(await pluginDialogsUnavailable())) return pluginOpen(options);
   const paths = await gtkPick(options);
@@ -79,10 +84,9 @@ export async function open<T extends OpenDialogOptions>(options: T = {} as T): P
 
 export async function save(options: SaveDialogOptions = {}): Promise<string | null> {
   if (isWebMode()) {
-    return choosePath({
-      directory: false,
+    return chooseSavePath({
+      ...options,
       title: options.title ?? "Save File",
-      defaultPath: options.defaultPath,
     });
   }
   if (needsGtk === false || !(await pluginDialogsUnavailable())) return pluginSave(options);

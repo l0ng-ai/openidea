@@ -8,6 +8,29 @@ async function selectPage(page: Page, id: string) {
   }, id);
 }
 
+test("Git settings expose fetch tag modes and the check-only mode", async ({ workbench: page }) => {
+  await page.keyboard.press("Meta+,");
+  const dialog = page.getByRole("dialog", { name: "Settings", exact: true });
+  await expect(dialog).toBeVisible();
+  await selectPage(page, "vcs.git");
+  const mode = dialog.getByRole("button", { name: "Fetch tags", exact: true });
+  await expect(mode).toHaveText("Auto");
+  await mode.click();
+  const choices = page.getByRole("listbox");
+  for (const label of ["Auto", "Sync", "Always", "Never"]) {
+    await expect(choices.getByRole("option", { name: new RegExp(`^${label}`) })).toBeVisible();
+  }
+  const sync = choices.getByRole("option", { name: /^Sync/ });
+  await expect(sync).toContainText("Delete local tags missing on remote");
+  await sync.click();
+  await expect(mode).toHaveText("Sync");
+  const incoming = dialog.getByRole("button", { name: "Explicitly check for incoming commits on remotes" });
+  await incoming.click();
+  await choices.getByRole("option", { name: "Check without fetching", exact: true }).click();
+  await expect(incoming).toHaveText("Check without fetching");
+  await expect(dialog.getByRole("button", { name: "Apply", exact: true })).toBeEnabled();
+});
+
 test("settings forms share control columns and keep font metrics on one row", async ({ workbench: page }) => {
   await page.keyboard.press("Meta+,");
   const dialog = page.getByRole("dialog", { name: "Settings", exact: true });
@@ -52,7 +75,7 @@ for (const locale of ["en", "zh"]) {
       const path = "/src/platform/i18n.ts";
       await (await import(/* @vite-ignore */ path)).setLocale(locale);
     }, locale);
-    for (const id of ["appearance", "editor.font", "general", "general.httpProxy"]) {
+    for (const id of ["appearance", "editor.font", "general", "general.httpProxy", "vcs.log"]) {
       await selectPage(page, id);
       const body = page.locator("[class*='pageBody']");
       for (const width of [1000, 784, 640, 520]) {
@@ -83,6 +106,31 @@ test("keeps Open project in options within narrow System Settings", async ({ wor
     return text.getBoundingClientRect().right - group.getBoundingClientRect().right;
   });
   expect(overflow).toBeLessThanOrEqual(1);
+});
+
+test("Git Log settings group display and column options with aligned checkboxes", async ({ workbench: page }) => {
+  await page.keyboard.press("Meta+,");
+  const dialog = page.getByRole("dialog", { name: "Settings", exact: true });
+  await selectPage(page, "vcs.log");
+  const view = dialog.getByRole("region", { name: "View Options" });
+  const columns = dialog.getByRole("region", { name: "Visible columns" });
+  const tagNames = view.getByRole("checkbox", { name: "Show tag names" });
+  const hash = columns.getByRole("checkbox", { name: "Hash" });
+  await expect(view.getByRole("checkbox")).toHaveCount(5);
+  await expect(columns.getByRole("checkbox")).toHaveCount(4);
+
+  for (const width of [1000, 520]) {
+    await page.setViewportSize({ width, height: 760 });
+    // Read both rows together once the dialog has finished opening and relaid out.
+    await expect
+      .poll(async () => Math.abs((await tagNames.boundingBox())!.x - (await hash.boundingBox())!.x))
+      .toBeLessThan(0.5);
+  }
+
+  await expect(hash).not.toBeChecked();
+  await hash.focus();
+  await page.keyboard.press("Space");
+  await expect(hash).toBeChecked();
 });
 
 test("settings sidebar resizes with mouse and keyboard and remembers its width", async ({ workbench: page }) => {

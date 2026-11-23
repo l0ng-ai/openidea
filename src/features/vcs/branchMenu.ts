@@ -1,55 +1,66 @@
 /** Branch context menu shared by the Branches popup and the Git Log Branches pane (IDEA's Git.Branch actions). */
 import type { Branch } from "@/bindings";
 import { executeAction } from "@/platform/actions";
-import type { MenuItem } from "@/ui";
+import { showContextMenu, useContextMenuStore, type MenuItem } from "@/ui";
 import { isFavoriteBranch } from "./branches";
 import {
   branchRef,
-  checkoutAndRebase,
   checkoutBranch,
   checkoutDetached,
-  checkoutAndRebaseInRepos,
   checkoutInRepos,
   deleteBranch,
   deleteBranches,
   deleteInRepos,
   deleteRemoteBranch,
-  deleteTag,
-  knownRemotes,
-  pushTag,
   mergeInRepos,
   newBranchInRepos,
-  rebaseInRepos,
   renameInRepos,
   loadFavoriteBranches,
   mergeIntoCurrent,
   newBranch,
-  rebaseOnto,
   renameBranch,
   toggleFavoriteBranch,
-  updateBranches,
+  configuredRemoteNames,
+  type BranchUpdateTarget,
   useFavoriteBranches,
 } from "./branchOps";
-import { showCompareBranches } from "./CompareBranches";
-import { showDiffWithWorkingTree } from "./operations";
+import { branchRebaseProblem } from "./branchRebase";
 import type { CommonBranch } from "./repoBranches";
-import { runRemote, saveAll } from "./ops";
-import { currentRepo, focusRepo, useVcs } from "./store";
+import { currentRepo, currentRepoRoot, focusRepo, useVcs } from "./store";
+import { openWorktree } from "./openWorktree";
 import { tx } from "@/platform/i18n";
 
-/** `git pull <remote> <branch>` into the current branch (`origin/feat/x` → origin, feat/x). */
-async function pullInto(remoteBranch: string, rebase: boolean) {
-  const i = remoteBranch.indexOf("/");
-  if (i <= 0) return;
-  const current = useVcs.getState().branch?.head ?? "HEAD";
-  await saveAll();
-  await runRemote(
-    { op: "pullFrom", remote: remoteBranch.slice(0, i), branches: [remoteBranch.slice(i + 1)], rebase, options: {} },
-    `${current} ← ${remoteBranch}`,
-  );
+type Run = (fn: () => unknown) => () => void;
+
+function pullBranchItems(branch: string, cur: string | null, run: Run, repositories?: readonly string[]): MenuItem[] {
+  return [
+    {
+      label: cur ? tx`Pull into '${cur}' Using Rebase` : tx("Pull into Current Branch Using Rebase"),
+      run: run(() => executeAction("vcs.pullRemoteBranch", { branch, rebase: true, repositories })),
+    },
+    {
+      label: cur ? tx`Pull into '${cur}' Using Merge` : tx("Pull into Current Branch Using Merge"),
+      run: run(() => executeAction("vcs.pullRemoteBranch", { branch, rebase: false, repositories })),
+    },
+  ];
 }
 
-type Run = (fn: () => unknown) => () => void;
+function pushBranchItem(branch: string, run: Run, repositories?: readonly string[]): MenuItem {
+  return {
+    label: "Push…",
+    icon: "git-push",
+    run: run(() =>
+      executeAction("vcs.push", repositories ? { branch, repositories } : { branch, repo: currentRepoRoot() }),
+    ),
+  };
+}
+
+function updateSelection(targets: readonly BranchUpdateTarget[]) {
+  return executeAction(
+    "vcs.log.branches.update",
+    targets.flatMap((target) => (target.branch ? [{ ...target, ref: target.branch.name }] : [])),
+  );
+}
 
 function favoriteMenuItem(b: Branch, run: Run): MenuItem {
   loadFavoriteBranches();
@@ -65,10 +76,20 @@ function historyMenuItem(name: string, run: Run): MenuItem {
   return { label: "Show History", icon: "history", run: run(() => executeAction("vcs.showLog", { branch: name })) };
 }
 
+function worktreeDiffItem(rev: string, label: string, run: Run, repositories?: readonly string[]): MenuItem {
+  return {
+    label: "Show Diff with Working Tree",
+    run: run(() => executeAction("vcs.diffWithWorkingTree", { rev, label, repositories })),
+  };
+}
+
 function worktreeMenuItem(branch: Pick<Branch, "name" | "remote" | "current">, run: Run, repo?: string): MenuItem {
   return {
     label: tx`New Worktree from '${branch.name}'…`,
-    run: run(() => executeAction("vcs.newWorktree", { repo: repo ?? currentRepo(), branch })),
+    icon: "folder",
+    run: run(() =>
+      executeAction("vcs.newWorktree", { repo: repo ?? currentRepo(), source: branchRef(branch.name, branch.remote) }),
+    ),
   };
 }
 
@@ -77,32 +98,58 @@ export function branchMenu(
   b: Branch,
   current: string | null,
   done: () => void = () => {},
-  selected: readonly { repo?: string; branch?: Branch }[] = [],
+  {
+    selected = [],
+    existingWorktree,
+    branches = useVcs.getState().branches,
+    headCommit = useVcs.getState().branch?.headCommit,
+  }: {
+    selected?: readonly { repo?: string; branch?: Branch }[];
+    existingWorktree?: string;
+    branches?: readonly Branch[];
+    headCommit?: string | null;
+  } = {},
 ): MenuItem[] {
   const run = (fn: () => unknown) => () => {
     done();
     void fn();
   };
   const cur = current ?? "HEAD";
+  const rebaseBase = current ?? headCommit?.slice(0, 8);
   const favoriteItem = favoriteMenuItem(b, run);
+  const newWorktree = worktreeMenuItem(b, run);
   // Update Selected acts on every selected local branch, each in its own repository.
+  const updating = !!useVcs.getState().remoteBusy;
   const update: MenuItem =
     selected.filter((t) => t.branch && !t.branch.remote).length > 1
-      ? { label: "Update Selected", icon: "git-pull", run: run(() => updateBranches(selected)) }
+      ? {
+          label: "Update Selected",
+          icon: "git-pull",
+          disabled: updating || !selected.some((target) => !target.branch?.remote && target.branch?.upstream),
+          run: run(() => updateSelection(selected)),
+        }
       : {
           label: "Update",
           icon: "git-pull",
-          disabled: !b.current && !b.upstream,
-          run: run(() => updateBranches([{ branch: b }])),
+          disabled: updating || !b.upstream,
+          run: run(() => updateSelection([{ repo: currentRepoRoot() ?? undefined, branch: b }])),
         };
   const history = historyMenuItem(b.name, run);
+  const worktreeDiff = worktreeDiffItem(branchRef(b.name, b.remote), b.name, run);
+  const upstream = !b.remote && b.upstream ? branches.find((ref) => ref.remote && ref.name === b.upstream) : undefined;
+  const trackedActions: MenuItem[] = upstream
+    ? [{ label: tx`Tracked Branch '${upstream.name}'`, submenu: branchMenu(upstream, current, done, { branches }) }]
+    : [];
   if (b.current) {
     return [
-      { label: tx`New Branch from '${b.name}'…`, icon: "branch", run: run(() => newBranch()) },
-      worktreeMenuItem(b, run),
+      { label: tx`New Branch from '${b.name}'…`, icon: "branch", run: run(() => newBranch(b)) },
+      newWorktree,
+      { kind: "separator" },
+      worktreeDiff,
       { kind: "separator" },
       update,
-      { label: "Push…", icon: "git-push", run: run(() => executeAction("vcs.push", { repo: currentRepo() })) },
+      pushBranchItem(b.name, run),
+      ...trackedActions,
       { kind: "separator" },
       { label: "Rename…", run: run(() => renameBranch(b)) },
       favoriteItem,
@@ -110,32 +157,43 @@ export function branchMenu(
     ];
   }
   const items: MenuItem[] = [
-    { label: "Checkout", run: run(() => checkoutBranch(b.name)) },
-    { label: tx`New Branch from '${b.name}'…`, icon: "branch", run: run(() => newBranch(b.name)) },
-    worktreeMenuItem(b, run),
-    ...(current ? [{ label: tx`Checkout and Rebase onto '${cur}'`, run: run(() => checkoutAndRebase(b.name)) }] : []),
+    { label: "Checkout", run: run(() => checkoutBranch(b)) },
+    ...(existingWorktree && !b.remote
+      ? [{ label: "Open Existing Worktree", icon: "folder", run: run(() => openWorktree(existingWorktree, true)) }]
+      : []),
+    { label: tx`New Branch from '${b.name}'…`, icon: "branch", run: run(() => newBranch(b)) },
+    newWorktree,
+    ...(rebaseBase
+      ? [
+          {
+            label: tx`Checkout and Rebase onto '${rebaseBase}'`,
+            disabled: !!existingWorktree && !b.remote,
+            run: run(() => executeAction("vcs.checkoutAndRebase", { branch: b, repos: [currentRepo()] })),
+          },
+        ]
+      : []),
     { kind: "separator" },
-    { label: tx`Compare with '${cur}'`, icon: "diff", run: run(() => showCompareBranches(b.name)) },
-    { label: "Show Diff with Working Tree", run: run(() => showDiffWithWorkingTree(b.name)) },
+    {
+      label: tx`Compare with '${cur}'`,
+      icon: "diff",
+      run: run(() => executeAction("vcs.log.compareBranches", { name: b.name, rev: branchRef(b.name, b.remote) })),
+    },
+    worktreeDiff,
     history,
     { kind: "separator" },
-    { label: tx`Rebase '${cur}' onto '${b.name}'`, run: run(() => rebaseOnto(b.name, branchRef(b.name, b.remote))) },
+    {
+      label: tx`Rebase '${cur}' onto '${b.name}'`,
+      disabled: !!branchRebaseProblem(b, current),
+      hint: branchRebaseProblem(b, current) ?? undefined,
+      run: run(() => executeAction("vcs.rebaseOntoBranch", { branch: b, repos: [currentRepoRoot()] })),
+    },
     {
       label: tx`Merge '${b.name}' into '${cur}'`,
       run: run(() => mergeIntoCurrent(b.name, undefined, branchRef(b.name, b.remote))),
     },
   ];
-  if (b.remote)
-    items.push(
-      { label: tx`Pull into '${cur}' Using Rebase`, run: run(() => pullInto(b.name, true)) },
-      { label: tx`Pull into '${cur}' Using Merge`, run: run(() => pullInto(b.name, false)) },
-    );
-  if (!b.remote)
-    items.push({ kind: "separator" }, update, {
-      label: "Push…",
-      icon: "git-push",
-      run: run(() => executeAction("vcs.push", { branch: b.name })),
-    });
+  if (b.remote) items.push(...pullBranchItems(b.name, rebaseBase ?? null, run));
+  if (!b.remote) items.push({ kind: "separator" }, update, pushBranchItem(b.name, run), ...trackedActions);
   items.push(
     { kind: "separator" },
     ...(b.remote ? [] : [{ label: "Rename…", run: run(() => renameBranch(b)) }]),
@@ -153,25 +211,69 @@ export function branchMenu(
 }
 
 /** Tag entries of the Branches popup. */
-export function tagMenu(tag: string, done: () => void = () => {}): MenuItem[] {
+export function tagMenu(
+  tag: string,
+  done: () => void = () => {},
+  { repo = currentRepoRoot(), remotes }: { repo?: string | null; remotes?: readonly string[] } = {},
+): MenuItem[] {
   const run = (fn: () => unknown) => () => {
     done();
     void fn();
   };
+  const ref = `refs/tags/${tag}`;
+  const pushItems: MenuItem[] = (remotes ?? []).map((remote) => ({
+    label: tx`Push to ${remote}`,
+    icon: "git-push",
+    run: run(() => executeAction("vcs.pushTag", { tag, remote, repo })),
+  }));
+  const pushes: MenuItem[] =
+    remotes === undefined
+      ? [{ label: "Loading…", disabled: true }]
+      : pushItems.length >= 6
+        ? [{ label: "Push Tag", icon: "git-push", submenu: pushItems }]
+        : pushItems;
   return [
-    { label: "Checkout", run: run(() => checkoutDetached(tag, tag)) },
-    { label: tx`New Branch from '${tag}'…`, icon: "branch", run: run(() => newBranch(tag)) },
+    { label: "Checkout", run: run(() => checkoutDetached(ref, tag, repo)) },
+    { label: tx`New Branch from '${tag}'…`, icon: "branch", run: run(() => newBranch({ tag }, repo)) },
+    {
+      label: tx`New Worktree from '${tag}'…`,
+      icon: "folder",
+      run: run(() => executeAction("vcs.newWorktree", { repo, source: ref })),
+    },
     { kind: "separator" },
-    { label: "Compare with Current", icon: "diff", run: run(() => showCompareBranches(tag)) },
-    { label: "Show Diff with Working Tree", run: run(() => showDiffWithWorkingTree(tag)) },
+    {
+      label: "Compare with Current",
+      icon: "diff",
+      run: run(() =>
+        executeAction("vcs.log.compareBranches", { name: tag, rev: ref, repositories: repo ? [repo] : undefined }),
+      ),
+    },
+    worktreeDiffItem(ref, tag, run, repo ? [repo] : undefined),
     { label: "Show History", icon: "history", run: run(() => executeAction("vcs.showLog", { branch: tag })) },
-    ...knownRemotes().flatMap((remote, i): MenuItem[] => [
-      ...(i === 0 ? [{ kind: "separator" } as const] : []),
-      { label: tx`Push to ${remote}`, icon: "git-push", run: run(() => pushTag(tag, remote)) },
-    ]),
+    {
+      label: tx`Merge '${tag}' into Current`,
+      run: run(() => executeAction("vcs.mergeTag", { tag, repo })),
+    },
     { kind: "separator" },
-    { label: "Delete", danger: true, icon: "trash", run: run(() => deleteTag(tag)) },
+    { label: "Delete", danger: true, icon: "trash", run: run(() => executeAction("vcs.deleteTag", { tag, repo })) },
+    // Remote items arrive asynchronously. Keep the local actions at stable positions.
+    ...(pushes.length ? [{ kind: "separator" } as const, ...pushes] : []),
   ];
+}
+
+/** Update only the menu that requested these remotes. */
+export function showTagContextMenu(at: { clientX: number; clientY: number }, tag: string, repo: string | null) {
+  const items = (remotes?: string[]) => {
+    const menu = tagMenu(tag, undefined, { repo, remotes });
+    return repo ? inRepo(repo, menu) : menu;
+  };
+  showContextMenu(at, items());
+  const id = useContextMenuStore.getState().menu?.id;
+  void configuredRemoteNames(repo).then((remotes) =>
+    useContextMenuStore.setState((s) =>
+      s.menu && s.menu.id === id ? { menu: { ...s.menu, items: items(remotes) } } : s,
+    ),
+  );
 }
 
 /**
@@ -181,8 +283,9 @@ export function tagMenu(tag: string, done: () => void = () => {}): MenuItem[] {
 export function commonBranchMenu(
   b: CommonBranch,
   roots: readonly string[],
-  current: string | null,
+  current: string | null = null,
   done: () => void = () => {},
+  checkedOutInWorktree = false,
 ): MenuItem[] {
   const run = (fn: () => unknown) => () => {
     done();
@@ -191,9 +294,16 @@ export function commonBranchMenu(
   const newFrom: MenuItem = {
     label: tx`New Branch from '${b.name}'…`,
     icon: "branch",
-    run: run(() => newBranchInRepos(roots, b.name)),
+    run: run(() => newBranchInRepos(roots, b)),
   };
   const rename: MenuItem = { label: "Rename…", run: run(() => renameInRepos(b.name, roots, b.upstream)) };
+  const worktreeDiff = worktreeDiffItem(branchRef(b.name, b.remote), b.name, run, roots);
+  const update: MenuItem = {
+    label: "Update",
+    icon: "git-pull",
+    disabled: !b.upstream || !!useVcs.getState().remoteBusy,
+    run: run(() => updateSelection(roots.map((repo) => ({ repo, branch: b })))),
+  };
   const currentRoot = currentRepo();
   const worktree = worktreeMenuItem(b, run, roots.find((root) => root === currentRoot) ?? roots[0]);
   if (b.current)
@@ -201,38 +311,79 @@ export function commonBranchMenu(
       newFrom,
       worktree,
       { kind: "separator" },
-      { label: "Update", icon: "git-pull", run: run(() => executeAction("vcs.update")) },
-      { label: "Push…", icon: "git-push", run: run(() => executeAction("vcs.push")) },
+      worktreeDiff,
+      { kind: "separator" },
+      update,
+      pushBranchItem(b.name, run, roots),
       { kind: "separator" },
       rename,
     ];
+  const { heads } = useVcs.getState();
+  const selectedHeads = roots.map((root) => heads[root]);
+  const rebaseProblem = selectedHeads
+    .flatMap((info) => (info ? [branchRebaseProblem(b, info.head)] : []))
+    .find(Boolean);
+  const bases = selectedHeads.map((info) => info?.head ?? info?.headCommit?.slice(0, 8) ?? current);
+  const base = bases[0];
   const items: MenuItem[] = [
-    { label: "Checkout", run: run(() => checkoutInRepos(b.name, roots)) },
+    { label: "Checkout", run: run(() => checkoutInRepos(b, roots)) },
     newFrom,
     worktree,
-    ...(current
+    ...(bases.every(Boolean)
       ? [
           {
-            label: tx`Checkout and Rebase onto '${current}'`,
-            run: run(() => checkoutAndRebaseInRepos(b.name, current, roots)),
+            label:
+              base && bases.every((name) => name === base)
+                ? tx`Checkout and Rebase onto '${base}'`
+                : tx("Checkout and Rebase onto Current"),
+            disabled: !b.remote && (checkedOutInWorktree || selectedHeads.some((info) => info?.head === b.name)),
+            run: run(() => executeAction("vcs.checkoutAndRebase", { branch: b, repos: roots })),
           },
         ]
       : []),
     { kind: "separator" },
-    { label: tx`Rebase Current onto '${b.name}'`, run: run(() => rebaseInRepos(b.name, roots)) },
-    { label: tx`Merge '${b.name}' into Current`, run: run(() => mergeInRepos(b.name, roots)) },
+    {
+      label: base && bases.every((name) => name === base) ? tx`Compare with '${base}'` : "Compare with Current",
+      icon: "diff",
+      disabled: !b.remote && selectedHeads.some((info) => info?.head === b.name),
+      run: run(() =>
+        executeAction("vcs.log.compareBranches", {
+          name: b.name,
+          rev: branchRef(b.name, b.remote),
+          repositories: roots,
+        }),
+      ),
+    },
+    ...(current || roots.length === 1 ? [worktreeDiff] : []),
+    {
+      label: tx`Rebase Current onto '${b.name}'`,
+      disabled: !!rebaseProblem,
+      hint: rebaseProblem ?? undefined,
+      run: run(() => executeAction("vcs.rebaseOntoBranch", { branch: b, repos: roots })),
+    },
+    {
+      label: tx`Merge '${b.name}' into Current`,
+      run: run(() => mergeInRepos(b.name, roots, branchRef(b.name, b.remote))),
+    },
   ];
   if (!b.remote)
+    items.push({ kind: "separator" }, update, pushBranchItem(b.name, run, roots), { kind: "separator" }, rename, {
+      label: "Delete",
+      danger: true,
+      icon: "trash",
+      run: run(() => deleteInRepos(b.name, roots)),
+    });
+  else
     items.push(
       { kind: "separator" },
-      {
-        label: "Update",
-        icon: "git-pull",
-        run: run(() => updateBranches(roots.map((repo) => ({ repo, branch: b })))),
-      },
+      ...pullBranchItems(b.name, current, run, roots),
       { kind: "separator" },
-      rename,
-      { label: "Delete", danger: true, icon: "trash", run: run(() => deleteInRepos(b.name, roots)) },
+      {
+        label: "Delete",
+        danger: true,
+        icon: "trash",
+        run: run(() => deleteBranches(roots.map((repo) => ({ repo, branch: b })))),
+      },
     );
   return items;
 }
@@ -248,7 +399,7 @@ export function inRepo(root: string, items: MenuItem[]): MenuItem[] {
     if (item.kind === "action")
       return {
         label: item.label ?? item.action,
-        icon: item.icon,
+        icon: item.icon ?? undefined,
         disabled: item.disabled,
         run: runInRepo(() => executeAction(item.action, item.arg)),
       };
@@ -274,25 +425,33 @@ export function mergedBranchMenu(
   current: string | null,
   selected: readonly { repo?: string; branch?: Branch }[],
   done: () => void = () => {},
+  checkedOutInWorktree = false,
 ): MenuItem[] {
   const run: Run = (fn) => () => {
     done();
     void fn();
   };
   const several = new Set(selected.map((t) => t.branch?.name)).size > 1;
-  const own = commonBranchMenu(common, roots, current, done).filter(
+  const own = commonBranchMenu(common, roots, current, done, checkedOutInWorktree).filter(
     (item) => !several || !("label" in item) || (item.label !== "Update" && item.label !== "Delete"),
   );
   const selection: MenuItem[] = several
     ? [
         ...(selected.filter((t) => t.branch && !t.branch.remote).length > 1
-          ? [{ label: "Update Selected", icon: "git-pull" as const, run: run(() => updateBranches(selected)) }]
+          ? [
+              {
+                label: "Update Selected",
+                icon: "git-pull" as const,
+                disabled:
+                  !!useVcs.getState().remoteBusy ||
+                  !selected.some((target) => !target.branch?.remote && target.branch?.upstream),
+                run: run(() => updateSelection(selected)),
+              },
+            ]
           : []),
         { label: "Delete", danger: true, icon: "trash", run: run(() => deleteBranches(selected)) },
       ]
-    : b.remote
-      ? [{ label: "Delete", danger: true, icon: "trash", run: run(() => deleteBranches(selected)) }]
-      : [];
+    : [];
   return tidySeparators([
     ...own,
     { kind: "separator" },

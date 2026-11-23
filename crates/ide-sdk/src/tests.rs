@@ -6,6 +6,7 @@ use crate::apply::{
 };
 use crate::python::parse_pip_list;
 use crate::{bin_dir, exe, venv_of};
+use ide_core::CancellationToken;
 use ide_core::settings::Settings;
 use ide_language::LanguageServerConfig;
 use ide_run::RunConfig;
@@ -575,6 +576,31 @@ fn run_configs_use_selected_interpreter_and_package_manager() {
     assert_eq!(configs[5].args, ["manage.py", "test"]);
     assert_eq!(configs[6].command, python);
     assert_eq!(configs[6].args, ["manage.py", "test", "polls"]);
+}
+
+#[test]
+fn saved_python_configs_keep_their_explicit_interpreter() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let default = fake_venv(root, ".venv");
+    let override_python = fake_venv(&root.join("member"), ".override");
+    let relative_python = override_python.strip_prefix(root.join("member")).unwrap();
+    let mut settings = Settings::default();
+    settings.languages.python.interpreter = default.to_string_lossy().into_owned();
+
+    for command in [&override_python, relative_python] {
+        for kind in ["python", "pytest", "django-test"] {
+            let command = command.to_string_lossy();
+            let mut config = run(kind, &command, &["main.py"]);
+            config.detected = false;
+            config.cwd = Some(Path::new("member").into());
+            apply_to_run_configs(std::slice::from_mut(&mut config), root, &settings);
+            assert_eq!(config.command, command);
+            assert_eq!(config.env["VIRTUAL_ENV"], root.join("member/.override").to_string_lossy());
+            let saved = without_derived(&config, root, &settings);
+            assert_eq!(saved.command, command);
+        }
+    }
 }
 
 #[test]
@@ -1484,6 +1510,7 @@ fn env_tools_are_reported_missing_before_they_run() {
         crate::python::VenvTool::Uv,
         &base,
         &location,
+        false,
         none,
         &Default::default(),
         &|_| {},
@@ -1494,6 +1521,7 @@ fn env_tools_are_reported_missing_before_they_run() {
         crate::python::VenvTool::Poetry,
         &base,
         &location,
+        false,
         none,
         &Default::default(),
         &|_| {},
@@ -1504,12 +1532,24 @@ fn env_tools_are_reported_missing_before_they_run() {
         crate::python::VenvTool::Conda,
         &base,
         &location,
+        false,
         none,
         &Default::default(),
         &|_| {},
     )
     .unwrap_err();
     assert!(conda.message.contains("conda is not installed"), "{}", conda.message);
+    let pipenv = crate::python::create_venv_with(
+        crate::python::VenvTool::Pipenv,
+        &base,
+        &location,
+        true,
+        none,
+        &Default::default(),
+        &|_| {},
+    )
+    .unwrap_err();
+    assert!(pipenv.message.contains("Pipenv is not installed"), "{}", pipenv.message);
     // An existing environment is refused before any tool runs.
     std::fs::create_dir_all(&location).unwrap();
     std::fs::write(location.join("pyvenv.cfg"), "home = /python").unwrap();
@@ -1517,6 +1557,7 @@ fn env_tools_are_reported_missing_before_they_run() {
         crate::python::VenvTool::Uv,
         &base,
         &location,
+        false,
         none,
         &Default::default(),
         &|_| {},
@@ -1539,6 +1580,7 @@ fn an_existing_conda_environment_is_not_recreated() {
         crate::python::VenvTool::Conda,
         &base,
         &location,
+        false,
         none,
         &Default::default(),
         &|_| {},
@@ -1589,6 +1631,7 @@ fn a_named_conda_environment_is_found_where_conda_put_it() {
             crate::python::VenvTool::Conda,
             &base,
             Path::new("ds"),
+            false,
             which,
             &Default::default(),
             &|_| {},
@@ -1598,6 +1641,65 @@ fn a_named_conda_environment_is_found_where_conda_put_it() {
     assert_eq!(&*sdk.path, root.join("envs/ds/bin/python").as_path());
     let again = create().unwrap_err();
     assert!(again.message.contains("named ds already exists"), "{}", again.message);
+}
+
+#[test]
+#[cfg(unix)]
+fn pipenv_creates_the_projects_environment_and_never_replaces_one() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let tmp = dunce::canonicalize(tmp.path()).unwrap();
+    let project = tmp.join("shop");
+    let home = tmp.join("workon").join(crate::discover::pipenv_env_name(&project));
+    std::fs::create_dir_all(&project).unwrap();
+    let python = tmp.join("python");
+    std::fs::write(&python, "#!/bin/sh\necho 'Python 3.12.1'\n").unwrap();
+    std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // `--venv` fails until the environment exists; `--python` creates it outside the project,
+    // records the project in `.project` and writes a Pipfile.
+    let pipenv = tmp.join("pipenv");
+    std::fs::write(
+        &pipenv,
+        format!(
+            "#!/bin/sh\nhome='{home}'\nif [ \"$1\" = --venv ]; then [ -f \"$home/pyvenv.cfg\" ] || exit 1; echo \"$home\"; exit 0; fi\n\
+             [ \"$PIPENV_YES\" = 1 ] || exit 3\necho \"$@\" >> calls\n[ \"$1\" = --python ] || exit 0\n\
+             mkdir -p \"$home/bin\"\ncp '{python}' \"$home/bin/python\"\necho 'version = 3.12.1' > \"$home/pyvenv.cfg\"\n\
+             touch Pipfile\npwd -P > \"$home/.project\"\n",
+            home = home.display(),
+            python = python.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&pipenv, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let which = |tool: &str| (tool == "pipenv").then(|| pipenv.clone());
+    let create = |install: bool| {
+        crate::python::create_venv_with(
+            crate::python::VenvTool::Pipenv,
+            &python,
+            &project.join(".venv"),
+            install,
+            which,
+            &Default::default(),
+            &|_| {},
+        )
+    };
+    let calls = || std::fs::read_to_string(project.join("calls")).unwrap_or_default();
+    // The project had no Pipfile: the one pipenv writes is installed from, as asked.
+    let sdk = create(true).unwrap();
+    assert_eq!(&*sdk.path, home.join("bin/python").as_path());
+    assert_eq!((sdk.name.as_str(), sdk.source.as_str()), ("Python 3.12 (Pipenv: shop)", "pipenv"));
+    assert_eq!(calls(), format!("--python {}\ninstall --dev\n", python.display()));
+    // An existing environment is reused, never created again with `--python` (which replaces one
+    // of another version); one pipenv left without `.project` is still the project's.
+    std::fs::remove_file(home.join(".project")).unwrap();
+    assert_eq!(create(false).unwrap().source, "pipenv");
+    assert_eq!(calls().lines().count(), 2);
+    // On another Python than the base, nothing runs and the error says what to do.
+    std::fs::write(home.join("pyvenv.cfg"), "version = 3.11.4\n").unwrap();
+    let err = create(true).unwrap_err();
+    assert!(err.message.contains("Python 3.11 environment, not Python 3.12"), "{}", err.message);
+    assert!(err.message.contains("pipenv --rm"), "{}", err.message);
+    assert_eq!(calls().lines().count(), 2);
 }
 
 #[test]
@@ -3183,4 +3285,47 @@ fn server_command_paths_report_executables_set_for_built_in_servers() {
             ("jdtls".to_owned(), root.join("bin/jdtls")),
         ]
     );
+}
+
+#[test]
+fn unsatisfied_requirements_are_judged_by_the_interpreter() {
+    let Some(base) = crate::exec::which("python3").or_else(|| crate::exec::which("python")) else { return };
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("env");
+    // System site packages: pip's vendored `packaging` when the base has pip.
+    let status = std::process::Command::new(base)
+        .args(["-I", "-m", "venv", "--without-pip", "--system-site-packages"])
+        .arg(&home)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let python = home.join(bin_dir()).join(exe("python"));
+    let site = std::process::Command::new(&python)
+        .args(["-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"])
+        .output()
+        .unwrap();
+    let site = std::path::PathBuf::from(String::from_utf8(site.stdout).unwrap().trim());
+    let info = site.join("Fake.Dist_Pkg-1.0.dist-info");
+    std::fs::create_dir_all(&info).unwrap();
+    std::fs::write(info.join("METADATA"), "Metadata-Version: 2.1\nName: Fake.Dist_Pkg\nVersion: 1.0\n").unwrap();
+    let packaging = std::process::Command::new(&python)
+        .args(["-c", "import pip._vendor.packaging.requirements"])
+        .status()
+        .is_ok_and(|s| s.success());
+    let cancel = CancellationToken::new();
+    let found = crate::python::unsatisfied_requirements(
+        &python,
+        &[
+            "fake-dist-pkg",
+            "FAKE_dist.pkg>=0.5",
+            "fake-dist-pkg>=2",
+            "openidea-not-installed-xyz[extra]==1",
+            "openidea-not-installed-xyz; sys_platform == 'nowhere'",
+        ],
+        &cancel,
+    )
+    .unwrap();
+    let missing = || Some(crate::python::Unsatisfied { installed: None });
+    let old = packaging.then(|| crate::python::Unsatisfied { installed: Some("1.0".into()) });
+    assert_eq!(found, [None, None, old, missing(), None]);
 }

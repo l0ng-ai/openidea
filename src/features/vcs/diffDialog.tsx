@@ -14,6 +14,7 @@ import { DiffEditor } from "./DiffEditor";
 import { diffInput, diffTitle, type DiffData } from "./diffInput";
 import { openDialog } from "./dialogs";
 import { GitMergeDiff } from "./GitMergeDiff";
+import { currentStagedDiffPath, stagedDocumentAtPath } from "./stagedDocument";
 
 const SIZE_KEY = "openidea.vcs.diffDialogSize";
 
@@ -39,7 +40,7 @@ export function saveDiffDialogSize(size: { w: number; h: number }) {
 let shown: (() => void) | null = null;
 
 /** Shows `render`'s window, replacing the open diff window instead of stacking another on top. */
-function showFront(render: (onClose: () => void) => ReactNode): () => void {
+export function showFront(render: (onClose: () => void) => ReactNode): () => void {
   shown?.();
   shown = null;
   const close = openDialog((c) =>
@@ -64,13 +65,21 @@ export function openDiffDialog(data: DiffData): () => void {
 export function openMergeDiffDialog(input: EditorInput): () => void {
   const title = (input.data as { path: string }).path;
   return showFront((onClose) => (
-    <FrontWindow title={title} onClose={onClose}>
+    <DiffDialogFrame title={title} onClose={onClose}>
       <GitMergeDiff input={input} />
-    </FrontWindow>
+    </DiffDialogFrame>
   ));
 }
 
-function FrontWindow({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+export function DiffDialogFrame({
+  title,
+  onClose,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
   const body = useRef<HTMLDivElement>(null);
   // The size the user last resized the diff window to (#2328), else the usual default.
   const [initialSize] = useState(
@@ -121,9 +130,36 @@ function FrontWindow({ title, onClose, children }: { title: string; onClose: () 
 function DiffDialog({ data: initial, onClose }: { data: DiffData; onClose: () => void }) {
   const [data, setData] = useState(initial);
   const input = diffInput({ ...data, embedded: true });
+  const transition = useRef(false);
+  const leave = async (next: () => void) => {
+    if (transition.current) return;
+    const path = currentStagedDiffPath(data);
+    const doc = path ? stagedDocumentAtPath(path) : undefined;
+    if (!doc?.dirty) {
+      next();
+      return;
+    }
+    transition.current = true;
+    const owner = `dialog-close:${input.key}`;
+    try {
+      await doc.prepareClose(owner);
+      await doc.save();
+      next();
+    } catch {
+      // The staged pane shows the error and still owns the draft.
+    } finally {
+      doc.cancelClose(owner);
+      transition.current = false;
+    }
+  };
   return (
-    <FrontWindow title={diffTitle(data)} onClose={onClose}>
-      <DiffEditor key={input.key} input={input} onNeighbour={setData} onJumpToSource={onClose} />
-    </FrontWindow>
+    <DiffDialogFrame title={diffTitle(data)} onClose={() => void leave(onClose)}>
+      <DiffEditor
+        key={input.key}
+        input={input}
+        onNeighbour={(next) => void leave(() => setData(next))}
+        onJumpToSource={onClose}
+      />
+    </DiffDialogFrame>
   );
 }

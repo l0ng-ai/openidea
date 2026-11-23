@@ -37,7 +37,7 @@ import {
 import { canDownload } from "./download";
 import { isSameOrInside } from "./paths";
 import { useProjectTree } from "./store";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 
 /** Keys handled by the project view itself (the default keymap has no entries for them). */
 export const LOCAL_KEYS: Record<string, string> = {
@@ -378,7 +378,7 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
         "git",
         "Git",
         [
-          act("vcs.commit", undefined, dirs || nodes.length > 1 ? "Commit…" : "Commit File…"),
+          act("vcs.commit", arg, dirs || nodes.length > 1 ? "Commit…" : "Commit File…"),
           act("vcs.addToVcs", arg, "Add"),
           nonRoot.length === nodes.length &&
             nodes.length > 0 &&
@@ -467,7 +467,9 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
               {
                 id: "unmark",
                 label:
-                  current === "excluded" ? "Cancel Exclusion" : tx`Unmark as ${roles.find(([r]) => r === current)![1]}`,
+                  current === "excluded"
+                    ? "Cancel Exclusion"
+                    : tx`Unmark as ${txPart(roles.find(([r]) => r === current)![1])}`,
                 run: () => void markDirectory(single.path, null),
               },
             ]
@@ -510,6 +512,8 @@ function libraryMenuItems(nodes: ProjectNode[]): MenuItem[] {
           run: () => void copyPaths("absolute", nodes),
         },
         { id: "name", label: "File Name", run: () => void copyPaths("name", nodes) },
+        { kind: "separator" },
+        ...menuGroupItems("copyPath", menuGroupContext(nodes)),
       ],
     },
     { kind: "separator" },

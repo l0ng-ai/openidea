@@ -27,7 +27,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 
-pub const PROTOCOL_VERSION: u32 = 2;
+/// 3: binary arguments (`IpcBytes`) are base64 strings, not arrays of numbers.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

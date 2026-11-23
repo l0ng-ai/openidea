@@ -10,6 +10,7 @@ import {
   type CSSProperties,
   type KeyboardEvent,
   type MutableRefObject,
+  type ReactNode,
 } from "react";
 import { basename, relativePath, useProject } from "@/platform/project";
 import { executeAction, getAction } from "@/platform/actions";
@@ -78,12 +79,13 @@ import { EventBreakpointsSection } from "../js/EventBreakpointsSection";
 import { StreamChainChooser } from "../streams/StreamChainChooser";
 import { StreamAbortDialog } from "../streams/StreamAbortDialog";
 import { closeBreakpointPopover, useOverlays } from "./popoverStore";
+import { TableViewDialog } from "./TableViewDialog";
 import { VariablesView, type VarRoot } from "./VariablesView";
 import { useExpressionCompletion } from "./ExpressionCompletion";
 import { pushHistory, readHistory } from "./expressionHistory";
 import styles from "./Overlays.module.css";
 import { isImeKey } from "@/platform/ime";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 
 export function DebuggerOverlays() {
   return (
@@ -96,7 +98,26 @@ export function DebuggerOverlays() {
       <SmartStepChooser />
       <StreamChainChooser />
       <StreamAbortDialog />
+      <TableView />
     </>
+  );
+}
+
+function TableView() {
+  const view = useOverlays((s) => s.tableView);
+  // A finished session (Stop, or Restart, which starts another id) has nothing left to show.
+  const live = useDebug((s) => view != null && isLive(s.sessions[view.session]));
+  useEffect(() => {
+    if (view && !live) useOverlays.setState({ tableView: null });
+  }, [view, live]);
+  if (!view || !live) return null;
+  return (
+    <TableViewDialog
+      key={`${view.session}:${view.expression}`}
+      expression={view.expression}
+      session={view.session}
+      onClose={() => useOverlays.setState({ tableView: null })}
+    />
   );
 }
 
@@ -117,6 +138,62 @@ function BreakpointPopover() {
   return <BreakpointEditor key={popover.id} path={popover.path} bp={bp} at={popover} focusLog={popover.focusLog} />;
 }
 
+function BreakpointPropertiesPopup({
+  at,
+  title,
+  onClose,
+  onRemove,
+  children,
+}: {
+  at: { x: number; y: number };
+  title: ReactNode;
+  onClose: () => void;
+  onRemove: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <Popup
+      open
+      onClose={onClose}
+      anchor={at}
+      placement="bottom-start"
+      trapFocus
+      aria-label="Breakpoint properties"
+      className={styles.bpPopover}
+    >
+      <div className={styles.bpPopoverTitle}>{title}</div>
+      <div className={styles.bpPopoverFields}>{children}</div>
+      <div className={styles.bpFooter}>
+        <button
+          type="button"
+          className={styles.bpMore}
+          onClick={() => {
+            onClose();
+            void executeAction("debug.viewBreakpoints");
+          }}
+        >
+          <T>More</T> <Kbd action="debug.viewBreakpoints" />
+        </button>
+        <div className={styles.bpFooterButtons}>
+          <Button
+            size="small"
+            variant="ghost"
+            onClick={() => {
+              onRemove();
+              closeBreakpointPopover();
+            }}
+          >
+            <T>Remove</T>
+          </Button>
+          <Button size="small" variant="primary" onClick={onClose}>
+            <T>Done</T>
+          </Button>
+        </div>
+      </div>
+    </Popup>
+  );
+}
+
 function BreakpointEditor({
   path,
   bp,
@@ -135,49 +212,25 @@ function BreakpointEditor({
   };
 
   return (
-    <Popup open onClose={close} anchor={at} placement="bottom-start" trapFocus aria-label="Breakpoint properties">
-      <div className={styles.bpEditor}>
-        <div className={styles.bpTitle}>
+    <BreakpointPropertiesPopup
+      at={at}
+      onClose={close}
+      onRemove={() => removeBreakpoint(path, bp.id)}
+      title={
+        <>
           <span className={styles.bpDot} data-look={bp.enabled ? "on" : "off"} aria-hidden />
-          <span className={styles.bpFile}>
-            {basename(path)}:{bp.line + 1}
-          </span>
-        </div>
-        <BreakpointFields
-          path={path}
-          bp={bp}
-          focus={focusLog ? "log" : "condition"}
-          onEnter={close}
-          commitRef={commitText}
-        />
-        <div className={styles.bpFooter}>
-          <button
-            type="button"
-            className={styles.link}
-            onClick={() => {
-              close();
-              void executeAction("debug.viewBreakpoints");
-            }}
-          >
-            <T>More</T> <Kbd action="debug.viewBreakpoints" />
-          </button>
-          <div className={styles.spacer} />
-          <Button
-            size="small"
-            variant="ghost"
-            onClick={() => {
-              removeBreakpoint(path, bp.id);
-              closeBreakpointPopover();
-            }}
-          >
-            <T>Remove</T>
-          </Button>
-          <Button size="small" variant="primary" onClick={close}>
-            <T>Done</T>
-          </Button>
-        </div>
-      </div>
-    </Popup>
+          <BreakpointLocation path={path} line={bp.line} />
+        </>
+      }
+    >
+      <BreakpointFields
+        path={path}
+        bp={bp}
+        focus={focusLog ? "log" : "condition"}
+        onEnter={close}
+        commitRef={commitText}
+      />
+    </BreakpointPropertiesPopup>
   );
 }
 
@@ -192,12 +245,14 @@ function BreakpointFields({
   focus,
   onEnter,
   commitRef,
+  showRemoveOnceHit = false,
 }: {
   path: string;
   bp: BreakpointEntry;
   focus?: "condition" | "log";
   onEnter?: () => void;
   commitRef?: MutableRefObject<(() => void) | null>;
+  showRemoveOnceHit?: boolean;
 }) {
   const [condition, setCondition] = useState(bp.condition ?? "");
   const [hitCondition, setHitCondition] = useState(bp.hitCondition ?? "");
@@ -288,32 +343,44 @@ function BreakpointFields({
           aria-label="Hit count condition"
         />
       </label>
-      <Checkbox
-        checked={!!bp.logHit}
-        onChange={(on) => updateBreakpoint(path, bp.id, { logHit: on || undefined })}
-        label={'"Breakpoint hit" message'}
-      />
-      <Checkbox
-        checked={logEval}
-        onChange={(on) => {
-          setLogEval(on);
-          draft.current = { ...draft.current, logEval: on };
-          commitText();
-        }}
-        label="Evaluate and log"
-      />
-      {logEval && (
-        <Input
-          mono
-          value={logMessage}
-          onChange={(e) => setLogMessage(e.target.value)}
-          onBlur={commitText}
-          onKeyDown={onKey}
-          placeholder="Value: {expression}"
-          data-autofocus={focus === "log" ? "" : undefined}
-          aria-label="Evaluate and log"
+      <fieldset className={styles.bpActions}>
+        <legend>
+          <T>Actions</T>
+        </legend>
+        <Checkbox
+          checked={!!bp.logHit}
+          onChange={(on) => updateBreakpoint(path, bp.id, { logHit: on || undefined })}
+          label={'"Breakpoint hit" message'}
         />
-      )}
+        <Checkbox
+          checked={logEval}
+          onChange={(on) => {
+            setLogEval(on);
+            draft.current = { ...draft.current, logEval: on };
+            commitText();
+          }}
+          label="Evaluate and log"
+        />
+        {logEval && (
+          <Input
+            mono
+            value={logMessage}
+            onChange={(e) => setLogMessage(e.target.value)}
+            onBlur={commitText}
+            onKeyDown={onKey}
+            placeholder="Value: {expression}"
+            data-autofocus={focus === "log" ? "" : undefined}
+            aria-label="Evaluate and log"
+          />
+        )}
+        {showRemoveOnceHit && (
+          <Checkbox
+            checked={!!bp.temporary}
+            onChange={(temporary) => updateBreakpoint(path, bp.id, { temporary })}
+            label="Remove once hit"
+          />
+        )}
+      </fieldset>
     </>
   );
 }
@@ -331,66 +398,46 @@ function SpecialEditor({ bp, at }: { bp: SpecialBreakpoint; at: { x: number; y: 
     closeBreakpointPopover();
   };
   return (
-    <Popup open onClose={close} anchor={at} placement="bottom-start" trapFocus aria-label="Breakpoint properties">
-      <div className={styles.bpEditor}>
-        <div className={styles.bpTitle}>
+    <BreakpointPropertiesPopup
+      at={at}
+      onClose={close}
+      onRemove={() => removeSpecial(bp.id)}
+      title={
+        <>
           <Icon name={bp.kind === "method" ? "breakpoint-method" : "breakpoint-field"} size={14} />
-          <span className={styles.bpFile}>{specialTitle(bp)}</span>
-        </div>
-        <Checkbox checked={bp.enabled} onChange={(enabled) => updateSpecial(bp.id, { enabled })} label="Enabled" />
-        <label className={styles.field}>
-          <span className={styles.label}>
-            <T>Condition</T>
+          <span className={styles.bpFile} title={specialTitle(bp)}>
+            {specialTitle(bp)}
           </span>
-          <Input
-            mono
-            value={condition}
-            onChange={(e) => setCondition(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && close()}
-            data-autofocus=""
-            aria-label="Condition"
-          />
-        </label>
-        <label className={styles.field}>
-          <span className={styles.label}>
-            <T>Hit count</T>
-          </span>
-          <Input
-            mono
-            value={hitCondition}
-            onChange={(e) => setHitCondition(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && close()}
-            aria-label="Hit count condition"
-          />
-        </label>
-        <div className={styles.bpFooter}>
-          <button
-            type="button"
-            className={styles.link}
-            onClick={() => {
-              close();
-              void executeAction("debug.viewBreakpoints");
-            }}
-          >
-            <T>More</T> <Kbd action="debug.viewBreakpoints" />
-          </button>
-          <div className={styles.spacer} />
-          <Button
-            size="small"
-            variant="ghost"
-            onClick={() => {
-              removeSpecial(bp.id);
-              closeBreakpointPopover();
-            }}
-          >
-            <T>Remove</T>
-          </Button>
-          <Button size="small" variant="primary" onClick={close}>
-            <T>Done</T>
-          </Button>
-        </div>
-      </div>
-    </Popup>
+        </>
+      }
+    >
+      <Checkbox checked={bp.enabled} onChange={(enabled) => updateSpecial(bp.id, { enabled })} label="Enabled" />
+      <label className={styles.field}>
+        <span className={styles.label}>
+          <T>Condition</T>
+        </span>
+        <Input
+          mono
+          value={condition}
+          onChange={(e) => setCondition(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && close()}
+          data-autofocus=""
+          aria-label="Condition"
+        />
+      </label>
+      <label className={styles.field}>
+        <span className={styles.label}>
+          <T>Hit count</T>
+        </span>
+        <Input
+          mono
+          value={hitCondition}
+          onChange={(e) => setHitCondition(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && close()}
+          aria-label="Hit count condition"
+        />
+      </label>
+    </BreakpointPropertiesPopup>
   );
 }
 
@@ -586,7 +633,7 @@ function BreakpointsDialog() {
                     <Checkbox
                       checked={r.bp.enabled}
                       onChange={(enabled) => updateExceptionClass(r.bp.id, { enabled })}
-                      aria-label={tx`Enable ${name}`}
+                      aria-label={tx`Enable ${r.bp.className || txPart("No class chosen")}`}
                     />
                     <Icon name="breakpoint-exception" size={14} />
                     <span className={styles.bpName} title={name}>
@@ -751,12 +798,7 @@ function BreakpointDetail({
         </Button>
       </div>
       {st && <div className={styles.statusLine}>{st.verified ? tx("Verified") : (st.message ?? "Not verified")}</div>}
-      <BreakpointFields path={path} bp={bp} commitRef={commitRef} />
-      <Checkbox
-        checked={!!bp.temporary}
-        onChange={(temporary) => updateBreakpoint(path, bp.id, { temporary })}
-        label="Remove once hit"
-      />
+      <BreakpointFields path={path} bp={bp} commitRef={commitRef} showRemoveOnceHit />
     </div>
   );
 }

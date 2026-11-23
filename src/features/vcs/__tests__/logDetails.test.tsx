@@ -43,6 +43,28 @@ beforeEach(() => {
   useVcs.setState((s) => ({ repo: "/repo", root: "/repo", version: s.version + 1 }));
 });
 describe("commit detail jobs", () => {
+  it("reloads expired signature results and retains unsigned results", async () => {
+    const now = vi.spyOn(performance, "now").mockReturnValue(0);
+    try {
+      const signed = commit("signature-expiration");
+      const unsigned = commit("unsigned-expiration");
+      api.batch.mockImplementation(async (_repo: string, ids: string[]) => ({
+        status: "ok",
+        data: ids.map((id) => ({ signature: id === signed.id ? "E" : "N" })),
+      }));
+      await Promise.all([loadLogDetails(signed), loadLogDetails(unsigned)]);
+      now.mockReturnValue(59_999);
+      await loadLogDetails(signed);
+      expect(api.batch).toHaveBeenCalledTimes(1);
+      now.mockReturnValue(60_000);
+      await Promise.all([loadLogDetails(signed), loadLogDetails(unsigned)]);
+      expect(api.batch).toHaveBeenCalledTimes(2);
+      expect(api.batch.mock.calls[1]![1]).toEqual([signed.id]);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   it("retries immediately after the last consumer cancels without losing the replacement cache entry", async () => {
     let rejectOld!: (error: Error) => void;
     api.batch.mockImplementationOnce(

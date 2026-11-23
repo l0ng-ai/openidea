@@ -88,3 +88,40 @@ test("a close button on the left keeps a narrow slot before the icon", async ({ 
   const slot = await box(closeOf(selected));
   expect(slot.x + slot.width).toBeLessThanOrEqual(label.x + 0.5);
 });
+
+test("a pinned editor tab uses the close slot and can be unpinned from it", async ({ workbench: page }) => {
+  await openFromTree(page, "README.md");
+  await openFromTree(page, "build.gradle.kts");
+  const strip = page.getByRole("tablist", { name: "Editor tabs" });
+  const unpinned = strip.getByRole("tab", { name: "build.gradle.kts", exact: true });
+  const pinned = strip.getByRole("tab", { name: "build.gradle.kts Pinned", exact: true });
+  const menu = page.getByRole("menu", { name: "Context menu" });
+  const pin = async () => {
+    await unpinned.click({ button: "right" });
+    await menu.getByRole("menuitem", { name: "Pin Tab", exact: true }).click();
+  };
+  await pin();
+  const unpin = pinned.locator("..").getByRole("button", { name: "Unpin Tab", exact: true });
+
+  for (const closeButtonPosition of ["right", "left"]) {
+    await setTabs(page, { closeButtonPosition });
+    await expect(closeOf(pinned)).toHaveCount(0);
+    const tab = await box(pinned.locator(".."));
+    const action = await box(unpin);
+    const label = await box(pinned.locator(":scope > span"));
+    const inset = closeButtonPosition === "left" ? action.x - tab.x : tab.x + tab.width - action.x - action.width;
+    expect(inset).toBeCloseTo(2, 0);
+    expect(action.width).toBeCloseTo(16, 0);
+    if (closeButtonPosition === "left") expect(action.x + action.width).toBeLessThanOrEqual(label.x);
+    else expect(action.x).toBeGreaterThanOrEqual(label.x + label.width);
+  }
+
+  await setTabs(page, { showCloseButton: false });
+  await unpin.click();
+  await expect(unpinned).toHaveAttribute("aria-selected", "true");
+  await expect(closeOf(unpinned)).toHaveCount(0);
+
+  await pin();
+  await pinned.click({ button: "middle" });
+  await expect(pinned).toHaveCount(0);
+});

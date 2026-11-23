@@ -113,8 +113,8 @@ async fn external_history_is_readable_and_never_becomes_a_write_target() {
         Some("historical content\n")
     );
     assert!(project.repos().at_root(&external).is_none());
-    assert!(vcs::vcs_checkout(&host, "main", Some(external.clone()), first.clone(), false, None).await.is_err());
-    assert!(vcs::vcs_apply_patch(&host, "main", Some(external.clone()), String::new()).await.is_err());
+    assert!(vcs::vcs_checkout(&host, "main", Some(external.clone()), first.clone(), false, None, None).await.is_err());
+    assert!(vcs::vcs_apply_patch(&host, "main", Some(external.clone()), String::new(), None).await.is_err());
     assert_eq!(git(&external, &["rev-parse", "HEAD"]), head);
     assert!(!deleted.exists());
     host.close_project("main");

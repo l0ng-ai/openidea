@@ -1,14 +1,13 @@
-import type { Commit } from "@/bindings";
+import type { Commit, LogDetails } from "@/bindings";
 import { writeClipboardText } from "@/platform/clipboard";
-import { fontWeightOf } from "@/platform/editorSettings";
-import { resolveMonoFont } from "@/platform/fonts";
 import { tx } from "@/platform/i18n";
-import { useProject } from "@/platform/project";
+import { Icon } from "@/ui";
 import clsx from "clsx";
+import { CommitMessageContent } from "../CommitMessageContent";
 import styles from "../GitLog.module.css";
 import { IssueText } from "../issueLinks";
 import { useCommitDetails } from "../logDetails";
-import { refLabels } from "../logOptions";
+import { refLabels, type RefLabel } from "../logOptions";
 import { goToRef } from "../logStore";
 import { commitRepo } from "../multiRoot";
 import { currentRepo } from "../store";
@@ -35,9 +34,18 @@ export function RefLabels({
   remoteNames?: ReadonlySet<string>;
   left?: boolean;
 }) {
-  const labels = refLabels(refs, { compact, tagNames }, remoteNames);
   return (
-    <span className={clsx(styles.refs, left && styles.refsLeft)}>
+    <RefGroup
+      labels={refLabels(refs, { compact, tagNames }, remoteNames)}
+      className={clsx(styles.refs, compact && styles.refsCompact, left && styles.refsLeft)}
+    />
+  );
+}
+
+function RefGroup({ labels, className }: { labels: RefLabel[]; className: string | undefined }) {
+  if (!labels.length) return null;
+  return (
+    <span className={className}>
       {labels.map((l) => (
         <span key={`${l.kind}:${l.title}`} className={clsx(styles.ref, REF_KIND_CLASS[l.kind])} title={l.title}>
           {l.text && <span className={styles.refText}>{l.text}</span>}
@@ -47,42 +55,38 @@ export function RefLabels({
   );
 }
 
+function CommitReferences({ refs }: { refs: string[] }) {
+  const labels = refLabels(refs, { compact: false, tagNames: true }, NO_REMOTES);
+  return (
+    <div className={styles.meta}>
+      <RefGroup labels={labels.filter((label) => label.kind !== "tag")} className={styles.detailRefGroup} />
+      <RefGroup labels={labels.filter((label) => label.kind === "tag")} className={styles.detailRefGroup} />
+    </div>
+  );
+}
+
 /** A commit's message and metadata; `compact` (one of several selected): without the body. */
 export function CommitMessage({ commit, compact = false }: { commit: Commit; compact?: boolean }) {
   const { details, error } = useCommitDetails(commit, !compact);
-  const editor = useProject((s) => s.settings?.editor);
-  const { family, size } = resolveMonoFont(undefined, editor);
   const repo = commitRepo(commit) ?? currentRepo();
-  const message = details?.message || commit.message;
-  const [subject, ...bodyLines] = message.replace(/\s+$/, "").split("\n");
-  const body = compact ? "" : bodyLines.join("\n").replace(/^\n+/, "");
   return (
     <div className={clsx(compact && styles.commitEntry)}>
-      <div
-        className={styles.messageText}
-        style={{ fontFamily: family, fontSize: size, fontWeight: fontWeightOf(editor?.fontWeight, 400) }}
-      >
-        <div className={styles.subjectLine} style={{ fontWeight: fontWeightOf(editor?.boldFontWeight, 700) }}>
-          <CommitMessageText text={subject ?? ""} repo={repo} />
-        </div>
-        {body && (
-          <div className={styles.fullMessage}>
-            <CommitMessageText text={body} repo={repo} />
-          </div>
-        )}
-      </div>
-      <div className={styles.meta}>
-        <button
-          type="button"
-          className={styles.linkButton}
-          title={tx("Copy revision number")}
-          onClick={() => void writeClipboardText(commit.id)}
-        >
-          {commit.shortId}
-        </button>{" "}
-        {commit.author} &lt;{commit.email}&gt;
-        {commit.timeMs ? " " + tx`on ${new Date(commit.timeMs).toLocaleString()}` : ""}
-      </div>
+      <CommitMessageContent
+        commit={commit}
+        message={details?.message || commit.message}
+        compact={compact}
+        renderText={(text) => <CommitMessageText text={text} repo={repo} />}
+        revision={
+          <button
+            type="button"
+            className={styles.linkButton}
+            title={tx("Copy revision number")}
+            onClick={() => void writeClipboardText(commit.id)}
+          >
+            {commit.shortId}
+          </button>
+        }
+      />
       {!compact &&
         commit.committer &&
         (commit.committer !== commit.author ||
@@ -106,11 +110,7 @@ export function CommitMessage({ commit, compact = false }: { commit: Commit; com
           ))}
         </div>
       )}
-      {commit.refs.length > 0 && (
-        <div className={styles.meta}>
-          <RefLabels refs={commit.refs} />
-        </div>
-      )}
+      {commit.refs.length > 0 && <CommitReferences refs={commit.refs} />}
       {details && (
         <>
           <div className={styles.meta}>
@@ -126,10 +126,7 @@ export function CommitMessage({ commit, compact = false }: { commit: Commit; com
                 ))
               : tx("None")}
           </div>
-          <div
-            className={styles.meta}
-            title={[details.signer, details.key, details.fingerprint].filter(Boolean).join("\n")}
-          >
+          <div className={styles.meta} title={signatureDescription(details)}>
             {tx("Signature")}: {signatureLabel(details.signature)}
             {details.signer ? ` · ${details.signer}` : ""}
           </div>
@@ -161,11 +158,24 @@ function signatureLabel(code: string) {
   );
 }
 
+function signatureDescription({ signature, signer, fingerprint, key }: LogDetails) {
+  return [
+    signatureLabel(signature),
+    signer && tx`Signed by ${signer}`,
+    fingerprint ? tx`Key fingerprint ${fingerprint}` : key && tx`Signing key ${key}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 export function CommitSignature({ commit }: { commit: Commit }) {
   const { details, error } = useCommitDetails(commit);
+  if (details?.signature === "N" || (!details && !error)) return null;
+  const code = details?.signature ?? "E";
+  const label = signatureLabel(code);
   return (
-    <span title={details ? [details.signer, details.key, details.fingerprint].filter(Boolean).join("\n") : undefined}>
-      {details ? signatureLabel(details.signature) : error ? tx("Could not verify") : tx("Loading…")}
+    <span className={styles.signatureIndicator} title={details ? signatureDescription(details) : label}>
+      <Icon name={code === "G" ? "success" : code === "B" ? "error" : "warning"} size={14} label={label} />
     </span>
   );
 }

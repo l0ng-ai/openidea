@@ -14,6 +14,7 @@ import {
   menuGroupItems,
   useDebugRunSessions,
   notifications,
+  provideRunConfigurationChecks,
   provideRunConfigurationLookup,
   provideRunOutput,
   registerMenuGroup,
@@ -60,6 +61,7 @@ import {
 import { liveServiceSession, serviceSessions } from "./serviceSessions";
 import { ServiceImportHost } from "./serviceImport";
 import { cmakeBuildId } from "./cmake";
+import { configurationChecks } from "./configurationChecks";
 import { runBeforeLaunch } from "./beforeLaunch";
 import { compoundChildren } from "./configs";
 import { containerDebuggable, remoteDebugBlocked } from "./remote";
@@ -70,6 +72,7 @@ import { junitType } from "./junitType";
 import { listenForApplicationDeactivation, showApplicationUpdate, updatableSessions } from "./applicationUpdate";
 import { hotReload, hotReloadSession, hotRestart } from "./flutterHotReload";
 import { npmGutter } from "./npmGutter";
+import { startNpmScriptsWatch } from "./npmScripts";
 import { launchSettingsGutter } from "./launchSettingsGutter";
 import { runGutter } from "./runGutter";
 import { markdownCommandGutter } from "./markdownCommands";
@@ -435,6 +438,7 @@ export function activate(): () => void {
       headerContent: lazyComponent(() => import("./RunView").then((m) => m.RunTabs)),
       useBadge: useRunningCount,
     }),
+    startNpmScriptsWatch(),
     registerTitleItem({ id: "run.widget", title: "Run Widget", align: "right", priority: 0, component: RunWidget }),
     registerRunAnythingProvider(runConfigsRunAnything),
     registerBuiltinTypes(),
@@ -920,6 +924,8 @@ export function activate(): () => void {
 
   setBeforeLaunchRunner(runBeforeLaunch);
   disposers.push(() => setBeforeLaunchRunner(null));
+  provideRunConfigurationChecks(configurationChecks);
+  disposers.push(() => provideRunConfigurationChecks(undefined));
   provideRunOutput({ subscribe: subscribeOutput });
   disposers.push(() => provideRunOutput(undefined));
   provideRunConfigurationLookup((kind, directory) => {

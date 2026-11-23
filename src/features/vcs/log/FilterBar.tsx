@@ -1,13 +1,14 @@
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { isMacHost } from "@/platform/keymap";
-import { Icon, IconButton, SearchField, type MenuItem } from "@/ui";
+import { Icon, IconButton, SearchField, Spinner, type MenuItem } from "@/ui";
 import clsx from "clsx";
 import { useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { BranchFilterPopup } from "../BranchFilterPopup";
 import { chooseDateRange, chooseMany } from "../dialogs";
 import styles from "../GitLog.module.css";
 import { LogIdContext } from "../logContext";
+import { refreshLogDetails } from "../logDetails";
 import { useLogOptions, type LogOptions } from "../logOptions";
 import {
   ME,
@@ -26,7 +27,7 @@ import {
 } from "../logStore";
 import { relTo } from "../model";
 import { branchesByRepo } from "../multiRoot";
-import { chooseLogPaths, editLogPaths } from "../PathFilterDialog";
+import { LogPathsEditor, chooseLogPaths } from "../PathFilterDialog";
 import { openExternalLog } from "../RevisionBrowser";
 import { currentRepo, repoName, useVcs } from "../store";
 import { useDropdownMenu, useLogRepositories, useReadOnlyLog } from "./logHooks";
@@ -50,13 +51,27 @@ interface LogFilter {
   onClear: () => void;
 }
 
-function FilterButton({ label, value, onOpen, onClear, hidden }: LogFilter & { hidden?: boolean }) {
+function FilterButton({
+  label,
+  value,
+  onOpen,
+  onClear,
+  hidden,
+  triggerRef,
+}: LogFilter & { hidden?: boolean; triggerRef?: (button: HTMLButtonElement | null) => void }) {
   return (
     <span
       className={clsx(styles.filterButton, value && styles.filterActive, hidden && styles.filterHidden)}
       inert={hidden}
     >
-      <button type="button" className={styles.filterMain} onClick={(e) => onOpen(e.currentTarget)} aria-haspopup="menu">
+      <button
+        ref={triggerRef}
+        type="button"
+        className={styles.filterMain}
+        onClick={(e) => onOpen(e.currentTarget)}
+        aria-haspopup="menu"
+        title={value ?? undefined}
+      >
         {value ? (
           <>
             {tx(label)}: <span className={styles.filterValue}>{value}</span>
@@ -70,7 +85,7 @@ function FilterButton({ label, value, onOpen, onClear, hidden }: LogFilter & { h
         <IconButton
           type="button"
           className={styles.filterClear}
-          aria-label={tx`Clear ${tx(label)} filter`}
+          aria-label={tx`Clear ${txPart(label)} filter`}
           onClick={onClear}
           icon="close"
           size="small"
@@ -86,6 +101,7 @@ export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
   const active = !scope || scope === shown;
   const logGeneration = useGitLog((s) => s.generation);
   const filters = useGitLog((s) => s.filters);
+  const comparingBranches = useGitLog((s) => s.cherryHighlight?.unmatched === null);
   const commits = useGitLog((s) => s.commits);
   const selectedBranches = useVcs((s) => s.branches);
   const [branches, setBranches] = useState(selectedBranches);
@@ -95,6 +111,7 @@ export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
   const readOnly = useReadOnlyLog();
   const bookmarks = useGitLog((s) => s.bookmarks);
   const showBranches = useLogOptions((s) => s.showBranches);
+  const comparison = useGitLog((s) => !!s.logTabs.find((t) => t.id === (scope ?? s.shownLog))?.comparison);
   useEffect(() => {
     let live = true;
     const roots = filters.repositories?.length ? filters.repositories : repositories;
@@ -116,6 +133,11 @@ export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
   }, [repositories, filters.repositories, version, logGeneration]);
   const [text, setText] = useState(filters.text);
   const [branchAnchor, setBranchAnchor] = useState<HTMLElement | null>(null);
+  const [pathEditor, setPathEditor] = useState<{ roots: string[]; initial: string[] } | null>(null);
+  const [pathsTrigger, setPathsTrigger] = useState<HTMLButtonElement | null>(null);
+  const [overflowTrigger, setOverflowTrigger] = useState<HTMLButtonElement | null>(null);
+  const pathEditorAnchor = overflowTrigger ?? pathsTrigger;
+  if (!active && pathEditor) setPathEditor(null);
   const [menuBelow, dropdown] = useDropdownMenu();
   // Filters that do not fit move behind a chevron, like a toolbar's overflow.
   const groupRef = useRef<HTMLSpanElement>(null);
@@ -237,7 +259,13 @@ export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
       paths: [],
       repositories: selected.length === repositories.length ? [] : selected,
     });
+  const closePathEditorAt = (anchor: HTMLElement) => {
+    if (!pathEditor || pathEditorAnchor !== anchor) return false;
+    setPathEditor(null);
+    return true;
+  };
   const openPaths = (anchor: HTMLElement) => {
+    if (closePathEditorAt(anchor)) return;
     const modifier = isMacHost() ? "⌘" : "Ctrl";
     const repositoryItems: MenuItem[] =
       repositories.length > 1
@@ -283,10 +311,7 @@ export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
     menuBelow(anchor, [
       {
         label: "Select…",
-        run: async () => {
-          const selected = await editLogPaths(pathRoots, paths);
-          if (selected) selectPaths(selected);
-        },
+        run: () => setPathEditor({ roots: pathRoots, initial: paths }),
       },
       {
         label: "Select in Tree…",
@@ -303,12 +328,16 @@ export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
   };
 
   const logFilters: LogFilter[] = [
-    {
-      label: "Branch",
-      value: filters.range || filters.branches.join(", ") || null,
-      onOpen: (anchor: HTMLElement) => setBranchAnchor((open) => (open === anchor ? null : anchor)),
-      onClear: () => setLogBranches([]),
-    },
+    ...(comparison
+      ? []
+      : [
+          {
+            label: "Branch",
+            value: filters.range || filters.branches.join(", ") || null,
+            onOpen: (anchor: HTMLElement) => setBranchAnchor((open) => (open === anchor ? null : anchor)),
+            onClear: () => setLogBranches([]),
+          },
+        ]),
     {
       label: "User",
       value: filters.authors.join(", ") || null,
@@ -332,7 +361,7 @@ export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
   return (
     <div className={styles.filters} role="toolbar" aria-label={tx("Log filters")}>
       <div className={styles.filterControls}>
-        {!fileHistory && !showBranches && (
+        {!fileHistory && !comparison && !showBranches && (
           <IconButton icon="chevron-right" title="Show Branches" size="small" action="vcs.log.showBranches" />
         )}
         <SearchField
@@ -360,17 +389,24 @@ export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
         />
         <span ref={groupRef} className={styles.filterGroup}>
           {logFilters.map((f, i) => (
-            <FilterButton key={f.label} {...f} hidden={i >= hiddenFrom} />
+            <FilterButton
+              key={f.label}
+              {...f}
+              hidden={i >= hiddenFrom}
+              triggerRef={f.label === "Paths" ? setPathsTrigger : undefined}
+            />
           ))}
         </span>
         {hiddenFrom < logFilters.length && (
           <IconButton
+            ref={setOverflowTrigger}
             icon="chevron-right"
             title="More Filters"
             size="small"
             aria-haspopup="menu"
             onClick={(e) => {
               const anchor = e.currentTarget;
+              if (closePathEditorAt(anchor)) return;
               menuBelow(
                 anchor,
                 logFilters.slice(hiddenFrom).map((f) => ({
@@ -383,6 +419,16 @@ export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
         )}
       </div>
       {dropdown}
+      {pathEditor && pathEditorAnchor && (
+        <LogPathsEditor
+          {...pathEditor}
+          anchor={pathEditorAnchor}
+          onDone={(paths) => {
+            setPathEditor(null);
+            if (paths) selectPaths(paths);
+          }}
+        />
+      )}
       {branchAnchor && (
         <BranchFilterPopup
           anchor={branchAnchor}
@@ -415,28 +461,30 @@ export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
             )
           }
         />
-        <IconButton
-          icon="plus"
-          title="Open Another Log Tab"
-          size="small"
-          onClick={(e) =>
-            menuBelow(e, [
-              {
-                label: "In Tool Window",
-                run: () => {
-                  openLogTab("log", `Log ${useGitLog.getState().logTabs.length + 1}`);
+        {!comparison && (
+          <IconButton
+            icon="plus"
+            title="Open Another Log Tab"
+            size="small"
+            onClick={(e) =>
+              menuBelow(e, [
+                {
+                  label: "In Tool Window",
+                  run: () => {
+                    openLogTab("log", `Log ${useGitLog.getState().logTabs.length + 1}`);
+                  },
                 },
-              },
-              {
-                label: "In Editor",
-                run: () => {
-                  openLogTab("log", `Log ${useGitLog.getState().logTabs.length + 1}`, "editor");
+                {
+                  label: "In Editor",
+                  run: () => {
+                    openLogTab("log", `Log ${useGitLog.getState().logTabs.length + 1}`, "editor");
+                  },
                 },
-              },
-              { label: "External Repository…", run: openExternalLog },
-            ])
-          }
-        />
+                { label: "External Repository…", run: openExternalLog },
+              ])
+            }
+          />
+        )}
         <IconButton
           icon="clock"
           title="Recent Filters"
@@ -462,7 +510,15 @@ export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
             )
           }
         />
-        <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void reloadLog({ preserve: true })} />
+        <IconButton
+          icon="refresh"
+          title="Refresh"
+          size="small"
+          onClick={() => {
+            void reloadLog({ preserve: true }, scope ?? undefined);
+            void refreshLogDetails(repositories);
+          }}
+        />
         <IconButton
           icon="sort"
           title="Graph Options"
@@ -477,6 +533,11 @@ export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
           aria-haspopup="menu"
           onClick={(e) => menuBelow(e, viewOptionsMenu(useLogOptions.getState()))}
         />
+        {active && comparingBranches && (
+          <span role="status" aria-label={tx("Comparing Branches…")}>
+            <Spinner size={12} />
+          </span>
+        )}
         <IconButton icon="search" title="Go to Hash/Branch/Tag" size="small" action="vcs.log.goToRef" />
       </div>
     </div>
@@ -540,5 +601,6 @@ export function viewOptionsMenu(o: LogOptions): MenuItem[] {
     toggle("My Commits", o, "highlightMine"),
     toggle("Merge Commits", o, "highlightMerges"),
     toggle("Current Branch", o, "highlightCurrentBranch"),
+    { kind: "action", action: "vcs.log.highlightNotCherryPicked" },
   ];
 }

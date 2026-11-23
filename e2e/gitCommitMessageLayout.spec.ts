@@ -26,6 +26,7 @@ test("the history message editor shows commit context and grows with the dialog"
       const handlers = window.__ipc.handlers;
       handlers.vcs_roots = () => [{ root, ...branch }];
       handlers.vcs_branch_info = () => branch;
+      handlers.vcs_branches = () => [];
       handlers.vcs_status = () => [];
       handlers.vcs_log = ({ query }) =>
         (query as { range: string | null }).range?.startsWith("b".repeat(40)) ? commits.slice(0, 1) : commits;
@@ -90,7 +91,7 @@ test("the history message editor shows commit context and grows with the dialog"
   await page.getByRole("menuitem", { name: /Squash Commits/ }).click();
   const squash = page.getByRole("dialog", { name: "Squashed Commit Message" });
   const combined = squash.getByRole("textbox", { name: "Edit message for squashed commit" });
-  await expect(combined).toHaveValue([earlier, detail, latest, detail].join("\n\n"));
+  await expect(combined).toHaveValue([earlier + "\n\n" + detail, latest + "\n\n" + detail].join("\n\n\n"));
   await page.setViewportSize({ width: 420, height: 490 });
   await expect(combined).toBeInViewport({ ratio: 1 });
   await expect(squash.getByRole("button", { name: "OK", exact: true })).toBeInViewport({ ratio: 1 });

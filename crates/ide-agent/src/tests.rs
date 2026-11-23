@@ -453,6 +453,57 @@ fn manager(dir: &Path, agent: Arc<FakeAgent>) -> AgentManager {
 }
 
 #[tokio::test]
+async fn change_reads_share_a_budget_until_the_blocking_work_finishes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::default());
+    let submitted = Arc::new(AtomicU32::new(0));
+    mgr.set_git_executable_hook(Arc::new({
+        let submitted = submitted.clone();
+        move || {
+            submitted.fetch_add(1, Ordering::SeqCst);
+            None
+        }
+    }));
+    let (started, mut starts) = tokio::sync::mpsc::unbounded_channel();
+    let (finished, mut finishes) = tokio::sync::mpsc::unbounded_channel();
+    let mut releases = Vec::new();
+    let mut reads = Vec::new();
+    for job in 0..12 {
+        let (release, gate) = tokio::sync::oneshot::channel::<()>();
+        releases.push(release);
+        let (started, finished) = (started.clone(), finished.clone());
+        let mut read = Box::pin(read_changes(&mgr.shared, move || {
+            started.send(()).unwrap();
+            gate.blocking_recv().unwrap();
+            finished.send(()).unwrap();
+            Ok(())
+        }));
+        tokio::select! { biased; _ = &mut read => panic!("read finished before release"), _ = std::future::ready(()) => {} }
+        reads.push(read);
+        if job == 0 {
+            // Cancelling the requester cannot stop the blocking job or free its slot.
+            starts.recv().await.unwrap();
+            drop(reads.pop());
+        }
+    }
+    let admitted = submitted.load(Ordering::SeqCst);
+    for _ in 1..admitted {
+        starts.recv().await.unwrap();
+    }
+    for release in releases {
+        release.send(()).unwrap();
+    }
+    for read in reads {
+        read.await.unwrap();
+    }
+    for _ in 0..12 {
+        finishes.recv().await.unwrap();
+    }
+    eprintln!("change-read fixture: peak active {admitted}; completed 12/12");
+    assert_eq!(admitted, 4);
+}
+
+#[tokio::test]
 async fn subscribers_do_not_replace_or_close_each_other() {
     let tmp = tempfile::tempdir().unwrap();
     let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
@@ -1373,6 +1424,46 @@ async fn steers_through_session_steering() {
     assert!(!entries.iter().any(|e| matches!(e, AgentEntry::User { text, steered: true, .. } if text == "too late")));
     mgr.cancel(&task.id, None).unwrap();
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stale_queue_actions_refresh_the_queue_without_starting_another_turn() {
+    use ide_core::error::ErrorKind;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let task = mgr
+        .create(NewAgentTask { provider: "claude".into(), prompt: text("ask"), ..Default::default() })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    mgr.prompt(&task.id, text("again"), false).await.unwrap();
+    let handle = mgr.task(&task.id).unwrap();
+    let queued = handle.state.lock().task.queue[0].id.clone();
+    let permission = *handle.permissions.lock().keys().next().unwrap();
+    let (tx, mut updates) = tokio::sync::mpsc::unbounded_channel();
+    let weak = Arc::downgrade(&handle);
+    mgr.subscribe(Arc::new(move |event| {
+        if let AgentEvent::Task { task } = event
+            && task.queue.is_empty()
+            && let Some(handle) = weak.upgrade()
+        {
+            let _ = tx.send(handle.turns.load(Ordering::Acquire));
+        }
+    }));
+    mgr.respond(&task.id, permission, Some("yes".into())).unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    assert_eq!(updates.try_recv().unwrap(), 1, "publish the dequeue before starting the second turn");
+    while updates.try_recv().is_ok() {}
+
+    for error in
+        [mgr.unqueue(&task.id, &queued).unwrap_err(), mgr.send_queued_now(&task.id, &queued).await.unwrap_err()]
+    {
+        assert_eq!(error.kind, ErrorKind::OutOfSync);
+        assert_eq!(updates.try_recv().unwrap(), 2, "a stale action gets the current queue");
+    }
+    assert!(!handle.state.lock().busy);
+    assert_eq!(mgr.unqueue("missing-task", &queued).unwrap_err().kind, ErrorKind::NotFound);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -4459,9 +4550,8 @@ async fn per_session_skill_overrides_filter_commands_persist_and_reload_when_idl
         let root = root.to_path_buf();
         move || SkillsPolicy {
             user: BTreeMap::from([("tdd".into(), AgentSkillPolicy { mode: AgentSkillMode::Off })]),
-            workspace: BTreeMap::new(),
-            workspace_trusted: true,
             workspace_roots: vec![root.clone()],
+            ..SkillsPolicy::default()
         }
     }));
 

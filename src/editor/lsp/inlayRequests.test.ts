@@ -25,6 +25,7 @@ const ok = (label: string) => ({
       paddingLeft: false,
       paddingRight: false,
       tooltip: null,
+      textEdits: [],
     },
   ] as InlayHint[],
 });

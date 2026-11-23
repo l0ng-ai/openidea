@@ -25,11 +25,12 @@ import {
 import { choosePath } from "@/platform/choosePath";
 import { Row, SearchLabel, SettingSelect } from "../components/Form";
 import { useSetting } from "../components/context";
-import type { AgentModelCatalog, AgentProvider } from "@/bindings";
+import type { AgentModelCatalog, AgentProvider, FetchTagsMode } from "@/bindings";
 import type { PageSpec } from "./spec";
-import { BoundToggle, Grid, Indented, TableEditor, ToggleNumber } from "./workflowControls";
+import { BoundToggle, Grid, Indented, RadioRow, TableEditor, ToggleNumber } from "./workflowControls";
 import styles from "./Workflow.module.css";
 import gitStyles from "./GitSettings.module.css";
+import { GitSigningRow } from "./GitSigningRow";
 import { tx } from "@/platform/i18n";
 
 const L = WORKFLOW_LIMITS;
@@ -484,7 +485,15 @@ const PATCH_CREATED: SelectOption[] = [
 const INCOMING: SelectOption[] = [
   { value: "auto", label: "Auto" },
   { value: "always", label: "Always" },
+  { value: "check", label: "Check without fetching" },
   { value: "never", label: "Never" },
+];
+
+const FETCH_TAGS: SelectOption<FetchTagsMode>[] = [
+  { value: "auto", label: "Auto", detail: "Follow Git config" },
+  { value: "sync", label: "Sync", detail: "Delete local tags missing on remote" },
+  { value: "always", label: "Always", detail: "Fetch all remote tags" },
+  { value: "never", label: "Never", detail: "Disable automatic tag fetching" },
 ];
 
 // ---------------------------------------------------------------------------
@@ -653,6 +662,7 @@ function AgentInstructionsRow() {
 }
 
 function CommitChecks() {
+  const [nonModal] = useSetting<boolean>("vcs.commit.nonModal");
   return (
     <Grid
       left={
@@ -670,6 +680,12 @@ function CommitChecks() {
         <>
           <BoundToggle k="vcs.commit.reformat" label="Reformat code" />
           <BoundToggle k="vcs.commit.optimizeImports" label="Optimize imports" />
+          <BoundToggle
+            k="vcs.commit.postponeSlowChecks"
+            label="Run advanced checks after commit"
+            hint="Runs code analysis and TODO checks in the background after a local commit. Commit and Push checks them first."
+            disabled={!nonModal}
+          />
         </>
       }
     />
@@ -747,6 +763,23 @@ function IssuePresets() {
 export const VCS_PAGES: PageSpec[] = [
   // No sections: the page links to its sub-pages.
   { id: "vcs", title: "Version Control", order: 300, keywords: ["git", "vcs", "history"] },
+  {
+    id: "vcs.changelists",
+    title: "Changelists",
+    order: 0,
+    keywords: ["cherry-pick", "revert", "local changes", "conflict"],
+    sections: [
+      {
+        options: [
+          {
+            kind: "toggle",
+            key: "vcs.createChangelistsAutomatically",
+            label: "Create changelists for conflicted cherry-picks and reverts",
+          },
+        ],
+      },
+    ],
+  },
   {
     id: "vcs.commit",
     title: "Commit",
@@ -912,6 +945,25 @@ export const VCS_PAGES: PageSpec[] = [
           },
           {
             kind: "custom",
+            label: "Recursively clone submodules",
+            keywords: ["clone", "submodules"],
+            component: () => (
+              <BoundToggle
+                k="vcs.git.cloneSubmodules"
+                label="Recursively clone submodules"
+                hint={<T>Applies to all projects.</T>}
+                scope="global"
+              />
+            ),
+          },
+          {
+            kind: "custom",
+            label: "GPG signing",
+            keywords: ["Configure GPG Signature…", "Signing key", "Sign commits with GPG"],
+            component: GitSigningRow,
+          },
+          {
+            kind: "custom",
             label: "Show inline blame for the current line",
             keywords: ["Open the commit when the inline blame is clicked"],
             component: InlineBlameRows,
@@ -963,6 +1015,29 @@ export const VCS_PAGES: PageSpec[] = [
           },
           {
             kind: "toggle",
+            key: "vcs.git.addCherryPickOrigin",
+            label: "Record the source of cherry-picked commits from protected branches",
+            hint: "Adds the source commit hash to the commit message.",
+          },
+          {
+            kind: "custom",
+            label: "On empty cherry-pick",
+            keywords: ["Skip commit", "Create empty commit"],
+            component: () => (
+              <RadioRow
+                k="vcs.git.emptyCherryPick"
+                label="On empty cherry-pick"
+                hint={<T>Applies to all projects.</T>}
+                scope="global"
+                choices={[
+                  { value: "skip", label: "Skip commit" },
+                  { value: "createEmpty", label: "Create empty commit" },
+                ]}
+              />
+            ),
+          },
+          {
+            kind: "toggle",
             key: "vcs.git.signOff",
             label: "Sign-off commit",
             hint: "Adds a Signed-off-by trailer by default; it can still be switched per commit in Commit Options.",
@@ -997,14 +1072,29 @@ export const VCS_PAGES: PageSpec[] = [
           },
           {
             kind: "custom",
+            label: "Clean working tree using",
+            keywords: ["Shelve", "Stash", "Smart Checkout"],
+            component: () => (
+              <RadioRow
+                k="vcs.git.saveChangesPolicy"
+                label="Clean working tree using"
+                choices={[
+                  { value: "shelve", label: "Shelve" },
+                  { value: "stash", label: "Stash" },
+                ]}
+              />
+            ),
+          },
+          {
+            kind: "custom",
             label: "Explicitly check for incoming commits on remotes",
-            keywords: ["Auto", "Always", "Never", "fetch"],
+            keywords: ["Auto", "Always", "Never", "fetch", "check remote refs"],
             component: () => (
               <SettingSelect
                 k="vcs.git.incomingCheck"
                 label="Explicitly check for incoming commits on remotes"
                 options={INCOMING}
-                hint="Fetches the remotes of every repository in the background so incoming commits show in the Branches popup and the Project view. Auto stops checking a repository after it fails, for example on an authentication failure."
+                hint="Check without fetching looks up remote branch tips. Auto and Always fetch in the background. Auto skips a failing remote for one check before retrying."
               />
             ),
           },
@@ -1015,6 +1105,12 @@ export const VCS_PAGES: PageSpec[] = [
             ...L.incomingCheckInterval,
             integer: true,
             unit: "min",
+          },
+          {
+            kind: "custom",
+            label: "Fetch tags",
+            keywords: ["Auto", "Sync", "Always", "Never", "prune"],
+            component: () => <SettingSelect k="vcs.git.fetchTagsMode" label="Fetch tags" options={FETCH_TAGS} />,
           },
         ],
       },
@@ -1033,6 +1129,23 @@ export const VCS_PAGES: PageSpec[] = [
         title: "Stash",
         options: [
           { kind: "toggle", key: "vcs.git.combineStashAndShelf", label: "Combine stashes and shelves in one tab" },
+          {
+            kind: "custom",
+            label: "Compare stashed changes when showing a diff",
+            keywords: ["With the local version of a file", "With the parent commit"],
+            component: () => (
+              <RadioRow
+                k="vcs.git.stashDiffTarget"
+                label="Compare stashed changes when showing a diff"
+                hint={<T>Applies to all projects.</T>}
+                scope="global"
+                choices={[
+                  { value: "local", label: "With the local version of a file" },
+                  { value: "parent", label: "With the parent commit" },
+                ]}
+              />
+            ),
+          },
         ],
       },
     ],

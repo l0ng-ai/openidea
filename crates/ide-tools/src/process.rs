@@ -405,6 +405,13 @@ impl Http {
         self
     }
 
+    /// Skips `GITHUB_TOKEN` / `GH_TOKEN` / `gh auth token` (e.g. retrying a public GitHub endpoint after HTTP 401).
+    pub fn without_github_auth(mut self) -> Self {
+        self.gh = None;
+        self.explicit_github_token = None;
+        self
+    }
+
     fn base(&self, url: &str, cancel: &CancellationToken) -> IdeResult<(Command, Option<String>)> {
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());

@@ -4,6 +4,11 @@
   gap: var(--space-2);
   padding: 14px;
 }
+.patchDestination {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
 .fieldLabel {
   color: var(--fg-secondary);
   font-size: var(--fs-small);
@@ -363,9 +368,6 @@
 .pushCommitDetails {
   flex: 1;
   min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
   margin: var(--space-1) var(--space-3);
   padding: var(--space-1) var(--space-2);
   overflow: auto;
@@ -373,16 +375,6 @@
   border-radius: var(--radius-small);
   -webkit-user-select: text;
   user-select: text;
-}
-.pushCommitMessage {
-  color: var(--fg-strong);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.todoList {
-  margin: 8px 0 0;
-  padding-left: 18px;
-  white-space: normal;
 }
 .linkButton {
   padding: 0;
@@ -416,6 +408,13 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.pushWarning {
+  gap: var(--space-1) var(--space-3);
+}
+.pushWarning [role="status"] {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .linkButton:disabled {
   color: var(--fg-faint);
   cursor: default;
@@ -434,6 +433,9 @@
 .textarea:focus {
   outline: none;
   border-color: var(--focus-ring);
+}
+.rebaseTodo {
+  font-family: var(--font-mono);
 }
 .stashForm {
   gap: var(--space-3);
@@ -500,10 +502,14 @@
   border-bottom: 1px solid var(--border);
 }
 .rebaseList {
+  --rebase-action-width: 112px;
   flex: 1;
   min-height: 0;
   overflow: auto;
   padding: var(--space-1);
+}
+.rebaseList[data-fixup-messages] {
+  --rebase-action-width: 144px;
 }
 .rebaseRow {
   display: flex;
@@ -518,9 +524,18 @@
 .rebaseRow[data-selected] {
   background: var(--bg-selected);
 }
+.rebaseCommitCell {
+  flex: 1;
+  min-width: 0;
+}
+.rebaseRow[data-combined] .rebaseCommitCell {
+  border-inline-start: 1px solid var(--border-strong);
+  margin-inline-start: var(--space-2);
+  padding-inline-start: var(--space-2);
+}
 .rebaseCommit {
   display: flex;
-  flex: 1;
+  width: 100%;
   flex-direction: column;
   justify-content: center;
   gap: var(--space-0-5);
@@ -543,8 +558,42 @@
   text-decoration: line-through;
 }
 .rebaseAction {
-  width: 112px;
-  flex: 0 1 112px;
+  width: var(--rebase-action-width);
+  flex: 0 1 var(--rebase-action-width);
+}
+.rebaseAction > button {
+  width: 100%;
+}
+.rebaseRefAction {
+  padding-inline: var(--space-2);
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.rebaseDetailsSplit {
+  flex: 1;
+  min-height: 0;
+}
+.rebaseChanges {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding: var(--space-1) var(--space-2) var(--space-2);
+}
+.rebaseChangesToolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding-block-end: var(--space-1);
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.rebaseChanges .comparison {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+  padding: 0;
 }
 .rebaseDetails {
   display: flex;
@@ -564,6 +613,13 @@
   color: var(--fg-subtle);
   font-size: var(--fs-small);
   overflow-wrap: anywhere;
+}
+.rebaseExtraCommit {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-2);
 }
 .rebasePreview {
   color: var(--fg-strong);
@@ -647,6 +703,14 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.targetRecent {
+  flex: none;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.targetSizer .targetRecent {
+  margin-inline-start: var(--space-1-5);
+}
 /* Fits the remote and target fields into a 22px tree row. */
 .pushRepoRow {
   display: flex;
@@ -659,22 +723,16 @@
   min-width: 20px;
 }
 .pushRepoLabel,
-.pushSourceBranch,
-.pushRemoteName {
+.pushSourceBranch {
   display: block;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.pushSourceBranch,
-.pushRemoteName {
+.pushSourceBranch {
   color: var(--fg-subtle);
   font-size: var(--fs-small);
-}
-.pushRemoteName {
-  flex: none;
-  max-width: 14ch;
 }
 .pushRowTarget {
   --h-field: var(--h-control-small);
@@ -715,12 +773,67 @@
   gap: var(--space-1-5);
   min-width: 0;
 }
+.optionChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+.optionChips > code {
+  padding: var(--space-0-5) var(--space-1-5);
+  border-radius: var(--radius-control);
+  background: var(--bg-field);
+  color: var(--fg-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+}
 .manageBar {
   display: flex;
   align-items: center;
   gap: var(--space-0-5);
 }
-
+.worktreeFields {
+  display: grid;
+  grid-template-columns: fit-content(44%) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+.worktreeFields > :not(.worktreeLabel) {
+  grid-column: 2;
+  min-width: 0;
+}
+.worktreeLabel {
+  grid-column: 1;
+  min-width: 0;
+  font-size: var(--fs-ui);
+  overflow-wrap: anywhere;
+}
+.worktreeFields > .worktreeOptions {
+  display: flex;
+  flex-direction: column;
+  grid-column: 1 / -1;
+  gap: var(--space-2);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-2);
+}
+.worktreeCopyOptions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+.worktreeLocation {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-1);
+}
+.worktreeTarget {
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+.worktreeFields > .worktreeTarget {
+  font-size: var(--fs-small);
+}
 .comparisonDialog > [data-dialog-body] {
   display: flex;
   flex-direction: column;

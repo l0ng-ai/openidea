@@ -162,15 +162,24 @@
   white-space: nowrap;
   max-width: 220px;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
 .filterValue {
+  min-width: 0;
+  max-width: 16ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--fg-strong);
+}
+@container git-log (max-width: 600px) {
+  .filterValue {
+    max-width: 10ch;
+  }
 }
 .filterChevron {
   color: var(--fg-icon);
 }
 .filterClear {
+  flex: none;
   height: 100%;
   display: inline-flex;
   align-items: center;
@@ -249,6 +258,11 @@
   padding-inline-start: min(var(--space-2), 2%);
   /* Anchor for the full-height column resize strip (IDEA's invisible divider). */
   position: relative;
+}
+.signatureIndicator {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
 }
 .columnHeading {
   position: relative;
@@ -388,9 +402,6 @@
   font-weight: 600;
   color: var(--fg);
 }
-.mergeSubject {
-  color: var(--fg-subtle);
-}
 .muted {
   color: var(--fg-subtle);
 }
@@ -405,9 +416,15 @@
 .subject {
   flex: 0 1 auto;
   min-width: var(--log-subject-min);
+  color: var(--fg);
+}
+.subjectText {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--fg);
+}
+.mergeSubject {
+  color: var(--fg-subtle);
 }
 .headSubject {
   font-weight: 600;
@@ -436,6 +453,22 @@
   /* Keep ref names at their full width while leaving space for a short subject. */
   flex: none;
   max-width: calc(100% - var(--log-subject-min) - var(--space-1-5));
+}
+.commitText > .refsCompact {
+  flex: 0 1 auto;
+  max-width: calc(100% / 3);
+}
+.commitText:has(> .refsCompact) > .subject {
+  /* Protect a short subject while leaving room for compact reference names. */
+  flex: 0 1000 max-content;
+  min-width: auto;
+  width: min(75%, 24ch);
+}
+.commitText > .refs .ref {
+  font-size: var(--fs-small);
+}
+.refsCompact .ref {
+  min-width: 11px;
 }
 .refsLeft {
   margin-left: 0;
@@ -670,15 +703,16 @@
   padding-top: 10px;
   border-top: 1px solid var(--border);
 }
-.meta .refs {
-  margin-left: 0;
-  max-width: none;
+.detailRefGroup {
+  display: flex;
   flex-wrap: wrap;
+  gap: var(--space-0-5) var(--space-2);
 }
-.meta .ref {
+.detailRefGroup .ref {
+  align-items: baseline;
+  font-size: inherit;
   max-width: 100%;
   white-space: normal;
-  overflow-wrap: anywhere;
 }
 .hash {
   font-family: var(--font-mono);
@@ -843,4 +877,13 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--fg-secondary);
+}
+.shallowHistory {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  padding-inline: var(--space-2);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-muted);
 }

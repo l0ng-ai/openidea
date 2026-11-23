@@ -41,6 +41,37 @@
   color: var(--warning);
   border-bottom: 1px solid var(--border);
 }
+.skippedSummary,
+.skippedOnly {
+  padding: var(--space-2) var(--space-3);
+  overflow: auto;
+}
+.skippedSummary {
+  max-block-size: 45%;
+  border-bottom: 1px solid var(--border);
+}
+.skippedSummary summary {
+  cursor: pointer;
+}
+.skippedOnly h3 {
+  margin: 0;
+  font: inherit;
+  font-weight: 600;
+}
+.skippedFiles {
+  margin: var(--space-2) 0 0;
+  padding-inline-start: calc(var(--space-4) + var(--space-1));
+  overflow-wrap: anywhere;
+}
+.skippedFiles li + li {
+  margin-top: var(--space-2);
+}
+.skippedFiles li > * {
+  display: block;
+}
+.skipDetail {
+  color: var(--fg-muted);
+}
 .scopeBar {
   flex: none;
   display: flex;

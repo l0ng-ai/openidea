@@ -8,6 +8,8 @@
 
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use ignore::{WalkBuilder, WalkState};
+use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -301,6 +303,27 @@ impl PathFilter {
     pub(crate) fn dirs(&self, dir: &Path) -> Vec<PathBuf> {
         let Some(builder) = self.walker(dir) else { return Vec::new() };
         builder.build().flatten().filter(|e| e.file_type().is_some_and(|t| t.is_dir())).map(|e| e.into_path()).collect()
+    }
+
+    pub(crate) fn directories_with_names(&self, names: &HashSet<&OsStr>) -> Vec<PathBuf> {
+        let matches = parking_lot::Mutex::new(Vec::new());
+        for root in self.roots() {
+            let Some(mut builder) = self.walker(root) else { continue };
+            builder.standard_filters(true).hidden(false).require_git(ide_core::ignored::inside_git_repo(root));
+            let matches = &matches;
+            builder.build_parallel().run(|| {
+                Box::new(move |entry| {
+                    if let Ok(entry) = entry
+                        && entry.file_type().is_some_and(|ty| ty.is_dir())
+                        && names.contains(entry.file_name())
+                    {
+                        matches.lock().push(entry.into_path());
+                    }
+                    WalkState::Continue
+                })
+            });
+        }
+        matches.into_inner()
     }
 
     /// All indexable files at or below `dir`, walked in parallel.

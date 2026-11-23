@@ -2,7 +2,10 @@
 //! root plus those nested below it (separate clones side by side, submodules).
 
 use crate::{Backend, FileStatus, Repo};
-use ide_core::IdeResult;
+use ide_core::{IdeError, IdeResult, IpcPath};
+use serde::{Deserialize, Serialize};
+use specta::Type;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -17,6 +20,14 @@ const SKIPPED: &[&str] = &["node_modules", "target", "build", "dist", "out", "ve
 pub struct Repos {
     repos: Vec<Arc<Repo>>,
     primary: Option<usize>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectUpdateTarget {
+    pub root: IpcPath,
+    pub parent: Option<IpcPath>,
+    pub detached_submodule: bool,
 }
 
 impl Repos {
@@ -67,6 +78,26 @@ impl Repos {
                     stack.push((path, depth + 1));
                 }
             }
+        }
+        // Declared submodules remain Git roots under ignored folders or beyond the
+        // filesystem scan's depth. An uninitialized submodule has no Git worktree.
+        let mut next = 0;
+        while next < repos.len() {
+            let parent = &repos[next];
+            let children = parent.initialized_submodules().unwrap_or_else(|error| {
+                tracing::debug!(root = %parent.root().display(), %error, "cannot list Git submodules");
+                Vec::new()
+            });
+            for path in children {
+                if path.starts_with(project_root)
+                    && !repos.iter().any(|r| r.root() == path)
+                    && let Ok(Some(repo)) = Repo::discover(&path)
+                    && repo.root() == path
+                {
+                    repos.push(repo);
+                }
+            }
+            next += 1;
         }
         Ok(Self::new(repos, project_root))
     }
@@ -120,6 +151,53 @@ impl Repos {
         &self.repos
     }
 
+    /// Selects the roots that Update Project operates on. Detached children are
+    /// included with their selected superproject and read its updated pointer.
+    pub fn project_update_plan(&self, roots: &[Option<PathBuf>]) -> IdeResult<Vec<ProjectUpdateTarget>> {
+        let selected: BTreeSet<&Path> = if roots.is_empty() {
+            self.repos.iter().map(|repo| repo.root()).collect()
+        } else {
+            roots
+                .iter()
+                .map(|root| {
+                    match root {
+                        Some(root) => self.at_root(root),
+                        None => self.primary(),
+                    }
+                    .map(|repo| repo.root())
+                    .ok_or_else(|| IdeError::unavailable("The selected repository is no longer part of the project"))
+                })
+                .collect::<IdeResult<_>>()?
+        };
+        let mut parents = BTreeMap::new();
+        for parent in &self.repos {
+            for path in parent.initialized_submodules().unwrap_or_default() {
+                parents.insert(path, parent.root());
+            }
+        }
+        let mut included = BTreeSet::new();
+        let mut targets = Vec::new();
+        for repo in &self.repos {
+            let root = repo.root();
+            let parent = parents.get(root).copied();
+            let is_selected = selected.contains(root);
+            if !is_selected && !parent.is_some_and(|p| included.contains(p)) {
+                continue;
+            }
+            let (branch, head) = repo.head()?;
+            let detached_submodule = branch.is_none() && head.is_some() && parent.is_some();
+            if is_selected || detached_submodule {
+                included.insert(root);
+                targets.push(ProjectUpdateTarget {
+                    root: root.into(),
+                    parent: parent.map(Into::into),
+                    detached_submodule,
+                });
+            }
+        }
+        Ok(targets)
+    }
+
     /// The repository of the project root, else the first one.
     pub fn primary(&self) -> Option<&Arc<Repo>> {
         self.primary.map(|i| &self.repos[i])
@@ -169,22 +247,32 @@ impl Repos {
     /// The reads go through [`Backend`], the Changes-view surface — repositories of a
     /// future second backend slot in here once `Repos` learns to hold them.
     pub fn status(&self) -> IdeResult<Vec<FileStatus>> {
-        let groups: Vec<(Arc<Repo>, Vec<PathBuf>)> = self.repos.iter().map(|repo| (repo.clone(), Vec::new())).collect();
-        self.read_status(groups, false)
+        self.read_status(self.all_status_groups(), |repo, _| (repo as &dyn Backend).status())
+    }
+
+    /// Ignored entries for the staging tree. Commit and status consumers read the regular status.
+    pub fn ignored_files(&self) -> IdeResult<Vec<FileStatus>> {
+        self.read_status(self.all_status_groups(), |repo, _| repo.ignored_files())
+    }
+
+    fn all_status_groups(&self) -> Vec<(Arc<Repo>, Vec<PathBuf>)> {
+        self.repos.iter().map(|repo| (repo.clone(), Vec::new())).collect()
     }
 
     /// [`status`](Self::status) for `paths` only: each path goes to its innermost repository,
     /// so a repository without one is not read at all and a nested repository keeps its own
     /// files (the enclosing one's "untracked folder" entry for them is dropped).
     pub fn status_paths(&self, paths: &[PathBuf]) -> IdeResult<Vec<FileStatus>> {
-        self.read_status(self.group(paths), true)
+        self.read_status(self.group(paths), |repo, mine| (repo as &dyn Backend).status_paths(mine))
     }
 
-    /// Reads one status per repository: the whole working tree, or `scoped` the paths it was
-    /// given. A nested repository reports its own files, so the enclosing one's "untracked
-    /// folder" entry for it is dropped. A repository that cannot be read is left out; fails
-    /// only when all fail.
-    fn read_status(&self, groups: Vec<(Arc<Repo>, Vec<PathBuf>)>, scoped: bool) -> IdeResult<Vec<FileStatus>> {
+    /// A nested repository reports its own files. When a repository cannot be read,
+    /// the operation can still display the other repositories' results.
+    fn read_status(
+        &self,
+        groups: Vec<(Arc<Repo>, Vec<PathBuf>)>,
+        status: impl Fn(&Repo, &[PathBuf]) -> IdeResult<Vec<FileStatus>>,
+    ) -> IdeResult<Vec<FileStatus>> {
         let mut out = Vec::new();
         let mut first_error = None;
         let mut read = 0;
@@ -195,8 +283,7 @@ impl Repos {
                 .map(|r| r.root())
                 .filter(|r| *r != repo.root() && r.starts_with(repo.root()))
                 .collect();
-            let backend = repo.as_ref() as &dyn Backend;
-            let status = match if scoped { backend.status_paths(&mine) } else { backend.status() } {
+            let status = match status(&repo, &mine) {
                 Ok(status) => {
                     read += 1;
                     status
@@ -210,10 +297,11 @@ impl Repos {
             // A file belongs to its innermost repository: the nested one reports what lies
             // inside it, including files the enclosing one still tracks there (#4990).
             out.extend(status.into_iter().filter(|f| {
-                let untracked_root =
-                    f.unstaged == Some(crate::ChangeKind::Untracked) && nested.iter().any(|n| f.path.0 == *n);
+                let skipped_root =
+                    matches!(f.unstaged, Some(crate::ChangeKind::Untracked | crate::ChangeKind::Ignored))
+                        && nested.iter().any(|n| f.path.0 == *n);
                 let in_nested = nested.iter().any(|n| f.path.0 != *n && f.path.0.starts_with(n));
-                !untracked_root && !in_nested
+                !skipped_root && !in_nested
             }));
         }
         match first_error {
@@ -246,6 +334,49 @@ mod tests {
         std::fs::create_dir_all(dir).unwrap();
         let ok = Command::new("git").args(["init", "-q"]).current_dir(dir).status().is_ok_and(|s| s.success());
         assert!(ok, "git init in {}", dir.display());
+    }
+
+    #[test]
+    fn ignored_files_use_git_rules_without_listing_other_repositories_twice() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let nested = root.join("nested");
+        git_init(&root);
+        git_init(&nested);
+        std::fs::write(root.join(".gitignore"), "*.tmp\n!visible.tmp\ncache/\nnested/\n").unwrap();
+        std::fs::write(root.join(".git/info/exclude"), "/private.txt\n").unwrap();
+        std::fs::write(nested.join(".gitignore"), "/nested-private.txt\n").unwrap();
+        std::fs::create_dir(root.join("cache")).unwrap();
+        std::fs::create_dir(root.join("plain-folder")).unwrap();
+        for path in [
+            "space name.tmp",
+            "visible.tmp",
+            "tracked.tmp",
+            "cache/child.txt",
+            "plain-folder/child.tmp",
+            "private.txt",
+            "nested/nested-private.txt",
+        ] {
+            std::fs::write(root.join(path), "fixture\n").unwrap();
+        }
+        assert!(
+            Command::new("git").args(["add", "-f", "--", "tracked.tmp"]).current_dir(&root).status().unwrap().success()
+        );
+        let repos = Repos::discover(&root, &|_| false).unwrap();
+        let files = repos.ignored_files().unwrap();
+        assert!(files.iter().all(|file| file.unstaged == Some(crate::ChangeKind::Ignored) && file.staged.is_none()));
+        let listed: BTreeSet<_> = files.iter().map(|file| (file.path.0.clone(), file.rel_path.as_str())).collect();
+        assert_eq!(
+            listed,
+            BTreeSet::from([
+                (root.join("cache"), "cache/"),
+                (root.join("plain-folder/child.tmp"), "plain-folder/child.tmp"),
+                (root.join("private.txt"), "private.txt"),
+                (root.join("space name.tmp"), "space name.tmp"),
+                (nested.join("nested-private.txt"), "nested-private.txt"),
+            ])
+        );
+        assert!(repos.status().unwrap().iter().all(|file| file.unstaged != Some(crate::ChangeKind::Ignored)));
     }
 
     #[test]

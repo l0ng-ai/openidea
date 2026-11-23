@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 
 const mocks = vi.hoisted(() => ({
   worktree: vi.fn(),
@@ -124,6 +124,47 @@ describe("CompareToolWindow", () => {
     expect(jump).toBeEnabled();
     fireEvent.click(jump);
     expect(mocks.openFile).toHaveBeenCalledWith("/workspace/client/src/app.ts", { focus: true });
+  });
+
+  it("groups working-tree diffs by the requested repositories and opens the selected copy of a common path", async () => {
+    const roots = ["/workspace/client", "/workspace/server"];
+    useVcs.setState({ roots: [...roots, "/workspace/tools"], repo: "/workspace/tools" });
+    const ref = { rev: "refs/heads/main", label: "main" };
+    useCompareTool.getState().show(ref, null, roots);
+    mocks.worktree.mockResolvedValue({ status: "ok", data: [modified] });
+    mocks.openDiff.mockResolvedValue(undefined);
+    render(<CompareToolWindow />);
+
+    const files = await screen.findAllByText("app.ts");
+    expect(files).toHaveLength(2);
+    expect(screen.getByText("client")).toBeInTheDocument();
+    expect(screen.getByText("server")).toBeInTheDocument();
+    expect(mocks.worktree.mock.calls).toEqual(roots.map((root) => [root, ref.rev]));
+    fireEvent.doubleClick(files[1]!);
+    expect(mocks.openDiff).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: "/workspace/server/src/app.ts",
+        left: expect.objectContaining({ rev: ref.rev }),
+      }),
+    );
+
+    act(() => useCompareTool.getState().show(ref, null, [roots[0]!]));
+    expect(await screen.findAllByText("app.ts")).toHaveLength(1);
+    expect(mocks.worktree).toHaveBeenLastCalledWith(roots[0], ref.rev);
+
+    act(() => useCompareTool.getState().show(ref, null, [roots[0]!]));
+    expect(await screen.findAllByText("app.ts")).toHaveLength(1);
+    expect(mocks.worktree).toHaveBeenCalledTimes(4);
+  });
+
+  it("keeps results from repositories it can compare and names the repository that failed", async () => {
+    useCompareTool.getState().show(from, null, ["/workspace/client", "/workspace/server"]);
+    mocks.worktree
+      .mockResolvedValueOnce({ status: "ok", data: [modified] })
+      .mockRejectedValueOnce(new Error("revision unavailable"));
+    render(<CompareToolWindow />);
+    expect(await screen.findByText("app.ts")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Cannot compare server against main: revision unavailable");
   });
 
   it("shows Java and Kotlin declarations from the compared repository and skips deleted files", async () => {

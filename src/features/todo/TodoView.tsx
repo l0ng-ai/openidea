@@ -1,19 +1,21 @@
 /** TODO tool window: "Project", "Current File", "Scope Based" and "Changes" tabs, grouped by file. */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import clsx from "clsx";
 import { openEditorPaths, useEditorRegistry } from "@/editor/api";
+import { previewColors } from "@/editor/lineTokens";
 import { executeAction } from "@/platform/actions";
 import { basename, relativeDir, useProject } from "@/platform/project";
 import { EDIT_SCOPES_ACTION, useCustomScopeList } from "@/platform/search";
-import { editorService, useLocalChanges, useOccurrenceNavigator } from "@/workbench/contributions";
+import { editorService, toolWindowService, useLocalChanges, useOccurrenceNavigator } from "@/workbench/contributions";
 import {
   EmptyState,
   Icon,
   IconButton,
   Menu,
   Select,
+  SourcePreview,
   SplitGroup,
   SplitHandle,
   SplitPanel,
@@ -31,21 +33,45 @@ import { previewText } from "./ipc";
 import { PreviewEditor } from "./PreviewEditor";
 import {
   BUILTIN_TODO_SCOPES,
-  activePatterns,
   changedPaths,
   countItems,
   groupTodos,
   mergeLive,
   todoSearchScope,
   type TodoGroup,
-  type TodoItem,
   type TodoScope,
 } from "./model";
-import { scanProject, scanScope, updateTodoSettings, useTodoSettings, useTodos } from "./store";
+import {
+  activePatterns,
+  todoFilterKeywords,
+  updateTodoSettings,
+  useTodoSettings,
+  type TodoItem,
+} from "@/platform/todo";
+import { setTodoFilterSelection, useTodoFilterSelection } from "@/platform/todoFilterSelection";
+import { editTodoFiltersItem, todoFilterChoices } from "@/workbench/todoFilterMenu";
+import {
+  provideTodoReview,
+  type TodoReview,
+  type TodoReviewFile,
+  type TodoReviewSkippedFile,
+} from "@/workbench/todoReview";
+import { scanProject, scanScope, useTodos } from "./store";
 import styles from "./TodoView.module.css";
 import { tx } from "@/platform/i18n";
 
-type Tab = "project" | "file" | "scope" | "changes";
+type ScopeTab = "project" | "file" | "scope" | "changes";
+type ReviewId = `review:${number}`;
+type Tab = ScopeTab | ReviewId;
+
+interface ReviewTab {
+  id: ReviewId;
+  review: TodoReview;
+}
+
+function isReviewId(tab: Tab): tab is ReviewId {
+  return tab.startsWith("review:");
+}
 
 const SCOPE_KEY = "openidea.todo.scope.v1";
 
@@ -60,7 +86,9 @@ function loadScope(): TodoScope {
 }
 
 interface ViewState {
-  tab: Tab;
+  tab: ScopeTab;
+  activeReview: ReviewId | null;
+  reviewTabs: ReviewTab[];
   /** Hidden keywords (filter). */
   hidden: string[];
   collapsed: Set<string>;
@@ -68,7 +96,7 @@ interface ViewState {
   scope: TodoScope;
   /** The Changes tab's change list (null: the active one). */
   changelist: string | null;
-  setTab(tab: Tab): void;
+  setTab(tab: ScopeTab): void;
   setScope(scope: TodoScope): void;
   toggleKeyword(k: string): void;
   showAll(): void;
@@ -76,11 +104,13 @@ interface ViewState {
 
 export const useTodoView = create<ViewState>((set) => ({
   tab: "project",
+  activeReview: null,
+  reviewTabs: [],
   hidden: [],
   collapsed: new Set(),
   scope: loadScope(),
   changelist: null,
-  setTab: (tab) => set({ tab }),
+  setTab: (tab) => set({ tab, activeReview: null }),
   setScope: (scope) => {
     set({ scope });
     try {
@@ -93,6 +123,42 @@ export const useTodoView = create<ViewState>((set) => ({
     set((s) => ({ hidden: s.hidden.includes(k) ? s.hidden.filter((h) => h !== k) : [...s.hidden, k] })),
   showAll: () => set({ hidden: [] }),
 }));
+
+let reviewSequence = 0;
+
+function closeReview(id: string) {
+  useTodoView.setState((state) => {
+    const at = state.reviewTabs.findIndex((tab) => tab.id === id);
+    if (at === -1) return state;
+    const reviewTabs = state.reviewTabs.filter((tab) => tab.id !== id);
+    return {
+      reviewTabs,
+      activeReview:
+        state.activeReview === id ? (reviewTabs[Math.min(at, reviewTabs.length - 1)]?.id ?? null) : state.activeReview,
+    };
+  });
+}
+
+export function installTodoReviews() {
+  const clear = () => useTodoView.setState({ reviewTabs: [], activeReview: null });
+  const dispose = provideTodoReview((review) => {
+    useTodoView.setState((state) => {
+      const existing = state.reviewTabs.find((tab) => tab.review === review);
+      if (existing) return { activeReview: existing.id };
+      const id: ReviewId = `review:${++reviewSequence}`;
+      return { reviewTabs: [...state.reviewTabs, { id, review }], activeReview: id };
+    });
+    toolWindowService().show("todo", true);
+  });
+  const unsubscribe = useProject.subscribe((state, before) => {
+    if (state.project !== before.project) clear();
+  });
+  return () => {
+    dispose();
+    unsubscribe();
+    clear();
+  };
+}
 
 // View options (persisted), in the tool window's ⋮ menu. IDEA's defaults:
 // preview on, no autoscroll.
@@ -128,20 +194,23 @@ useTodoViewOptions.subscribe((s) => {
 /** The TODO tool window's ⋮ menu entries. */
 export function useTodoHeaderMenu(): MenuItem[] {
   const o = useTodoViewOptions();
-  return [
+  const review = useTodoView((state) => state.activeReview !== null);
+  const items: MenuItem[] = [
     {
       id: "preview",
       label: "Show Preview",
       checked: o.preview,
       run: () => useTodoViewOptions.setState({ preview: !o.preview }),
     },
-    {
+  ];
+  if (!review)
+    items.push({
       id: "autoscroll",
       label: "Autoscroll to Source",
       checked: o.autoscroll,
       run: () => useTodoViewOptions.setState({ autoscroll: !o.autoscroll }),
-    },
-  ];
+    });
+  return items;
 }
 
 type Node = { kind: "file"; key: string; group: TodoGroup } | { kind: "item"; key: string; item: TodoItem };
@@ -158,19 +227,22 @@ function useChangedPaths(): Set<string> {
 }
 
 /** Groups for a tab (exported for the badge and tests). */
-export function useTodoGroups(tab: Tab, openPaths?: ReadonlySet<string>): TodoGroup[] {
+export function useTodoGroups(tab: ScopeTab, openPaths?: ReadonlySet<string>): TodoGroup[] {
   const scanned = useTodos((s) => s.scanned);
   const scoped = useTodos((s) => s.scoped);
   const live = useTodos((s) => s.live);
   const hidden = useTodoView((s) => s.hidden);
-  const patterns = useTodoSettings((s) => s.patterns);
+  const settings = useTodoSettings();
+  const selectedFilter = useTodoFilterSelection("view");
   const current = useEditorRegistry((s) => s.active?.ctx.path ?? null);
   const changed = useChangedPaths();
   return useMemo(() => {
-    const keywords = keywordFilter(
-      hidden,
-      patterns.map((p) => p.keyword.trim()),
-    );
+    const keywords =
+      todoFilterKeywords(settings, selectedFilter) ??
+      keywordFilter(
+        hidden,
+        activePatterns(settings).map((p) => p.keyword.trim()),
+      );
     if (tab === "scope") {
       // Open Files membership comes from the tabs, even when the last scan found no matches there.
       if (openPaths) return groupTodos(mergeLive(scoped, live), { keywords, paths: openPaths });
@@ -181,7 +253,7 @@ export function useTodoGroups(tab: Tab, openPaths?: ReadonlySet<string>): TodoGr
     const merged = mergeLive(scanned, live);
     if (tab === "changes") return groupTodos(merged, { keywords, paths: changed });
     return groupTodos(merged, tab === "file" ? { keywords, path: current } : { keywords });
-  }, [scanned, scoped, live, hidden, patterns, tab, current, changed, openPaths]);
+  }, [scanned, scoped, live, hidden, settings, selectedFilter, tab, current, changed, openPaths]);
 }
 
 /** The Scope Based tab's scope as the backend scope, with a key that changes when it does. */
@@ -301,43 +373,86 @@ function ItemText({ item }: { item: TodoItem }) {
   );
 }
 
-function TodoToolbar() {
+function TodoToolbar({ review }: { review: boolean }) {
   const settings = useTodoSettings();
   const hidden = useTodoView((s) => s.hidden);
   const toggleKeyword = useTodoView((s) => s.toggleKeyword);
   const showAll = useTodoView((s) => s.showAll);
+  const filterId = useTodoFilterSelection("view");
+  const selected = settings.filters.find(({ id }) => id === filterId)?.id ?? null;
+  const keywords = todoFilterKeywords(settings, selected);
+  const patterns = activePatterns(settings);
   const scanning = useTodos((s) => s.scanning);
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const items: MenuItem[] = [
-    { id: "all", label: "Show All", checked: hidden.length === 0, run: showAll },
+    ...todoFilterChoices(
+      settings,
+      selected,
+      (id) => {
+        showAll();
+        setTodoFilterSelection("view", id);
+      },
+      selected === null && hidden.length === 0,
+    ),
+    {
+      id: "keywords",
+      label: "Filter by Keyword",
+      disabled: !patterns.length,
+      submenu: patterns.map(({ id, keyword }) => ({
+        id,
+        label: keyword,
+        verbatim: true,
+        checked: keywords?.has(keyword.trim()) ?? !hidden.includes(keyword.trim()),
+        run: () => {
+          if (keywords) {
+            useTodoView.setState({
+              hidden: patterns.map((pattern) => pattern.keyword.trim()).filter((word) => !keywords.has(word)),
+            });
+            setTodoFilterSelection("view", null);
+          }
+          toggleKeyword(keyword.trim());
+        },
+      })),
+    },
     { kind: "separator" },
-    ...activePatterns(settings).map((p) => ({
-      id: p.id,
-      label: p.keyword,
-      checked: !hidden.includes(p.keyword.trim()),
-      run: () => toggleKeyword(p.keyword.trim()),
-    })),
+    editTodoFiltersItem,
   ];
   return (
     <Toolbar aria-label="TODO actions" orientation="vertical" className={styles.toolbar}>
       <IconButton icon="arrow-up" action="navigate.prevOccurrence" size="small" />
       <IconButton icon="arrow-down" action="navigate.nextOccurrence" size="small" />
-      <IconButton
-        icon="filter"
-        size="small"
-        title="Filter TODO Items"
-        pressed={hidden.length > 0}
-        onClick={(e) => setAnchor(anchor ? null : e.currentTarget)}
-      />
-      <Menu open={!!anchor} anchor={anchor} items={items} onClose={() => setAnchor(null)} aria-label="TODO filters" />
-      <IconButton
-        icon="case"
-        size="small"
-        title="Match Case"
-        pressed={settings.caseSensitive}
-        onClick={() => updateTodoSettings({ caseSensitive: !settings.caseSensitive })}
-      />
-      <IconButton icon="refresh" size="small" title="Refresh" disabled={scanning} onClick={() => void scanProject()} />
+      {!review && (
+        <>
+          <IconButton
+            icon="filter"
+            size="small"
+            title="Filter TODO Items"
+            pressed={selected !== null || hidden.length > 0}
+            onClick={(e) => setAnchor(anchor ? null : e.currentTarget)}
+          />
+          <Menu
+            open={!!anchor}
+            anchor={anchor}
+            items={items}
+            onClose={() => setAnchor(null)}
+            aria-label="TODO filters"
+          />
+          <IconButton
+            icon="case"
+            size="small"
+            title="Match Case"
+            pressed={settings.caseSensitive}
+            onClick={() => updateTodoSettings({ caseSensitive: !settings.caseSensitive })}
+          />
+          <IconButton
+            icon="refresh"
+            size="small"
+            title="Refresh"
+            disabled={scanning}
+            onClick={() => void scanProject()}
+          />
+        </>
+      )}
     </Toolbar>
   );
 }
@@ -346,6 +461,8 @@ function TodoToolbar() {
 export function TodoTabs() {
   const tab = useTodoView((s) => s.tab);
   const setTab = useTodoView((s) => s.setTab);
+  const reviews = useTodoView((s) => s.reviewTabs);
+  const activeReview = useTodoView((s) => s.activeReview);
   const current = useEditorRegistry((s) => s.active?.ctx.path ?? null);
   const projectCount = countItems(useTodoGroups("project"));
   const fileCount = countItems(useTodoGroups("file"));
@@ -355,8 +472,13 @@ export function TodoTabs() {
       variant="compact"
       aria-label="TODO scope"
       className={styles.tabs}
-      activeId={tab}
-      onSelect={(id) => setTab(id as Tab)}
+      activeId={activeReview ?? tab}
+      onSelect={(id) => {
+        const tab = id as Tab;
+        if (isReviewId(tab)) useTodoView.setState({ activeReview: tab });
+        else setTab(tab);
+      }}
+      onClose={closeReview}
       items={[
         {
           id: "project",
@@ -382,6 +504,22 @@ export function TodoTabs() {
           tooltip: "TODO items in files of a changelist",
           trailing: changesCount ? <span className={styles.tabCount}>{changesCount}</span> : undefined,
         },
+        ...reviews.map(({ id, review }) => {
+          const title = tx(review.kind === "pending" ? "Commit TODOs" : "Committed TODOs");
+          const count = review.files.reduce((total, file) => total + file.items.length, 0);
+          return {
+            id,
+            closable: true,
+            label: (
+              <>
+                {title}
+                {review.subject && <span className={styles.tabFile}> {review.subject}</span>}
+              </>
+            ),
+            text: review.subject ? `${title} · ${review.subject}` : title,
+            trailing: count ? <span className={styles.tabCount}>{count}</span> : undefined,
+          };
+        }),
       ]}
     />
   );
@@ -389,22 +527,131 @@ export function TodoTabs() {
 
 export function TodoView() {
   const tab = useTodoView((s) => s.tab);
-  const collapsed = useTodoView((s) => s.collapsed);
-  const root = useProject((s) => s.project?.root ?? "");
+  const activeReview = useTodoView((s) => s.activeReview);
+  const review = useTodoView((s) => s.reviewTabs.find(({ id }) => id === activeReview)?.review);
   const current = useEditorRegistry((s) => s.active?.ctx.path ?? null);
   const { scanning, error, limitHit, scannedOnce, scopedScanning, scopedKey } = useTodos();
   const scope = useScopeQuery();
-  const groups = useTodoGroups(tab, scope.openPaths);
-  useScopeScan(tab === "scope", scope);
+  const liveGroups = useTodoGroups(tab, scope.openPaths);
+  useScopeScan(!review && tab === "scope", scope);
+  const groups = useMemo(
+    () => review?.files.map(({ path, items }) => ({ path, items })) ?? liveGroups,
+    [review, liveGroups],
+  );
+
+  const empty =
+    tab === "file" && !current ? (
+      <EmptyState icon="todo" title="No file is open" />
+    ) : tab === "scope" ? (
+      scopedScanning || scopedKey !== scope.key ? (
+        <div className={styles.loading}>
+          <Spinner size={14} /> <T>Scanning for TODO items…</T>
+        </div>
+      ) : (
+        <EmptyState icon="todo" title="No TODO items found in this scope" />
+      )
+    ) : tab === "changes" ? (
+      <EmptyState icon="todo" title="No TODO items in changed files" />
+    ) : error && tab === "project" ? (
+      <EmptyState icon="todo" title="TODO items unavailable">
+        {error}
+      </EmptyState>
+    ) : scanning || (!scannedOnce && tab === "project") ? (
+      <div className={styles.loading}>
+        <Spinner size={14} /> <T>Scanning for TODO items…</T>
+      </div>
+    ) : (
+      <EmptyState icon="todo" title={tab === "file" ? "No TODO items in this file" : "No TODO items found"} />
+    );
+
+  return (
+    <div className={styles.view}>
+      {(!review || groups.length > 0) && <TodoToolbar review={!!review} />}
+      <div className={styles.content}>
+        {!review && tab === "project" && limitHit && (
+          <div className={styles.banner}>
+            <T>Too many matches; showing the first 10 000.</T>
+          </div>
+        )}
+        {!review && tab === "scope" && <ScopeBar />}
+        {!review && tab === "changes" && <ChangelistBar />}
+        {review && review.skipped.length > 0 && (
+          <SkippedTodoFiles files={review.skipped} collapsible={groups.length > 0} />
+        )}
+        {(!review || groups.length > 0) && (
+          <TodoResults
+            key={activeReview ?? "scopes"}
+            groups={groups}
+            empty={review ? undefined : empty}
+            review={review}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SkippedTodoFiles({ files, collapsible }: { files: readonly TodoReviewSkippedFile[]; collapsible: boolean }) {
+  const root = useProject((state) => state.project?.root ?? "");
+  const list = (
+    <ul className={styles.skippedFiles}>
+      {files.map(({ path, reason, detail }) => {
+        const directory = relativeDir(root, path);
+        const label = directory ? `${directory}/${basename(path)}` : basename(path);
+        return (
+          <li key={path}>
+            <strong title={path}>{label}</strong>
+            <span>{reason}</span>
+            {detail && <span className={styles.skipDetail}>{detail}</span>}
+          </li>
+        );
+      })}
+    </ul>
+  );
+  return collapsible ? (
+    <details className={styles.skippedSummary}>
+      <summary>
+        <T>Files Not Checked</T> <span className={styles.tabCount}>{files.length}</span>
+      </summary>
+      {list}
+    </details>
+  ) : (
+    <section className={styles.skippedOnly} aria-label={tx("Files Not Checked")}>
+      <h3>
+        <T>Files Not Checked</T>
+      </h3>
+      {list}
+    </section>
+  );
+}
+
+function itemKey({ path, line, col }: TodoItem) {
+  return `${path}\u0000${line}:${col}`;
+}
+
+function TodoResults({ groups, empty, review }: { groups: TodoGroup[]; empty: ReactNode; review?: TodoReview }) {
+  const liveCollapsed = useTodoView((s) => s.collapsed);
+  const [reviewCollapsed, setReviewCollapsed] = useState(() => new Set<string>());
+  const collapsed = review ? reviewCollapsed : liveCollapsed;
+  const root = useProject((s) => s.project?.root ?? "");
   const showPreview = useTodoViewOptions((o) => o.preview);
   const tree = useRef<TreeHandle>(null);
-  const [lead, setLead] = useState<Node | null>(null);
+  const first = review ? groups[0]?.items[0] : undefined;
+  const [lead, setLead] = useState<Node | null>(() =>
+    first ? { kind: "item", key: itemKey(first), item: first } : null,
+  );
+
+  const activate = (item: TodoItem, focus: boolean) => {
+    if (review) {
+      void review.files.find(({ path }) => path === item.path)?.open(item, focus);
+    } else open(item, focus);
+  };
 
   useOccurrenceNavigator("todo", (dir, focus) => {
     const step = tree.current?.selectOccurrence(dir);
-    const n = step?.node as Node | undefined;
-    if (!step || n?.kind !== "item") return null;
-    open(n.item, focus);
+    const node = step?.node as Node | undefined;
+    if (!step || node?.kind !== "item") return null;
+    if (!review || focus) activate(node.item, focus);
     return step;
   });
 
@@ -414,10 +661,8 @@ export function TodoView() {
     [roots, collapsed],
   );
   const getChildren = useCallback(
-    (n: Node): Node[] | undefined =>
-      n.kind === "file"
-        ? n.group.items.map((item) => ({ kind: "item", key: `${item.path}\u0000${item.line}:${item.col}`, item }))
-        : undefined,
+    (node: Node): Node[] | undefined =>
+      node.kind === "file" ? node.group.items.map((item) => ({ kind: "item", key: itemKey(item), item })) : undefined,
     [],
   );
 
@@ -454,101 +699,73 @@ export function TodoView() {
     );
   };
 
-  const empty =
-    tab === "file" && !current ? (
-      <EmptyState icon="todo" title="No file is open" />
-    ) : tab === "scope" ? (
-      scopedScanning || scopedKey !== scope.key ? (
-        <div className={styles.loading}>
-          <Spinner size={14} /> <T>Scanning for TODO items…</T>
-        </div>
-      ) : (
-        <EmptyState icon="todo" title="No TODO items found in this scope" />
-      )
-    ) : tab === "changes" ? (
-      <EmptyState icon="todo" title="No TODO items in changed files" />
-    ) : error && tab === "project" ? (
-      <EmptyState icon="todo" title="TODO items unavailable">
-        {error}
-      </EmptyState>
-    ) : scanning || (!scannedOnce && tab === "project") ? (
-      <div className={styles.loading}>
-        <Spinner size={14} /> <T>Scanning for TODO items…</T>
-      </div>
-    ) : (
-      <EmptyState icon="todo" title={tab === "file" ? "No TODO items in this file" : "No TODO items found"} />
-    );
-
   return (
-    <div className={styles.view}>
-      <TodoToolbar />
-      <div className={styles.content}>
-        {tab === "project" && limitHit && (
-          <div className={styles.banner}>
-            <T>Too many matches; showing the first 10 000.</T>
-          </div>
-        )}
-        {tab === "scope" && <ScopeBar />}
-        {tab === "changes" && <ChangelistBar />}
-        <SplitGroup
-          orientation="horizontal"
-          id="todo-preview-split"
-          storageKey={showPreview ? "openidea.todo.previewSplit" : undefined}
-          className={styles.body}
-        >
-          <SplitPanel id="items" minSize={160} className={styles.panel}>
-            <Tree<Node>
-              handleRef={tree}
-              roots={roots}
-              getKey={(n) => n.key}
-              getLabel={(n) => (n.kind === "file" ? basename(n.group.path) : n.item.text)}
-              getChildren={getChildren}
-              isExpandable={(n) => n.kind === "file"}
-              expanded={expanded}
-              onExpandedChange={(_next, node, isExpanded) =>
-                useTodoView.setState((s) => {
-                  const c = new Set(s.collapsed);
-                  if (isExpanded) c.delete(node.key);
-                  else c.add(node.key);
-                  return { collapsed: c };
-                })
-              }
-              renderNode={renderNode}
-              onActivate={(n) => {
-                if (n.kind === "item") open(n.item, true);
-                else if (n.group.items[0]) open(n.group.items[0], true);
-              }}
-              onSelectionChange={(_sel, node) => {
-                setLead(node);
-                // Autoscroll to Source (off by default, as in IDEA).
-                if (node?.kind === "item" && useTodoViewOptions.getState().autoscroll) open(node.item, false);
-              }}
-              activateExpandable={false}
-              multiSelect={false}
-              speedSearch
-              aria-label="TODO items"
-              empty={empty}
-            />
+    <SplitGroup
+      orientation="horizontal"
+      id="todo-preview-split"
+      storageKey={showPreview ? "openidea.todo.previewSplit" : undefined}
+      className={styles.body}
+    >
+      <SplitPanel id="items" minSize={160} className={styles.panel}>
+        <Tree<Node>
+          handleRef={tree}
+          roots={roots}
+          getKey={(node) => node.key}
+          getLabel={(node) => (node.kind === "file" ? basename(node.group.path) : node.item.text)}
+          getChildren={getChildren}
+          isExpandable={(node) => node.kind === "file"}
+          expanded={expanded}
+          defaultSelected={first ? [itemKey(first)] : undefined}
+          onExpandedChange={(_next, node, isExpanded) => {
+            const updated = new Set(collapsed);
+            if (isExpanded) updated.delete(node.key);
+            else updated.add(node.key);
+            if (review) setReviewCollapsed(updated);
+            else useTodoView.setState({ collapsed: updated });
+          }}
+          renderNode={renderNode}
+          onActivate={(node) => {
+            const item = node.kind === "item" ? node.item : node.group.items[0];
+            if (item) activate(item, true);
+          }}
+          onSelectionChange={(_selection, node) => {
+            setLead(node);
+            if (!review && node?.kind === "item" && useTodoViewOptions.getState().autoscroll) open(node.item, false);
+          }}
+          activateExpandable={false}
+          multiSelect={false}
+          speedSearch
+          aria-label="TODO items"
+          empty={empty}
+        />
+      </SplitPanel>
+      {showPreview && (
+        <>
+          <SplitHandle />
+          <SplitPanel id="preview" minSize={160} defaultSize="50%" className={styles.panel}>
+            <TodoPreview node={lead} review={review} />
           </SplitPanel>
-          {showPreview && (
-            <>
-              <SplitHandle />
-              <SplitPanel id="preview" minSize={160} defaultSize="50%" className={styles.panel}>
-                <TodoPreview node={lead} />
-              </SplitPanel>
-            </>
-          )}
-        </SplitGroup>
-      </div>
-    </div>
+        </>
+      )}
+    </SplitGroup>
   );
 }
 
-function TodoPreview({ node }: { node: Node | null }) {
+function TodoPreview({ node, review }: { node: Node | null; review?: TodoReview }) {
   const item = node?.kind === "item" ? node.item : (node?.group.items[0] ?? null);
   const highlights = item ? [{ line: item.line, ranges: [[item.col, item.col + item.text.length] as const] }] : [];
-  // IDEA's TODO preview is simply an editor on the file: editable in place,
-  // with read-only files falling back to the read-only preview (in PreviewEditor).
+  const snapshot: TodoReviewFile | undefined = review?.files.find(({ path }) => path === item?.path);
+  const load = useCallback(async () => snapshot?.text ?? "", [snapshot]);
+  if (review)
+    return (
+      <SourcePreview
+        path={snapshot?.path ?? null}
+        line={item?.line ?? 0}
+        highlights={highlights}
+        load={load}
+        colorize={previewColors}
+      />
+    );
   return (
     <PreviewEditor
       path={item?.path ?? null}

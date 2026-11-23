@@ -1,0 +1,15 @@
+{
+  "name": "openidea-fixture-checkout",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenIDEA QA fixture: Playwright Test specs for a checkout module (no browser needed)",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "lint": "tsc -p . --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.0",
+    "typescript": "^5.6.0"
+  }
+}

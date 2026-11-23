@@ -1,0 +1,9 @@
+$accent: #336699;
+
+// Intentional Stylelint problem: an empty block (block-no-empty).
+.button {
+  color: $accent;
+
+  &:hover {
+  }
+}

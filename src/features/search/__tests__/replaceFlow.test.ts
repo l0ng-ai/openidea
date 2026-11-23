@@ -19,7 +19,7 @@ import {
   toggleExcluded,
   type ReplaceDeps,
 } from "../find/replaceFlow";
-import { buildFindTree, nodeGroups } from "../find/FindToolWindow";
+import { buildFindTree, nodeGroups } from "../find/findTree";
 
 const q: SearchQuery = {
   pattern: "foo",
@@ -103,9 +103,9 @@ describe("replace flow model", () => {
   });
 
   it("confirmation and summary texts carry the counts", () => {
-    expect(confirmText({ usages: 3, files: 1 }, "foo", "bar")).toBe(
-      "Replace 3 occurrences of 'foo' with 'bar' in 1 file?",
-    );
+    expect(confirmText({ usages: 1, files: 1 })).toBe("Replace 1 occurrence in 1 file?");
+    expect(confirmText({ usages: 3, files: 1 })).toBe("Replace 3 occurrences in 1 file?");
+    expect(confirmText({ usages: 3, files: 2 })).toBe("Replace 3 occurrences in 2 files?");
     expect(summaryText({ files: 2, replacements: 1, failed: 0, cancelled: false, elapsedMs: 3 })).toBe(
       "Replaced 1 occurrence in 2 files",
     );

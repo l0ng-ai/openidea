@@ -2,17 +2,36 @@
 
 use crate::Host;
 use ide_core::event::NotifyLevel;
-use ide_core::settings::{ExternalFormatter, LanguagesSettings, Settings};
-use ide_core::{ChangeSet, DocId, IdeError, IdeEvent, IdeResult, LanguageId, Pos, Range, TextEdit};
+use ide_core::settings::{BIOME_LANGUAGES, ExternalFormatter, LanguagesSettings, Settings};
+use ide_core::{ChangeSet, DocId, IdeError, IdeEvent, IdeResult, IpcPath, LanguageId, Pos, Range, TextEdit};
 use ide_language::{LanguageConfig, PhpAlignment, Syntax};
 use ide_lsp::types::FormatOptions;
 use ide_tools::{Tools, formatter};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const OXFMT_CONFIGS: [&str; 4] = [".oxfmtrc.json", ".oxfmtrc.jsonc", "oxfmt.config.ts", "oxfmt.config.mts"];
+/// A Biome configuration, or Biome installed as a project dependency (it then uses its defaults).
+const BIOME_MARKERS: [&str; 3] = ["biome.json", "biome.jsonc", "node_modules/@biomejs/biome/package.json"];
+
+/// Reformat Code uses Biome below a Biome configuration or installation, unless the nearest
+/// configuration turns its formatter off (Biome lints, another tool formats).
+fn biome_formats(file: &Path) -> bool {
+    let config = ["biome.json", "biome.jsonc"]
+        .iter()
+        .filter_map(|name| formatter::find_up(file, Path::new(name)))
+        .max_by_key(|path| path.components().count());
+    match config {
+        Some(config) => !std::fs::read_to_string(&config)
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&ide_core::jsonc::strip(&text)).ok())
+            .is_some_and(|v| v.pointer("/formatter/enabled") == Some(&serde_json::Value::Bool(false))),
+        None => BIOME_MARKERS.iter().any(|name| formatter::find_up(file, Path::new(name)).is_some()),
+    }
+}
 
 fn supports_external_format(language: &LanguageConfig, tool: ExternalFormatter) -> bool {
     match language.formatter.as_ref().map(|f| f.tool.as_str()) {
+        Some("prettier") if tool == ExternalFormatter::Biome => BIOME_LANGUAGES.contains(&language.id.as_str()),
         Some("prettier") => matches!(tool, ExternalFormatter::Prettier | ExternalFormatter::Oxfmt),
         Some("ruff") => tool == ExternalFormatter::Ruff,
         _ => false,
@@ -20,9 +39,9 @@ fn supports_external_format(language: &LanguageConfig, tool: ExternalFormatter) 
 }
 
 /// The external formatter of a file, for a language with an external formatter.
-/// `forced` names the tool (Reformat with Prettier, oxfmt, or Ruff). Ruff is
-/// the base formatter for Python; oxfmt can replace Prettier for its languages
-/// when configured or selected. A tool that cannot format the language is
+/// `forced` names the tool (Reformat with Prettier, oxfmt, Biome, or Ruff). Ruff is
+/// the base formatter for Python; Biome, then oxfmt, can replace Prettier for their
+/// languages when configured or selected. A tool that cannot format the language is
 /// rejected even when explicitly requested.
 fn external_tool(
     forced: Option<ExternalFormatter>,
@@ -30,7 +49,7 @@ fn external_tool(
     file: &Path,
     settings: &LanguagesSettings,
 ) -> IdeResult<Option<ExternalFormatter>> {
-    use ExternalFormatter::{Oxfmt, Prettier, Ruff};
+    use ExternalFormatter::{Biome, Oxfmt, Prettier, Ruff};
     let Some(language) = language.filter(|l| l.formatter.is_some()) else {
         return match forced {
             Some(tool) => Err(IdeError::invalid(format!(
@@ -56,8 +75,11 @@ fn external_tool(
     if language.formatter.as_ref().is_some_and(|f| f.tool == "ruff") {
         return Ok(enabled(Ruff).then_some(Ruff));
     }
-    let oxfmt_config = || OXFMT_CONFIGS.iter().any(|name| formatter::find_up(file, Path::new(name)).is_some());
-    Ok(if enabled(Oxfmt) && (settings.oxfmt.prefer || oxfmt_config()) {
+    let found = |names: &[&str]| names.iter().any(|name| formatter::find_up(file, Path::new(name)).is_some());
+    let biome = enabled(Biome) && supports_external_format(language, Biome);
+    Ok(if biome && (settings.biome.prefer || biome_formats(file)) {
+        Some(Biome)
+    } else if enabled(Oxfmt) && (settings.oxfmt.prefer || found(&OXFMT_CONFIGS)) {
         Some(Oxfmt)
     } else {
         enabled(Prettier).then_some(Prettier)
@@ -151,10 +173,58 @@ pub async fn format(
 ) -> IdeResult<Vec<TextEdit>> {
     let project = host.project(window)?;
     let snap = project.documents.snapshot(doc)?;
+    let source = FormatSource {
+        path: snap.path,
+        language: snap.language,
+        text: snap.text,
+        doc: Some(doc),
+        version: snap.version,
+        read_only: snap.read_only,
+    };
+    format_source(host, window, &project, source, range, options).await
+}
+
+/// Format a separate snapshot using the file's language, settings and formatter.
+pub async fn format_text(
+    host: &Host,
+    window: &str,
+    path: PathBuf,
+    text: String,
+    options: FormatOptions,
+) -> IdeResult<Vec<TextEdit>> {
+    let project = host.project(window)?;
+    if !path.is_absolute() || path.file_name().is_none() {
+        return Err(IdeError::invalid("formatting requires a file path"));
+    }
+    if text.len() as u64 > ide_vfs::LARGE_FILE_THRESHOLD {
+        return Ok(Vec::new());
+    }
+    let language = project.documents.language_of(&path, text.lines().next()).language;
+    let source = FormatSource { path: path.into(), language, text, doc: None, version: 0, read_only: false };
+    format_source(host, window, &project, source, None, options).await
+}
+
+struct FormatSource {
+    path: IpcPath,
+    language: LanguageId,
+    text: String,
+    doc: Option<DocId>,
+    version: u32,
+    read_only: bool,
+}
+
+async fn format_source(
+    host: &Host,
+    window: &str,
+    project: &crate::Project,
+    snap: FormatSource,
+    range: Option<Range>,
+    options: FormatOptions,
+) -> IdeResult<Vec<TextEdit>> {
     let settings = project.settings.effective();
     let alignment = php_alignment(&settings, &snap.language);
     let original = alignment.any().then(|| (snap.language.clone(), snap.text.clone()));
-    let Some(edits) = provider_edits(host, window, &project, snap, settings, range, options).await? else {
+    let Some(edits) = provider_edits(host, window, project, snap, settings, range, options).await? else {
         return Ok(Vec::new());
     };
     let Some((language, text)) = original else {
@@ -235,12 +305,12 @@ async fn provider_edits(
     host: &Host,
     window: &str,
     project: &crate::Project,
-    snap: ide_workspace::documents::DocumentInfo,
+    snap: FormatSource,
     settings: Settings,
     range: Option<Range>,
     options: FormatOptions,
 ) -> IdeResult<Option<Vec<TextEdit>>> {
-    let doc = snap.id;
+    let doc = snap.doc;
     let language = project.languages.get(&snap.language);
     if options.tool.is_none()
         && let Some(id) = settings.languages.plugin_formatters.get(snap.language.as_str()).filter(|s| !s.is_empty())
@@ -307,7 +377,10 @@ async fn provider_edits(
     if let Some(tool) = selected
         && options.tool.is_none()
         && !settings.languages.formatter(tool).prefer
-        && project.lsp.can_format(doc).await?
+        && match doc {
+            Some(doc) => project.lsp.can_format(doc).await?,
+            None => project.lsp.can_format_text(&snap.path, &snap.language).await,
+        }
     {
         selected = None;
     }
@@ -315,7 +388,10 @@ async fn provider_edits(
         if options.on_save && !settings.editor.format_on_save {
             return Ok(None);
         }
-        let edits = project.lsp.format(doc, range, options).await?;
+        let edits = match doc {
+            Some(doc) => project.lsp.format(doc, range, options).await?,
+            None => project.lsp.format_text(&snap.path, &snap.language, &snap.text, options).await?,
+        };
         let text = snap.text;
         return tokio::task::spawn_blocking(move || Some(minimal_edits(&text, edits)))
             .await
@@ -385,7 +461,7 @@ async fn provider_edits(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ExternalFormatter::{Oxfmt, Prettier, Ruff};
+    use ExternalFormatter::{Biome, Oxfmt, Prettier, Ruff};
     use ide_core::LanguageId;
     use ide_language::LanguageRegistry;
 
@@ -428,6 +504,40 @@ mod tests {
         assert_eq!(prettier.message, "Prettier cannot format Python files");
         let oxfmt = tool(Some(Oxfmt), "python", file, &settings).unwrap_err();
         assert_eq!(oxfmt.message, "oxfmt cannot format Python files");
+        let biome = tool(Some(Biome), "python", file, &settings).unwrap_err();
+        assert_eq!(biome.message, "Biome cannot format Python files");
+    }
+
+    #[test]
+    fn biome_config_or_dependency_selects_biome_for_its_languages() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("web/src")).unwrap();
+        let (web, api, readme) = (root.join("web/src/app.ts"), root.join("api/main.ts"), root.join("web/README.md"));
+        let mut settings = LanguagesSettings::default();
+        for marker in BIOME_MARKERS {
+            let path = root.join("web").join(marker);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "{}").unwrap();
+            assert_eq!(tool(None, "typescript", &web, &settings).unwrap(), Some(Biome), "{marker}");
+            assert_eq!(tool(None, "typescript", &api, &settings).unwrap(), Some(Prettier), "{marker}");
+            // Biome doesn't format Markdown: Prettier keeps it.
+            assert_eq!(tool(None, "markdown", &readme, &settings).unwrap(), Some(Prettier), "{marker}");
+            std::fs::remove_file(&path).unwrap();
+        }
+        std::fs::write(root.join("web/biome.json"), "{}").unwrap();
+        std::fs::write(root.join("web/.oxfmtrc.json"), "{}").unwrap();
+        assert_eq!(tool(None, "css", &web, &settings).unwrap(), Some(Biome));
+        settings.biome.languages.retain(|l| l != "css");
+        assert_eq!(tool(None, "css", &web, &settings).unwrap(), Some(Oxfmt));
+        // Biome only lints here: Prettier keeps formatting.
+        std::fs::remove_file(root.join("web/.oxfmtrc.json")).unwrap();
+        std::fs::write(root.join("web/biome.json"), r#"{ "formatter": { "enabled": false } }"#).unwrap();
+        assert_eq!(tool(None, "typescript", &web, &settings).unwrap(), Some(Prettier));
+        settings.biome.prefer = true;
+        assert_eq!(tool(None, "typescript", &api, &settings).unwrap(), Some(Biome));
+        let markdown = tool(Some(Biome), "markdown", &readme, &settings).unwrap_err();
+        assert_eq!(markdown.message, "Biome cannot format Markdown files");
     }
 
     #[test]

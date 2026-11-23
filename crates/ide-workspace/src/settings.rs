@@ -113,7 +113,13 @@ fn restrict_project_layer(below: &Json, layer: &mut Json) {
     // The IDE-wide interpreter list, its view options and the project interpreters of
     // other projects belong to the user's settings, not to one project.
     if let Some(python) = layer.get_mut("languages").and_then(|l| l.get_mut("python")).and_then(Json::as_object_mut) {
-        for key in ["interpreters", "hiddenInterpreters", "hideOtherProjectInterpreters", "showInterpreterPaths"] {
+        for key in [
+            "interpreters",
+            "hiddenInterpreters",
+            "hideOtherProjectInterpreters",
+            "showInterpreterPaths",
+            "interpreterPaths",
+        ] {
             python.remove(key);
         }
     }
@@ -353,6 +359,11 @@ impl SettingsStore {
     /// Effective (merged) settings.
     pub fn effective(&self) -> Settings {
         self.effective.read().clone()
+    }
+
+    /// Reads part of the effective settings without copying all of them.
+    pub fn read_effective<T>(&self, read: impl FnOnce(&Settings) -> T) -> T {
+        read(&self.effective.read())
     }
 
     /// Settings defined in `scope`'s file alone (without merging the other layer).
@@ -725,6 +736,8 @@ mod tests {
         let store = SettingsStore::load(&cfg, Some(&proj));
         store.set(SettingsScope::Global, "languages.python.interpreters", json!(["/envs/a/bin/python"])).unwrap();
         store.set(SettingsScope::Global, "languages.python.showInterpreterPaths", json!(false)).unwrap();
+        let paths = json!({ "/envs/a/bin/python": ["/shared/lib"] });
+        store.set(SettingsScope::Global, "languages.python.interpreterPaths", paths).unwrap();
         let loaded = SettingsStore::load(&cfg, Some(&proj)).effective();
         assert_eq!(loaded.languages.python.interpreters, ["/envs/a/bin/python"]);
         assert!(!loaded.languages.python.show_interpreter_paths);
@@ -734,10 +747,12 @@ mod tests {
             proj.join(".openidea/settings.toml"),
             "[languages.python]\ninterpreters = [\"/proj/bin/python\"]\n\
              hiddenInterpreters = [\"/envs/a/bin/python\"]\nhideOtherProjectInterpreters = true\n\
-             showInterpreterPaths = true\n",
+             showInterpreterPaths = true\n\
+             [languages.python.interpreterPaths]\n\"/envs/a/bin/python\" = [\"/proj/evil\"]\n",
         )
         .unwrap();
         let loaded = SettingsStore::load(&cfg, Some(&proj)).effective();
+        assert_eq!(loaded.languages.python.interpreter_paths["/envs/a/bin/python"], ["/shared/lib"]);
         assert_eq!(loaded.languages.python.interpreters, ["/envs/a/bin/python"]);
         assert!(loaded.languages.python.hidden_interpreters.is_empty());
         assert!(!loaded.languages.python.hide_other_project_interpreters);
@@ -905,6 +920,7 @@ mod tests {
                 "nonModal": true,
                 "clearInitialMessage": false,
                 "analyzeCode": true,
+                "postponeSlowChecks": true,
                 "checkTodo": true,
                 "reformat": false,
                 "optimizeImports": false,
@@ -919,6 +935,7 @@ mod tests {
                 "disabledPluginChecks": [],
                 "doubleClickOpensDiff": null,
                 "includeChangesByDefault": true,
+                "commitAllWhenNothingStaged": true,
                 "agentInstructions": "",
                 "agent": "",
                 "agentModel": "",
@@ -972,13 +989,17 @@ mod tests {
     }
 
     #[test]
-    fn commit_default_inclusion_persists() {
+    fn commit_inclusion_options_persist() {
         let tmp = tempfile::tempdir().unwrap();
         let store = SettingsStore::load(tmp.path(), None);
         assert!(store.effective().vcs.commit.include_changes_by_default);
         let settings = store.set(SettingsScope::Global, "vcs.commit.includeChangesByDefault", json!(false)).unwrap();
         assert!(!settings.vcs.commit.include_changes_by_default);
-        assert!(!SettingsStore::load(tmp.path(), None).effective().vcs.commit.include_changes_by_default);
+        assert!(settings.vcs.commit.commit_all_when_nothing_staged);
+        store.set(SettingsScope::Global, "vcs.commit.commitAllWhenNothingStaged", json!(false)).unwrap();
+        let reloaded = SettingsStore::load(tmp.path(), None).effective();
+        assert!(!reloaded.vcs.commit.include_changes_by_default);
+        assert!(!reloaded.vcs.commit.commit_all_when_nothing_staged);
     }
 
     #[test]

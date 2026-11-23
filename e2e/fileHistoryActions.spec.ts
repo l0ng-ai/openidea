@@ -44,6 +44,7 @@ test("File History opens its revision and compares only that file with the worki
       h.vcs_log_details_batch = () => [];
       h.vcs_commit_files = () => [];
       h.vcs_file_at = ({ path: filePath }) => `historical contents of ${String(filePath)}\n`;
+      h.vcs_diff_entries = ({ entries }) => (entries as unknown[]).map(() => ({ mode: "100644", gitlink: null }));
       h.fs_probe = () => ({ size: 32, binary: false, tooLarge: false });
 
       const storeModule = "/src/features/vcs/store.ts";
@@ -79,7 +80,14 @@ test("File History opens its revision and compares only that file with the worki
     .poll(async () => ipcCalls(page, "vcs_file_at"))
     .toContainEqual({ path: `${ROOT}/src/old-name.ts`, rev: REVISION });
   // The working copy side is the file itself (an editable document), not the historical path.
-  await expect.poll(async () => ipcCalls(page, "vcs_file_mode")).toContainEqual({ path: FILE, rev: "WT" });
+  await expect
+    .poll(async () => ipcCalls(page, "vcs_diff_entries"))
+    .toContainEqual({
+      entries: [
+        { path: `${ROOT}/src/old-name.ts`, rev: REVISION },
+        { path: FILE, rev: "WT" },
+      ],
+    });
   await expect(page.getByText(`historical contents of ${ROOT}/src/old-name.ts`).first()).toBeVisible();
 
   await row.click({ button: "right" });

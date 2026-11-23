@@ -324,6 +324,10 @@ export function inlineBlame(ctx: EditorDocContext): Extension {
             (s) => s.vcs.git.inlineBlame,
             () => this.invalidate(),
           ),
+          onWorkflowSettingsChange(
+            (s) => s.vcs.git.annotate,
+            () => this.invalidate(),
+          ),
           // Only the label's behaviour changes: redraw it from the loaded blame.
           onWorkflowSettingsChange(
             (s) => s.vcs.git.inlineBlameClickable,

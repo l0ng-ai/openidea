@@ -30,6 +30,34 @@ describe("commonBranchMenu", () => {
     expect(rebase(commonBranchMenu(common("feature"), roots, null))).toEqual([]);
     expect(rebase(commonBranchMenu(common("main", { current: true }), roots, "main"))).toEqual([]);
   });
+
+  it("offers Delete for a common remote branch", () => {
+    expect(labels(commonBranchMenu(common("origin/feature", { remote: true }), ["/a", "/b"]))).toContain("Delete");
+  });
+
+  it("offers both ways to pull a common remote branch into the current branches", () => {
+    const roots = ["/a", "/b"];
+    const feature = common("origin/feature", { remote: true });
+    expect(labels(commonBranchMenu(feature, roots, "main"))).toEqual(
+      expect.arrayContaining(["Pull into 'main' Using Rebase", "Pull into 'main' Using Merge"]),
+    );
+    expect(labels(commonBranchMenu(feature, roots))).toEqual(
+      expect.arrayContaining(["Pull into Current Branch Using Rebase", "Pull into Current Branch Using Merge"]),
+    );
+    expect(labels(commonBranchMenu(common("feature"), roots, "main")).some((label) => label.startsWith("Pull"))).toBe(
+      false,
+    );
+  });
+
+  it("offers a working-tree diff for common branches when the repositories share a current branch", () => {
+    const roots = ["/a", "/b"];
+    const feature = common("origin/feature", { remote: true });
+    expect(labels(commonBranchMenu(feature, roots, "main"))).toContain("Show Diff with Working Tree");
+    expect(labels(commonBranchMenu(feature, roots, null))).not.toContain("Show Diff with Working Tree");
+    expect(labels(commonBranchMenu(common("main", { current: true }), roots, "main"))).toContain(
+      "Show Diff with Working Tree",
+    );
+  });
 });
 
 describe("mergedBranchMenu", () => {
@@ -76,6 +104,6 @@ describe("mergedBranchMenu", () => {
         roots.map((repo) => ({ repo, branch: origin })),
       ),
     );
-    expect(items).toContain("Delete");
+    expect(items.filter((label) => label === "Delete")).toHaveLength(1);
   });
 });

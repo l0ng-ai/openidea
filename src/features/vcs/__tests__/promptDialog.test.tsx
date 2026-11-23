@@ -12,7 +12,7 @@ const open = (initial = "") =>
     initial,
     okLabel: "Create",
     sanitize: cleanUpBranchNameOnTyping,
-    validate: validateBranchName,
+    validate: (name, overwrite) => validateBranchName(name, overwrite),
   });
 
 // The dialog stack is module state: close whatever a test left open.

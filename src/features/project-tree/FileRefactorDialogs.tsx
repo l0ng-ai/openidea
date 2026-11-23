@@ -143,7 +143,7 @@ function Options({
   disabled: boolean;
 }) {
   return (
-    <div className={styles.options}>
+    <div className={move ? styles.options : styles.renameOptions}>
       <Checkbox
         label="Search for references"
         checked={value.references}
@@ -223,31 +223,33 @@ function RenameDialog({ request }: { request: Extract<FileRefactorRequest, { kin
       ]}
     >
       <form
-        className={styles.form}
+        className={styles.renameForm}
         onSubmit={(e) => {
           e.preventDefault();
           submit();
         }}
       >
-        <label className={styles.fieldLabel} htmlFor="file-rename-name">
-          {request.dir
-            ? tx`Rename directory '${current}' and its usages to:`
-            : tx`Rename file '${current}' and its usages to:`}
-        </label>
-        <Input
-          id="file-rename-name"
-          ref={input}
-          value={name}
-          disabled={busy}
-          invalid={!!error}
-          aria-label="New name"
-          onChange={(e) => setName(e.target.value)}
-        />
-        {error && (
-          <div className={styles.error} role="alert">
-            {error}
-          </div>
-        )}
+        <div className={styles.renameName}>
+          <label className={styles.fieldLabel} htmlFor="file-rename-name">
+            {request.dir
+              ? tx`Rename directory '${current}' and its usages to:`
+              : tx`Rename file '${current}' and its usages to:`}
+          </label>
+          <Input
+            id="file-rename-name"
+            ref={input}
+            value={name}
+            disabled={busy}
+            invalid={!!error}
+            aria-label="New name"
+            onChange={(e) => setName(e.target.value)}
+          />
+          {error && (
+            <div className={styles.error} role="alert">
+              {error}
+            </div>
+          )}
+        </div>
         <Options value={options} onChange={setOptions} move={false} disabled={busy} />
       </form>
     </Dialog>

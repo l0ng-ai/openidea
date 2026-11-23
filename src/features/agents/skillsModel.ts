@@ -5,24 +5,47 @@
  */
 import { useEffect } from "react";
 import { create } from "zustand";
-import type { AgentSkillMode, AgentSkillSource, AgentSkillState, McpScope } from "@/bindings";
+import type {
+  AgentSkillMode,
+  AgentSkillSource,
+  AgentSkillState,
+  InstallRemoteSkillRequest,
+  McpScope,
+  RemoteSkillBrowseResult,
+  RemoteSkillPreview,
+  RequestId,
+} from "@/bindings";
 import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 
 export interface SkillsBackend {
   list(): Promise<AgentSkillState[]>;
   setMode(name: string, scope: McpScope, mode: AgentSkillMode): Promise<AgentSkillState[]>;
+  browse?(source: string, request: RequestId): Promise<RemoteSkillBrowseResult>;
+  preview?(
+    owner: string,
+    repo: string,
+    gitRef: string,
+    subpath: string,
+    request: RequestId,
+  ): Promise<RemoteSkillPreview>;
+  install?(input: InstallRemoteSkillRequest, request: RequestId): Promise<AgentSkillState[]>;
 }
 
 export const defaultSkillsBackend: SkillsBackend = {
   list: () => (typeof commands.agentSkillsList === "function" ? call(commands.agentSkillsList()) : Promise.resolve([])),
   setMode: (name, scope, mode) => call(commands.agentSkillsSetMode(name, scope, mode)),
+  browse: (source, request) => call(commands.agentSkillsBrowse(source, request)),
+  preview: (owner, repo, gitRef, subpath, request) =>
+    call(commands.agentSkillsPreview(owner, repo, gitRef, subpath, request)),
+  install: (input, request) => call(commands.agentSkillsInstall(input, request)),
 };
 
 /** Which folder family a skill came from, with the paths it is discovered in. */
 export const SKILL_SOURCE_GROUPS: Record<AgentSkillSource, { label: string; paths: string; agent: string | null }> = {
   workspace: { label: "Workspace", paths: ".agents/skills · .openidea/skills", agent: null },
   user: { label: "User", paths: "~/.agents/skills", agent: null },
+  plugin: { label: "Plugins", paths: "[[contributes.skills]]", agent: null },
   claudeWorkspace: { label: "Claude Code", paths: ".claude/skills", agent: "claude" },
   claudeUser: { label: "Claude Code", paths: "~/.claude/skills", agent: "claude" },
   githubWorkspace: { label: "GitHub Copilot", paths: ".github/skills", agent: "copilot" },
@@ -35,7 +58,7 @@ export const SKILL_SOURCE_GROUPS: Record<AgentSkillSource, { label: string; path
 
 /** Skill folders the CLI discovers itself: OpenIDEA only reads them, and its "off" holds only where the CLI supports it. */
 export function isDiscoveredSource(source: AgentSkillSource): boolean {
-  return source !== "workspace" && source !== "user";
+  return source !== "workspace" && source !== "user" && source !== "plugin";
 }
 
 export interface SessionSkillItem {

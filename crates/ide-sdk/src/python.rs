@@ -1,7 +1,7 @@
 //! Python environments: creating virtualenvs and managing packages with pip
 //! (or `uv pip` for environments created by uv, which ship without pip).
 
-use crate::exec::{query_in, stream, which};
+use crate::exec::{query_in, query_in_cancellable, stream, which};
 use crate::{Sdk, bin_dir, exe, venv_of};
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
@@ -28,18 +28,22 @@ pub enum VenvTool {
     Poetry,
     /// `conda create -n <name> -y` for a bare name, else `-p <location>` (conda must be on PATH).
     Conda,
+    /// `pipenv --python <base>` in the project (pipenv must be on PATH).
+    Pipenv,
 }
 
 /// Creates a virtualenv at `location` with `tool` and returns its interpreter.
-/// `base` is the interpreter uv / venv build on, or the one poetry's env uses.
+/// `base` is the interpreter uv / venv build on, or the one poetry's / pipenv's env uses.
+/// `install` also installs the packages the project declares, for the tool that reads them (pipenv).
 pub fn create_venv(
     tool: VenvTool,
     base: &Path,
     location: &Path,
+    install: bool,
     cancel: &CancellationToken,
     on_line: &dyn Fn(String),
 ) -> IdeResult<Sdk> {
-    create_venv_with(tool, base, location, which, cancel, on_line)
+    create_venv_with(tool, base, location, install, which, cancel, on_line)
 }
 
 /// [`create_venv`] with the tool lookup injectable (tests fake `uv` / `poetry`).
@@ -47,6 +51,7 @@ pub(crate) fn create_venv_with(
     tool: VenvTool,
     base: &Path,
     location: &Path,
+    install: bool,
     which: impl Fn(&str) -> Option<PathBuf>,
     cancel: &CancellationToken,
     on_line: &dyn Fn(String),
@@ -86,6 +91,7 @@ pub(crate) fn create_venv_with(
         }
         VenvTool::Poetry => create_poetry_env(base, location, &which, cancel, on_line),
         VenvTool::Conda => create_conda_env(base, location, &which, cancel, on_line),
+        VenvTool::Pipenv => create_pipenv_env(base, location, install, &which, cancel, on_line),
     }
 }
 
@@ -116,6 +122,79 @@ fn create_poetry_env(
     let home = query_in(&poetry, &["env", "info", "--path"], Some(project), &[], Duration::from_secs(30))
         .map(PathBuf::from)
         .ok_or_else(|| IdeError::internal("poetry created no environment".to_owned()))?;
+    let python = home.join(bin_dir()).join(exe("python"));
+    crate::discover::python_sdk(&python, "pipenv", Some(project))
+        .ok_or_else(|| IdeError::internal(format!("{} was not created", python.display())))
+}
+
+/// An environment that already exists is reused rather than rebuilt: the tools replace one
+/// built on another Python without asking, losing its packages. If `base` is another Python
+/// version than the environment's, nothing is changed and the error says how to go on.
+fn reuse_existing_env(home: &Path, base: &Path, remove: &str) -> IdeResult<()> {
+    let short = |version: &str| version.split('.').take(2).collect::<Vec<_>>().join(".");
+    let existing = crate::discover::pyvenv_version(&home.join(bin_dir()).join(exe("python")));
+    let wanted = query_in(base, &["--version"], None, &[], Duration::from_secs(15))
+        .and_then(|v| v.strip_prefix("Python ").map(str::to_owned));
+    match (existing.as_deref().map(short), wanted.as_deref().map(short)) {
+        (Some(existing), Some(wanted)) if existing != wanted => Err(IdeError::new(
+            ide_core::error::ErrorKind::AlreadyExists,
+            format!(
+                "{} already holds a Python {existing} environment, not Python {wanted} like the base interpreter. \
+                 Select it under Existing environment, or remove it first with `{remove}`.",
+                home.display()
+            ),
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Pipenv's environment for the project (`location` is a hint inside it, as for Poetry: pipenv
+/// keeps its envs under `WORKON_HOME`). `pipenv --python <base>` creates it when `pipenv --venv`
+/// finds none, writing a `Pipfile` (from `requirements.txt` if there is one) when the project
+/// has none. `install` then runs `pipenv install --dev` for the packages of the `Pipfile`.
+fn create_pipenv_env(
+    base: &Path,
+    location: &Path,
+    install: bool,
+    which: &dyn Fn(&str) -> Option<PathBuf>,
+    cancel: &CancellationToken,
+    on_line: &dyn Fn(String),
+) -> IdeResult<Sdk> {
+    let pipenv = which("pipenv")
+        .ok_or_else(|| IdeError::unavailable("Pipenv is not installed (install it from https://pipenv.pypa.io)"))?;
+    let project = location
+        .parent()
+        .filter(|p| p.is_dir())
+        .ok_or_else(|| IdeError::invalid("Pipenv environments need an open project directory"))?;
+    // No prompts or spinner, and the project's own environment even when the IDE was
+    // started from inside another virtualenv.
+    const ENV: [(&str, &str); 3] = [("PIPENV_YES", "1"), ("PIPENV_NOSPIN", "1"), ("PIPENV_IGNORE_VIRTUALENVS", "1")];
+    let env = ENV.map(|(k, v)| (k.to_owned(), v.to_owned()));
+    let venv = || {
+        query_in_cancellable(&pipenv, &["--venv"], project, &ENV, Duration::from_secs(30), cancel)
+            .map(PathBuf::from)
+            .filter(|home| home.join("pyvenv.cfg").is_file())
+    };
+    match venv() {
+        Some(home) => reuse_existing_env(&home, base, "pipenv --rm")?,
+        None => {
+            let args = ["--python".to_owned(), base.to_string_lossy().into_owned()];
+            stream(&pipenv, &args, Some(project), &env, cancel, on_line)?;
+        }
+    }
+    // Decided after creation: pipenv may just have written the `Pipfile`, or found one above the project.
+    let pipfile_dir = crate::discover::pipfile_dir(project);
+    if install && pipfile_dir.is_some() {
+        stream(&pipenv, &["install".to_owned(), "--dev".to_owned()], Some(project), &env, cancel, on_line)?;
+    }
+    let home = venv().ok_or_else(|| IdeError::internal("pipenv created no environment".to_owned()))?;
+    // Pipenv records the project only when it creates the environment: one it reuses after an
+    // interrupted creation has no `.project`, and detection would not know whose it is.
+    let record = home.join(".project");
+    if !record.exists() {
+        let owner = pipfile_dir.as_deref().unwrap_or(project);
+        let _ = std::fs::write(record, owner.to_string_lossy().as_bytes());
+    }
     let python = home.join(bin_dir()).join(exe("python"));
     crate::discover::python_sdk(&python, "venv", Some(project))
         .ok_or_else(|| IdeError::internal(format!("{} was not created", python.display())))
@@ -318,6 +397,82 @@ pub fn install_package(
     let (program, args) = pip_command(python, &installer, &sub);
     let dir = neutral_dir();
     stream(&program, &args, dir.as_ref().map(|d| d.path()), &pip_env(python), cancel, on_line).map(|_| ())
+}
+
+/// Run by the interpreter itself, so markers and PEP 440 specifiers are judged as pip would:
+/// prints, per requirement of `argv[1]` (a JSON list), `null` when satisfied or not applicable
+/// there, else `{"installed": <version or null>}`.
+const CHECK_REQUIREMENTS: &str = r#"
+import json, re, sys
+try:
+    from packaging.requirements import Requirement
+except Exception:
+    try:
+        from pip._vendor.packaging.requirements import Requirement
+    except Exception:
+        Requirement = None
+from importlib import metadata
+norm = lambda n: re.sub(r"[-_.]+", "-", n).lower()
+installed = {}
+for d in metadata.distributions():
+    name = d.metadata["Name"]
+    if name:
+        installed.setdefault(norm(name), d.version)
+out = []
+for line in json.loads(sys.argv[1]):
+    try:
+        if Requirement:
+            r = Requirement(line)
+            name, spec, applies = r.name, r.specifier, r.marker is None or r.marker.evaluate({"extra": ""})
+        else:
+            # Without packaging only names are compared; a marker can't be judged.
+            name, spec, applies = re.match(r"[A-Za-z0-9._-]+", line).group(0), None, ";" not in line
+        version = installed.get(norm(name))
+        if not applies or (version is not None and (spec is None or spec.contains(version, prereleases=True))):
+            out.append(None)
+        else:
+            out.append({"installed": version})
+    except Exception:
+        out.append(None)
+print(json.dumps(out))
+"#;
+
+#[derive(Debug, Deserialize, PartialEq)]
+pub struct Unsatisfied {
+    /// The version installed that misses the specifier; `None` when not installed.
+    pub installed: Option<String>,
+}
+
+/// Which of `requirements` (PEP 508 strings) `python` doesn't satisfy, in order;
+/// `None` for satisfied ones, for ones whose marker excludes this interpreter, and
+/// for ones it can't parse.
+pub fn unsatisfied_requirements(
+    python: &Path,
+    requirements: &[&str],
+    cancel: &CancellationToken,
+) -> IdeResult<Vec<Option<Unsatisfied>>> {
+    let list = serde_json::to_string(requirements).map_err(|e| IdeError::internal(e.to_string()))?;
+    let dir = neutral_dir().ok_or_else(|| IdeError::internal("no temporary directory"))?;
+    let out = query_in_cancellable(
+        python,
+        &["-c", CHECK_REQUIREMENTS, &list],
+        dir.path(),
+        &[],
+        Duration::from_secs(20),
+        cancel,
+    );
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
+    let out =
+        out.ok_or_else(|| IdeError::unavailable(format!("cannot check requirements with {}", python.display())))?;
+    let json = out.lines().rev().find(|l| l.starts_with('[')).unwrap_or("");
+    let result: Vec<Option<Unsatisfied>> =
+        serde_json::from_str(json).map_err(|e| IdeError::internal(format!("unexpected output: {e}")))?;
+    if result.len() != requirements.len() {
+        return Err(IdeError::internal("unexpected output: wrong number of results"));
+    }
+    Ok(result)
 }
 
 pub fn uninstall_package(

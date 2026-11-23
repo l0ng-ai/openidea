@@ -6,6 +6,7 @@
 import { introspectSource } from "./introspection";
 import { writeClipboardText } from "@/platform/clipboard";
 import { call, commands, type DataSource, type DbDriver, type DbTableInfo } from "@/platform/ipc";
+import { readDesktopText } from "@/platform/desktopFiles";
 import { registerActions, type Action } from "@/platform/actions";
 import { editorService, notifications, showServiceView, toolWindowService } from "@/workbench/contributions";
 import { splitTarget } from "./model";
@@ -200,7 +201,7 @@ async function runScriptFile(id: string) {
   });
   if (typeof file !== "string") return;
   try {
-    const text = await call(commands.fsReadText(file));
+    const text = await readDesktopText(file);
     const statements = await call(commands.dbStatements(id, text, 0, text.length));
     useDatabase.setState({ activeResult: OUTPUT_TAB });
     showServiceView(RESULTS_VIEW, false);
@@ -346,6 +347,9 @@ export function registerDatabaseTreeActions(): () => void {
         if (!n) return;
         const id = nodeTarget(n);
         if (n.kind === "source" && id) return openDialog({ kind: "rename", id, object: null });
+        const source = sourceById(id);
+        if (n.kind === "database" && !n.current && !source?.readOnly && createsDatabases(source))
+          return openDialog({ kind: "renameDatabase", id: splitTarget(n.id).id, database: n.name });
         const o = objectOf(n);
         if (id && o && canRename(driverOf(id), o)) openDialog({ kind: "rename", id, object: o });
       },

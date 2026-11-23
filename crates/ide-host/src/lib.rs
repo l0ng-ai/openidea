@@ -26,7 +26,7 @@ pub mod shell_env;
 pub mod trust;
 pub mod web_server;
 
-pub use project::{Project, apply_git_executable, history_retention};
+pub use project::{Project, history_retention};
 
 use ide_core::{CancellationToken, IdeError, IdeResult, RequestId, SharedSink};
 use ide_language::{LanguageRegistry, Syntax};
@@ -35,7 +35,7 @@ use ide_terminal::TerminalManager;
 use ide_workspace::SettingsStore;
 use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 /// Event sink for one window (by label).
@@ -93,6 +93,7 @@ pub struct Host {
     /// The window that owns each open heap snapshot; its project's close closes them.
     pub(crate) heap_windows: Mutex<HashMap<ide_heap::HeapSnapshotId, String>>,
     pub(crate) heap_requests: ops::heap::HeapRequests,
+    pub(crate) rebase_editors: Arc<ops::vcs::RebaseEditors>,
     /// SSH connections of Settings › SSH Configurations.
     pub ssh: Arc<ide_ssh::SshManager>,
     /// SFTP deployment, remote file editing and runs on run targets.
@@ -191,6 +192,7 @@ impl Host {
             heap: Arc::new(ide_heap::HeapRegistry::new(ide_heap::snapshots_root(&local_data_dir))),
             heap_windows: Mutex::default(),
             heap_requests: Default::default(),
+            rebase_editors: Default::default(),
             languages,
             syntax,
             config_dir,
@@ -208,6 +210,7 @@ impl Host {
         };
         host.apply_proxy();
         host.apply_added_jdks();
+        host.apply_git_executable();
         // Before any project starts jdtls; the deleting itself can take a while.
         let unused =
             ide_sdk::jdtls_workspaces::take_unused(&host.local_data_dir, ide_sdk::jdtls_workspaces::UNUSED_FOR);
@@ -598,6 +601,14 @@ impl Host {
     pub fn apply_added_jdks(&self) {
         let homes = self.global_settings.effective().languages.java.added_jdks;
         ide_sdk::java::set_added_jdks(homes.into_iter().map(PathBuf::from));
+    }
+
+    /// Global Settings › Version Control › Git › Path to Git executable, for git started outside
+    /// a project's repositories (clone, init, agents, gh, plugins). A project's own value stays
+    /// with its repositories ([`Project::repos`]).
+    pub fn apply_git_executable(&self) {
+        let exe = self.global_settings.read_effective(|s| s.vcs.git.executable.trim().to_owned());
+        ide_vcs::set_default_git_executable((!exe.is_empty()).then(|| Path::new(&exe)));
     }
 }
 

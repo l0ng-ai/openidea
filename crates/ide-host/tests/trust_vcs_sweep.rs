@@ -11,7 +11,7 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 /// Allowed in Restricted Mode and not swept: none of them starts git for the project.
-const NOT_THE_PROJECT_REPOSITORY: [&str; 7] = [
+const NOT_THE_PROJECT_REPOSITORY: [&str; 8] = [
     "vcs_clone",        // clones a URL the user gives into a new folder
     "vcs_diff_hunks",   // compares two texts
     "vcs_detected_git", // looks for the git executable
@@ -19,6 +19,7 @@ const NOT_THE_PROJECT_REPOSITORY: [&str; 7] = [
     "vcs_shelf_patch",
     "vcs_changelists_load",
     "vcs_write_patch", // writes a patch the UI already holds
+    "vcs_read_patch",  // reads patch text without running Git
 ];
 
 fn git(root: &Path, args: &[&str]) -> String {
@@ -165,25 +166,30 @@ async fn restricted_vcs_commands_run_no_program_of_the_repository() {
             ($command, $what, Box::pin(async { $call.await.is_ok() }) as Pin<Box<dyn Future<Output = bool> + '_>>)
         };
     }
-    macro_rules! sync {
-        ($command:literal, $what:literal, $call:expr) => {
-            ($command, $what, Box::pin(async { $call.is_ok() }) as Pin<Box<dyn Future<Output = bool> + '_>>)
-        };
-    }
     let calls: Vec<Call> = vec![
         call!("vcs_status", "", ops::vcs::vcs_status(host, w)),
+        call!("vcs_ignored_files", "", ops::vcs::vcs_ignored_files(host, w)),
         call!("vcs_status_paths", "", ops::vcs::vcs_status_paths(host, w, vec![file.clone()])),
-        sync!("vcs_roots", "", vcs::vcs_roots(host, w)),
+        call!("vcs_roots", "", vcs::vcs_roots(host, w)),
+        call!("vcs_project_update_plan", "", vcs::vcs_project_update_plan(host, w, vec![root()])),
         call!("vcs_detected_roots", "", vcs::vcs_detected_roots(host, w)),
         call!("vcs_branch_info", "", vcs::vcs_branch_info(host, w, root())),
         call!("vcs_line_hunks", "", vcs::vcs_line_hunks(host, w, file.clone())),
+        call!("vcs_staging_line_hunks", "", vcs::vcs_staging_line_hunks(host, w, file.clone(), None)),
         call!("vcs_file_at", "", vcs::vcs_file_at(host, w, file.clone(), None)),
+        call!(
+            "vcs_diff_entries",
+            "",
+            vcs::vcs_diff_entries(host, w, vec![vcs::DiffEntryRequest { path: file.clone().into(), rev: "WT".into() }])
+        ),
         call!("vcs_blame", "", vcs::vcs_blame(host, w, file.clone(), None, None)),
         call!("vcs_block_history", "", vcs::vcs_block_history(host, w, RequestId(1), file.clone(), None, (0, 1))),
         call!("vcs_log", "", vcs::vcs_log(host, w, root(), Default::default())),
         call!("vcs_log_refs", "", vcs::vcs_log_refs(host, w, root())),
         call!("vcs_log_users", "", vcs::vcs_log_users(host, w, root())),
         call!("vcs_log_details", "", vcs::vcs_log_details(host, w, root(), project.head.clone())),
+        call!("vcs_invalidate_log_signatures", "", vcs::vcs_invalidate_log_signatures(host, w, project.root.clone())),
+        call!("vcs_signing_config", "", vcs::vcs_signing_config(host, w, project.root.clone())),
         call!(
             "vcs_log_details_batch",
             "",
@@ -214,9 +220,26 @@ async fn restricted_vcs_commands_run_no_program_of_the_repository() {
         call!("vcs_conflict_versions", "", vcs::vcs_conflict_versions(host, w, file.clone())),
         call!("vcs_diff_text", "", vcs::vcs_diff_text(host, w, file.clone(), false)),
         call!("vcs_config_get", "", vcs::vcs_config_get(host, w, root(), "user.name".into())),
+        call!("vcs_config_get_bool", "", vcs::vcs_config_get_bool(host, w, root(), "log.showSignature".into())),
+        call!("vcs_watch_commit_messages", "", async {
+            let request = RequestId(30);
+            let (send, mut messages) = tokio::sync::mpsc::channel(1);
+            let channel = ops::Channel::new(move |message| {
+                let _ = send.try_send(message);
+            });
+            let watch = vcs::vcs_watch_commit_messages(host, w, root(), request, channel);
+            let stop = async {
+                let initial = tokio::time::timeout(std::time::Duration::from_secs(10), messages.recv()).await;
+                host.cancel_request(request);
+                assert!(matches!(initial, Ok(Some(_))), "missing initial commit messages");
+            };
+            let (result, ()) = tokio::join!(watch, stop);
+            result
+        }),
         call!("vcs_tags", "", vcs::vcs_tags(host, w, root())),
         call!("vcs_remotes", "", vcs::vcs_remotes(host, w, root())),
         call!("vcs_worktrees", "", vcs::vcs_worktrees(host, w, root())),
+        call!("vcs_worktree_include", "", vcs::vcs_worktree_include(host, w, root())),
         call!("vcs_diff_with_worktree", "", vcs::vcs_diff_with_worktree(host, w, root(), "HEAD".into())),
         call!("vcs_compare_scope", "", vcs::vcs_compare_scope(host, w, vec![project.root.clone()])),
         call!(
@@ -235,6 +258,28 @@ async fn restricted_vcs_commands_run_no_program_of_the_repository() {
             vcs::vcs_diff_numstat(host, w, root(), project.first.clone(), project.head.clone(), Vec::new())
         ),
         call!("vcs_merge_base", "", vcs::vcs_merge_base(host, w, root(), project.first.clone(), project.head.clone())),
+        call!("vcs_has_commit", "", vcs::vcs_has_commit(host, w, root(), project.head.clone())),
+        call!(
+            "vcs_not_cherry_picked",
+            "",
+            vcs::vcs_not_cherry_picked(host, w, root(), project.head.clone(), project.first.clone(), RequestId(4))
+        ),
+        call!(
+            "vcs_commit_selection_changes",
+            "",
+            vcs::vcs_commit_selection_changes(host, w, root(), vec![project.head.clone()], RequestId(5))
+        ),
+        call!("vcs_default_push_target", "", vcs::vcs_default_push_target(host, w, root(), None)),
+        call!(
+            "vcs_commit_push_target",
+            "",
+            vcs::vcs_commit_push_target(host, w, root(), RequestId(6), project.head.clone())
+        ),
+        call!(
+            "vcs_push_target_choices",
+            "commit",
+            vcs::vcs_push_target_choices(host, w, root(), RequestId(7), None, Some(project.head.clone()))
+        ),
         call!("vcs_has_hook", "", vcs::vcs_has_hook(host, w, root(), "pre-push".into())),
         // A worktree outside the project, opened for its history only.
         call!("vcs_open_external_log", "", vcs::vcs_open_external_log(host, w, external.root.clone())),
@@ -248,8 +293,40 @@ async fn restricted_vcs_commands_run_no_program_of_the_repository() {
         ),
         call!("vcs_revision_files", "external", vcs::vcs_revision_files(host, w, log(), external.head.clone())),
         call!("vcs_commit_files", "external", vcs::vcs_commit_files(host, w, log(), external.head.clone())),
+        (
+            "vcs_review_apply_commit",
+            "paused cherry-pick",
+            Box::pin(async {
+                git(
+                    &project.root,
+                    &["-c", "core.fsmonitor=false", "-c", "filter.marker.clean=", "add", "--", "src/a.txt"],
+                );
+                let marker = project.root.join(".git/CHERRY_PICK_HEAD");
+                let message = project.root.join(".git/MERGE_MSG");
+                std::fs::write(&marker, format!("{}\n", project.head)).unwrap();
+                std::fs::write(&message, "Review staged changes\n").unwrap();
+                let result = vcs::vcs_review_apply_commit(host, w, root(), RequestId(8)).await;
+                std::fs::remove_file(marker).unwrap();
+                std::fs::remove_file(message).unwrap();
+                git(
+                    &project.root,
+                    &[
+                        "-c",
+                        "core.fsmonitor=false",
+                        "-c",
+                        "filter.marker.clean=",
+                        "reset",
+                        "-q",
+                        "HEAD",
+                        "--",
+                        "src/a.txt",
+                    ],
+                );
+                result.ok().flatten().is_some_and(|review| review.paths.len() == 1 && review.paths[0].0 == file)
+            }),
+        ),
         // Last: it rewrites nothing of an existing repository, but it does touch it.
-        call!("vcs_init", "", vcs::vcs_init(host, project.root.clone())),
+        call!("vcs_init", "", vcs::vcs_init(host, w, project.root.clone())),
     ];
 
     // The sweep covers every `vcs_*` command declared `trust = always`: a newly allowed one fails

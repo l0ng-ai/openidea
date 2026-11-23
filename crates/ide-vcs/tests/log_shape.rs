@@ -170,7 +170,7 @@ fn merge_with_options_and_rebase_onto() {
 
     git(dir, &["checkout", "-q", "-b", "topic", &base], None);
     commit(dir, "t.txt", "topic", 3000);
-    repo.rebase_with("main", &RebaseOptions::default()).unwrap();
+    repo.rebase_with(Some("main"), &RebaseOptions::default()).unwrap();
     assert_eq!(git(dir, &["rev-list", "--count", "main..topic"], None), "1");
     assert_eq!(git(dir, &["merge-base", "main", "topic"], None), git(dir, &["rev-parse", "main"], None));
 }

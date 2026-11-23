@@ -85,7 +85,7 @@ impl Drop for Fixture {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn checkout_reloads_clean_open_documents_before_returning() {
     let f = Fixture::new().await;
-    vcs::vcs_checkout(&f.host, "main", None, "other".into(), false, None).await.unwrap();
+    vcs::vcs_checkout(&f.host, "main", None, "other".into(), false, None, None).await.unwrap();
     f.assert_clean(OTHER);
 }
 
@@ -104,7 +104,8 @@ async fn stash_and_unstash_reload_clean_open_documents_before_returning() {
     f.saved_edit(&edited);
     vcs::vcs_stash_push(&f.host, "main", None, None, false, false, None).await.unwrap();
     f.assert_clean(ORIGINAL);
-    vcs::vcs_stash_apply(&f.host, "main", None, 0, true, false, None).await.unwrap();
+    let selected = vcs::vcs_stashes(&f.host, "main", None).await.unwrap().remove(0);
+    vcs::vcs_stash_apply(&f.host, "main", None, selected, true, false, None).await.unwrap();
     f.assert_clean(&edited);
 }
 
@@ -114,15 +115,37 @@ async fn applying_patch_reloads_clean_open_documents_before_returning() {
     std::fs::write(&f.path, OTHER).unwrap();
     let patch = git(&f.project.root, &["diff"]);
     git(&f.project.root, &["restore", "."]);
-    vcs::vcs_apply_patch(&f.host, "main", None, patch).await.unwrap();
+    vcs::vcs_apply_patch(&f.host, "main", None, patch, None).await.unwrap();
     f.assert_clean(OTHER);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn writing_patch_file_reloads_its_clean_open_document() {
     let f = Fixture::new().await;
-    vcs::vcs_write_patch(&f.host, "main", f.path.clone(), OTHER.into()).await.unwrap();
+    vcs::vcs_write_patch(&f.host, "main", f.path.clone(), OTHER.into(), None).await.unwrap();
     f.assert_clean(OTHER);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn patch_file_encoding_round_trips_without_normalizing_hunks() {
+    let f = Fixture::new().await;
+    let path = f.project.root.join("export.patch");
+    let patch =
+        "diff --git a/notes.txt b/notes.txt\n--- a/notes.txt\n+++ b/notes.txt\n@@ -1 +1 @@\n-Café\r\n+Voilà\r\n";
+    vcs::vcs_write_patch(&f.host, "main", path.clone(), patch.into(), Some("utf-16le".into())).await.unwrap();
+    assert!(std::fs::read(&path).unwrap().starts_with(&[0xff, 0xfe]));
+    assert_eq!(vcs::vcs_read_patch(&f.host, "main", path.clone()).await.unwrap(), patch);
+
+    vcs::vcs_write_patch(&f.host, "main", path.clone(), patch.into(), Some("windows-1252".into())).await.unwrap();
+    let encoded = std::fs::read(&path).unwrap();
+    assert!(encoded.windows(5).any(|bytes| bytes == b"Caf\xe9\r"));
+    assert!(
+        vcs::vcs_write_patch(&f.host, "main", path.clone(), "你好".into(), Some("windows-1252".into())).await.is_err()
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), encoded);
+
+    std::fs::write(&path, patch).unwrap();
+    assert_eq!(vcs::vcs_read_patch(&f.host, "main", path).await.unwrap(), patch);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -184,7 +207,7 @@ async fn working_tree_operation_does_not_discard_unsaved_edits() {
         .documents
         .edit(f.doc, version, ChangeSet { changes: vec![TextChange { from: 0, to: 0, insert: "-- local\n".into() }] })
         .unwrap();
-    vcs::vcs_checkout(&f.host, "main", None, "other".into(), false, None).await.unwrap();
+    vcs::vcs_checkout(&f.host, "main", None, "other".into(), false, None, None).await.unwrap();
     let snapshot = f.project.documents.snapshot(f.doc).unwrap();
     assert_eq!(snapshot.text, format!("-- local\n{ORIGINAL}"));
     assert!(snapshot.dirty);
@@ -235,6 +258,6 @@ async fn worktree_checkout_hook_reloads_clean_open_documents() {
     std::fs::write(&hook, "#!/bin/sh\nprintf 'SELECT hook;' > ../project/node_modules/query.sql\n").unwrap();
     std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
     let linked = f.project.root.parent().unwrap().join("linked");
-    vcs::vcs_add_worktree(&f.host, "main", None, linked, "other".into(), None).await.unwrap();
+    vcs::vcs_add_worktree(&f.host, "main", None, linked, "other".into(), None, None, None).await.unwrap();
     f.assert_clean("SELECT hook;");
 }

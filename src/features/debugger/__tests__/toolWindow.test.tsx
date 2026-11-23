@@ -293,7 +293,7 @@ describe("debug tool window", () => {
     expect(screen.getByRole("tab", { name: "Threads & Variables" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Console" })).toBeTruthy();
     expect(screen.getByRole("option", { selected: true })).toHaveTextContent("main:12, main.py");
-    expect(screen.getByPlaceholderText("Evaluate expression (↩) or add a watch (⇧⌘↩)")).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "Evaluate expression" })).toBeTruthy();
     expect(await screen.findByText("{int}")).toBeTruthy();
     expect(screen.getByText("'hi'")).toBeTruthy();
     // A multi-line rendering stays on its row.

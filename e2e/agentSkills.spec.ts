@@ -73,6 +73,8 @@ const initialSkills: AgentSkillState[] = [
       alsoIn: ["claudeWorkspace"],
       userInvocable: true,
       disableModelInvocation: false,
+      contextFork: true,
+      paths: ["src/**/*.tsx", "e2e/*.spec.ts"],
       valid: true,
       warnings: [],
     },
@@ -110,6 +112,22 @@ const initialSkills: AgentSkillState[] = [
     },
     mode: "off",
     origin: "user",
+  },
+  {
+    skill: {
+      name: "release-notes",
+      description: "Draft concise release notes from merged commits and pull requests",
+      hint: "[tag]",
+      path: "/Users/dev/Library/Application Support/ai.l0ng.openidea/plugins/acme.release-tools/1.0.0/skills/release-notes",
+      source: "plugin",
+      alsoIn: [],
+      userInvocable: true,
+      disableModelInvocation: false,
+      valid: true,
+      warnings: [],
+    },
+    mode: "auto",
+    origin: "none",
   },
   {
     skill: {
@@ -190,6 +208,90 @@ test("manages multi-level skills in Settings and per-session overrides via Compo
         );
         return skills;
       };
+      handlers.agent_skills_browse = () => ({
+        owner: "vercel-labs",
+        repo: "agent-skills",
+        gitRef: "main",
+        treeSha: "9f8e7d6c",
+        truncated: false,
+        skills: [
+          { folderName: "find-skills", subpath: "skills/find-skills", fileCount: 2, totalBytes: 1420 },
+          { folderName: "web-design-audit", subpath: "skills/web-design-audit", fileCount: 1, totalBytes: 860 },
+        ],
+      });
+      handlers.agent_skills_preview = ({ subpath }) =>
+        subpath === "skills/web-design-audit"
+          ? {
+              owner: "vercel-labs",
+              repo: "agent-skills",
+              gitRef: "main",
+              treeSha: "9f8e7d6c",
+              subpath: "skills/web-design-audit",
+              skillName: "web-design-audit",
+              description: "Audit responsive layout and contrast tokens",
+              skillMarkdown:
+                "---\nname: web-design-audit\ndescription: Audit responsive layout and contrast tokens\n---\n\nCheck spacing and contrast tokens.\n",
+              files: [{ path: "SKILL.md", size: 860, executable: false, symlink: false }],
+              scanWarnings: [],
+              alreadyInstalledUser: false,
+              alreadyInstalledWorkspace: false,
+            }
+          : {
+              owner: "vercel-labs",
+              repo: "agent-skills",
+              gitRef: "main",
+              treeSha: "9f8e7d6c",
+              subpath: "skills/find-skills",
+              skillName: "find-skills",
+              description: "Discover reusable SKILL.md workflows and inspect bundled scripts",
+              skillMarkdown:
+                "---\nname: find-skills\ndescription: Discover reusable SKILL.md workflows and inspect bundled scripts\nallowed-tools:\n  - Bash(gh:*)\n---\n\nInspect candidate SKILL.md files before installing.\n",
+              files: [
+                { path: "SKILL.md", size: 980, executable: false, symlink: false },
+                { path: "scripts/inspect.sh", size: 440, executable: true, symlink: false },
+              ],
+              scanWarnings: [
+                {
+                  kind: "executableScript",
+                  file: "scripts/inspect.sh",
+                  message: "Contains executable file mode (100755)",
+                },
+                {
+                  kind: "allowedToolsShell",
+                  file: "SKILL.md",
+                  message: "`allowed-tools` grants shell/command execution (`Bash(gh:*)`)",
+                },
+              ],
+              alreadyInstalledUser: false,
+              alreadyInstalledWorkspace: false,
+            };
+      handlers.agent_skills_install = ({ input }) => {
+        const req = input as { subpath: string; scope: "user" | "workspace" };
+        const installedName = req.subpath.endsWith("web-design-audit") ? "web-design-audit" : "find-skills";
+        skills = [
+          ...skills,
+          {
+            skill: {
+              name: installedName,
+              description: "Discover reusable SKILL.md workflows and inspect bundled scripts",
+              hint: null,
+              path:
+                req.scope === "workspace"
+                  ? `/dev/openidea/.agents/skills/${installedName}`
+                  : `/Users/dev/.agents/skills/${installedName}`,
+              source: req.scope === "workspace" ? "workspace" : "user",
+              alsoIn: [],
+              userInvocable: true,
+              disableModelInvocation: false,
+              valid: true,
+              warnings: [],
+            },
+            mode: "auto",
+            origin: "none",
+          },
+        ];
+        return skills;
+      };
       handlers.agent_set_skill_overrides = ({ overrides }) => {
         currentTask = { ...currentTask, skillOverrides: overrides as Record<string, AgentSkillMode> };
         return currentTask;
@@ -226,7 +328,11 @@ test("manages multi-level skills in Settings and per-session overrides via Compo
   const sessionPopup = page.getByRole("dialog", { name: "Session Skills" });
   await expect(sessionPopup).toBeVisible();
   await expect(sessionPopup).toContainText("verify");
+  await expect(sessionPopup).toContainText("fork");
+  await expect(sessionPopup).toContainText("paths");
   await expect(sessionPopup).toContainText("impeccable");
+  await expect(sessionPopup).toContainText("Plugins");
+  await expect(sessionPopup).toContainText("release-notes");
   await expect(sessionPopup).toContainText("Untrusted workspace");
 
   // Enable default-off `impeccable` for this session and turn `pg-tune` off for this session.
@@ -250,12 +356,48 @@ test("manages multi-level skills in Settings and per-session overrides via Compo
   await expect(settingsDialog).toBeVisible();
   await expect(settingsDialog.getByRole("heading", { name: "Skills" })).toBeVisible();
   await expect(settingsDialog.getByTitle(".claude/skills").first()).toHaveText("Claude Code");
+  await expect(settingsDialog.getByText("context: fork")).toBeVisible();
+  await expect(settingsDialog.getByText("paths (2)")).toBeVisible();
 
   await settingsDialog.getByRole("button", { name: /^verify/ }).click();
   await expect(settingsDialog.getByText("Claude Code (.claude/skills)")).toBeVisible();
+  await expect(settingsDialog.getByText("src/**/*.tsx, e2e/*.spec.ts")).toBeVisible();
   await expect(settingsDialog.getByText("SKILL.md is valid")).toBeVisible();
 
+  await settingsDialog.getByRole("tab", { name: /Plugins/ }).click();
+  await expect(settingsDialog.getByText("release-notes")).toBeVisible();
+  await expect(settingsDialog.getByText("[[contributes.skills]]")).toBeVisible();
+
   if (screenshotDir) {
+    await settingsDialog.screenshot({ path: `${screenshotDir}/after-settings-skills-plugins.png` });
+    await settingsDialog.getByRole("tab", { name: /All Sources/ }).click();
     await settingsDialog.screenshot({ path: `${screenshotDir}/after-settings-skills.png` });
+  }
+
+  // Open Install Skill… dialog, fetch repository, verify static scan warning gate, confirm, and install.
+  await settingsDialog.getByRole("button", { name: "Install Skill…" }).click();
+  const installDialog = page.getByRole("dialog", { name: "Install Agent Skill" });
+  await expect(installDialog).toBeVisible();
+  await installDialog.getByLabel("Skill repository").fill("vercel-labs/agent-skills");
+  await installDialog.getByRole("button", { name: "Fetch" }).click();
+
+  await expect(installDialog.getByText("Static security scan found 2 warnings")).toBeVisible();
+  const installBtn = installDialog.getByRole("button", { name: "Install", exact: true });
+  await expect(installBtn).toBeDisabled();
+
+  if (screenshotDir) {
+    await installDialog.screenshot({ path: `${screenshotDir}/after-install-skill-dialog.png` });
+  }
+
+  await installDialog.getByLabel("I reviewed these warnings and want to install this skill").click();
+  await expect(installBtn).toBeEnabled();
+  await installBtn.click();
+
+  await expect(installDialog).toHaveCount(0);
+  await settingsDialog.getByRole("tab", { name: /^User/ }).click();
+  await expect(settingsDialog.getByText("find-skills")).toBeVisible();
+
+  if (screenshotDir) {
+    await settingsDialog.screenshot({ path: `${screenshotDir}/after-settings-skills-installed.png` });
   }
 });

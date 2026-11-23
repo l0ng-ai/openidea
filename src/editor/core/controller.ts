@@ -34,6 +34,7 @@ import {
   textEditorWrapperFor,
   uriOpenerFor,
   useContributions,
+  useEditorDocuments,
   useStandaloneEditor,
   useTextEditorWrappers,
   type EditorCloseSession,
@@ -51,7 +52,8 @@ import { call, commands, isErrorKind, isTauri } from "@/platform/ipc";
 import { openLightweightEditor } from "./openLightweightEditor";
 import { windowBackgroundHex } from "@/workbench/theme";
 import { hoverActionsAt } from "@/platform/hoverActions";
-import { save as saveFileDialog, type DialogFilter as SaveDialogFilter } from "@/platform/dialog";
+import { chooseSavePath } from "@/platform/choosePath";
+import type { DialogFilter as SaveDialogFilter } from "@/platform/dialog";
 import { isUntitledUri, untitledTitle } from "@/platform/virtualDocs";
 import { isRemoteWindow } from "@/platform/remote";
 import { auxiliaryWindow } from "@/platform/auxWindow";
@@ -375,6 +377,17 @@ export class EditorController implements SlotHost {
           .find((tab) => kinds.get(tab.input.kind)?.standalone);
         useStandaloneEditor.setState({ title: standalone ? tabTitle(standalone.input, kinds) : null });
       }),
+      useEditorDocuments.subscribe(() => {
+        const current = useTabs.getState();
+        const kinds = useContributions.getState().editorKinds;
+        let next = current;
+        for (const [paneId, pane] of Object.entries(current.panes)) {
+          for (const tab of pane.tabs) {
+            if (tab.preview && inputDirty(tab.input, kinds)) next = promoteTab(next, paneId, tab.id);
+          }
+        }
+        if (next !== current) useTabs.setState(next, true);
+      }),
     );
     tabOptions.activateOnClose = editorPrefs().tabs.activateOnClose as typeof tabOptions.activateOnClose;
     let prevSettings = useProject.getState().settings;
@@ -675,7 +688,10 @@ export class EditorController implements SlotHost {
     const state = restoreTabsState(session, fileKey);
     const kinds = useContributions.getState().editorKinds;
     for (const pane of Object.values(state.panes))
-      pane.tabs = pane.tabs.map((tab) => (documentLifecycle(tab.input, kinds) ? { ...tab, preview: false } : tab));
+      pane.tabs = pane.tabs.map((tab) => {
+        const lifecycle = documentLifecycle(tab.input, kinds);
+        return lifecycle && !lifecycle.allowPreview ? { ...tab, preview: false } : tab;
+      });
     const current = useTabs.getState();
     const liveKeys = openKeys(current);
     this.restoredViews = new Map(Object.entries(session.files).filter(([path]) => !liveKeys.has(fileKey(path))));
@@ -1284,7 +1300,7 @@ export class EditorController implements SlotHost {
    * every tab showing it becomes a file tab.
    */
   private async saveUntitled(model: import("./model/document").DocModel): Promise<boolean> {
-    const path = await saveFileDialog({
+    const path = await chooseSavePath({
       title: tx("Save As"),
       defaultPath: this.saveAsSuggestion(model),
       filters: await languageFilters(),
@@ -1359,13 +1375,14 @@ export class EditorController implements SlotHost {
     this.checkOpening(generation);
     this.navSuppress++;
     try {
-      let s = useTabs.getState();
+      const before = useTabs.getState();
+      let s = before;
       const activate = this.isCurrentOpening(generation);
       if (activate) restoreMaximizedToolWindow();
-      const preview =
-        !!o.preview &&
-        editorPrefs().tabs.previewTab &&
-        !documentLifecycle(input, useContributions.getState().editorKinds);
+      const kinds = useContributions.getState().editorKinds;
+      const lifecycle = documentLifecycle(input, kinds);
+      const canPreview = !lifecycle || (lifecycle.allowPreview && !documentDirty({ input, lifecycle }));
+      const preview = !!o.preview && editorPrefs().tabs.previewTab && canPreview;
       if (!activate && preview) return;
       let paneId = s.panes[generation.pane] ? generation.pane : activate ? s.activePane : null;
       if (!paneId) return;
@@ -1387,12 +1404,11 @@ export class EditorController implements SlotHost {
       if (found && (!(o.side || o.pane) || found.paneId === paneId)) {
         paneId = found.paneId;
         if (activate) s = activateTab(setActivePane(s, paneId), paneId, found.tab.id);
-        if (!o.preview || documentLifecycle(input, useContributions.getState().editorKinds))
-          s = promoteTab(s, paneId, found.tab.id);
+        if (!o.preview || !canPreview) s = promoteTab(s, paneId, found.tab.id);
         tabId = found.tab.id;
         if (activate && found.tab.input.data !== input.data && input.data !== undefined)
           s = openTab(s, paneId, input, {
-            preview: o.preview && !documentLifecycle(input, useContributions.getState().editorKinds),
+            preview: o.preview && canPreview,
             activate,
           }).state;
       } else {
@@ -1417,6 +1433,8 @@ export class EditorController implements SlotHost {
       } finally {
         this.admitting = false;
       }
+      const replaced = preview && closedDocuments(before, s, kinds);
+      if (replaced && replaced.length) await this.releaseDocuments(replaced).catch((e) => this.documentError(e));
       const canFocus = () => this.isCurrentOpening(generation) && this.activeTabOf()?.id === tabId;
       await this.enforcePaneTabLimit(paneId, activate ? tabId : (useTabs.getState().panes[paneId]?.active ?? tabId));
       if (!isTextInput(input)) {
@@ -2255,7 +2273,7 @@ export class EditorController implements SlotHost {
     if (!input) return false;
     const lifecycle = documentLifecycle(input, useContributions.getState().editorKinds);
     const run = lifecycle?.[command];
-    if (!run) return false;
+    if (!run || lifecycle.handlesHistory?.(input) === false) return false;
     void run.call(lifecycle, input).catch((e) => this.documentError(e));
     return true;
   }
@@ -2307,6 +2325,9 @@ export class EditorController implements SlotHost {
                       },
                     ] as MenuItem[])
                   : []),
+                // The links the project view and the editor chooser offer (features/vcs: GitHub Link).
+                { kind: "separator" },
+                ...menuGroupItems("copyPath", { paths: [path] }),
               ],
             },
             { kind: "separator" },

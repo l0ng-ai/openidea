@@ -8,12 +8,13 @@
  * Exclude with Preserve Case, Esc closes. `FindPanel` is the bar itself, for
  * any CodeMirror view (the diff viewer's sides); `FindBar` is it on an editor pane.
  */
+import { SearchHistoryMenu } from "@/ui/SearchHistoryMenu";
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { create } from "zustand";
 import clsx from "clsx";
 import type { EditorView } from "@codemirror/view";
 import { Button, IconButton, Menu, SearchField, T, type MenuItem } from "@/ui";
-import { SEARCH_CONTEXTS, rememberSearch, searchHistory } from "@/platform/search";
+import { SEARCH_CONTEXTS, rememberSearch } from "@/platform/search";
 import { editorController, useFindBars, useTabs } from "../controller";
 import {
   countMatches,
@@ -557,19 +558,6 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
         ? "0 results"
         : `${count.current || "?"}/${count.total}${count.capped ? "+" : ""}`;
 
-  const historyItems = (kind: "find" | "replace"): MenuItem[] => {
-    const h = searchHistory(kind);
-    return h.length
-      ? [
-          { kind: "header", label: kind === "find" ? "Recent Searches" : "Recent Replacements" },
-          ...h.map((q) => ({
-            label: q.replace(/\n/g, "⏎"),
-            verbatim: true,
-            run: () => setOpts(kind === "find" ? { search: q } : { replace: q }),
-          })),
-        ]
-      : [{ label: kind === "find" ? "No recent searches" : "No recent replacements", disabled: true }];
-  };
   const filterItems: MenuItem[] = [
     {
       label: "Search In Selection",
@@ -652,6 +640,7 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
             aria-label="Find"
             invalid={invalid || none}
             multiline
+            maxRows={3}
             onHistory={() => setHistoryMenu("find")}
             onKeyDown={(e) => onKeyDown(e, "find")}
             className={styles.findInput}
@@ -722,6 +711,7 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
                 placeholder="Replace"
                 aria-label="Replace"
                 multiline
+                maxRows={3}
                 onHistory={() => setHistoryMenu("replace")}
                 onKeyDown={(e) => onKeyDown(e, "replace")}
                 toggles={[
@@ -765,12 +755,10 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
             </div>
           </>
         )}
-        <Menu
-          open={historyMenu !== null}
+        <SearchHistoryMenu
+          kind={historyMenu}
           anchor={historyMenu === "replace" ? replaceBoxRef : findBoxRef}
-          items={historyMenu ? historyItems(historyMenu) : []}
-          placement="bottom-start"
-          aria-label="Recent searches"
+          onSelect={(value) => setOpts(historyMenu === "replace" ? { replace: value } : { search: value })}
           onClose={() => setHistoryMenu(null)}
         />
         <Menu

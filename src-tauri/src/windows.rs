@@ -178,10 +178,26 @@ pub struct DiffLaunch {
     /// Absolute path of the file (the right side's path).
     pub path: String,
     pub left: DiffSide,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub middle: Option<DiffSide>,
     pub right: DiffSide,
-    /// 0-based line of the right side to reveal.
+    /// 0-based line to reveal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_side: Option<DiffLineSide>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub col: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain: Option<Vec<DiffLaunch>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DiffLineSide {
+    Left,
+    Middle,
+    Right,
 }
 
 /// The two files of a command-line diff (`openidea diff a.txt b.txt`), both sides editable.
@@ -1820,7 +1836,7 @@ pub fn open_comparison_window(
 fn diff_window_id(diff: &DiffLaunch) -> u64 {
     use std::hash::{DefaultHasher, Hash, Hasher};
     let mut hasher = DefaultHasher::new();
-    (&diff.path, &diff.left, &diff.right).hash(&mut hasher);
+    (&diff.path, &diff.left, &diff.middle, &diff.right).hash(&mut hasher);
     hasher.finish()
 }
 
@@ -2222,12 +2238,19 @@ mod tests {
         let mut diff = DiffLaunch {
             path: "/p/a.txt".into(),
             left: DiffSide::Rev { rev: "HEAD".into(), path: None, label: None },
+            middle: None,
             right: DiffSide::Worktree { label: None, label_detail: None },
             line: None,
+            line_side: None,
+            col: None,
+            chain: None,
         };
         let id = diff_window_id(&diff);
         diff.line = Some(12);
         assert_eq!(diff_window_id(&diff), id);
+        diff.middle = Some(DiffSide::Rev { rev: ":0".into(), path: None, label: None });
+        assert_ne!(diff_window_id(&diff), id);
+        diff.middle = None;
         diff.right = DiffSide::Rev { rev: ":0".into(), path: None, label: None };
         assert_ne!(diff_window_id(&diff), id);
         diff.path = "/p/b.txt".into();
