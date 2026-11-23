@@ -313,7 +313,7 @@ export function activate(): () => void {
       {
         id: "agents.addAgent",
         title: "More Agents…",
-        description: "Opens Settings › Tools › Agents: installs, updates or removes agents from the ACP Registry.",
+        description: "Install, update, or remove agents from the ACP Registry.",
         category: "Agents",
         icon: "plugin",
         keywords: ["agent", "acp", "registry", "install", "update"],
@@ -321,12 +321,11 @@ export function activate(): () => void {
       },
       {
         id: "agents.mcpServers",
-        title: "External MCP Servers…",
-        description:
-          "Opens Settings › Agents › External MCP Servers: configures the User and Workspace MCP servers coding agents use.",
+        title: "MCP Connections…",
+        description: "Configure the MCP servers that agents can use.",
         category: "Agents",
         icon: "settings",
-        keywords: ["mcp", "model context protocol", "servers", "tools", "agent"],
+        keywords: ["mcp", "model context protocol", "servers", "tools", "agent", "External MCP Servers"],
         run: () => void executeAction("file.settings", MCP_PAGE),
       },
       {

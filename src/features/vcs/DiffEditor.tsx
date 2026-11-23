@@ -121,6 +121,7 @@ import { PaddedPanes, UnalignedPanes, type DiffPanes } from "./diffScroll";
 import { groupOf } from "./changes";
 import { commitLineTarget, EXCLUDE_COMMIT_LINES, INCLUDE_COMMIT_LINES, inclusionGutter } from "./hunkInclusion";
 import { unifiedCommitLines, unifiedCommitSelection } from "./unifiedCommitLines";
+import { unifiedLineNumbers } from "./unifiedLineNumbers";
 import { hunksOverlapping } from "./hunks";
 import { requireDisplayedText, staleDiff, writeIndexChunk } from "./stagingDiffEdits";
 import {
@@ -735,7 +736,7 @@ function TwoPaneDiff({
       viewerBase({
         readOnly: !editable,
         findBar: true,
-        lineNumbers: viewMode === "split" && notes === "left" ? "after" : true,
+        lineNumbers: viewMode === "split" ? (notes === "left" ? "after" : true) : single,
       }),
       collapseUnchanged ? collapsedDiffLines() : [],
       changedRanges,
@@ -924,6 +925,7 @@ function TwoPaneDiff({
           includable ? unifiedCommitSelection : [],
           highlightChanges ? diffWords : [],
           unifiedOnLeft ? unifiedLeftDiff(highlightChanges) : [],
+          single ? [] : unifiedLineNumbers(unifiedOnLeft),
           unifiedMergeView({
             original: unifiedOnLeft ? textB : textA,
             highlightChanges,

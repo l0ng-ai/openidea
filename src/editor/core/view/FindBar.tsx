@@ -640,6 +640,7 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
             aria-label="Find"
             invalid={invalid || none}
             multiline
+            maxRows={3}
             onHistory={() => setHistoryMenu("find")}
             onKeyDown={(e) => onKeyDown(e, "find")}
             className={styles.findInput}
@@ -710,6 +711,7 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
                 placeholder="Replace"
                 aria-label="Replace"
                 multiline
+                maxRows={3}
                 onHistory={() => setHistoryMenu("replace")}
                 onKeyDown={(e) => onKeyDown(e, "replace")}
                 toggles={[

@@ -55,7 +55,10 @@ export const commands = {
 	 */
 	agentCustomSave: (input: CustomAgentInput) => typedError<null, IdeError>(__TAURI_INVOKE("agent_custom_save", { input })),
 	agentDelete: (task: string, removeWorktree: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("agent_delete", { task, removeWorktree })),
-	/**  Entries of `task`'s conversation, or of its subagent `subagent`'s. */
+	/**
+	 *  Entries of `task`'s conversation, or of its subagent `subagent`'s. Async so a long
+	 *  conversation is cloned and serialised off the main thread.
+	 */
 	agentEntries: (task: string, subagent: string | null) => typedError<AgentEntry[], IdeError>(__TAURI_INVOKE("agent_entries", { task, subagent })),
 	/**  Sessions of the project on this machine that no task holds yet, newest first. */
 	agentExternalSessions: () => typedError<ExternalSession[], IdeError>(__TAURI_INVOKE("agent_external_sessions")),
@@ -95,6 +98,10 @@ export const commands = {
 	agentProbe: (provider: string, refresh: boolean) => typedError<AgentProbe, IdeError>(__TAURI_INVOKE("agent_probe", { provider, refresh })),
 	/**  Sends a message; while the agent works it is queued, or with `now` it interrupts the turn. */
 	agentPrompt: (task: string, prompt: AgentPrompt, now: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("agent_prompt", { task, prompt, now })),
+	/**
+	 *  Reads the ACP registry's install state for every provider from disk, so it runs on the
+	 *  blocking pool.
+	 */
 	agentProviders: () => typedError<AgentProvider[], IdeError>(__TAURI_INVOKE("agent_providers")),
 	/**  Refreshes the model catalog; force bypasses freshness, not the cooldown. */
 	agentRefreshModels: (provider: string, force: boolean, model: string | null) => typedError<AgentModelCatalog, IdeError>(__TAURI_INVOKE("agent_refresh_models", { provider, force, model })),
@@ -673,7 +680,7 @@ export const commands = {
 	 *  `charset` (writes the BOM for `utf-8-bom` / UTF-16).
 	 */
 	fsCreateFile: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_create_file", { path })),
-	fsCreateFileBytes: (path: string, data: number[]) => typedError<null, IdeError>(__TAURI_INVOKE("fs_create_file_bytes", { path, data })),
+	fsCreateFileBytes: (path: string, data: IpcBytes) => typedError<null, IdeError>(__TAURI_INVOKE("fs_create_file_bytes", { path, data })),
 	/**  Moving to the trash can take a while (large trees): kept off the main thread. */
 	fsDelete: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_delete", { path })),
 	/**  Moves an item to the Trash and returns the snapshot for Project View Undo. */
@@ -700,6 +707,11 @@ export const commands = {
 	fsRename: (from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_rename", { from, to })),
 	/**  The existing file or directory a path written in `from` names (`href`, `url()`, a string literal). */
 	fsResolveReference: (from: IpcPath, value: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("fs_resolve_reference", { from, value })),
+	/**
+	 *  The scratch files' folder of this host (`<data dir>/scratches`), created. A remote window
+	 *  keeps its scratches on the server, where its file commands run.
+	 */
+	fsScratchesDir: () => typedError<IpcPath, IdeError>(__TAURI_INVOKE("fs_scratches_dir")),
 	/**
 	 *  Toggle Read-only Attribute: sets the writable bit (and the open document's
 	 *  state). Returns whether the file is read-only now.
@@ -1256,7 +1268,10 @@ export const commands = {
 	pluginSetEnabled: (id: string, enabled: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_set_enabled", { id, enabled })),
 	/**  Sets the marketplace index URL (an `https://…/index.json` or a local path; `None` for the default). */
 	pluginSetMarketUrl: (url: string | null) => __TAURI_INVOKE<void>("plugin_set_market_url", { url }),
-	/**  Stores a plugin secret (`None` or empty deletes it). The value never goes back to the UI or the plugin. */
+	/**
+	 *  Stores a plugin secret (`None` or empty deletes it). The value never goes back to the UI or the plugin.
+	 *  The keychain call takes up to hundreds of milliseconds, so it runs on the blocking pool.
+	 */
 	pluginSetSecret: (pluginId: string, name: string, value: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_set_secret", { pluginId, name, value })),
 	/**  Selects a plugin theme; both `None` restores the built-in theme. */
 	pluginSetTheme: (pluginId: string | null, themeId: string | null) => typedError<{
@@ -1355,9 +1370,15 @@ export const commands = {
 	/**
 	 *  Sets a `projectStructure.*` key in the settings of `root`, a project attached to the window's
 	 *  project (Mark Directory as there). Every open window holding that project follows.
+	 *  Like `project_workspace_members`, its `for_project` settings re-parse runs off the IPC thread.
 	 */
 	projectWorkspaceMemberSet: (root: string, key: string, value: string) => typedError<null, IdeError>(__TAURI_INVOKE("project_workspace_member_set", { root, key, value })),
-	/**  The workspace projects outside the window's project folder, for Mark Directory as there. */
+	/**
+	 *  The workspace projects outside the window's project folder, for Mark Directory as there.
+	 *  Each member's `for_project().layer(Project)` re-parses both settings layers and validates the
+	 *  merged tree against `Settings`; that stack-hungry work must not run on the IPC (main) thread,
+	 *  whose 1 MiB stack overflows on project open (STATUS_STACK_OVERFLOW).
+	 */
 	projectWorkspaceMembers: () => typedError<WorkspaceMember[], IdeError>(__TAURI_INVOKE("project_workspace_members")),
 	/**
 	 *  System Settings › HTTP Proxy › Check connection: GETs `url` through `proxy` as
@@ -1802,7 +1823,7 @@ export const commands = {
 	 *  to start the shell takes tens of milliseconds, a frozen UI if run there.
 	 */
 	termSpawn: (options: TerminalOptions, onOutput: Channel<string>) => typedError<TerminalInfo, IdeError>(__TAURI_INVOKE("term_spawn", { options, onOutput })),
-	termStoreImage: (id: TerminalId, data: number[], mime: string) => typedError<string, IdeError>(__TAURI_INVOKE("term_store_image", { id, data, mime })),
+	termStoreImage: (id: TerminalId, data: IpcBytes, mime: string) => typedError<string, IdeError>(__TAURI_INVOKE("term_store_image", { id, data, mime })),
 	termWrite: (id: TerminalId, data: string) => typedError<null, IdeError>(__TAURI_INVOKE("term_write", { id, data })),
 	/**
 	 *  Installs (or reinstalls) a tool into `<app-data>/tools`, streaming output through
@@ -2513,6 +2534,8 @@ chosen: string | null } | { type: "thought"; text: string;
 startedMs?: number | null } | { type: "tool"; id: string; title: string; 
 /**  ACP tool kind: `read`, `edit`, `execute`, `search`, `fetch`, `think`… */
 kind: string; status: AgentToolStatus; locations: IpcPath[]; 
+/**  Images returned by the tool, kept separately from its truncated text. */
+images?: AgentImage[]; 
 /**  Text the tool reported (command output…), truncated. */
 output: string | null; diffs: AgentToolDiff[]; 
 /**  When the call started and ended (ms since the epoch); `None` in tasks saved before. */
@@ -6537,7 +6560,7 @@ report?: PushReport | null } |
 { type: "amendConflict"; commit: string };
 
 export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "invalidInput" | 
-/**  Document version mismatch; the UI must resync the full text. */
+/**  The requested state is stale; the UI must use the current snapshot. */
 "outOfSync" | "cancelled" | "timedOut" | 
 /**  A required external tool (language server, git, debugger) is unavailable. */
 "unavailable" | "io" | "protocol" | "internal";
@@ -8349,6 +8372,9 @@ export type InvalidateCachesOptions = {
 	/**  Build tool sync results (Maven / Gradle) and other per-project caches. */
 	buildCaches?: boolean,
 };
+
+/**  A binary argument or result of an IPC command. */
+export type IpcBytes = string;
 
 /**  A path field of an IPC type. */
 export type IpcPath = string;

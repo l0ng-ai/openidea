@@ -35,7 +35,7 @@ beforeEach(() => {
   });
   vi.spyOn(commands, "fsOpenWithSystem").mockResolvedValue(ok);
   vi.spyOn(commands, "fsCreateFileBytes").mockImplementation(async (path, data) => {
-    written.push({ path, text: new TextDecoder().decode(new Uint8Array(data)) });
+    written.push({ path, text: new TextDecoder().decode(Uint8Array.from(atob(data), (c) => c.charCodeAt(0))) });
     return ok;
   });
 });

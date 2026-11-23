@@ -5,9 +5,11 @@
  * Request Changes (not for the author) and Comment. Shown above the button that opened
  * it, or centred in the window. 500×200, resizable.
  */
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useState } from "react";
 import { Button, IconButton, Popup, Spinner, T } from "@/ui";
+import { resolveMonoFont } from "@/platform/fonts";
 import { useTx, tx } from "@/platform/i18n";
+import { useProject } from "@/platform/project";
 import { ask } from "@/workbench/messages";
 import { errorMessage } from "../api/client";
 import type { GHPullRequestReviewEvent } from "../api/types";
@@ -25,26 +27,25 @@ export function showSubmitReview(number: number, anchor?: Element | null): Promi
   // The details and the pending review are needed for the buttons and the header.
   void loadPullRequestData(number, "details").catch(() => undefined);
   void loadPullRequestData(number, "pendingReview").catch(() => undefined);
-  const at = anchor?.isConnected
-    ? anchor
-    : { x: Math.round(window.innerWidth / 2) - 250, y: Math.round(window.innerHeight / 3) };
   return openDialog<true>((done) => (
-    <SubmitReview number={number} draftKey={draftKey} anchor={at} onClose={() => done(null)} />
+    <SubmitReview
+      number={number}
+      draftKey={draftKey}
+      anchor={anchor?.isConnected ? anchor : "center"}
+      onClose={() => done(null)}
+    />
   ));
 }
 
-function SubmitReview(props: {
-  number: number;
-  draftKey: string;
-  anchor: Element | { x: number; y: number };
-  onClose: () => void;
-}) {
-  const { number, draftKey, onClose } = props;
+function SubmitReview(props: { number: number; draftKey: string; anchor: Element | "center"; onClose: () => void }) {
+  const { number, draftKey, anchor, onClose } = props;
   const t = useTx();
   const details = usePullRequestData(number, "details").value;
   const pending = usePullRequestData(number, "pendingReview").value;
   const text = useReviewText((s) => s.text[draftKey] ?? "");
   const activeDraftKey = useGhRepository((s) => reviewDraftKey(s.connection, number));
+  const editor = useProject((s) => s.settings?.editor);
+  const { family, size } = resolveMonoFont(undefined, editor);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -94,12 +95,11 @@ function SubmitReview(props: {
       setBusy(false);
     }
   };
-  const anchored = "getBoundingClientRect" in props.anchor;
   return (
     <Popup
       open
-      anchor={props.anchor}
-      placement={anchored ? "top-start" : "bottom-start"}
+      anchor={anchor}
+      placement="top-start"
       onClose={(reason) => {
         // A click outside does not drop a review while it is being sent.
         if (reason !== "outside" || !busy) onClose();
@@ -107,26 +107,38 @@ function SubmitReview(props: {
       role="dialog"
       aria-label={t("Submit Review")}
       className={styles.submitPopup}
-      style={{ "--submit-width": "500px", "--submit-height": "200px" } as CSSProperties}
+      resizable="both"
+      minWidth={260}
+      minHeight={160}
     >
       <div className={styles.submitHeader}>
-        <span className={styles.bold}>
-          <T>Submit Review</T>
-        </span>
-        {comments > 0 && (
-          <span>{comments === 1 ? t`${comments} pending comment` : t`${comments} pending comments`}</span>
-        )}
-        <span className={styles.flex} />
-        {pending && comments > 0 && (
-          <IconButton icon="trash" size="small" title="Discard pending comments" disabled={busy} onClick={discard} />
-        )}
-        <IconButton icon="close" size="small" title="Close" onClick={onClose} />
+        <div className={styles.submitHeading}>
+          <span className={styles.bold}>
+            <T>Submit Review</T>
+          </span>
+          {comments > 0 && (
+            <span className={styles.submitCount}>
+              {comments === 1 ? t`${comments} pending comment` : t`${comments} pending comments`}
+            </span>
+          )}
+        </div>
+        <div className={styles.submitHeaderActions}>
+          {pending && comments > 0 && (
+            <IconButton icon="trash" size="small" title="Discard pending comments" disabled={busy} onClick={discard} />
+          )}
+          <IconButton icon="close" size="small" title="Close" onClick={onClose} />
+        </div>
       </div>
       <textarea
         data-autofocus
         className={styles.submitEditor}
         placeholder={t("Review comment")}
         aria-label={t("Review comment")}
+        style={{
+          fontFamily: family,
+          fontSize: size,
+          lineHeight: editor?.lineHeight ? `${editor.lineHeight}px` : undefined,
+        }}
         value={text}
         onChange={(e) => {
           setError(null);
@@ -134,7 +146,7 @@ function SubmitReview(props: {
         }}
       />
       {error && (
-        <div className={styles.submitError}>
+        <div className={styles.submitError} role="alert">
           <T>Failed to submit review</T>
           <div className={styles.secondary}>{error}</div>
         </div>

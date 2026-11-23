@@ -488,7 +488,7 @@ async fn find_java_module(call: &Call, main: &str) -> IdeResult<Option<String>> 
 /// (compile errors are added to `errors`). Other configurations are returned as they are.
 async fn resolve_jvm_application(
     call: &Call,
-    config: RunConfig,
+    mut config: RunConfig,
     errors: &mut BuildErrors,
 ) -> IdeResult<Result<RunConfig, String>> {
     if !JVM_APPLICATION_KINDS.contains(&config.kind.as_str()) {
@@ -544,6 +544,7 @@ async fn resolve_jvm_application(
         (Some(exec), "java") => exec.clone(),
         _ => config.command.clone(),
     };
+    config.extras.module = Some(module);
     Ok(Ok(RunConfig { command, args, ..config }))
 }
 
