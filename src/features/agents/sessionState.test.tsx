@@ -738,6 +738,31 @@ describe("the conversation selection", () => {
 });
 
 describe("scrolling", () => {
+  it("hides Jump to Latest while the end is visible even when following has stopped", async () => {
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Answer A");
+    const el = stream();
+    let height = 1000;
+    Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
+    el.style.paddingBottom = "12px";
+    el.scrollTop = 599.75;
+    fireEvent.scroll(el);
+    fireEvent.wheel(el, { deltaY: -2 });
+    const jump = () => screen.queryByRole("button", { name: "Jump to Latest" });
+    expect(jump()).toBeNull();
+    el.scrollTop = 594;
+    fireEvent.scroll(el);
+    expect(jump()).toBeNull();
+    el.scrollTop = 580;
+    fireEvent.scroll(el);
+    expect(jump()).toBeInTheDocument();
+    // The end moves into view when content shrinks, without a downward gesture.
+    height = 980;
+    fireEvent.scroll(el);
+    expect(jump()).toBeNull();
+  });
+
   it("returns to the end when the user sends a message while scrolled up", async () => {
     const reply = { type: "agent", text: "Initial reply" } as AgentEntry;
     useAgents.setState({ entries: new Map([["A", [reply]]]) });
