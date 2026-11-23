@@ -28,18 +28,22 @@ pub enum VenvTool {
     Poetry,
     /// `conda create -n <name> -y` for a bare name, else `-p <location>` (conda must be on PATH).
     Conda,
+    /// `pipenv --python <base>` in the project (pipenv must be on PATH).
+    Pipenv,
 }
 
 /// Creates a virtualenv at `location` with `tool` and returns its interpreter.
-/// `base` is the interpreter uv / venv build on, or the one poetry's env uses.
+/// `base` is the interpreter uv / venv build on, or the one poetry's / pipenv's env uses.
+/// `install` also installs the packages the project declares, for the tool that reads them (pipenv).
 pub fn create_venv(
     tool: VenvTool,
     base: &Path,
     location: &Path,
+    install: bool,
     cancel: &CancellationToken,
     on_line: &dyn Fn(String),
 ) -> IdeResult<Sdk> {
-    create_venv_with(tool, base, location, which, cancel, on_line)
+    create_venv_with(tool, base, location, install, which, cancel, on_line)
 }
 
 /// [`create_venv`] with the tool lookup injectable (tests fake `uv` / `poetry`).
@@ -47,6 +51,7 @@ pub(crate) fn create_venv_with(
     tool: VenvTool,
     base: &Path,
     location: &Path,
+    install: bool,
     which: impl Fn(&str) -> Option<PathBuf>,
     cancel: &CancellationToken,
     on_line: &dyn Fn(String),
@@ -86,6 +91,7 @@ pub(crate) fn create_venv_with(
         }
         VenvTool::Poetry => create_poetry_env(base, location, &which, cancel, on_line),
         VenvTool::Conda => create_conda_env(base, location, &which, cancel, on_line),
+        VenvTool::Pipenv => create_pipenv_env(base, location, install, &which, cancel, on_line),
     }
 }
 
@@ -116,6 +122,48 @@ fn create_poetry_env(
     let home = query_in(&poetry, &["env", "info", "--path"], Some(project), &[], Duration::from_secs(30))
         .map(PathBuf::from)
         .ok_or_else(|| IdeError::internal("poetry created no environment".to_owned()))?;
+    let python = home.join(bin_dir()).join(exe("python"));
+    crate::discover::python_sdk(&python, "venv", Some(project))
+        .ok_or_else(|| IdeError::internal(format!("{} was not created", python.display())))
+}
+
+/// `pipenv --python <base>` in the project directory (the parent of `location`, a hint as
+/// for Poetry: pipenv keeps its envs under `WORKON_HOME`), or `pipenv install --dev --python
+/// <base>` to also install the packages of an existing `Pipfile`; then `pipenv --venv` for
+/// the interpreter it made or reused. Pipenv writes a `Pipfile` when the project has none.
+fn create_pipenv_env(
+    base: &Path,
+    location: &Path,
+    install: bool,
+    which: &dyn Fn(&str) -> Option<PathBuf>,
+    cancel: &CancellationToken,
+    on_line: &dyn Fn(String),
+) -> IdeResult<Sdk> {
+    let pipenv = which("pipenv")
+        .ok_or_else(|| IdeError::unavailable("Pipenv is not installed (install it from https://pipenv.pypa.io)"))?;
+    let project = location
+        .parent()
+        .filter(|p| p.is_dir())
+        .ok_or_else(|| IdeError::invalid("Pipenv environments need an open project directory"))?;
+    // No prompts or spinner, and the project's own environment even when the IDE was
+    // started from inside another virtualenv.
+    const ENV: [(&str, &str); 3] = [("PIPENV_YES", "1"), ("PIPENV_NOSPIN", "1"), ("PIPENV_IGNORE_VIRTUALENVS", "1")];
+    let mut args = vec!["--python".to_owned(), base.to_string_lossy().into_owned()];
+    if install && project.join("Pipfile").is_file() {
+        args.splice(0..0, ["install".to_owned(), "--dev".to_owned()]);
+    }
+    let env = ENV.map(|(k, v)| (k.to_owned(), v.to_owned()));
+    stream(&pipenv, &args, Some(project), &env, cancel, on_line)?;
+    let home = query_in(&pipenv, &["--venv"], Some(project), &ENV, Duration::from_secs(30))
+        .map(PathBuf::from)
+        .filter(|home| home.is_dir())
+        .ok_or_else(|| IdeError::internal("pipenv created no environment".to_owned()))?;
+    // Pipenv records the project only when it creates the environment: one it reuses after an
+    // interrupted creation has no `.project`, and detection would not know whose it is.
+    let record = home.join(".project");
+    if !record.exists() {
+        let _ = std::fs::write(record, project.to_string_lossy().as_bytes());
+    }
     let python = home.join(bin_dir()).join(exe("python"));
     crate::discover::python_sdk(&python, "venv", Some(project))
         .ok_or_else(|| IdeError::internal(format!("{} was not created", python.display())))

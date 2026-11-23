@@ -67,7 +67,13 @@ describe("Add Python Interpreter", () => {
   it("lists the environment types PyCharm offers", async () => {
     open();
     await waitFor(() => expect(mocks.detect).toHaveBeenCalled());
-    for (const label of ["Virtualenv Environment", "Conda Environment", "uv Environment", "Poetry Environment"]) {
+    for (const label of [
+      "Virtualenv Environment",
+      "Conda Environment",
+      "uv Environment",
+      "Poetry Environment",
+      "Pipenv Environment",
+    ]) {
       expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
     }
   });
@@ -82,6 +88,7 @@ describe("Add Python Interpreter", () => {
       "venv",
       "/usr/bin/python3",
       "/project/.venv",
+      false,
       expect.anything(),
       expect.anything(),
     );
@@ -105,6 +112,7 @@ describe("Add Python Interpreter", () => {
         tool,
         "/usr/bin/python3",
         target,
+        false,
         expect.anything(),
         expect.anything(),
       );
@@ -116,6 +124,7 @@ describe("Add Python Interpreter", () => {
       "conda",
       "/usr/bin/python3",
       "ds",
+      false,
       expect.anything(),
       expect.anything(),
     );
@@ -127,9 +136,27 @@ describe("Add Python Interpreter", () => {
       "poetry",
       "/usr/bin/python3",
       "/project/.venv",
+      false,
       expect.anything(),
       expect.anything(),
     );
+    await act(async () => finish(ok(VENV)));
+    // Pipenv keeps its own location too, and installs the Pipfile's packages unless told not to.
+    fireEvent.click(screen.getByRole("button", { name: "Pipenv Environment" }));
+    await waitFor(() => expect(screen.getByLabelText("Location:")).toBeDisabled());
+    for (const install of [true, false]) {
+      fireEvent.click(screen.getByRole("button", { name: "OK" }));
+      expect(mocks.createVenv).toHaveBeenLastCalledWith(
+        "pipenv",
+        "/usr/bin/python3",
+        "/project/.venv",
+        install,
+        expect.anything(),
+        expect.anything(),
+      );
+      await act(async () => finish(ok(VENV)));
+      fireEvent.click(screen.getByRole("checkbox", { name: "Install packages from Pipfile" }));
+    }
   });
 
   it("adds an existing interpreter without creating anything", async () => {

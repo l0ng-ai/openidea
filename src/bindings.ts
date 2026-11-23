@@ -1641,8 +1641,11 @@ export const commands = {
 	 *  with the Maven / Gradle dependency jars of the build model.
 	 */
 	sdkProjectLibraries: (request: RequestId, onGroups: Channel<LibraryGroup[]>) => typedError<LibraryGroup[], IdeError>(__TAURI_INVOKE("sdk_project_libraries", { request, onGroups })),
-	/**  Creates a Python environment with `tool` (`venv` / `uv` / `poetry`); output streams through `on_output`. */
-	sdkPythonCreateVenv: (tool: VenvTool, base: string, location: string, request: RequestId, onOutput: Channel<string>) => typedError<Sdk, IdeError>(__TAURI_INVOKE("sdk_python_create_venv", { tool, base, location, request, onOutput })),
+	/**
+	 *  Creates a Python environment with `tool` (`venv` / `uv` / `poetry` / `pipenv`); output streams through
+	 *  `on_output`. `install_packages` also installs what the project's `Pipfile` declares (pipenv).
+	 */
+	sdkPythonCreateVenv: (tool: VenvTool, base: string, location: string, installPackages: boolean, request: RequestId, onOutput: Channel<string>) => typedError<Sdk, IdeError>(__TAURI_INVOKE("sdk_python_create_venv", { tool, base, location, installPackages, request, onOutput })),
 	/**  The interpreter the project uses: the configured one, else its virtualenv. */
 	sdkPythonEffective: (near: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_effective", { near })),
 	/**  An existing Python executable or virtualenv folder as an SDK; `None` if Python cannot run. */
@@ -13757,7 +13760,9 @@ export type VenvTool =
 /**  `poetry env use <base>` in the project, then `poetry env info --path`. */
 "poetry" | 
 /**  `conda create -n <name> -y` for a bare name, else `-p <location>` (conda must be on PATH). */
-"conda";
+"conda" | 
+/**  `pipenv --python <base>` in the project (pipenv must be on PATH). */
+"pipenv";
 
 /**  What a view or custom editor shows. */
 export type View = {

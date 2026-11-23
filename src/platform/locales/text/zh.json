@@ -9953,5 +9953,8 @@
   "Previous Rows": "上一组行",
   "Next Rows": "下一组行",
   "Previous Columns": "上一组列",
-  "Next Columns": "下一组列"
+  "Next Columns": "下一组列",
+  "Pipenv Environment": "Pipenv 环境",
+  "Install packages from Pipfile": "安装 Pipfile 中的软件包",
+  "Runs “pipenv --python <base>” in the project; pipenv keeps the environment under its own virtualenvs directory.": "在项目中运行“pipenv --python <base>”；Pipenv 会将环境保存在其自己的 virtualenvs 目录下。"
 }

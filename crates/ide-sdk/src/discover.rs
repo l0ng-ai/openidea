@@ -55,7 +55,7 @@ fn tool_of(kind: SdkKind) -> Option<Tool> {
 fn pinned_first(sdks: &mut Vec<Sdk>, kind: SdkKind, root: &Path) {
     let Some((dir, _)) = tool_of(kind).and_then(|t| pinned::pinned_install(root, t)) else { return };
     let Some(i) = sdks.iter().position(|s| s.path.starts_with(&dir)) else { return };
-    let at = sdks.iter().take_while(|s| s.source == "venv").count().min(i);
+    let at = sdks.iter().take_while(|s| matches!(s.source.as_str(), "venv" | "pipenv")).count().min(i);
     let sdk = sdks.remove(i);
     sdks.insert(at, sdk);
 }
@@ -81,7 +81,8 @@ fn dedupe_by_real_path(paths: Vec<(PathBuf, &'static str)>) -> Vec<(PathBuf, &'s
 /// Project-local virtualenv directories checked by auto-detection, in order.
 pub(crate) const PROJECT_VENVS: [&str; 4] = [".venv", "venv", "env", ".env"];
 
-/// `<root>/<venv>/bin/python` of the first project virtualenv or pixi environment.
+/// `<root>/<venv>/bin/python` of the first project virtualenv or pixi environment, else the
+/// interpreter of the project's Pipenv environment.
 pub(crate) fn project_venv_python(root: &Path) -> Option<PathBuf> {
     PROJECT_VENVS
         .iter()
@@ -94,6 +95,42 @@ pub(crate) fn project_venv_python(root: &Path) -> Option<PathBuf> {
                 [env.join(exe("python")), env.join("bin").join(exe("python"))].into_iter().find(|p| p.is_file())
             })
         })
+        .or_else(|| pipenv_env_python(root))
+}
+
+/// Where Pipenv and virtualenvwrapper keep virtualenvs: `WORKON_HOME`, else `~/.virtualenvs`
+/// (virtualenvwrapper, Pipenv on Windows) and `$XDG_DATA_HOME/virtualenvs` / `~/.local/share/virtualenvs`.
+fn workon_homes(home: &Path, env: impl Fn(&str) -> Option<OsString>) -> Vec<PathBuf> {
+    let var = |key: &str| env(key).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let data = var("XDG_DATA_HOME").unwrap_or_else(|| home.join(".local/share"));
+    var("WORKON_HOME").into_iter().chain([home.join(".virtualenvs"), data.join("virtualenvs")]).collect()
+}
+
+/// The project a Pipenv virtualenv belongs to. Pipenv records the project directory in
+/// `<venv>/.project` (as virtualenvwrapper does); a `Pipfile` there makes the environment Pipenv's.
+fn pipenv_project(venv: &Path) -> Option<PathBuf> {
+    let project = PathBuf::from(std::fs::read_to_string(venv.join(".project")).ok()?.trim());
+    (project.is_absolute() && project.join("Pipfile").is_file()).then_some(project)
+}
+
+/// The interpreter of the Pipenv environment `pipenv --venv` names for the project at `root`,
+/// found through the environments' `.project` files: starting pipenv takes about a second.
+/// (`<root>/.venv`, Pipenv's with `PIPENV_VENV_IN_PROJECT`, is a project virtualenv already.)
+fn pipenv_env_python(root: &Path) -> Option<PathBuf> {
+    if !root.join("Pipfile").is_file() {
+        return None;
+    }
+    pipenv_env_in(root, &workon_homes(&home_dir()?, |key| host_var_os(key)))
+}
+
+fn pipenv_env_in(root: &Path, homes: &[PathBuf]) -> Option<PathBuf> {
+    let root = root.canonicalize().ok()?;
+    homes
+        .iter()
+        .flat_map(|dir| subdirs(dir))
+        .filter(|env| pipenv_project(env).and_then(|p| p.canonicalize().ok()).is_some_and(|p| p == root))
+        .map(|env| env.join(bin_dir()).join(exe("python")))
+        .find(|p| p.is_file())
 }
 
 /// `/usr/bin/python3` on macOS is a stub that opens an installer dialog when
@@ -223,15 +260,15 @@ fn python(root: Option<&Path>) -> Vec<Sdk> {
                 found.push((python, "pixi"));
             }
         }
+        found.extend(pipenv_env_python(root).map(|p| (p, "venv")));
     }
     if let Ok(venv) = std::env::var("VIRTUAL_ENV") {
         found.push((Path::new(&venv).join(bin_dir()).join(exe("python")), "venv"));
     }
     if let Some(home) = home_dir() {
         // Virtualenvs managed by virtualenvwrapper / pipenv / poetry.
-        let env_dirs = [".virtualenvs", ".local/share/virtualenvs"].map(|d| home.join(d));
         let var = |key: &str| host_var_os(key);
-        for dir in env_dirs.into_iter().chain(poetry_venv_dirs(Host::current(), &home, var)) {
+        for dir in workon_homes(&home, var).into_iter().chain(poetry_venv_dirs(Host::current(), &home, var)) {
             for env in subdirs(&dir) {
                 found.push((env.join(bin_dir()).join(exe("python")), "venv"));
             }
@@ -370,7 +407,13 @@ pub(crate) fn python_sdk(path: &Path, source: &str, root: Option<&Path>) -> Opti
 fn python_sdk_with_version(path: &Path, source: &str, root: Option<&Path>, version: String) -> Sdk {
     let short = version.split('.').take(2).collect::<Vec<_>>().join(".");
     let venv = venv_of(path);
+    let pipenv = venv.as_deref().filter(|_| source == "venv").and_then(pipenv_project);
+    let source = if pipenv.is_some() { "pipenv" } else { source };
     let label = match (&venv, source) {
+        (_, "pipenv") => {
+            let project = pipenv.as_deref().and_then(Path::file_name).unwrap_or_default().to_string_lossy();
+            format!("Python {short} (Pipenv: {project})")
+        }
         (Some(home), _) => {
             let dir = home.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             // `.venv` inside a project reads better as the folder that holds it (the project,
@@ -1120,6 +1163,60 @@ mod pixi_tests {
 }
 
 #[cfg(test)]
+mod pipenv_tests {
+    use super::*;
+
+    fn venv(home: &Path, project: &Path) -> PathBuf {
+        let python = home.join(bin_dir()).join(exe("python"));
+        std::fs::create_dir_all(python.parent().unwrap()).unwrap();
+        std::fs::write(&python, "").unwrap();
+        std::fs::write(home.join("pyvenv.cfg"), "version = 3.12.1\n").unwrap();
+        std::fs::write(home.join(".project"), project.to_string_lossy().as_bytes()).unwrap();
+        python
+    }
+
+    #[test]
+    fn the_environment_recording_the_project_is_its_pipenv_environment() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (shop, blog, plain) = (tmp.path().join("shop"), tmp.path().join("blog"), tmp.path().join("plain"));
+        for project in [&shop, &blog, &plain] {
+            std::fs::create_dir_all(project).unwrap();
+        }
+        std::fs::write(shop.join("Pipfile"), "").unwrap();
+        std::fs::write(blog.join("Pipfile"), "").unwrap();
+        let homes = [tmp.path().join("missing"), tmp.path().join("workon")];
+        let blog_python = venv(&homes[1].join("blog-aaaaaaaa"), &blog);
+        let shop_python = venv(&homes[1].join("shop-Kpos5yRM"), &shop);
+        // virtualenvwrapper writes `.project` too: without a Pipfile it is no Pipenv environment.
+        let plain_python = venv(&homes[1].join("plain"), &plain);
+
+        assert_eq!(pipenv_env_in(&shop, &homes), Some(shop_python.clone()));
+        assert_eq!(pipenv_env_in(&blog, &homes), Some(blog_python));
+        assert_eq!(pipenv_env_in(&plain, &homes), None);
+
+        let sdk = python_sdk(&shop_python, "venv", Some(&blog)).unwrap();
+        assert_eq!((sdk.name.as_str(), sdk.source.as_str()), ("Python 3.12 (Pipenv: shop)", "pipenv"));
+        assert_eq!(
+            sdk.home.as_deref().map(|h| h.to_path_buf()),
+            shop_python.parent().unwrap().parent().map(Into::into)
+        );
+        let sdk = python_sdk(&plain_python, "venv", None).unwrap();
+        assert_eq!((sdk.name.as_str(), sdk.source.as_str()), ("Python 3.12 (plain)", "venv"));
+    }
+
+    #[test]
+    fn a_pipenv_environment_inside_the_project_is_named_as_pipenvs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shop = tmp.path().join("shop");
+        std::fs::create_dir_all(&shop).unwrap();
+        std::fs::write(shop.join("Pipfile"), "").unwrap();
+        let python = venv(&shop.join(".venv"), &shop);
+        assert_eq!(project_venv_python(&shop), Some(python.clone()));
+        assert_eq!(python_sdk(&python, "venv", Some(&shop)).unwrap().name, "Python 3.12 (Pipenv: shop)");
+    }
+}
+
+#[cfg(test)]
 mod conda_tests {
     use super::*;
 
@@ -1258,6 +1355,17 @@ mod env_manager_dir_tests {
         assert_eq!(
             poetry_venv_dirs(Host::Unix, home, env(&[("XDG_CACHE_HOME", "/xdg/cache")])),
             vec![Path::new("/xdg/cache").join("pypoetry").join("virtualenvs")]
+        );
+    }
+
+    #[test]
+    fn workon_homes_follow_pipenv_and_virtualenvwrapper() {
+        let home = Path::new("/home/me");
+        let defaults = [home.join(".virtualenvs"), home.join(".local/share").join("virtualenvs")];
+        assert_eq!(workon_homes(home, env(&[("WORKON_HOME", "")])), defaults);
+        assert_eq!(
+            workon_homes(home, env(&[("WORKON_HOME", "/envs"), ("XDG_DATA_HOME", "/xdg/data")])),
+            vec![PathBuf::from("/envs"), home.join(".virtualenvs"), Path::new("/xdg/data").join("virtualenvs")]
         );
     }
 

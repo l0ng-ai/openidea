@@ -3716,5 +3716,8 @@
   "Previous Columns": "Previous Columns",
   "Next Columns": "Next Columns",
   "View Options": "View Options",
-  "Visible columns": "Visible columns"
+  "Visible columns": "Visible columns",
+  "Pipenv Environment": "Pipenv Environment",
+  "Install packages from Pipfile": "Install packages from Pipfile",
+  "Runs “pipenv --python <base>” in the project; pipenv keeps the environment under its own virtualenvs directory.": "Runs “pipenv --python <base>” in the project; pipenv keeps the environment under its own virtualenvs directory."
 }
