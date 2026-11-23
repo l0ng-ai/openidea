@@ -157,7 +157,11 @@ function EntryView({
             <T>Plan</T>
           </div>
           {entry.items.map((item, i) => (
-            <div key={i} className={clsx(styles.planItem, item.status === "completed" && styles.planDone)}>
+            <div
+              // oxlint-disable-next-line react/no-array-index-key -- plan items can repeat; position is the identity
+              key={i}
+              className={clsx(styles.planItem, item.status === "completed" && styles.planDone)}
+            >
               <Icon
                 name={item.status === "completed" ? "check" : item.status === "in_progress" ? "run" : "minus"}
                 size={12}
@@ -339,8 +343,8 @@ function UserMessage({
         <ImageStrip images={images} />
         {files.length > 0 && (
           <div className={styles.attachments}>
-            {files.map((a, i) => (
-              <span key={i} className={styles.attachment}>
+            {files.map((a) => (
+              <span key={a} className={styles.attachment}>
                 <Icon name={fileIconName(a)} size={12} />
                 {a}
               </span>

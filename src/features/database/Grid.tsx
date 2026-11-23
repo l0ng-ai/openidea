@@ -141,6 +141,7 @@ function cellText(value: string) {
     i === 0
       ? [part]
       : [
+          // oxlint-disable-next-line react/no-array-index-key -- repeated blank lines produce identical markers; position is the identity
           <span key={i} className={styles.lineBreak}>
             ↵
           </span>,
@@ -673,7 +674,7 @@ export function Grid(props: GridProps) {
             const s = sort?.find((k) => k.column === c.name);
             return (
               <div
-                key={ci}
+                key={c.name}
                 role="columnheader"
                 className={clsx(styles.headerCell, onSort && styles.sortable)}
                 title={`${c.name}: ${c.type}${onSort ? "\nClick to sort, ⇧-click to add to the sort" : ""}`}
@@ -735,9 +736,8 @@ export function Grid(props: GridProps) {
               <div className={styles.rowNumber} onMouseDown={(e) => onRowNumberMouseDown(e, r)}>
                 {state === "inserted" ? "+" : (props.rowNumber?.(r) ?? firstRowNumber + r)}
               </div>
-              {columns.map((_, c) => {
+              {columns.map((col, c) => {
                 if (editing && !editing.dialog && editing.row === r && editing.col === c) {
-                  const col = columns[c]!;
                   const lit = bools[c] ? booleanLiterals(props.driver) : null;
                   const values = enums[c];
                   const cell = value(editing.row, editing.col);
@@ -752,7 +752,7 @@ export function Grid(props: GridProps) {
                     if (col.nullable !== false) options.push({ value: NULL_INPUT, label: "NULL" });
                     return (
                       <CellSelect
-                        key={c}
+                        key={`${v.key}:${col.name}`}
                         label={tx`Edit ${col.name}`}
                         value={cell === null ? NULL_INPUT : cell}
                         options={options}
@@ -766,7 +766,7 @@ export function Grid(props: GridProps) {
                   }
                   return (
                     <input
-                      key={c}
+                      key={`${v.key}:${col.name}`}
                       className={styles.cellEditor}
                       data-cell-editor=""
                       autoFocus
@@ -808,7 +808,7 @@ export function Grid(props: GridProps) {
                   editable && onEdit && bools[c] && state !== "deleted" ? booleanLiterals(props.driver) : null;
                 return (
                   <div
-                    key={c}
+                    key={`${v.key}:${col.name}`}
                     role="gridcell"
                     aria-selected={selected(r, c)}
                     className={clsx(

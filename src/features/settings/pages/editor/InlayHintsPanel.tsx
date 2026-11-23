@@ -87,6 +87,7 @@ export function InlayHintsPanel() {
                 typeof part === "string"
                   ? part
                   : showHint && (
+                      // oxlint-disable-next-line react/no-array-index-key -- annotations can repeat; position is the identity
                       <span className={styles.hint} key={i}>
                         {part.annotation}
                       </span>

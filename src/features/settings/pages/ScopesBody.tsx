@@ -258,6 +258,7 @@ export function FileColorsEditor() {
               )}
               {colors.map((c, i) => (
                 <tr
+                  // oxlint-disable-next-line react/no-array-index-key -- scopes can repeat; position is the identity
                   key={i}
                   ref={i === index ? revealRow : undefined}
                   className={clsx(i === index && styles.selectedRow)}

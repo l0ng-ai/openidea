@@ -672,6 +672,7 @@ function ProgressView({ job, onBack, onClose }: { job: Job; onBack: () => void; 
       <div className={styles.progress}>
         <ol className={styles.steps}>
           {job.steps.map((s, i) => (
+            // oxlint-disable-next-line react/no-array-index-key -- step labels can repeat; position is the identity
             <li key={i} aria-current={i === job.steps.length - 1 && !failed ? "step" : undefined}>
               {tx(s)}
             </li>

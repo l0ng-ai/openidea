@@ -99,6 +99,7 @@ function BlameMessageText({ text }: { text: string }) {
       <button
         type="button"
         className={styles.hashLink}
+        // oxlint-disable-next-line react/no-array-index-key -- hash and text parts can repeat; position is the identity
         key={i}
         onClick={() => {
           closeBlamePopup();
@@ -108,6 +109,7 @@ function BlameMessageText({ text }: { text: string }) {
         {part}
       </button>
     ) : (
+      // oxlint-disable-next-line react/no-array-index-key -- hash and text parts can repeat; position is the identity
       <IssueText key={i} text={part} />
     ),
   );

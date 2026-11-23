@@ -1225,10 +1225,10 @@ export function ContainerDashboard({
               <T>Mode</T>
             </span>
           </div>
-          {inspect.mounts.map((m, idx) => {
+          {inspect.mounts.map((m) => {
             const volumeObj = m.name ? snapshot.volumes.find((v) => v.name === m.name) : undefined;
             return (
-              <div key={`${m.destination}:${idx}`} className={styles.dataRow}>
+              <div key={`${m.destination}:${m.type}:${m.source}`} className={styles.dataRow}>
                 <span className={styles.badgeMuted}>{m.type}</span>
                 <span className={styles.mono} title={m.source}>
                   {volumeObj ? (
@@ -1402,19 +1402,30 @@ export function ContainerProcessesView({ conn, id, running }: { conn: string; id
           <table className={styles.gridTable}>
             <thead>
               <tr>
-                {data.titles.map((title, i) => (
-                  <th key={`${title}:${i}`}>{title}</th>
+                {data.titles.map((title, idx) => (
+                  // oxlint-disable-next-line react/no-array-index-key -- column titles can repeat; position is the identity
+                  <th key={idx}>{title}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {data.processes.map((row, rIdx) => (
-                <tr key={rIdx}>
-                  {data.titles.map((_, cIdx) => (
-                    <td key={cIdx} className={styles.mono}>
-                      {row[cIdx] ?? ""}
-                    </td>
-                  ))}
+                <tr
+                  // oxlint-disable-next-line react/no-array-index-key -- process rows can repeat; position is the identity
+                  key={rIdx}
+                >
+                  {data.titles.map((_, cIdx) => {
+                    const value = row[cIdx] ?? "";
+                    return (
+                      <td
+                        // oxlint-disable-next-line react/no-array-index-key -- cell values repeat; position is the identity
+                        key={cIdx}
+                        className={styles.mono}
+                      >
+                        {value}
+                      </td>
+                    );
+                  })}
                 </tr>
               ))}
             </tbody>
@@ -1617,7 +1628,7 @@ export function ImageLayersView({ conn, id }: { conn: string; id: string }) {
               const bytes = unitsToBytes(layer.size);
               const pct = bytes > 0 ? (bytes / maxBytes) * 100 : 0;
               return (
-                <tr key={`${layer.id}:${idx}`}>
+                <tr key={layer.id}>
                   <td className={styles.mutedMeta}>{idx + 1}</td>
                   <td>
                     <span className={clsx(styles.statusBadge, styles.badgeMuted)}>{instruction}</span>
@@ -1796,8 +1807,8 @@ export function NetworkDashboard({
         </PropRow>
         <PropRow label={<T>Subnet / Gateway</T>} hidden={!inspect?.ipamConfigs.length}>
           <div className={styles.chipGroupInline}>
-            {inspect?.ipamConfigs.map((cfg, idx) => (
-              <span key={idx} className={styles.entityChip}>
+            {inspect?.ipamConfigs.map((cfg) => (
+              <span key={`${cfg.subnet}:${cfg.gateway}`} className={styles.entityChip}>
                 <span className={styles.mono}>
                   {[cfg.subnet, cfg.gateway ? `gw ${cfg.gateway}` : ""].filter(Boolean).join(" · ")}
                 </span>

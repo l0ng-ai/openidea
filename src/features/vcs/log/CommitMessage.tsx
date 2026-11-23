@@ -183,10 +183,12 @@ export function CommitSignature({ commit }: { commit: Commit }) {
 function CommitMessageText({ text, repo }: { text: string; repo: string | null | undefined }) {
   return text.split(/\b([a-fA-F0-9]{7,64})\b/g).map((part, i) =>
     i % 2 ? (
+      // oxlint-disable-next-line react/no-array-index-key -- hashes can repeat; position is the identity
       <button type="button" className={styles.linkButton} key={i} onClick={() => void goToRef(part, repo)}>
         {part}
       </button>
     ) : (
+      // oxlint-disable-next-line react/no-array-index-key -- text parts can repeat; position is the identity
       <IssueText key={i} text={part} />
     ),
   );

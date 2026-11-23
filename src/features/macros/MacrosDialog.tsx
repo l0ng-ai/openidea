@@ -122,7 +122,11 @@ function EditMacrosDialog({ onClose }: { onClose: () => void }) {
           <SplitPanel id="macro-steps" defaultSize="50%" minSize="25%">
             <ol className={styles.steps} aria-label={tx("Recorded steps")}>
               {macro?.steps.map((step, i) => (
-                <li key={i} className={styles.step}>
+                <li
+                  // oxlint-disable-next-line react/no-array-index-key -- recorded steps repeat; position is the identity
+                  key={i}
+                  className={styles.step}
+                >
                   {describeStep(step, actionTitle)}
                 </li>
               ))}
