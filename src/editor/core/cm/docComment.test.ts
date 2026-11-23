@@ -208,6 +208,25 @@ describe("Python docstring stub", () => {
     expect(pythonDocStub("async def run() -> None:", [], "rest")).toEqual([]);
   });
 
+  it("reads non-ASCII names, strings and lambdas in parameters, and raise after a colon", () => {
+    expect(
+      pythonDocStub(
+        "def größe(self, maß: int, s='a,b', t=\")\", key=lambda a, b: a, *, ä=1) -> int:",
+        ["    if maß: raise MyÄrger()", "    raise ÄError", "    raise größe_fehler"],
+        "rest",
+      ),
+    ).toEqual([
+      ":param maß:",
+      ":param s:",
+      ":param t:",
+      ":param key:",
+      ":param ä:",
+      ":return:",
+      ":raises MyÄrger:",
+      ":raises ÄError:",
+    ]);
+  });
+
   it("writes Epytext, Google and NumPy sections", () => {
     const h = "def f(a, b) -> int:";
     const raising = ["    raise ValueError"];

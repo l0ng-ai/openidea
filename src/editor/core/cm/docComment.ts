@@ -190,16 +190,34 @@ function splitTopLevel(params: string, angles = false): string[] {
   return out.filter((p) => p.trim());
 }
 
-/** Splits `params` at top-level commas (any bracket, `<>` included). */
+/** Index past the string literal opening at `i` of `text` (its closing quote), or `text.length`. */
+function skipString(text: string, i: number): number {
+  const quote = text[i]!;
+  for (let j = i + 1; j < text.length; j++) {
+    if (text[j] === "\\") j++;
+    else if (text[j] === quote) return j;
+  }
+  return text.length;
+}
+
+/**
+ * Splits `params` at top-level commas (any bracket, `<>` included), not those in string literals
+ * or between a Python `lambda` and its `:`.
+ */
 function splitParams(params: string): string[] {
   const out: string[] = [];
   let depth = 0;
   let start = 0;
+  let lambda = false;
   for (let i = 0; i < params.length; i++) {
     const c = params[i]!;
-    if ("([{<".includes(c)) depth++;
+    if (c === '"' || c === "'" || c === "`") i = skipString(params, i);
+    else if ("([{<".includes(c)) depth++;
     else if (")]}>".includes(c) && params[i - 1] !== "=") depth--;
-    else if (c === "," && depth === 0) {
+    else if (depth === 0 && /^lambda\b/.test(params.slice(i, i + 7)) && !/[\p{L}\p{N}_]/u.test(params[i - 1] ?? ""))
+      lambda = true;
+    else if (c === ":" && depth === 0 && lambda) lambda = false;
+    else if (c === "," && depth === 0 && !lambda) {
       out.push(params.slice(start, i));
       start = i + 1;
     }
@@ -213,7 +231,8 @@ function paramList(text: string, open: number): { params: string; after: string 
   let depth = 0;
   for (let i = open; i < text.length; i++) {
     const c = text[i];
-    if (c === "(") depth++;
+    if (c === '"' || c === "'" || c === "`") i = skipString(text, i);
+    else if (c === "(") depth++;
     else if (c === ")" && --depth === 0) return { params: text.slice(open + 1, i), after: text.slice(i + 1) };
   }
   return null;
@@ -247,16 +266,17 @@ export type PythonDocFormat = "plain" | "rest" | "epytext" | "google" | "numpy";
 
 /** Parameters, whether a value is returned, and the exceptions raised, of the `def` whose header is `header`. */
 function pythonSignature(header: string, body: readonly string[]) {
-  const m = /^\s*(?:async\s+)?def\s+(\w+)\s*(?=\()/.exec(header);
+  const m = /^\s*(?:async\s+)?def\s+([\p{L}_][\p{L}\p{N}_]*)\s*(?=\()/u.exec(header);
   if (!m) return null;
   const list = paramList(header, m[0].length);
   if (!list) return null;
   const params = splitParams(list.params).flatMap((p) => {
-    const name = /^\**(\w+)/.exec(p)?.[1];
+    const name = /^\**([\p{L}_][\p{L}\p{N}_]*)/u.exec(p)?.[1];
     return name && name !== "self" && name !== "cls" ? [name] : [];
   });
   const returns = /->\s*([^:]+):/.exec(list.after)?.[1]?.trim();
-  // ponytail: `raise` lines of the body by text, nested defs skipped; an exception class is capitalised.
+  // ponytail: `raise` statements of the body by text (at a line's start or after a `:`), nested
+  // defs skipped; an exception class is capitalised.
   const raises: string[] = [];
   let nested = Infinity;
   for (const line of body) {
@@ -265,8 +285,8 @@ function pythonSignature(header: string, body: readonly string[]) {
     if (indent <= nested) nested = Infinity;
     if (nested !== Infinity) continue;
     if (/^\s*(async\s+)?(def|class)\b/.test(line)) nested = indent;
-    const name = /^\s*raise\s+([A-Za-z_][\w.]*)/.exec(line)?.[1];
-    if (name && /^[A-Z]/.test(name.split(".").pop()!) && !raises.includes(name)) raises.push(name);
+    const name = /(?:^\s*|:\s*)raise\s+([\p{L}_][\p{L}\p{N}_.]*)/u.exec(line)?.[1];
+    if (name && /^\p{Lu}/u.test(name.split(".").pop()!) && !raises.includes(name)) raises.push(name);
   }
   return { params, returns: m[1] !== "__init__" && returns !== "None", raises };
 }
