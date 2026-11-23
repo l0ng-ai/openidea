@@ -9,9 +9,8 @@ import { splitCommandLine } from "@/platform/commandLine";
 import type { RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { onWorkflowSettingsChange, workflowSettings, type ExternalToolValid } from "@/platform/workflowSettings";
-import { getContext } from "@/platform/context";
 import { isVirtualUri } from "@/platform/virtualDocs";
-import { notifications, useProjectViewLead } from "@/workbench/contributions";
+import { notifications, projectViewContextLead } from "@/workbench/contributions";
 import { promptValue } from "./dialogs";
 import { startRun, useRun } from "./store";
 
@@ -81,8 +80,8 @@ export function expandMacros(text: string, ctx: MacroContext, prompt = ""): stri
  * the editor's file.
  */
 function contextFile(editorPath: string | null): string | null {
-  const lead = useProjectViewLead.getState().lead;
-  if (lead && !lead.dir && !isVirtualUri(lead.path) && !getContext().editorFocus) return lead.path;
+  const lead = projectViewContextLead();
+  if (lead && !lead.dir && !isVirtualUri(lead.path)) return lead.path;
   return editorPath;
 }
 
