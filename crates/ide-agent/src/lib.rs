@@ -95,6 +95,8 @@ const MAX_EMBED: u64 = 256 * 1024;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long deleting a task waits for its agent to exit before removing the worktree.
 const EXIT_WAIT: Duration = Duration::from_secs(5);
+/// Change lists can each open several Git pipes; leave room for interactive VCS operations.
+const MAX_CHANGE_READS: usize = 4;
 
 /// The agent tasks of one project.
 pub struct AgentManager {
@@ -189,6 +191,7 @@ struct Shared {
     new_task_approvals: RwLock<Option<NewTaskApprovalsHook>>,
     workspace_roots: RwLock<Option<WorkspaceRootsHook>>,
     git_executable: RwLock<Option<GitExecutableHook>>,
+    change_reads: Arc<tokio::sync::Semaphore>,
     known: Arc<Mutex<HashMap<String, Known>>>,
     providers: RwLock<Vec<provider::ProviderSpec>>,
     /// Last probe of each provider.
@@ -604,6 +607,7 @@ impl AgentManager {
             new_task_approvals: RwLock::new(None),
             workspace_roots: RwLock::new(None),
             git_executable: RwLock::new(None),
+            change_reads: Arc::new(tokio::sync::Semaphore::new(MAX_CHANGE_READS)),
             known,
             providers,
             probes: Mutex::new(HashMap::new()),
@@ -1847,7 +1851,7 @@ impl AgentManager {
         let task = self.task(id)?;
         let at = task.base();
         let (before, touched) = task.attribution();
-        vcs(&self.shared, move || Ok(worktree::made_by_task(at.changes(&before)?, touched.as_deref()))).await
+        read_changes(&self.shared, move || Ok(worktree::made_by_task(at.changes(&before)?, touched.as_deref()))).await
     }
 
     /// The task's uncommitted changes and, for a worktree task, the commits made since it
@@ -1856,7 +1860,7 @@ impl AgentManager {
         let task = self.task(id)?;
         let at = task.base();
         let (before, touched) = task.attribution();
-        vcs(&self.shared, move || {
+        read_changes(&self.shared, move || {
             let mut grouped = at.grouped_changes(&before)?;
             grouped.uncommitted = worktree::made_by_task(grouped.uncommitted, touched.as_deref());
             Ok(grouped)
@@ -1869,7 +1873,7 @@ impl AgentManager {
     pub async fn turn_changes(&self, id: &str) -> IdeResult<Vec<AgentChange>> {
         let (cwd, turn, dir) = self.task(id)?.last_turn();
         let Some(turn) = turn else { return Ok(Vec::new()) };
-        vcs(&self.shared, move || {
+        read_changes(&self.shared, move || {
             let changed = match &turn.changed {
                 Some(changed) => changed.clone(),
                 None => worktree::changed_in_turn(&cwd, &turn)?.1,
@@ -4268,6 +4272,19 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + '
 async fn vcs<T: Send + 'static>(shared: &Shared, f: impl FnOnce() -> IdeResult<T> + Send + 'static) -> IdeResult<T> {
     let git = shared.git_executable.read().as_ref().and_then(|hook| hook());
     blocking(move || ide_vcs::with_git_executable(git.as_deref(), f)).await
+}
+
+async fn read_changes<T: Send + 'static>(
+    shared: &Shared,
+    f: impl FnOnce() -> IdeResult<T> + Send + 'static,
+) -> IdeResult<T> {
+    let permit = shared.change_reads.clone().acquire_owned().await.map_err(|e| IdeError::internal(e.to_string()))?;
+    vcs(shared, move || {
+        // Dropping the caller doesn't cancel a blocking job. Keep the slot with the work.
+        let _permit = permit;
+        f()
+    })
+    .await
 }
 
 #[cfg(test)]
