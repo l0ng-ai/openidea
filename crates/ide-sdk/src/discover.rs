@@ -98,7 +98,7 @@ pub(crate) fn project_venv_python(root: &Path) -> Option<PathBuf> {
         .or_else(|| {
             hatch_env_pythons(root)
                 .into_iter()
-                .find(|p| venv_of(p).is_some_and(|v| hatch_env_name(&v) == Some(DEFAULT_HATCH_ENV.into())))
+                .find(|p| venv_of(p).and_then(|v| hatch_env(&v)).is_some_and(|(_, env)| env == DEFAULT_HATCH_ENV))
         })
 }
 
@@ -205,43 +205,70 @@ fn hatch_env_dir(host: Host, home: &Path, env: impl Fn(&str) -> Option<OsString>
 }
 
 /// The folder name Hatch derives from a project's path: the first 8 characters of the URL-safe
-/// base64 SHA-256 of the path, which it lower-cases on Windows and macOS.
+/// base64 SHA-256 of the path, which it case-folds on Windows and macOS.
 fn hatch_project_id(host: Host, root: &Path) -> String {
     use base64::Engine;
     use sha2::Digest;
     let path = root.to_string_lossy();
-    let path = if matches!(host, Host::Unix) { path.into_owned() } else { path.to_lowercase() };
+    let path = if matches!(host, Host::Unix) { path.into_owned() } else { casefold(&path) };
     let mut id = base64::engine::general_purpose::URL_SAFE.encode(sha2::Sha256::digest(path.as_bytes()));
     id.truncate(8);
     id
 }
 
-/// The Hatch environment a virtualenv is, told by where it lives:
-/// `…/env/virtual/<project name>/<project id>/<environment>`, the `default` environment
-/// being the one named after the project.
-fn hatch_env_name(venv: &Path) -> Option<String> {
+/// Python's `str.casefold()` for the letters a path is likely to hold: lower case, with the
+/// letters that case-fold to more than their lower case expanded (`ß` → `ss`). `ponytail:` the
+/// rest of Unicode's full case folding (Cherokee, Greek symbol variants, iota subscripts) is
+/// lower-cased only; a project path with them gets no default environment picked.
+fn casefold(text: &str) -> String {
+    text.chars().fold(String::with_capacity(text.len()), |mut out, c| {
+        match c {
+            'ß' | 'ẞ' => out.push_str("ss"),
+            'ſ' => out.push('s'),
+            'ς' => out.push('σ'),
+            'µ' => out.push('μ'),
+            'ﬀ' => out.push_str("ff"),
+            'ﬁ' => out.push_str("fi"),
+            'ﬂ' => out.push_str("fl"),
+            'ﬃ' => out.push_str("ffi"),
+            'ﬄ' => out.push_str("ffl"),
+            'ﬅ' | 'ﬆ' => out.push_str("st"),
+            _ => out.extend(c.to_lowercase()),
+        }
+        out
+    })
+}
+
+/// The Hatch project and environment a virtualenv is, told by where it lives:
+/// `…/env/virtual/<project name>/<project id>/<environment>`, the `default` environment being
+/// the one named after the project. `None` for Hatch's internal environments (`hatch-test.py3.12`, …).
+fn hatch_env(venv: &Path) -> Option<(String, String)> {
     let project = venv.parent()?.parent()?;
     if !project.parent()?.ends_with("env/virtual") {
         return None;
     }
-    let name = venv.file_name()?;
-    Some(if Some(name) == project.file_name() {
-        DEFAULT_HATCH_ENV.to_owned()
-    } else {
-        name.to_string_lossy().into_owned()
-    })
+    let (name, project) = (venv.file_name()?.to_string_lossy(), project.file_name()?.to_string_lossy());
+    if name == project {
+        return Some((project.into_owned(), DEFAULT_HATCH_ENV.to_owned()));
+    }
+    (!name.starts_with("hatch-")).then(|| (project.into_owned(), name.into_owned()))
+}
+
+/// The folder Hatch takes as the project for `root`: the nearest one, `root` or above it, with a
+/// `pyproject.toml` or `setup.py`, else `root` itself when it has a `hatch.toml`.
+fn hatch_project_root(root: &Path) -> Option<PathBuf> {
+    root.ancestors()
+        .find(|dir| dir.join("pyproject.toml").is_file() || dir.join("setup.py").is_file())
+        .or_else(|| root.join("hatch.toml").is_file().then_some(root))
+        .map(Path::to_path_buf)
 }
 
 /// Interpreters of the Hatch environments that exist for the project at `root`, found without
 /// starting Hatch. `ponytail:` only Hatch's own data directory is searched; environments moved
 /// with `dirs.env` in Hatch's config or an environment's `path` option need `hatch env find`.
 fn hatch_env_pythons(root: &Path) -> Vec<PathBuf> {
-    // Hatch treats any folder as a project, but one without either file has no environments worth a lookup.
-    if !root.join("pyproject.toml").is_file() && !root.join("hatch.toml").is_file() {
-        return Vec::new();
-    }
-    let Some(home) = home_dir() else { return Vec::new() };
-    hatch_envs_in(root, &hatch_env_dir(Host::current(), &home, |key| host_var_os(key)), Host::current())
+    let (Some(project), Some(home)) = (hatch_project_root(root), home_dir()) else { return Vec::new() };
+    hatch_envs_in(&project, &hatch_env_dir(Host::current(), &home, |key| host_var_os(key)), Host::current())
 }
 
 fn hatch_envs_in(root: &Path, storage: &Path, host: Host) -> Vec<PathBuf> {
@@ -255,6 +282,7 @@ fn hatch_envs_in(root: &Path, storage: &Path, host: Host) -> Vec<PathBuf> {
     subdirs(storage)
         .iter()
         .flat_map(|project| ids.iter().flat_map(|id| subdirs(&project.join(id))))
+        .filter(|env| hatch_env(env).is_some())
         .map(|env| env.join(bin_dir()).join(exe("python")))
         .filter(|python| python.is_file())
         .collect()
@@ -321,7 +349,7 @@ fn python(root: Option<&Path>) -> Vec<Sdk> {
         }
         // Hatch environments of every project: `<project name>/<project id>/<environment>`.
         for project in subdirs(&hatch_env_dir(Host::current(), &home, var)) {
-            for env in subdirs(&project).iter().flat_map(|id| subdirs(id)) {
+            for env in subdirs(&project).iter().flat_map(|id| subdirs(id)).filter(|env| hatch_env(env).is_some()) {
                 found.push((env.join(bin_dir()).join(exe("python")), "venv"));
             }
         }
@@ -455,10 +483,15 @@ pub(crate) fn python_sdk(path: &Path, source: &str, root: Option<&Path>) -> Opti
 fn python_sdk_with_version(path: &Path, source: &str, root: Option<&Path>, version: String) -> Sdk {
     let short = version.split('.').take(2).collect::<Vec<_>>().join(".");
     let venv = venv_of(path);
-    let hatch = venv.as_deref().filter(|_| source == "venv").and_then(hatch_env_name);
+    let hatch = venv.as_deref().filter(|_| source == "venv").and_then(hatch_env);
     let source = if hatch.is_some() { "hatch" } else { source };
     let label = match (&venv, source) {
-        (_, "hatch") => format!("Python {short} (Hatch: {})", hatch.unwrap_or_default()),
+        // Every project has a `default`: the project names it, as Pipenv's are named.
+        (_, "hatch") => match hatch {
+            Some((project, env)) if env != DEFAULT_HATCH_ENV => format!("Python {short} (Hatch: {project}:{env})"),
+            Some((project, _)) => format!("Python {short} (Hatch: {project})"),
+            None => format!("Python {short} (Hatch)"),
+        },
         (Some(home), _) => {
             let dir = home.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             // `.venv` inside a project reads better as the folder that holds it (the project,
@@ -521,7 +554,7 @@ fn pixi_env_name(python: &Path) -> Option<String> {
     pixi_env_home(python)?.file_name().map(|n| n.to_string_lossy().into_owned())
 }
 
-fn pyvenv_version(python: &Path) -> Option<String> {
+pub(crate) fn pyvenv_version(python: &Path) -> Option<String> {
     let cfg = std::fs::read_to_string(venv_of(python)?.join("pyvenv.cfg")).ok()?;
     cfg.lines().find_map(|l| {
         let (k, v) = l.split_once('=')?;
@@ -1221,11 +1254,26 @@ mod hatch_tests {
 
     #[test]
     fn the_project_id_is_hatchs_hash_of_the_path() {
-        // `base64.urlsafe_b64encode(sha256(path)).decode()[:8]`, the path lower-cased on Windows and macOS.
+        // `base64.urlsafe_b64encode(sha256(path)).decode()[:8]`, the path case-folded on Windows and macOS.
         let root = Path::new("/Users/Me/Shop");
         assert_eq!(hatch_project_id(Host::Unix, root), "nrZdKLu1");
         assert_eq!(hatch_project_id(Host::Mac, root), "6jvy1__M");
         assert_eq!(hatch_project_id(Host::Windows, root), "6jvy1__M");
+        // `"Straße".casefold()` is `strasse`, where lower-casing keeps the `ß`.
+        assert_eq!(hatch_project_id(Host::Mac, Path::new("/Users/me/Straße/shop")), "uZq42xD1");
+        assert_eq!(casefold("ẞſﬁΣς"), "sssfiσσ");
+    }
+
+    #[test]
+    fn the_project_is_the_nearest_folder_with_a_pyproject() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shop = tmp.path().join("shop");
+        std::fs::create_dir_all(shop.join("src/pkg")).unwrap();
+        assert_eq!(hatch_project_root(&shop), None);
+        std::fs::write(shop.join("hatch.toml"), "").unwrap();
+        assert_eq!(hatch_project_root(&shop), Some(shop.clone()));
+        std::fs::write(shop.join("pyproject.toml"), "").unwrap();
+        assert_eq!(hatch_project_root(&shop.join("src/pkg")), Some(shop));
     }
 
     #[test]
@@ -1239,15 +1287,23 @@ mod hatch_tests {
         // Another project of the same name keeps its environments under its own id.
         let theirs = storage.join("shop").join(hatch_project_id(Host::current(), &other));
         let (default, docs) = (venv(&ours.join("shop")), venv(&ours.join("docs")));
-        venv(&theirs.join("shop"));
+        let theirs = venv(&theirs.join("shop"));
         std::fs::create_dir_all(ours.join("half-made")).unwrap();
+        // Hatch's own test environments live beside the project's.
+        let internal = venv(&ours.join("hatch-test.py3.12"));
 
         assert_eq!(hatch_envs_in(&shop, &storage, Host::current()), [docs.clone(), default.clone()]);
+        assert_eq!(hatch_env(internal.parent().unwrap().parent().unwrap()), None);
         assert!(hatch_envs_in(&other, &tmp.path().join("missing"), Host::current()).is_empty());
 
         let sdk = python_sdk(&default, "venv", Some(&shop)).unwrap();
-        assert_eq!((sdk.name.as_str(), sdk.source.as_str()), ("Python 3.12 (Hatch: default)", "hatch"));
-        assert_eq!(python_sdk(&docs, "venv", None).unwrap().name, "Python 3.12 (Hatch: docs)");
+        // Named by their project, as every project has a `default`.
+        assert_eq!((sdk.name.as_str(), sdk.source.as_str()), ("Python 3.12 (Hatch: shop)", "hatch"));
+        assert_eq!(python_sdk(&docs, "venv", None).unwrap().name, "Python 3.12 (Hatch: shop:docs)");
+        assert_eq!(python_sdk(&theirs, "venv", None).unwrap().name, "Python 3.12 (Hatch: shop)");
+        // A project whose name starts like Hatch's internal environments keeps its `default`.
+        let named = venv(&storage.join("hatch-shop").join("abcdefgh").join("hatch-shop"));
+        assert_eq!(python_sdk(&named, "venv", None).unwrap().name, "Python 3.12 (Hatch: hatch-shop)");
         // A virtualenv that merely sits three folders deep is no Hatch environment.
         let plain = venv(&tmp.path().join("a").join("b").join("c"));
         assert_eq!(python_sdk(&plain, "venv", None).unwrap().source, "venv");
