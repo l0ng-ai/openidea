@@ -2,6 +2,69 @@ import type { Page } from "@playwright/test";
 import type { BeforeLaunchTask } from "../src/bindings";
 import { expect, test } from "./fixtures";
 
+test("expands VM options beside the field and returns edited text to the configuration", async ({
+  workbench: page,
+}) => {
+  const original = "-Xmx512m\n-Ddemo.endpoint=https://example.test/" + "long-segment/".repeat(12);
+  await page.evaluate(async (vmOptions) => {
+    const path = "/src/features/run/store.ts";
+    const { useRun } = await import(/* @vite-ignore */ path);
+    useRun.setState({
+      configs: [
+        {
+          id: "layout:jvm",
+          name: "Catalog service",
+          kind: "application",
+          command: "java",
+          args: ["example.Catalog"],
+          params: { mainClass: "example.Catalog", vmOptions },
+          env: {},
+          cwd: null,
+          detected: false,
+          isTest: false,
+          debugAdapter: "java-debug",
+        },
+      ],
+      editTarget: "layout:jvm",
+      loaded: true,
+      editorOpen: true,
+    });
+  }, original);
+
+  const config = page.getByRole("dialog", { name: "Run/Debug Configurations", exact: true });
+  const field = config.getByRole("textbox", { name: "VM options", exact: true });
+  const expanded = page.getByRole("dialog", { name: "VM options", exact: true });
+  const editor = expanded.getByRole("textbox", { name: "VM options", exact: true });
+  for (const width of [1100, 560]) {
+    await page.setViewportSize({ width, height: 760 });
+    await field.scrollIntoViewIfNeeded();
+    await field.press("Shift+Enter");
+    await expect(editor).toBeFocused();
+    await expect
+      .poll(async () => {
+        const source = (await field.boundingBox())!;
+        const popup = (await expanded.boundingBox())!;
+        const gap = Math.min(Math.abs(popup.y - source.y - source.height), Math.abs(source.y - popup.y - popup.height));
+        return popup.x >= 0 && popup.x + popup.width <= width && gap <= 6;
+      })
+      .toBe(true);
+    await expect.poll(() => editor.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeGreaterThan(0);
+    await editor.fill("-Xmx1g");
+    await editor.press("Escape");
+    await expect(expanded).toBeHidden();
+    await expect(field).toBeFocused();
+    await expect(field).toHaveValue(original);
+  }
+
+  const expand = config.getByRole("button", { name: "Expand (⇧⏎)", exact: true });
+  await expand.click();
+  await expect(editor).toBeFocused();
+  await editor.fill(original + "\n-Ddemo.mode=local");
+  await editor.press("Control+Enter");
+  await expect(expanded).toBeHidden();
+  await expect(field).toHaveValue(original + "\n-Ddemo.mode=local");
+});
+
 async function openConfigurations(page: Page, target?: string, beforeLaunch?: BeforeLaunchTask[]) {
   await page.evaluate(
     async ({ target, beforeLaunch }) => {
