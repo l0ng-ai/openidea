@@ -9,7 +9,8 @@ import { useSettingsDialog } from "../../model/staging";
 import { useSetting } from "../../components/context";
 import { GlobListEditor, Row, SearchLabel, Section } from "../../components/Form";
 import { useProject } from "@/platform/project";
-import { T, Tabs } from "@/ui";
+import { Select, T, Tabs } from "@/ui";
+import type { SelectOption } from "@/ui";
 import type { PageSpec } from "../spec";
 import formStyles from "../../components/Form.module.css";
 import styles from "./Spelling.module.css";
@@ -101,8 +102,26 @@ function AcceptedWords() {
 
 function SpellingPage() {
   const [dictionaries, setDictionaries] = useSetting<string[]>("spelling.customDictionaries", "global");
+  const [defaultDictionary, setDefaultDictionary] = useSetting<string>("spelling.defaultDictionary", "global");
+  const newProjects = useSettingsDialog((s) => s.newProjects);
+  const hasProject = useProject((s) => !!s.project) && !newProjects;
+  const options: SelectOption<string>[] = [
+    ...(hasProject ? [{ value: "project", label: "Project dictionary" }] : []),
+    { value: "application", label: "Application dictionary" },
+    ...(dictionaries ?? []).map((d) => ({ value: d.trim(), label: d.trim(), verbatim: true })),
+  ];
   return (
     <div className={styles.spelling}>
+      <Section stackFields>
+        <Row label="Default dictionary" hint="The dictionary the editor's Save '…' to dictionary quick fix writes to.">
+          <Select
+            value={defaultDictionary || (hasProject ? "project" : "application")}
+            options={options}
+            onChange={(v) => setDefaultDictionary(v === (hasProject ? "project" : "application") ? "" : v)}
+            aria-label="Default dictionary"
+          />
+        </Row>
+      </Section>
       <Section title="Custom dictionaries">
         <Row
           label="Dictionary files"

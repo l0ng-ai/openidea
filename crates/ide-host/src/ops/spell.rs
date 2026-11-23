@@ -20,11 +20,16 @@ fn dictionary_paths(settings: &SpellingSettings, root: &Path) -> Vec<PathBuf> {
         .iter()
         .map(|p| p.trim())
         .filter(|p| !p.is_empty())
-        .map(|p| match p.strip_prefix("~/") {
-            Some(rest) => dirs::home_dir().unwrap_or_default().join(rest),
-            None => root.join(p),
-        })
+        .map(|p| resolve_dictionary(p, root))
         .collect()
+}
+
+/// One `spelling.customDictionaries` entry resolved: `~/…` from home, relative from the project root.
+fn resolve_dictionary(text: &str, root: &Path) -> PathBuf {
+    match text.strip_prefix("~/") {
+        Some(rest) => dirs::home_dir().unwrap_or_default().join(rest),
+        None => root.join(text),
+    }
 }
 
 fn speller(project: &Project) -> Speller {
@@ -116,4 +121,65 @@ pub async fn spell_suggest(host: &Host, window: &str, word: String) -> IdeResult
     .await
 }
 
-ide_command::domain!(spell: spell_check, spell_suggest);
+/// Appends `word` to the custom dictionary `dictionary` (a
+/// `spelling.customDictionaries` entry: `~/…` from home, relative from the
+/// project root) and reports which file was written, creating it when missing.
+/// A Hunspell `.dic` with a `.aff` beside it keeps its word count line current;
+/// the speller picks the change up through its own mtime cache.
+#[command(trust = always)]
+pub async fn spell_save_to_dictionary(
+    host: &Host,
+    window: &str,
+    dictionary: String,
+    word: String,
+) -> IdeResult<String> {
+    let project = host.project(window)?;
+    blocking(move || {
+        let root = project.root.clone();
+        let entry = dictionary.trim();
+        if entry.is_empty() {
+            return Err(IdeError::invalid("No custom dictionary selected"));
+        }
+        let w = word.trim();
+        // One word per line: no whitespace, no line breaks; digits and hyphens
+        // may appear, but at least one letter (a number list checks nothing).
+        if w.is_empty() || w.chars().any(|c| c.is_whitespace()) || !w.chars().any(|c| c.is_alphabetic()) {
+            return Err(IdeError::invalid(format!("'{word}' is not a word a dictionary can list")));
+        }
+        let path = resolve_dictionary(entry, &root);
+        let existing = std::fs::read(&path).ok();
+        if let Some(bytes) = &existing {
+            let text = String::from_utf8_lossy(bytes);
+            if text.lines().any(|l| l.trim() == w) {
+                return Ok(String::new());
+            }
+        }
+        let aff = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("dic"))
+            && ["aff", "AFF"].into_iter().any(|ext| path.with_extension(ext).is_file());
+        let updated = match existing.as_deref().map(String::from_utf8_lossy) {
+            None => format!("{w}\n"),
+            Some(text) if aff && text.starts_with(|c: char| c.is_ascii_digit()) => {
+                // A Hunspell dictionary: its first line counts the words.
+                let (count, rest) = text.split_once('\n').unwrap_or((text.trim(), ""));
+                match count.trim().parse::<usize>() {
+                    Ok(n) => format!("{}\n{rest}{w}\n", n + 1),
+                    Err(_) => format!("{w}\n{text}"),
+                }
+            }
+            Some(text) if !text.is_empty() && !text.ends_with('\n') => format!("{text}\n{w}\n"),
+            Some(text) => format!("{text}{w}\n"),
+        };
+        // A dictionary file may name folders that do not exist yet (a fresh
+        // project layout): create them, then write.
+        if let Some(dir) = path.parent()
+            && !dir.is_dir()
+        {
+            std::fs::create_dir_all(dir)?;
+        }
+        ide_vfs::write_atomic_strict(&path, updated.as_bytes())?;
+        Ok(path.to_string_lossy().into_owned())
+    })
+    .await
+}
+
+ide_command::domain!(spell: spell_check, spell_suggest, spell_save_to_dictionary);
