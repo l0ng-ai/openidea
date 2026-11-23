@@ -13,6 +13,8 @@ import { AgentsStatus } from "./AgentsStatus";
 import { activate } from "./index";
 import { openChangeDiff } from "./session/ChangesPane";
 import * as actions from "@/platform/actions";
+import { commands } from "@/platform/ipc";
+import { deferred } from "@/test/deferred";
 import { SESSION_KIND, sessionKey, TASK_DRAG } from "./model";
 import {
   connect,
@@ -22,6 +24,7 @@ import {
   markVisible,
   openHome,
   openTask,
+  refreshChanges,
   setSessionLocation,
   undockTask,
   useAgents,
@@ -144,6 +147,47 @@ describe("agent tab titles", () => {
     expect(useEditorTabTitles.getState().revision).toBe(revision + 1);
     emit({ type: "task", task: { ...task("two", "ready"), title: "Provider title" } });
     expect(useEditorTabTitles.getState().revision).toBe(revision + 2);
+  });
+});
+
+describe("in-flight change reads", () => {
+  it.each(["project switch", "removal", "cache eviction"])(
+    "drops stale results and queued reads on %s",
+    async (why) => {
+      const reply = deferred<Awaited<ReturnType<typeof commands.agentChanges>>>();
+      const reads = vi.spyOn(commands, "agentChanges").mockImplementationOnce(() => reply.promise);
+      const first = refreshChanges("one");
+      const next = refreshChanges("one");
+      if (why === "project switch") {
+        disconnect();
+        await connect(); // Same id in the new project.
+      } else if (why === "removal") {
+        emit({ type: "removed", id: "one" });
+        emit({ type: "task", task: task("one") });
+      } else {
+        emit({ type: "task", task: task("one", "archived") }); // Not open: drops its cache.
+      }
+      reply.resolve({ status: "ok", data: [] });
+      await Promise.all([first, next]);
+      expect(reads).toHaveBeenCalledTimes(1);
+      expect(useAgents.getState().changes.has("one")).toBe(false);
+      await refreshChanges("one");
+      expect(useAgents.getState().changes.has("one")).toBe(true);
+    },
+  );
+
+  it("honors a fresh request after eviction without overlapping the obsolete read", async () => {
+    const stale = deferred<Awaited<ReturnType<typeof commands.agentChanges>>>();
+    const reads = vi.spyOn(commands, "agentChanges").mockImplementationOnce(() => stale.promise);
+    const first = refreshChanges("one");
+    const abandoned = refreshChanges("one");
+    emit({ type: "task", task: task("one", "archived") });
+    const reopened = refreshChanges("one");
+    expect(reads).toHaveBeenCalledTimes(1);
+    stale.resolve({ status: "ok", data: [] });
+    await Promise.all([first, abandoned, reopened]);
+    expect(reads).toHaveBeenCalledTimes(2);
+    expect(useAgents.getState().changes.has("one")).toBe(true);
   });
 });
 

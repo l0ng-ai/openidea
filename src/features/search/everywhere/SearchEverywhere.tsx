@@ -934,8 +934,11 @@ function ResultRow({
           <span className={styles.main}>
             <CodeText path={row.path} text={row.text} indices={row.indices} />
           </span>
-          <span className={clsx(styles.right, active && styles.rightActive)}>
-            <span className={clsx(repeat && !active && styles.repeat)}>{basename(row.rel)}</span> {row.line + 1}
+          <span className={clsx(styles.right, styles.textLocation, active && styles.rightActive)}>
+            <span className={clsx(styles.textFile, repeat && !active && styles.repeat)} title={row.rel}>
+              {basename(row.rel)}
+            </span>{" "}
+            <span className={styles.textLine}>{row.line + 1}</span>
           </span>
         </>
       );

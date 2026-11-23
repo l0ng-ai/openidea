@@ -6,8 +6,13 @@ import { sessionTabs } from "../ui/sessionTabs";
 const node = { ...browserLaunch("dev", "http://localhost:5173", "chrome", "/p"), extraJson: '{"type":"pwa-node"}' };
 const page = browserLaunch("localhost:5173", "http://localhost:5173", "chrome", "/p");
 
-function session(id: number, parent: number | null, launch: DebugSession["launch"] = null): DebugSession {
-  return { id, name: `s${id}`, parent, launch } as DebugSession;
+function session(
+  id: number,
+  parent: number | null,
+  launch: DebugSession["launch"] = null,
+  tabOrder = id,
+): DebugSession {
+  return { id, name: `s${id}`, parent, launch, tabOrder } as DebugSession;
 }
 
 const shown = (sessions: DebugSession[]) => sessionTabs(sessions).map((t) => [t.session.id, t.owner, t.child]);
@@ -33,6 +38,29 @@ describe("debug session tabs", () => {
     expect(shown([session(4, null, page), session(5, 4), session(6, 5)])).toEqual([
       [5, 4, false],
       [6, 6, true],
+    ]);
+  });
+
+  it("keeps a reused slot instead of ordering tabs by session id", () => {
+    expect(shown([session(2, null, null, 2), session(9, null, null, 1), session(5, null, null, 3)])).toEqual([
+      [9, 9, false],
+      [2, 2, false],
+      [5, 5, false],
+    ]);
+  });
+
+  it("keeps a child next to its parent when the parent took an older slot", () => {
+    expect(shown([session(2, null, null, 2), session(3, null, null, 1), session(4, 3, null, 3)])).toEqual([
+      [3, 3, false],
+      [4, 4, true],
+      [2, 2, false],
+    ]);
+  });
+
+  it("puts a browser page in the slot of the launch it stands for", () => {
+    expect(shown([session(21, 20, null, 20), session(30, null, null, 1), session(20, null, page, 2)])).toEqual([
+      [30, 30, false],
+      [21, 20, false],
     ]);
   });
 });

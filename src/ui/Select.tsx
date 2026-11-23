@@ -22,6 +22,8 @@ import styles from "./Select.module.css";
 export interface SelectOption<V extends string = string> {
   value: V;
   label: string;
+  /** Give the label extra weight in the list. */
+  emphasized?: boolean;
   /** User values are displayed as written. */
   verbatim?: boolean;
   icon?: IconName | (string & {});
@@ -280,7 +282,7 @@ export function SelectListbox<V extends string = string>({
             <span className={styles.check} />
             {o.tree && <TreeIndent {...o.tree} />}
             {o.icon && <Icon name={o.icon} size={14} />}
-            <span>{labelOf(o)}</span>
+            <span className={o.emphasized ? styles.emphasized : undefined}>{labelOf(o)}</span>
             {o.detail && <span className={styles.sizerDetail}>{detailOf(o)}</span>}
           </div>
         ))}
@@ -315,7 +317,10 @@ export function SelectListbox<V extends string = string>({
               <span className={styles.check}>{o.value === value && <Icon name="check" size={12} />}</span>
               {o.tree && <TreeIndent {...o.tree} />}
               {o.icon && <Icon name={o.icon} size={14} />}
-              <span className={clsx(styles.optionLabel, detail && styles.withDetail)} title={label}>
+              <span
+                className={clsx(styles.optionLabel, detail && styles.withDetail, o.emphasized && styles.emphasized)}
+                title={label}
+              >
                 {highlight(label)}
               </span>
               {detail && (

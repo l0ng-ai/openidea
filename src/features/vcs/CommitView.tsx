@@ -29,7 +29,8 @@ import {
   EmptyState,
   Icon,
   IconButton,
-  Menu,
+  MenuList,
+  Popup,
   Spinner,
   SplitGroup,
   SplitHandle,
@@ -590,7 +591,7 @@ export function stageOperation(n: ChangeNode): { label: string; icon: "plus" | "
   return null;
 }
 
-function StageButton({ node }: { node: ChangeNode }) {
+function StageButton({ node, leadSelected }: { node: ChangeNode; leadSelected: boolean }) {
   const op = stageOperation(node);
   if (!op) return null;
   const { label, icon, paths } = op;
@@ -600,7 +601,7 @@ function StageButton({ node }: { node: ChangeNode }) {
       icon={icon}
       title={label}
       size="small"
-      className={styles.stageButton}
+      className={clsx(styles.stageButton, leadSelected && styles.stageButtonLead)}
       onMouseDown={(e) => e.stopPropagation()}
       onDoubleClick={(e) => e.stopPropagation()}
       onClick={(e) => {
@@ -1161,6 +1162,7 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
                 className={clsx(
                   styles.label,
                   n.type === "group" && styles.groupLabel,
+                  staging && n.type === "group" && styles.stageGroupLabel,
                   n.type === "group" && n.changelist && !n.active && styles.inactiveList,
                 )}
                 style={n.type === "file" && n.kind ? { color: KIND_COLOR[n.kind] } : undefined}
@@ -1268,7 +1270,7 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
                 )}
                 {n.detail && n.detailIcon && <Icon name={n.detailIcon} size={14} className={styles.detailIcon} />}
                 {n.detail && <span className={styles.detail}>{n.detail}</span>}
-                {staging && <StageButton node={n} />}
+                {staging && <StageButton node={n} leadSelected={st.selected && st.lead} />}
               </span>
             );
           }}
@@ -1374,7 +1376,6 @@ export function CommitMessageField({
   const amend = useCommit((s) => s.amend);
   const focusTick = useCommit((s) => s.focusTick);
   const ref = useRef<HTMLTextAreaElement>(null);
-  const barRef = useRef<HTMLDivElement>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const historyTick = useCommit((s) => s.historyTick);
   const { emptyError } = runner;
@@ -1393,6 +1394,11 @@ export function CommitMessageField({
   const cfg = useWorkflowSettings((s) => s.vcs.commit);
   const editor = useProject((s) => s.settings?.editor);
   const { family, size } = resolveMonoFont(undefined, editor);
+  const messageFont = {
+    fontFamily: family,
+    fontSize: size,
+    fontWeight: fontWeightOf(editor?.fontWeight, 400),
+  };
   const first = message.split("\n")[0] ?? "";
   const tooLong = cfg.limitSubject && first.length > cfg.subjectLimit;
   const problems = messageProblems(message, cfg).filter((p) => !p.startsWith("Subject line"));
@@ -1402,7 +1408,7 @@ export function CommitMessageField({
 
   return (
     <>
-      <div ref={barRef} className={styles.commitBar}>
+      <div className={styles.commitBar}>
         <Checkbox checked={amend} onChange={(v) => void setAmend(v)} label="Amend" />
         {chooseAmendTarget && amendRoot && <AmendTargetMenu root={amendRoot} />}
         <IconButton
@@ -1414,22 +1420,32 @@ export function CommitMessageField({
           aria-expanded={historyOpen}
           onClick={() => setHistoryOpen((o) => !o)}
         />
-        <Menu
+        <Popup
           open={historyOpen}
           onClose={() => setHistoryOpen(false)}
-          anchor={barRef}
+          anchor={ref}
           placement="top-start"
-          iconColumn={false}
-          aria-label="Recent commit messages"
-          items={history.map((m, i) => ({
-            id: `h${i}`,
-            label: m.split("\n")[0]!.slice(0, 80),
-            run: () => {
-              useCommit.setState({ message: m });
-              ref.current?.focus();
-            },
-          }))}
-        />
+          offset={3}
+          role="presentation"
+          autoFocus={false}
+          className={styles.messageHistory}
+          style={{ ...messageFont, ["--history-columns" as string]: `${cfg.subjectLimit}ch` }}
+        >
+          <MenuList
+            onDone={() => setHistoryOpen(false)}
+            iconColumn={false}
+            aria-label={tx("Recent commit messages")}
+            items={history.map((m, i) => ({
+              id: `h${i}`,
+              label: m.replace(/\r\n?|\n/g, " ⏎ "),
+              verbatim: true,
+              run: () => {
+                useCommit.setState({ message: m });
+                ref.current?.focus();
+              },
+            }))}
+          />
+        </Popup>
         <CommitMessageActions />
         <span className={styles.grow} />
         {tooLong && (
@@ -1445,9 +1461,7 @@ export function CommitMessageField({
         aria-invalid={emptyError || undefined}
         style={{
           ["--guide" as string]: `${margin}ch`,
-          fontFamily: family,
-          fontSize: size,
-          fontWeight: fontWeightOf(editor?.fontWeight, 400),
+          ...messageFont,
           lineHeight: editor?.lineHeight ? `${editor.lineHeight}px` : undefined,
         }}
         value={message}

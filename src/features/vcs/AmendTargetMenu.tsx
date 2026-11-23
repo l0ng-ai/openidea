@@ -42,6 +42,7 @@ export function AmendTargetMenu({ root }: { root: string }) {
     {
       value: LAST_COMMIT,
       label: "Amend Last Commit",
+      emphasized: true,
       detail: available?.latest?.summary,
       verbatimDetail: true,
     },

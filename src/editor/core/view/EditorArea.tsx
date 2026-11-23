@@ -38,7 +38,6 @@ import { useFileColors } from "@/workbench/fileColors";
 import { EmptyEditor } from "@/workbench/EditorArea";
 import {
   EmptyState,
-  Icon,
   IconButton,
   Menu,
   SplitGroup,
@@ -216,7 +215,6 @@ function PaneView({ paneId }: { paneId: string }) {
             ? (gitRevisionOf(t.input.path)?.revision.slice(0, 8) ?? basename(dirname(t.input.path)))
             : null;
       const kindMark = tabTrailing(t.input, kinds);
-      const pin = t.pinned ? <Icon name="pin" size={11} className={styles.pin} label="Pinned" /> : null;
       const file = t.input.kind === "file" && t.input.path ? files.get(t.input.path) : undefined;
       const title = markModified && dirty[i] ? `*${name}` : name;
       const prefix = t.input.kind === "file" && dupe ? (dupe.endsWith("/") ? dupe : `${dupe}/`) : null;
@@ -242,6 +240,7 @@ function PaneView({ paneId }: { paneId: string }) {
             : tabIcon(t.input, kinds)
           : undefined,
         italic: t.preview,
+        pinned: t.pinned,
         error: t.input.kind === "file" && errors[i],
         modified: dirty[i],
         // IDEA: hiding the close button is visual only. Keep close gestures
@@ -252,13 +251,7 @@ function PaneView({ paneId }: { paneId: string }) {
           tints[i] || (fileColors && t.input.kind === "file" && t.input.path ? fileColors(t.input.path) : undefined),
         tintStrength: tints[i] ? undefined : "var(--file-tint-strength)",
         tooltip: virtualTooltip(t.input) ?? (showFullPathOnHover ? (t.input.path ?? name) : undefined),
-        trailing:
-          kindMark || pin ? (
-            <>
-              {kindMark}
-              {pin}
-            </>
-          ) : undefined,
+        trailing: kindMark,
       };
     });
   }, [
@@ -369,6 +362,7 @@ function PaneView({ paneId }: { paneId: string }) {
       onSelect={(id) => ctrl.activate(paneId, id)}
       onClose={(id) => void ctrl.closeTab(paneId, id)}
       onCloseOthers={(id) => void ctrl.closeOthers(paneId, id)}
+      onTogglePin={(id) => ctrl.togglePin(paneId, id)}
       closeOnShiftClick
       onDoubleClick={(id) => {
         // IDEA: a preview tab becomes a regular one; any other tab maximizes the editor.

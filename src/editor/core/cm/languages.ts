@@ -25,6 +25,7 @@ import { languages as languageData } from "@codemirror/language-data";
 import type { DocBackend, LanguageInfo } from "../backend";
 import type { BracketSyntax } from "./rainbowBrackets";
 import { _languageMode, editorsFor } from "@/editor/api";
+import { wildcardMatch } from "@/platform/fileTypes";
 import { JS_TAGS } from "./jsTags";
 import { docCommentTags } from "./docCommentTags";
 import type { FencedCodeMode } from "./markdown";
@@ -95,6 +96,45 @@ export function uiModeForPath(path: string): string | null | undefined {
     for (const info of infos.values()) if (info.extensions.includes(rest)) return info.uiMode;
   }
   return undefined;
+}
+
+let namesOf: {
+  infos: Map<string, LanguageInfo>;
+  byExtension: Map<string, LanguageInfo[]>;
+  byName: Map<string, LanguageInfo[]>;
+  patterns: Array<{ pattern: string; info: LanguageInfo }>;
+} | null = null;
+
+/**
+ * The backend languages whose definition claims `path`'s file name (an `extension`, longest first, or
+ * a `filenames` entry); empty when none does, `undefined` while the languages are not loaded. Settings
+ * › File Types and the file's first line are not consulted.
+ */
+export function languagesForPath(path: string): readonly LanguageInfo[] | undefined {
+  if (!infos) return undefined;
+  if (namesOf?.infos !== infos) {
+    namesOf = { infos, byExtension: new Map(), byName: new Map(), patterns: [] };
+    const add = (m: Map<string, LanguageInfo[]>, key: string, info: LanguageInfo) =>
+      m.set(key, [...(m.get(key) ?? []), info]);
+    for (const info of infos.values()) {
+      for (const ext of info.extensions) add(namesOf.byExtension, ext.toLowerCase(), info);
+      for (const name of info.filenames ?? []) {
+        if (/[*?]/.test(name)) namesOf.patterns.push({ pattern: name.toLowerCase(), info });
+        else add(namesOf.byName, name.toLowerCase(), info);
+      }
+    }
+  }
+  const name = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
+  const found = new Set(namesOf.byName.get(name));
+  for (const { pattern, info } of namesOf.patterns) if (wildcardMatch(pattern, name)) found.add(info);
+  for (let rest = name, dot = rest.indexOf("."); dot >= 0; dot = rest.indexOf(".")) {
+    rest = rest.slice(dot + 1);
+    const claimed = namesOf.byExtension.get(rest);
+    if (!claimed) continue;
+    for (const info of claimed) found.add(info);
+    break;
+  }
+  return [...found];
 }
 
 const supports = new Map<string, Promise<LanguageSupport | null>>();

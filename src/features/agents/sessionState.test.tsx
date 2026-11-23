@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { registerActions } from "@/platform/actions";
-import { emitLocalIdeEvent } from "@/platform/ipc";
+import { commands, emitLocalIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
+import { deferred } from "@/test/deferred";
 import { EditorShownProvider } from "@/workbench/contributions";
 import { hideContextMenu, useContextMenuStore } from "@/ui";
 import type { AgentChange, AgentCommit, AgentEntry, AgentTask } from "@/bindings";
@@ -11,11 +12,15 @@ import { SessionEditor } from "./SessionEditor";
 import { conversationRows } from "./session/conversationRows";
 import { entriesKey, SESSION_KIND, sessionKey, type SubagentEntry } from "./model";
 import {
+  acceptChanges,
   disconnect,
   hideImportSessions,
   importExternalSessions,
+  refreshChanges,
   refreshExternalSessions,
   releaseClosedTaskCache,
+  rollbackChanges,
+  scheduleChanges,
   showImportSessions,
   useAgents,
 } from "./store";
@@ -2830,6 +2835,92 @@ describe("import sessions dialog", () => {
 });
 
 describe("changes refresh", () => {
+  it("coalesces a burst of six edits without losing the final revision", async () => {
+    vi.useFakeTimers();
+    useAgents.setState({ docked: "A" });
+    let revision = 0;
+    let active = 0;
+    let peak = 0;
+    const reads = vi.spyOn(commands, "agentChanges").mockImplementation(async () => {
+      const added = revision;
+      peak = Math.max(peak, ++active);
+      // The oldest snapshot arrives last if the reads overlap.
+      await new Promise((done) => setTimeout(done, added === 1 ? 6000 : 3000));
+      active--;
+      return {
+        status: "ok",
+        data: [{ path: "/project/a", relPath: "a", kind: "modified", added, removed: 0, oldPath: null, repo: null }],
+      };
+    });
+    for (let i = 0; i < 6; i++) {
+      revision++;
+      scheduleChanges("A");
+      await vi.advanceTimersByTimeAsync(500);
+    }
+    await vi.runAllTimersAsync();
+    const finalRevision = useAgents.getState().changes.get("A")?.[0]?.added;
+    expect({ starts: reads.mock.calls.length, peak, finalRevision }).toEqual({ starts: 2, peak: 1, finalRevision: 6 });
+  });
+
+  it("accept and rollback await their trailing read, not an earlier read or the next burst", async () => {
+    vi.useFakeTimers();
+    useAgents.setState({ docked: "A" });
+    const reads = vi.spyOn(commands, "agentChanges").mockImplementation(async () => {
+      const data = backend.changes;
+      await new Promise((done) => setTimeout(done, 1000));
+      return { status: "ok", data };
+    });
+    void refreshChanges("A");
+    const accepted = vi.fn();
+    const rolledBack = vi.fn();
+    void acceptChanges("A", null).then(accepted);
+    void rollbackChanges("A", null).then(rolledBack);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(reads).toHaveBeenCalledTimes(2);
+    expect(accepted).not.toHaveBeenCalled();
+    expect(rolledBack).not.toHaveBeenCalled();
+
+    backend.changes = [
+      { path: "/project/b", relPath: "b", kind: "deleted", added: 0, removed: 1, oldPath: null, repo: null },
+    ];
+    scheduleChanges("A"); // Fresh demand during the trailing read needs another pass.
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(reads).toHaveBeenCalledTimes(3);
+    expect(accepted).toHaveBeenCalledOnce();
+    expect(rolledBack).toHaveBeenCalledOnce();
+    await vi.runAllTimersAsync();
+    expect(useAgents.getState().changes.get("A")).toEqual(backend.changes);
+  });
+
+  it("waits for both change views, samples options on rerun, and doesn't block another task", async () => {
+    vi.useFakeTimers();
+    useAgents.setState((s) => ({ tasks: new Map(s.tasks).set("A", { ...task("A"), isolation: "worktree" }) }));
+    useChangesOptions.setState({ groupByCommit: true, scope: "turn" });
+    const lastTurn = deferred<Awaited<ReturnType<typeof commands.agentChanges>>>();
+    const flat = vi.spyOn(commands, "agentChanges").mockImplementationOnce(() => lastTurn.promise);
+    const grouped = vi.spyOn(commands, "agentGroupedChanges");
+    scheduleChanges("A"); // Already covered by the manual read below.
+    const first = refreshChanges("A");
+    const next = refreshChanges("A");
+    useChangesOptions.setState({ scope: "task" });
+    await refreshChanges("B");
+    expect(grouped.mock.calls).toEqual([["A"]]);
+    expect(flat.mock.calls).toEqual([
+      ["A", "lastTurn"],
+      ["B", null],
+    ]);
+    expect(useAgents.getState().changes.has("B")).toBe(true);
+
+    useChangesOptions.setState({ groupByCommit: false });
+    lastTurn.resolve({ status: "ok", data: [] });
+    await Promise.all([first, next]);
+    await vi.runAllTimersAsync();
+    expect(flat.mock.calls.slice(2)).toEqual([["A", null]]);
+    expect(useAgents.getState().changes.has("A")).toBe(true);
+    expect(useAgents.getState().turnChanges.has("A")).toBe(true);
+    expect(useAgents.getState().groupedChanges.has("A")).toBe(true);
+  });
+
   it("re-reads the changes only when the task's own checkout changes", async () => {
     vi.useFakeTimers();
     render(<SessionEditor input={input("A")} />);

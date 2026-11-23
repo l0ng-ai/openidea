@@ -1,3 +1,4 @@
+import { SearchHistoryMenu } from "@/ui/SearchHistoryMenu";
 import {
   useEffect,
   useId,
@@ -39,14 +40,12 @@ import {
 } from "@/ui";
 import { useRowHeight } from "@/ui/density";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
-import { confirm } from "@/workbench/messages";
 import { basename, dirname, openLocation } from "../common/open";
 import { CodePreview, MatchText, ReplaceDiffPreview } from "./parts";
 import { clearPreviewCache } from "./preview";
+import { confirmReplacement } from "./ReplaceAllConfirmation";
 import {
   NO_MARKS,
-  confirmAllText,
-  confirmText,
   countUsages,
   groupState,
   loadReplacePreview,
@@ -74,7 +73,6 @@ import {
   customScopeName,
   customScopeValue,
   describeQuery,
-  findHistory,
   hideFindPopup,
   recentMasks,
   rememberFindString,
@@ -284,6 +282,8 @@ function FindInFilesDialog() {
   const rows = useMemo(() => matchRows(state.files), [state.files]);
   const active = rows.length ? Math.min(sel.lead, rows.length - 1) : -1;
   const selected = active >= 0 ? rows[active] : undefined;
+  const previewDirectory = selected?.relPath.includes("/") ? dirname(selected.relPath) : "";
+  const previewParentStart = Math.max(0, previewDirectory.lastIndexOf("/"));
   const chosen = useMemo(() => selectedRows(rows, sel), [rows, sel]);
   const fileHighlights = useMemo(() => {
     if (stale || !selected) return [];
@@ -346,22 +346,11 @@ function FindInFilesDialog() {
       void replaceAll(usages);
       return;
     }
-    const ok = await confirm({
-      title: "Replace All",
-      ok: "Replace",
-      message: (
-        <>
-          {allInScope
-            ? confirmAllText(s.pattern, s.replacement || "")
-            : confirmText(counts, s.pattern, s.replacement || "")}
-          {marks.excluded.size > 0 && (
-            <>
-              {" "}
-              <T>Excluded usages are skipped.</T>
-            </>
-          )}
-        </>
-      ),
+    const ok = await confirmReplacement({
+      counts: allInScope ? null : counts,
+      pattern: s.pattern,
+      replacement: s.replacement || "",
+      hasExclusions: marks.excluded.size > 0,
     });
     if (ok) void replaceAll(usages, allInScope);
   };
@@ -563,19 +552,6 @@ function FindInFilesDialog() {
     checked: m === s.mask ? true : undefined,
     run: () => set({ mask: m, maskEnabled: true }),
   }));
-  const historyItems = (kind: "find" | "replace"): MenuItem[] => {
-    const h = findHistory(kind);
-    return h.length
-      ? [
-          { kind: "header", label: kind === "find" ? "Recent Searches" : "Recent Replacements" },
-          ...h.map((q) => ({
-            label: q,
-            verbatim: true,
-            run: () => set(kind === "find" ? { pattern: q } : { replacement: q }),
-          })),
-        ]
-      : [{ label: kind === "find" ? "No recent searches" : "No recent replacements", disabled: true }];
-  };
   const contextItems: MenuItem[] = SEARCH_CONTEXTS.map((c) => ({
     label: c.label,
     checked: c.value === s.context ? true : undefined,
@@ -890,16 +866,21 @@ function FindInFilesDialog() {
               </SplitPanel>
               <SplitHandle hairline={false} />
               <SplitPanel id="preview" minSize={96}>
-                <div className={styles.previewHeader}>
-                  {selected ? (
-                    <span className={styles.previewPath}>
-                      <span className={styles.previewName}>{basename(selected.relPath)}</span>
-                      {selected.relPath.includes("/") && dirname(selected.relPath)}
-                    </span>
-                  ) : (
-                    <span />
-                  )}
-                </div>
+                {selected && (
+                  <div className={styles.previewHeader} title={selected.relPath}>
+                    <span className={styles.previewName}>{basename(selected.relPath)}</span>
+                    {previewDirectory && (
+                      <span className={styles.previewDirectory} dir="ltr">
+                        {previewParentStart > 0 && (
+                          <span className={styles.previewSegment}>{previewDirectory.slice(0, previewParentStart)}</span>
+                        )}
+                        <span className={clsx(styles.previewSegment, styles.previewParent)}>
+                          {previewDirectory.slice(previewParentStart)}
+                        </span>
+                      </span>
+                    )}
+                  </div>
+                )}
                 <div className={styles.previewBox}>
                   {!stale && previewMode && s.replace && selected ? (
                     <ReplaceDiffPreview
@@ -974,12 +955,10 @@ function FindInFilesDialog() {
         placement="bottom-end"
         onClose={() => setMaskMenu(false)}
       />
-      <Menu
-        open={historyMenu !== null}
+      <SearchHistoryMenu
+        kind={historyMenu}
         anchor={historyMenu === "replace" ? replaceBoxRef : patternBoxRef}
-        items={historyMenu ? historyItems(historyMenu) : []}
-        placement="bottom-start"
-        aria-label="Recent searches"
+        onSelect={(value) => set(historyMenu === "replace" ? { replacement: value } : { pattern: value })}
         onClose={() => setHistoryMenu(null)}
       />
       <Menu

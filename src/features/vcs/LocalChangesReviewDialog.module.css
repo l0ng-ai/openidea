@@ -13,7 +13,12 @@
   font-size: var(--fs-ui);
 }
 
-.content p {
+.intro {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.intro p {
   margin: 0;
 }
 
@@ -21,7 +26,7 @@
   display: flex;
   flex: 1 1 230px;
   flex-direction: column;
-  min-height: 0;
+  min-height: calc(2 * var(--h-row) + var(--h-control));
   border: 1px solid var(--border);
   border-radius: var(--radius-small);
   overflow: hidden;
@@ -40,11 +45,30 @@
   min-height: var(--h-row);
 }
 
-.path {
+.nodeIcon {
+  flex: none;
+}
+
+.fileLabel {
+  display: flex;
+  flex: 1;
+  align-items: baseline;
+  gap: var(--space-1-5);
+  min-width: 0;
+}
+
+.fileName,
+.directory {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.directory {
+  flex: 1;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
 }
 
 .hint {
