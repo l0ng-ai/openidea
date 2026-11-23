@@ -88,6 +88,7 @@ pub(crate) fn discover(path: &Path) -> IdeResult<Option<Repo>> {
         cli_status: Default::default(),
         automatic_shelf: Default::default(),
         log_index: Default::default(),
+        ref_decorations: Default::default(),
         log_signatures: Default::default(),
         conflict_mutation: Default::default(),
         amend_recovery: Default::default(),

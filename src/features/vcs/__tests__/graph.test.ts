@@ -115,6 +115,55 @@ describe("pruneFilteredEdges", () => {
     const commits = [c("m", "b", "f"), c("f", "a"), c("b", "a"), c("a")];
     expect(pruneFilteredEdges(commits)).toEqual(commits);
   });
+
+  it("does not fan out connections to filtered ancestors that are not loaded yet", () => {
+    // The #5345 history under an author filter: the merge's hidden parent projects onto
+    // every older matching commit, deepest first. Only the first 300 rows are loaded.
+    const n = 340;
+    const older = ["root", ...Array.from({ length: n - 1 }, (_, i) => `a${i + 1}`)];
+    const merge: GraphCommit = {
+      id: "tip",
+      parents: [`a${n}`, ...older],
+      dashed: [false, ...older.map(() => true)],
+      edgeTypes: ["normal", ...older.map(() => "filtered" as const)],
+    };
+    const chain = Array.from({ length: n }, (_, i) => shown(`a${n - i}`, n - i === 1 ? "root" : `a${n - i - 1}`));
+    const all = [merge, ...chain, c("root")];
+    expect(all).toHaveLength(342);
+
+    const page = pruneFilteredEdges(all.slice(0, 300));
+    expect(page[0]!.parents).toEqual([`a${n}`]);
+    expect(computeGraph(page).rows[0]!.width).toBe(1);
+    expect(pruneFilteredEdges(all)[0]!.parents).toEqual([`a${n}`]);
+  });
+
+  it("keeps one connection leaving the page and restores the rest once they load", () => {
+    // Sibling side branches: neither reaches the other, but neither is loaded yet.
+    const all = [filtered("tip", "left", "right"), shown("left", "base"), shown("right", "base"), c("base")];
+    expect(pruneFilteredEdges(all.slice(0, 1))[0]!.parents).toEqual(["left"]);
+    // `left` leads further down the log, so `right` still waits for its own row...
+    expect(pruneFilteredEdges(all.slice(0, 2))[0]!.parents).toEqual(["left"]);
+    // ...and gets its connection back as soon as it is loaded.
+    expect(pruneFilteredEdges(all.slice(0, 3))[0]!.parents).toEqual(["left", "right"]);
+    expect(pruneFilteredEdges(all)[0]!.parents).toEqual(["left", "right"]);
+  });
+
+  it("prefers a real parent over filtered ones when all of them are below the page", () => {
+    const real = { id: "x", kind: "normal" as const };
+    const hidden = ["y", "z"].map((id) => ({ id, kind: "filtered" as const }));
+    for (const order of [
+      [real, ...hidden],
+      [...hidden, real],
+    ]) {
+      const merge: GraphCommit = {
+        id: "m",
+        parents: order.map((p) => p.id),
+        dashed: order.map((p) => p.kind === "filtered"),
+        edgeTypes: order.map((p) => p.kind),
+      };
+      expect(pruneFilteredEdges([merge])[0]!.parents).toEqual(["x"]);
+    }
+  });
 });
 
 describe("straightenLaneChanges", () => {

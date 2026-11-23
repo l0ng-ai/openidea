@@ -458,6 +458,13 @@ impl Translator {
                 let last = self.children.get(&tool_use).map(|c| c.last_text.clone()).filter(|t| !t.is_empty());
                 self.finish_child(&tool_use, stop, last.or(summary))
             }
+            // Compaction replaced the conversation with its summary: the context now holds
+            // `post_tokens`. Without it the stale count must not come back with the result;
+            // the driver asks Claude Code instead (`Session::refresh_usage`).
+            Some("compact_boundary") => {
+                self.used = msg.pointer("/compact_metadata/post_tokens").and_then(Value::as_u64);
+                self.usage_update().into_iter().collect()
+            }
             // A turn's background tasks (`run_in_background`) outlive it: the task keeps
             // the list and stays up while it isn't empty (see `Task::release_when_idle`).
             Some("background_tasks_changed") => {
@@ -559,6 +566,16 @@ impl Translator {
             self.cost_usd = Some(cost);
         }
         self.usage_update().into_iter().collect()
+    }
+
+    /// The context usage Claude Code reports (`get_context_usage`), as a usage update.
+    pub fn on_context_usage(&mut self, used: u64, size: u64) -> Update {
+        self.used = Some(used);
+        let mut update = json!({ "sessionUpdate": "usage_update", "used": used, "size": size });
+        if let Some(amount) = self.cost_usd {
+            update["cost"] = json!({ "amount": amount, "currency": "USD" });
+        }
+        Update { session: self.root.clone(), update }
     }
 
     fn usage_update(&self) -> Option<Update> {
