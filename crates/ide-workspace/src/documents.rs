@@ -168,6 +168,8 @@ struct DocState {
     can_reload_encoding: bool,
     /// The user picked `encoding`; reloads keep it instead of detecting again.
     encoding_chosen: bool,
+    /// The user converted the text to `encoding`; it is theirs to keep once a save writes it.
+    encoding_unsaved: bool,
     /// Disk state we last loaded or wrote; changes matching it are our own.
     disk_mtime: f64,
     disk_len: u64,
@@ -254,8 +256,15 @@ fn configured_fallback<'a>(
     path: &Path,
     editorconfig: Option<&EditorConfigProps>,
 ) -> Option<ide_vfs::Fallback<'a>> {
-    let fallback = defaults.fallback_for(&absolute(path));
-    match editorconfig.filter(|_| defaults.editorconfig).and_then(EditorConfigProps::encoding) {
+    let path = absolute(path);
+    let charset = editorconfig.filter(|_| defaults.editorconfig).and_then(EditorConfigProps::encoding);
+    let inherited = defaults.inherited_encoding_for(&path);
+    let fallback = if inherited.source == EncodingSource::Folder && charset.is_some() {
+        defaults.project_encoding_for(&path).fallback()
+    } else {
+        inherited.fallback()
+    };
+    match charset {
         Some(("utf-8", _)) => fallback.map(|f| ide_vfs::Fallback { ascii: false, ..f }),
         Some((encoding, _)) if !encoding.starts_with("utf-16") => Some(ide_vfs::Fallback { encoding, ascii: true }),
         _ => fallback,
@@ -371,6 +380,13 @@ impl Documents {
     pub fn detect_encoding(&self, path: &Path, bytes: &[u8]) -> &'static encoding_rs::Encoding {
         let defaults = self.file_defaults();
         let editorconfig = self.editorconfig_for(path, &defaults);
+        let configured = defaults.configured_encoding_for(&absolute(path));
+        if configured.source == EncodingSource::File
+            && let Some(enc) = encoding_rs::Encoding::for_label(configured.label.as_bytes())
+            && !enc.decode_with_bom_removal(bytes).0.contains(char::REPLACEMENT_CHARACTER)
+        {
+            return enc;
+        }
         ide_vfs::detect_encoding(bytes, configured_fallback(&defaults, path, editorconfig.as_ref()))
     }
 
@@ -385,6 +401,10 @@ impl Documents {
     pub fn configured_encoding_for(&self, path: &Path) -> Option<String> {
         let defaults = self.file_defaults();
         let editorconfig = self.editorconfig_for(path, &defaults);
+        let configured = defaults.configured_encoding_for(&absolute(path));
+        if configured.source == EncodingSource::File {
+            return Some(configured.label.to_owned());
+        }
         configured_fallback(&defaults, path, editorconfig.as_ref()).map(|f| f.encoding.to_owned())
     }
 
@@ -415,9 +435,9 @@ impl Documents {
         let configured = defaults.configured_encoding_for(&path_abs);
         if configured.source == EncodingSource::File {
             let loaded = Self::load_as(path, configured.label, defaults.native_to_ascii_for(path))?;
-            // The file is no longer in that encoding (changed outside the IDE, a conversion
-            // that was never saved): open it as if nothing was chosen, rather than show and
-            // save broken characters.
+            // The bytes are not text in that encoding (the file changed outside the IDE):
+            // open it as if nothing was chosen, rather than show and save broken characters.
+            // A single-byte encoding decodes any bytes, so this only catches the others.
             if !loaded.text.contains(char::REPLACEMENT_CHARACTER) {
                 return Ok((loaded, true));
             }
@@ -564,6 +584,7 @@ impl Documents {
             dirty: false,
             can_reload_encoding: true,
             encoding_chosen,
+            encoding_unsaved: false,
             disk_mtime: loaded.mtime_ms,
             disk_len: disk_len(path),
             disk_conflict: false,
@@ -641,6 +662,7 @@ impl Documents {
             dirty: false,
             can_reload_encoding,
             encoding_chosen: false,
+            encoding_unsaved: false,
             disk_mtime: 0.0,
             disk_len: 0,
             disk_conflict: false,
@@ -702,6 +724,7 @@ impl Documents {
             dirty: false,
             can_reload_encoding: false,
             encoding_chosen: false,
+            encoding_unsaved: false,
             disk_mtime: 0.0,
             disk_len: 0,
             disk_conflict: false,
@@ -1315,6 +1338,30 @@ impl Documents {
         })
     }
 
+    /// Whether the encoding the user chose for `doc` is still to reach its file: the text was
+    /// converted and not saved. It is then reported by [`Documents::take_saved_encodings`]
+    /// once a save has written it.
+    pub fn keep_encoding_when_saved(&self, doc: DocId) -> IdeResult<bool> {
+        self.with_doc(doc, |st| {
+            st.encoding_unsaved = st.dirty;
+            Ok(st.dirty)
+        })
+    }
+
+    /// The files saved in the encoding their text was converted to since
+    /// [`Documents::keep_encoding_when_saved`], with that encoding. Each is reported once.
+    pub fn take_saved_encodings(&self) -> Vec<(PathBuf, String)> {
+        let ids: Vec<DocId> = self.registry.lock().docs.keys().copied().collect();
+        let saved = |id| {
+            self.with_doc(id, |st| {
+                let saved = st.encoding_unsaved && !st.dirty;
+                st.encoding_unsaved &= st.dirty;
+                Ok(saved.then(|| (st.path.clone(), st.encoding.clone())))
+            })
+        };
+        ids.into_iter().filter_map(|id| saved(id).ok().flatten()).collect()
+    }
+
     /// Load Changes from Disk: drops the buffer's unsaved changes and reads its file again in
     /// the buffer's encoding, after the file changed on disk (`IdeEvent::DocDiskConflict`).
     pub fn discard_and_reload(&self, doc: DocId) -> IdeResult<()> {
@@ -1324,6 +1371,7 @@ impl Documents {
             }
             let loaded = Self::load_as(&st.path, &st.encoding, st.native_to_ascii)?;
             st.has_bom = loaded.has_bom;
+            st.encoding_unsaved = false;
             self.replace_locked(doc, st, &loaded.text)?;
             st.synced(loaded.mtime_ms);
             self.set_dirty(doc, st, false);

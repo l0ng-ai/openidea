@@ -270,13 +270,45 @@ async fn remembered_encoding_is_written_once_and_used_when_the_file_is_reopened(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn converted_encoding_is_remembered_once_the_file_is_saved_in_it() {
+    let f = Fixture::new();
+    let settings = f.project_settings();
+    std::fs::write(&f.path, "ação\n").unwrap();
+    let doc = f.open(&f.path).await;
+    doc_set_encoding(&f.host, "main", doc.id, "iso-8859-15".into(), false).await.unwrap();
+    doc_remember_encoding(&f.host, "main", doc.id).await.unwrap();
+    // The file is still UTF-8 on disk: closing without saving must not leave it mapped.
+    assert!(!settings.exists());
+    doc_close(&f.host, "main", doc.id).await.unwrap();
+    let reopened = f.open(&f.path).await;
+    assert_eq!((reopened.encoding.as_str(), reopened.text.as_str()), ("utf-8", "ação\n"));
+
+    doc_set_encoding(&f.host, "main", reopened.id, "iso-8859-15".into(), false).await.unwrap();
+    doc_remember_encoding(&f.host, "main", reopened.id).await.unwrap();
+    doc_save(&f.host, "main", reopened.id).await.unwrap();
+    assert_eq!(std::fs::read(&f.path).unwrap(), b"a\xe7\xe3o\n");
+    assert_eq!(
+        std::fs::read_to_string(&settings).unwrap(),
+        "[editor.encodings.mappings]\n\"node_modules/file.txt\" = \"iso-8859-15\"\n"
+    );
+    assert_eq!(f.mappings_changed(), 1);
+    // Later saves keep nothing more.
+    doc_save(&f.host, "main", reopened.id).await.unwrap();
+    assert_eq!(f.mappings_changed(), 1);
+
+    doc_close(&f.host, "main", reopened.id).await.unwrap();
+    let again = f.open(&f.path).await;
+    assert_eq!((again.encoding.as_str(), again.text.as_str()), ("iso-8859-15", "ação\n"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn encoding_stays_changed_when_it_cannot_be_remembered() {
     let f = Fixture::new();
     let settings = f.project_settings();
     std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
     std::fs::write(&settings, "[editor\n").unwrap();
     let doc = f.open(&f.path).await;
-    doc_set_encoding(&f.host, "main", doc.id, "iso-8859-15".into(), false).await.unwrap();
+    doc_set_encoding(&f.host, "main", doc.id, "iso-8859-15".into(), true).await.unwrap();
 
     let err = doc_remember_encoding(&f.host, "main", doc.id).await.unwrap_err();
     assert_eq!(err.kind, ide_core::error::ErrorKind::InvalidInput);

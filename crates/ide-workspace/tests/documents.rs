@@ -1813,6 +1813,25 @@ fn encoding_mapping_of_a_file_beats_editorconfig_and_a_folder_mapping_loses_to_i
 }
 
 #[test]
+fn encoding_mapping_of_a_folder_is_left_out_where_editorconfig_sets_the_charset() {
+    let f = fixture();
+    let mut defaults = f.docs.file_defaults();
+    defaults.project_fallback = "gbk".into();
+    f.docs.set_file_defaults(defaults);
+    fs::write(f.root.join(".editorconfig"), "root = true\n[*.java]\ncharset = latin1\n").unwrap();
+    fs::create_dir(f.root.join("src")).unwrap();
+    let path = in_root(&f, "src/B.java");
+    fs::write(&path, b"// \xd6\xd0\n").unwrap();
+    let unmapped = f.docs.open(&path).unwrap();
+    f.docs.close(unmapped.id);
+
+    encoding_mappings(&f, &[("src", "koi8-r")]);
+    let mapped = f.docs.open(&path).unwrap();
+    assert_eq!((mapped.encoding, mapped.text), (unmapped.encoding, unmapped.text));
+    assert_eq!(f.docs.load_file(&path).unwrap().encoding, "windows-1252", "closed-file readers agree");
+}
+
+#[test]
 fn encoding_mapping_a_file_no_longer_decodes_in_falls_back_to_detection() {
     let f = fixture();
     latin_project(&f);

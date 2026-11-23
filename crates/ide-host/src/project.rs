@@ -1530,8 +1530,7 @@ impl Project {
     }
 
     pub fn staged_file_encoding(&self, path: &Path, bytes: &[u8]) -> ide_vcs::TextEncoding {
-        let defaults = self.documents.file_defaults();
-        let charset = ide_vfs::detect_encoding(bytes, defaults.fallback_for(path));
+        let charset = self.documents.detect_encoding(path, bytes);
         self.vcs_text_encoding(path, charset)
     }
 

@@ -47,10 +47,8 @@ pub struct ConfiguredEncoding<'a> {
 impl<'a> ConfiguredEncoding<'a> {
     /// The label for files that are not valid UTF-8 or are plain ASCII (`None`: detect).
     pub fn fallback(self) -> Option<ide_vfs::Fallback<'a>> {
-        (self.label != "utf-8").then_some(ide_vfs::Fallback {
-            encoding: self.label,
-            ascii: self.source != EncodingSource::Properties,
-        })
+        (self.label != "utf-8")
+            .then_some(ide_vfs::Fallback { encoding: self.label, ascii: self.source != EncodingSource::Properties })
     }
 }
 
@@ -102,16 +100,22 @@ impl FileDefaults {
             let above = self.mappings.iter().filter(|(mapped, _)| path != mapped && path.starts_with(mapped));
             above.max_by_key(|(mapped, _)| mapped.components().count())
         };
-        let (label, source) = if path.extension().is_some_and(|e| e == "properties") {
-            (&self.properties_fallback, EncodingSource::Properties)
+        if path.extension().is_some_and(|e| e == "properties") {
+            ConfiguredEncoding { label: &self.properties_fallback, source: EncodingSource::Properties }
         } else if let Some((_, label)) = folder() {
-            (label, EncodingSource::Folder)
-        } else if self.root.as_ref().is_none_or(|r| path.starts_with(r)) {
-            (&self.project_fallback, EncodingSource::Project)
+            ConfiguredEncoding { label, source: EncodingSource::Folder }
         } else {
-            (&self.global_fallback, EncodingSource::Global)
-        };
-        ConfiguredEncoding { label, source }
+            self.project_encoding_for(path)
+        }
+    }
+
+    /// The project's encoding for a file inside it, the global one for any other.
+    pub fn project_encoding_for(&self, path: &Path) -> ConfiguredEncoding<'_> {
+        if self.root.as_ref().is_none_or(|r| path.starts_with(r)) {
+            ConfiguredEncoding { label: &self.project_fallback, source: EncodingSource::Project }
+        } else {
+            ConfiguredEncoding { label: &self.global_fallback, source: EncodingSource::Global }
+        }
     }
 
     /// Encoding for `path` when it is not valid UTF-8 or is plain ASCII (`None`: detect).
@@ -226,13 +230,24 @@ mod tests {
         );
         let fallback = |rel: &str| d.fallback_for(&root.join(rel));
         assert_eq!(fallback("src/legacy/A.java"), Some(ide_vfs::Fallback { encoding: "windows-1252", ascii: true }));
-        assert_eq!(fallback("src/legacy/B.java"), Some(ide_vfs::Fallback { encoding: "koi8-r", ascii: true }), "the longest folder wins");
+        assert_eq!(
+            fallback("src/legacy/B.java"),
+            Some(ide_vfs::Fallback { encoding: "koi8-r", ascii: true }),
+            "the longest folder wins"
+        );
         assert_eq!(fallback("src/main/C.java"), Some(ide_vfs::Fallback { encoding: "iso-8859-15", ascii: true }));
-        assert_eq!(fallback("srcs/C.java"), Some(ide_vfs::Fallback { encoding: "gbk", ascii: true }), "a folder is matched by whole path segments");
+        assert_eq!(
+            fallback("srcs/C.java"),
+            Some(ide_vfs::Fallback { encoding: "gbk", ascii: true }),
+            "a folder is matched by whole path segments"
+        );
         assert_eq!(fallback("other/C.java"), Some(ide_vfs::Fallback { encoding: "gbk", ascii: true }));
         assert_eq!(fallback("src/utf/D.java"), None, "a UTF-8 mapping does not fall through to the project");
         // `.properties` keep their own default inside a mapped folder; only their own entry overrides it.
-        assert_eq!(fallback("src/legacy/b.properties"), Some(ide_vfs::Fallback { encoding: "iso-8859-1", ascii: false }));
+        assert_eq!(
+            fallback("src/legacy/b.properties"),
+            Some(ide_vfs::Fallback { encoding: "iso-8859-1", ascii: false })
+        );
         assert_eq!(fallback("src/app.properties"), Some(ide_vfs::Fallback { encoding: "big5", ascii: true }));
         assert_eq!(d.fallback_for(Path::new("/elsewhere/src/C.java")), None);
 
@@ -277,7 +292,10 @@ mod tests {
         assert_eq!(mapping_key(root, root), None);
         assert_eq!(mapping_key(root, Path::new("untitled:Untitled-1")), None);
         let d = mapped(&[("src/a.b/A.java", "koi8-r")], root);
-        assert_eq!(d.fallback_for(&root.join("src/a.b/A.java")), Some(ide_vfs::Fallback { encoding: "koi8-r", ascii: true }));
+        assert_eq!(
+            d.fallback_for(&root.join("src/a.b/A.java")),
+            Some(ide_vfs::Fallback { encoding: "koi8-r", ascii: true })
+        );
     }
 
     #[test]
@@ -285,7 +303,10 @@ mod tests {
         let d = FileDefaults::from_settings(&Settings::default(), Some(Path::new("/p")));
         assert!(d.mappings.is_empty());
         assert_eq!(d.fallback_for(Path::new("/p/src/A.java")), None);
-        assert_eq!(d.fallback_for(Path::new("/p/a.properties")), Some(ide_vfs::Fallback { encoding: "iso-8859-1", ascii: false }));
+        assert_eq!(
+            d.fallback_for(Path::new("/p/a.properties")),
+            Some(ide_vfs::Fallback { encoding: "iso-8859-1", ascii: false })
+        );
         assert_eq!(d.configured_encoding_for(Path::new("/p/src/A.java")).label, "utf-8");
     }
 }

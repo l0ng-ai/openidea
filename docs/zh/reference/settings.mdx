@@ -140,7 +140,7 @@ exclude = ["**/.git", "**/node_modules", "**/target", "**/dist"]
 
 `[editor.general]`、`[editor.appearance]`、`[editor.completion]`、`[editor.tabs]`、`[editor.codeStyle]`、`[editor.encodings]` 等子表保存对应编辑器页面的选项。
 
-项目 `.openidea/settings.toml` 中的 `[editor.encodings.mappings]` 为单个文件或文件夹指定编码。键是相对于项目的路径，使用 `/` 分隔。在状态栏中选择编码时，该文件会被添加到这里。
+项目 `.openidea/settings.toml` 中的 `[editor.encodings.mappings]` 为单个文件或文件夹指定编码。键是相对于项目的路径，使用 `/` 分隔。在状态栏中选择编码时，该文件会被添加到这里；使用 **Convert** 时，在保存文件之后添加。
 
 ```toml
 [editor.encodings.mappings]
