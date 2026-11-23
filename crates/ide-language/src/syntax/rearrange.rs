@@ -1,52 +1,113 @@
 //! Rearrange Code: class members in arrangement order. Python only for now: within each class,
 //! `__new__` / `__init__` / `__post_init__`, other dunder methods, public, `_protected`, then
 //! `__private` methods, each group in its original order. The docstring and class attributes
-//! before the first method stay put; a method moves with its decorators and the comments right
-//! above it; definitions sharing a name (property accessors, `@overload` stubs) move together.
-//! A class with other statements among its methods is left alone: they may depend on the order.
+//! before the first method stay put; a method moves with its decorators and the comment lines
+//! directly above it; definitions sharing a name (property accessors, `@overload` stubs) move
+//! together. A class is left alone when moving could change it: other statements or standalone
+//! comments among its methods, or a decorator, default or annotation naming another method.
 
 use crate::{LanguageId, Syntax};
+use std::ops::Range;
 use tree_sitter::Node;
 
 impl Syntax {
-    /// `text` with its class members rearranged; `None` when nothing moves or the language has
-    /// no arrangement.
+    /// `text` with its class members rearranged; `None` when nothing moves, the text has syntax
+    /// errors, or the language has no arrangement.
     pub fn rearranged(&self, lang: &LanguageId, text: &str) -> Option<String> {
-        let mut text = text.to_owned();
-        let mut changed = false;
-        // One class per pass: a rearranged class shifts the classes after (and inside) it.
-        // ponytail: reparses once per class that moves; fine for files of a few hundred classes.
-        while let Some(next) = self.analyze(lang, &text, |g, tree, text| {
-            (g.spec.name == "python").then(|| first_python_change(tree.root_node(), text)).flatten()
-        }) {
-            text = next;
-            changed = true;
-        }
-        changed.then_some(text)
+        self.analyze(lang, text, |g, tree, text| {
+            (g.spec.name == "python").then(|| python_rearranged(tree.root_node(), text)).flatten()
+        })
     }
 }
 
-/// The text with the first class (in document order) whose methods are out of order rearranged.
-fn first_python_change(node: Node, text: &str) -> Option<String> {
-    if node.kind() == "class_definition"
-        && let Some(next) = rearrange_class(node, text)
-    {
-        return Some(next);
+/// One class whose methods move: their line ranges, the blank lines between them (which stay in
+/// place), and the order to write the methods in.
+struct Change {
+    region: Range<usize>,
+    methods: Vec<Range<usize>>,
+    gaps: Vec<Range<usize>>,
+    order: Vec<usize>,
+}
+
+/// Every class of the parsed `text` rearranged in one pass: a moved method carries the classes
+/// rearranged inside it.
+fn python_rearranged(root: Node, text: &str) -> Option<String> {
+    if root.has_error() {
+        return None;
     }
-    let mut cursor = node.walk();
-    let children: Vec<Node> = node.named_children(&mut cursor).collect();
-    children.into_iter().find_map(|child| first_python_change(child, text))
+    let mut changes = Vec::new();
+    let mut cursor = root.walk();
+    'walk: loop {
+        let node = cursor.node();
+        // An empty block (`if x:` with nothing under it) is an error the parser lets through.
+        if node.kind() == "block" && node.named_child_count() == 0 {
+            return None;
+        }
+        if node.kind() == "class_definition"
+            && let Some(change) = class_change(node, text)
+        {
+            changes.push(change);
+        }
+        if cursor.goto_first_child() {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                break 'walk;
+            }
+        }
+    }
+    if changes.is_empty() {
+        return None;
+    }
+    changes.sort_by_key(|c| c.region.start);
+    let mut out = String::with_capacity(text.len());
+    emit(text, &changes, 0..text.len(), &mut out);
+    (out != text).then_some(out)
+}
+
+/// `text[range]` with the changes inside it applied.
+fn emit(text: &str, changes: &[Change], range: Range<usize>, out: &mut String) {
+    let mut pos = range.start;
+    let first = changes.partition_point(|c| c.region.start < range.start);
+    for change in &changes[first..] {
+        if change.region.start >= range.end {
+            break;
+        }
+        // Inside a change already written, or the change `range` is a method of.
+        if change.region.start < pos || change.region.end > range.end {
+            continue;
+        }
+        out.push_str(&text[pos..change.region.start]);
+        for (position, &method) in change.order.iter().enumerate() {
+            emit(text, changes, change.methods[method].clone(), out);
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+            if let Some(gap) = change.gaps.get(position) {
+                out.push_str(&text[gap.clone()]);
+            }
+        }
+        if !text[..change.region.end].ends_with('\n') {
+            out.pop();
+        }
+        pos = change.region.end;
+    }
+    out.push_str(&text[pos..range.end]);
 }
 
 fn method_name<'a>(member: Node, text: &'a str) -> Option<&'a str> {
-    let function = match member.kind() {
-        "function_definition" => member,
+    function_of(member)?.child_by_field_name("name").map(|n| &text[n.byte_range()])
+}
+
+fn function_of(member: Node) -> Option<Node> {
+    match member.kind() {
+        "function_definition" => Some(member),
         "decorated_definition" => {
-            member.child_by_field_name("definition").filter(|d| d.kind() == "function_definition")?
+            member.child_by_field_name("definition").filter(|d| d.kind() == "function_definition")
         }
-        _ => return None,
-    };
-    function.child_by_field_name("name").map(|n| &text[n.byte_range()])
+        _ => None,
+    }
 }
 
 /// Arrangement group of a method name.
@@ -66,44 +127,128 @@ fn line_start(text: &str, offset: usize) -> usize {
     text[..offset].rfind('\n').map_or(0, |i| i + 1)
 }
 
+/// Just past the end of the line holding `offset` (a char boundary).
 fn line_end(text: &str, offset: usize) -> usize {
     text[offset..].find('\n').map_or(text.len(), |i| offset + i + 1)
 }
 
-/// Where a method's lines start: its first line, or the comment lines right above it at its indent.
-fn chunk_start(text: &str, def_start: usize) -> usize {
-    let mut start = line_start(text, def_start);
-    let indent = &text[start..def_start];
-    while start > 0 {
-        let above = line_start(text, start - 1);
-        let line = &text[above..start - 1];
-        if line.strip_prefix(indent).is_some_and(|rest| rest.starts_with('#')) {
-            start = above;
-        } else {
-            break;
-        }
-    }
-    start
+/// Whether `node` is the first thing on its line.
+fn starts_line(node: Node, text: &str) -> bool {
+    text[line_start(text, node.start_byte())..node.start_byte()].trim().is_empty()
 }
 
-/// The text with `class`'s methods in arrangement order; `None` when they already are, or when the
-/// class has other statements among its methods.
-fn rearrange_class(class: Node, text: &str) -> Option<String> {
+/// Whether the comments `above` sit on the lines right above `node`, at its column.
+fn directly_above(above: &[Node], node: Node, text: &str) -> bool {
+    let mut next = node;
+    above.iter().rev().all(|comment| {
+        let fits = comment.start_position().column == node.start_position().column
+            && comment.end_position().row + 1 == next.start_position().row
+            && starts_line(*comment, text);
+        next = *comment;
+        fits
+    })
+}
+
+/// A comment that marks a position rather than describing a method (`# region`, `# fmt: off`).
+fn is_marker(comment: Node, text: &str) -> bool {
+    let body = text[comment.byte_range()].trim_start_matches('#').trim_start();
+    ["region", "endregion", "fmt:", "yapf:", "isort:", "<editor-fold", "</editor-fold"]
+        .iter()
+        .any(|m| body.starts_with(m))
+}
+
+/// Pre-order walk of `root`'s subtree, stopping early when `visit` returns true.
+fn any_in(root: Node, mut visit: impl FnMut(Node) -> bool) -> bool {
+    let mut cursor = root.walk();
+    loop {
+        if visit(cursor.node()) {
+            return true;
+        }
+        if cursor.goto_first_child() {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() || cursor.node() == root {
+                return false;
+            }
+        }
+    }
+}
+
+/// Whether a method's decorators, parameter defaults or annotations name one of `others`: they
+/// run when the class body does, so they must stay below what they name.
+fn header_names_any(member: Node, text: &str, others: &[&str]) -> bool {
+    let mut roots = Vec::new();
+    let mut cursor = member.walk();
+    roots.extend(member.named_children(&mut cursor).filter(|c| c.kind() == "decorator"));
+    if let Some(function) = function_of(member) {
+        roots.extend(function.child_by_field_name("return_type"));
+        if let Some(params) = function.child_by_field_name("parameters") {
+            let mut cursor = params.walk();
+            for param in params.named_children(&mut cursor) {
+                roots.extend(param.child_by_field_name("type"));
+                roots.extend(param.child_by_field_name("value"));
+            }
+        }
+    }
+    roots
+        .into_iter()
+        .any(|root| any_in(root, |node| node.kind() == "identifier" && others.contains(&&text[node.byte_range()])))
+}
+
+/// The methods of `class` in arrangement order; `None` when they already are or moving them could
+/// change the class.
+fn class_change(class: Node, text: &str) -> Option<Change> {
     let body = class.child_by_field_name("body")?;
     let mut cursor = body.walk();
     let members: Vec<Node> = body.named_children(&mut cursor).collect();
     let first = members.iter().position(|m| method_name(*m, text).is_some())?;
-    let mut methods = Vec::new();
+    if members.iter().any(|m| m.kind() == "comment" && is_marker(*m, text)) {
+        return None;
+    }
+    // The comments directly above the first method move with it.
+    let mut lead = first;
+    while lead > 0
+        && members[lead - 1].kind() == "comment"
+        && directly_above(&members[lead - 1..first], members[first], text)
+    {
+        lead -= 1;
+    }
+    let mut methods: Vec<(Node, &str, usize)> = Vec::new();
+    let mut comments: Vec<Node> = members[lead..first].to_vec();
     for member in &members[first..] {
-        match method_name(*member, text) {
-            Some(name) => methods.push((*member, name)),
-            None if member.kind() == "comment" => {}
-            None => return None,
+        if member.kind() == "comment" {
+            comments.push(*member);
+            continue;
+        }
+        let name = method_name(*member, text)?;
+        let column = member.start_position().column;
+        // Methods at different columns: indentation Python would reject.
+        if column != members[first].start_position().column {
+            return None;
+        }
+        // A dedented comment the parser put inside the method belongs to the class.
+        let class_comment = any_in(*member, |n| n.kind() == "comment" && n.start_position().column <= column);
+        if !starts_line(*member, text) || !directly_above(&comments, *member, text) || class_comment {
+            return None;
+        }
+        let start = comments.first().map_or(member.start_byte(), |c| c.start_byte());
+        methods.push((*member, name, line_start(text, start)));
+        comments.clear();
+    }
+    // A comment after the last method belongs to no method.
+    if !comments.is_empty() {
+        return None;
+    }
+    for (member, name, _) in &methods {
+        let others: Vec<&str> = methods.iter().map(|m| m.1).filter(|n| n != name).collect();
+        if header_names_any(*member, text, &others) {
+            return None;
         }
     }
     // Same-named definitions form one unit, placed by its first definition.
     let mut units: Vec<(u8, &str, Vec<usize>)> = Vec::new();
-    for (i, (_, name)) in methods.iter().enumerate() {
+    for (i, (_, name, _)) in methods.iter().enumerate() {
         match units.iter_mut().find(|u| u.1 == *name) {
             Some(unit) => unit.2.push(i),
             None => units.push((group(name), name, vec![i])),
@@ -114,33 +259,17 @@ fn rearrange_class(class: Node, text: &str) -> Option<String> {
     if order.iter().enumerate().all(|(i, &m)| i == m) {
         return None;
     }
-    // Each method's lines, split into its content and the blank lines after it, which stay in place.
-    let starts: Vec<usize> = methods.iter().map(|(m, _)| chunk_start(text, m.start_byte())).collect();
-    let end = line_end(text, methods.last()?.0.end_byte().saturating_sub(1).max(starts[0]));
-    let mut contents = Vec::new();
-    let mut separators = Vec::new();
-    for (i, &start) in starts.iter().enumerate() {
-        let next = starts.get(i + 1).copied().unwrap_or(end);
-        let chunk = &text[start..next];
-        let content = chunk.trim_end_matches(|c: char| c.is_whitespace());
-        let content_end = start + content.len();
-        let content_end = if content_end < next { line_end(text, content_end) } else { content_end };
-        let mut content = text[start..content_end].to_owned();
-        if !content.ends_with('\n') {
-            content.push('\n');
+    let methods: Vec<Range<usize>> =
+        methods.iter().map(|(member, _, start)| *start..line_end(text, member.end_byte())).collect();
+    let mut gaps = Vec::new();
+    for pair in methods.windows(2) {
+        // Only blank lines between methods; anything else stays where it is, with the class.
+        if pair[0].end > pair[1].start || !text[pair[0].end..pair[1].start].trim().is_empty() {
+            return None;
         }
-        contents.push(content);
-        separators.push(&text[content_end..next]);
+        gaps.push(pair[0].end..pair[1].start);
     }
-    let mut rearranged = String::new();
-    for (position, &method) in order.iter().enumerate() {
-        rearranged.push_str(&contents[method]);
-        rearranged.push_str(separators[position]);
-    }
-    if !text[..end].ends_with('\n') {
-        rearranged.pop();
-    }
-    Some(format!("{}{rearranged}{}", &text[..starts[0]], &text[end..]))
+    Some(Change { region: methods[0].start..methods.last()?.end, methods, gaps, order })
 }
 
 #[cfg(test)]
@@ -206,17 +335,53 @@ mod tests {
         let text = "class A:\n    def _helper(self): ...\n    @property\n    def x(self): ...\n    @x.setter\n    def x(self, v): ...\n    def __init__(self):\n        class B:\n            def b(self): ...\n            def __init__(self): ...\n";
         let expected = "class A:\n    def __init__(self):\n        class B:\n            def __init__(self): ...\n            def b(self): ...\n    @property\n    def x(self): ...\n    @x.setter\n    def x(self, v): ...\n    def _helper(self): ...\n";
         assert_eq!(rearranged(text).as_deref(), Some(expected));
+        assert_eq!(rearranged(expected), None);
     }
 
     #[test]
-    fn classes_with_statements_among_methods_and_other_languages_stay() {
-        let text = "class A:\n    def b(self): ...\n    alias = b\n    def __init__(self): ...\n";
-        assert_eq!(rearranged(text), None);
-        let no_newline = "class A:\n    def b(self): ...\n\n    def __init__(self): ...";
-        assert_eq!(
-            rearranged(no_newline).as_deref(),
-            Some("class A:\n    def __init__(self): ...\n\n    def b(self): ...")
-        );
+    fn non_ascii_text_and_a_missing_final_newline_are_kept() {
+        let text = "class A:\n    def b(self):\n        self.名前 = 1  # 名前\n\n    def __init__(self):\n        self.x = 1  # 初始化";
+        let expected = "class A:\n    def __init__(self):\n        self.x = 1  # 初始化\n\n    def b(self):\n        self.名前 = 1  # 名前";
+        assert_eq!(rearranged(text).as_deref(), Some(expected));
+    }
+
+    #[test]
+    fn classes_that_moving_could_change_stay() {
+        for text in [
+            // A statement among the methods.
+            "class A:\n    def b(self): ...\n    alias = b\n    def __init__(self): ...\n",
+            // A decorator, a default and a registration naming another method.
+            "class A:\n    def _retry(fn): return fn\n    @_retry\n    def fetch(self): ...\n",
+            "class A:\n    def _default(self): ...\n    def run(self, cb=_default): ...\n",
+            "class A:\n    @singledispatchmethod\n    def _visit(self, x): ...\n    @_visit.register\n    def visit_int(self, x: int): ...\n",
+            // A section comment or region markers apart from the methods.
+            "class A:\n    def b(self): ...\n\n    # ---- construction ----\n\n    def __init__(self): ...\n",
+            "class A:\n    # region api\n    def b(self): ...\n    # endregion\n    def __init__(self): ...\n",
+            "class A:\n    def b(self): ...\n    # fmt: off\n    def __init__(self): ...\n",
+            // Two definitions on one line, and broken syntax.
+            "class A:\n    def _b(self): pass; def a(self): pass\n",
+            "class A:\n    def b(self): ...\n    def a(self\n    def __init__(self): ...\n",
+            "class A:\n    def _b(self):\n        if x:\n\n    def a(self):\n        pass\n",
+        ] {
+            assert_eq!(rearranged(text), None, "{text}");
+        }
         assert_eq!(Syntax::default().rearranged(&LanguageId::new("rust"), "fn main() {}\n"), None);
+    }
+
+    #[test]
+    fn a_hash_line_inside_a_string_is_not_a_comment() {
+        let text = "class A:\n    SQL = \"\"\"\n    # not a comment\"\"\"\n    def b(self): ...\n    def __init__(self): ...\n";
+        let expected = "class A:\n    SQL = \"\"\"\n    # not a comment\"\"\"\n    def __init__(self): ...\n    def b(self): ...\n";
+        assert_eq!(rearranged(text).as_deref(), Some(expected));
+    }
+
+    #[test]
+    fn many_classes_are_rearranged_in_one_parse() {
+        let class = "class A:\n    def c(self): ...\n    def _b(self): ...\n    def __init__(self): ...\n\n";
+        let sorted = "class A:\n    def __init__(self): ...\n    def c(self): ...\n    def _b(self): ...\n\n";
+        let started = std::time::Instant::now();
+        assert_eq!(rearranged(&class.repeat(3000)), Some(sorted.repeat(3000)));
+        // Linear: well under a second in release builds; a reparse per class took minutes.
+        assert!(started.elapsed().as_secs() < 30);
     }
 }

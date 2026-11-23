@@ -15,7 +15,7 @@ import { expressionTypeInfo } from "./typeInfo";
 import { gotoHighlightedUsage, gotoTargets, highlightUsages } from "./navigation";
 import { gotoDiagnostic, showErrorDescription } from "./diagnostics";
 import { applyKindSilently, applyQuickFix, runKindAction, showIntentions } from "./intentions";
-import { docOf } from "./lsp";
+import { docOf, reportLspError } from "./lsp";
 import { languageSemantics } from "./semantic";
 import { workflowSettings, type ActionsOnSaveValid } from "@/platform/workflowSettings";
 import { startRename } from "./rename";
@@ -145,10 +145,16 @@ async function rearrange(view: EditorView) {
   if (!doc || doc.readOnly) return;
   await whenSynced(view);
   const state = view.state;
-  const edits = await call(commands.docRearrange(doc.doc)).catch(() => null);
-  if (!edits) return;
+  let edits;
+  try {
+    edits = await call(commands.docRearrange(doc.doc));
+  } catch (e) {
+    reportLspError(view, e, true);
+    return;
+  }
   if (view.state.doc !== state.doc) return showHint(view, "The file changed while rearranging; try again");
-  if (!edits.length) return showHint(view, "Nothing to rearrange: class members are already in order");
+  if (!edits.length)
+    return showHint(view, "Nothing to rearrange: members are in order, or moving them could change the class");
   view.dispatch({
     changes: textEditsToChanges(state.doc, edits),
     userEvent: "format.rearrange",

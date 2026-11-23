@@ -9952,6 +9952,6 @@
   "Previous Columns": "上一组列",
   "Next Columns": "下一组列",
   "Rearrange Code": "重新排列代码",
-  "Nothing to rearrange: class members are already in order": "无需重新排列：类成员已按顺序排列",
+  "Nothing to rearrange: members are in order, or moving them could change the class": "无需重新排列：成员已按顺序排列，或移动它们可能改变类的行为",
   "The file changed while rearranging; try again": "重新排列期间文件已更改，请重试"
 }
