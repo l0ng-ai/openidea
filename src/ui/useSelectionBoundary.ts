@@ -111,32 +111,49 @@ function textEdge(root: HTMLElement, side: "start" | "end"): { node: Node; offse
 }
 
 /**
- * Marks `ref` with `data-selection` while the document's selection intersects it, and keeps the
+ * Marks the pane or its intersecting rows with `data-selection` while the document's selection intersects it, and keeps the
  * mark until the frame after the selection leaves. WebKit never clears the selection highlight of
  * a subtree that skips rendering (`content-visibility: auto` or `hidden`); pairing `[data-selection]`
  * with `content-visibility: visible` lets WebKit apply the deselection before skipping again.
  */
-export function useSelectionVisibility(ref: RefObject<HTMLElement | null>, enabled = true): void {
+export function useSelectionVisibility(ref: RefObject<HTMLElement | null>, enabled = true, rowSelector?: string): void {
   useEffect(() => {
     const el = ref.current;
     if (!el || !enabled) return;
     const doc = el.ownerDocument;
     const win = doc.defaultView ?? window;
     let frame = 0;
-    const selected = () => {
+    const marked = new Set<Element>();
+    const selectionRange = () => {
       const sel = doc.getSelection();
-      return !!sel && !sel.isCollapsed && sel.rangeCount > 0 && sel.getRangeAt(0).intersectsNode(el);
+      return sel && !sel.isCollapsed && sel.rangeCount ? sel.getRangeAt(0) : null;
     };
     const update = () => {
       win.cancelAnimationFrame(frame);
-      if (selected()) {
-        el.setAttribute("data-selection", "");
-        return;
+      const range = selectionRange();
+      if (range?.intersectsNode(el)) {
+        // Keep unrelated history at its remembered size while selecting visible text.
+        let targets: Iterable<Element> = [el];
+        if (rowSelector) {
+          const node = range.commonAncestorContainer;
+          const row = (node instanceof Element ? node : node.parentElement)?.closest(rowSelector);
+          targets = row?.parentElement === el ? [row] : el.querySelectorAll(`:scope > ${rowSelector}`);
+        }
+        for (const target of targets) {
+          if (!range.intersectsNode(target) || marked.has(target)) continue;
+          marked.add(target);
+          target.setAttribute("data-selection", "");
+        }
       }
-      if (!el.hasAttribute("data-selection")) return;
+      if (![...marked].some((target) => !range?.intersectsNode(target))) return;
       frame = win.requestAnimationFrame(() => {
         frame = win.requestAnimationFrame(() => {
-          if (!selected()) el.removeAttribute("data-selection");
+          const current = selectionRange();
+          for (const target of marked) {
+            if (current?.intersectsNode(target)) continue;
+            target.removeAttribute("data-selection");
+            marked.delete(target);
+          }
         });
       });
     };
@@ -145,9 +162,9 @@ export function useSelectionVisibility(ref: RefObject<HTMLElement | null>, enabl
     return () => {
       win.cancelAnimationFrame(frame);
       doc.removeEventListener("selectionchange", update);
-      el.removeAttribute("data-selection");
+      for (const target of marked) target.removeAttribute("data-selection");
     };
-  }, [ref, enabled]);
+  }, [ref, enabled, rowSelector]);
 }
 
 /**

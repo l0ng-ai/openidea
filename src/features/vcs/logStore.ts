@@ -1395,6 +1395,16 @@ export function isMine(c: Commit, user: string | null): boolean {
   );
 }
 
+/** The repositories Go to Hash/Branch/Tag looks in: the shown log's, else the filtered ones, else every root. */
+export function goToRefRepositories(state: LogState = useGitLog.getState()): (string | null)[] {
+  const logTab = state.logTabs.find((t) => t.id === state.shownLog);
+  if (logTab?.repositories?.length) return logTab.repositories;
+  if (logTab?.repo) return [logTab.repo];
+  if (state.filters.repositories?.length) return state.filters.repositories;
+  const roots = useVcs.getState().roots;
+  return roots.length ? roots : [currentRepo()];
+}
+
 /**
  * Go to Hash/Branch/Tag: selects the commit `rev` names, paging the log until it is
  * loaded (and clearing the filters when they hide it). False when there is no such commit.
@@ -1410,18 +1420,7 @@ export async function goToRef(rev: string, repository?: string | null): Promise<
     await load;
   };
   const logTab = state.logTabs.find((t) => t.id === state.shownLog);
-  const repos =
-    repository !== undefined
-      ? [repository]
-      : logTab?.repositories?.length
-        ? logTab.repositories
-        : logTab?.repo
-          ? [logTab.repo]
-          : state.filters.repositories?.length
-            ? state.filters.repositories
-            : useVcs.getState().roots.length
-              ? useVcs.getState().roots
-              : [currentRepo()];
+  const repos = repository !== undefined ? [repository] : goToRefRepositories(state);
   if (repos.length > 1) {
     const candidates = (
       await Promise.all(
