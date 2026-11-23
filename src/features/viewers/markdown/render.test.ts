@@ -131,6 +131,19 @@ describe("markdown preview rendering", () => {
     expect(root.querySelector("h1")?.id).toBe("user-content-title");
   });
 
+  it("keeps embedded image destinations and code samples intact", () => {
+    const url = "data:image/png;base64," + "abcd".repeat(100);
+    const line = `![](${url})`;
+    const render = createMarkdownRenderer();
+    const root = document.createElement("div");
+    root.innerHTML = render([line, "", "## Next", "", line].join("\n"));
+    expect([...root.querySelectorAll("img")].map((img) => img.dataset.src)).toEqual([url, url]);
+    expect(root.querySelector("h2")?.parentElement?.dataset.line).toBe("2");
+    root.innerHTML = render([line, "", "```md", line, "```"].join("\n"));
+    expect(root.querySelector("code")?.textContent?.trimEnd()).toBe(line);
+    expect(root.querySelector("img")?.dataset.src).toBe(url);
+  });
+
   it("sanitizes and defers image loading", () => {
     const root = document.createElement("div");
     root.innerHTML = renderMarkdown(

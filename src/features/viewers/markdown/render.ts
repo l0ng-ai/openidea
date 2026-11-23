@@ -152,11 +152,37 @@ function trackContainers(raw: string, open: string[]) {
 
 type MarkdownBlock = { line: number; endLine: number; html: string };
 
+function lexBlocks(body: string): TokensList {
+  // Marked repeatedly scans the remaining input for block boundaries. Keep the bytes of
+  // standalone embedded images out of those scans and restore their URLs before rendering.
+  const prefix = "openidea-embedded-image-";
+  if (!body.includes(";base64,") || body.includes(prefix)) return marked.lexer(body);
+  const urls: string[] = [];
+  const compact = body.replace(
+    /^!\[\]\((data:image\/[\w.+-]+;base64,[A-Za-z0-9+/]{256,}={0,2})\)(?=[ \t]*\r?$)/gm,
+    (_, url: string) => {
+      urls.push(url);
+      return `![](${prefix}${urls.length - 1})`;
+    },
+  );
+  const tokens = marked.lexer(compact);
+  let restored = 0;
+  for (const token of tokens) {
+    if (restored === urls.length) break;
+    if (!token.raw.includes(prefix)) continue;
+    const image = token.type === "paragraph" && token.tokens?.length === 1 && token.tokens[0];
+    if (!image || image.type !== "image" || image.href !== prefix + restored || token.raw.trimEnd() !== image.raw)
+      return marked.lexer(body);
+    image.href = urls[restored++]!;
+  }
+  return restored === urls.length ? tokens : marked.lexer(body);
+}
+
 /** Top-level source ranges; an open HTML container groups its enclosed blocks. */
 function blocks(text: string): MarkdownBlock[] {
   const front = frontMatter(text);
   const body = front ? text.split("\n").slice(front.lines).join("\n") : text;
-  const tokens = marked.lexer(body);
+  const tokens = lexBlocks(body);
   const slugs = new Map<string, number>();
   let line = front?.lines ?? 0;
   const out = front ? [{ line: 0, endLine: front.lines, html: frontMatterTable(front.fields) }] : [];

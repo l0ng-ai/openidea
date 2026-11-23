@@ -643,6 +643,7 @@ export async function openFileExternally(path: string): Promise<boolean> {
  * view stays alive.
  */
 export interface TextEditorWrapperContribution {
+  keepAlive?: boolean;
   id: string;
   matches(path: string): boolean;
   component: ComponentType<{ path: string; tabId: string; children: ReactNode; actionsInTabs?: boolean }>;

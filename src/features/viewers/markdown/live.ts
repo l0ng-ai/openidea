@@ -3,7 +3,7 @@
  * files publishes the text, scroll position, and caret moves per path.
  * Preview Only follows navigation in the hidden editor.
  */
-import { StateEffect, type EditorState } from "@codemirror/state";
+import { StateEffect, Text, type EditorState } from "@codemirror/state";
 import { Decoration, Direction, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { SearchCursor, getSearchQuery } from "@codemirror/search";
 import { create } from "zustand";
@@ -25,7 +25,7 @@ export interface LiveMarkdownFind {
 }
 
 export interface LiveMarkdown {
-  text: string;
+  text: Text;
   /** 0-based source line at the top of the editor, including progress through the line. */
   topLine: number;
   /** Whether the scrolling editor has reached its bottom. */
@@ -57,7 +57,7 @@ const previewSelectionMark = Decoration.mark({ class: "cm-selectionMatch" });
 function publish(path: string, patch: Partial<LiveMarkdown>) {
   useLiveMarkdown.setState((s) => {
     const prev = s[path] ?? {
-      text: "",
+      text: Text.empty,
       topLine: 0,
       sourceAtEnd: false,
       scrollSeq: 0,
@@ -274,7 +274,7 @@ function livePlugin(path: string) {
         this.previewSel = current?.previewSelection ?? "";
         this.decorations = previewSelectionDecorations(view, this.previewSel);
         publish(path, {
-          text: view.state.doc.toString(),
+          text: view.state.doc,
           fontZoom: view.state.field(fontZoom, false) ?? 0,
           find: findStateOf(view.state),
           editorSelection: editorSelectionOf(view.state),
@@ -336,7 +336,7 @@ function livePlugin(path: string) {
           return;
         }
         clearTimeout(this.timer);
-        this.timer = setTimeout(() => publish(path, { text: this.view.state.doc.toString() }), TEXT_DELAY);
+        this.timer = setTimeout(() => publish(path, { text: this.view.state.doc }), TEXT_DELAY);
       }
 
       destroy() {
@@ -345,7 +345,7 @@ function livePlugin(path: string) {
         this.unsubscribe();
         this.view.scrollDOM.removeEventListener("scroll", this.onScroll);
         // Flush the latest edit for a preview that outlives this view.
-        publish(path, { text: this.view.state.doc.toString() });
+        publish(path, { text: this.view.state.doc });
       }
     },
     { decorations: (v) => v.decorations },
