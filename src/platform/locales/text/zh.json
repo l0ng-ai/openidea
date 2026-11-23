@@ -4257,6 +4257,7 @@
   "File relative to the project root": "相对于项目根目录的文件",
   "Shell command, e.g. make generate": "Shell 命令，例如 make generate",
   "Remove Task": "移除任务",
+  "Task Actions": "任务操作",
   "Add task": "添加任务",
   "Add configuration…": "添加配置…",
   "Add configuration": "添加配置",
