@@ -64,6 +64,30 @@ pub(super) struct Member {
     pub rebuild_on_jdt_errors: bool,
 }
 
+/// Launches share a build only within the same workspace project's cache.
+#[derive(Default)]
+pub(crate) struct Sessions(Mutex<HashMap<PathBuf, Arc<Launches>>>);
+
+pub(in crate::ops) struct Launches {
+    pub waiting: Waiting,
+    pub snapshots: Mutex<Session>,
+}
+
+impl Sessions {
+    pub(in crate::ops) fn for_cache(&self, cache: &Path) -> Arc<Launches> {
+        self.0
+            .lock()
+            .entry(cache.to_owned())
+            .or_insert_with(|| {
+                Arc::new(Launches {
+                    waiting: Waiting::default(),
+                    snapshots: Mutex::new(Session::new(cache.to_owned())),
+                })
+            })
+            .clone()
+    }
+}
+
 /// Java launches from their start until their build: one launch's Maven run also builds
 /// the modules of launches still waiting (configurations started together, #3971).
 #[derive(Default)]
