@@ -856,6 +856,8 @@ export class TerminalSession {
       }
       this.ptyId = info.id;
       this.update({ status: "running", title: info.title || "Local" });
+      // Send the new size if it changed while the program was starting.
+      if (this.term.cols !== cols || this.term.rows !== rows) this.resizePty(this.term.cols, this.term.rows);
       this.flushPendingInput();
     } catch (e) {
       this.pendingInput = "";
