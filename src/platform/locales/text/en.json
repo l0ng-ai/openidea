@@ -3709,5 +3709,11 @@
   "Previous Columns": "Previous Columns",
   "Next Columns": "Next Columns",
   "View Options": "View Options",
-  "Visible columns": "Visible columns"
+  "Visible columns": "Visible columns",
+  "Stub / Implementation": "Stub / Implementation",
+  "Stub": "Stub",
+  "Implementation": "Implementation",
+  "No stub or implementation found": "No stub or implementation found",
+  "Implementation of {name} in {file}": "Implementation of {name} in {file}",
+  "Stub of {name} in {file}": "Stub of {name} in {file}"
 }

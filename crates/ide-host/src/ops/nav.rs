@@ -1,4 +1,5 @@
 use super::doc::blocking;
+use super::python_stubs::{PythonStubLinks, counterpart_candidates, match_declarations};
 use crate::Host;
 use crate::Project;
 use ide_command::command;
@@ -383,6 +384,35 @@ pub async fn web_unresolved_references(host: &Host, window: &str, doc: DocId) ->
     .await
 }
 
+/// The stub (`.pyi`) of a Python document, or the implementation of a stub, and the
+/// functions and classes declared in both: PyCharm's stub gutter markers.
+#[command(trust = always)]
+pub async fn nav_python_stubs(host: &Host, window: &str, doc: DocId) -> IdeResult<PythonStubLinks> {
+    let project = host.project(window)?;
+    let syntax = host.syntax();
+    blocking(move || {
+        let snap = project.documents.snapshot(doc)?;
+        if snap.large {
+            return Ok(PythonStubLinks::default());
+        }
+        let path = PathBuf::from(snap.path.clone());
+        let module = super::refactor::python_module(&project.root, &project.roots(), &path, false);
+        let typings = project.root.join("typings");
+        let Some(counterpart) =
+            counterpart_candidates(&path, &typings, module.as_deref(), &super::python::paths(&project))
+                .into_iter()
+                .find(|p| p.is_file() || project.documents.text_of(p).is_some())
+        else {
+            return Ok(PythonStubLinks::default());
+        };
+        let other = project.text_of(&counterpart)?;
+        let links =
+            match_declarations(&syntax.outline(&snap.language, &snap.text), &syntax.outline(&snap.language, &other));
+        Ok(PythonStubLinks { counterpart: Some(IpcPath::from(counterpart)), links })
+    })
+    .await
+}
+
 ide_command::domain!(
     nav:
     find_dirs,
@@ -396,6 +426,7 @@ ide_command::domain!(
     mark_recent,
     nav_index_definitions,
     nav_inheritance,
+    nav_python_stubs,
     nav_resolve_module,
     path_completions,
     recent_files,

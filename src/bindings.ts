@@ -1087,6 +1087,11 @@ export const commands = {
 	 */
 	navInheritance: () => typedError<ClassInheritance[], IdeError>(__TAURI_INVOKE("nav_inheritance")),
 	/**
+	 *  The stub (`.pyi`) of a Python document, or the implementation of a stub, and the
+	 *  functions and classes declared in both: PyCharm's stub gutter markers.
+	 */
+	navPythonStubs: (doc: DocId) => typedError<PythonStubLinks, IdeError>(__TAURI_INVOKE("nav_python_stubs", { doc })),
+	/**
 	 *  The file a Python import path (`a.b.c`, or `.x` relative to `from`) names; `None` when
 	 *  no project or content root has it.
 	 */
@@ -11357,6 +11362,12 @@ export type PythonSettings = {
 	showInterpreterPaths?: boolean,
 };
 
+export type PythonStubLinks = {
+	/**  The stub of a `.py` document, the implementation of a `.pyi` one. */
+	counterpart: IpcPath | null,
+	links: StubLink[],
+};
+
 /**  Color Scheme › Language Defaults › Rainbow brackets: which delimiters are coloured. */
 export type RainbowBracketKinds = {
 	round?: boolean,
@@ -13019,6 +13030,18 @@ export type StructureSupport = {
 	tree: boolean,
 	/**  A `locals.scm` query is bundled. */
 	locals: boolean,
+};
+
+/**  A declaration of the document and its counterpart in the other file. */
+export type StubLink = {
+	/**  Qualified name, `Class.method`. */
+	name: string,
+	/**  The declaration's identifier in the document. */
+	range: Range,
+	/**  The declaration's whole extent in the document. */
+	extent: Range,
+	/**  The counterpart's identifier in `PythonStubLinks::counterpart`. */
+	target: Range,
 };
 
 export type SubmoduleRollbackSource = "head" | "index";
