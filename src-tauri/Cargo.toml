@@ -43,37 +43,26 @@ dunce.workspace = true
 ide-clipboard.workspace = true
 ide-drag-out.workspace = true
 ide-fonts.workspace = true
-ide-text.workspace = true
 ide-vfs.workspace = true
 ide-workspace.workspace = true
 ide-language.workspace = true
-ide-index.workspace = true
-ide-syntax.workspace = true
-ide-search.workspace = true
-ide-lsp.workspace = true
 ide-dap.workspace = true
 ide-vcs.workspace = true
 ide-terminal.workspace = true
 ide-run.workspace = true
 ide-sdk.workspace = true
-ide-build.workspace = true
-ide-analysis.workspace = true
-ide-coverage.workspace = true
 ide-profiler.workspace = true
 ide-http.workspace = true
 ide-agent.workspace = true
 ide-db.workspace = true
 ide-web.workspace = true
-ide-spell.workspace = true
 ide-ssh.workspace = true
 ide-remote.workspace = true
 ide-host.workspace = true
 ide-command.workspace = true
 ide-mcp.workspace = true
-ide-notebook.workspace = true
 ide-jsonrpc.workspace = true
 ide-tools = { path = "../crates/ide-tools" }
-ide-scaffold.workspace = true
 ide-plugin = { path = "../crates/ide-plugin" }
 ide-extension = { path = "../crates/ide-extension" }
 ide-docker = { path = "../crates/ide-docker" }
