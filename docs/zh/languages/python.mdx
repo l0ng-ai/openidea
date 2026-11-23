@@ -43,7 +43,8 @@ Ruff 只为位于 Ruff 配置之下的文件启动：`ruff.toml`、`.ruff.toml`�
 
 1. **设置 › 语言和框架 › Python 解释器** 中选定的解释器。
 2. 项目里的虚拟环境：`.venv`、`venv`、`env` 或 `.env`（含 `pyvenv.cfg` 的目录），或 `.pixi/envs/` 下的 pixi 环境。
-3. 项目通过 mise 或 asdf 固定的 Python 版本（`mise.toml`、`.tool-versions` 等 mise 配置文件）。
+3. 最近的 `Pipfile` 对应的 Pipenv 环境，包括通过 `.venv` 文件或 `PIPENV_CUSTOM_VENV_NAME` 指定的环境。
+4. 项目通过 mise 或 asdf 固定的 Python 版本（`mise.toml`、`.tool-versions` 等 mise 配置文件）。
 
 该页面的解释器列表还会列出 IDE 在本机找到的解释器：当前激活的 `VIRTUAL_ENV`，virtualenvwrapper、pipenv 和 Poetry 创建的虚拟环境，pyenv 的各个版本，uv 安装的 Python，mise 和 asdf 的安装，conda 环境（Miniconda、Anaconda、Miniforge、Mambaforge、micromamba，以及 `conda env list` 能看到的所有环境），还有 `PATH` 上的 `python` 可执行文件。
 
@@ -69,6 +70,7 @@ Ruff 只为位于 Ruff 配置之下的文件启动：`ruff.toml`、`.ruff.toml`�
 - **Virtualenv 环境**：用你选的基础解释器执行 `python -m venv`。
 - **uv 环境**：执行 `uv venv <location> --python <base>`（`PATH` 上需要有 uv）。
 - **Poetry 环境**：在项目中执行 `poetry env use <base>`。
+- **Pipenv 环境**：在项目中执行 `pipenv --python <base>`（`PATH` 上需要有 pipenv）。项目没有 `Pipfile` 时，Pipenv 会写入一个，有 `requirements.txt` 时从中导入。勾选 **安装 Pipfile 中的软件包** 时，随后执行 `pipenv install --dev`。项目已有的环境会被复用；如果它的 Python 版本与基础解释器不同，不做任何改动并在对话框中提示（可用 `pipenv --rm` 删除后重建）。
 - **Conda 环境**：执行 `conda create -n <名称>`，环境建在 conda 的 envs 目录中，Python 版本为所选版本。
 
 也可以直接选择已有的解释器或环境目录。新解释器会成为项目解释器。

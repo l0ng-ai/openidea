@@ -1485,6 +1485,7 @@ fn env_tools_are_reported_missing_before_they_run() {
         crate::python::VenvTool::Uv,
         &base,
         &location,
+        false,
         none,
         &Default::default(),
         &|_| {},
@@ -1495,6 +1496,7 @@ fn env_tools_are_reported_missing_before_they_run() {
         crate::python::VenvTool::Poetry,
         &base,
         &location,
+        false,
         none,
         &Default::default(),
         &|_| {},
@@ -1505,12 +1507,24 @@ fn env_tools_are_reported_missing_before_they_run() {
         crate::python::VenvTool::Conda,
         &base,
         &location,
+        false,
         none,
         &Default::default(),
         &|_| {},
     )
     .unwrap_err();
     assert!(conda.message.contains("conda is not installed"), "{}", conda.message);
+    let pipenv = crate::python::create_venv_with(
+        crate::python::VenvTool::Pipenv,
+        &base,
+        &location,
+        true,
+        none,
+        &Default::default(),
+        &|_| {},
+    )
+    .unwrap_err();
+    assert!(pipenv.message.contains("Pipenv is not installed"), "{}", pipenv.message);
     // An existing environment is refused before any tool runs.
     std::fs::create_dir_all(&location).unwrap();
     std::fs::write(location.join("pyvenv.cfg"), "home = /python").unwrap();
@@ -1518,6 +1532,7 @@ fn env_tools_are_reported_missing_before_they_run() {
         crate::python::VenvTool::Uv,
         &base,
         &location,
+        false,
         none,
         &Default::default(),
         &|_| {},
@@ -1540,6 +1555,7 @@ fn an_existing_conda_environment_is_not_recreated() {
         crate::python::VenvTool::Conda,
         &base,
         &location,
+        false,
         none,
         &Default::default(),
         &|_| {},
@@ -1590,6 +1606,7 @@ fn a_named_conda_environment_is_found_where_conda_put_it() {
             crate::python::VenvTool::Conda,
             &base,
             Path::new("ds"),
+            false,
             which,
             &Default::default(),
             &|_| {},
@@ -1599,6 +1616,65 @@ fn a_named_conda_environment_is_found_where_conda_put_it() {
     assert_eq!(&*sdk.path, root.join("envs/ds/bin/python").as_path());
     let again = create().unwrap_err();
     assert!(again.message.contains("named ds already exists"), "{}", again.message);
+}
+
+#[test]
+#[cfg(unix)]
+fn pipenv_creates_the_projects_environment_and_never_replaces_one() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let tmp = dunce::canonicalize(tmp.path()).unwrap();
+    let project = tmp.join("shop");
+    let home = tmp.join("workon").join(crate::discover::pipenv_env_name(&project));
+    std::fs::create_dir_all(&project).unwrap();
+    let python = tmp.join("python");
+    std::fs::write(&python, "#!/bin/sh\necho 'Python 3.12.1'\n").unwrap();
+    std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // `--venv` fails until the environment exists; `--python` creates it outside the project,
+    // records the project in `.project` and writes a Pipfile.
+    let pipenv = tmp.join("pipenv");
+    std::fs::write(
+        &pipenv,
+        format!(
+            "#!/bin/sh\nhome='{home}'\nif [ \"$1\" = --venv ]; then [ -f \"$home/pyvenv.cfg\" ] || exit 1; echo \"$home\"; exit 0; fi\n\
+             [ \"$PIPENV_YES\" = 1 ] || exit 3\necho \"$@\" >> calls\n[ \"$1\" = --python ] || exit 0\n\
+             mkdir -p \"$home/bin\"\ncp '{python}' \"$home/bin/python\"\necho 'version = 3.12.1' > \"$home/pyvenv.cfg\"\n\
+             touch Pipfile\npwd -P > \"$home/.project\"\n",
+            home = home.display(),
+            python = python.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&pipenv, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let which = |tool: &str| (tool == "pipenv").then(|| pipenv.clone());
+    let create = |install: bool| {
+        crate::python::create_venv_with(
+            crate::python::VenvTool::Pipenv,
+            &python,
+            &project.join(".venv"),
+            install,
+            which,
+            &Default::default(),
+            &|_| {},
+        )
+    };
+    let calls = || std::fs::read_to_string(project.join("calls")).unwrap_or_default();
+    // The project had no Pipfile: the one pipenv writes is installed from, as asked.
+    let sdk = create(true).unwrap();
+    assert_eq!(&*sdk.path, home.join("bin/python").as_path());
+    assert_eq!((sdk.name.as_str(), sdk.source.as_str()), ("Python 3.12 (Pipenv: shop)", "pipenv"));
+    assert_eq!(calls(), format!("--python {}\ninstall --dev\n", python.display()));
+    // An existing environment is reused, never created again with `--python` (which replaces one
+    // of another version); one pipenv left without `.project` is still the project's.
+    std::fs::remove_file(home.join(".project")).unwrap();
+    assert_eq!(create(false).unwrap().source, "pipenv");
+    assert_eq!(calls().lines().count(), 2);
+    // On another Python than the base, nothing runs and the error says what to do.
+    std::fs::write(home.join("pyvenv.cfg"), "version = 3.11.4\n").unwrap();
+    let err = create(true).unwrap_err();
+    assert!(err.message.contains("Python 3.11 environment, not Python 3.12"), "{}", err.message);
+    assert!(err.message.contains("pipenv --rm"), "{}", err.message);
+    assert_eq!(calls().lines().count(), 2);
 }
 
 #[test]
