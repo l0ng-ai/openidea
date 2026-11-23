@@ -8,7 +8,9 @@ const mocks = vi.hoisted(() => ({
   pypi: vi.fn(),
   pip: vi.fn(),
   container: vi.fn(),
+  index: vi.fn(),
   cancel: vi.fn(),
+  active: null as string | null,
 }));
 vi.mock("@tauri-apps/api/core", () => ({ Channel: class {} }));
 vi.mock("@/platform/ipc", async (importOriginal) => {
@@ -21,11 +23,17 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       sdkPythonPackages: mocks.packages,
       sdkPythonPip: mocks.pip,
       sdkContainerPython: mocks.container,
+      sdkPythonPackageIndex: mocks.index,
       pypiPackage: mocks.pypi,
       cancelRequest: mocks.cancel,
     },
   };
 });
+
+vi.mock("@/workbench/contributions", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/workbench/contributions")>()),
+  editorService: () => ({ activePath: () => mocks.active, onActiveInputChange: () => () => {} }),
+}));
 
 const { useProject } = await import("@/platform/project");
 const { PackagesView } = await import("./PackagesView");
@@ -62,6 +70,8 @@ beforeEach(() => {
   mocks.pypi.mockImplementation((name: string) => Promise.resolve(ok(name === "six" ? SIX : null)));
   mocks.pip.mockResolvedValue(ok(null));
   mocks.container.mockResolvedValue(ok(null));
+  mocks.index.mockResolvedValue(ok(null));
+  mocks.active = null;
 });
 afterEach(() => {
   cleanup();
@@ -96,6 +106,59 @@ describe("Python Packages", () => {
       expect.anything(),
     );
     // The list is read again once pip is done.
+    await waitFor(() => expect(mocks.packages.mock.calls.filter((c) => c[1] === false)).toHaveLength(2));
+  });
+
+  it("sends an installed package's name to PyPI only when asked, once per session", async () => {
+    open();
+    select(await screen.findByText("urllib3"));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(mocks.pypi).not.toHaveBeenCalled();
+    mocks.pypi.mockResolvedValue(ok({ ...SIX, name: "urllib3", summary: "HTTP library" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show PyPI Details" }));
+    expect(await screen.findByText("HTTP library")).toBeInTheDocument();
+    select(screen.getByText("requests"));
+    select(screen.getByText("urllib3"));
+    expect(screen.getByText("HTTP library")).toBeInTheDocument();
+    expect(mocks.pypi).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not search PyPI on its own when installing uses another index", async () => {
+    mocks.index.mockResolvedValue(ok("https://pypi.acme.dev/simple"));
+    open();
+    await screen.findByText("urllib3");
+    search("acme-utils");
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(mocks.pypi).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Search PyPI for acme-utils" }));
+    await waitFor(() => expect(mocks.pypi).toHaveBeenCalledWith("acme-utils", expect.anything()));
+  });
+
+  it("says when PyPI cannot be reached, and tries again", async () => {
+    mocks.pypi.mockResolvedValue({ status: "error", error: { kind: "unavailable", message: "offline" } });
+    open();
+    await screen.findByText("urllib3");
+    search("flask");
+    expect(await screen.findByText("Could not load package information from PyPI.")).toBeInTheDocument();
+    mocks.pypi.mockResolvedValue(ok({ ...SIX, name: "flask" }));
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("flask")).toBeInTheDocument();
+  });
+
+  it("manages the interpreter of the active file's folder, and shows it", async () => {
+    mocks.active = "/p/backend/app.py";
+    mocks.effective.mockResolvedValue(ok("/p/backend/.venv/bin/python"));
+    open();
+    expect(await screen.findByText("backend/.venv/bin/python")).toBeInTheDocument();
+    expect(mocks.effective).toHaveBeenCalledWith("/p/backend");
+  });
+
+  it("reloads the list after a failed pip run, which may have installed part of it", async () => {
+    mocks.pip.mockResolvedValue({ status: "error", error: { kind: "io", message: "pip failed" } });
+    open();
+    select(await screen.findByText("requests"));
+    fireEvent.click(await screen.findByRole("button", { name: "Uninstall" }));
+    expect(await screen.findByText("pip failed")).toBeInTheDocument();
     await waitFor(() => expect(mocks.packages.mock.calls.filter((c) => c[1] === false)).toHaveLength(2));
   });
 

@@ -314,7 +314,11 @@ pub async fn pypi_package(
     let result = host
         .blocking(move || {
             let search_path = std::env::var_os("PATH").unwrap_or_default();
-            let text = ide_tools::Http::new(&search_path)?.https_only().get_text_or_empty_on_404(&url, &cancel)?;
+            let text = ide_tools::Http::new(&search_path)?.https_only().get_text_limited_or_empty_on_404(
+                &url,
+                16 * 1024 * 1024,
+                &cancel,
+            )?;
             // The helper's body for a 404.
             if text == "[]" {
                 return Ok(None);

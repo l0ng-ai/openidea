@@ -7,7 +7,7 @@ import { useEffect, useMemo, useState } from "react";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { call, commands, isCancelled, nextRequestId, type PypiPackage, type PythonPackage } from "@/platform/ipc";
-import { useProject } from "@/platform/project";
+import { dirname, useProject } from "@/platform/project";
 import { usePythonPackages } from "@/platform/pythonPackages";
 import {
   Button,
@@ -23,6 +23,7 @@ import {
   SplitPanel,
   T,
 } from "@/ui";
+import { editorService } from "@/workbench/contributions";
 import { isPackageName, listRows, normalize, requirementOf, rowKey, type Row } from "./model";
 import styles from "./PythonPackages.module.css";
 
@@ -36,12 +37,27 @@ interface Job {
 
 const message = (e: unknown) => String((e as Error)?.message ?? e);
 
-/** The interpreter whose packages are listed; a run target's (`container`) is read-only. */
+/** The folder of the active editor's file, which picks the interpreter as runs do. */
+function useActiveFolder() {
+  const folder = () => {
+    const path = editorService().activePath();
+    return path ? dirname(path) : null;
+  };
+  const [current, setCurrent] = useState(folder);
+  useEffect(() => editorService().onActiveInputChange?.(() => setCurrent(folder())), []);
+  return current;
+}
+
+/**
+ * The interpreter whose packages are listed: the one runs and the Python Console use for the
+ * active file (in a workspace, its member's virtualenv). A run target's (`container`) is read-only.
+ */
 function useInterpreter() {
   const root = useProject((s) => s.project?.root ?? null);
   const setting = useProject((s) => s.settings?.languages?.python?.interpreter ?? "");
+  const near = useActiveFolder();
   const container = setting.trim().startsWith("target:");
-  const key = `${root}\n${setting}`;
+  const key = `${root}\n${setting}\n${near}`;
   const [local, setLocal] = useState<{ key: string; python: string | null } | null>(null);
   const [snapshot, setSnapshot] = useState<{ key: string; packages: PythonPackage[] } | null>(null);
   const [tick, setTick] = useState(0);
@@ -54,7 +70,7 @@ function useInterpreter() {
         () => live && setSnapshot({ key, packages: [] }),
       );
     } else {
-      call(commands.sdkPythonEffective(null)).then(
+      call(commands.sdkPythonEffective(near)).then(
         (python) => live && setLocal({ key, python }),
         () => live && setLocal({ key, python: null }),
       );
@@ -62,8 +78,9 @@ function useInterpreter() {
     return () => {
       live = false;
     };
-  }, [root, container, key, tick]);
+  }, [root, container, near, key, tick]);
   return {
+    root,
     container,
     python: !container && local?.key === key ? local.python : null,
     snapshot: container && snapshot?.key === key ? snapshot.packages : null,
@@ -72,11 +89,37 @@ function useInterpreter() {
   };
 }
 
+/** A package index other than PyPI configured for `python`'s pip or uv; `undefined` until known. */
+function useCustomIndex(python: string | null) {
+  const [state, setState] = useState<{ python: string; index: string | null } | null>(null);
+  useEffect(() => {
+    if (!python) return;
+    let live = true;
+    const request = nextRequestId();
+    call(commands.sdkPythonPackageIndex(python, request)).then(
+      (index) => live && setState({ python, index }),
+      // Unknown counts as custom: names stay on this machine.
+      () => live && setState({ python, index: "" }),
+    );
+    return () => {
+      live = false;
+      void commands.cancelRequest(request);
+    };
+  }, [python]);
+  return python && state?.python === python ? state.index : undefined;
+}
+
+/** PyPI projects looked up this session, by normalised name; `null` when PyPI has none. */
+const pypiCache = new Map<string, PypiPackage | null>();
+
 /** The PyPI project named exactly `name`, asked `delay` ms after the name last changed. */
 function usePypi(name: string | null, delay: number) {
-  const [state, setState] = useState<{ name: string; found: PypiPackage | null; error: string | null } | null>(null);
+  const [state, setState] = useState<{ name: string; error: string } | null>(null);
+  const [, setDone] = useState(0);
+  const [tick, setTick] = useState(0);
+  const cached = name ? pypiCache.get(normalize(name)) : undefined;
   useEffect(() => {
-    if (!name) return;
+    if (!name || pypiCache.has(normalize(name))) return;
     let live = true;
     let running = false;
     const request = nextRequestId();
@@ -84,8 +127,11 @@ function usePypi(name: string | null, delay: number) {
       running = true;
       call(commands.pypiPackage(name, request))
         .then(
-          (found) => live && setState({ name, found, error: null }),
-          (e: unknown) => live && !isCancelled(e) && setState({ name, found: null, error: message(e) }),
+          (found) => {
+            pypiCache.set(normalize(name), found);
+            if (live) setDone((n) => n + 1);
+          },
+          (e: unknown) => live && !isCancelled(e) && setState({ name, error: message(e) }),
         )
         .finally(() => (running = false));
     }, delay);
@@ -94,14 +140,27 @@ function usePypi(name: string | null, delay: number) {
       clearTimeout(timer);
       if (running) void commands.cancelRequest(request);
     };
-  }, [name, delay]);
-  const current = name && state?.name === name ? state : null;
-  return { found: current?.found ?? null, error: current?.error ?? null, loading: !!name && !current };
+  }, [name, delay, tick]);
+  const error = name && cached === undefined && state?.name === name ? state.error : null;
+  return {
+    found: cached ?? null,
+    error,
+    loading: !!name && cached === undefined && !error,
+    retry: () => {
+      setState(null);
+      setTick((t) => t + 1);
+    },
+  };
 }
 
 export function PackagesView() {
-  const { container, python, snapshot, resolved, retry } = useInterpreter();
+  const { root, container, python, snapshot, resolved, retry } = useInterpreter();
   const local = usePythonPackages(python);
+  const customIndex = useCustomIndex(python);
+  // Names go to pypi.org on their own only when installing uses PyPI too.
+  const auto = customIndex === null;
+  const [asked, setAsked] = useState<string | null>(null);
+  const [detailsOf, setDetailsOf] = useState<string | null>(null);
   const packages = container ? snapshot : local.packages;
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
@@ -110,7 +169,8 @@ export function PackagesView() {
   const [jobError, setJobError] = useState<string | null>(null);
 
   const name = query.trim();
-  const search = usePypi(!container && isPackageName(name) ? name : null, 300);
+  const searchable = !container && isPackageName(name);
+  const search = usePypi(searchable && (auto || asked === name) ? name : null, 300);
   const rows = useMemo(
     () => listRows(packages ?? [], local.newer, search.found, query),
     [packages, local.newer, search.found, query],
@@ -121,7 +181,9 @@ export function PackagesView() {
   const picked = row && row.kind !== "section" ? row : null;
   // The search already asked PyPI about the package it found.
   const fromSearch = !!picked && !!search.found && normalize(search.found.name) === normalize(picked.name);
-  const details = usePypi(picked && !container && !fromSearch ? picked.name : null, 0);
+  // An installed package's name is sent to PyPI only when asked for: it may be a private one.
+  const wanted = !!picked && (picked.kind === "pypi" || detailsOf === normalize(picked.name));
+  const details = usePypi(picked && !container && !fromSearch && wanted ? picked.name : null, 200);
   const info = fromSearch ? search : details;
 
   const run = (op: Op, requirement: string) => {
@@ -133,8 +195,12 @@ export function PackagesView() {
     setJobError(null);
     setJob({ op, target: requirement, cancel: () => void commands.cancelRequest(request) });
     call(commands.sdkPythonPip(python, requirement, op === "uninstall", op === "upgrade", request, channel))
-      .then(local.reload, (e: unknown) => setJobError(isCancelled(e) ? null : message(e)))
-      .finally(() => setJob(null));
+      .catch((e: unknown) => setJobError(isCancelled(e) ? null : message(e)))
+      .finally(() => {
+        setJob(null);
+        // A failed or cancelled run can still have installed some of the packages.
+        local.reload();
+      });
   };
 
   if (resolved && !container && !python) {
@@ -176,6 +242,11 @@ export function PackagesView() {
             disabled={loading || !!job}
             onClick={container ? retry : local.reload}
           />
+          {python && (
+            <span className={styles.interpreter} title={python}>
+              {relativeTo(root, python)}
+            </span>
+          )}
           {(loading || local.checking || search.loading) && (
             <Spinner
               size={14}
@@ -237,11 +308,40 @@ export function PackagesView() {
             <T>Could not check for newer versions of the packages.</T>
           </div>
         )}
+        {searchable && !auto && customIndex !== undefined && asked !== name && (
+          <div className={styles.note}>
+            <span>
+              <T>Installing uses another package index, so names are not sent to PyPI on their own.</T>
+            </span>{" "}
+            <Button size="small" variant="ghost" onClick={() => setAsked(name)}>
+              {tx`Search PyPI for ${name}`}
+            </Button>
+          </div>
+        )}
+        {search.error && (
+          <div className={styles.note} role="alert">
+            <span>
+              <T>Could not load package information from PyPI.</T>
+            </span>{" "}
+            <Button size="small" variant="ghost" onClick={search.retry}>
+              <T>Retry</T>
+            </Button>
+          </div>
+        )}
       </SplitPanel>
       <SplitHandle />
       <SplitPanel id="details" minSize={260} className={styles.detailsPane}>
         {picked ? (
-          <Details key={rowKey(picked)} row={picked} info={info} readOnly={container} busy={!!job} run={run} />
+          <Details
+            key={rowKey(picked)}
+            row={picked}
+            info={info}
+            asked={wanted || fromSearch}
+            onAsk={() => setDetailsOf(normalize(picked.name))}
+            readOnly={container}
+            busy={!!job}
+            run={run}
+          />
         ) : (
           <EmptyState>
             <T>Select a package to see its versions.</T>
@@ -279,15 +379,26 @@ export function PackagesView() {
   );
 }
 
+/** `path` relative to `root` when it is inside it. */
+function relativeTo(root: string | null, path: string) {
+  const base = root?.replace(/[\\/]+$/, "");
+  return base && path.startsWith(`${base}/`) ? path.slice(base.length + 1) : path;
+}
+
 function Details({
   row,
   info,
+  asked,
+  onAsk,
   readOnly,
   busy,
   run,
 }: {
   row: Exclude<Row, { kind: "section" }>;
-  info: { found: PypiPackage | null; error: string | null; loading: boolean };
+  info: { found: PypiPackage | null; error: string | null; loading: boolean; retry: () => void };
+  /** Whether PyPI was asked about this package. */
+  asked: boolean;
+  onAsk: () => void;
   readOnly: boolean;
   busy: boolean;
   run: (op: Op, requirement: string) => void;
@@ -314,17 +425,29 @@ function Details({
         <span className={styles.version}>{installed ?? <T>Not installed</T>}</span>
       </div>
       {info.found?.summary && <div className={styles.summary}>{info.found.summary}</div>}
-      {info.loading && (
+      {!readOnly && !asked && (
+        <div>
+          <Button size="small" onClick={onAsk}>
+            <T>Show PyPI Details</T>
+          </Button>
+        </div>
+      )}
+      {asked && info.loading && (
         <div className={styles.note}>
           <T>Loading package information from PyPI…</T>
         </div>
       )}
-      {info.error && (
-        <div className={styles.note}>
-          <T>Could not load package information from PyPI.</T>
+      {asked && info.error && (
+        <div className={styles.note} role="alert">
+          <span>
+            <T>Could not load package information from PyPI.</T>
+          </span>{" "}
+          <Button size="small" variant="ghost" onClick={info.retry}>
+            <T>Retry</T>
+          </Button>
         </div>
       )}
-      {!readOnly && !info.loading && !info.error && !info.found && (
+      {!readOnly && asked && !info.loading && !info.error && !info.found && (
         <div className={styles.note}>
           <T>This package is not on PyPI.</T>
         </div>

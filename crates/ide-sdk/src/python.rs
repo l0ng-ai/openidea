@@ -363,6 +363,35 @@ pub(crate) fn resolve_requirement(requirement: &str, base: Option<&Path>) -> Ide
     Ok(base.join(requirement).to_string_lossy().into_owned())
 }
 
+/// Environments with a pip run in progress, by [`environment_key`].
+static BUSY: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// Holds an environment for one pip run; two runs at once can leave it half installed.
+pub(crate) struct Busy(PathBuf);
+
+impl Busy {
+    pub(crate) fn take(python: &Path) -> IdeResult<Self> {
+        let key = environment_key(python);
+        let mut busy = BUSY.lock().unwrap_or_else(|e| e.into_inner());
+        if busy.contains(&key) {
+            return Err(IdeError::unavailable("another package operation is running for this interpreter"));
+        }
+        busy.push(key.clone());
+        Ok(Self(key))
+    }
+}
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        BUSY.lock().unwrap_or_else(|e| e.into_inner()).retain(|k| *k != self.0);
+    }
+}
+
+/// A virtualenv's folder (its `python` and `python3` are one environment), else the interpreter.
+fn environment_key(python: &Path) -> PathBuf {
+    venv_of(python).unwrap_or_else(|| python.to_path_buf())
+}
+
 /// Installs (or upgrades, with `upgrade`) a requirement such as `requests` or `django==5.0`;
 /// relative paths (`./pkg`) are resolved against `project_root`.
 pub fn install_package(
@@ -379,6 +408,7 @@ pub fn install_package(
     }
     let requirement = resolve_requirement(requirement, project_root)?;
     let installer = installer(python)?;
+    let _busy = Busy::take(python)?;
     let mut sub = vec!["install"];
     if upgrade {
         sub.push("--upgrade");
@@ -476,7 +506,81 @@ pub fn uninstall_package(
         return Err(IdeError::invalid("no package selected"));
     }
     let installer = installer(python)?;
+    let _busy = Busy::take(python)?;
     let (program, args) = pip_command(python, &installer, &["uninstall", "-y", name]);
     let dir = neutral_dir();
     stream(&program, &args, dir.as_ref().map(|d| d.path()), &pip_env(python), cancel, on_line).map(|_| ())
+}
+
+/// A package index other than PyPI that installing from `python` uses, as configured for pip
+/// (`pip config list`, `PIP_INDEX_URL`, `PIP_EXTRA_INDEX_URL`) or for uv (its environment
+/// variables, `uv.toml`, `[tool.uv]` in the project's `pyproject.toml`). Package names should
+/// then not be sent to PyPI unasked: a private package may have a public namesake.
+pub fn configured_index(
+    python: &Path,
+    project_root: Option<&Path>,
+    cancel: &CancellationToken,
+) -> IdeResult<Option<String>> {
+    let env = |key: &str| std::env::var(key).ok().filter(|v| !v.trim().is_empty());
+    let custom = |url: &str| !url.contains("://pypi.org/") && !url.contains("://pypi.python.org/");
+    for key in ["PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL"] {
+        if let Some(url) = env(key).filter(|u| custom(u)) {
+            return Ok(Some(url));
+        }
+    }
+    match installer(python)? {
+        Installer::Pip => {
+            let (program, args) = pip_command(python, &Installer::Pip, &["config", "list"]);
+            let dir = neutral_dir();
+            let out = stream(&program, &args, dir.as_ref().map(|d| d.path()), &pip_env(python), cancel, &|_| {})?;
+            Ok(pip_config_index(&out).filter(|u| custom(u)))
+        }
+        Installer::Uv(_) => {
+            for key in ["UV_INDEX_URL", "UV_EXTRA_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX"] {
+                if let Some(url) = env(key).filter(|u| custom(u)) {
+                    return Ok(Some(url));
+                }
+            }
+            let mut files: Vec<PathBuf> = Vec::new();
+            if let Some(root) = project_root {
+                files.push(root.join("uv.toml"));
+                files.push(root.join("pyproject.toml"));
+            }
+            if let Some(config) = std::env::var_os("XDG_CONFIG_HOME")
+                .map(PathBuf::from)
+                .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
+            {
+                files.push(config.join("uv/uv.toml"));
+            }
+            if let Some(config) = dirs::config_dir() {
+                files.push(config.join("uv/uv.toml"));
+            }
+            files.push(PathBuf::from("/etc/uv/uv.toml"));
+            Ok(files.iter().find_map(|f| uv_config_index(f.file_name()?.to_str()?, &std::fs::read_to_string(f).ok()?)))
+        }
+    }
+}
+
+/// The first `index-url` / `extra-index-url` in `pip config list` output
+/// (`global.index-url='https://…'`, `:env:.extra-index-url='…'`).
+pub(crate) fn pip_config_index(out: &str) -> Option<String> {
+    out.lines().find_map(|line| {
+        let (key, value) = line.split_once('=')?;
+        (key.ends_with(".index-url") || key.ends_with(".extra-index-url"))
+            .then(|| value.trim().trim_matches(['\'', '"']).split_whitespace().next().unwrap_or_default().to_owned())
+            .filter(|v| !v.is_empty())
+    })
+}
+
+/// An index configured in a uv config file: `index-url`, `extra-index-url` or `[[index]]`
+/// in `uv.toml`, the same under `[tool.uv]` in `pyproject.toml`.
+pub(crate) fn uv_config_index(file_name: &str, text: &str) -> Option<String> {
+    let doc: toml::Table = text.parse().ok()?;
+    let uv = if file_name == "pyproject.toml" { doc.get("tool")?.get("uv")?.as_table()? } else { &doc };
+    let url = |v: &toml::Value| v.as_str().map(str::to_owned);
+    uv.get("index-url")
+        .and_then(url)
+        .or_else(|| uv.get("extra-index-url")?.as_array()?.first().and_then(url))
+        .or_else(|| uv.get("index")?.as_array()?.first()?.get("url").and_then(url))
+        .filter(|u| !u.contains("://pypi.org/"))
 }

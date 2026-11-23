@@ -3733,5 +3733,8 @@
   "Could not load package information from PyPI.": "Could not load package information from PyPI.",
   "This package is not on PyPI.": "This package is not on PyPI.",
   "Install Version": "Install Version",
-  "Upgrade to {latest}": "Upgrade to {latest}"
+  "Upgrade to {latest}": "Upgrade to {latest}",
+  "Show PyPI Details": "Show PyPI Details",
+  "Search PyPI for {name}": "Search PyPI for {name}",
+  "Installing uses another package index, so names are not sent to PyPI on their own.": "Installing uses another package index, so names are not sent to PyPI on their own."
 }

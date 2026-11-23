@@ -186,10 +186,13 @@ export function PythonInterpreterPage() {
           setInstalling(false);
         }
         if (op === "uninstall") setSelected(null);
-        reload();
       })
       .catch((e: unknown) => setJobError(isCancelled(e) ? null : String((e as Error)?.message ?? e)))
-      .finally(() => setJob(null));
+      .finally(() => {
+        setJob(null);
+        // A failed or cancelled run can still have installed some of the packages.
+        reload();
+      });
   };
 
   const menu = (e: MouseEvent, pkg: PythonPackage) => {

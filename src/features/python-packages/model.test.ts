@@ -21,6 +21,15 @@ describe("package rows", () => {
     expect(listRows(INSTALLED, null, null, "quest").map(rowKey)).toEqual(["section:installed", "installed:requests"]);
   });
 
+  it("filters the installed packages by their normalised names", () => {
+    for (const query of ["typing-extensions", "Typing.Extensions", "typing_ext"]) {
+      expect(listRows(INSTALLED, null, found("typing-extensions"), query).map(rowKey)).toEqual([
+        "section:installed",
+        "installed:typing_extensions",
+      ]);
+    }
+  });
+
   it("does not list an installed package again under PyPI, however its name is spelled", () => {
     const rows = listRows(INSTALLED, null, found("typing-extensions"), "typing");
     expect(rows.map(rowKey)).toEqual(["section:installed", "installed:typing_extensions"]);

@@ -25,10 +25,11 @@ export function listRows(
   found: PypiPackage | null,
   query: string,
 ): Row[] {
-  const q = query.trim().toLowerCase();
+  // `typing-extensions` finds `typing_extensions`, as pip would.
+  const q = normalize(query.trim());
   const rows: Row[] = [];
   for (const p of installed) {
-    if (q && !p.name.toLowerCase().includes(q)) continue;
+    if (q && !normalize(p.name).includes(q)) continue;
     const latest = newer?.get(p.name);
     rows.push({
       kind: "installed",

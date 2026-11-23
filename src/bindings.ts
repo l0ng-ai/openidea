@@ -1675,6 +1675,8 @@ export const commands = {
 	/**  Rust standard library sources, Go default GOPATH. */
 	extra: IpcPath | null,
 } | null, IdeError>(__TAURI_INVOKE("sdk_python_interpreter", { path })),
+	/**  A package index other than PyPI that installing from `python` uses; `None` for PyPI. */
+	sdkPythonPackageIndex: (python: string, request: RequestId) => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_package_index", { python, request })),
 	sdkPythonPackages: (python: string, outdated: boolean, request: RequestId) => typedError<PythonPackage[], IdeError>(__TAURI_INVOKE("sdk_python_packages", { python, outdated, request })),
 	/**  Installs (`uninstall = false`) or removes a package; output streams through `on_output`. */
 	sdkPythonPip: (python: string, requirement: string, uninstall: boolean, upgrade: boolean, request: RequestId, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("sdk_python_pip", { python, requirement, uninstall, upgrade, request, onOutput })),
