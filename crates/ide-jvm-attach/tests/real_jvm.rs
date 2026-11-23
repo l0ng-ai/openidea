@@ -188,10 +188,10 @@ fn finds_a_real_jvm_by_its_jdwp_port() {
 
 /// Compiles `MAIN_JAVA` with the `javac` next to `java`, since JDK 8 has no source launcher.
 fn launch_main(java: &Path, dir: &Path, jvm_args: &[&str]) -> JvmGuard {
-    launch_class(java, dir, "Main", MAIN_JAVA, &[], jvm_args)
+    launch_class(java, dir, "Main", MAIN_JAVA, jvm_args)
 }
 
-fn launch_class(java: &Path, dir: &Path, class: &str, source_text: &str, args: &[&str], jvm_args: &[&str]) -> JvmGuard {
+fn launch_class(java: &Path, dir: &Path, class: &str, source_text: &str, jvm_args: &[&str]) -> JvmGuard {
     let source = dir.join(format!("{class}.java"));
     std::fs::write(&source, source_text).unwrap();
     let status = Command::new(java.with_file_name("javac")).arg("-d").arg(dir).arg(&source).status().expect("javac");
@@ -201,7 +201,6 @@ fn launch_class(java: &Path, dir: &Path, class: &str, source_text: &str, args: &
         .arg("-cp")
         .arg(dir)
         .arg(class)
-        .args(args)
         .current_dir(dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -371,7 +370,7 @@ fn thread_print_reports_a_deadlock() {
         return;
     };
     let dir = tempfile::tempdir().unwrap();
-    let mut guard = launch_class(&java, dir.path(), "Deadlock", DEADLOCK_JAVA, &[], &["-XX:+StartAttachListener"]);
+    let mut guard = launch_class(&java, dir.path(), "Deadlock", DEADLOCK_JAVA, &["-XX:+StartAttachListener"]);
     let pid = guard.0.id();
     wait_for_ready(&output_lines(&mut guard.0));
     wait_for_listener(pid);

@@ -27,6 +27,7 @@ pub fn thread_print(pid: u32, timeout: Duration) -> Result<String, AttachError> 
 pub struct ProcEntry {
     pub pid: u32,
     pub ppid: u32,
+    /// The full argv joined by spaces, as `ps` prints it.
     pub command: String,
 }
 
@@ -53,7 +54,7 @@ pub fn select_run_jvm(
     token: Option<&str>,
     is_hotspot: impl Fn(u32) -> bool,
 ) -> Option<u32> {
-    if let Some(token) = token {
+    if let Some(token) = token.filter(|token| !token.is_empty()) {
         let wanted = format!("{RUN_TOKEN_PROPERTY}{token}");
         let tagged = table
             .iter()
@@ -147,6 +148,14 @@ mod tests {
     fn select_none_when_tree_has_no_jvm() {
         let table = vec![entry(10, 1, "/bin/zsh"), entry(11, 10, "/bin/sleep 5"), entry(12, 1, "java -cp app Main")];
         assert_eq!(select_run_jvm(&table, 10, None, |pid| pid == 12), None);
+    }
+
+    #[test]
+    fn select_treats_an_empty_token_as_no_token() {
+        // "-Dopenidea.run.token=" with nothing after it must not tag every such process.
+        let table =
+            vec![entry(50, 1, "java -Dopenidea.run.token= -cp app Main"), entry(10, 1, "sh"), entry(11, 10, "java a")];
+        assert_eq!(select_run_jvm(&table, 10, Some(""), not_the_shell), Some(11));
     }
 
     #[test]
