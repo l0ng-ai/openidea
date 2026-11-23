@@ -138,6 +138,22 @@ pub(super) fn result_fields(name: &str, input: &Value, block: &Value, structured
             }
         }
     }
+    if let Some(blocks) = block.get("content").and_then(Value::as_array) {
+        for block in blocks {
+            if block.get("type").and_then(Value::as_str) != Some("image") {
+                continue;
+            }
+            let Some(source) = block.get("source") else { continue };
+            if source.get("type").and_then(Value::as_str) != Some("base64") {
+                continue;
+            }
+            let data = source.get("data").and_then(Value::as_str).unwrap_or_default();
+            let mime = source.get("media_type").and_then(Value::as_str).unwrap_or_default();
+            if !data.is_empty() && mime.starts_with("image/") {
+                content.push(json!({"type": "content", "content": {"type": "image", "mimeType": mime, "data": data}}));
+            }
+        }
+    }
     if failed && content.is_empty() {
         let t = result_text(block);
         if !t.is_empty() {
@@ -228,6 +244,27 @@ mod tests {
         assert_eq!(call_fields("Grep", &json!({"pattern": "fn", "path": "/w/src"}), cwd)["title"], "grep \"fn\" src");
         assert_eq!(call_fields("mcp__docs__read", &json!({}), cwd)["title"], "docs: read");
         assert_eq!(call_fields("WebSearch", &json!({"query": "q"}), cwd)["kind"], "fetch");
+    }
+
+    #[test]
+    fn image_tool_results_keep_text_and_inline_images() {
+        let result = result_fields(
+            "Read",
+            &json!({"file_path": "/w/preview.png"}),
+            &json!({"content": [
+                {"type": "text", "text": "Preview ready"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "aW1hZ2U="}}
+            ]}),
+            None,
+        );
+        assert_eq!(result["status"], "completed");
+        assert_eq!(
+            result["content"],
+            json!([
+                text("Preview ready"),
+                {"type": "content", "content": {"type": "image", "mimeType": "image/png", "data": "aW1hZ2U="}}
+            ])
+        );
     }
 
     #[test]
