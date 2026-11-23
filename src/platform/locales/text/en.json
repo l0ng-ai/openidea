@@ -2417,6 +2417,8 @@
   "Save As…": "Save As…",
   "Text file": "Text file",
   "Cannot save the thread dump": "Cannot save the thread dump",
+  "Cannot take a new thread dump": "Cannot take a new thread dump",
+  "Thread dump": "Thread dump",
   "Filter threads": "Filter threads",
   "Hide JVM threads": "Hide JVM threads",
   "Threads": "Threads",

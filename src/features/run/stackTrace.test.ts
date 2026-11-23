@@ -48,6 +48,7 @@ describe("Analyze Stack Trace", () => {
     const tab = useStackTraces.getState().tabs.find((t) => t.id === id)!;
     expect(useRun.getState().activeSession).toBe(id);
     if (tab.kind !== "threads") throw new Error("expected a thread dump tab");
+    expect(tab.title).toBe("Thread dump");
     expect(tab.source).toBeNull();
     expect(tab.dump.deadlocks).toHaveLength(1);
     expect(tab.dump.threads[tab.selected!]!.name).toBe("sync-1");

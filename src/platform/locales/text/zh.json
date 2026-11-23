@@ -2816,6 +2816,8 @@
   "Save As…": "另存为…",
   "Text file": "文本文件",
   "Cannot save the thread dump": "无法保存线程转储",
+  "Cannot take a new thread dump": "无法获取新的线程转储",
+  "Thread dump": "线程转储",
   "Filter threads": "过滤线程",
   "Hide JVM threads": "隐藏 JVM 线程",
   "Threads": "线程",

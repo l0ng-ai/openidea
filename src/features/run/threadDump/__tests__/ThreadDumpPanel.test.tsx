@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { commands } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
 import { addThreadDump, updateThreadDump, useStackTraces } from "../../stackTrace";
 import { ThreadDumpPanel } from "../ThreadDumpPanel";
@@ -9,6 +10,15 @@ import jdk25None from "../__fixtures__/jdk25-none.txt?raw";
 
 const clipboard = vi.hoisted(() => ({ writeClipboardText: vi.fn(async (_text: string) => {}) }));
 vi.mock("@/platform/clipboard", async (orig) => ({ ...(await orig<object>()), ...clipboard }));
+const notify = vi.hoisted(() => vi.fn());
+vi.mock("@/workbench/contributions", async (orig) => ({
+  ...(await orig<typeof import("@/workbench/contributions")>()),
+  notifications: () => ({ notify }),
+}));
+const dialog = vi.hoisted(() => ({ save: vi.fn(async (): Promise<string | null> => null) }));
+vi.mock("@/platform/dialog", () => dialog);
+const remote = vi.hoisted(() => ({ isRemoteWindow: vi.fn(() => false) }));
+vi.mock("@/platform/remote", async (orig) => ({ ...(await orig<object>()), ...remote }));
 
 vi.mock("@tanstack/react-virtual", () => ({
   useVirtualizer: ({ count }: { count: number }) => ({
@@ -46,6 +56,8 @@ beforeEach(() => {
   usePlatform.setState({ os: "macos" });
   useStackTraces.setState({ tabs: [] });
   clipboard.writeClipboardText.mockClear();
+  notify.mockClear();
+  remote.isRemoteWindow.mockReturnValue(false);
 });
 
 describe("ThreadDumpPanel", () => {
@@ -113,6 +125,94 @@ describe("ThreadDumpPanel", () => {
     act(() => updateThreadDump(id, (t) => ({ ...t, refresh })));
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     expect(refresh).toHaveBeenCalledOnce();
+  });
+
+  it("reports a refresh that fails", async () => {
+    const id = open(jdk25Sync, { session: 3 });
+    act(() => updateThreadDump(id, (t) => ({ ...t, refresh: async () => Promise.reject(new Error("gone")) })));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() =>
+      expect(notify).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "Cannot take a new thread dump", body: "gone" }),
+      ),
+    );
+  });
+});
+
+describe("Save As…", () => {
+  const ok = { status: "ok", data: null } as const;
+  let onDisk: Record<string, "file" | "dir">;
+  let written: { path: string; text: string }[];
+
+  beforeEach(() => {
+    onDisk = {};
+    written = [];
+    dialog.save.mockResolvedValue("/out/dump.txt");
+    vi.spyOn(commands, "fsEntryKind").mockImplementation(async (path) =>
+      onDisk[path]
+        ? { status: "ok", data: onDisk[path] }
+        : { status: "error", error: { kind: "NotFound", message: path } as never },
+    );
+    vi.spyOn(commands, "fsDelete").mockImplementation(async (path) => {
+      delete onDisk[path];
+      return ok;
+    });
+    vi.spyOn(commands, "fsCreateFileBytes").mockImplementation(async (path, data) => {
+      if (onDisk[path]) return { status: "error", error: { kind: "AlreadyExists", message: path } as never };
+      written.push({ path, text: new TextDecoder().decode(Uint8Array.from(atob(data), (c) => c.charCodeAt(0))) });
+      return ok;
+    });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  const save = () => fireEvent.click(screen.getByRole("button", { name: "Save As…" }));
+
+  it("writes the whole dump to a .txt file named after the tab", async () => {
+    const id = open(jdk25Sync);
+    save();
+    await waitFor(() => expect(written).toHaveLength(1));
+    expect(dialog.save).toHaveBeenCalledWith(expect.objectContaining({ defaultPath: "Threads- App.txt" }));
+    expect(written[0]).toEqual({ path: "/out/dump.txt", text: threadsTab(id).text });
+    expect(commands.fsDelete).not.toHaveBeenCalled();
+  });
+
+  it("replaces an existing file", async () => {
+    onDisk["/out/dump.txt"] = "file";
+    open(jdk25Sync);
+    save();
+    await waitFor(() => expect(written).toHaveLength(1));
+    expect(commands.fsDelete).toHaveBeenCalledWith("/out/dump.txt");
+  });
+
+  it("refuses to replace a directory", async () => {
+    onDisk["/out/dump.txt"] = "dir";
+    open(jdk25Sync);
+    save();
+    await waitFor(() =>
+      expect(notify).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "Cannot save the thread dump", body: "/out/dump.txt is a directory" }),
+      ),
+    );
+    expect(commands.fsDelete).not.toHaveBeenCalled();
+    expect(written).toEqual([]);
+  });
+
+  it("reports a failed write", async () => {
+    vi.mocked(commands.fsCreateFileBytes).mockResolvedValue({
+      status: "error",
+      error: { kind: "PermissionDenied", message: "read-only volume" } as never,
+    });
+    open(jdk25Sync);
+    save();
+    await waitFor(() =>
+      expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: "Cannot save the thread dump" })),
+    );
+  });
+
+  it("is not offered in a remote window", () => {
+    remote.isRemoteWindow.mockReturnValue(true);
+    open(jdk25Sync);
+    expect(screen.queryByRole("button", { name: "Save As…" })).toBeNull();
   });
 });
 

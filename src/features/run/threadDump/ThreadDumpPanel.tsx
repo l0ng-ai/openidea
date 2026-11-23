@@ -7,6 +7,7 @@ import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { ipcPath } from "@/platform/paths";
 import { useProject } from "@/platform/project";
+import { isRemoteWindow } from "@/platform/remote";
 import { Icon, IconButton, List, SearchField, SplitGroup, SplitHandle, SplitPanel, T, Toolbar } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { ConsoleModel } from "../console";
@@ -26,7 +27,9 @@ async function saveDump(tab: ThreadDumpTab) {
   const path = ipcPath(picked);
   try {
     // The save dialog already confirmed replacing the file, and the backend only creates new ones.
-    if (await call(commands.fsEntryKind(path)).catch(() => null)) await call(commands.fsDelete(path));
+    const kind = await call(commands.fsEntryKind(path)).catch(() => null);
+    if (kind === "dir") throw new Error(tx`${path} is a directory`);
+    if (kind === "file") await call(commands.fsDelete(path));
     await call(commands.fsCreateFileBytes(path, toBase64(new TextEncoder().encode(tab.text))));
   } catch (e) {
     notifications().notify({
@@ -92,6 +95,13 @@ export function ThreadDumpPanel({ tab }: { tab: ThreadDumpTab }) {
     setRefreshing(true);
     try {
       await refresh();
+    } catch (e) {
+      notifications().notify({
+        group: "run",
+        level: "error",
+        title: "Cannot take a new thread dump",
+        body: e instanceof Error ? e.message : String(e),
+      });
     } finally {
       setRefreshing(false);
     }
@@ -112,7 +122,8 @@ export function ThreadDumpPanel({ tab }: { tab: ThreadDumpTab }) {
               />
             )}
             <IconButton icon="copy" title="Copy" onClick={() => void writeClipboardText(tab.text)} />
-            <IconButton icon="export" title="Save As…" onClick={() => void saveDump(tab)} />
+            {/* Like Save Heap Dump As…: local windows only. */}
+            {!isRemoteWindow() && <IconButton icon="export" title="Save As…" onClick={() => void saveDump(tab)} />}
           </div>
         </Toolbar>
         <SplitGroup

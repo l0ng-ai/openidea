@@ -95,7 +95,7 @@ export function addStackTrace(raw: string): string | null {
   const text = normalizeTrace(raw);
   if (!text) return null;
   const dump = isThreadDump(text) ? parseThreadDump(text) : null;
-  return dump ? addThreads(text, traceTitle(text), null, dump) : addTrace(text, traceTitle(text));
+  return dump ? addThreads(text, tx("Thread dump"), null, dump) : addTrace(text, traceTitle(text));
 }
 
 /** Opens a dump in the thread viewer; text that holds no thread opens as a plain trace. */
