@@ -60,6 +60,29 @@ describe("graph projections", () => {
     expect(rows[0]!.down[0]!.dashed).toBe(true);
   });
 
+  it("keeps a filtered merge narrow while its older matches are still below the page", () => {
+    // The first page of an author-filtered log: the merge's hidden parent projects onto
+    // older matches that are not loaded yet, while its real parent leads there too (#5345).
+    const row = (id: string, realParents: string[], graphParents: string[], dashed: boolean[]) => ({
+      ...commit(id, realParents),
+      repo: "/repo",
+      graphParents,
+      graphDashed: dashed,
+    });
+    const page = [
+      row("merge", ["a3", "hidden3"], ["a3", "root", "a1", "a2"], [false, true, true, true]),
+      row("a3", ["a2"], ["a2"], [false]),
+    ];
+    const { rows, graph } = presentLogGraph(
+      page,
+      DEFAULT_LOG_OPTIONS,
+      { expanded: new Set(), collapsed: new Set(), merges: new Set() },
+      new Set(),
+    );
+    expect(graph[0]!.parents).toEqual([commitKey({ id: "a3", repo: "/repo" })]);
+    expect(rows[0]!.width).toBe(1);
+  });
+
   it("preserves filter dashes even when collapse hides no additional commits", () => {
     const c = { ...commit("tip", ["base"]), dashed: [true] };
     const collapsed = collapseLinear([c, commit("base")], new Set(["tip"]));

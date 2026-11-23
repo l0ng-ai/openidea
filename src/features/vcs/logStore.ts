@@ -1336,15 +1336,20 @@ export function displayedLogGraph() {
 export async function goToParent(c: Commit) {
   const generation = useGitLog.getState().generation;
   const find = () => {
-    const { graph, commits } = displayedLogGraph();
-    const parents = graph.find((x) => x.id === commitKey(c))?.parents ?? [];
-    return { parents, candidates: commits.filter((x) => parents.includes(commitKey(x))) };
+    const { graph, unpruned, commits } = displayedLogGraph();
+    const key = commitKey(c);
+    const parents = graph.find((x) => x.id === key)?.parents ?? [];
+    // A filtered connection below the loaded page is only decided once its target loads.
+    const pending = unpruned.find((x) => x.id === key)?.parents ?? [];
+    const loaded = new Set(commits.map(commitKey));
+    return {
+      parents,
+      complete: pending.every((p) => loaded.has(p)),
+      candidates: commits.filter((x) => parents.includes(commitKey(x))),
+    };
   };
   if (!find().parents.length) return;
-  await pageUntil(() => {
-    const { parents, candidates } = find();
-    return candidates.length === parents.length;
-  });
+  await pageUntil(() => find().complete);
   if (useGitLog.getState().generation !== generation) return;
   const { candidates } = find();
   const chosen = candidates.length > 1 ? await chooseLogCommit(candidates, "Select Parent Commit") : candidates[0];
