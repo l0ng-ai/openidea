@@ -165,6 +165,10 @@ describe("the all-in-one diff tab with many files", () => {
       this.scrollTop = typeof options === "number" ? options : (options?.top ?? 0);
       this.dispatchEvent(new Event("scroll"));
     };
+    HTMLElement.prototype.scrollBy = function (this: HTMLElement, options?: ScrollToOptions | number) {
+      this.scrollTop += typeof options === "number" ? options : (options?.top ?? 0);
+      this.dispatchEvent(new Event("scroll"));
+    };
   });
   afterEach(() => {
     delete (HTMLElement.prototype as { scrollTop?: number }).scrollTop;
@@ -287,6 +291,17 @@ describe("the all-in-one diff tab with many files", () => {
       expect(below("/r/src/File40.ts")).toBe(300);
       grow(38, 130_000);
       expect(below("/r/src/File40.ts")).toBe(300);
+    });
+
+    it("keeps the wheel scrolling the view has not reported yet", async () => {
+      render(<CombinedDiffTab input={combinedDiffInput({ items: many(60), reveal: "/r/src/File40.ts" })} />);
+      await act(() => new Promise((r) => setTimeout(r, 50)));
+      const el = document.querySelector<HTMLElement>("[data-combined-scroll]")!;
+      // The wheel moved the view, its scroll event not dispatched yet.
+      const scrolled = el.scrollTop - 200;
+      el.scrollTop = scrolled;
+      grow(38, 1000);
+      expect(el.scrollTop).toBe(scrolled + 400);
     });
   });
 

@@ -4,7 +4,7 @@
  * the viewport are mounted; a header collapses its block or opens the file's own diff tab.
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/react-virtual";
+import { defaultRangeExtractor, elementScroll, useVirtualizer, type Range } from "@tanstack/react-virtual";
 import clsx from "clsx";
 import { tx } from "@/platform/i18n";
 import { relativeDir, useProject } from "@/platform/project";
@@ -179,6 +179,13 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
     estimateSize: () => ESTIMATE,
     overscan: 4,
     rangeExtractor,
+    // A correction for a block above moves the view by its delta from wherever it is now: a `scrollTo`
+    // (the library's offset plus the delta) can drop wheel scrolling still in flight in WebKit.
+    scrollToFn: (offset, options, instance) => {
+      if (options.adjustments)
+        instance.scrollElement?.scrollBy({ top: options.adjustments, behavior: options.behavior });
+      else elementScroll(offset, options, instance);
+    },
   });
   // A block's real height is only known once its diff loads, up to thousands of lines past the
   // estimate. The view moves with every block above it that grows, scrolling up too (the library
