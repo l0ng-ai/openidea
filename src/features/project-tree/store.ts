@@ -46,7 +46,7 @@ import {
   type ProjectViewLead,
   type ProjectViewRootContribution,
 } from "@/workbench/contributions";
-import { ancestorsWithin, isInside, isSameOrInside, nameOf, type PackageKind } from "./paths";
+import { ancestorsWithin, insideAnyOf, isInside, isSameOrInside, nameOf, type PackageKind } from "./paths";
 
 export interface ViewOptions extends TreeOptions {
   /** Select the active editor's file in the tree (IDEA: Always Select Opened File). */
@@ -620,7 +620,8 @@ export async function applyFsChange(event: {
   if (plan.drop.length) {
     const listings = new Map(s.listings);
     dropListings(listings, plan.drop);
-    const gone = (k: string) => plan.drop.some((d) => isSameOrInside(pathOfKey(k), d));
+    const dropped = insideAnyOf(plan.drop);
+    const gone = (k: string) => dropped(pathOfKey(k));
     const selected = [...s.selected].filter((k) => !gone(k));
     set({
       listings,
@@ -645,13 +646,13 @@ export async function applyFsChange(event: {
   if (event.modified.length) dropOutlines(event.modified);
   if (event.removed.length) {
     const outlines = new Map(get().outlines);
+    const inRemoved = insideAnyOf(event.removed);
     let changed = false;
-    for (const p of event.removed)
-      for (const key of [...outlines.keys()])
-        if (isSameOrInside(key, p)) {
-          outlines.delete(key);
-          changed = true;
-        }
+    for (const key of [...outlines.keys()])
+      if (inRemoved(key)) {
+        outlines.delete(key);
+        changed = true;
+      }
     if (changed) set({ outlines });
   }
 }
