@@ -4811,6 +4811,7 @@ dependencies = [
  "ide-build",
  "ide-core",
  "ide-language",
+ "ide-workspace",
  "libc",
  "parking_lot",
  "portable-pty",
@@ -5087,6 +5088,7 @@ dependencies = [
  "toml_edit 0.25.17+spec-1.1.0",
  "tracing",
  "uuid",
+ "winreg 0.56.0",
  "zip",
 ]
 
