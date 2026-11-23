@@ -3,6 +3,7 @@ import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { undo, history } from "@codemirror/commands";
 import { java } from "@codemirror/lang-java";
+import { languages } from "@codemirror/language-data";
 import {
   enterInBlockComment,
   enterInDocComment,
@@ -182,7 +183,12 @@ describe("JavaScript / TypeScript documentation stub tags", () => {
   });
 });
 
-describe("Python docstring stub", () => {
+describe("Python docstring stub", async () => {
+  const python = await languages.find((mode) => mode.name === "Python")!.load();
+  const stub = (header: string, body: string[], format: PythonDocFormat) => {
+    const text = [header, ...body].join("\n");
+    return pythonDocStub(text, python.language.parser.parse(text).topNode.firstChild!, format);
+  };
   const header = "def greet(self, name: str, *args, times=2, **kw) -> str:";
   const body = [
     "    if not name:",
@@ -195,7 +201,7 @@ describe("Python docstring stub", () => {
   ];
 
   it("lists parameters (not self), the return value and raised exceptions in reST", () => {
-    expect(pythonDocStub(header, body, "rest")).toEqual([
+    expect(stub(header, body, "rest")).toEqual([
       ":param name:",
       ":param args:",
       ":param times:",
@@ -204,13 +210,13 @@ describe("Python docstring stub", () => {
       ":raises ValueError:",
       ":raises errors.GreetError:",
     ]);
-    expect(pythonDocStub("def __init__(self, x):", [], "rest")).toEqual([":param x:"]);
-    expect(pythonDocStub("async def run() -> None:", [], "rest")).toEqual([]);
+    expect(stub("def __init__(self, x):", [], "rest")).toEqual([":param x:"]);
+    expect(stub("async def run() -> None:", [], "rest")).toEqual([]);
   });
 
   it("reads non-ASCII names, strings and lambdas in parameters, and raise after a colon", () => {
     expect(
-      pythonDocStub(
+      stub(
         "def größe(self, maß: int, s='a,b', t=\")\", key=lambda a, b: a, *, ä=1) -> int:",
         ["    if maß: raise MyÄrger()", "    raise ÄError", "    raise größe_fehler"],
         "rest",
@@ -224,14 +230,15 @@ describe("Python docstring stub", () => {
       ":return:",
       ":raises MyÄrger:",
       ":raises ÄError:",
+      ":raises größe_fehler:",
     ]);
   });
 
   it("writes Epytext, Google and NumPy sections", () => {
     const h = "def f(a, b) -> int:";
     const raising = ["    raise ValueError"];
-    expect(pythonDocStub(h, raising, "epytext")).toEqual(["@param a:", "@param b:", "@return:", "@raise ValueError:"]);
-    expect(pythonDocStub(h, raising, "google")).toEqual([
+    expect(stub(h, raising, "epytext")).toEqual(["@param a:", "@param b:", "@return:", "@raise ValueError:"]);
+    expect(stub(h, raising, "google")).toEqual([
       "",
       "Args:",
       "    a:",
@@ -242,7 +249,7 @@ describe("Python docstring stub", () => {
       "Raises:",
       "    ValueError:",
     ]);
-    expect(pythonDocStub(h, raising, "numpy")).toEqual([
+    expect(stub(h, raising, "numpy")).toEqual([
       "",
       "Parameters",
       "----------",
@@ -256,14 +263,14 @@ describe("Python docstring stub", () => {
       "------",
       "ValueError",
     ]);
-    expect(pythonDocStub(h, raising, "plain")).toEqual([]);
-    expect(pythonDocStub("def g(self) -> None:", [], "google")).toEqual([]);
+    expect(stub(h, raising, "plain")).toEqual([]);
+    expect(stub("def g(self) -> None:", [], "google")).toEqual([]);
   });
 
   const enter = (doc: string, format: PythonDocFormat = "rest") => {
     const at = doc.indexOf("|");
     const view = new EditorView({
-      state: EditorState.create({ doc: doc.replace("|", ""), selection: { anchor: at } }),
+      state: EditorState.create({ doc: doc.replace("|", ""), selection: { anchor: at }, extensions: [python] }),
     });
     const handled = enterInDocstring(() => format)(view);
     const s = view.state;
@@ -283,6 +290,28 @@ describe("Python docstring stub", () => {
     expect(enter('def check(x) -> None:\n    """|\n    if x:\n        raise TypeError(x)\n\ny = 1', "google")).toBe(
       'def check(x) -> None:\n    """\n    |\n\n    Args:\n        x:\n\n    Raises:\n        TypeError:\n    """\n    if x:\n        raise TypeError(x)\n\ny = 1',
     );
+  });
+
+  it("uses Python syntax for multiline parameters and finds only actual raises", () => {
+    const header = "async def f(\n    a=1 < 2,  # comment\n    b=sentinel,\n) -> (None):";
+    expect(
+      stub(
+        header,
+        [
+          '    print(": raise FakeError")',
+          '    text = """\n    raise AlsoFake\n    """',
+          "    class Nested: raise NestedError",
+          "    a = 1; raise (errors.RealError)()",
+        ],
+        "rest",
+      ),
+    ).toEqual([":param a:", ":param b:", ":raises errors.RealError:"]);
+  });
+
+  it("skips strings that are not a docstring and accepts comments before a docstring", () => {
+    expect(enter('def f():\n    if True:\n        """|"""')).toBeNull();
+    expect(enter('def f():\n    print(1)\n    """|"""')).toBeNull();
+    expect(enter('class C:\n    # explanation\n    """|')).toBe('class C:\n    # explanation\n    """\n    |\n    """');
   });
 
   it("closes a class docstring with only the summary line", () => {

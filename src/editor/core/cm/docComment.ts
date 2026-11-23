@@ -4,7 +4,8 @@
  * parameters (`@param`) and return type (`@return`), as PhpStorm does; in Java a method's,
  * constructor's or generic type's parameters, return value and exceptions, as IDEA does.
  */
-import { syntaxTree } from "@codemirror/language";
+import { ensureSyntaxTree, language, syntaxTree } from "@codemirror/language";
+import type { SyntaxNode } from "@lezer/common";
 import { EditorSelection, type EditorState } from "@codemirror/state";
 import type { Command } from "@codemirror/view";
 
@@ -190,34 +191,16 @@ function splitTopLevel(params: string, angles = false): string[] {
   return out.filter((p) => p.trim());
 }
 
-/** Index past the string literal opening at `i` of `text` (its closing quote), or `text.length`. */
-function skipString(text: string, i: number): number {
-  const quote = text[i]!;
-  for (let j = i + 1; j < text.length; j++) {
-    if (text[j] === "\\") j++;
-    else if (text[j] === quote) return j;
-  }
-  return text.length;
-}
-
-/**
- * Splits `params` at top-level commas (any bracket, `<>` included), not those in string literals
- * or between a Python `lambda` and its `:`.
- */
+/** Splits `params` at top-level commas (any bracket, `<>` included). */
 function splitParams(params: string): string[] {
   const out: string[] = [];
   let depth = 0;
   let start = 0;
-  let lambda = false;
   for (let i = 0; i < params.length; i++) {
     const c = params[i]!;
-    if (c === '"' || c === "'" || c === "`") i = skipString(params, i);
-    else if ("([{<".includes(c)) depth++;
+    if ("([{<".includes(c)) depth++;
     else if (")]}>".includes(c) && params[i - 1] !== "=") depth--;
-    else if (depth === 0 && /^lambda\b/.test(params.slice(i, i + 7)) && !/[\p{L}\p{N}_]/u.test(params[i - 1] ?? ""))
-      lambda = true;
-    else if (c === ":" && depth === 0 && lambda) lambda = false;
-    else if (c === "," && depth === 0 && !lambda) {
+    else if (c === "," && depth === 0) {
       out.push(params.slice(start, i));
       start = i + 1;
     }
@@ -231,8 +214,7 @@ function paramList(text: string, open: number): { params: string; after: string 
   let depth = 0;
   for (let i = open; i < text.length; i++) {
     const c = text[i];
-    if (c === '"' || c === "'" || c === "`") i = skipString(text, i);
-    else if (c === "(") depth++;
+    if (c === "(") depth++;
     else if (c === ")" && --depth === 0) return { params: text.slice(open + 1, i), after: text.slice(i + 1) };
   }
   return null;
@@ -264,41 +246,42 @@ export function jsDocTags(text: string): string[] {
 /** Python docstring formats (Settings › Python › Docstrings). */
 export type PythonDocFormat = "plain" | "rest" | "epytext" | "google" | "numpy";
 
-/** Parameters, whether a value is returned, and the exceptions raised, of the `def` whose header is `header`. */
-function pythonSignature(header: string, body: readonly string[]) {
-  const m = /^\s*(?:async\s+)?def\s+([\p{L}_][\p{L}\p{N}_]*)\s*(?=\()/u.exec(header);
-  if (!m) return null;
-  const list = paramList(header, m[0].length);
-  if (!list) return null;
-  const params = splitParams(list.params).flatMap((p) => {
-    const name = /^\**([\p{L}_][\p{L}\p{N}_]*)/u.exec(p)?.[1];
-    return name && name !== "self" && name !== "cls" ? [name] : [];
+function pythonRaises(body: SyntaxNode, text: string): string[] {
+  const names = new Set<string>();
+  body.cursor().iterate((node) => {
+    if (node.name === "FunctionDefinition" || node.name === "ClassDefinition") return false;
+    if (node.name !== "RaiseStatement") return;
+    let target = node.node.firstChild?.nextSibling;
+    while (target?.name === "CallExpression" || target?.name === "ParenthesizedExpression") {
+      target = target.name === "CallExpression" ? target.firstChild : target.firstChild?.nextSibling;
+    }
+    if (target?.name === "VariableName" || target?.name === "MemberExpression") {
+      names.add(text.slice(target.from, target.to));
+    }
+    return false;
   });
-  const returns = /->\s*([^:]+):/.exec(list.after)?.[1]?.trim();
-  // ponytail: `raise` statements of the body by text (at a line's start or after a `:`), nested
-  // defs skipped; an exception class is capitalised.
-  const raises: string[] = [];
-  let nested = Infinity;
-  for (const line of body) {
-    const indent = line.length - line.trimStart().length;
-    if (!line.trim()) continue;
-    if (indent <= nested) nested = Infinity;
-    if (nested !== Infinity) continue;
-    if (/^\s*(async\s+)?(def|class)\b/.test(line)) nested = indent;
-    const name = /(?:^\s*|:\s*)raise\s+([\p{L}_][\p{L}\p{N}_.]*)/u.exec(line)?.[1];
-    if (name && /^\p{Lu}/u.test(name.split(".").pop()!) && !raises.includes(name)) raises.push(name);
-  }
-  return { params, returns: m[1] !== "__init__" && returns !== "None", raises };
+  return [...names];
 }
 
-/**
- * The lines of a docstring stub below its summary line, for the `def` whose header is `header`
- * and whose body is `body`, in `format`, as PyCharm writes them.
- */
-export function pythonDocStub(header: string, body: readonly string[], format: PythonDocFormat): string[] {
-  const sig = pythonSignature(header, body);
-  if (!sig || format === "plain") return [];
-  const { params, returns, raises } = sig;
+/** The lines below a Python function docstring's summary. */
+export function pythonDocStub(text: string, owner: SyntaxNode, format: PythonDocFormat): string[] {
+  if (format === "plain" || owner.name !== "FunctionDefinition") return [];
+  const params: string[] = [];
+  let start = true;
+  for (let param = owner.getChild("ParamList")?.firstChild; param; param = param.nextSibling) {
+    if (param.name === ",") start = true;
+    if (!start || param.name !== "VariableName") continue;
+    const name = text.slice(param.from, param.to);
+    if (name !== "self" && name !== "cls") params.push(name);
+    start = false;
+  }
+  const name = owner.getChild("VariableName");
+  const annotation = owner.getChild("TypeDef");
+  const returnType = annotation && text.slice(annotation.from + 2, annotation.to);
+  const returns =
+    !!name && text.slice(name.from, name.to) !== "__init__" && returnType?.replace(/[()\s]/g, "") !== "None";
+  const body = owner.getChild("Body");
+  const raises = body ? pythonRaises(body, text) : [];
   switch (format) {
     case "rest":
     case "epytext": {
@@ -353,24 +336,32 @@ export function enterInDocstring(format: () => PythonDocFormat): Command {
     const after = line.text.slice(head - line.from);
     const quote = /^\s*("""|''')$/.exec(before)?.[1];
     if (!quote || (after.trim() && after.trim() !== quote)) return false;
-    // The header ends on the closest line above with code.
-    let n = line.number - 1;
-    while (n >= 1 && !state.doc.line(n).text.trim()) n--;
-    if (n < 1 || !/:\s*(#.*)?$/.test(state.doc.line(n).text)) return false;
-    let start = n;
-    const opens = (text: string) => /^\s*((async\s+)?def|class)\b/.test(text);
-    while (start > 1 && !opens(state.doc.line(start).text) && n - start < 20) start--;
-    const header = state.sliceDoc(state.doc.line(start).from, state.doc.line(n).to);
-    if (!opens(header)) return false;
     const indent = /^\s*/.exec(before)![0];
-    const body: string[] = [];
-    for (let b = line.number + 1; b <= state.doc.lines && body.length < 2000; b++) {
-      const text = state.doc.line(b).text;
-      if (text.trim() && text.length - text.trimStart().length < indent.length) break;
-      body.push(text);
+    const literal = ensureSyntaxTree(state, line.to, 50)?.resolveInner(head - quote.length, 1);
+    const statement = literal?.parent;
+    const body = statement?.parent;
+    const owner = body?.parent;
+    if (
+      literal?.name !== "String" ||
+      literal.from !== head - quote.length ||
+      statement?.name !== "ExpressionStatement" ||
+      body?.name !== "Body" ||
+      (owner?.name !== "FunctionDefinition" && owner?.name !== "ClassDefinition")
+    )
+      return false;
+    for (let prev = statement.prevSibling; prev; prev = prev.prevSibling) {
+      if (prev.name !== ":" && prev.name !== "Comment") return false;
     }
     const br = state.lineBreak;
-    const tags = pythonDocStub(header, body, format());
+    const style = format();
+    let tags: string[] = [];
+    if (style !== "plain" && owner.name === "FunctionDefinition") {
+      // Close the opener in a temporary parse so an unfinished literal doesn't swallow the body.
+      const end = state.doc.line(Math.min(state.doc.lines, line.number + 2000)).to;
+      const text = state.sliceDoc(owner.from, head) + quote + state.sliceDoc(line.to, end);
+      const parsed = state.facet(language)?.parser.parse(text).topNode.firstChild;
+      if (parsed) tags = pythonDocStub(text, parsed, style);
+    }
     const summary = `${br}${indent}`;
     const insert = summary + tags.map((t) => br + (t ? indent + t : "")).join("") + `${br}${indent}${quote}`;
     view.dispatch({
