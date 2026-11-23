@@ -1,6 +1,6 @@
 //! Maven / Gradle tool windows (the build model and its background sync) and
 //! Build › Build Project (compiling with the project's build system).
-mod workspace;
+pub(super) mod workspace;
 
 use super::dependencies::{MavenCentralArtifacts, MavenCentralGroups, MavenCentralVersions};
 use crate::ops::Channel;
@@ -181,7 +181,7 @@ fn prepare_plan(mut plan: compile::BuildPlan, root: &Path, settings: &Settings) 
 
 /// `model` building with the Maven profiles of the last sync (`-P`), as Maven runs from
 /// the tool window do.
-fn with_profiles(mut model: BuildModel, cache: &Path) -> BuildModel {
+pub(super) fn with_profiles(mut model: BuildModel, cache: &Path) -> BuildModel {
     let profiles = ide_build::maven_profiles(cache);
     if let (Some(m), false) = (&mut model.maven, profiles.is_empty()) {
         for p in &mut m.projects {
@@ -952,16 +952,18 @@ pub async fn build_run(
                 items: Vec::new(),
             });
         }
+        let mut launch_caches = Vec::new();
         let plan = if let Some(id) = cmake {
+            launch_caches.push(cache.clone());
             let configs = super::run::project_configs(&root, &settings, &config_dir)?;
             cmake_plan(&root, kind, &configs, &id)?
         } else if let Some(workspace) = ide_workspace::workspace::Workspace::load(&root)? {
             let mut combined: Option<compile::BuildPlan> = None;
             for member in workspace.projects.iter().filter(|p| file.as_ref().is_none_or(|f| f.starts_with(p))) {
                 let settings = ide_workspace::SettingsStore::load(&config_dir, Some(member)).effective();
-                let member_cache =
-                    if member == &root { cache.clone() } else { cache.join(crate::project::project_key(member)) };
+                let member_cache = workspace::cache_at(&root, &cache, member);
                 let model = with_profiles(load(member, &member_cache, &settings), &member_cache);
+                launch_caches.push(member_cache);
                 let plan = prepare_plan(
                     compile::plan(
                         member,
@@ -985,6 +987,7 @@ pub async fn build_run(
             plan
         } else {
             let model = with_profiles(load(&root, &cache, &settings), &cache);
+            launch_caches.push(cache.clone());
             match compile::plan(
                 &root,
                 &model,
@@ -1007,7 +1010,9 @@ pub async fn build_run(
         });
         if kind == BuildKind::Rebuild {
             // The clean removed outputs that earlier launch snapshots still hold.
-            launch_project.java_launch_snapshots.lock().forget_reusable_snapshots();
+            for cache in launch_caches {
+                launch_project.java_launches.for_cache(&cache).snapshots.lock().forget_reusable_snapshots();
+            }
         }
         let result = result?;
         if result.success && single && kind == BuildKind::Build {

@@ -57,6 +57,8 @@ export interface LanguageSemantics {
   constructDocumentation?(name: string): string | null;
   /** Bulb intentions contributed on this language's documents. */
   intentions?(view: EditorView): ContributedIntention[];
+  /** Intentions that need the language server's answer first; `signal` aborts when the caret moved on. */
+  asyncIntentions?(view: EditorView, signal: AbortSignal): Promise<ContributedIntention[]>;
   /** Fallback for the Implement Methods action when the server offers no code action. */
   implementMethods?(view: EditorView): Promise<boolean>;
 }

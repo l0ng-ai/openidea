@@ -144,6 +144,22 @@ pub(super) fn result_fields(name: &str, input: &Value, block: &Value, structured
             content.push(text(&t));
         }
     }
+    if let Some(blocks) = block.get("content").and_then(Value::as_array) {
+        for block in blocks {
+            if block.get("type").and_then(Value::as_str) != Some("image") {
+                continue;
+            }
+            let Some(source) = block.get("source") else { continue };
+            if source.get("type").and_then(Value::as_str) != Some("base64") {
+                continue;
+            }
+            let data = source.get("data").and_then(Value::as_str).unwrap_or_default();
+            let mime = source.get("media_type").and_then(Value::as_str).unwrap_or_default();
+            if !data.is_empty() && mime.starts_with("image/") {
+                content.push(json!({"type": "content", "content": {"type": "image", "mimeType": mime, "data": data}}));
+            }
+        }
+    }
     let mut out = json!({ "status": if failed { "failed" } else { "completed" } });
     if !content.is_empty() {
         out["content"] = Value::Array(content);
@@ -228,6 +244,43 @@ mod tests {
         assert_eq!(call_fields("Grep", &json!({"pattern": "fn", "path": "/w/src"}), cwd)["title"], "grep \"fn\" src");
         assert_eq!(call_fields("mcp__docs__read", &json!({}), cwd)["title"], "docs: read");
         assert_eq!(call_fields("WebSearch", &json!({"query": "q"}), cwd)["kind"], "fetch");
+    }
+
+    #[test]
+    fn image_tool_results_keep_text_and_inline_images() {
+        let result = result_fields(
+            "Read",
+            &json!({"file_path": "/w/preview.png"}),
+            &json!({"content": [
+                {"type": "text", "text": "Preview ready"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "aW1hZ2U="}}
+            ]}),
+            None,
+        );
+        assert_eq!(result["status"], "completed");
+        assert_eq!(
+            result["content"],
+            json!([
+                text("Preview ready"),
+                {"type": "content", "content": {"type": "image", "mimeType": "image/png", "data": "aW1hZ2U="}}
+            ])
+        );
+    }
+
+    #[test]
+    fn failed_shell_tool_images_keep_fallback_error_text() {
+        let result = result_fields(
+            "Bash",
+            &json!({}),
+            &json!({"is_error": true, "content": [
+                {"type": "text", "text": "Preview command failed"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "aW1hZ2U="}}
+            ]}),
+            Some(&json!({"stdout": "", "stderr": ""})),
+        );
+        assert_eq!(result["status"], "failed");
+        assert_eq!(result["content"][0], text("Preview command failed"));
+        assert_eq!(result["content"][1]["content"]["type"], "image");
     }
 
     #[test]

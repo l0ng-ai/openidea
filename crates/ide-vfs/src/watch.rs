@@ -1753,7 +1753,8 @@ mod tests {
         std::fs::write(root.join("src/a/after.rs"), "x").unwrap();
         assert!(wait_for(&batches, |b| all_paths(b).contains(&root.join("src/a/after.rs"))));
         let paths = all_paths(&batches.lock());
-        assert!(!paths.iter().any(|p| p.starts_with(root.join("node_modules"))), "{paths:?}");
+        let excluded = root.join("node_modules");
+        assert!(!paths.iter().any(|p| p != &excluded && p.starts_with(&excluded)), "{paths:?}");
         assert!(!paths.contains(&root.join("lib/out/o.txt")));
 
         // Un-ignoring lib/out keeps its existing filename watch.

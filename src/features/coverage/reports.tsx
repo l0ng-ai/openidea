@@ -5,6 +5,7 @@
  */
 import { useMemo, useState } from "react";
 import { create } from "zustand";
+import { choosePath } from "@/platform/choosePath";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { basename } from "@/platform/project";
 import { Dialog, Icon, List, T } from "@/ui";
@@ -28,9 +29,7 @@ import styles from "./Coverage.module.css";
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 async function pickReport(): Promise<string | null> {
-  const { open } = await import("@/platform/dialog");
-  const file = await open({
-    multiple: false,
+  return choosePath({
     directory: false,
     title: "Import Coverage Report",
     filters: [
@@ -41,7 +40,6 @@ async function pickReport(): Promise<string | null> {
       { name: "All files", extensions: ["*"] },
     ],
   });
-  return typeof file === "string" ? file : null;
 }
 
 /** Imports `path` (asks for a file without one) and shows it like a run's suite. */
