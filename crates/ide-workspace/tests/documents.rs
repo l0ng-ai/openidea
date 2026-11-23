@@ -1375,6 +1375,97 @@ fn editorconfig_utf8_charset_wins_over_a_latin_project_for_ascii_files() {
     assert_eq!(fs::read(&path).unwrap(), "// é\nclass A {}\n".as_bytes());
 }
 
+fn legacy_module(f: &Fixture) -> PathBuf {
+    let module = f.root.join("legacy");
+    fs::create_dir_all(module.join("src")).unwrap();
+    let mut defaults = f.docs.file_defaults();
+    defaults.pom_encodings = vec![(module.clone(), "iso-8859-15".into())];
+    f.docs.set_file_defaults(defaults);
+    module
+}
+
+#[test]
+fn ascii_source_of_a_maven_module_saves_new_characters_in_the_pom_encoding() {
+    let f = fixture();
+    let module = legacy_module(&f);
+    let path = module.join("src/A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+    let outside = f.root.join("B.java");
+    fs::write(&outside, b"class B {}\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "iso-8859-15");
+    f.docs.edit(doc.id, doc.version, change(0, 0, "// ação €\n")).unwrap();
+    f.docs.save(doc.id).unwrap();
+
+    assert_eq!(fs::read(&path).unwrap(), b"// a\xE7\xE3o \xA4\nclass A {}\n");
+    assert_eq!(f.docs.open(&outside).unwrap().encoding, "utf-8", "a file outside the module");
+    assert_eq!(f.docs.load_file(&path).unwrap().text, "// ação €\nclass A {}\n", "closed-file readers agree");
+}
+
+#[test]
+fn pom_encoding_wins_over_the_project_encoding() {
+    let f = fixture();
+    let module = legacy_module(&f);
+    let mut defaults = f.docs.file_defaults();
+    defaults.project_fallback = "gbk".into();
+    f.docs.set_file_defaults(defaults);
+    let path = module.join("src/A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+    let outside = f.root.join("B.java");
+    fs::write(&outside, b"class B {}\n").unwrap();
+
+    assert_eq!(f.docs.open(&path).unwrap().encoding, "iso-8859-15");
+    assert_eq!(f.docs.open(&outside).unwrap().encoding, "gbk");
+}
+
+#[test]
+fn editorconfig_charset_wins_over_the_pom_encoding() {
+    let f = fixture();
+    let module = legacy_module(&f);
+    fs::write(f.root.join(".editorconfig"), "root = true\n[*.java]\ncharset = utf-8\n").unwrap();
+    let path = module.join("src/A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "utf-8");
+    f.docs.edit(doc.id, doc.version, change(0, 0, "// é\n")).unwrap();
+    f.docs.save(doc.id).unwrap();
+
+    assert_eq!(fs::read(&path).unwrap(), "// é\nclass A {}\n".as_bytes());
+}
+
+#[test]
+fn set_pom_encodings_replaces_only_the_module_encodings() {
+    let f = fixture();
+    let mut defaults = f.docs.file_defaults();
+    defaults.project_fallback = "gbk".into();
+    f.docs.set_file_defaults(defaults);
+    let module = f.root.join("legacy");
+
+    f.docs.set_pom_encodings(vec![(module.clone(), "iso-8859-15".into())]);
+
+    let defaults = f.docs.file_defaults();
+    assert_eq!(defaults.pom_encodings, [(module, "iso-8859-15".to_owned())]);
+    assert_eq!(defaults.project_fallback, "gbk");
+    f.docs.set_pom_encodings(Vec::new());
+    assert!(f.docs.file_defaults().pom_encodings.is_empty());
+}
+
+#[test]
+fn a_settings_change_keeps_the_pom_encodings() {
+    let f = fixture();
+    let module = legacy_module(&f);
+    let mut settings = ide_core::settings::Settings::default();
+    settings.editor.encodings.project = "gbk".into();
+
+    f.docs.set_settings_defaults(ide_workspace::FileDefaults::from_settings(&settings, Some(&f.root)));
+
+    let defaults = f.docs.file_defaults();
+    assert_eq!(defaults.project_fallback, "gbk");
+    assert_eq!(defaults.pom_encodings, [(module, "iso-8859-15".to_owned())]);
+}
+
 #[test]
 fn ascii_properties_file_takes_the_properties_encoding_by_default() {
     let f = fixture();

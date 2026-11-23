@@ -41,6 +41,7 @@ function project(over: Partial<MavenProject>): MavenProject {
     dependencies: [],
     profiles: [],
     javaVersion: 21,
+    sourceEncoding: null,
     command: "/p/mvnw",
     options: [],
     env: { JAVA_HOME: "/jdk21" },

@@ -1,5 +1,6 @@
 //! Maven / Gradle tool windows (the build model and its background sync) and
 //! Build › Build Project (compiling with the project's build system).
+mod source_encoding;
 mod workspace;
 
 use super::dependencies::{MavenCentralArtifacts, MavenCentralGroups, MavenCentralVersions};
@@ -197,7 +198,19 @@ pub async fn build_model(host: &Host, window: &str) -> IdeResult<BuildModel> {
     host.require_trust(window)?;
     let project = host.project(window)?;
     let config = host.config_dir.clone();
-    tokio::task::spawn_blocking(move || workspace::load_project(&project, &config)).await.map_err(join_err)?
+    tokio::task::spawn_blocking(move || load_project(&project, &config)).await.map_err(join_err)?
+}
+
+/// The project's build model. Each load hands the source encodings of its Maven modules
+/// to the document layer, so the editor follows the POMs as they are now.
+pub(crate) fn load_project(project: &Project, config: &Path) -> IdeResult<BuildModel> {
+    let model = workspace::load_project(project, config)?;
+    apply_source_encodings(project, &model);
+    Ok(model)
+}
+
+fn apply_source_encodings(project: &Project, model: &BuildModel) {
+    project.documents.set_pom_encodings(source_encoding::pom_encodings(&project.root, model));
 }
 
 fn linked_gradle_paths(
@@ -377,6 +390,7 @@ pub async fn build_sync(
         let scopes = workspace::scopes(&p, &config)?;
         let model = workspace::load_scopes(&p.root, &scopes);
         let updates = workspace::update_files(&p.root, &scopes, &model, tool);
+        apply_source_encodings(&p, &model);
         Ok::<_, IdeError>((model, profiles_changed, offline_changed, updates))
     })
     .await
