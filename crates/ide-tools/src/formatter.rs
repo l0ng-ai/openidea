@@ -87,7 +87,8 @@ impl Tools {
         self.exe_in(&crate::managed_bin_dir(&self.root, spec, self.platform)?, spec.commands[0])
     }
 
-    /// Explicit executable/script, then the nearest project package, then managed tools and PATH.
+    /// Explicit executable/script (for Ruff, also the project environment's copy), then the nearest
+    /// project package, then managed tools and PATH.
     pub fn formatter_command(&self, tool: &str, file: &Path, custom: Option<&Path>) -> IdeResult<Command> {
         self.resolve_formatter_command(tool, file, custom).map_err(|e| e.with_tool(tool))
     }

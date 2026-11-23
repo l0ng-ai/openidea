@@ -29,6 +29,16 @@ fn biome_formats(file: &Path) -> bool {
     }
 }
 
+/// `tool` installed in the environment of the interpreter nearest to `near` (`svc/.venv/bin/ruff`,
+/// or `Scripts` in conda and pixi environments on Windows). A project that pins its own Ruff
+/// formats with it, as its language server runs it, before the IDE's copy.
+fn interpreter_tool(root: &Path, near: Option<&Path>, settings: &Settings, tool: &str) -> Option<PathBuf> {
+    let python = ide_sdk::apply::python_interpreter_near(root, near, settings)?;
+    let dir = python.parent()?;
+    let exe = if cfg!(windows) { format!("{tool}.exe") } else { tool.to_owned() };
+    [dir.join(&exe), dir.join("Scripts").join(&exe)].into_iter().find(|p| p.is_file())
+}
+
 fn supports_external_format(language: &LanguageConfig, tool: ExternalFormatter) -> bool {
     match language.formatter.as_ref().map(|f| f.tool.as_str()) {
         Some("prettier") if tool == ExternalFormatter::Biome => BIOME_LANGUAGES.contains(&language.id.as_str()),
@@ -408,7 +418,14 @@ async fn provider_edits(
     let config = language.and_then(|l| l.formatter).expect("external_tool selects languages with a formatter");
     let tool = selected.name();
     let name = formatter::display_name(tool);
-    let custom = ide_sdk::apply::setting_path(&project.root, &tool_settings.path);
+    let mut custom = ide_sdk::apply::setting_path(&project.root, &tool_settings.path);
+    if custom.is_none() && selected == ExternalFormatter::Ruff {
+        let (root, near, settings) =
+            (project.root.clone(), snap.path.parent().map(Path::to_path_buf), settings.clone());
+        custom = tokio::task::spawn_blocking(move || interpreter_tool(&root, near.as_deref(), &settings, "ruff"))
+            .await
+            .map_err(|e| IdeError::internal(e.to_string()))?;
+    }
     let tools = Tools::new(&host.local_data_dir);
     let whole_selection = range.is_some() && !formatter::supports_range(tool, &config);
     let project_root = project.root.clone();
@@ -461,6 +478,22 @@ async fn provider_edits(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ruff_comes_from_the_environment_of_the_files_own_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let bin = root.join(if cfg!(windows) { "svc/.venv/Scripts" } else { "svc/.venv/bin" });
+        std::fs::create_dir_all(&bin).unwrap();
+        let exe = |name: &str| if cfg!(windows) { format!("{name}.exe") } else { name.to_owned() };
+        std::fs::write(bin.join(exe("python")), "").unwrap();
+        std::fs::write(root.join("svc/.venv/pyvenv.cfg"), "").unwrap();
+        let settings = Settings::default();
+        let near = root.join("svc/src");
+        assert_eq!(interpreter_tool(root, Some(&near), &settings, "ruff"), None);
+        std::fs::write(bin.join(exe("ruff")), "").unwrap();
+        assert_eq!(interpreter_tool(root, Some(&near), &settings, "ruff"), Some(bin.join(exe("ruff"))));
+    }
     use ExternalFormatter::{Biome, Oxfmt, Prettier, Ruff};
     use ide_core::LanguageId;
     use ide_language::LanguageRegistry;
