@@ -1355,9 +1355,15 @@ export const commands = {
 	/**
 	 *  Sets a `projectStructure.*` key in the settings of `root`, a project attached to the window's
 	 *  project (Mark Directory as there). Every open window holding that project follows.
+	 *  Like `project_workspace_members`, its `for_project` settings re-parse runs off the IPC thread.
 	 */
 	projectWorkspaceMemberSet: (root: string, key: string, value: string) => typedError<null, IdeError>(__TAURI_INVOKE("project_workspace_member_set", { root, key, value })),
-	/**  The workspace projects outside the window's project folder, for Mark Directory as there. */
+	/**
+	 *  The workspace projects outside the window's project folder, for Mark Directory as there.
+	 *  Each member's `for_project().layer(Project)` re-parses both settings layers and validates the
+	 *  merged tree against `Settings`; that stack-hungry work must not run on the IPC (main) thread,
+	 *  whose 1 MiB stack overflows on project open (STATUS_STACK_OVERFLOW).
+	 */
 	projectWorkspaceMembers: () => typedError<WorkspaceMember[], IdeError>(__TAURI_INVOKE("project_workspace_members")),
 	/**
 	 *  System Settings › HTTP Proxy › Check connection: GETs `url` through `proxy` as
