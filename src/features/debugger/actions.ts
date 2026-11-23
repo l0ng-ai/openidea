@@ -622,6 +622,27 @@ export function registerDebugActions(): () => void {
       },
     },
     {
+      id: "debug.dumpThreads",
+      title: "Dump Threads",
+      category: "Debug",
+      icon: "thread-dump",
+      keywords: ["thread dump", "jstack", "deadlock", "threads"],
+      when: "debugHasJvmMemory",
+      indicatesRunning: true,
+      run: async () => {
+        const s = activeSession();
+        if (!s || !sessionSupports("jvmMemory", s)) return;
+        const session = s.id;
+        const name = s.name;
+        // The Run tool window shows the dump; its tab takes the next one through `take` on Refresh.
+        await executeAction("run.openThreadDump", {
+          title: tx`Threads: ${name}`,
+          source: { session },
+          take: () => call(commands.debugJvmThreadDump(session)),
+        });
+      },
+    },
+    {
       id: "debug.startPageProfile",
       title: "Start CPU Profile",
       description: "Record where the debugged page spends its time",

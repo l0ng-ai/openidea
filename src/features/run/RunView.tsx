@@ -52,6 +52,7 @@ import { formatDuration, nodeOutput } from "./testing";
 import { TestStatusBar, TestTreeView } from "./TestTreeView";
 import { StackTracePanel, useStackTraces, type StackTraceTab } from "./stackTrace";
 import { ThreadDumpPanel } from "./threadDump/ThreadDumpPanel";
+import { isJvmRun } from "./threadDump/actions";
 import { closeRunTab, runTabMenu } from "./runTabs";
 import { showApplicationUpdate, useApplicationUpdates } from "./applicationUpdate";
 import { isUpdatable } from "./updatePolicies";
@@ -113,8 +114,11 @@ export function SessionPanel({
   const hasTests = !!rt?.tests;
   const canUpdateApplication = isUpdatable(session.config);
   const hasFlutterActions = supportsHotReload(session.config);
+  const canDumpThreads = isJvmRun(session.config);
   // Eight standard buttons with group spacing and insets, then 24 px plus gap per extra button.
-  const fullToolbarWidth = 228 + 26 * (Number(hasTests) + Number(canUpdateApplication) + 2 * Number(hasFlutterActions));
+  const fullToolbarWidth =
+    228 +
+    26 * (Number(hasTests) + Number(canUpdateApplication) + Number(canDumpThreads) + 2 * Number(hasFlutterActions));
   useLayoutEffect(() => {
     const pane = body.current;
     if (!hasRuntime || !pane || (!showLifecycle && !hasTests)) return;
@@ -279,6 +283,15 @@ export function SessionPanel({
                 shortcut={shortcutLabel("run.updateApplication")}
                 disabled={session.status !== "running" || updating}
                 onClick={() => showApplicationUpdate(session.id)}
+              />
+            )}
+            {canDumpThreads && (
+              <IconButton
+                icon="thread-dump"
+                title="Dump Threads"
+                action="run.dumpThreads"
+                actionArg={session.id}
+                disabled={session.status !== "running"}
               />
             )}
             {hasFlutterActions && (

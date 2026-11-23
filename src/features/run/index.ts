@@ -78,6 +78,7 @@ import { runGutter } from "./runGutter";
 import { markdownCommandGutter } from "./markdownCommands";
 import { gradleDelegation } from "./gradleRun";
 import { activateStackTrace, useStackTraces } from "./stackTrace";
+import { activateThreadDumps } from "./threadDump/actions";
 import { clearRuntimeCache } from "./runtimes";
 import {
   adoptTemporary,
@@ -480,6 +481,7 @@ export function activate(): () => void {
     onWorkflowSettingsChange((w) => w.console, applyConsoleSettings),
     registerExternalTools(),
     activateStackTrace(),
+    activateThreadDumps(),
     listenForApplicationDeactivation(),
     trackRecentConfigurations(),
     trackFailedTestSelection(),

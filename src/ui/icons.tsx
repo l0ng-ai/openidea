@@ -486,6 +486,7 @@ const ICONS = {
   "thread-running": "openidea/debugger/threadRunning",
   "thread-suspended": "openidea/debugger/threadSuspended",
   "thread-breakpoint": "openidea/debugger/threadBreakpoint",
+  "thread-dump": "openidea/debugger/threadDump",
   "step-over": "run/stepOver",
   "step-into": "run/stepInto",
   "step-out": "run/stepOut",
