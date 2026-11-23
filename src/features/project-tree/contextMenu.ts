@@ -512,6 +512,8 @@ function libraryMenuItems(nodes: ProjectNode[]): MenuItem[] {
           run: () => void copyPaths("absolute", nodes),
         },
         { id: "name", label: "File Name", run: () => void copyPaths("name", nodes) },
+        { kind: "separator" },
+        ...menuGroupItems("copyPath", menuGroupContext(nodes)),
       ],
     },
     { kind: "separator" },

@@ -591,8 +591,17 @@ fn select_into(
     encoding: &dyn Fn(&Path) -> IdeResult<TextEncoding>,
 ) -> IdeResult<Vec<String>> {
     let index = r.git_dir.join("index");
-    if index.exists() {
-        std::fs::copy(&index, &tmp.0)?;
+    match std::fs::File::open(index) {
+        Ok(mut source) => {
+            let metadata = source.metadata()?;
+            let mut copy = std::fs::File::create(&tmp.0)?;
+            copy.set_permissions(metadata.permissions())?;
+            std::io::copy(&mut source, &mut copy)?;
+            // Git uses the index timestamp to decide which same-size files need a content check.
+            copy.set_modified(metadata.modified()?)?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
     }
     let env = [("GIT_INDEX_FILE", tmp.0.as_os_str())];
     fill_commit_index(r, &env, options, encoding)
