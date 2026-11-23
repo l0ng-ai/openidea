@@ -18,7 +18,13 @@ uuid.workspace = true
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[features]
+# `testing`: the `.hprof` fixture builders, for tests and benches of this crate and of crates built on it.
+testing = []
+
 [dev-dependencies]
+# Self dev-dependency: turns `testing` on for this crate's benches, so a plain `cargo bench -p ide-heap` builds them.
+ide-heap = { workspace = true, features = ["testing"] }
 criterion = { version = "0.5", default-features = false }
 proptest.workspace = true
 tempfile.workspace = true

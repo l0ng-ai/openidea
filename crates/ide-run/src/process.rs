@@ -12,11 +12,17 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::time::{Duration, Instant};
 
 const BATCH_INTERVAL: Duration = Duration::from_millis(8);
 const BATCH_BYTES: usize = 64 * 1024;
+/// Size of one pipe read, so the most one queued [`Msg::Data`] holds.
+const READ_BUF: usize = 16 * 1024;
+/// Chunks the readers may queue ahead of the pump (at most `OUTPUT_QUEUE_CHUNKS * READ_BUF`,
+/// 2 MiB). A process printing faster than the console takes its output waits on its full
+/// pipe, as it would on a terminal, instead of piling the flood up in memory here.
+const OUTPUT_QUEUE_CHUNKS: usize = 128;
 /// After the main process exits, how long to wait for pipes still held by
 /// orphaned descendants before reporting the exit.
 const EXIT_DRAIN: Duration = Duration::from_millis(500);
@@ -112,6 +118,12 @@ enum Msg {
     Exited(Exit),
 }
 
+/// The queue from the readers (and the waiter) to the pump: bounded, so the readers wait
+/// while the pump is behind.
+fn output_queue() -> (SyncSender<Msg>, mpsc::Receiver<Msg>) {
+    mpsc::sync_channel(OUTPUT_QUEUE_CHUNKS)
+}
+
 /// The program and arguments actually executed, plus the echoed command line.
 pub(crate) struct Invocation {
     pub program: PathBuf,
@@ -165,7 +177,7 @@ fn shorten_java(inv: &mut Invocation, config: &RunConfig, cwd: &Path) -> IdeResu
         return Ok(TempFile(None));
     }
     let java = if inv.program.components().count() == 1 {
-        crate::which::find_executable(&inv.program.to_string_lossy(), &crate::wrap::search_path_in(config, cwd))
+        ide_core::process::find_executable(&inv.program.to_string_lossy(), &crate::wrap::search_path_in(config, cwd))
             .unwrap_or_else(|| inv.program.clone())
     } else {
         inv.program.clone()
@@ -290,7 +302,7 @@ fn resolve_program(command: &str, cwd: &Path, config: &RunConfig, windows: bool)
                 return local;
             }
             if path.extension().is_none()
-                && let Some(found) = crate::which::executable_names(command, true, pathext.as_deref())
+                && let Some(found) = ide_core::process::executable_names(command, true, pathext.as_deref())
                     .iter()
                     .map(|name| cwd.join(name))
                     .find(|p| p.is_file())
@@ -298,7 +310,7 @@ fn resolve_program(command: &str, cwd: &Path, config: &RunConfig, windows: bool)
                 return found;
             }
         }
-        if let Some(found) = crate::which::find_executable_in(command, &search, windows, pathext.as_deref()) {
+        if let Some(found) = ide_core::process::find_executable_in(command, &search, windows, pathext.as_deref()) {
             return found;
         }
     }
@@ -484,7 +496,7 @@ impl ProcessManager {
 
         on_output(OutputChunk::System { text: format!("{}\n", inv.display) });
 
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = output_queue();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let result = (|| -> std::io::Result<()> {
@@ -631,7 +643,7 @@ impl ProcessManager {
         self.register(entry.clone());
         on_output(OutputChunk::System { text: format!("{}\n", inv.display) });
 
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = output_queue();
         let result = spawn_reader(
             id,
             Stream::Stdout,
@@ -824,7 +836,7 @@ fn run_followup(
     config: &RunConfig,
     cwd: &Path,
     entry: &Entry,
-    tx: &Sender<Msg>,
+    tx: &SyncSender<Msg>,
 ) -> std::io::Result<ExitStatus> {
     let mut pid = entry.pid.lock();
     if entry.stopping.load(Ordering::Acquire) {
@@ -1106,16 +1118,19 @@ fn kill_tree(entry: &Entry, pid: u32, _force: bool) {
         .status();
 }
 
+/// Reads `pipe` into `tx` until EOF. It waits in `send` while the pump is a full queue behind
+/// (the process then waits on its pipe). The pump dropping its receiver fails the `send`
+/// and ends the reader, so no reader stays blocked once the pump is gone.
 fn spawn_reader(
     id: RunId,
     stream: Stream,
     mut pipe: impl Read + Send + 'static,
-    tx: Sender<Msg>,
+    tx: SyncSender<Msg>,
     #[cfg(unix)] mut wait_readable: Option<Box<dyn FnMut() -> std::io::Result<()> + Send>>,
 ) -> std::io::Result<()> {
     let label = if stream == Stream::Stdout { "out" } else { "err" };
     std::thread::Builder::new().name(format!("openidea-run-{label}-{}", id.0)).spawn(move || {
-        let mut buf = vec![0u8; 16 * 1024];
+        let mut buf = vec![0u8; READ_BUF];
         loop {
             match pipe.read(&mut buf) {
                 Ok(0) => break,
@@ -1424,6 +1439,7 @@ fn input_writer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
 
     #[cfg(unix)]
     #[test]
@@ -1568,5 +1584,112 @@ mod tests {
         // Relative paths resolve against the run directory on every platform.
         assert_eq!(resolve_program("./gradlew", cwd, &config, true), cwd.join("./gradlew"));
         assert_eq!(resolve_program(".venv/bin/python", cwd, &config, false), cwd.join(".venv/bin/python"));
+    }
+
+    /// A pipe stand-in that counts the bytes taken from it.
+    #[cfg(unix)]
+    struct Counted<R> {
+        inner: R,
+        taken: Arc<AtomicUsize>,
+    }
+
+    #[cfg(unix)]
+    impl<R: Read> Read for Counted<R> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.inner.read(buf)?;
+            self.taken.fetch_add(n, Ordering::SeqCst);
+            Ok(n)
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_slow_pump_holds_a_flooding_process_back_instead_of_queueing_its_output() {
+        const LINES: usize = 2_000_000;
+        // (Not `seq`: macOS prints large numbers in exponent form.)
+        let mut child = Command::new("awk")
+            .arg(format!("BEGIN{{for(i=1;i<={LINES};i++)print i}}"))
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("awk");
+        let taken = Arc::new(AtomicUsize::new(0));
+        let pipe = Counted { inner: child.stdout.take().unwrap(), taken: taken.clone() };
+        let (tx, rx) = output_queue();
+        spawn_reader(RunId::next(), Stream::Stdout, pipe, tx, None).unwrap();
+        let (mut received, mut peak, mut all) = (0usize, 0usize, Vec::new());
+        loop {
+            match rx.recv_timeout(Duration::from_secs(60)) {
+                Ok(Msg::Data(stream, bytes)) => {
+                    assert!(stream == Stream::Stdout);
+                    // Read from the pipe but not yet handled: the queue, plus the chunk the
+                    // reader holds while it waits for room, plus the one just received.
+                    peak = peak.max(taken.load(Ordering::SeqCst) - received);
+                    received += bytes.len();
+                    all.extend_from_slice(&bytes);
+                    // A console that cannot keep up with the process.
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Ok(Msg::Exited(_)) => unreachable!("only the waiter sends the exit"),
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => panic!("the reader stalled"),
+            }
+        }
+        assert!(child.wait().unwrap().success());
+        let bound = (OUTPUT_QUEUE_CHUNKS + 2) * READ_BUF;
+        assert!(peak <= bound, "{peak} bytes queued ahead of the pump, more than {bound}");
+        let expected: String = (1..=LINES).map(|n| format!("{n}\n")).collect();
+        assert!(all == expected.as_bytes(), "the output arrived incomplete or out of order");
+    }
+
+    /// Endless output (cut at a size an unbounded queue could still hold in a test) that
+    /// reports when it is dropped, which is when the reader thread owning it ends.
+    struct Endless {
+        served: Arc<AtomicUsize>,
+        gone: mpsc::Sender<()>,
+    }
+
+    impl Read for Endless {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.served.load(Ordering::SeqCst) >= 8 * OUTPUT_QUEUE_CHUNKS {
+                return Ok(0);
+            }
+            self.served.fetch_add(1, Ordering::SeqCst);
+            buf.fill(b'x');
+            Ok(buf.len())
+        }
+    }
+
+    impl Drop for Endless {
+        fn drop(&mut self) {
+            let _ = self.gone.send(());
+        }
+    }
+
+    #[test]
+    fn a_reader_blocked_on_a_full_queue_ends_when_the_pump_is_gone() {
+        let served = Arc::new(AtomicUsize::new(0));
+        let (gone_tx, gone) = mpsc::channel();
+        let (tx, rx) = output_queue();
+        spawn_reader(
+            RunId::next(),
+            Stream::Stdout,
+            Endless { served: served.clone(), gone: gone_tx },
+            tx,
+            #[cfg(unix)]
+            None,
+        )
+        .unwrap();
+        // A pump that takes nothing: the queue fills and the reader holds one more chunk.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while served.load(Ordering::SeqCst) < OUTPUT_QUEUE_CHUNKS + 1 {
+            assert!(Instant::now() < deadline, "the reader never filled the queue");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // Time for a reader that does not wait to run ahead.
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(served.load(Ordering::SeqCst), OUTPUT_QUEUE_CHUNKS + 1, "the reader ran past the full queue");
+        assert!(gone.try_recv().is_err(), "the reader ended while its pump was still there");
+        drop(rx);
+        gone.recv_timeout(Duration::from_secs(30)).expect("the reader stayed blocked after the pump was gone");
     }
 }

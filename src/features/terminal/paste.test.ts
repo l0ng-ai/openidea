@@ -218,7 +218,7 @@ it("allows images at the size limit", async () => {
   const remove = installTerminalPaste(host, paste, () => remoteTarget());
   host.dispatchEvent(imageEvent(image(undefined, 20 * 1024 * 1024)));
   await vi.waitFor(() => expect(paste).toHaveBeenCalledWith("'/remote/image.png'"));
-  expect(store).toHaveBeenCalledWith(42, [1, 2], "image/png");
+  expect(store).toHaveBeenCalledWith(42, "AQI=", "image/png");
   expect(notify).not.toHaveBeenCalled();
   remove();
 });
@@ -238,7 +238,7 @@ it("claims remote image events before xterm and pastes a quoted path only after 
   const event = imageEvent(image());
   host.dispatchEvent(event);
   expect(event.defaultPrevented).toBe(true);
-  await vi.waitFor(() => expect(store).toHaveBeenCalledWith(42, [1, 2], "image/png"));
+  await vi.waitFor(() => expect(store).toHaveBeenCalledWith(42, "AQI=", "image/png"));
   expect(paste).not.toHaveBeenCalled();
   finish({ status: "ok", data: "/tmp/a'b c.png" });
   await vi.waitFor(() => expect(paste).toHaveBeenCalledWith("'/tmp/a'\\''b c.png'"));
@@ -256,7 +256,7 @@ it("reads an image from the explicit paste menu after text and file recovery", a
   const paste = vi.fn();
   await pasteTerminalClipboard(paste, () => remoteTarget());
   expect(getType).toHaveBeenCalledWith("image/png");
-  expect(store).toHaveBeenCalledWith(42, [1, 2], "image/png");
+  expect(store).toHaveBeenCalledWith(42, "AQI=", "image/png");
   expect(paste).toHaveBeenCalledWith("'/remote/image.png'");
 });
 
@@ -283,7 +283,7 @@ it("uploads a menu image even if reading clipboard text is rejected", async () =
   });
   const paste = vi.fn();
   await pasteTerminalClipboard(paste, () => remoteTarget());
-  expect(store).toHaveBeenCalledWith(42, [1, 2], "image/png");
+  expect(store).toHaveBeenCalledWith(42, "AQI=", "image/png");
   expect(paste).toHaveBeenCalledWith("'/remote/image.png'");
   expect(notify).not.toHaveBeenCalled();
 });
@@ -298,7 +298,7 @@ it("uploads image events instead of recovering a local image path", async () => 
   host.dispatchEvent(event);
   expect(event.defaultPrevented).toBe(true);
   await vi.waitFor(() => expect(paste).toHaveBeenCalledWith("'/remote/photo.png'"));
-  expect(store).toHaveBeenCalledWith(42, [1, 2], "image/png");
+  expect(store).toHaveBeenCalledWith(42, "AQI=", "image/png");
   expect(list).not.toHaveBeenCalled();
   remove();
 });
@@ -463,7 +463,7 @@ it.each(["event", "menu"])("stores raw local clipboard media through %s paste", 
     await pasteTerminalClipboard(paste, () => localTarget());
   }
   await vi.waitFor(() => expect(paste).toHaveBeenCalledExactlyOnceWith("'/tmp/a'\\''b c.png'"));
-  expect(store).toHaveBeenCalledWith(42, [1, 2], "image/png");
+  expect(store).toHaveBeenCalledWith(42, "AQI=", "image/png");
   expect(notify).not.toHaveBeenCalled();
   remove();
 });
@@ -566,7 +566,7 @@ it.each(["audio/wav", "video/mp4"])("stores raw %s clipboard data", async (type)
   const event = imageEvent({ ...image(), type } as Blob);
   host.dispatchEvent(event);
   await vi.waitFor(() => expect(paste).toHaveBeenCalledExactlyOnceWith("'/tmp/media'"));
-  expect(store).toHaveBeenCalledWith(42, [1, 2], type);
+  expect(store).toHaveBeenCalledWith(42, "AQI=", type);
   remove();
 });
 

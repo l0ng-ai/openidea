@@ -157,6 +157,11 @@ struct Script {
     breakpoints_after_continue: usize,
     /// The `reason` of the stop a `next` ends with (`step` when unset; kotlin-lsp says `breakpoint`).
     step_reason: Option<&'static str>,
+    /// Send `stopped` before answering `next` / `stepIn` / `stepOut` / `continue` (like php-debug
+    /// when Xdebug finishes a step before the DAP reply is handled).
+    stop_before_reply: bool,
+    /// Send `continued` before answering `next` / `continue`.
+    continued_before_reply: bool,
     /// Refuse `next`, then stop at a breakpoint (one the program hit meanwhile).
     refuse_next: bool,
     /// Send `invalidated { areas: ["variables"] }` right after the first `stopped` event.
@@ -213,6 +218,8 @@ impl Default for Script {
             refuse_continue: false,
             breakpoints_after_continue: 0,
             step_reason: None,
+            stop_before_reply: false,
+            continued_before_reply: false,
             refuse_next: false,
             invalidated_after_stop: false,
             stop_during_threads: false,
@@ -414,6 +421,19 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 send!(json!({"type": "event", "event": "stopped", "body": {"reason": "breakpoint", "threadId": 1}}));
             }
+            "next" if script.stop_before_reply => {
+                let reason = script.step_reason.unwrap_or("step");
+                send!(json!({"type": "event", "event": "stopped", "body": {"reason": reason, "threadId": 1}}));
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                ok!(msg, Value::Null);
+            }
+            "next" if script.continued_before_reply => {
+                send!(
+                    json!({"type": "event", "event": "continued", "body": {"threadId": 1, "allThreadsContinued": false}})
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                ok!(msg, Value::Null);
+            }
             "next" => {
                 ok!(msg, Value::Null);
                 let reason = script.step_reason.unwrap_or("step");
@@ -553,6 +573,20 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
             "stepOut" if script.refuse_step_out => send!(
                 json!({"type": "response", "request_seq": msg["seq"], "command": "stepOut", "success": false, "message": "Thread is not suspended"})
             ),
+            "continue" if script.stop_before_reply => {
+                send!(
+                    json!({"type": "event", "event": "stopped", "body": {"reason": "breakpoint", "threadId": 1, "allThreadsStopped": true}})
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                ok!(msg, json!({"allThreadsContinued": true}));
+            }
+            "continue" if script.continued_before_reply => {
+                send!(
+                    json!({"type": "event", "event": "continued", "body": {"threadId": 1, "allThreadsContinued": true}})
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                ok!(msg, json!({"allThreadsContinued": true}));
+            }
             "continue" if script.stop_after_continue => {
                 ok!(msg, json!({"allThreadsContinued": true}));
                 send!(
@@ -574,6 +608,11 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                     let reason = if i + 1 == script.step_out_stops.len() { "step" } else { "breakpoint" };
                     send!(json!({"type": "event", "event": "stopped", "body": {"reason": reason, "threadId": thread}}));
                 }
+            }
+            "stepIn" | "stepOut" if script.stop_before_reply => {
+                send!(json!({"type": "event", "event": "stopped", "body": {"reason": "step", "threadId": 1}}));
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                ok!(msg, Value::Null);
             }
             "stepIn" | "stepOut" | "pause" => ok!(msg, Value::Null),
             "hotReload" => {
@@ -2786,6 +2825,74 @@ async fn step_of_one_thread_keeps_the_others_suspended() {
         let continued =
             h.wait_event(|e| matches!(e, DebugEvent::Continued { thread_id, .. } if *thread_id == thread)).await;
         assert!(matches!(continued, DebugEvent::Continued { all_threads_continued: false, .. }), "{continued:?}");
+    }
+}
+
+/// When an adapter emits the next `stopped` event before replying to `next` / `stepIn` / `stepOut`
+/// / `continue` (as php-debug / Xdebug can on fast steps), no trailing synthetic `continued` may
+/// overwrite the new stop.
+#[tokio::test]
+async fn stop_before_reply_does_not_emit_trailing_continued() {
+    let h = harness(Script { stop_before_reply: true, ..Script::default() });
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    let session = h.manager.session(id).unwrap();
+
+    let run_events = |from: usize| {
+        h.events
+            .lock()
+            .iter()
+            .skip(from)
+            .filter_map(|e| match e {
+                IdeEvent::Debug { event: DebugEvent::Stopped { reason, .. }, .. } => Some(format!("stopped:{reason}")),
+                IdeEvent::Debug { event: DebugEvent::Continued { .. }, .. } => Some("continued".into()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    for (label, expected) in [
+        ("over", "stopped:step"),
+        ("into", "stopped:step"),
+        ("out", "stopped:step"),
+        ("target", "stopped:step"),
+        ("resume", "stopped:breakpoint"),
+    ] {
+        let before = h.events.lock().len();
+        match label {
+            "over" => h.manager.step(id, 1, StepKind::Over).await.unwrap(),
+            "into" => h.manager.step(id, 1, StepKind::Into).await.unwrap(),
+            "out" => h.manager.step(id, 1, StepKind::Out).await.unwrap(),
+            "target" => h.manager.step_in_target(id, 1, 1).await.unwrap(),
+            "resume" => h.manager.resume(id, 1).await.unwrap(),
+            _ => unreachable!(),
+        }
+        assert!(session.suspended.get(), "{label}: session must remain suspended");
+        assert_eq!(run_events(before), [expected], "{label}: must not emit continued after stopped");
+    }
+}
+
+#[tokio::test]
+async fn continued_event_before_reply_does_not_emit_duplicate_continued() {
+    for is_resume in [false, true] {
+        let h = harness(Script { continued_before_reply: true, ..Script::default() });
+        let id = h.start(config()).await.unwrap();
+        h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+
+        let before = h.events.lock().len();
+        if is_resume {
+            h.manager.resume(id, 1).await.unwrap();
+        } else {
+            h.manager.step(id, 1, StepKind::Over).await.unwrap();
+        }
+        let continued = h
+            .events
+            .lock()
+            .iter()
+            .skip(before)
+            .filter(|e| matches!(e, IdeEvent::Debug { event: DebugEvent::Continued { .. }, .. }))
+            .count();
+        assert_eq!(continued, 1, "is_resume={is_resume}: adapter continued event already reported it");
     }
 }
 

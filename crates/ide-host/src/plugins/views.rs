@@ -130,17 +130,7 @@ mod tests {
     #[tokio::test]
     async fn a_tool_window_call_carries_the_active_editor() {
         let tmp = tempfile::tempdir().unwrap();
-        let host = Host::new(HostConfig {
-            config_dir: tmp.path().join("config"),
-            data_dir: tmp.path().join("data"),
-            local_data_dir: tmp.path().join("data"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(HostConfig::for_test(tmp.path()));
         let range = ide_core::Range::new(ide_core::Pos::new(1, 0), ide_core::Pos::new(1, 4));
         let active = PluginEditor { path: "/p/a.rs".into(), language: "rust".into(), selections: vec![range] };
         let inv = view_invocation(&host, "main", None, Some(active)).unwrap();

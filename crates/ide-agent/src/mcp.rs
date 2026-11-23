@@ -941,107 +941,10 @@ fn normalize_agents_list(agents: Vec<String>) -> Vec<String> {
     out
 }
 
-/// Strips `//` line comments, `/* ... */` block comments, and trailing commas before `}` or `]`
-/// outside JSON string literals so JSONC config files parse cleanly with `serde_json`.
-pub(crate) fn strip_jsonc(input: &str) -> String {
-    let bytes = input.as_bytes();
-    let mut out = String::with_capacity(input.len());
-    let mut i = 0;
-    let mut in_str = false;
-    while i < bytes.len() {
-        if in_str {
-            let ch = input[i..].chars().next().unwrap();
-            out.push(ch);
-            i += ch.len_utf8();
-            if ch == '\\' && i < bytes.len() {
-                let next = input[i..].chars().next().unwrap();
-                out.push(next);
-                i += next.len_utf8();
-            } else if ch == '"' {
-                in_str = false;
-            }
-            continue;
-        }
-        if bytes[i] == b'"' {
-            in_str = true;
-            out.push('"');
-            i += 1;
-            continue;
-        }
-        if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-            i += 2;
-            while i < bytes.len() && bytes[i] != b'\n' {
-                i += 1;
-            }
-            continue;
-        }
-        if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
-            i += 2;
-            while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-                if bytes[i] == b'\n' {
-                    out.push('\n');
-                    i += 1;
-                } else {
-                    let ch = input[i..].chars().next().unwrap();
-                    i += ch.len_utf8();
-                }
-            }
-            i = (i + 2).min(bytes.len());
-            continue;
-        }
-        let ch = input[i..].chars().next().unwrap();
-        out.push(ch);
-        i += ch.len_utf8();
-    }
-    remove_trailing_commas(&out)
-}
-
-fn remove_trailing_commas(input: &str) -> String {
-    let bytes = input.as_bytes();
-    let mut out = String::with_capacity(input.len());
-    let mut i = 0;
-    let mut in_str = false;
-    while i < bytes.len() {
-        if in_str {
-            let ch = input[i..].chars().next().unwrap();
-            out.push(ch);
-            i += ch.len_utf8();
-            if ch == '\\' && i < bytes.len() {
-                let next = input[i..].chars().next().unwrap();
-                out.push(next);
-                i += next.len_utf8();
-            } else if ch == '"' {
-                in_str = false;
-            }
-            continue;
-        }
-        if bytes[i] == b'"' {
-            in_str = true;
-            out.push('"');
-            i += 1;
-            continue;
-        }
-        if bytes[i] == b',' {
-            let mut j = i + 1;
-            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
-                j += 1;
-            }
-            if j < bytes.len() && (bytes[j] == b'}' || bytes[j] == b']') {
-                i += 1;
-                continue;
-            }
-        }
-        let ch = input[i..].chars().next().unwrap();
-        out.push(ch);
-        i += ch.len_utf8();
-    }
-    out
-}
-
 fn parse_jsonc_value(raw: &str) -> Result<Value, String> {
     let trimmed = raw.trim().trim_start_matches('\u{feff}');
     serde_json::from_str::<Value>(trimmed)
-        .or_else(|_| serde_json::from_str::<Value>(&strip_jsonc(trimmed)))
+        .or_else(|_| serde_json::from_str::<Value>(&ide_core::jsonc::strip(trimmed)))
         .map_err(|e| format!("Invalid JSON: {e}"))
 }
 

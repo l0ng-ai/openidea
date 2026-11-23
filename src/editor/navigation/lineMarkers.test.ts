@@ -1,27 +1,45 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { fireEvent } from "@testing-library/react";
+import { EditorView } from "@codemirror/view";
+import { iconAreaExtension } from "@/editor/core/cm/iconArea";
+import { lspDoc } from "@/editor/lsp/lsp";
+import type { DeclarationTarget } from "@/editor/lsp/syntaxFallback";
 import {
   IpcError,
   commands,
   type ClassInheritance,
   type HierarchyItem,
+  type IdeEvent,
   type Location,
   type OutlineItem,
   type Pos,
   type SymbolKind,
 } from "@/platform/ipc";
+import { setInvokeRoute } from "@/platform/tauriCore";
 
 const nav = vi.hoisted(() => ({ navigateTo: vi.fn(async () => {}), openPopup: vi.fn() }));
+const ideListeners = vi.hoisted(() => new Map<string, Set<(event: IdeEvent) => void>>());
+vi.mock("@/platform/ipc", async (orig) => ({
+  ...(await orig<typeof import("@/platform/ipc")>()),
+  onIdeEvent: (type: string, listener: (event: IdeEvent) => void) => {
+    let listeners = ideListeners.get(type);
+    if (!listeners) ideListeners.set(type, (listeners = new Set()));
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  },
+}));
 vi.mock("@/editor/lsp/navigation", async (orig) => ({
   ...(await orig<typeof import("@/editor/lsp/navigation")>()),
   navigateTo: nav.navigateTo,
-  locationItems: async (locs: Location[]) => locs.map((l, i) => ({ id: `${i}`, label: l.path, run: () => {} })),
+  locationItems: async (locs: DeclarationTarget[]) =>
+    locs.map((l, i) => ({ id: `${i}`, label: l.name ?? l.path, run: () => {} })),
 }));
 vi.mock("@/editor/lsp/popupStore", async (orig) => ({
   ...(await orig<typeof import("@/editor/lsp/popupStore")>()),
   openPopup: nav.openPopup,
 }));
 
-import { candidateKey, markerCandidates, type MarkerCandidate } from "./lineMarkers";
+import { candidateKey, markerCandidates, type LineMarker, type MarkerCandidate } from "./lineMarkers";
 import { Text } from "@codemirror/state";
 import {
   affectsMarkers,
@@ -29,6 +47,7 @@ import {
   emptyCache,
   enabledGroups,
   fillMarkers,
+  implementationGutter,
   libraryCandidates,
   markerBatches,
   markerDeps,
@@ -539,16 +558,18 @@ describe("clicking a marker", () => {
   it("navigates to a single target", async () => {
     const target = loc("/p/Circle.java", 0, 13);
     await openMarkerTargets(
-      {
-        kind: "implemented",
-        line: 0,
-        col: 17,
-        method: false,
-        name: "Shape",
-        targets: [target],
-        tooltip: "",
-        chooserTitle: "",
-      },
+      [
+        {
+          kind: "implemented",
+          line: 0,
+          col: 17,
+          method: false,
+          name: "Shape",
+          targets: [target],
+          tooltip: "",
+          chooserTitle: "",
+        },
+      ],
       { x: 1, y: 2 },
     );
     expect(nav.navigateTo).toHaveBeenCalledWith(target);
@@ -562,16 +583,18 @@ describe("clicking a marker", () => {
     const method = { ...zero, range: { start: { line: 5, col: 4 }, end: { line: 7, col: 5 } } };
     const spy = vi.spyOn(commands, "lspImplementationLocations").mockResolvedValue({ status: "ok", data: [method] });
     await openMarkerTargets(
-      {
-        kind: "implemented",
-        line: 1,
-        col: 9,
-        method: true,
-        name: "save",
-        targets: [zero],
-        tooltip: "",
-        chooserTitle: "",
-      },
+      [
+        {
+          kind: "implemented",
+          line: 1,
+          col: 9,
+          method: true,
+          name: "save",
+          targets: [zero],
+          tooltip: "",
+          chooserTitle: "",
+        },
+      ],
       { x: 1, y: 2 },
       7,
     );
@@ -585,16 +608,18 @@ describe("clicking a marker", () => {
     const targets = [loc("/p/Circle.java", 0, 13), loc("/p/Square.java", 0, 13)];
     expect(candidateKey(candidate())).toBe("0:17:Shape");
     await openMarkerTargets(
-      {
-        kind: "implemented",
-        line: 0,
-        col: 17,
-        method: false,
-        name: "Shape",
-        targets,
-        tooltip: "",
-        chooserTitle: "Choose Implementation of Shape (2 found)",
-      },
+      [
+        {
+          kind: "implemented",
+          line: 0,
+          col: 17,
+          method: false,
+          name: "Shape",
+          targets,
+          tooltip: "",
+          chooserTitle: "Choose Implementation of Shape (2 found)",
+        },
+      ],
       { x: 1, y: 2 },
     );
     expect(nav.navigateTo).not.toHaveBeenCalled();
@@ -606,6 +631,151 @@ describe("clicking a marker", () => {
       }),
     );
     expect(nav.openPopup.mock.calls[0]![0].items).toHaveLength(2);
+  });
+});
+
+describe("inheritance gutter", () => {
+  it.each([
+    { type: "interface", source: SHAPE, outline: SHAPE_OUTLINE },
+    { type: "abstract class", source: BASE, outline: BASE_OUTLINE },
+  ])(
+    "refreshes implementation and override markers when a Java project update finishes ($type)",
+    async ({ source, outline }) => {
+      vi.useFakeTimers();
+      let indexed = false;
+      const target = "/p/service/target/generated-sources/example/ServiceImpl.java";
+      const queries = vi.fn<MarkerDeps["implementations"]>(async (positions) =>
+        positions.map(({ line }) => (indexed ? [loc(target, line + 2)] : [])),
+      );
+      setInvokeRoute(async (command, args) => {
+        if (command === "doc_outline") return outline;
+        if (command === "lsp_type_hierarchy") {
+          throw { kind: "unavailable", message: "no type hierarchy", data: null };
+        }
+        if (command === "lsp_implementations") return queries((args as { positions: Pos[] }).positions);
+        return null;
+      });
+      const ctx = { doc: 12, path: `/p/api/${outline[0]!.name}.java`, language: "java", uiMode: null, readOnly: false };
+      const view = new EditorView({
+        doc: Text.of(source),
+        extensions: [lspDoc.of(ctx), iconAreaExtension, implementationGutter(ctx)],
+        parent: document.body,
+      });
+      const kinds = () =>
+        [...view.dom.querySelectorAll<HTMLElement>('[class*="cm-openidea-lineMarker-"]')].map((el) => el.dataset.kind);
+      const emit = (event: IdeEvent) => {
+        for (const listener of ideListeners.get(event.type) ?? []) listener(event);
+      };
+      try {
+        await vi.advanceTimersByTimeAsync(500);
+        expect(queries).toHaveBeenCalledTimes(1);
+        expect(kinds()).toEqual([]);
+
+        indexed = true;
+        emit({ type: "lspRefresh", server: 1, kind: "semanticTokens" });
+        await vi.advanceTimersByTimeAsync(500);
+        expect(queries).toHaveBeenCalledTimes(1);
+
+        emit({ type: "lspRefresh", server: 1, kind: "inheritance" });
+        await vi.advanceTimersByTimeAsync(500);
+        expect(queries).toHaveBeenCalledTimes(2);
+        expect(kinds()).toEqual(["implemented", "implemented", "overridden"]);
+      } finally {
+        view.destroy();
+        setInvokeRoute(null);
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each([
+    { kind: "overriding", language: "java", declaration: "@SuperBuilder" },
+    { kind: "overridden", language: "java", declaration: "@Data" },
+    { kind: "implementing", language: "go", declaration: "type Square struct{}" },
+    { kind: "implemented", language: "rust", declaration: "trait Shape { fn area(); fn label(); }" },
+  ] as const)("merges $language $kind markers by line and kind", async ({ kind, language, declaration }) => {
+    vi.useFakeTimers();
+    nav.navigateTo.mockClear();
+    nav.openPopup.mockClear();
+    const ctx = { doc: 1, path: `/p/gutter-${kind}`, language, uiMode: null, readOnly: false };
+    const doc = Text.of([declaration, "another declaration"]);
+    const markers = markersOf(ctx.path, doc);
+    const otherKind = kind === "overridden" ? "overriding" : "overridden";
+    const inputs = [
+      { kind, name: "build", line: 0 },
+      { kind: otherKind, name: "other", line: 0 },
+      { kind, name: "self", line: 0 },
+      { kind, name: "build", line: 0 },
+      { kind, name: "later", line: 1 },
+    ] as const;
+    const candidates = inputs.map(({ name, line }, i): MarkerCandidate => ({
+      name,
+      line,
+      symbol: `${name}(${i})`,
+      col: 0,
+      method: true,
+      abstract: false,
+      inheritable: false,
+      overriding: false,
+      owner: null,
+    }));
+    markers.outline = { items: [], candidates };
+    inputs.forEach((input, i) => {
+      const marker: LineMarker = {
+        ...input,
+        col: 0,
+        method: true,
+        targets: [
+          loc(
+            language === "java" && input.kind === kind && input.line === 0 ? "/p/BaseOrder.java" : `/p/${input.name}`,
+            2,
+          ),
+        ],
+        tooltip: `Target for ${input.name}`,
+        chooserTitle: input.name,
+      };
+      const group = marker.kind === "implemented" || marker.kind === "overridden" ? "inheritors" : "supers";
+      markers.cache.entries.set(candidateKey(candidates[i]!), { [group]: marker });
+    });
+    const view = new EditorView({
+      doc,
+      extensions: [lspDoc.of(ctx), iconAreaExtension, implementationGutter(ctx)],
+      parent: document.body,
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(500);
+      const icons = [...view.dom.querySelectorAll<HTMLElement>(`.cm-openidea-lineMarker-${kind}`)];
+      expect(icons).toHaveLength(2);
+      expect(icons[0]!.title).toContain("Target for build");
+      expect(icons[0]!.title).toContain("Target for self");
+      expect(icons[0]!.title).not.toContain("Target for later");
+      expect(icons[0]!.parentElement!.querySelector(`.cm-openidea-lineMarker-${otherKind}`)).not.toBeNull();
+
+      fireEvent.mouseDown(icons[0]!, { button: 0 });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(nav.navigateTo).not.toHaveBeenCalled();
+      expect(nav.openPopup.mock.calls[0]![0].items.map((item: { label: string }) => item.label)).toEqual([
+        "build",
+        "self",
+      ]);
+
+      // CodeMirror finds the clicked line by the gutter row's screen position.
+      const block = view.lineBlockAt(doc.line(2).from);
+      vi.spyOn(icons[1]!.parentElement!, "getBoundingClientRect").mockReturnValue(
+        new DOMRect(0, view.documentTop + block.top, 10, block.height),
+      );
+      fireEvent.mouseDown(icons[1]!, { button: 0 });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(nav.navigateTo).toHaveBeenCalledWith(loc("/p/later", 2));
+
+      view.dispatch({ changes: { from: doc.line(1).to, to: doc.line(2).from, insert: " " } });
+      const joined = view.dom.querySelectorAll<HTMLElement>(`.cm-openidea-lineMarker-${kind}`);
+      expect(joined).toHaveLength(1);
+      expect(joined[0]!.title).toContain("Target for later");
+    } finally {
+      view.destroy();
+      vi.useRealTimers();
+    }
   });
 });
 

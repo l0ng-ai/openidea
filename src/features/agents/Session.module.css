@@ -202,6 +202,8 @@
   overflow-x: hidden;
   overflow-anchor: none;
   padding: var(--space-3);
+  /* Room below the end that keeps the header of a section folded there in place (`Stream`). */
+  padding-bottom: calc(var(--space-3) + var(--stream-slack, 0px));
   display: flex;
   flex-direction: column;
   font-size: var(--agent-fs-ui, var(--fs-ui));
@@ -229,7 +231,7 @@
   content-visibility: auto;
 }
 /* WebKit leaves a stale selection highlight on rows that skipped rendering (`useOffscreenRows`). */
-.stream[data-selection] > .conversationRow[data-measured] {
+.conversationRow[data-measured][data-selection] {
   content-visibility: visible;
 }
 /* Keep turns distinct and the work within a turn close to its author. Not `* + *`: a
@@ -558,8 +560,12 @@
 }
 .codeBlock:hover > .codeCopy,
 .markdown :global([data-mermaid]:hover) .codeCopy,
-.codeCopy:focus-visible {
+.codeCopy:focus-visible,
+.codeCopy[data-copied] {
   opacity: 1;
+}
+.codeCopy[data-copied] {
+  color: var(--success);
 }
 /* A drawn diagram carries its own tools at the top-right; Copy moves aside. */
 .markdown :global([data-mermaid][data-mermaid-state="ok"]) .codeCopy {
@@ -1195,6 +1201,15 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-small);
 }
+.toolImages,
+.toolImages .imageItem,
+.toolImages .imageButton {
+  max-width: 100%;
+}
+.toolImages .image {
+  max-width: min(100%, 640px);
+  max-height: 320px;
+}
 .removeImage {
   position: absolute;
   top: 4px;
@@ -1274,7 +1289,7 @@
 }
 .changesScope {
   flex: none;
-  padding: 6px 10px 2px;
+  padding: 0 4px;
 }
 .changesSummary {
   flex: none;

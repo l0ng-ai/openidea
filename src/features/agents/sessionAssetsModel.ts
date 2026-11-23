@@ -828,6 +828,67 @@ function relativeIfUnder(bases: readonly string[], absPath: string): string | nu
   return null;
 }
 
+type FileAsset = Extract<SessionArtifact, { kind: "file" }>;
+
+/** The artifact a path names for the session, or `null` when it is no artifact. */
+function fileAsset(
+  rawPath: string,
+  source: "edit" | "read" | "mention",
+  cwd: string,
+  bases: readonly string[],
+): FileAsset | null {
+  const trimmed = rawPath.trim();
+  if (!trimmed || /^[a-z][a-z\d+.-]*:/i.test(trimmed)) return null;
+  const abs = trimmed.startsWith("/") ? resolveTyped("", trimmed) : resolveTyped(cwd, trimmed);
+  if (!isArtifactCandidate(abs, source)) return null;
+  return {
+    key: `file:${abs}`,
+    kind: "file",
+    name: basename(abs) || abs,
+    path: abs,
+    rel: relativeIfUnder(bases, abs),
+    externalBinary: EXTERNAL_BINARY_EXTENSIONS.has(extOf(abs)),
+  };
+}
+
+type ForgeItemFields<T> = Omit<T, "title" | "state" | "hasExplicitTitle" | "hasExplicitState">;
+
+interface IssueTouch {
+  created?: boolean;
+  title?: string | null;
+  fallbackTitle?: string | null;
+  state?: IssueAssetState | null;
+}
+
+/** What one entry says about the session's assets, in the order it says it. */
+type Finding =
+  | {
+      kind: "pr";
+      item: ForgeItemFields<SessionPullRequest>;
+      title?: string | null;
+      state?: PullRequestAssetState | null;
+    }
+  | { kind: "issue"; item: ForgeItemFields<SessionIssue>; opts: IssueTouch }
+  | {
+      kind: "reference";
+      refKind: "commit" | "discussion";
+      key: string;
+      idLabel: string;
+      repo: string;
+      url: string;
+      title?: string | null;
+    }
+  | { kind: "website"; key: string; url: string; fallbackTitle: string; label?: string | null }
+  | { kind: "file"; asset: FileAsset };
+
+/**
+ * Findings of each entry, kept while the entry is the same object. A streamed chunk replaces
+ * the last entry and leaves the rest as they were, so only the replaced one is read again.
+ * Findings depend on where the task runs: the same entry read for another folder or default
+ * repository is read again.
+ */
+const findings = new WeakMap<AgentEntry, { scope: string; found: Finding[] }>();
+
 export interface ExtractAssetsOptions {
   task: Pick<AgentTask, "cwd" | "projectRoot">;
   entries: readonly AgentEntry[] | null;
@@ -861,7 +922,7 @@ export function extractSessionAssets({
   let seq = 0;
 
   const touchPr = (
-    item: Omit<SessionPullRequest, "title" | "state" | "hasExplicitTitle" | "hasExplicitState">,
+    item: ForgeItemFields<SessionPullRequest>,
     title?: string | null,
     state?: PullRequestAssetState | null,
     bumpOrder = true,
@@ -890,15 +951,7 @@ export function extractSessionAssets({
     });
   };
 
-  const touchIssue = (
-    item: Omit<SessionIssue, "title" | "state" | "hasExplicitTitle" | "hasExplicitState">,
-    opts: {
-      created?: boolean;
-      title?: string | null;
-      fallbackTitle?: string | null;
-      state?: IssueAssetState | null;
-    } = {},
-  ) => {
+  const touchIssue = (item: ForgeItemFields<SessionIssue>, opts: IssueTouch = {}) => {
     const cleanTitle = opts.title?.trim() || null;
     if (opts.created || createdIssues.has(item.key)) {
       // Promote from `references` if it was seen before `gh issue create` completed.
@@ -1008,27 +1061,20 @@ export function extractSessionAssets({
     });
   };
 
-  const touchFile = (rawPath: string, source: "edit" | "read" | "mention") => {
-    const trimmed = rawPath.trim();
-    if (!trimmed || /^[a-z][a-z\d+.-]*:/i.test(trimmed)) return;
-    const abs = trimmed.startsWith("/") ? resolveTyped("", trimmed) : resolveTyped(task.cwd, trimmed);
-    if (!isArtifactCandidate(abs, source)) return;
-    const key = `file:${abs}`;
-    const existing = files.get(key);
+  const touchFile = (asset: FileAsset) => {
+    const existing = files.get(asset.key);
     if (existing) {
       existing.seq = ++seq;
       return;
     }
-    const ext = extOf(abs);
-    files.set(key, {
-      key,
-      kind: "file",
-      name: basename(abs) || abs,
-      path: abs,
-      rel: relativeIfUnder(bases, abs),
-      externalBinary: EXTERNAL_BINARY_EXTENSIONS.has(ext),
-      seq: ++seq,
-    });
+    files.set(asset.key, { ...asset, seq: ++seq });
+  };
+
+  /** What the entry being read says about assets, in the order it says it. */
+  let found: Finding[] = [];
+  const foundFile = (rawPath: string, source: "edit" | "read" | "mention") => {
+    const asset = fileAsset(rawPath, source, task.cwd, bases);
+    if (asset) found.push({ kind: "file", asset });
   };
 
   const ingestUrl = (
@@ -1043,38 +1089,50 @@ export function extractSessionAssets({
     if (!classified) return;
     switch (classified.kind) {
       case "pr":
-        touchPr(classified, meaningfulLabel(label, classified.idLabel));
+        found.push({ kind: "pr", item: classified, title: meaningfulLabel(label, classified.idLabel) });
         break;
       case "issue":
-        touchIssue(classified, {
-          created: opts.createdIssue,
-          title: meaningfulLabel(label, classified.idLabel),
-          fallbackTitle: classified.fallbackTitle ?? null,
+        found.push({
+          kind: "issue",
+          item: classified,
+          opts: {
+            created: opts.createdIssue,
+            title: meaningfulLabel(label, classified.idLabel),
+            fallbackTitle: classified.fallbackTitle ?? null,
+          },
         });
         break;
       case "discussion":
-        touchOtherReference(
-          "discussion",
-          classified.key,
-          classified.idLabel,
-          classified.repo,
-          classified.url,
-          meaningfulLabel(label, classified.idLabel),
-        );
+        found.push({
+          kind: "reference",
+          refKind: "discussion",
+          key: classified.key,
+          idLabel: classified.idLabel,
+          repo: classified.repo,
+          url: classified.url,
+          title: meaningfulLabel(label, classified.idLabel),
+        });
         break;
       case "commit":
-        touchOtherReference(
-          "commit",
-          classified.key,
-          classified.idLabel,
-          classified.repo,
-          classified.url,
-          meaningfulLabel(label, classified.idLabel),
-        );
+        found.push({
+          kind: "reference",
+          refKind: "commit",
+          key: classified.key,
+          idLabel: classified.idLabel,
+          repo: classified.repo,
+          url: classified.url,
+          title: meaningfulLabel(label, classified.idLabel),
+        });
         break;
       case "website":
         if (opts.allowWebsites) {
-          touchWebsite(classified.key, classified.url, classified.fallbackTitle, label);
+          found.push({
+            kind: "website",
+            key: classified.key,
+            url: classified.url,
+            fallbackTitle: classified.fallbackTitle,
+            label,
+          });
         }
         break;
     }
@@ -1092,13 +1150,13 @@ export function extractSessionAssets({
     for (const meta of extractJsonMetadata(output)) {
       const classified = classifyUrl(meta.url);
       if (classified?.kind === "pr") {
-        touchPr(classified, meta.title, meta.state);
+        found.push({ kind: "pr", item: classified, title: meta.title, state: meta.state });
       } else if (classified?.kind === "issue") {
         const state: IssueAssetState | null = meta.state === "closed" ? "closed" : meta.state ? "open" : null;
-        touchIssue(classified, {
-          created: created.createdIssue,
-          title: meta.title ?? created.issueTitle,
-          state,
+        found.push({
+          kind: "issue",
+          item: classified,
+          opts: { created: created.createdIssue, title: meta.title ?? created.issueTitle, state },
         });
       }
     }
@@ -1119,18 +1177,18 @@ export function extractSessionAssets({
     // Markdown relative/absolute file links (`[Report](docs/report.md)`).
     for (const m of prose.matchAll(/\[([^\][\n]{1,200})\]\(\s*([^)\s]+)\s*\)/g)) {
       const file = fileHref(m[2]!, task.cwd);
-      if (file) touchFile(file.path, "mention");
+      if (file) foundFile(file.path, "mention");
     }
     // `@file` mentions in messages.
     for (const tok of messageTokens(prose)) {
       if (tok.kind !== "file") continue;
       const mention = parseMention(tok.value);
-      if (mention && !mention.dir) touchFile(mention.rel, "mention");
+      if (mention && !mention.dir) foundFile(mention.rel, "mention");
     }
     // Inline code spans naming an artifact file (`storage_session_spec.docx`, `/tmp/report.md`).
     for (const m of prose.matchAll(/`([^`\n]{3,240})`/g)) {
       const link = pathLink(m[1]!, task.cwd);
-      if (link) touchFile(link.path, "mention");
+      if (link) foundFile(link.path, "mention");
     }
   };
 
@@ -1142,28 +1200,28 @@ export function extractSessionAssets({
     touchPr(classified, bpr.title, state);
   }
 
-  for (const entry of entries ?? []) {
+  const readEntry = (entry: AgentEntry) => {
     if (entry.type === "user") {
       ingestProse(entry.text);
       const imageCount = entry.images?.length ?? 0;
       const attachedFiles = entry.attachments.slice(0, Math.max(0, entry.attachments.length - imageCount));
-      for (const a of attachedFiles) touchFile(a, "mention");
-      continue;
+      for (const a of attachedFiles) foundFile(a, "mention");
+      return;
     }
     if (entry.type === "agent" || entry.type === "message") {
       ingestProse(entry.text);
-      continue;
+      return;
     }
     if (entry.type === "subagent") {
       if (entry.prompt) ingestProse(entry.prompt);
       if (entry.reply) ingestProse(entry.reply);
-      continue;
+      return;
     }
     if (entry.type === "tool") {
       const edited = entry.kind === "edit" || entry.kind === "move" || entry.diffs.length > 0;
-      for (const diff of entry.diffs) touchFile(diff.path, "edit");
+      for (const diff of entry.diffs) foundFile(diff.path, "edit");
       if (edited || entry.kind === "read") {
-        for (const loc of entry.locations) touchFile(loc, edited ? "edit" : "read");
+        for (const loc of entry.locations) foundFile(loc, edited ? "edit" : "read");
       }
       if (entry.kind === "fetch") {
         for (const link of extractLinks(entry.title)) {
@@ -1199,7 +1257,7 @@ export function extractSessionAssets({
             linkLabel: createsPr?.titleFlag || createsIssue?.titleFlag || null,
           });
         }
-        continue;
+        return;
       }
       // Other tools (e.g. GitHub / Linear / Datadog MCP calls): inspect structured JSON and explicit links.
       for (const link of extractLinks(entry.title)) {
@@ -1207,6 +1265,38 @@ export function extractSessionAssets({
       }
       if (entry.output) ingestToolOutput(entry.output);
     }
+  };
+
+  const touch = (finding: Finding) => {
+    switch (finding.kind) {
+      case "pr":
+        touchPr(finding.item, finding.title, finding.state);
+        break;
+      case "issue":
+        touchIssue(finding.item, finding.opts);
+        break;
+      case "reference":
+        touchOtherReference(finding.refKind, finding.key, finding.idLabel, finding.repo, finding.url, finding.title);
+        break;
+      case "website":
+        touchWebsite(finding.key, finding.url, finding.fallbackTitle, finding.label);
+        break;
+      case "file":
+        touchFile(finding.asset);
+        break;
+    }
+  };
+
+  const scope = `${task.cwd}\0${task.projectRoot ?? ""}\0${defaultGithubRepo ?? ""}`;
+  for (const entry of entries ?? []) {
+    let known = findings.get(entry);
+    if (known?.scope !== scope) {
+      found = [];
+      readEntry(entry);
+      known = { scope, found };
+      findings.set(entry, known);
+    }
+    known.found.forEach(touch);
   }
 
   // Apply live `gh api` metadata enrichment (`title` and `state`).

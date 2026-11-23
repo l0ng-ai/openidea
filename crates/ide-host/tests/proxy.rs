@@ -1,23 +1,14 @@
 //! System Settings › HTTP Proxy: applied on write, the password kept out of settings.toml.
 
-use ide_core::NullSink;
+mod common;
+
 use ide_core::proxy_settings::{ProxyMode, ProxyRoute, proxy};
-use ide_host::{Host, HostConfig, ops};
+use ide_host::{Host, ops};
 use ide_workspace::SettingsScope;
 use std::sync::Arc;
 
 fn host(base: &std::path::Path) -> Arc<Host> {
-    Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    }))
+    Arc::new(Host::new(common::host_config(base)))
 }
 
 fn set(host: &Host, key: &str, value: &str) -> ide_core::settings::Settings {

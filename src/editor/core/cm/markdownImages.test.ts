@@ -3,6 +3,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { history, undo } from "@codemirror/commands";
 import { IpcError, commands } from "@/platform/ipc";
+import { handleFileDrop } from "@/workbench/fileDrop";
 import { imageName, imageTarget, markdownImages, relativeImagePath, saveImage } from "./markdownImages";
 
 const views: EditorView[] = [];
@@ -38,9 +39,7 @@ describe("Markdown images", () => {
       .mockRejectedValueOnce(new IpcError({ kind: "alreadyExists", message: "exists" }))
       .mockRejectedValueOnce(new IpcError({ kind: "alreadyExists", message: "exists" }))
       .mockResolvedValue(null);
-    expect(await saveImage("/p/docs/readme.md", "assets", "photo.png", [0, 255], create)).toBe(
-      "![](assets/photo-2.png)",
-    );
+    expect(await saveImage("/p/docs/readme.md", "assets", "photo.png", "AP8=", create)).toBe("![](assets/photo-2.png)");
     expect(create.mock.calls.map(([path]) => path)).toEqual([
       "/p/docs/assets/photo.png",
       "/p/docs/assets/photo-1.png",
@@ -49,7 +48,7 @@ describe("Markdown images", () => {
   });
   it("does not retry permission failures", async () => {
     const create = vi.fn().mockRejectedValue(new IpcError({ kind: "permissionDenied", message: "denied" }));
-    await expect(saveImage("/p/a.md", "assets", "a.png", [], create)).rejects.toThrow("denied");
+    await expect(saveImage("/p/a.md", "assets", "a.png", "", create)).rejects.toThrow("denied");
     expect(create).toHaveBeenCalledTimes(1);
   });
   it("computes nested paths and encodes spaces and Markdown delimiters", () => {
@@ -82,10 +81,10 @@ describe("Markdown images", () => {
     vi.stubGlobal(
       "Worker",
       class {
-        onmessage?: (e: { data: { data: number[] } }) => void;
+        onmessage?: (e: { data: { data: string } }) => void;
         terminate() {}
         postMessage() {
-          queueMicrotask(() => this.onmessage?.({ data: { data: [137, 80, 78, 71] } }));
+          queueMicrotask(() => this.onmessage?.({ data: { data: "iVBORw==" } }));
         }
       },
     );
@@ -98,16 +97,31 @@ describe("Markdown images", () => {
     paste(editor, [new File(["png"], "image.png", { type: "image/png" })]);
     await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
     expect(create.mock.calls[0]![0]).toMatch(hasFile ? /assets\/image\.png$/ : /assets\/image-\d{8}-\d{6}\.png$/);
+    expect(create.mock.calls[0]![1]).toBe("iVBORw==");
+  });
+
+  it("writes the base64 from a native image drop directly", async () => {
+    const invoke = vi.fn().mockResolvedValue("data:image/png;base64,AP8=");
+    vi.stubGlobal("__TAURI_INTERNALS__", { invoke });
+    const create = vi.spyOn(commands, "fsCreateFileBytes").mockResolvedValue({ status: "ok", data: null });
+    const editor = view();
+    vi.spyOn(editor, "posAtCoords").mockReturnValue(7);
+
+    await handleFileDrop(["/source/photo.png"], 0, 0);
+
+    expect(invoke).toHaveBeenCalledWith("fs_read_image", { path: "/source/photo.png" }, undefined);
+    await vi.waitFor(() => expect(create).toHaveBeenCalledWith("/project/docs/assets/photo.png", "AP8="));
+    expect(editor.state.doc.toString()).toBe("before ![](assets/photo.png)after");
   });
 
   it("inserts a paste as one isolated undo step and tracks edits during saving", async () => {
     vi.stubGlobal(
       "Worker",
       class {
-        onmessage?: (e: { data: { data: number[] } }) => void;
+        onmessage?: (e: { data: { data: string } }) => void;
         terminate() {}
         postMessage() {
-          queueMicrotask(() => this.onmessage?.({ data: { data: [137, 80, 78, 71] } }));
+          queueMicrotask(() => this.onmessage?.({ data: { data: "iVBORw==" } }));
         }
       },
     );

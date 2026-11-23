@@ -890,8 +890,7 @@ fn non_utf8_files_use_the_given_decoder() {
     // Text too short to detect reliably decodes with the configured encoding.
     let p = project(&[("a.txt", &gbk("中文\n"))]);
     let out = Mutex::new(Vec::new());
-    let decode = |_: &Path, bytes: &[u8]| ide_vfs::decode_text(bytes, Some("gbk"));
-    let source = TextSource { overlay: &|_| None, decode: &decode };
+    let source = TextSource { overlay: &|_| None, fallback: &|_| Some("gbk".into()) };
     ide_search::search_in_context(p.path(), &query("中文"), None, None, source, &CancellationToken::new(), &|f| {
         out.lock().unwrap().push(f)
     })

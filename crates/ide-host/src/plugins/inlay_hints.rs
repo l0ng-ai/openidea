@@ -20,6 +20,7 @@ pub(crate) fn merge(server: Vec<InlayHint>, plugin: Vec<PluginInlayHint>, range:
         padding_right: h.padding_right,
         tooltip: h.tooltip,
         parts: Vec::new(),
+        text_edits: Vec::new(),
     }));
     out.sort_by_key(|h| (h.position.line, h.position.col));
     out
@@ -50,6 +51,7 @@ mod tests {
             padding_right: true,
             tooltip: None,
             parts: Vec::new(),
+            text_edits: Vec::new(),
         }
     }
 

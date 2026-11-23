@@ -1,6 +1,6 @@
 /** POSIX path helpers for backend paths (the backend always reports `/`-separated absolute paths). */
 import { tx } from "@/platform/i18n";
-import { isSameOrInside } from "@/platform/paths";
+import { ipcPath, isSameOrInside } from "@/platform/paths";
 export { isSameOrInside } from "@/platform/paths";
 
 export function joinPath(dir: string, name: string): string {
@@ -20,6 +20,27 @@ export function nameOf(path: string): string {
 
 export function isInside(path: string, ancestor: string): boolean {
   return path !== ancestor && isSameOrInside(path, ancestor);
+}
+
+/**
+ * `path => ancestors.some((a) => isSameOrInside(path, a))`, answered by looking up the path and each
+ * of its parent folders in a set instead of comparing against every ancestor.
+ */
+export function insideAnyOf(ancestors: readonly string[]): (path: string) => boolean {
+  if (!ancestors.length) return () => false;
+  const same = new Set<string>();
+  const below = new Set<string>();
+  for (const a of ancestors) {
+    const n = ipcPath(a);
+    same.add(n);
+    below.add(n.endsWith("/") ? n : `${n}/`);
+  }
+  return (path) => {
+    const n = ipcPath(path);
+    if (same.has(n)) return true;
+    for (let i = n.indexOf("/"); i >= 0; i = n.indexOf("/", i + 1)) if (below.has(n.slice(0, i + 1))) return true;
+    return false;
+  };
 }
 
 /** Path relative to `root` (`""` for the root itself); `path` unchanged when outside. */
