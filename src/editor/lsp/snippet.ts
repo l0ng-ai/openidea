@@ -193,11 +193,17 @@ export function lspSnippetToCm(snippet: string, vars: SnippetVariables = {}): st
   const hasField = nodes.some(
     (n) => n.t === "tab" || n.t === "choice" || (n.t === "var" && vars[n.name] === undefined && !n.children),
   );
+  const defaults = new Map<number, string>();
+  for (const node of nodes) {
+    if (node.t === "text" || node.t === "var" || node.n === 0 || defaults.has(node.n)) continue;
+    if (node.t === "choice") defaults.set(node.n, node.options[0] ?? "");
+    else if (node.children) defaults.set(node.n, flatten(node.children, vars));
+  }
   let out = "";
   for (const n of nodes) {
     if (n.t === "text") out += escapeText(n.v);
-    else if (n.t === "tab") out += field(n.n, n.children ? flatten(n.children, vars) : "");
-    else if (n.t === "choice") out += field(n.n, n.options[0] ?? "");
+    else if (n.t === "tab") out += field(n.n, defaults.get(n.n) ?? (n.children ? flatten(n.children, vars) : ""));
+    else if (n.t === "choice") out += field(n.n, defaults.get(n.n) ?? n.options[0] ?? "");
     else {
       const v = vars[n.name];
       if (v !== undefined) out += escapeText(v);

@@ -11,11 +11,11 @@ test("local terminal stores clipboard media and pastes one shell-quoted argument
       configurable: true,
       value: { transformCallback: () => 1 },
     });
-    const stored: { id: number; data: number[]; mime: string }[] = [];
+    const stored: { id: number; data: string; mime: string }[] = [];
     const writes: string[] = [];
     commands.termSpawn = async () => ({ status: "ok", data: { id: 838, title: "pwsh", pid: 1 } });
     commands.clipboardFileList = async () => ({ status: "ok", data: [] });
-    commands.termStoreImage = async (id: number, data: number[], mime: string) => {
+    commands.termStoreImage = async (id: number, data: string, mime: string) => {
       stored.push({ id, data, mime });
       return { status: "ok", data: "C:\\Temp\\a'b c\\image.png" };
     };
@@ -47,6 +47,6 @@ test("local terminal stores clipboard media and pastes one shell-quoted argument
     }
   });
   expect(observed.claimed).toBe(true);
-  expect(observed.stored).toEqual([{ id: 838, data: [137, 80, 78, 71], mime: "image/png" }]);
+  expect(observed.stored).toEqual([{ id: 838, data: "iVBORw==", mime: "image/png" }]);
   expect(observed.writes).toEqual(["'C:\\Temp\\a''b c\\image.png'"]);
 });

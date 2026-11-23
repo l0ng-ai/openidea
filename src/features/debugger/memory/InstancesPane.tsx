@@ -43,7 +43,9 @@ export function InstancesPane({ session }: { session: DebugSession }) {
   return (
     <section className={styles.pane} aria-label={title}>
       <div className={styles.header}>
-        <span className={styles.title}>{title}</span>
+        <span className={styles.title} title={title}>
+          {title}
+        </span>
         <IconButton
           icon="edit-source"
           action="debug.memory.jumpToSource"
@@ -206,16 +208,21 @@ function NodeRow({
   onRetry: (r: Retry) => void;
 }) {
   switch (node.kind) {
-    case "value":
+    case "value": {
+      const value = labelOf(node);
       return (
         <span className={styles.node}>
           {node.name != null && (
             <>
-              <span className={styles.name}>{node.name}</span>
+              <span className={styles.name} title={node.name}>
+                {node.name}
+              </span>
               <span className={styles.equals}> = </span>
             </>
           )}
-          <span className={styles.value}>{labelOf(node)}</span>
+          <span className={styles.value} title={value}>
+            {value}
+          </span>
           {node.ref && (
             <IconButton
               icon="hierarchy"
@@ -229,6 +236,7 @@ function NodeRow({
           )}
         </span>
       );
+    }
     case "referrers":
       return (
         <span className={styles.group}>

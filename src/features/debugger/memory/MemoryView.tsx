@@ -1,7 +1,7 @@
 /** Memory tab of the Debug tool window: live instance counts per class of the debugged JVM, and heap capture. */
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
-import { Checkbox, Icon, IconButton, Input, List, T } from "@/ui";
+import { Icon, IconButton, List, Menu, SearchField, T } from "@/ui";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
 import type { JvmClassRow, JvmMemorySnapshot } from "@/platform/ipc";
@@ -112,6 +112,8 @@ export function MemoryView({ session }: { session: DebugSession }) {
   const id = session.id;
   const entry = useMemory((s) => s.bySession[id]);
   const query = entry?.query ?? DEFAULT_QUERY;
+  const optionsButton = useRef<HTMLButtonElement>(null);
+  const [optionsOpen, setOptionsOpen] = useState(false);
   const result = entry?.result ?? null;
   const snapshot = entry?.snapshot ?? null;
   const source = snapshot?.source ?? "histogram";
@@ -161,17 +163,37 @@ export function MemoryView({ session }: { session: DebugSession }) {
           disabled={entry?.loading || !canRefresh}
         />
         <HeapCaptureButton session={session} />
-        <Input
+        <SearchField
           className={styles.filter}
           value={query.filter}
-          onChange={(e) => setMemoryQuery(id, { filter: e.target.value })}
+          onChange={(filter) => setMemoryQuery(id, { filter })}
           placeholder="Filter classes"
           aria-label="Filter classes"
         />
-        <Checkbox
-          checked={query.changedOnly}
-          onChange={(changedOnly) => setMemoryQuery(id, { changedOnly })}
-          label="Changed only"
+        <IconButton
+          ref={optionsButton}
+          icon="settings"
+          title="View Options"
+          size="small"
+          iconSize={16}
+          pressed={query.changedOnly}
+          aria-haspopup="menu"
+          aria-expanded={optionsOpen}
+          onClick={() => setOptionsOpen(!optionsOpen)}
+        />
+        <Menu
+          open={optionsOpen}
+          onClose={() => setOptionsOpen(false)}
+          anchor={optionsButton}
+          placement="bottom-end"
+          aria-label="View Options"
+          items={[
+            {
+              label: "Changed only",
+              checked: query.changedOnly,
+              run: () => setMemoryQuery(id, { changedOnly: !query.changedOnly }),
+            },
+          ]}
         />
       </div>
       {backend && (

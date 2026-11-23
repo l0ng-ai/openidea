@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { provideToolWindowService, type ToolWindowService } from "@/workbench/contributions";
 import type { FileMatches, SearchQuery } from "@/platform/ipc";
-import { buildFindTree } from "../find/FindToolWindow";
+import { buildFindTree } from "../find/findTree";
 import type { FindDeps } from "../find/session";
 import {
   closeFindTab,

@@ -125,7 +125,9 @@ export function activate(): () => void {
     registerTextEditorWrapper({
       id: "viewers.markdown",
       matches: isMarkdownPath,
-      component: lazyComponent(() => import("./markdown/MarkdownEditor").then((m) => m.MarkdownEditor)),
+      component: lazyComponent(() => import("./markdown/MarkdownEditor").then((m) => m.MarkdownEditor), {
+        prefetch: true,
+      }),
       tabActions: MarkdownLayoutActions,
       useSourceHidden: useMarkdownSourceHidden,
     }),

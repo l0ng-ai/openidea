@@ -3,7 +3,7 @@ import type { AgentProvider } from "@/bindings";
 import type { tx as Tx } from "@/platform/i18n";
 import type { SelectOption } from "@/ui";
 
-/** Picker entry that opens Settings › Tools › Agents instead of choosing an agent. */
+/** Picker entry that opens Settings › Agents › Agent Setup. */
 export const ADD_AGENT = "__addAgent__";
 
 /**

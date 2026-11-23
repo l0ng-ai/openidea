@@ -78,6 +78,7 @@ zip.workspace = true
 quick-xml = "0.42"
 
 [dev-dependencies]
+ide-heap = { workspace = true, features = ["testing"] }
 ide-ssh = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "test-util"] }
 criterion = { version = "0.5", default-features = false }

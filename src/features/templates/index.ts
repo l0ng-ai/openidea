@@ -93,9 +93,10 @@ function newFileAction(t: FileTemplate): Action {
   };
 }
 
-// Generic templates and user or plugin templates have no project type restriction; nor do the web
-// ones (JavaScript, TypeScript), which IntelliJ IDEA Ultimate offers in every project.
+// Generic templates (including JavaScript and TypeScript) and user or plugin templates
+// have no project type restriction.
 const templateProjectTypes: Partial<Record<string, readonly ProjectType[]>> = {
+  svelte: ["vite", "node"],
   rust: ["cargo"],
   python: ["python"],
   jupyter: ["python"],

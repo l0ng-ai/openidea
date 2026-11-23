@@ -14,6 +14,7 @@ import {
   buildRepositoryBranchTree,
   filterBranchTree,
   isFavoriteBranch,
+  mergedRefTooltip,
   type BranchTreeNode,
 } from "../branches";
 import { branchMenu, inRepo, mergedBranchMenu, showTagContextMenu } from "../branchMenu";
@@ -364,6 +365,7 @@ export function BranchesPanel() {
                 : undefined;
             return branchDetail(n, availableRepositories.length, sync);
           }}
+          getTooltip={(n) => mergedRefTooltip(n, (r) => repoName(branchRoots[r] ?? r))}
           selected={selected}
           onSelectionChange={(sel) => setSelected(sel)}
           onActivate={(n) => {
