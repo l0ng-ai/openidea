@@ -367,6 +367,9 @@ impl Manifest {
             if matches!(cap, Capability::ClipboardRead) {
                 self.needs_api(&format!("capability `{cap}`"), 11)?;
             }
+            if matches!(cap, Capability::Agents) {
+                self.needs_api(&format!("capability `{cap}`"), 15)?;
+            }
             if matches!(cap, Capability::JavaAgent) {
                 return Err(
                     "`java.agent` comes from `[[contributes.javaAgents]]`: remove it from [capabilities]".into()

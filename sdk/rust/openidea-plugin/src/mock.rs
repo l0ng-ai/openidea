@@ -193,6 +193,8 @@ struct State {
     run_targets: BTreeMap<(String, String), crate::PluginRunTargetWithOverrides>,
     run_configurations: BTreeMap<String, crate::PluginRunConfiguration>,
     configuration_runs: Vec<(String, String, Vec<String>, bool)>,
+    /// `(agent, session_id, cwd)` of each `fork_agent_session` call.
+    agent_forks: Vec<(String, String, String)>,
     log_tabs: Vec<MockLogTab>,
     locations: Vec<(String, u32, u32)>,
     settings: BTreeMap<String, String>,
@@ -664,6 +666,10 @@ impl MockHost {
     /// Run launches recorded as (operation id, configuration id, appended args, debug).
     pub fn configuration_runs(&self) -> Vec<(String, String, Vec<String>, bool)> {
         self.state.borrow().configuration_runs.clone()
+    }
+    /// Recorded `fork_agent_session` calls as `(agent, session_id, cwd)` (API 1.15).
+    pub fn agent_forks(&self) -> Vec<(String, String, String)> {
+        self.state.borrow().agent_forks.clone()
     }
     /// Makes the language server `server` run and answer `method` with `result` (JSON).
     /// A server with no answer set is not running: requests to it are not-found.
@@ -2487,6 +2493,14 @@ pub mod current {
                 .get(point)
                 .cloned()
                 .ok_or_else(|| Error::NotFound(format!("no running plugin declares {point}")))
+        })
+    }
+    pub fn fork_agent_session(agent: &str, session_id: &str, cwd: &str) -> Result<String, Error> {
+        with(|s| {
+            require(s, "agents")?;
+            let id = format!("mock-agent-task-{}", s.agent_forks.len());
+            s.agent_forks.push((agent.into(), session_id.into(), cwd.into()));
+            Ok(id)
         })
     }
 

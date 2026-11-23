@@ -998,6 +998,10 @@ mod imp {
         Ok(list.into_iter().map(|c| crate::Contribution { plugin: c.plugin, data: c.data }).collect())
     }
 
+    pub fn fork_agent_session(agent: &str, session_id: &str, cwd: &str) -> Result<String, Error> {
+        wit::agents::fork_session(agent, session_id, cwd).map_err(error)
+    }
+
     pub fn run_process(
         program: &str,
         args: &[String],
@@ -2135,4 +2139,15 @@ pub fn mcp_stdio_command() -> Option<Vec<String>> {
 /// to refresh what was derived from them. Needs `engines.openidea = "^1.4"`.
 pub fn extension_contributions(point: &str) -> Result<Vec<crate::Contribution>, Error> {
     imp::extension_contributions(point)
+}
+
+/// Fork a recorded native agent session into a new task in the open project,
+/// returning the new task id (API 1.15). Requires the `agents` capability and an
+/// invoking window. The session must belong to that window's project and have
+/// been recorded in `cwd`; the host builds the fork invocation and names the
+/// fork's session id for claude (codex assigns its own). `agent` is a
+/// native provider (`claude` or `codex`). The new task's first turn continues the
+/// recording as the agent's own fork. Needs `engines.openidea = "^1.15"`.
+pub fn fork_agent_session(agent: &str, session_id: &str, cwd: &str) -> Result<String, Error> {
+    imp::fork_agent_session(agent, session_id, cwd)
 }

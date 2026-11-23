@@ -268,6 +268,12 @@ pub trait HostApi: Send + Sync {
         let _ = (set, items);
         Err(HostError::Failed("decorations unavailable".into()))
     }
+    /// Fork a recorded native agent session into a new task in the invoking
+    /// window's project, returning the new task id (API 1.15).
+    fn fork_agent_session(&self, client: &str, agent: &str, session_id: &str, cwd: &Path) -> Result<String, HostError> {
+        let _ = (client, agent, session_id, cwd);
+        Err(HostError::Failed("agent fork unavailable".into()))
+    }
     /// Trusted repository history.
     fn vcs_log(
         &self,

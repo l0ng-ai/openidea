@@ -68,6 +68,17 @@ pub trait PluginWorkspace: Send + Sync {
     fn problems(&self, _client: &str, _path: Option<&Path>) -> Result<Vec<ide_plugin::FileProblems>, HostError> {
         Ok(Vec::new())
     }
+    /// Fork a recorded native agent session into a new task in the invoking
+    /// window's project, returning the new task id (API 1.15).
+    fn fork_agent_session(
+        &self,
+        _client: &str,
+        _agent: &str,
+        _session_id: &str,
+        _cwd: &Path,
+    ) -> Result<String, HostError> {
+        Err(HostError::Failed("agent fork unavailable".into()))
+    }
 
     /// Roots of the open projects.
     fn projects(&self) -> Vec<PathBuf>;
@@ -1826,6 +1837,12 @@ impl HostApi for PluginApi {
     fn file_icon_decorations(&self, set: &str, items: Vec<(PathBuf, String)>) -> Result<(), HostError> {
         self.set_file_icon_decorations(set, items)
     }
+    fn fork_agent_session(&self, client: &str, agent: &str, session_id: &str, cwd: &Path) -> Result<String, HostError> {
+        self.shared
+            .workspace()
+            .ok_or_else(|| HostError::NotFound("window project".into()))?
+            .fork_agent_session(client, agent, session_id, cwd)
+    }
     fn console_rules(&self, rules: Vec<ide_plugin::ConsoleRule>) -> Result<(), HostError> {
         let rules = super::console_rules::normalize(rules).map_err(HostError::Invalid)?;
         let mut all = self.shared.console_rules.lock();
@@ -3451,6 +3468,14 @@ impl PluginWorkspace for HostWorkspace {
                 });
         }
         Ok(config)
+    }
+
+    fn fork_agent_session(&self, client: &str, agent: &str, session_id: &str, cwd: &Path) -> Result<String, HostError> {
+        let host = self.0.upgrade().ok_or(HostError::Cancelled)?;
+        let project = host.project(client).map_err(failed)?;
+        project.require_trust().map_err(failed)?;
+        // Scans the recorded transcripts on disk; plugin calls already run off the UI thread.
+        Ok(project.agents.fork_session(agent, session_id, cwd).map_err(failed)?.id)
     }
 
     fn buffer_text_in(&self, client: Option<&str>, path: &Path) -> Option<String> {

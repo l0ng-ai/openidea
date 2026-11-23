@@ -3017,6 +3017,19 @@ impl bindings::openidea::plugin::mcp::Host for StoreData {
     }
 }
 
+impl bindings::openidea::plugin::agents::Host for StoreData {
+    fn fork_session(&mut self, agent: String, session_id: String, cwd: String) -> Fallible<String> {
+        if let Err(e) = self.require(Capability::Agents) {
+            return Ok(Err(e));
+        }
+        if let Err(e) = self.require_window() {
+            return Ok(Err(e));
+        }
+        let client = self.invocation.client.clone().unwrap_or_default();
+        Ok(self.host.fork_agent_session(&client, &agent, &session_id, Path::new(&cwd)).map_err(to_wit))
+    }
+}
+
 pub(crate) mod mcp_bindings {
     wasmtime::component::bindgen!({ world: "mcp-tools", path: "../../wit",
         with: {

@@ -1339,10 +1339,8 @@ function markImporting(keys: readonly string[], on: boolean) {
   });
 }
 
-async function importOne(provider: string, sessionId: string, open: boolean) {
-  const started = generation;
-  const task = await call(commands.agentImportSession(provider, sessionId));
-  if (generation !== started) return task;
+/** Records the task an external session became and opens it when asked; shared by import and fork. */
+function adoptSessionTask(provider: string, sessionId: string, task: AgentTask, open: boolean) {
   useAgents.setState((s) => ({
     tasks: s.tasks.has(task.id) ? s.tasks : new Map(s.tasks).set(task.id, task),
     external: s.external.filter((e) => !(e.provider === provider && e.sessionId === sessionId)),
@@ -1351,26 +1349,52 @@ async function importOne(provider: string, sessionId: string, open: boolean) {
   return task;
 }
 
-/** Imports an external session as a task and opens it: its first turn loads it (#312). */
-export async function importExternalSession(provider: string, sessionId: string) {
+async function importOne(provider: string, sessionId: string, open: boolean) {
+  const started = generation;
+  const task = await call(commands.agentImportSession(provider, sessionId));
+  if (generation !== started) return task;
+  return adoptSessionTask(provider, sessionId, task, open);
+}
+
+async function forkOne(provider: string, sessionId: string, cwd: string, open: boolean) {
+  const started = generation;
+  const task = await call(commands.agentForkSession(provider, sessionId, cwd));
+  if (generation !== started) return task;
+  return adoptSessionTask(provider, sessionId, task, open);
+}
+
+/** Guards a single external-session operation against a concurrent one on the same session. */
+async function runExternalOne(provider: string, sessionId: string, run: () => Promise<AgentTask>) {
   const key = externalKey(provider, sessionId);
   if (useAgents.getState().importing.has(key)) throw new Error(tx("Already importing"));
   markImporting([key], true);
   try {
-    return await importOne(provider, sessionId, true);
+    return await run();
   } finally {
     markImporting([key], false);
   }
 }
 
+/** Imports an external session as a task and opens it: its first turn loads it (#312). */
+export async function importExternalSession(provider: string, sessionId: string) {
+  return runExternalOne(provider, sessionId, () => importOne(provider, sessionId, true));
+}
+
+/** Forks a recorded session into a new task and opens it: its first turn continues the recording. */
+export async function forkExternalSession(provider: string, sessionId: string, cwd: string) {
+  return runExternalOne(provider, sessionId, () => forkOne(provider, sessionId, cwd, true));
+}
+
 /**
- * Imports sessions one after another, all marked pending from the start; only a single one opens.
- * Sessions already being imported are skipped. Failures don't stop the rest and are reported
- * together at the end. A project switch ends the batch; an abort ends it after the import in
- * flight and frees the sessions it didn't reach.
+ * Runs external-session operations one after another, all marked pending from the start; only a
+ * single one opens. Sessions already pending are skipped. Failures don't stop the rest and are
+ * reported together at the end. A project switch ends the batch; an abort ends it after the
+ * operation in flight and frees the sessions it didn't reach. Shared by import and fork.
  */
-export async function importExternalSessions(
-  sessions: readonly { provider: string; sessionId: string; title: string }[],
+async function runExternalBatch<T extends { provider: string; sessionId: string; title: string }>(
+  sessions: readonly T[],
+  runOne: (session: T, open: boolean) => Promise<unknown>,
+  failed: { one: string; many: string },
   onProgress?: (done: number) => void,
   signal?: AbortSignal,
 ) {
@@ -1388,7 +1412,7 @@ export async function importExternalSessions(
       break;
     }
     try {
-      await importOne(s.provider, s.sessionId, batch.length === 1);
+      await runOne(s, batch.length === 1);
     } catch (e) {
       failures.push(`${s.title}: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -1398,9 +1422,37 @@ export async function importExternalSessions(
   }
   if (generation !== started || !failures.length) return;
   // Not awaited, so the caller's dialog closes instead of waiting behind the message.
-  const title =
-    failures.length === 1 ? tx("A session could not be imported") : tx("Some sessions could not be imported");
-  void showError(title, failures.join("\n"));
+  void showError(failures.length === 1 ? failed.one : failed.many, failures.join("\n"));
+}
+
+/** Imports sessions one after another; the batch rules are {@link runExternalBatch}'s. */
+export async function importExternalSessions(
+  sessions: readonly { provider: string; sessionId: string; title: string }[],
+  onProgress?: (done: number) => void,
+  signal?: AbortSignal,
+) {
+  await runExternalBatch(
+    sessions,
+    (s, open) => importOne(s.provider, s.sessionId, open),
+    { one: tx("A session could not be imported"), many: tx("Some sessions could not be imported") },
+    onProgress,
+    signal,
+  );
+}
+
+/** Forks sessions one after another; the batch rules are {@link runExternalBatch}'s. */
+export async function forkExternalSessions(
+  sessions: readonly { provider: string; sessionId: string; cwd: string; title: string }[],
+  onProgress?: (done: number) => void,
+  signal?: AbortSignal,
+) {
+  await runExternalBatch(
+    sessions,
+    (s, open) => forkOne(s.provider, s.sessionId, s.cwd, open),
+    { one: tx("A session could not be forked"), many: tx("Some sessions could not be forked") },
+    onProgress,
+    signal,
+  );
 }
 
 export function setIdeContext(on: boolean) {
