@@ -3789,6 +3789,7 @@ impl Task {
     }
 
     /// Records the answer to the request at `entry`; the turn runs on once nothing else waits.
+    /// Saved before it returns, which is before the agent is told: a restart after that keeps the answer.
     fn settle(self: &Arc<Self>, entry: usize, chosen: String) {
         {
             let mut s = self.state.lock();
@@ -3798,8 +3799,13 @@ impl Task {
         }
         self.mark_dirty([(None, entry)]);
         let still_asking = !self.permissions.lock().is_empty();
-        if !still_asking && self.state.lock().task.status == AgentStatus::NeedsInput {
-            self.resume_running();
+        let resumed = !still_asking && self.state.lock().task.status == AgentStatus::NeedsInput;
+        if resumed {
+            self.change_status(AgentStatus::Running, None);
+        }
+        self.persist();
+        if resumed {
+            self.emit_task();
         }
     }
 

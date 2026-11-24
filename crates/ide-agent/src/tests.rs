@@ -32,6 +32,10 @@ struct FakeAgent {
     servers: Mutex<Vec<Peer>>,
     calls: Mutex<Vec<String>>,
     permission_replies: Mutex<Vec<Value>>,
+    /// The tasks' store directory: when set, a "decide" prompt notes what the task file holds
+    /// for the answered request at the moment its reply arrives.
+    store_dir: Mutex<Option<PathBuf>>,
+    file_at_reply: Mutex<Vec<Value>>,
     /// Without `loadSession` (a session lives only as long as its process).
     no_load: bool,
     auth_on_new: bool,
@@ -316,6 +320,29 @@ impl Handler for FakeAgent {
                         .unwrap();
                     let chosen = answer.pointer("/outcome/optionId").and_then(Value::as_str).unwrap_or("none");
                     self.say(&session, &format!("late chose {chosen}"));
+                    return Ok(json!({"stopReason": "end_turn"}));
+                }
+                if text == "decide" {
+                    let peer = self.latest();
+                    let _: Value = tokio::runtime::Handle::current()
+                        .block_on(peer.request(
+                            "session/request_permission",
+                            json!({"sessionId": session, "toolCall": {"toolCallId": "d1", "title": "Run cargo test"},
+                                "options": [{"optionId": "yes", "name": "Allow", "kind": "allow_once"},
+                                            {"optionId": "no", "name": "Reject", "kind": "reject_once"}]}),
+                            None,
+                        ))
+                        .unwrap();
+                    if let Some(dir) = self.store_dir.lock().clone() {
+                        let held = std::fs::read_dir(dir)
+                            .unwrap()
+                            .filter_map(|f| serde_json::from_slice::<Value>(&std::fs::read(f.ok()?.path()).ok()?).ok())
+                            .flat_map(|file| file["entries"].as_array().cloned().unwrap_or_default())
+                            .find_map(|entry| entry.get("chosen").cloned())
+                            .unwrap_or(Value::Null);
+                        self.file_at_reply.lock().push(held);
+                    }
+                    self.say(&session, "decided");
                     return Ok(json!({"stopReason": "end_turn"}));
                 }
                 if text == "escalate" {
@@ -1592,6 +1619,39 @@ async fn archiving_saves_the_task_before_it_returns() {
     assert_eq!(saved_task(&path).map(|(status, _)| status), Some(serde_json::to_value(AgentStatus::Archived).unwrap()));
     assert_eq!(saved_title(&path).as_deref(), Some("changed meanwhile"));
     mgr.shutdown();
+}
+
+/// The answer to a request is in the task file before the agent hears it: a restart right
+/// after still shows the request as answered, not cancelled.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_answer_is_saved_before_the_agent_is_told() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    *agent.store_dir.lock() = Some(tmp.path().join("store"));
+    let mgr = manager(tmp.path(), agent.clone());
+    let _shut_down = ShutDown(&mgr);
+    let task = mgr
+        .create(NewAgentTask {
+            prompt: text("decide"),
+            provider: "claude".into(),
+            isolation: Isolation::Local,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    let permission = mgr
+        .entries(&task.id, None)
+        .unwrap()
+        .iter()
+        .find_map(|e| match e {
+            AgentEntry::Permission { id, .. } => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    mgr.respond(&task.id, permission, Some("yes".into())).unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    assert_eq!(*agent.file_at_reply.lock(), [json!("Allow")]);
 }
 
 /// A turn that fails or hits the usage limit is in the task file by the time the window is
