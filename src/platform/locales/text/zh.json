@@ -10088,5 +10088,12 @@
   "No stub or implementation found": "未找到存根或实现",
   "Implementation of {name} in {file}": "{file} 中 {name} 的实现",
   "Stub of {name} in {file}": "{file} 中 {name} 的存根",
-  "This color can't be changed with the picker": "无法用颜色选择器修改此颜色"
+  "This color can't be changed with the picker": "无法用颜色选择器修改此颜色",
+  "Upload Files…": "上传文件…",
+  "Upload Files": "上传文件",
+  "Upload Local Files Into Remote Folder": "将本地文件上传到远程文件夹",
+  "Replace Existing Files?": "替换现有文件？",
+  "{count} items already exist in {path}. Replace files and merge folders?": "{path} 中已有 {count} 个同名项目。是否替换文件并合并文件夹？",
+  "Cannot upload files": "无法上传文件",
+  "Desktop uploads are not available in a remote development window": "远程开发窗口暂不支持从本机桌面上传文件"
 }

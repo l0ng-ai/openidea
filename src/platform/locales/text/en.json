@@ -3858,5 +3858,12 @@
   "No stub or implementation found": "No stub or implementation found",
   "Implementation of {name} in {file}": "Implementation of {name} in {file}",
   "Stub of {name} in {file}": "Stub of {name} in {file}",
-  "This color can't be changed with the picker": "This color can't be changed with the picker"
+  "This color can't be changed with the picker": "This color can't be changed with the picker",
+  "Upload Files…": "Upload Files…",
+  "Upload Files": "Upload Files",
+  "Upload Local Files Into Remote Folder": "Upload Local Files Into Remote Folder",
+  "Replace Existing Files?": "Replace Existing Files?",
+  "{count} items already exist in {path}. Replace files and merge folders?": "{count} items already exist in {path}. Replace files and merge folders?",
+  "Cannot upload files": "Cannot upload files",
+  "Desktop uploads are not available in a remote development window": "Desktop uploads are not available in a remote development window"
 }
