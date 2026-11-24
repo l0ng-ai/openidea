@@ -49,7 +49,9 @@ import {
   foldSelection,
   unfoldAtCaret,
 } from "./cm/folding";
-import { reverseLines, sortLines } from "./cm/lines";
+import { fillParagraph } from "./cm/fillParagraph";
+import { convertIndentsToSpaces, convertIndentsToTabs, reverseLines, sortLines } from "./cm/lines";
+import { hardWrapAt } from "./cm/setup";
 import { customRegions } from "./cm/regions";
 import { toggleRenderedViewAtCaret } from "./cm/renderedDocs";
 import { enclosingHeaders } from "./cm/stickyScroll";
@@ -83,6 +85,7 @@ import { togglePinSelectedContent } from "@/workbench/toolwindows/content";
 import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import { toggleReadOnly } from "./fileAttributes";
 import { codeVisionShown, toggleCodeVision } from "./codeVision";
+import { appearanceSwitches, toggleAppearance, type AppearanceSwitch } from "./gutterMenu";
 import { openNavBarPopup } from "./view/NavBarPopup";
 import {
   cachedStructureQueries,
@@ -729,6 +732,15 @@ export async function toggleSchemeSwitch(key: SchemeSwitch, on = !editorPrefs()[
   }
 }
 
+const appearanceSwitch = (id: string, s: AppearanceSwitch, keywords: string[]): Action => ({
+  id,
+  title: s.title,
+  category: "View",
+  keywords,
+  toggled: s.on,
+  run: () => toggleAppearance(s),
+});
+
 const schemeSwitch = (id: string, title: string, key: SchemeSwitch, keywords: string[]): Action => ({
   id,
   title,
@@ -793,6 +805,14 @@ export function registerEditorActions(): () => void {
       "bracket pair colorization",
       "rainbow parentheses",
       "color scheme",
+    ]),
+    appearanceSwitch("editor.toggleLineNumbers", appearanceSwitches.lineNumbers, ["gutter", "hide line numbers"]),
+    appearanceSwitch("editor.toggleIndentGuides", appearanceSwitches.indentGuides, ["indent lines", "indentation"]),
+    appearanceSwitch("editor.toggleStickyLines", appearanceSwitches.stickyLines, ["sticky scroll"]),
+    appearanceSwitch("editor.toggleWhitespaces", appearanceSwitches.whitespaces, [
+      "render whitespace",
+      "spaces",
+      "tabs",
     ]),
     {
       id: "editor.toggleCodeVision",
@@ -987,6 +1007,23 @@ export function registerEditorActions(): () => void {
     }),
     edit("code.sortLines", "Sort Lines", (v) => sortLines(v), { category: "Edit" }),
     edit("code.reverseLines", "Reverse Lines", (v) => reverseLines(v), { category: "Edit" }),
+    text(
+      "code.fillParagraph",
+      "Fill Paragraph",
+      (v, slot) => fillParagraph(v, hardWrapAt(slot.model.settings(), slot.model.info)),
+      {
+        category: "Edit",
+        keywords: ["wrap", "reflow", "rewrap comment"],
+      },
+    ),
+    edit("code.convertIndentsToSpaces", "Convert Indents to Spaces", (v) => convertIndentsToSpaces(v), {
+      category: "Edit",
+      keywords: ["tabs", "indentation"],
+    }),
+    edit("code.convertIndentsToTabs", "Convert Indents to Tabs", (v) => convertIndentsToTabs(v), {
+      category: "Edit",
+      keywords: ["spaces", "indentation"],
+    }),
     text("code.unwrap", "Unwrap/Remove…", (_v, slot) => void unwrapAtCaret(slot), {
       keywords: ["unwrap", "remove if"],
     }),

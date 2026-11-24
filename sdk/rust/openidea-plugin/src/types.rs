@@ -201,6 +201,21 @@ impl ClipboardContent {
     }
 }
 
+/// A named group of extensions in a native file chooser.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileFilter {
+    pub name: String,
+    pub extensions: Vec<String>,
+}
+
+/// Options for choosing an existing file or a save destination.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FileDialog {
+    pub save: bool,
+    pub name: Option<String>,
+    pub filters: Vec<FileFilter>,
+}
+
 /// An entry of [`crate::host::pick`] and [`crate::host::pick_many`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PickItem {

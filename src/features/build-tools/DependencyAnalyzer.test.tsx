@@ -130,6 +130,26 @@ describe("dependency analyzer", () => {
       { groupId: "com.google.guava", artifactId: "guava" },
     );
   });
+
+  it("shows module names as written in Chinese", async () => {
+    const { _resetI18nForTests, setLocale, tx } = await import("@/platform/i18n");
+    await setLocale("zh");
+    try {
+      // Precondition: the zh catalog translates the word, so a translated label would differ.
+      expect(tx("dev")).not.toBe("dev");
+      expect(tx("test")).not.toBe("test");
+      const maven = { ...model.maven!, projects: [{ ...model.maven!.projects[0]!, displayName: "dev" }] };
+      const build = { ...gradle, projects: [{ ...gradle.projects[0]!, name: "test" }] };
+      act(() => useBuild.setState({ model: { maven, gradle: [build] } }));
+      render(<DependencyAnalyzer input={{ kind: ANALYZER_KIND, key: ANALYZER_KIND }} />);
+      const picker = screen.getByRole("button", { name: tx("Module") });
+      expect(picker).toHaveTextContent(/^dev$/);
+      fireEvent.click(picker);
+      expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(["devpom.xml", "test. :"]);
+    } finally {
+      _resetI18nForTests();
+    }
+  });
 });
 
 function gradleDep(coords: string, selected: string | null, children: GradleDependency[] = []): GradleDependency {

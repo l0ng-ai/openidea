@@ -43,6 +43,40 @@ export function insideAnyOf(ancestors: readonly string[]): (path: string) => boo
   };
 }
 
+/**
+ * `paths.filter((p) => !paths.some((q) => q !== p && isInside(p, q)))` without comparing every pair:
+ * a path is looked up, with each folder above it, in a map from the paths' normalised forms, so the
+ * cost grows linearly with the number of paths.
+ */
+export function outermostPaths(paths: string[]): string[] {
+  // A few paths: comparing pairs costs less than building the maps.
+  if (paths.length < 8) return paths.filter((p) => !paths.some((q) => q !== p && isInside(p, q)));
+  const norms = paths.map(ipcPath);
+  // Normalised form → the path behind it, or null when several different strings share it.
+  const forms = new Map<string, string | null>();
+  paths.forEach((p, i) => {
+    const v = forms.get(norms[i]!);
+    forms.set(norms[i]!, v === undefined || v === p ? p : null);
+  });
+  // The "…/" folder above a path or folder ("" at the top).
+  const up = (n: string) => n.slice(0, n.length < 2 ? 0 : n.lastIndexOf("/", n.length - 2) + 1);
+  // Whether a path is `dir` (with or without its "/") or a folder above it, once per folder.
+  const covered = new Map<string, boolean>();
+  const isCovered = (dir: string): boolean => {
+    let c = covered.get(dir);
+    if (c === undefined)
+      covered.set(dir, (c = !!dir && (forms.has(dir) || forms.has(dir.slice(0, -1)) || isCovered(up(dir)))));
+    return c;
+  };
+  return paths.filter((p, i) => {
+    const n = norms[i]!;
+    const v = forms.get(n);
+    // Another string with the same form, or `n` is "x/" and "x" is a path: inside it, as `q !== p` above.
+    if (v !== p || (n.endsWith("/") && forms.has(n.slice(0, -1)))) return false;
+    return !isCovered(up(n));
+  });
+}
+
 /** Path relative to `root` (`""` for the root itself); `path` unchanged when outside. */
 export function relativeTo(root: string, path: string): string {
   if (path === root) return "";

@@ -5,7 +5,6 @@ import { reorderedTabs, useWindowGroup } from "@/platform/windowGroups";
 import { IconButton, showContextMenu } from "@/ui";
 import { notifications } from "./contributions";
 import { subscribeTabColors, tabColorOverride, tabColorVars, tabColorsVersion } from "./tabColors";
-import { TabColorPicker } from "./TabColorPicker";
 import styles from "./WindowGroupTabs.module.css";
 
 function run(work: Promise<unknown>) {
@@ -174,7 +173,6 @@ export function WindowGroupTabs() {
           </div>
         ))}
       </div>
-      <TabColorPicker />
     </div>
   );
 }

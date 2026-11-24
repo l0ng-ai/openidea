@@ -892,6 +892,11 @@ export const commands = {
 	lspExecuteCommand: (doc: DocId, command: Command) => typedError<null, IdeError>(__TAURI_INVOKE("lsp_execute_command", { doc, command })),
 	lspExtractInterface: (request: RequestId, doc: DocId, pos: Pos, members: string[], name: string, destination: string, confirmation: string | null) => typedError<ServerRefactored, IdeError>(__TAURI_INVOKE("lsp_extract_interface", { request, doc, pos, members, name, destination, confirmation })),
 	lspExtractInterfaceInfo: (request: RequestId, doc: DocId, pos: Pos) => typedError<ExtractInterfaceInfo, IdeError>(__TAURI_INVOKE("lsp_extract_interface_info", { request, doc, pos })),
+	/**
+	 *  Where other files import the document's file (Find Usages on a file, a Vue component's
+	 *  usages). Cancel with `cancel_request(request)`.
+	 */
+	lspFileReferences: (request: RequestId, doc: DocId) => typedError<Location[], IdeError>(__TAURI_INVOKE("lsp_file_references", { request, doc })),
 	lspFormat: (doc: DocId, range: {
 	start: Pos,
 	end: Pos,
@@ -8857,6 +8862,10 @@ export type LanguageCodeStyle_Deserialize = {
 	alignKeyValuePairs?: boolean | null,
 	/**  PHP: align `=` of consecutive assignment statements after formatting. */
 	alignConsecutiveAssignments?: boolean | null,
+	/**  SQL › Case › Keywords: `upper` | `lower` | `keep` (other languages ignore it). */
+	keywordCase?: string | null,
+	/**  SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`. */
+	identifierCase?: string | null,
 };
 
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
@@ -8877,6 +8886,10 @@ export type LanguageCodeStyle_Serialize = {
 	alignKeyValuePairs?: boolean | null,
 	/**  PHP: align `=` of consecutive assignment statements after formatting. */
 	alignConsecutiveAssignments?: boolean | null,
+	/**  SQL › Case › Keywords: `upper` | `lower` | `keep` (other languages ignore it). */
+	keywordCase?: string | null,
+	/**  SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`. */
+	identifierCase?: string | null,
 };
 
 /**  Language identifier, e.g. `rust`, `typescript`, `kotlin`. Matches LSP `languageId`. */
@@ -10725,6 +10738,12 @@ actions: NotificationAction[] }) & { arg?: never; args?: never; cancellable?: ne
  */
 ({ type: "clipboardRequested"; pluginId: string; requestId: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never };
 
+/**  A group of file extensions in a plugin's native chooser. */
+export type PluginFileFilter = {
+	name: string,
+	extensions: string[],
+};
+
 /**  A plugin's own icon (`icon`, `icon-dark` of its manifest): sanitised SVG markup. */
 export type PluginIcon = {
 	light: string,
@@ -11353,7 +11372,7 @@ export type ProjectUpdateTarget = {
  *  What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`,
  *  `ui.input-multiline`, `ui.confirm`).
  */
-export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null; multiline: boolean } | { kind: "confirm"; title: string; message: string } | { kind: "pickDirectory"; title: string; initial: string | null } | 
+export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null; multiline: boolean } | { kind: "confirm"; title: string; message: string } | { kind: "pickDirectory"; title: string; initial: string | null } | { kind: "pickFile"; title: string; save: boolean; name: string | null; filters: PluginFileFilter[] } | 
 /**
  *  The host's own question under `net:ask` (never plugin-initiated): the
  *  plugin reached an HTTPS host its manifest does not list.

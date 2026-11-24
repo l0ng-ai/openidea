@@ -2,7 +2,8 @@
 import { rootFor, type RootFolder } from "@/platform/languageSettings";
 import type { PackageKind } from "./paths";
 
-const JVM_BUILD = /(^|\/)(pom\.xml|build\.gradle(\.kts)?)$/;
+// `Gradle` marks the source sets a Gradle sync reported (ide-host `with_gradle_roots`).
+const JVM_BUILD = /^Gradle$|(^|\/)(pom\.xml|build\.gradle(\.kts)?|\.classpath)$/;
 const PY_BUILD = /(^|\/)(pyproject\.toml|setup\.py|setup\.cfg|Pipfile|requirements\.txt)$/;
 const JVM_DIR = /(^|\/)(java|kotlin|scala|groovy)$/;
 

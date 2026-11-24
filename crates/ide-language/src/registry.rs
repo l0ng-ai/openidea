@@ -12,6 +12,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("arduino", include_str!("../../../languages/arduino.toml")),
     ("asciidoc", include_str!("../../../languages/asciidoc.toml")),
     ("astro", include_str!("../../../languages/astro.toml")),
+    ("axaml", include_str!("../../../languages/axaml.toml")),
     ("bat", include_str!("../../../languages/bat.toml")),
     ("c", include_str!("../../../languages/c.toml")),
     ("clojure", include_str!("../../../languages/clojure.toml")),
@@ -1277,6 +1278,8 @@ mod tests {
             ("Cargo.toml", "toml"),
             ("Cargo.lock", "toml"),
             ("pom.xml", "xml"),
+            ("Views/MainWindow.axaml", "axaml"),
+            ("MainWindow.xaml", "xml"),
             ("README.md", "markdown"),
             ("Dockerfile", "dockerfile"),
             ("Dockerfile.dev", "dockerfile"),
@@ -1312,6 +1315,16 @@ mod tests {
         for (path, id) in cases {
             assert_eq!(detect(&reg, path), id, "{path}");
         }
+    }
+
+    #[test]
+    fn avalonia_xaml_is_xml_with_its_own_server() {
+        let reg = reg();
+        let axaml = reg.get(&LanguageId::new("axaml")).unwrap();
+        assert_eq!(axaml.tree_sitter.as_deref(), Some("xml"));
+        assert_eq!(axaml.ui_mode.as_deref(), Some("XML"));
+        let servers: Vec<_> = axaml.language_servers.iter().map(|s| (s.name.as_str(), s.fallback)).collect();
+        assert_eq!(servers, [("axsg-lsp", false), ("lemminx", true)]);
     }
 
     #[test]

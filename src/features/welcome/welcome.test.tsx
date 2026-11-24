@@ -241,6 +241,20 @@ describe("Welcome › Projects", () => {
     expect(items.some((i) => i.key === "reveal")).toBe(shown);
   });
 
+  it("changes any recent project's colour, and a local one's icon", async () => {
+    const { useTabColorPicker } = await import("@/workbench/TabColorPicker");
+    const local = resolveMenuItems(recentMenu(p("app", "/Users/me/app")));
+    expect(local.map((i) => i.key)).toEqual(expect.arrayContaining(["color", "icon"]));
+    // Nothing to reset until the project shows an icon set here.
+    expect(local.some((i) => i.key === "resetIcon")).toBe(false);
+    local.find((i) => i.key === "color")!.run!();
+    expect(useTabColorPicker.getState().target).toMatchObject({ root: "/Users/me/app", name: "app" });
+    useTabColorPicker.setState({ target: null });
+    const remote = resolveMenuItems(recentMenu(p("app", remoteLocation({ kind: "ssh", config: "box" }, "/srv/app"))));
+    expect(remote.map((i) => i.key)).toContain("color");
+    expect(remote.map((i) => i.key)).not.toContain("icon");
+  });
+
   it("reveals a local recent project from an SSH window's project switcher", async () => {
     useRemote.setState({
       session: { target: { kind: "ssh", config: "box" }, root: "/srv/app", host: "box", os: "linux", commands: [] },

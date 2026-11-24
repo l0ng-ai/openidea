@@ -158,6 +158,9 @@ export const intellijMacos: Record<string, string[]> = {
   "code.pasteFromHistory": ["Meta+Shift+V"],
   "code.sortLines": [],
   "code.reverseLines": [],
+  "code.fillParagraph": [],
+  "code.convertIndentsToSpaces": [],
+  "code.convertIndentsToTabs": [],
   "code.unwrap": ["Meta+Shift+Delete"],
   "code.foldSelection": ["Meta+."],
   "editor.toggleColumnSelection": ["Meta+Shift+8"],
@@ -257,6 +260,10 @@ export const intellijMacos: Record<string, string[]> = {
   // (ToggleDistractionFreeMode has no default). ⌃⌘D is macOS's system-wide
   // "Look Up in Dictionary" hotkey, which never reaches the webview.
   "editor.toggleZen": [],
+  "editor.toggleLineNumbers": [],
+  "editor.toggleIndentGuides": [],
+  "editor.toggleStickyLines": [],
+  "editor.toggleWhitespaces": [],
 
   // Build
   "build.buildProject": ["Meta+F9"],
@@ -287,6 +294,8 @@ export const intellijMacos: Record<string, string[]> = {
   "run.editConfigs": ["Ctrl+Alt+Shift+R"],
   "debug.toggleBreakpoint": ["Meta+F8"],
   "debug.viewBreakpoints": ["Meta+Shift+F8"],
+  "debug.removeAllBreakpoints": [],
+  "debug.removeAllBreakpointsInFile": [],
   "debug.resume": ["Meta+Alt+R", "F9"],
   "debug.stepOver": ["F8"],
   "debug.stepInto": ["F7"],
