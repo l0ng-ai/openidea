@@ -5439,6 +5439,10 @@ fn file_prompts_return_the_path_from_the_calling_window_without_a_capability() {
             }
         );
     }
+    // A suggested name is only a file name, never a directory to start in.
+    let (_, prompt) =
+        run_and_answer(&f, "pick-file", Some("/etc/out.parquet"), Some(&["C:/data/x.parquet"]), Duration::ZERO);
+    assert!(matches!(&prompt, Prompt::PickFile { name: Some(n), .. } if n == "out.parquet"), "{prompt:?}");
     assert_eq!(run_and_answer(&f, "pick-file", None, None, Duration::ZERO).0.unwrap(), None);
     assert!(run_and_answer(&f, "pick-file", None, Some(&["relative"]), Duration::ZERO).0.is_err());
     assert!(f.host.run_command("jobs", "pick-file", None, Invocation::default()).is_err());
