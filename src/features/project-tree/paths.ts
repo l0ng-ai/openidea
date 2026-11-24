@@ -75,12 +75,17 @@ export function splitExtension(name: string): [string, string] {
   return [name.slice(0, i), name.slice(i)];
 }
 
-/** Finder-style non-conflicting name: `Foo.kt` → `Foo copy.kt` → `Foo copy 2.kt`. */
+/**
+ * Finder-style non-conflicting name: `Foo.kt` → `Foo copy.kt` → `Foo copy 2.kt`. A Java source
+ * keeps a name its type can take: `Foo.java` → `FooCopy.java` → `FooCopy2.java`.
+ */
 export function uniqueName(name: string, taken: (candidate: string) => boolean, isDir = false): string {
   if (!taken(name)) return name;
   const [stem, ext] = isDir ? [name, ""] : splitExtension(name);
+  const java = ext === ".java";
   for (let n = 1; ; n++) {
-    const candidate = `${stem} copy${n > 1 ? ` ${n}` : ""}${ext}`;
+    const suffix = n > 1 ? (java ? `${n}` : ` ${n}`) : "";
+    const candidate = java ? `${stem}Copy${suffix}${ext}` : `${stem} copy${suffix}${ext}`;
     if (!taken(candidate)) return candidate;
   }
 }

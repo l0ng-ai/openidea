@@ -275,6 +275,7 @@ export const vscodeMacos: Record<string, string[]> = {
   // Build (Terminal › Run Build Task)
   "build.buildProject": ["Meta+Shift+B"],
   "build.buildModule": [],
+  "build.compileFile": [],
   "build.rebuildProject": [],
   "build.buildArtifacts": [],
 

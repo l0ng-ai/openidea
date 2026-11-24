@@ -112,6 +112,15 @@ function isAttachableTarget(
   return typeof a.attachable?.pid === "number" && typeof a.attachable.kind === "string";
 }
 
+/**
+ * Names the run the attach debugs (`RUN_LINK` in ide-dap, kept from the adapter): the run's Dump
+ * Threads then goes through the session, which knows whether the JVM is stopped.
+ */
+function linkedToRun(launch: LaunchConfig, run: RunId): LaunchConfig {
+  const extra = launch.extraJson ? (JSON.parse(launch.extraJson) as Record<string, unknown>) : {};
+  return { ...launch, extraJson: JSON.stringify({ ...extra, __openideaRun: run }) };
+}
+
 function errorText(e: unknown) {
   return e instanceof Error ? e.message : String(e);
 }
@@ -539,6 +548,7 @@ export function registerDebugActions(): () => void {
             else if (isJavaAttachTarget(arg)) launch = await javaAttachConfig(arg, root);
             else return;
             const process = (arg.process ?? null) as RunId | null;
+            if (process != null) launch = linkedToRun(launch, process);
             // Another JVM of the same run (a Gradle test worker, the one just detached) keeps it.
             const shared =
               process != null &&
@@ -595,6 +605,7 @@ export function registerDebugActions(): () => void {
           typeof arg === "object" && arg !== null && "configId" in arg && typeof arg.configId === "string"
             ? arg.configId
             : undefined,
+          typeof arg === "object" && arg !== null && "allowBuildErrors" in arg && arg.allowBuildErrors === true,
         ),
     },
     {
@@ -619,6 +630,27 @@ export function registerDebugActions(): () => void {
       run: () => {
         const s = activeSession();
         if (s && sessionSupports("jvmHeap", s)) void captureHeap(s.id);
+      },
+    },
+    {
+      id: "debug.dumpThreads",
+      title: "Dump Threads",
+      category: "Debug",
+      icon: "thread-dump",
+      keywords: ["thread dump", "jstack", "deadlock", "threads"],
+      when: "debugHasJvmMemory",
+      indicatesRunning: true,
+      run: async () => {
+        const s = activeSession();
+        if (!s || !sessionSupports("jvmMemory", s)) return;
+        const session = s.id;
+        const name = s.name;
+        // The Run tool window shows the dump; its tab takes the next one through `take` on Refresh.
+        await executeAction("run.openThreadDump", {
+          title: tx`Threads: ${name}`,
+          source: { session },
+          take: () => call(commands.debugJvmThreadDump(session)),
+        });
       },
     },
     {

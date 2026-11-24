@@ -253,7 +253,8 @@ export const intellijWindows: Record<string, string[]> = {
 
   // Build
   "build.buildProject": ["Ctrl+F9"],
-  "build.buildModule": ["Ctrl+Shift+F9"],
+  "build.buildModule": [],
+  "build.compileFile": ["Ctrl+Shift+F9"],
   "build.rebuildProject": [],
   "build.buildArtifacts": [],
 

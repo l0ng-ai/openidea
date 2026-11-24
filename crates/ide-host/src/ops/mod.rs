@@ -39,6 +39,7 @@ pub mod ssh;
 pub mod stream_trace;
 pub mod syntax;
 pub mod term;
+pub mod thread_dump;
 pub mod tools;
 pub mod vcs;
 pub mod web;
@@ -118,6 +119,7 @@ ide_command::domains!(
     stream_trace: crate::ops::stream_trace,
     syntax: crate::ops::syntax,
     term: crate::ops::term,
+    thread_dump: crate::ops::thread_dump,
     tools: crate::ops::tools,
     vcs: crate::ops::vcs,
     vcs_commands: crate::ops::vcs::commands,
