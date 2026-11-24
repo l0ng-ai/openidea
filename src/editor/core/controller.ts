@@ -55,7 +55,7 @@ import { hoverActionsAt } from "@/platform/hoverActions";
 import { chooseSavePath } from "@/platform/choosePath";
 import type { DialogFilter as SaveDialogFilter } from "@/platform/dialog";
 import { isUntitledUri, untitledTitle } from "@/platform/virtualDocs";
-import { isRemoteWindow } from "@/platform/remote";
+import { isRemoteWindow, projectLocation } from "@/platform/remote";
 import { auxiliaryWindow } from "@/platform/auxWindow";
 import { fileIconName, showContextMenu, type MenuItem } from "@/ui";
 import { canOpenWithSystemApp, canRevealInFileManager, fileManagerName } from "@/platform/fileManager";
@@ -391,7 +391,7 @@ export class EditorController implements SlotHost {
     );
     tabOptions.activateOnClose = editorPrefs().tabs.activateOnClose as typeof tabOptions.activateOnClose;
     let prevSettings = useProject.getState().settings;
-    let prevRoot = useProject.getState().project?.root ?? null;
+    let prevScope = projectLocation(useProject.getState().project?.root);
     let prevLight = useProject.getState().lightEdit;
     this.disposers.push(
       useProject.subscribe((s, previous) => {
@@ -401,10 +401,10 @@ export class EditorController implements SlotHost {
             .activateOnClose as typeof tabOptions.activateOnClose;
           this.manager.applySettings();
         }
-        const root = s.project?.root ?? null;
+        const scope = projectLocation(s.project?.root);
         // Entering or leaving LightEdit replaces the backend's documents too.
-        if (root !== prevRoot || s.lightEdit !== prevLight || (s.opening && s.project !== previous.project)) {
-          prevRoot = root;
+        if (scope !== prevScope || s.lightEdit !== prevLight || (s.opening && s.project !== previous.project)) {
+          prevScope = scope;
           prevLight = s.lightEdit;
           this.saveSession();
           this.sessionRoot = null;
@@ -417,7 +417,7 @@ export class EditorController implements SlotHost {
           const carriedUntitled: Tab[] = [];
           let carriedActive: string | null = null;
           const cs = useTabs.getState();
-          for (const pane of root || s.lightEdit ? Object.values(cs.panes) : []) {
+          for (const pane of scope || s.lightEdit ? Object.values(cs.panes) : []) {
             for (const tab of pane.tabs) {
               if (isUntitledUri(tab.input.path ?? "")) {
                 carriedUntitled.push(tab);
@@ -462,7 +462,7 @@ export class EditorController implements SlotHost {
             .catch((e) => this.documentError(e))
             .then(() => {
               if (generation !== this.projectGeneration) return;
-              if (root) return this.restoreSession(root);
+              if (scope) return this.restoreSession(scope);
               else if (s.lightEdit) return this.restoreSession(LIGHT_EDIT_SESSION);
             });
         } else if (previous.opening && !s.opening && this.closeCommitted) {
@@ -478,7 +478,7 @@ export class EditorController implements SlotHost {
         this.upgradeWrappedImageTabs(wrappers);
       }),
     );
-    if (prevRoot) this.projectTransition = this.restoreSession(prevRoot);
+    if (prevScope) this.projectTransition = this.restoreSession(prevScope);
     if (this.manager.backend.onFsChanged)
       this.disposers.push(this.manager.backend.onFsChanged((e) => this.onFilesRemoved(e.removed)));
     if (this.manager.backend.onDiskConflict)
@@ -671,7 +671,8 @@ export class EditorController implements SlotHost {
 
   private openSessionKey(): string | null {
     const s = useProject.getState();
-    if (s.project?.root) return s.project.root;
+    const scope = projectLocation(s.project?.root);
+    if (scope) return scope;
     if (s.lightEdit) return LIGHT_EDIT_SESSION;
     return null;
   }

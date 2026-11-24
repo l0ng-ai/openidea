@@ -461,6 +461,10 @@ function ProblemDetails({ node, root }: { node: Node | null; root: string }) {
   const { p } = node;
   const sev = severityKey(p.d);
   const pathParts = relativePath(root, p.path).split("/");
+  const dirCrumbs = pathParts.slice(0, -1).map((part, i, parts) => ({
+    part,
+    key: parts.slice(0, i + 1).join("/"),
+  }));
   return (
     <>
       <div className={styles.detailsActions} role="group" aria-label={tx("Inspection actions")}>
@@ -477,8 +481,8 @@ function ProblemDetails({ node, root }: { node: Node | null; root: string }) {
           <span>{p.d.source ? `${p.d.source}${p.d.code ? ` (${p.d.code})` : ""}` : <T>Language server</T>}</span>
         </div>
         <div className={clsx(styles.detailsLocation, selectableText)}>
-          {pathParts.slice(0, -1).map((part, i) => (
-            <span key={i}>
+          {dirCrumbs.map(({ part, key }) => (
+            <span key={key}>
               {part}/<wbr />
             </span>
           ))}

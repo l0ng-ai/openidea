@@ -560,15 +560,17 @@ function SnippetCode({
     };
   }, [key, language, text, tokens]);
   const segments = useMemo(() => lineSegments(lines, tokens ?? []), [lines, tokens]);
+  const rows = segments.map((segs, i) => ({ segs, no: first + i }));
   return (
     <pre className={styles.snippet} style={style}>
-      {segments.map((segs, i) => (
-        <div key={i} className={clsx(styles.snippetLine, first + i === caret && styles.caretLine)}>
-          <span className={styles.lineNo}>{first + i + 1}</span>
+      {rows.map(({ segs, no }) => (
+        <div key={no} className={clsx(styles.snippetLine, no === caret && styles.caretLine)}>
+          <span className={styles.lineNo}>{no + 1}</span>
           <span className={styles.code}>
             {segs.length
               ? segs.map((seg, j) =>
                   seg.cls ? (
+                    // oxlint-disable-next-line react/no-array-index-key -- highlighted segments repeat; position is the identity
                     <span key={j} className={seg.cls}>
                       {seg.text}
                     </span>

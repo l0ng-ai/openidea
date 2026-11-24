@@ -172,7 +172,7 @@ fn server_args(up: &Up, bin: &str) -> Vec<String> {
     ] {
         args.extend(["-e".to_owned(), var]);
     }
-    args.extend([up.container.clone(), bin.to_owned(), "--stdio".to_owned()]);
+    args.extend([up.container.clone(), bin.to_owned(), "--attach".to_owned(), up.folder.clone()]);
     args
 }
 
@@ -253,7 +253,8 @@ mod tests {
                 "OPENIDEA_LIFECYCLE_DONE=1",
                 ID,
                 "/home/vscode/.openidea/server/1/ab/openidea-server",
-                "--stdio",
+                "--attach",
+                "/workspaces/my app",
             ]
         );
     }
@@ -332,10 +333,12 @@ echo '{{"outcome":"success","containerId":"{ID}","remoteUser":"vscode","remoteWo
     #[tokio::test]
     #[ignore = "requires Docker, the Dev Containers CLI, OPENIDEA_DOCKER_TEST_DIR and OPENIDEA_SERVER_BIN"]
     async fn opens_a_real_dev_container() {
+        use serde_json::{Value, json};
+
         let base = PathBuf::from(std::env::var("OPENIDEA_DOCKER_TEST_DIR").expect("OPENIDEA_DOCKER_TEST_DIR"));
         let server = PathBuf::from(std::env::var("OPENIDEA_SERVER_BIN").expect("OPENIDEA_SERVER_BIN"));
-        let root = base.join("devcontainer");
-        let _ = std::fs::remove_dir_all(&root);
+        let workspace = tempfile::Builder::new().prefix("openidea-devcontainer-").tempdir_in(base).unwrap();
+        let root = workspace.path();
         std::fs::create_dir_all(root.join(".devcontainer")).unwrap();
         std::fs::write(
             root.join(".devcontainer/devcontainer.json"),
@@ -350,10 +353,19 @@ echo '{{"outcome":"success","containerId":"{ID}","remoteUser":"vscode","remoteWo
         std::fs::write(root.join("main.py"), "print('hello')\n").unwrap();
         let docker = ide_docker::docker_executable().expect("docker");
         let tail = Tail::default();
-        let up = up(Path::new("devcontainer"), &docker, &root, "", &tail)
+        let up = up(Path::new("devcontainer"), &docker, root, "", &tail)
             .await
             .unwrap_or_else(|e| panic!("{e:?}; the CLI said: {}", tail.text()));
-        assert_eq!(up.folder, "/workspaces/devcontainer");
+        struct RemoveContainer<'a>(&'a Path, &'a str);
+        impl Drop for RemoveContainer<'_> {
+            fn drop(&mut self) {
+                if let Err(e) = std::process::Command::new(self.0).args(["rm", "-f", self.1]).status() {
+                    eprintln!("could not remove dev container {}: {e}", self.1);
+                }
+            }
+        }
+        let _container = RemoveContainer(&docker, &up.container);
+        assert_eq!(up.folder, format!("/workspaces/{}", root.file_name().unwrap().to_string_lossy()));
         assert_eq!(up.user, "root");
         let found = probe(&docker, &up, "0.0.0-test").await.unwrap();
         assert_eq!(platform_os(&found.uname), "linux");
@@ -374,7 +386,7 @@ echo '{{"outcome":"success","containerId":"{ID}","remoteUser":"vscode","remoteWo
             .request("invoke", invoke("open_project", serde_json::json!({ "path": up.folder })), None)
             .await
             .unwrap_or_else(|e| panic!("{e:?}; the server said: {}", tail.text()));
-        assert_eq!(project["root"], "/workspaces/devcontainer");
+        assert_eq!(project["root"], up.folder);
         assert_eq!(project["trusted"], true, "the trust of the local folder is inherited");
         let files: serde_json::Value = peer
             .request("invoke", invoke("fs_read_dir", serde_json::json!({ "path": up.folder })), None)
@@ -410,10 +422,49 @@ echo '{{"outcome":"success","containerId":"{ID}","remoteUser":"vscode","remoteWo
         }
         assert_eq!(reply, "from the container\n");
         drop(tunnel);
-        drop(peer);
-        let removed = std::process::Command::new(&docker).args(["rm", "-f", &up.container]).output().unwrap();
-        assert!(removed.status.success());
-        std::fs::remove_dir_all(&root).unwrap();
+
+        let term: Value = peer
+            .request(
+                "invoke",
+                invoke(
+                    "term_spawn",
+                    json!({
+                        "options": {
+                            "cwd": up.folder, "shell": "/bin/sh", "args": ["-c", "exec sleep 300"],
+                            "env": {}, "cols": 80, "rows": 24, "shellIntegration": false
+                        },
+                        "onOutput": { "$channel": 1 }
+                    }),
+                ),
+                None,
+            )
+            .await
+            .unwrap();
+        let pid = term["pid"].as_u64().unwrap();
+        peer.kill();
+        peer.exited().await;
+        let live = || docker_sh(&docker, &up.container, &format!("kill -0 {pid} 2>/dev/null && printf live"));
+        assert_eq!(live(), "live", "the terminal must outlive the window in a dev container");
+
+        let peer = spawn(&docker, &up, &bin, Arc::new(Silent), &Tail::default()).unwrap();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            let project: Value = peer.request("invoke", invoke("project_current", json!({})), None).await.unwrap();
+            assert_eq!(project["root"], up.folder);
+            let terms: Value = peer.request("invoke", invoke("term_list", json!({})), None).await.unwrap();
+            assert_eq!(terms[0]["id"], term["id"]);
+            peer.request::<_, ()>("shutdown", Value::Null, None).await.unwrap();
+            peer.closed().await;
+        })
+        .await
+        .expect("dev container backend did not reattach and stop");
+        assert_eq!(docker_sh(&docker, &up.container, "printf running"), "running", "stopping the IDE keeps Docker up");
+        for _ in 0..50 {
+            if live().is_empty() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("terminal process {pid} outlived backend shutdown");
     }
 
     fn platform_os(uname: &str) -> String {

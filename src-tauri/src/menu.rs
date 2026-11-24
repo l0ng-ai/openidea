@@ -249,6 +249,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
         act("remote.connect", "Remote Development…"),
         act("remote.reopenInContainer", "Reopen in Container"),
         act("remote.disconnect", "Disconnect from Remote Host"),
+        act("remote.stopBackend", "Stop Remote Backend"),
         act("remote.reloadEnvironment", "Reload Environment"),
         SEP,
         act("file.save", "Save All"),
@@ -495,6 +496,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
                 "Code Completion",
                 vec![
                     act("code.completion", "Basic"),
+                    act("code.smartTypeCompletion", "Smart Type"),
                     SEP,
                     act("code.cyclicExpandWord", "Cyclic Expand Word"),
                     act("code.cyclicExpandWordBackward", "Cyclic Expand Word (Backward)"),

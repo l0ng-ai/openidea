@@ -495,6 +495,7 @@ export function GlobListEditor({
         )}
         {rows.map((glob, i) => (
           <li
+            // oxlint-disable-next-line react/no-array-index-key -- globs can repeat; position is the identity
             key={i}
             id={`${listId}-${i}`}
             role="option"

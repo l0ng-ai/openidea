@@ -933,6 +933,8 @@ mod ignore;
 mod index_writes;
 mod log_index;
 mod manage;
+mod metadata_watch;
+pub use metadata_watch::MetadataWatch;
 mod ops;
 mod patch;
 mod preserve;

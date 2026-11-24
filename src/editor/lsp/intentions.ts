@@ -14,7 +14,9 @@ import {
   contributedIntentions,
   contributedIntentionsAsync,
   contributedQuickFixes,
+  inspectionControlProviders,
   intentionProviders,
+  quickFixProviders,
   intentionsChanged,
   whenSynced,
 } from "@/editor/api";
@@ -40,7 +42,7 @@ import { iconNode } from "@/ui/iconNode";
 import { editorPrefs } from "@/platform/editorSettings";
 import { spellingIntentions } from "./spelling";
 import { inspectionsAt, type EditorDiagnostic } from "./diagnostics";
-import { SPELLING_INSPECTION } from "@/platform/inspections";
+import { SPELLING_INSPECTION, type InspectionRef } from "@/platform/inspections";
 import { editInspectionSettings, intentionControls } from "@/platform/inspectionControls";
 import { runInteractiveCodeAction } from "./interactiveCommand";
 import { tx, txPart } from "@/platform/i18n";
@@ -497,8 +499,12 @@ export function withInspectionControls(view: EditorView, items: ListPopupItem[])
   );
   if (!inspections.length) return items;
   const fixes = items.filter((i) => isFixItem(i) && !i.submenu);
+  const controls = (inspection: InspectionRef) => [
+    ...intentionControls(inspection),
+    ...view.state.facet(inspectionControlProviders).flatMap((provide) => provide(view, inspection.id)),
+  ];
   if (inspections.length === 1 && fixes.length) {
-    const submenu = intentionControls(inspections[0]!);
+    const submenu = controls(inspections[0]!);
     return items.map((i) => (fixes.includes(i) ? { ...i, submenu } : i));
   }
   return [
@@ -509,7 +515,7 @@ export function withInspectionControls(view: EditorView, items: ListPopupItem[])
       section: { id: "inspection-options" },
       icon: "settings",
       run: () => editInspectionSettings(inspection.id),
-      submenu: intentionControls(inspection),
+      submenu: controls(inspection),
     })),
   ];
 }
@@ -882,6 +888,9 @@ export function intentionsExtension(): Extension {
     bulbPlugin,
     floatingBulb,
     intentionProviders.of((view) => languageSemantics(docOf(view)?.language)?.intentions?.(view) ?? []),
+    quickFixProviders.of(
+      (view, from, to) => languageSemantics(docOf(view)?.language)?.quickFixes?.(view, from, to) ?? [],
+    ),
     asyncIntentionProviders.of(
       async (view, signal) => (await languageSemantics(docOf(view)?.language)?.asyncIntentions?.(view, signal)) ?? [],
     ),

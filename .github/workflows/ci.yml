@@ -155,6 +155,12 @@ jobs:
       # Test fixtures write LF files; keep Git from converting them on checkout.
       - run: git config --global core.autocrlf false
       - run: cargo nextest run --workspace --no-fail-fast
+      - name: Remote backend with Docker Compose
+        if: runner.os == 'Linux'
+        run: |
+          docker pull busybox:latest
+          cargo nextest run -p ide-host --test remote_daemon --run-ignored only \
+            -E 'test(=compose_service_survives_disconnect_and_is_removed_on_stop)'
       # nextest skips doctests; ide-command's are its compile-fail tests.
       - if: runner.os == 'Linux'
         run: cargo test --doc -p ide-command

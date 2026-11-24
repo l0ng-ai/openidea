@@ -348,7 +348,9 @@ lsp_change_signature                         trusted            project_host bin
 lsp_code_action_query                        trusted            project_host bindings async
 lsp_code_actions                             trusted            project_host bindings async
 lsp_code_lens                                trusted            project_host bindings async
+lsp_color_presentations                      trusted            project_host bindings async
 lsp_completion                               trusted            project_host bindings async
+lsp_document_colors                          trusted            project_host bindings async
 lsp_document_highlights                      trusted            project_host bindings async
 lsp_document_links                           trusted            project_host bindings async
 lsp_exception_class_at                       trusted            project_host bindings async
@@ -414,6 +416,7 @@ menu_refresh                                 always             desktop      bin
 menu_set_disabled                            always             desktop      bindings sync
 nav_index_definitions                        always             project_host bindings async
 nav_inheritance                              always             project_host bindings async
+nav_python_stubs                             always             project_host bindings async
 nav_resolve_module                           always             project_host bindings async
 notebook_cell_docs                           trusted            project_host bindings sync
 notebook_close                               always             project_host bindings async
@@ -539,6 +542,7 @@ remote_download_into                         trusted            project_host bin
 remote_download_local                        trusted            desktop      bindings async
 remote_forward_port                          trusted            desktop      bindings async
 remote_forwarded_ports                       trusted            desktop      bindings sync
+remote_idle_timeout_minutes                  always             project_host bindings async
 remote_import_local                          trusted            desktop      bindings async
 remote_invoke                                always             desktop      bindings async
 remote_list                                  always             project_host bindings async
@@ -546,6 +550,7 @@ remote_mkdir                                 trusted            project_host bin
 remote_of                                    always             project_host bindings sync
 remote_open                                  always             project_host bindings async
 remote_rename                                trusted            project_host bindings async
+remote_stop_backend                          always             desktop      bindings async
 remote_stop_forwarding                       trusted            desktop      bindings async
 remote_trust_set                             always             desktop      bindings sync
 remote_trust_status                          always             desktop      bindings sync
@@ -556,6 +561,7 @@ replace_preview                              trusted            project_host bin
 run_application_build                        trusted            project_host bindings async
 run_application_publish                      trusted            project_host bindings async
 run_apply_settings                           trusted            project_host bindings async
+run_attach                                   always             project_host bindings async
 run_close_stdin                              trusted            project_host bindings sync
 run_configs                                  trusted            project_host bindings async
 run_dotnet_resolve                           trusted            project_host bindings async
@@ -646,10 +652,12 @@ syntax_structural_ranges                     always             project_host bin
 syntax_support                               always             project_host bindings sync
 system_font_families                         always             desktop      bindings async
 system_probe_hotkeys                         trusted            desktop      bindings sync
+term_attach                                  always             project_host bindings async
 term_available_shells                        always             project_host bindings sync
 term_default_shell                           always             project_host bindings sync
 term_is_busy                                 always             project_host bindings async
 term_kill                                    always             project_host bindings sync
+term_list                                    always             project_host bindings async
 term_resize                                  always             project_host bindings sync
 term_spawn                                   always             project_host bindings async
 term_store_image                             always             project_host bindings async

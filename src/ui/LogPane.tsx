@@ -41,6 +41,7 @@ export interface LogPaneProps {
 
 /** A line as shown: its ANSI-coloured spans and the plain text (level detection, copy). */
 interface ShownLine {
+  seq: number;
   stderr: boolean;
   text: string;
   spans: Span[];
@@ -82,6 +83,7 @@ function LogStream(
     // One parser per stream: a colour set on one line carries to the next of the same stream.
     const ansi = [new AnsiStream(), new AnsiStream()];
     let frame = 0;
+    let seq = 0;
     // Output that arrives after the stop (a source that already ran) is dropped.
     let stopped = false;
     const flush = () => {
@@ -97,7 +99,7 @@ function LogStream(
       (line) => {
         if (stopped) return;
         const spans = ansi[line.stderr ? 1 : 0]!.parse(line.text);
-        buffer.push({ stderr: line.stderr, text: stripAnsi(line.text), spans });
+        buffer.push({ seq: seq++, stderr: line.stderr, text: stripAnsi(line.text), spans });
         frame ||= requestAnimationFrame(flush);
       },
       (message) => !stopped && setError(message),
@@ -157,15 +159,19 @@ function LogStream(
           setFollow(el.scrollHeight - el.scrollTop - el.clientHeight < 24);
         }}
       >
-        {lines.map((l, i) => (
+        {lines.map((l) => (
           <div
-            key={i}
+            key={l.seq}
             className={clsx(l.stderr && styles.stderr)}
             style={{ color: logLineColor(l.text, l.stderr ? "stderr" : "stdout", levelColors) }}
           >
             {l.spans.length
-              ? l.spans.map((span, j) => (
-                  <span key={j} style={spanStyle(span)}>
+              ? l.spans.map((span, i) => (
+                  <span
+                    // oxlint-disable-next-line react/no-array-index-key -- ANSI spans repeat; position in an immutable line is stable
+                    key={i}
+                    style={spanStyle(span)}
+                  >
                     {span.text}
                   </span>
                 ))

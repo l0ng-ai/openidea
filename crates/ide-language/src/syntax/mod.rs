@@ -32,7 +32,7 @@ pub use lines::{shift_pos, shift_range};
 pub use literals::{Literal, LiteralKind, SpellingKind, SpellingRegion};
 pub use outline::{merge_kinds, merge_visibility};
 pub use php_align::PhpAlignment;
-pub use python_facts::{MethodBody, PythonClassFacts, PythonFacts, PythonMethodFacts};
+pub use python_facts::{MethodBody, PythonClassFacts, PythonFacts, PythonMethodFacts, PythonSuppression};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::OnceLock;

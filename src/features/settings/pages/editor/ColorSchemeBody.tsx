@@ -224,6 +224,7 @@ function revealPreviewAttr(attrId: string, ids: Set<string>, reveal: (id: string
 }
 
 type Seg = [string, string?];
+
 interface CodeSample {
   code: Seg[][];
   /** Line shown with the caret-row background. */
@@ -1442,11 +1443,16 @@ function GitPreview({
         <div className={styles.gitSectionTitle}>{tx("Editor inline blame")}</div>
         <div className={styles.gitEditor}>
           {GIT_EDITOR_LINES.map((line, i) => (
-            <div key={i} className={`${styles.previewLine} ${line.blame ? styles.previewCaretLine : ""}`}>
+            <div
+              // oxlint-disable-next-line react/no-array-index-key -- sample lines repeat; position is the identity
+              key={i}
+              className={`${styles.previewLine} ${line.blame ? styles.previewCaretLine : ""}`}
+            >
               <span className={styles.previewGutter}>{i + 1}</span>
               <code>
                 {line.segs.map(([text, attrId], j) => (
                   <span
+                    // oxlint-disable-next-line react/no-array-index-key -- coloured segments repeat; position is the identity
                     key={j}
                     style={tokenStyle(attrId ? A(attrId) : undefined)}
                     className={attrId ? styles.clickable : undefined}
@@ -1484,6 +1490,7 @@ function GitPreview({
                 <span className={styles.gitSuffix}>
                   {suffixOf(root).map((s, j) => (
                     <span
+                      // oxlint-disable-next-line react/no-array-index-key -- suffix segments repeat; position is the identity
                       key={j}
                       className={`${styles.gitSuffixSegment} ${styles.clickable}`}
                       style={tokenStyle(A(s.attr))}
@@ -1911,7 +1918,11 @@ export function ColorSchemePage({
             ) : (
               <pre className={styles.schemePreview} style={vars} aria-label={tx("Color scheme preview")}>
                 {sample.code.map((line, i) => (
-                  <div key={i} className={`${styles.previewLine} ${i === sample.caret ? styles.previewCaretLine : ""}`}>
+                  <div
+                    // oxlint-disable-next-line react/no-array-index-key -- sample lines repeat; position is the identity
+                    key={i}
+                    className={`${styles.previewLine} ${i === sample.caret ? styles.previewCaretLine : ""}`}
+                  >
                     <span className={styles.previewGutter}>{i + 1}</span>
                     <code>
                       {line.map(([text, attrId], j) => {
@@ -1919,6 +1930,7 @@ export function ColorSchemePage({
                         const inPage = attr !== undefined && ids.has(attrId!);
                         return (
                           <span
+                            // oxlint-disable-next-line react/no-array-index-key -- coloured segments repeat; position is the identity
                             key={j}
                             style={tokenStyle(attr)}
                             className={attr ? styles.clickable : undefined}

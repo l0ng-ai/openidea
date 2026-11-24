@@ -365,10 +365,12 @@ export function chooseTargetChangelist(suggestedName: string): Promise<string | 
   });
 }
 
+const NO_EXCLUDED_IDS: readonly string[] = [];
+
 function TargetListDialog({
   title,
   hint,
-  exclude = [],
+  exclude = NO_EXCLUDED_IDS,
   suggestedName = "",
   onChoose,
   onClose,

@@ -50,6 +50,7 @@ const TARGETS = [
   { ...DEFAULT_RUN_TARGET, kind: "compose" as const, id: "web", name: "Compose web", service: "web" },
   { ...DEFAULT_RUN_TARGET, kind: "ssh" as const, id: "box", name: "Build box" },
 ];
+const PYTHON_INTERPRETER_CONTEXT = { pageId: "python.interpreter", scope: "project" } as const;
 
 function mount(interpreter: string) {
   const settings = structuredClone(DEFAULT_SETTINGS) as typeof DEFAULT_SETTINGS & Record<string, unknown>;
@@ -57,7 +58,7 @@ function mount(interpreter: string) {
   settings.runTargets = TARGETS;
   useSettingsDialog.setState({ base: settings, globalBase: structuredClone(DEFAULT_SETTINGS), staged: {}, query: "" });
   render(
-    <PageContext.Provider value={{ pageId: "python.interpreter", scope: "project" }}>
+    <PageContext.Provider value={PYTHON_INTERPRETER_CONTEXT}>
       <PythonInterpreterPage />
     </PageContext.Provider>,
   );

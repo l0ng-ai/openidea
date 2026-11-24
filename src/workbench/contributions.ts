@@ -795,6 +795,8 @@ export interface EditorService {
   forgetSavedTabs?(): void;
   /** Writes them again when a close is cancelled after {@link forgetSavedTabs}. */
   keepSavedTabs?(): void;
+  /** Flushes the open editor tabs, splits and caret positions to storage immediately. */
+  flushSession?(): void;
   /** Edit › Undo / Redo for a focused custom editor that has its own history; false when none takes it. */
   documentHistory?(command: "undo" | "redo"): boolean;
   /** Go to Declaration's chooser ("Choose Declaration of `name`") over `targets`, below `anchor`. */
