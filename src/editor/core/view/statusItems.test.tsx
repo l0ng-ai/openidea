@@ -292,3 +292,18 @@ it("shows the revision and the file's folders for a file at a Git revision", () 
   view.unmount();
   useProject.setState({ project: null, settings: null });
 });
+
+it("elides the middle of a deep path without a duplicate React key", () => {
+  useProject.setState({
+    project: { root: "/p", name: "app", settings: {}, trusted: true, isGit: false },
+    settings: { appearance: { navigationBar: "top" } } as unknown as Settings,
+  });
+  useEditorStatus.setState({ status: { ...caret(0, 0), path: "/p/src/main/java/com/example/orders/Rule.java" } });
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  const view = render(<Breadcrumbs className="nav" />);
+  expect(screen.getByRole("navigation", { name: "Breadcrumbs" }).textContent).toBe("appsrc…exampleordersRule.java");
+  expect(error).not.toHaveBeenCalled();
+  error.mockRestore();
+  view.unmount();
+  useProject.setState({ project: null, settings: null });
+});
