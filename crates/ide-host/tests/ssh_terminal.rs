@@ -1,3 +1,5 @@
+mod common;
+
 use ide_core::remote_settings::{SshAuth, SshConfiguration};
 use ide_core::{IdeEvent, SharedSink};
 use ide_docker::DockerEndpoint;
@@ -46,17 +48,8 @@ async fn host_with_ssh_box(tmp: &Path, exec: ide_ssh::testing::ExecFn) -> (Arc<H
         let _ = events_tx.lock().unwrap().send(e);
     });
     let base = tmp.join("app");
-    let mut host = Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(move |_| sink.clone()),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    }));
+    let mut host =
+        Arc::new(Host::new(HostConfig { sink_for: Box::new(move |_| sink.clone()), ..common::host_config(&base) }));
     Arc::get_mut(&mut host).unwrap().ssh = ssh;
 
     (host, events)

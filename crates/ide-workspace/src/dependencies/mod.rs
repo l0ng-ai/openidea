@@ -4,6 +4,7 @@ pub mod cargo;
 pub mod go;
 pub mod maven;
 pub mod npm;
+pub mod pypi;
 pub mod python;
 
 pub use cache::VersionCache;

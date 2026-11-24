@@ -59,6 +59,8 @@ export interface LanguageSemantics {
   intentions?(view: EditorView): ContributedIntention[];
   /** Local fixes of the problems at `from..to` on this language's documents (also listed by ⌥↵ at the caret). */
   quickFixes?(view: EditorView, from: number, to: number): ContributedIntention[];
+  /** Intentions that need the language server's answer first; `signal` aborts when the caret moved on. */
+  asyncIntentions?(view: EditorView, signal: AbortSignal): Promise<ContributedIntention[]>;
   /** Fallback for the Implement Methods action when the server offers no code action. */
   implementMethods?(view: EditorView): Promise<boolean>;
 }

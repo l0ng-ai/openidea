@@ -900,16 +900,21 @@ impl Shared {
 
         // Removals first; a path removed then re-created shows up in `changed` too.
         let mut deletes = Vec::new();
+        // Paths that are not indexed files: removed directories (or files that were never indexed).
+        let mut gone_dirs = HashSet::new();
         for path in removed {
             if path.exists() {
                 changed.push(path);
                 continue;
             }
-            let mut d = self.data.write();
-            let gone = match d.remove(&path) {
-                Some(_) => vec![path],
-                None => d.remove_tree(&path),
-            };
+            if self.data.write().remove(&path).is_some() {
+                deletes.extend(filter.store_key(&path));
+            } else {
+                gone_dirs.insert(path);
+            }
+        }
+        if !gone_dirs.is_empty() {
+            let gone = self.data.write().remove_trees(&gone_dirs);
             deletes.extend(gone.iter().filter_map(|p| filter.store_key(p)));
         }
         if !deletes.is_empty() {
@@ -1154,6 +1159,69 @@ mod metric_tests {
             Arc::new(ide_core::NullSink),
             None,
         )
+    }
+
+    #[test]
+    fn removed_subtree_costs_one_key_scan_per_batch() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        let shared = shared(&root);
+        let mut batch = std::collections::BTreeSet::new();
+        for i in 0..40 {
+            let sub = root.join("gone").join(format!("p{}", i / 10));
+            std::fs::create_dir_all(&sub).unwrap();
+            std::fs::write(sub.join(format!("f{i}.txt")), "x").unwrap();
+            batch.extend([sub.join(format!("f{i}.txt")), sub, root.join("gone")]);
+        }
+        std::fs::write(root.join("keep.txt"), "x").unwrap();
+        shared.scan(None, None, SystemTime::now()).unwrap();
+        assert_eq!(shared.data.read().file_count, 41);
+
+        std::fs::remove_dir_all(root.join("gone")).unwrap();
+        shared.data.write().key_scans = 0;
+        // The watcher's batches are sorted: each directory precedes its children.
+        shared.process(vec![Job::Removed(batch.into_iter().collect())]);
+
+        let data = shared.data.read();
+        assert_eq!(data.file_count, 1);
+        assert!(data.get(&root.join("keep.txt")).is_some());
+        assert!(data.key_scans <= 1, "{} full key scans for one removed subtree", data.key_scans);
+    }
+
+    #[test]
+    fn batch_removal_handles_files_dirs_recreated_and_unknown_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        let shared = shared(&root);
+        for rel in ["gone/a.txt", "gone/deep/b.txt", "kept/c.txt", "redo/d.txt", "redo/e.txt", "lone.txt", "stay.txt"] {
+            let p = root.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "x").unwrap();
+        }
+        shared.scan(None, None, SystemTime::now()).unwrap();
+        assert_eq!(shared.data.read().file_count, 7);
+
+        std::fs::remove_dir_all(root.join("gone")).unwrap();
+        std::fs::remove_file(root.join("lone.txt")).unwrap();
+        std::fs::remove_file(root.join("redo/e.txt")).unwrap();
+        let outside = root.join("never/indexed/f.txt");
+        let removed = [
+            root.join("gone/deep/b.txt"),
+            root.join("gone"),
+            root.join("gone/deep"),
+            root.join("lone.txt"),
+            root.join("redo"),
+            root.join("redo/e.txt"),
+            root.join("stay.txt"),
+            outside,
+        ];
+        shared.process(vec![Job::Removed(removed.to_vec())]);
+
+        let data = shared.data.read();
+        let mut left: Vec<_> = data.paths().map(|p| p.strip_prefix(&root).unwrap().to_owned()).collect();
+        left.sort();
+        // `redo` and `stay.txt` still exist: they are re-read, not dropped.
+        assert_eq!(left, ["kept/c.txt", "redo/d.txt", "stay.txt"].map(PathBuf::from));
     }
 
     #[test]

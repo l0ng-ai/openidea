@@ -1,6 +1,7 @@
 /** Query History (browse / paste / delete) and Import Data from File dialogs. */
 import { useEffect, useMemo, useState } from "react";
 import { call, commands, type DbHistoryEntry } from "@/platform/ipc";
+import { readDesktopText } from "@/platform/desktopFiles";
 import { editorsFor } from "@/editor/api";
 import { Checkbox, Dialog, EmptyState, IconButton, Input, List, Select, T } from "@/ui";
 import { notifications } from "@/workbench/contributions";
@@ -157,7 +158,7 @@ export function ImportDialog({ id, schema, table }: { id: string; schema: string
         filters: [{ name: "CSV / TSV", extensions: ["csv", "tsv", "txt"] }],
       });
       if (typeof f !== "string") return;
-      const content = await call(commands.fsReadText(f));
+      const content = await readDesktopText(f);
       setFile(f);
       setText(content);
       setSep(guessSeparator(content));

@@ -64,7 +64,7 @@ JSON-RPC 2.0 with `Content-Length` framing (`ide-jsonrpc`), over the server's st
 | notification `plugin`   | server → client | `{ window, event }` from code plugins of the remote project                                                                                          |
 | request `plugin_secret` | server → client | `{ plugin, name }` → `string` or `null`: a secret from the desktop's keychain                                                                        |
 
-The protocol version is `PROTOCOL_VERSION` in `rpc.rs`. Errors are `IdeError`s carried as JSON in the JSON-RPC error message, so the frontend sees the same `kind` / `message` as for a local command.
+The protocol version is `PROTOCOL_VERSION` in `rpc.rs`; the desktop refuses a server that speaks another one. Change it when an existing command's argument or result changes shape. A binary argument is an `IpcBytes` (a base64 string in JSON, `string` in the bindings), never a `Vec<u8>`, which is an array of numbers about 3.6 times the size. Errors are `IdeError`s carried as JSON in the JSON-RPC error message, so the frontend sees the same `kind` / `message` as for a local command.
 
 ## Routing commands
 

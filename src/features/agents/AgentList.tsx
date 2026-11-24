@@ -1,5 +1,5 @@
 /**
- * Settings › Agents › Coding Agents: one searchable list of every agent, those this machine can run first
+ * Agent Setup lists every agent, with those this machine can run first
  * (built in, installed from the ACP Registry, or defined in an agent file), then those it
  * can install. The selected agent's page holds its actions, the settings its new tasks
  * start with, and how it is launched. Launch edits are staged until Apply; installs run in
@@ -679,7 +679,7 @@ function CustomAgentModal({
     try {
       const trimmed = name.trim();
       const title = trimmed ? tx`Select ${trimmed}` : tx("Select executable");
-      const path = await backend.chooseExecutable(title, command);
+      const path = await backend.chooseExecutable(title, command, "desktop");
       if (path) setCommand(path);
       setError(null);
     } catch (e) {

@@ -1104,9 +1104,9 @@ checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "cookie"
-version = "0.18.2"
+version = "0.18.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a373e3602691c3cdea496d2f0ee5935151e6168fe87739483c463db1b2f2f87"
+checksum = "d55f2d6c30eeec7d5c6f98bd4395d4abb1895629eab97ee6522d340623615f8a"
 dependencies = [
  "time",
  "version_check",
@@ -4180,8 +4180,6 @@ dependencies = [
  "rayon",
  "serde",
  "specta",
- "tracing",
- "tree-sitter",
 ]
 
 [[package]]
@@ -4191,7 +4189,6 @@ dependencies = [
  "ide-core",
  "serde",
  "specta",
- "tempfile",
  "which",
 ]
 
@@ -4253,6 +4250,7 @@ dependencies = [
 name = "ide-core"
 version = "0.1.50"
 dependencies = [
+ "base64 0.22.1",
  "dunce",
  "encoding_rs",
  "libc",
@@ -4277,7 +4275,6 @@ dependencies = [
  "serde_json",
  "specta",
  "tempfile",
- "tracing",
 ]
 
 [[package]]
@@ -4316,7 +4313,6 @@ dependencies = [
  "base64 0.22.1",
  "bb8",
  "blake3",
- "dirs 6.0.0",
  "dunce",
  "flate2",
  "futures",
@@ -4382,7 +4378,6 @@ dependencies = [
  "blake3",
  "dunce",
  "ed25519-dalek",
- "ide-core",
  "parking_lot",
  "semver",
  "serde",
@@ -4437,6 +4432,7 @@ version = "0.1.50"
 dependencies = [
  "criterion",
  "ide-core",
+ "ide-heap",
  "libc",
  "memmap2",
  "proptest",
@@ -4540,7 +4536,6 @@ dependencies = [
  "specta",
  "tempfile",
  "tokio",
- "tracing",
  "uuid",
 ]
 
@@ -4553,6 +4548,7 @@ dependencies = [
  "dunce",
  "globset",
  "ide-core",
+ "ide-index",
  "ide-language",
  "ignore",
  "nucleo-matcher",
@@ -4583,7 +4579,6 @@ name = "ide-jsonrpc"
 version = "0.1.50"
 dependencies = [
  "encoding_rs",
- "futures",
  "ide-core",
  "parking_lot",
  "serde",
@@ -4726,7 +4721,6 @@ dependencies = [
 name = "ide-notebook"
 version = "0.1.50"
 dependencies = [
- "futures",
  "ide-core",
  "ide-vfs",
  "jupyter-protocol",
@@ -4739,7 +4733,6 @@ dependencies = [
  "specta-typescript",
  "tempfile",
  "tokio",
- "tracing",
  "uuid",
  "windows-sys 0.61.2",
  "zeromq",
@@ -4759,7 +4752,6 @@ dependencies = [
  "serde_json",
  "specta",
  "tempfile",
- "thiserror 2.0.21",
  "tokio",
  "tracing",
  "url",
@@ -4846,6 +4838,7 @@ dependencies = [
 name = "ide-sdk"
 version = "0.1.50"
 dependencies = [
+ "base64 0.22.1",
  "dirs 6.0.0",
  "dunce",
  "flate2",
@@ -4857,6 +4850,7 @@ dependencies = [
  "quick-xml 0.42.0",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "specta",
  "tar",
  "tempfile",
@@ -6706,14 +6700,11 @@ dependencies = [
  "dunce",
  "gtk",
  "ide-agent",
- "ide-analysis",
  "ide-android",
- "ide-build",
  "ide-cli",
  "ide-clipboard",
  "ide-command",
  "ide-core",
- "ide-coverage",
  "ide-dap",
  "ide-db",
  "ide-docker",
@@ -6723,24 +6714,16 @@ dependencies = [
  "ide-github",
  "ide-host",
  "ide-http",
- "ide-index",
  "ide-jsonrpc",
  "ide-language",
- "ide-lsp",
  "ide-mcp",
- "ide-notebook",
  "ide-plugin",
  "ide-profiler",
  "ide-remote",
  "ide-run",
- "ide-scaffold",
  "ide-sdk",
- "ide-search",
- "ide-spell",
  "ide-ssh",
- "ide-syntax",
  "ide-terminal",
- "ide-text",
  "ide-tools",
  "ide-vcs",
  "ide-vfs",

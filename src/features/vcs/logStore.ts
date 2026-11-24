@@ -1336,15 +1336,20 @@ export function displayedLogGraph() {
 export async function goToParent(c: Commit) {
   const generation = useGitLog.getState().generation;
   const find = () => {
-    const { graph, commits } = displayedLogGraph();
-    const parents = graph.find((x) => x.id === commitKey(c))?.parents ?? [];
-    return { parents, candidates: commits.filter((x) => parents.includes(commitKey(x))) };
+    const { graph, unpruned, commits } = displayedLogGraph();
+    const key = commitKey(c);
+    const parents = graph.find((x) => x.id === key)?.parents ?? [];
+    // A filtered connection below the loaded page is only decided once its target loads.
+    const pending = unpruned.find((x) => x.id === key)?.parents ?? [];
+    const loaded = new Set(commits.map(commitKey));
+    return {
+      parents,
+      complete: pending.every((p) => loaded.has(p)),
+      candidates: commits.filter((x) => parents.includes(commitKey(x))),
+    };
   };
   if (!find().parents.length) return;
-  await pageUntil(() => {
-    const { parents, candidates } = find();
-    return candidates.length === parents.length;
-  });
+  await pageUntil(() => find().complete);
   if (useGitLog.getState().generation !== generation) return;
   const { candidates } = find();
   const chosen = candidates.length > 1 ? await chooseLogCommit(candidates, "Select Parent Commit") : candidates[0];
@@ -1395,6 +1400,16 @@ export function isMine(c: Commit, user: string | null): boolean {
   );
 }
 
+/** The repositories Go to Hash/Branch/Tag looks in: the shown log's, else the filtered ones, else every root. */
+export function goToRefRepositories(state: LogState = useGitLog.getState()): (string | null)[] {
+  const logTab = state.logTabs.find((t) => t.id === state.shownLog);
+  if (logTab?.repositories?.length) return logTab.repositories;
+  if (logTab?.repo) return [logTab.repo];
+  if (state.filters.repositories?.length) return state.filters.repositories;
+  const roots = useVcs.getState().roots;
+  return roots.length ? roots : [currentRepo()];
+}
+
 /**
  * Go to Hash/Branch/Tag: selects the commit `rev` names, paging the log until it is
  * loaded (and clearing the filters when they hide it). False when there is no such commit.
@@ -1410,18 +1425,7 @@ export async function goToRef(rev: string, repository?: string | null): Promise<
     await load;
   };
   const logTab = state.logTabs.find((t) => t.id === state.shownLog);
-  const repos =
-    repository !== undefined
-      ? [repository]
-      : logTab?.repositories?.length
-        ? logTab.repositories
-        : logTab?.repo
-          ? [logTab.repo]
-          : state.filters.repositories?.length
-            ? state.filters.repositories
-            : useVcs.getState().roots.length
-              ? useVcs.getState().roots
-              : [currentRepo()];
+  const repos = repository !== undefined ? [repository] : goToRefRepositories(state);
   if (repos.length > 1) {
     const candidates = (
       await Promise.all(

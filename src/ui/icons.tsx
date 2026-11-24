@@ -274,11 +274,12 @@ const ICONS = {
   "toolwindow-maven": "toolwindows/maven",
   "toolwindow-gradle": "toolwindows/gradle",
   "toolwindow-build": "toolwindows/build",
-  // Python environment sources: virtualenv / conda / uv / Poetry, and version managers (pyenv, mise, asdf).
+  // Python environment sources: virtualenv / conda / uv / Poetry / Hatch, and version managers (pyenv, mise, asdf).
   "python-venv": "openidea/python/venv",
   "python-conda": "openidea/python/conda",
   "python-uv": "openidea/python/uv",
   "python-poetry": "openidea/python/poetry",
+  "python-hatch": "openidea/python/hatch",
   "python-versions": "openidea/python/versions",
   // General UI
   "chevron-right": "general/chevronRight",

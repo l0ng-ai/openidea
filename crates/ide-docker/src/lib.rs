@@ -658,7 +658,12 @@ mod local_tests {
         let batches = Mutex::new(Vec::<Vec<u32>>::new());
         let result = batched(Duration::from_millis(30), &|b| batches.lock().unwrap().push(b), |line| {
             (0..1000).for_each(line);
-            std::thread::sleep(Duration::from_millis(80));
+            // Wait for the flusher to emit the whole burst rather than assuming a fixed
+            // sleep outlasts its scheduling: a loaded runner can starve the thread
+            // past the quiet spell and fold the trailing line into the burst.
+            while batches.lock().unwrap().iter().map(Vec::len).sum::<usize>() < 1000 {
+                std::thread::sleep(Duration::from_millis(5));
+            }
             line(1000);
             "done"
         });

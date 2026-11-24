@@ -225,7 +225,7 @@ fn package_of(metadata: &str) -> Option<PythonPackage> {
             .find_map(|l| l.strip_prefix(key).and_then(|v| v.strip_prefix(':')))
             .map(|v| v.trim().to_owned())
     };
-    Some(PythonPackage { name: header("Name")?, version: header("Version").unwrap_or_default() })
+    Some(PythonPackage { name: header("Name")?, version: header("Version").unwrap_or_default(), latest_version: None })
 }
 
 /// The neutral interpreter for a container Python of `version`: an empty virtualenv in

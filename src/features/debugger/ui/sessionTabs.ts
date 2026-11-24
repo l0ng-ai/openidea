@@ -1,5 +1,5 @@
 import { isBrowserLaunch } from "../browser";
-import type { DebugSession } from "../state";
+import { inTabOrder, type DebugSession } from "../state";
 
 export interface SessionTab {
   session: DebugSession;
@@ -18,7 +18,8 @@ export function sessionTabs(sessions: readonly DebugSession[]): SessionTab[] {
   const launches = new Set(
     sessions.filter((s) => s.parent == null && isBrowserLaunch(s.launch) && parents.has(s.id)).map((s) => s.id),
   );
-  return sessions
+  // Ordered by the root's slot: a browser page takes the place of its hidden launch.
+  return inTabOrder(sessions)
     .filter((s) => !launches.has(s.id))
     .map((s) => {
       const page = s.parent != null && launches.has(s.parent);

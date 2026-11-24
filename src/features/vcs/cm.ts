@@ -37,6 +37,7 @@ import { defaultKeymap } from "@codemirror/commands";
 import { search, searchKeymap } from "@codemirror/search";
 import { scrollbarMarks, type ScrollbarMark } from "@/editor/api";
 import { openideaHighlightStyle } from "@/editor/core/cm/highlight";
+import { inlineBackground } from "@/editor/core/cm/inlineBg";
 import { languageDescriptionFor, loadSupport } from "@/editor/core/cm/languages";
 import { occurrenceSearch } from "@/editor/core/cm/editing";
 import { findExtension } from "@/editor/core/cm/find";
@@ -315,10 +316,9 @@ class WorkingChunk extends WidgetType {
   toDOM(view: EditorView) {
     const block = document.createElement("div");
     block.className = "cm-unifiedWorkingChunk";
-    if (!this.text.length) {
-      block.appendChild(document.createElement("br"));
-      return block;
-    }
+    block.dataset.diffFirstLine = String(getOriginalDoc(view.state).lineAt(this.chunk.fromA).number);
+    const makeRow = () => block.appendChild(document.createElement("div"));
+    let row = makeRow();
     const tokens: Array<{ from: number; to: number; classes: string }> = [];
     const lang = view.state.facet(language);
     if (lang && this.text.length <= 3000)
@@ -345,16 +345,22 @@ class WorkingChunk extends WidgetType {
         (insideWord ? word.toA : word?.fromA) ?? this.text.length,
       );
       const text = this.text.slice(at, end);
-      if (insideToken || insideWord) {
-        const span = document.createElement("span");
-        span.className = [insideToken && token.classes, insideWord && "cm-unifiedWorkingWord"]
-          .filter(Boolean)
-          .join(" ");
-        span.textContent = text;
-        block.appendChild(span);
-      } else block.append(text);
+      const classes = [insideToken && token.classes, insideWord && "cm-unifiedWorkingWord"].filter(Boolean).join(" ");
+      for (const [index, part] of text.split("\n").entries()) {
+        if (index) {
+          if (!row.firstChild) row.appendChild(document.createElement("br"));
+          row = makeRow();
+        }
+        if (!part) continue;
+        if (classes) {
+          const span = row.appendChild(document.createElement("span"));
+          span.className = classes;
+          span.textContent = part;
+        } else row.append(part);
+      }
       at = end;
     }
+    if (!row.firstChild) row.appendChild(document.createElement("br"));
     return block;
   }
 }
@@ -549,7 +555,7 @@ export const viewerTheme = EditorView.theme(
       color: "var(--fg-secondary)",
     },
     ".cm-panels": { backgroundColor: "var(--bg-elev)", color: "var(--fg)" },
-    ".cm-searchMatch": { backgroundColor: "color-mix(in srgb, var(--accent) 22%, transparent)" },
+    ".cm-searchMatch": inlineBackground("color-mix(in srgb, var(--accent) 22%, transparent)"),
     ...findStyles,
     ...markWidgetStyles,
   },
@@ -590,7 +596,7 @@ function viewerEditorLook(): Extension {
   ];
 }
 
-class LineNumber extends GutterMarker {
+export class LineNumber extends GutterMarker {
   constructor(readonly number: string) {
     super();
   }
@@ -602,7 +608,7 @@ class LineNumber extends GutterMarker {
   }
 }
 
-function maxLineNumber(lines: number): number {
+export function maxLineNumber(lines: number): number {
   let last = 9;
   while (last < lines) last = last * 10 + 9;
   return last;
