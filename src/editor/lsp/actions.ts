@@ -78,6 +78,7 @@ async function mountedEditor(path: string, frames = 60): Promise<TextEditorHandl
   for (let i = 0; i < frames; i++) {
     const ed = editorsFor(path)[0];
     if (ed) return ed;
+    // oxlint-disable-next-line no-await-in-loop -- polling for the editor to mount; each delay follows the previous check
     await new Promise((r) => setTimeout(r, 16));
   }
   return null;
