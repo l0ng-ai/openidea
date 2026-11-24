@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeAction, getAction, isActionEnabled } from "@/platform/actions";
 import { commands, type JvmThreadsResult, type JvmThreadsUnavailable, type RunConfig } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
+import type { ProjectInfo } from "@/platform/ipc";
 import { runJvmToken } from "../../gradleRun";
 import { useStackTraces } from "../../stackTrace";
 import { useRun, type RunSession, type SessionStatus } from "../../store";
@@ -61,8 +63,11 @@ function onlyTab(): ThreadDumpTab {
   return tab;
 }
 
+const ROOT = "/w/demo";
+
 let dispose: () => void;
 beforeEach(() => {
+  useProject.setState({ project: { root: ROOT } as ProjectInfo, settings: null });
   dispose = activateThreadDumps();
   useStackTraces.setState({ tabs: [], dialog: null });
   notify.mockClear();
@@ -101,7 +106,7 @@ describe("run.dumpThreads", () => {
     await executeAction("run.dumpThreads");
     const tab = onlyTab();
     expect(tab.title).toBe("Threads: App");
-    expect(tab.source).toEqual({ run: 7, token: runJvmToken(app) });
+    expect(tab.source).toEqual({ run: 7, token: runJvmToken(app, ROOT) });
     expect(tab.dump.deadlocks).toHaveLength(1);
     expect(notify).not.toHaveBeenCalled();
   });
@@ -110,7 +115,8 @@ describe("run.dumpThreads", () => {
     start(config("application", { id: "app:Main Class" }));
     const dump = vi.spyOn(commands, "runJvmThreadDump").mockResolvedValue(answer(ready(jdk25Sync)));
     await executeAction("run.dumpThreads");
-    expect(dump).toHaveBeenCalledWith(7, "app_Main_Class");
+    expect(dump).toHaveBeenCalledWith(7, runJvmToken({ id: "app:Main Class" }, ROOT));
+    expect(dump.mock.calls[0]![1]).toMatch(/^app_Main_Class-/);
   });
 
   it("notifies why no dump was taken", async () => {

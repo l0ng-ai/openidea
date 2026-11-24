@@ -5,8 +5,8 @@ use ide_dap::{JvmMemoryUnavailable, JvmThreadsResult, JvmThreadsUnavailable};
 use ide_jvm_attach::{ProcEntry, is_hotspot, process_table, select_run_jvm};
 use std::sync::Arc;
 
-/// A `Thread.print -l` of the JVM a run started: the one carrying `token` (the run's marker
-/// property) when any does, else the deepest HotSpot JVM of the run's process tree.
+/// A `Thread.print -l` of the JVM a run started: the deepest HotSpot JVM of the run's process
+/// tree, else the one carrying `token` (the run's marker property).
 #[command(trust = trusted)]
 pub async fn run_jvm_thread_dump(
     host: &Arc<Host>,

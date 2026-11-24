@@ -4,6 +4,7 @@ import { setContext } from "@/platform/context";
 import { tx } from "@/platform/i18n";
 import { call, commands, type JvmThreadsResult, type RunConfig } from "@/platform/ipc";
 import { isJvmApplication } from "@/platform/javaLaunch";
+import { useProject } from "@/platform/project";
 import { notifications } from "@/workbench/contributions";
 import { runJvmToken } from "../gradleRun";
 import { addThreadDump, normalizeTrace, updateThreadDump } from "../stackTrace";
@@ -88,7 +89,7 @@ function dumpRunThreads(sessionId?: string): Promise<void> | undefined {
   const run = s.runId;
   const config = s.config;
   // Every run passes its token: only Gradle runs carry it, the others are found in the run's process tree.
-  const token = runJvmToken(config);
+  const token = runJvmToken(config, useProject.getState().project?.root ?? "");
   const name = config.name;
   return openThreadDump({
     title: tx`Threads: ${name}`,

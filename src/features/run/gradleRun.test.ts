@@ -87,7 +87,7 @@ describe("Build and run using: Gradle", () => {
       '-Dopenidea.run.args=["--port","8081 x"]',
       '-Dopenidea.run.jvmArgs=["-Xmx1g"]',
       `-Dopenidea.run.workingDir=${CORE}`,
-      `${DELEGATED_TOKEN}${runJvmToken(app)}`,
+      `${DELEGATED_TOKEN}${runJvmToken(app, ROOT)}`,
       ":billing:core:openideaRun",
     ]);
   });
@@ -105,13 +105,21 @@ describe("Build and run using: Gradle", () => {
     const token = (c: RunConfig) => c.args.filter((a) => a.startsWith(DELEGATED_TOKEN));
     const first = token(delegatedGradleConfig(app, "app", ctx)!);
     // A per-launch value would miss Gradle's configuration cache on every launch.
-    expect(first).toEqual([`${DELEGATED_TOKEN}${runJvmToken(app)}`]);
+    expect(first).toEqual([`${DELEGATED_TOKEN}${runJvmToken(app, ROOT)}`]);
     expect(token(delegatedGradleConfig(app, "app", { ...ctx, configurationCache: true })!)).toEqual(first);
   });
 
   it("token escapes unsafe characters", () => {
-    expect(runJvmToken({ id: "app:Main Class/x\\y" })).toBe("app_Main_Class_x_y");
-    expect(runJvmToken({ id: "a.b-c_9" })).toBe("a.b-c_9");
+    expect(runJvmToken({ id: "app:Main Class/x\\y" }, ROOT)).toMatch(/^app_Main_Class_x_y-[A-Za-z0-9]+$/);
+    expect(runJvmToken({ id: "a.b-c_9" }, ROOT)).toMatch(/^a\.b-c_9-[A-Za-z0-9]+$/);
+  });
+
+  it("token names the project as well as the configuration", () => {
+    const app = { id: "application:app:com.example.DemoApplication" };
+    expect(runJvmToken(app, ROOT)).toBe(runJvmToken({ ...app }, ROOT));
+    // Two worktrees of one project, or two projects with the same main class.
+    expect(runJvmToken(app, "/w/shop-feature")).not.toBe(runJvmToken(app, ROOT));
+    expect(runJvmToken(app, "/w/other")).not.toBe(runJvmToken(app, ROOT));
   });
 
   it("init scripts hand the token to the forked JVM in Run and Debug alike", () => {
@@ -324,9 +332,12 @@ describe("Gradle launch routing", () => {
   });
 
   it("marks the forked BootRun JVM with a stable per-configuration token", async () => {
+    useProject.setState({ project: { root: ROOT } as ProjectInfo, settings: null });
     const named = { ...boot, id: "boot app/1" } as RunConfig;
     const first = await gradleBootLaunch(named);
-    expect(first.args.filter((a) => a.startsWith(DELEGATED_TOKEN))).toEqual([`${DELEGATED_TOKEN}boot_app_1`]);
+    expect(first.args.filter((a) => a.startsWith(DELEGATED_TOKEN))).toEqual([
+      `${DELEGATED_TOKEN}${runJvmToken(named, ROOT)}`,
+    ]);
     expect((await gradleBootLaunch(named)).args).toEqual(first.args);
     // Debug adds its flag after the token; the token stays and is not repeated.
     const debug = jdwpLaunch(first)!;

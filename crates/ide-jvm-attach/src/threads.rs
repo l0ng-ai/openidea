@@ -52,18 +52,20 @@ fn parse_ps_line(line: &str) -> Option<ProcEntry> {
     Some(ProcEntry { pid: pid.parse().ok()?, ppid: ppid.parse().ok()?, command: command.trim().to_string() })
 }
 
-/// The JVM that runs a run configuration: the one carrying `token` when any does (not Gradle's own), else the
-/// deepest HotSpot JVM below `root` that is not Gradle's own (a Maven `spring-boot:run` forks
-/// the application under the Maven JVM). Ties go to the highest pid.
+/// The JVM that runs a run configuration: the deepest HotSpot JVM below `root` that is not
+/// Gradle's own (a Maven `spring-boot:run` forks the application under the Maven JVM), else
+/// the one carrying `token` (a Gradle daemon forks it outside the run's tree, which then holds
+/// only the Gradle client). Ties go to the highest pid.
 pub fn select_run_jvm(
     table: &[ProcEntry],
     root: u32,
     token: Option<&str>,
     is_hotspot: impl Fn(u32) -> bool,
 ) -> Option<u32> {
-    if let Some(token) = token.filter(|token| !token.is_empty()) {
-        let wanted = format!("{RUN_TOKEN_PROPERTY}{token}");
-        let tagged = table
+    // The tree first: a token is only as unique as the configuration and project it names.
+    deepest_jvm_in_tree(table, root, &is_hotspot).or_else(|| {
+        let wanted = format!("{RUN_TOKEN_PROPERTY}{}", token.filter(|token| !token.is_empty())?);
+        table
             .iter()
             // The Gradle client carries the token too: a delegated run passes it on its command line.
             .filter(|entry| {
@@ -72,12 +74,8 @@ pub fn select_run_jvm(
                     && is_hotspot(entry.pid)
             })
             .map(|entry| entry.pid)
-            .max();
-        if tagged.is_some() {
-            return tagged;
-        }
-    }
-    deepest_jvm_in_tree(table, root, &is_hotspot)
+            .max()
+    })
 }
 
 /// Confirmed HotSpot (`is_hotspot`) and, by its command line, not one of Gradle's own JVMs.
@@ -144,7 +142,7 @@ mod tests {
     }
 
     #[test]
-    fn select_prefers_token_and_skips_gradle_clients() {
+    fn select_falls_back_to_the_token_when_the_tree_holds_only_gradle() {
         let table = gradle_run();
         assert_eq!(select_run_jvm(&table, 10, Some("cfg-1"), not_the_shell), Some(50));
         assert_eq!(select_run_jvm(&table, 10, Some("cfg-2"), not_the_shell), None);
@@ -171,6 +169,17 @@ mod tests {
         assert_eq!(select_run_jvm(&alone, 10, Some("cfg-1"), not_the_shell), None);
         let launcher = entry(13, 10, "java -Dopenidea.run.token=cfg-1 org.gradle.launcher.GradleMain run");
         assert_eq!(select_run_jvm(&[entry(10, 1, "sh"), launcher], 10, Some("cfg-1"), not_the_shell), None);
+    }
+
+    #[test]
+    fn select_prefers_the_run_tree_over_a_token_elsewhere() {
+        // Another worktree's delegated JVM carries the same token as this plain run.
+        let table = vec![
+            entry(10, 1, "/bin/zsh"),
+            entry(11, 10, "/jdk/bin/java -Dopenidea.run.token=cfg-1 -cp app Main"),
+            entry(50, 40, "/jdk/bin/java -Dopenidea.run.token=cfg-1 -cp app Main"),
+        ];
+        assert_eq!(select_run_jvm(&table, 10, Some("cfg-1"), not_the_shell), Some(11));
     }
 
     #[test]
