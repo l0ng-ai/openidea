@@ -12,3 +12,12 @@
   font-weight: 600;
   letter-spacing: 0.02em;
 }
+.badge:has(> img) {
+  background: none;
+}
+/* A project's own icon fills its avatar. */
+.icon {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}

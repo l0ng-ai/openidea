@@ -1293,7 +1293,66 @@ pub(crate) fn logged_build_plan_failure(message: &str) -> Option<(String, String
     Some((reason, body))
 }
 
+/// How long a failed Gradle sync waits for jdtls' incompatible-JDK message (sent a few ms later).
+const GRADLE_JDK_MESSAGE_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Buildship's log when a Gradle sync fails ("Synchronize project app failed due to an error
+/// connecting to the Gradle build.", then the stack trace), as (project, notification body).
+/// jdtls logs it below error level, so without this the import fails silently: every Java file
+/// shows unresolved types and nothing says why. The deepest `Caused by` is the build's own error.
+pub(crate) fn gradle_sync_failure(message: &str) -> Option<(String, String)> {
+    let first = message.lines().next()?;
+    let (_, rest) = first.split_once("Synchronize project ")?;
+    let (project, _) = rest.split_once(" failed due to ")?;
+    let cause = message
+        .lines()
+        .rev()
+        .find_map(|l| l.trim_start().strip_prefix("Caused by: "))
+        .or_else(|| message.lines().nth(1))
+        .map(|l| match l.split_once(": ") {
+            // `org.gradle.Some.Exception: what happened` → what happened
+            Some((class, text)) if class.contains('.') && !class.contains(char::is_whitespace) => text,
+            _ => l,
+        })
+        .map(str::trim)
+        .filter(|c| !c.is_empty() && !c.starts_with("at "));
+    const MAX: usize = 500;
+    let cause = cause.map(|c| match c.char_indices().nth(MAX) {
+        Some((end, _)) => format!("{}…", &c[..end]),
+        None => c.to_owned(),
+    });
+    let body = match cause {
+        Some(cause) => format!(
+            "Gradle could not sync {project}. Java code insight may not work until the build syncs. Fix the build, then reload the Gradle project. Cause: {cause}"
+        ),
+        None => format!(
+            "Gradle could not sync {project}. Java code insight may not work until the build syncs. Fix the build, then reload the Gradle project."
+        ),
+    };
+    Some((project.to_owned(), body))
+}
+
 impl LspManager {
+    /// A failed Gradle sync of `project` (see [`gradle_sync_failure`]), shown once. jdtls follows
+    /// a sync that failed on an incompatible JDK with "Can't use Java … to import Gradle project
+    /// …", which has its own notification with the fix; wait for it so that one is the only one.
+    pub(crate) fn report_gradle_sync_failure(&self, (project, body): (String, String)) {
+        let Some(me) = self.me.upgrade() else { return };
+        self.runtime.spawn(async move {
+            tokio::time::sleep(GRADLE_JDK_MESSAGE_WAIT).await;
+            if me.shown_message_containing(SERVER, &format!(" to import Gradle project {project}")) {
+                return;
+            }
+            if me.first_message(SERVER, &body) {
+                me.sink().emit(ide_core::IdeEvent::Notify {
+                    level: ide_core::event::NotifyLevel::Error,
+                    title: "Gradle project sync failed".into(),
+                    body: Some(body),
+                });
+            }
+        });
+    }
+
     /// JDT LS aborted its import with `message`: when reserved Windows device names
     /// below `root` are the cause, say which (once). The walk runs off the RPC thread.
     pub(crate) fn report_import_failure(&self, root: PathBuf, message: String) {
@@ -1400,6 +1459,43 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn a_failed_gradle_sync_is_explained_with_its_root_cause() {
+        let log = "Nov 25, 2026, 2:00:14 PM Synchronize project repro failed due to an error connecting to the Gradle build.\n\
+            org.gradle.tooling.BuildActionFailureException: The supplied phased action failed with an exception.\n\
+            \tat org.gradle.tooling.internal.consumer.connection.PhasedActionAwareConsumerConnection.doRun(PhasedActionAwareConsumerConnection.java:58)\n\
+            Caused by: org.gradle.api.plugins.InvalidPluginException: An exception occurred applying plugin request [id: 'war']\n\
+            \tat x\n\
+            Caused by: java.lang.IllegalArgumentException: Unable to determine constructor argument #2: missing parameter of type IdeArtifactRegistry, or no service of type IdeArtifactRegistry.\n\
+            \tat org.gradle.groovy.scripts.DefaultScript.apply(DefaultScript.java:133)\n\
+            \t... 12 more";
+        let (project, body) = gradle_sync_failure(log).unwrap();
+        assert_eq!(project, "repro");
+        assert_eq!(
+            body,
+            "Gradle could not sync repro. Java code insight may not work until the build syncs. Fix the build, then reload the Gradle project. \
+            Cause: Unable to determine constructor argument #2: missing parameter of type IdeArtifactRegistry, or no service of type IdeArtifactRegistry."
+        );
+
+        // Without a `Caused by`, the logged exception's own message.
+        let (_, body) = gradle_sync_failure(
+            "Synchronize project app failed due to an error in the referenced Gradle build.\n\
+            org.gradle.tooling.BuildException: Could not run build action.\n\tat y",
+        )
+        .unwrap();
+        assert!(body.ends_with(" Cause: Could not run build action."), "{body}");
+
+        // A cause that is a plain sentence keeps its colons.
+        let (_, body) = gradle_sync_failure(
+            "Synchronize project app failed due to an error connecting to the Gradle build.\nx\nCaused by: Build failed: see above",
+        )
+        .unwrap();
+        assert!(body.ends_with(" Cause: Build failed: see above"), "{body}");
+
+        assert_eq!(gradle_sync_failure("Synchronizing projects\nCaused by: x.Y: z"), None);
+        assert_eq!(gradle_sync_failure("Failed to configure some Maven project(s)"), None);
     }
 
     #[test]

@@ -295,6 +295,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "web.openInBrowser": [],
   "debug.toggleBreakpoint": ["F9"],
   "debug.viewBreakpoints": [],
+  "debug.removeAllBreakpoints": [],
+  "debug.removeAllBreakpointsInFile": [],
   "debug.resume": ["F5"],
   "debug.stepOver": ["F10"],
   "debug.stepInto": ["F11"],

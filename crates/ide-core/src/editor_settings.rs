@@ -475,6 +475,12 @@ pub struct LanguageCodeStyle {
     /// PHP: align `=` of consecutive assignment statements after formatting.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub align_consecutive_assignments: Option<bool>,
+    /// SQL › Case › Keywords: `upper` | `lower` | `keep` (other languages ignore it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keyword_case: Option<String>,
+    /// SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identifier_case: Option<String>,
 }
 
 /// Editor › Code Style (General tab + per-language overrides).

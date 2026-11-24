@@ -892,6 +892,11 @@ export const commands = {
 	lspExecuteCommand: (doc: DocId, command: Command) => typedError<null, IdeError>(__TAURI_INVOKE("lsp_execute_command", { doc, command })),
 	lspExtractInterface: (request: RequestId, doc: DocId, pos: Pos, members: string[], name: string, destination: string, confirmation: string | null) => typedError<ServerRefactored, IdeError>(__TAURI_INVOKE("lsp_extract_interface", { request, doc, pos, members, name, destination, confirmation })),
 	lspExtractInterfaceInfo: (request: RequestId, doc: DocId, pos: Pos) => typedError<ExtractInterfaceInfo, IdeError>(__TAURI_INVOKE("lsp_extract_interface_info", { request, doc, pos })),
+	/**
+	 *  Where other files import the document's file (Find Usages on a file, a Vue component's
+	 *  usages). Cancel with `cancel_request(request)`.
+	 */
+	lspFileReferences: (request: RequestId, doc: DocId) => typedError<Location[], IdeError>(__TAURI_INVOKE("lsp_file_references", { request, doc })),
 	lspFormat: (doc: DocId, range: {
 	start: Pos,
 	end: Pos,
@@ -8857,6 +8862,10 @@ export type LanguageCodeStyle_Deserialize = {
 	alignKeyValuePairs?: boolean | null,
 	/**  PHP: align `=` of consecutive assignment statements after formatting. */
 	alignConsecutiveAssignments?: boolean | null,
+	/**  SQL › Case › Keywords: `upper` | `lower` | `keep` (other languages ignore it). */
+	keywordCase?: string | null,
+	/**  SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`. */
+	identifierCase?: string | null,
 };
 
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
@@ -8877,6 +8886,10 @@ export type LanguageCodeStyle_Serialize = {
 	alignKeyValuePairs?: boolean | null,
 	/**  PHP: align `=` of consecutive assignment statements after formatting. */
 	alignConsecutiveAssignments?: boolean | null,
+	/**  SQL › Case › Keywords: `upper` | `lower` | `keep` (other languages ignore it). */
+	keywordCase?: string | null,
+	/**  SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`. */
+	identifierCase?: string | null,
 };
 
 /**  Language identifier, e.g. `rust`, `typescript`, `kotlin`. Matches LSP `languageId`. */
@@ -9390,6 +9403,8 @@ export type LspRefreshKind = "inlayHints" | "semanticTokens" | "codeLens" |
 
 export type MainToolbarSettings = {
 	left?: string[],
+	/**  Centred in the toolbar (between the other two groups when they leave too little room). */
+	center?: string[],
 	right?: string[],
 	/**  Widgets the user removed. */
 	hidden?: string[],

@@ -148,3 +148,21 @@ describe("decorator names after an edit", () => {
     expect(long).toBeLessThan(short * 2);
   });
 });
+
+describe("JavaScript and TypeScript methods", () => {
+  it("marks instance and static methods, declarations and calls, but not library methods", () => {
+    const doc = Text.of(["run of get log"]);
+    const tokens = {
+      tokenTypes: ["method", "member", "function"],
+      tokenModifiers: ["declaration", "static", "defaultLibrary", "local"],
+      // run: instance method declaration; of: static member call; get: library method; log: local function.
+      data: [0, 0, 3, 0, 0b0001, 0, 4, 2, 1, 0b0010, 0, 7, 3, 0, 0b0100, 0, 11, 3, 2, 0b1000],
+    };
+    expect(semanticRanges(doc, tokens, false, "typescript").map((r) => r.className)).toEqual([
+      "cm-sem-function cm-sem-declaration cm-sem-js-instance-method",
+      "cm-sem-function cm-sem-static cm-sem-js-static-method",
+      "cm-sem-function cm-sem-builtin",
+      "cm-sem-function",
+    ]);
+  });
+});

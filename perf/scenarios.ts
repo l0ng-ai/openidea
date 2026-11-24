@@ -194,6 +194,141 @@ const consoleOutput: Scenario = {
 };
 
 /**
+ * Run console with 10 KiB long lines and high-rate output without newlines
+ * (with Find open while streaming). `OPENIDEA_PERF_SCALE` scales counts across
+ * 1× / 10× / 100× (default 10×).
+ *
+ * Why `consoleOutput` above missed the stall: its `SAMPLE_LINES`
+ * (`src/features/run/store.ts`) are short (~70–150 char), newline-terminated
+ * lines with Find closed, so it never runs link detection on multi-KiB lines.
+ * The `x` fill is the worst case for path matching: one long run of path characters.
+ */
+const consoleLongLines: Scenario = {
+  id: "consoleLongLines",
+  title: "Stream 10 KiB long lines and no-newline output in the Run console",
+  async run(h) {
+    const scale = Math.max(1, Number(process.env.OPENIDEA_PERF_SCALE ?? "10"));
+    const longCount = Math.round(100 * scale);
+    const longPerFrame = Math.max(2, Math.ceil(longCount / 50));
+    const noLfCount = Math.round(1_000 * scale);
+    const noLfPerFrame = Math.max(20, Math.ceil(noLfCount / 60));
+
+    type ConsolePerfWindow = {
+      __openideaPerf: {
+        openConsoleSession(mode: "long" | "no-lf"): Promise<string>;
+        streamConsoleOutput(o: {
+          mode: "long" | "no-lf";
+          count: number;
+          perFrame: number;
+          sessionId?: string;
+        }): Promise<{
+          lines: number;
+          dropped: number;
+        }>;
+      };
+    };
+
+    await h.openFile(SAMPLE);
+    const refresh = await h.refreshMs();
+
+    // Phase 1: 10 KiB unique long lines streaming (each splits at 8,000 + 2,239 chars in ConsoleModel).
+    const longSessionId = await h.page.evaluate(() =>
+      (window as never as ConsolePerfWindow).__openideaPerf.openConsoleSession("long"),
+    );
+    const longLog = h.page.locator('section[aria-label="Run"] [role="log"][aria-label="Sample long output"]').first();
+    await longLog.waitFor({ timeout: 10_000 });
+    const tLong = await h.now();
+    await h.inPage((p) => p.startFrames());
+    const longStream = h.page.evaluate(
+      async ({ sessionId, count, perFrame }) => {
+        const started = performance.now();
+        await (window as never as ConsolePerfWindow).__openideaPerf.streamConsoleOutput({
+          mode: "long",
+          sessionId,
+          count,
+          perFrame,
+        });
+        return performance.now() - started;
+      },
+      { sessionId: longSessionId, count: longCount, perFrame: longPerFrame },
+    );
+    const longBox = await longLog.boundingBox();
+    if (longBox) {
+      await h.page.mouse.move(longBox.x + longBox.width / 2, longBox.y + longBox.height / 2);
+      for (let i = 0; i < 6; i++) {
+        await h.page.mouse.wheel(0, -180);
+        await h.page.waitForTimeout(40);
+      }
+    }
+    const longStreamMs = await longStream;
+    const longFrames = await h.inPage((p) => p.stopFrames());
+    const longSummary = frameSummary(longFrames, refresh);
+    const longTbtMs = totalBlockingTime(await h.longTasksSince(tLong));
+    const longDomNodes = await h.page.evaluate(() => document.querySelectorAll("*").length);
+
+    // Phase 2: mount the no-newline session and open Find ("t") before measurement or streaming starts,
+    // so the entire stream is measured, then scroll horizontally across the 8,000-char rows.
+    const noLfSessionId = await h.page.evaluate(() =>
+      (window as never as ConsolePerfWindow).__openideaPerf.openConsoleSession("no-lf"),
+    );
+    const noLfLog = h.page.locator('section[aria-label="Run"] [role="log"][aria-label="Sample no-lf output"]').first();
+    await noLfLog.waitFor({ timeout: 10_000 });
+    const findBtn = h.page.locator('section[aria-label="Run"] button[aria-label="Find…"]').first();
+    await findBtn.waitFor({ timeout: 10_000 });
+    await findBtn.click();
+    const findInput = h.page.locator("[data-console-find] input").first();
+    await findInput.waitFor({ timeout: 10_000 });
+    await findInput.fill("t");
+
+    const tNoLf = await h.now();
+    await h.inPage((p) => p.startFrames());
+    const noLfStreamMs = await h.page.evaluate(
+      async ({ sessionId, count, perFrame }) => {
+        const started = performance.now();
+        await (window as never as ConsolePerfWindow).__openideaPerf.streamConsoleOutput({
+          mode: "no-lf",
+          sessionId,
+          count,
+          perFrame,
+        });
+        return performance.now() - started;
+      },
+      { sessionId: noLfSessionId, count: noLfCount, perFrame: noLfPerFrame },
+    );
+    // Sweep scrollLeft across the wide 8,000-char rows with Find open.
+    await noLfLog.evaluate(async (el) => {
+      const maxLeft = Math.max(0, el.scrollWidth - el.clientWidth);
+      const steps = 12;
+      for (let i = 1; i <= steps; i++) {
+        el.scrollLeft = Math.round((maxLeft * i) / steps);
+        await new Promise(requestAnimationFrame);
+      }
+      el.scrollLeft = 0;
+      await new Promise(requestAnimationFrame);
+    });
+    const noLfFrames = await h.inPage((p) => p.stopFrames());
+    const noLfSummary = frameSummary(noLfFrames, refresh);
+    const noLfTbtMs = totalBlockingTime(await h.longTasksSince(tNoLf));
+    const noLfDomNodes = await h.page.evaluate(() => document.querySelectorAll("*").length);
+
+    return {
+      longStreamMs,
+      longFrameP95Ms: longSummary.frameP95Ms,
+      longFrameMaxMs: longSummary.frameMaxMs,
+      longDroppedFramesPct: longSummary.droppedFramesPct,
+      longTbtMs,
+      longDomNodes,
+      noLfStreamMs,
+      noLfFrameP95Ms: noLfSummary.frameP95Ms,
+      noLfFrameMaxMs: noLfSummary.frameMaxMs,
+      noLfDroppedFramesPct: noLfSummary.droppedFramesPct,
+      noLfTbtMs,
+      noLfDomNodes,
+    };
+  },
+};
+
+/**
  * A full-screen agent TUI (Claude Code, Grok) repainting the terminal 10 times a second
  * for 6 s — every row rewritten, only the spinner row changed — while the user types in
  * an editor. Guards the terminal's unchanged-row skip: without it every frame restyles
@@ -943,6 +1078,7 @@ export const SCENARIOS: Scenario[] = [
   typingAngular,
   completion,
   consoleOutput,
+  consoleLongLines,
   terminalTui,
   gitLog,
   gitLogScrollbar,
