@@ -495,6 +495,8 @@ const CSS_TAGS: Parameters<typeof styleTags>[0] = {
 export const JAVA_TAGS: Parameters<typeof styleTags>[0] = {
   "MarkerAnnotation/Identifier Annotation/Identifier MarkerAnnotation Annotation": t.annotation,
   this: t.keyword,
+  // IntelliJ has no Java label colour: `outer:` stays plain text, like `break outer`.
+  Label: t.variableName,
 };
 
 // @lezer/go leaves `default` uncoloured, unlike `case` and `switch`.
