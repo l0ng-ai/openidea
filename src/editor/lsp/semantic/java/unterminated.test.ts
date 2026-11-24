@@ -43,6 +43,15 @@ describe("Java unterminated literals", () => {
     ).toEqual([]);
   });
 
+  it("leaves an unterminated text block to the parser, which runs it to the end of the file", () => {
+    expect(strings('class A {\n  String t = """\n    abc "q" \\n\n  int x = 1;\n}\n')).toEqual([]);
+    expect(strings('class A { String t = """\n')).toEqual([]);
+  });
+
+  it('colours only the quote after `""` when a text block opener has no line break', () => {
+    expect(strings('class A { String t = """; }')).toEqual(['"; }']);
+  });
+
   it("starts after a closed string on the same line", () => {
     expect(strings('class A { String s = "a" + "bc; }')).toEqual(['"bc; }']);
   });
