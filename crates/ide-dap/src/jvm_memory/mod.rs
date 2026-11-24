@@ -194,6 +194,16 @@ fn histogram_pid(session: &Session) -> Result<Option<i32>, JvmMemoryUnavailable>
     Ok(None)
 }
 
+/// Whether `session` is a JVM session attached to `run` that may hold `pid`: its JVM is `pid` or
+/// not located yet.
+pub(crate) fn attached_to_run(session: &Session, run: ide_core::RunId, pid: u32) -> bool {
+    let located = session.jvm_pid.load(Ordering::Acquire);
+    session.run == Some(run)
+        && JVM_MEMORY_ADAPTERS.contains(&session.adapter.as_str())
+        && !session.terminated.load(Ordering::Acquire)
+        && (located <= 0 || located == i64::from(pid))
+}
+
 /// Whether `session` debugs the JVM `pid`: the program it launched or the JVM its attach found.
 pub(crate) fn debugs_jvm(session: &Session, pid: u32) -> bool {
     let jvm = if session.request == "launch" { launch_pid(session) } else { session.jvm_pid.load(Ordering::Acquire) };

@@ -22,9 +22,9 @@ pub async fn run_jvm_thread_dump(
         Ok(pid) => pid,
         Err(refused) => return Ok(refused),
     };
-    // A debugger attached to this JVM (Debug of a build tool's run, Attach to Process) may hold
-    // it suspended, which only its session knows.
-    if let Some(dump) = host.debugger.debugged_jvm_thread_dump(pid).await {
+    // A debugger attached to this run or JVM (Debug of a build tool's run, Attach to Process)
+    // may hold it suspended, which only its session knows.
+    if let Some(dump) = host.debugger.debugged_jvm_thread_dump(id, pid).await {
         return dump;
     }
     // The attach handshake blocks for seconds.

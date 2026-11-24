@@ -1314,6 +1314,46 @@ async fn a_session_debugs_the_jvm_it_launched_or_found() {
     assert!(!debugs_jvm(&bare_session("attach").session, 0));
 }
 
+#[tokio::test]
+async fn a_session_attached_to_a_run_may_hold_its_jvm_before_it_is_located() {
+    let run = ide_core::RunId(7);
+    let mut bare = bare_session("attach");
+    Arc::get_mut(&mut bare.session).unwrap().run = Some(run);
+    // Gradle bootRun Debug opens no attach listener, so the attach-time scan finds no pid.
+    assert!(attached_to_run(&bare.session, run, 555));
+    assert!(!attached_to_run(&bare.session, ide_core::RunId(8), 555));
+    bare.session.jvm_pid.store(4242, Ordering::Release);
+    assert!(attached_to_run(&bare.session, run, 4242));
+    assert!(!attached_to_run(&bare.session, run, 555), "another JVM of the same run");
+    bare.session.terminated.store(true, Ordering::Release);
+    assert!(!attached_to_run(&bare.session, run, 4242));
+
+    let mut python = bare_session_of("debugpy", "attach");
+    Arc::get_mut(&mut python.session).unwrap().run = Some(run);
+    assert!(!attached_to_run(&python.session, run, 555));
+    assert!(!attached_to_run(&bare_session("attach").session, run, 555), "not linked to a run");
+}
+
+#[tokio::test]
+async fn run_dump_through_a_linked_session_whose_jvm_is_not_located() {
+    // Stopped at a breakpoint, no listener: refused with the resume reason, no listener start.
+    let bare = stopped_attach(0);
+    let fake = Arc::new(dumping_threads(99, Vec::new()));
+    let probe: Arc<dyn AttachProbe> = fake.clone();
+    let r = known_pid_dump(&bare.session, |_| probe, 555).await.unwrap();
+    assert_eq!(threads_unavailable(r), threads_jvm(JvmMemoryUnavailable::ListenerNotRunning));
+    assert!(fake.commands.lock().is_empty());
+
+    // Running: the run's JVM is dumped under the session's turn.
+    let bare = bare_session("attach");
+    let fake = Arc::new(dumping_threads(99, vec![Ok(THREADS.into())]));
+    let probe: Arc<dyn AttachProbe> = fake.clone();
+    let r = known_pid_dump(&bare.session, |_| probe, 555).await.unwrap();
+    let JvmThreadsResult::Ready { dump } = r else { panic!("{r:?}") };
+    assert_eq!((dump.pid, dump.taken_while_suspended), (555, false));
+    assert_eq!(*fake.ensured.lock(), [555]);
+}
+
 /// A run's JVM held at a breakpoint by a debugger attached to it (Debug of `spring-boot:run`).
 fn stopped_attach(pid: u32) -> BareSession {
     let bare = bare_session("attach");

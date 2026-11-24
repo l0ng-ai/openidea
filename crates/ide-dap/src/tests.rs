@@ -3074,6 +3074,41 @@ async fn local_attach_finds_its_jvm_before_the_debugger_connects() {
     assert_eq!(session.jvm_pid.load(Ordering::Acquire), 4242);
 }
 
+/// Gradle bootRun Debug: the JVM has no attach listener, so the session never learns its pid. The
+/// run's dump still goes through the session and, the program being stopped, signals nothing.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_run_dump_goes_through_the_session_attached_to_the_run() {
+    let h = harness(Script::default());
+    let project = tempfile::tempdir().unwrap();
+    let mut cfg = remote_attach("java-debug", project.path());
+    let mut extra: Value = serde_json::from_str(cfg.extra_json.as_deref().unwrap()).unwrap();
+    extra[RUN_LINK] = json!(7);
+    cfg.extra_json = Some(extra.to_string());
+    let id = h.start(cfg).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    assert!(h.request("attach")["arguments"].get(RUN_LINK).is_none(), "IDE-side only");
+    let session = h.manager.session(id).unwrap();
+    assert_eq!((session.run, session.jvm_pid.load(Ordering::Acquire)), (Some(RunId(7)), 0));
+
+    // `sleep` stands in for the JVM: a SIGQUIT would end it.
+    let mut jvm = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+    let pid = jvm.id();
+    assert_eq!(h.manager.jvm_session_of(RunId(7), pid).map(|s| s.id), Some(id));
+    assert!(h.manager.jvm_session_of(RunId(8), pid).is_none());
+    let dump = h.manager.debugged_jvm_thread_dump(RunId(7), pid).await.unwrap().unwrap();
+    let alive = jvm.try_wait().unwrap().is_none();
+    let _ = jvm.kill();
+    let _ = jvm.wait();
+    assert_eq!(
+        dump,
+        JvmThreadsResult::Unavailable {
+            reason: JvmThreadsUnavailable::Jvm { reason: JvmMemoryUnavailable::ListenerNotRunning }
+        }
+    );
+    assert!(alive, "the stopped JVM was signalled");
+}
+
 /// A run's Dump Threads reaches the session attached to the run's JVM, not the plain run path.
 #[cfg(unix)]
 #[tokio::test]
@@ -3083,9 +3118,9 @@ async fn a_run_jvm_is_found_by_the_session_attached_to_it() {
     let mut cfg = java_config("attach");
     cfg.extra_json = Some(json!({"hostName": "127.0.0.1", "port": 5005}).to_string());
     let id = h.start(cfg).await.unwrap();
-    assert_eq!(h.manager.jvm_session_of(4242).map(|s| s.id), Some(id));
-    assert!(h.manager.jvm_session_of(4243).is_none());
-    assert!(h.manager.debugged_jvm_thread_dump(4243).await.is_none());
+    assert_eq!(h.manager.jvm_session_of(RunId(1), 4242).map(|s| s.id), Some(id));
+    assert!(h.manager.jvm_session_of(RunId(1), 4243).is_none());
+    assert!(h.manager.debugged_jvm_thread_dump(RunId(1), 4243).await.is_none());
 }
 
 #[cfg(unix)]
