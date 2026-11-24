@@ -770,8 +770,8 @@ export interface EditorService {
   openTabs?(): OpenEditorTab[];
   /** Input of the tab `tabId` in pane `paneId` (dragging tabs between views), null if there is none. */
   tabInput?(paneId: string, tabId: string): EditorInput | null;
-  /** Input of the active tab (any kind), if any. */
-  activeInput?(): EditorInput | null;
+  /** Input of the active tab, optionally restricted to the replaceable preview tab. */
+  activeInput?(options?: { previewOnly?: boolean }): EditorInput | null;
   /** Calls `fn` whenever the active tab changes; returns the unsubscribe. */
   onActiveInputChange?(fn: (input: EditorInput | null) => void): () => void;
   /**

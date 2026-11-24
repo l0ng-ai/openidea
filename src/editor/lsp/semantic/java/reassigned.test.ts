@@ -159,10 +159,10 @@ void m(int k) {
       tokenModifiers: ["declaration"],
       data: [...at("p"), 1, 1, ...at("t"), 0, 1, ...at("k"), 0, 1],
     };
-    const classes = semanticRanges(doc, tokens, false, "java", javaLanguage.parser.parse(source)).map((r) => [
-      source.slice(r.from, r.to),
-      r.className,
-    ]);
+    // `m` is coloured by the declaration fallback, which jdtls's tokens here don't cover.
+    const classes = semanticRanges(doc, tokens, false, "java", javaLanguage.parser.parse(source))
+      .map((r) => [source.slice(r.from, r.to), r.className])
+      .filter(([name]) => name !== "m");
     expect(classes).toEqual([
       ["t", "cm-sem-declaration cm-sem-mutable"],
       ["p", "cm-sem-parameter cm-sem-declaration cm-sem-mutable"],

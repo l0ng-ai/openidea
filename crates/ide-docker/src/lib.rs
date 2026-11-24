@@ -315,6 +315,17 @@ pub fn container_stats(ep: &DockerEndpoint, id: &str) -> IdeResult<DockerContain
     parse_container_stats(&out).ok_or_else(|| IdeError::not_found("no container stats returned"))
 }
 
+/// Per-volume disk usage (`docker system df -v --format '{{json .Volumes}}'`).
+pub fn volume_sizes(ep: &DockerEndpoint) -> IdeResult<std::collections::BTreeMap<String, String>> {
+    if docker_executable().is_none()
+        && let Some(sizes) = engine::volume_sizes(ep, QUICK)
+    {
+        return sizes;
+    }
+    let out = run(ep, &["system", "df", "-v", "--format", "{{json .Volumes}}"], QUICK)?;
+    Ok(parse_volume_sizes(&out))
+}
+
 /// How long log lines collect before they are handed on together.
 const LOG_BATCH: Duration = Duration::from_millis(30);
 
