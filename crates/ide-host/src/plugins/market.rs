@@ -416,17 +416,14 @@ impl PluginHost {
     fn fetch_market_package(&self, url: &str, entry: &IndexEntry, archive: &Path) -> IdeResult<PathBuf> {
         let bytes = read_url(url, MAX_PACKAGE).map_err(IdeError::unavailable)?;
         std::fs::write(archive, bytes)?;
-        let dir = self.unpack_package(archive);
-        // The archive stays needed only until it is unpacked; a failed source leaves none behind.
+        let unpacked = self.unpack_package(archive);
+        // The archive is needed only until it is unpacked; a failed source leaves none behind.
         let _ = std::fs::remove_file(archive);
-        let staged = dir?;
-        match self.verify_market_package(&staged, entry) {
-            Ok(()) => Ok(staged),
-            Err(e) => {
-                let _ = std::fs::remove_dir_all(&staged);
-                Err(e)
-            }
-        }
+        let dir = unpacked?;
+        self.verify_market_package(&dir, entry).inspect_err(|_| {
+            let _ = std::fs::remove_dir_all(&dir);
+        })?;
+        Ok(dir)
     }
 
     /// Whether the unpacked package in `dir` is the one `entry` names: same id, version and
@@ -447,6 +444,9 @@ impl PluginHost {
     }
 
     /// Unpacks a package file (`.oiplugin`, or a `.zip` of a package) next to the downloads; returns the folder.
+    ///
+    /// A package that fails to unpack leaves nothing: the folder is removed, so a half-written
+    /// zip is never mistaken for a package (a mirror's bytes reach here before they are checked).
     pub fn unpack_package(&self, archive: &Path) -> IdeResult<PathBuf> {
         let stem = archive.file_stem().and_then(|s| s.to_str()).unwrap_or("package");
         let dir = self.plugins_dir.join(DOWNLOADS).join(format!("{stem}-{}", std::process::id()));
@@ -454,16 +454,14 @@ impl PluginHost {
         let unpacked = match package::unpack(archive, &dir) {
             Ok(unpacked) => unpacked,
             Err(e) => {
-                // A zip that fails midway has written part of itself: none of it stays.
                 let _ = std::fs::remove_dir_all(&dir);
                 return Err(IdeError::invalid(e));
             }
         };
         // Kept with the files: install checks it and keeps it with the installed copy.
         if let Some(sig) = unpacked.signature {
-            let written = serde_json::to_string_pretty(&sig)
-                .map_err(|e| IdeError::internal(e.to_string()))
-                .and_then(|json| std::fs::write(dir.join(SIGNATURE_FILE), json).map_err(IdeError::from));
+            let json = serde_json::to_string_pretty(&sig).map_err(|e| IdeError::internal(e.to_string()));
+            let written = json.and_then(|json| std::fs::write(dir.join(SIGNATURE_FILE), json).map_err(IdeError::from));
             if let Err(e) = written {
                 let _ = std::fs::remove_dir_all(&dir);
                 return Err(e);
@@ -622,8 +620,8 @@ pub(super) fn read_signature(dir: &Path) -> Option<PackageSignature> {
 /// The first `candidate` whose `attempt` succeeds, with its index.
 ///
 /// A mirror is a third party: when one fails, that failure is its own and the official host
-/// below still gets its turn, its reason folded into whatever the official host reports. The
-/// official host's own failure is the download's and is returned as it is.
+/// below still gets its turn. The official host is the last candidate, so its failure is the
+/// download's: returned as it is when nothing came before it, else with the mirrors' reasons.
 fn try_sources<T>(
     candidates: &[mirror::Candidate],
     mut attempt: impl FnMut(usize, &mirror::Candidate) -> IdeResult<T>,
@@ -632,8 +630,8 @@ fn try_sources<T>(
     for (index, candidate) in candidates.iter().enumerate() {
         match attempt(index, candidate) {
             Ok(value) => return Ok((value, index)),
+            // A mirror's failure is its own: the next source still gets a turn.
             Err(e) if candidate.mirror.is_some() => failures.push(format!("{}: {}", candidate.describe(), e.message)),
-            // Nothing was folded in: the official host alone failed, and its reason stands.
             Err(e) if failures.is_empty() => return Err(e),
             Err(e) => {
                 failures.push(format!("{}: {}", candidate.describe(), e.message));
