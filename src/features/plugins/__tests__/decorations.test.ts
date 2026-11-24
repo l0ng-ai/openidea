@@ -412,7 +412,7 @@ it.each([
   expect(card.style.width).toBe(`${width}px`);
   expect(card.style.height).toBe(`${height}px`);
   resizePointer(window, "pointerup", 300 + dx, 220 + dy, 0);
-  expect(document.documentElement.hasAttribute("data-drag-cursor")).toBe(false);
+  expect(!!document.querySelector("[data-drag-cursor-surface]")).toBe(false);
 });
 
 it("anchors a long-line conversation to its model label and follows its rendered position", async () => {
@@ -499,7 +499,7 @@ it.each(["Escape", "outside pointer", "window blur", "window leave", "editor des
     const handle = card.querySelector<HTMLButtonElement>('button[data-edge="e"]')!;
     resizePointer(handle, "pointerdown", 490, 220);
     resizePointer(window, "pointermove", 570, 220);
-    expect(document.documentElement.hasAttribute("data-drag-cursor")).toBe(true);
+    expect(!!document.querySelector("[data-drag-cursor-surface]")).toBe(true);
     if (action === "Escape") window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     else if (action === "outside pointer") resizePointer(document.body, "pointerdown", 10, 10);
     else if (action === "window blur") window.dispatchEvent(new Event("blur"));
@@ -507,7 +507,7 @@ it.each(["Escape", "outside pointer", "window blur", "window leave", "editor des
       document.documentElement.dispatchEvent(new MouseEvent("mouseleave", { relatedTarget: null }));
     else editor.view.destroy();
     expect(card.isConnected).toBe(false);
-    expect(document.documentElement.hasAttribute("data-drag-cursor")).toBe(false);
+    expect(!!document.querySelector("[data-drag-cursor-surface]")).toBe(false);
     resizePointer(window, "pointermove", 800, 220);
     expect(card.style.width).toBe("480px");
   },
