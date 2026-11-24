@@ -5,8 +5,8 @@ import { provideNotificationService, type NotificationService } from "@/workbenc
 import { createMemoryPluginsBackend, setPluginsBackend } from "../backend";
 import { handleRuntimeEvent } from "../runtimeUi";
 
-const nativeOpen = vi.hoisted(() => vi.fn());
-vi.mock("@tauri-apps/plugin-dialog", () => ({ open: nativeOpen }));
+const { nativeOpen, nativeSave } = vi.hoisted(() => ({ nativeOpen: vi.fn(), nativeSave: vi.fn() }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: nativeOpen, save: nativeSave }));
 vi.mock("@/platform/ipc", async (original) => ({ ...(await original<object>()), isTauri: () => true }));
 const answerPrompt = vi.fn().mockResolvedValue(undefined);
 let notes: Parameters<NotificationService["notify"]>[0][];
@@ -28,6 +28,28 @@ const ask = (id: string) =>
   });
 
 describe("project UI requests", () => {
+  it.each([false, true])("chooses a file on the calling host (save=%s)", async (save) => {
+    const picker = save ? nativeSave : nativeOpen;
+    picker.mockResolvedValueOnce("C:\\work\\data.parquet").mockResolvedValueOnce(null);
+    const filters = [{ name: "Data", extensions: ["parquet", "csv"] }];
+    const request = (id: string) =>
+      handleRuntimeEvent({
+        type: "promptRequested",
+        pluginId: "p",
+        promptId: id,
+        prompt: { kind: "pickFile", title: "Choose data", save, name: "result.parquet", filters },
+      });
+    request("chosen");
+    await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("chosen", ["C:/work/data.parquet"]));
+    expect(picker).toHaveBeenCalledWith(
+      save
+        ? { title: "Choose data", filters, defaultPath: "result.parquet" }
+        : { title: "Choose data", filters, directory: false, multiple: false, defaultPath: undefined },
+    );
+    request("dismissed");
+    await waitFor(() => expect(answerPrompt).toHaveBeenCalledWith("dismissed", null));
+  });
+
   it("returns an absolute directory as an IPC path using the supplied title and initial path", async () => {
     nativeOpen.mockResolvedValue("C:\\work\\repo");
     ask("directory");

@@ -432,6 +432,10 @@ are always available. Calling a gated function without its capability returns
 API 1.16.0 is in development on `main`. Use `engines.openidea = "^1.16"` and the
 matching SDK. Plugins for 1.15 and earlier keep working. New in 1.16:
 
+- `host::pick_file(title, &dialog)` lets an interactive command or view event choose an existing file
+  or a save destination. The path belongs to the host running the project, including in remote windows.
+  See [File selection](#file-selection-api-116).
+
 - [Editor decorations](#editor-and-project-snapshots-api-14):
   `host::set_markdown_decorations` (`decorations.set-markdown`, API 1.16) draws
   the same line-end labels as `set_decorations`, and renders each item's
@@ -3172,6 +3176,14 @@ A new host function touches:
 Then run `plugins/build.sh`; CI's `plugins` job runs `plugins/build.sh --check`
 plus fmt, clippy (host and wasm) and the tests of the SDK, the official
 plugins and the fixtures.
+
+### File selection (API 1.16)
+
+Call `host::pick_file(title, &FileDialog { save, name, filters })` from an interactive command or view event.
+Set `save` to choose a destination and `name` to suggest a filename. Each `FileFilter` names a group of
+extensions, for example `["parquet", "csv"]`. The result is an absolute host path or `None` when dismissed.
+The component uses its existing capabilities to access the file. A web view can start the operation by
+posting a message to the component.
 
 ### Directory selection and opening projects (API 1.3)
 

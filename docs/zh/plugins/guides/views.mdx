@@ -182,6 +182,10 @@ fn handle(&mut self, _view: &str, event: ViewEvent, ctx: &Invocation) -> Result<
 `engines.openidea = "^1.16"`。IDE 打开文件时无需创建文本文档。页面可以访问只读文档的文件名，并通过网页视图桥接
 API 分段读取文件。插件代码收到此编辑器的消息时，编辑器上下文指向当前打开的二进制文件。
 
+如果组件需要文件路径，可以从页面发送消息，在处理视图事件时调用 `host::pick_file`（API 1.16）。
+该方法返回项目所在主机上的路径，取消时返回 `None`。例如，Parquet 查看器可选择第二个数据集，
+再使用已获授权的 DuckDB 进程进行比较。若需要在页面中读写文件内容，请使用 `openFile` 或 `saveFile`。
+
 ## HTML 主体
 
 `Body::Html` 在沙箱 frame 中运行：不透明源（opaque origin），CSP 只允许其内联脚本、内联样式和 `data:` 图片，

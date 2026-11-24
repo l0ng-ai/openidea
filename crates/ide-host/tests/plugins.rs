@@ -5421,6 +5421,34 @@ fn project_notifications_go_to_a_window_of_that_project_only() {
 }
 
 #[test]
+fn file_prompts_return_the_path_from_the_calling_window_without_a_capability() {
+    use ide_plugin::{PluginFileFilter, Prompt};
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    f.host.set_capability("jobs", "project.read", false).unwrap();
+    for name in [None, Some("result.parquet")] {
+        let (result, prompt) = run_and_answer(&f, "pick-file", name, Some(&["C:/data/chosen.parquet"]), Duration::ZERO);
+        assert_eq!(result.unwrap().as_deref(), Some("C:/data/chosen.parquet"));
+        assert_eq!(
+            prompt,
+            Prompt::PickFile {
+                title: "Data file".into(),
+                save: name.is_some(),
+                name: name.map(str::to_owned),
+                filters: vec![PluginFileFilter { name: "Parquet".into(), extensions: vec!["parquet".into()] }],
+            }
+        );
+    }
+    // A suggested name is only a file name, never a directory to start in.
+    let (_, prompt) =
+        run_and_answer(&f, "pick-file", Some("/etc/out.parquet"), Some(&["C:/data/x.parquet"]), Duration::ZERO);
+    assert!(matches!(&prompt, Prompt::PickFile { name: Some(n), .. } if n == "out.parquet"), "{prompt:?}");
+    assert_eq!(run_and_answer(&f, "pick-file", None, None, Duration::ZERO).0.unwrap(), None);
+    assert!(run_and_answer(&f, "pick-file", None, Some(&["relative"]), Duration::ZERO).0.is_err());
+    assert!(f.host.run_command("jobs", "pick-file", None, Invocation::default()).is_err());
+}
+
+#[test]
 fn directory_prompts_and_project_requests_use_the_calling_window_without_a_capability() {
     use ide_plugin::Prompt;
     let f = fixture(Limits { timeout: Duration::from_millis(500), ..Limits::default() });
