@@ -1439,26 +1439,10 @@ impl Tools {
                 sha256: Some(sha256.into()),
                 checksum_url: None,
             }),
-            ReleaseSource::GitHub { repo } => match http.get_text(&sources::github_latest_url(repo), cancel) {
-                Ok(json) => sources::github_pick(&json, assets, self.platform),
-                Err(e) if e.kind == ErrorKind::Cancelled => Err(e),
-                // Without a token the API allows 60 requests an hour per IP address, often used
-                // up behind a shared one (403/429); the release's web pages have no such limit.
-                Err(api) => self.resolve_github_web(http, repo, assets, cancel).map_err(|web| {
-                    if web.kind == ErrorKind::Cancelled {
-                        return web;
-                    }
-                    tracing::warn!("GitHub release lookup for {repo} failed: {api}; web pages: {web}");
-                    IdeError::new(
-                        api.kind,
-                        format!(
-                            "{}\nDownload it from {} and set its Path in Settings › Languages & Frameworks › Language Servers.",
-                            api.message,
-                            sources::github_latest_page(repo)
-                        ),
-                    )
-                }),
-            },
+            ReleaseSource::GitHub { repo } => self.resolve_github_release(http, repo, None, assets, cancel),
+            ReleaseSource::GitHubTag { repo, tag } => {
+                self.resolve_github_release(http, repo, Some(tag), assets, cancel)
+            }
             ReleaseSource::HashiCorp { product } => {
                 let json = http.get_text(&sources::hashicorp_latest_url(product), cancel)?;
                 sources::hashicorp_pick(&json, assets, self.platform)
@@ -1485,17 +1469,53 @@ impl Tools {
         }
     }
 
-    /// [`resolve_release`](Self::resolve_release) for a GitHub release, from its web pages.
+    fn resolve_github_release(
+        &self,
+        http: &Http,
+        repo: &str,
+        tag: Option<&str>,
+        assets: &[platform::AssetRule],
+        cancel: &CancellationToken,
+    ) -> IdeResult<sources::Download> {
+        let api_url = tag.map_or_else(|| sources::github_latest_url(repo), |tag| sources::github_tag_url(repo, tag));
+        match http.get_text(&api_url, cancel) {
+            Ok(json) => sources::github_pick(&json, assets, self.platform),
+            Err(e) if e.kind == ErrorKind::Cancelled => Err(e),
+            // Shared IP addresses can run out of unauthenticated API requests (403/429).
+            Err(api) => self.resolve_github_web(http, repo, tag, assets, cancel).map_err(|web| {
+                if web.kind == ErrorKind::Cancelled {
+                    return web;
+                }
+                let page = tag.map_or_else(|| sources::github_latest_page(repo), |tag| sources::github_tag_page(repo, tag));
+                tracing::warn!("GitHub release lookup for {repo} failed: {api}; web pages: {web}");
+                IdeError::new(
+                    api.kind,
+                    format!(
+                        "{}\nDownload it from {page} and set its Path in Settings › Languages & Frameworks › Language Servers.",
+                        api.message
+                    ),
+                )
+            }),
+        }
+    }
+
+    /// Resolve a GitHub release from its web pages when the API is unavailable.
     fn resolve_github_web(
         &self,
         http: &Http,
         repo: &str,
+        tag: Option<&str>,
         assets: &[platform::AssetRule],
         cancel: &CancellationToken,
     ) -> IdeResult<sources::Download> {
-        let page = http.effective_url(&sources::github_latest_page(repo), cancel)?;
-        let tag = sources::github_tag_from_url(&page)
-            .ok_or_else(|| IdeError::unavailable(format!("{repo} has no published release")))?;
+        let tag = match tag {
+            Some(tag) => tag.to_owned(),
+            None => {
+                let page = http.effective_url(&sources::github_latest_page(repo), cancel)?;
+                sources::github_tag_from_url(&page)
+                    .ok_or_else(|| IdeError::unavailable(format!("{repo} has no published release")))?
+            }
+        };
         let list = http.get_text(&sources::github_assets_page(repo, &tag), cancel)?;
         match sources::github_pick_web(repo, &tag, &list, None, assets, self.platform) {
             Err(e) if e.kind == ErrorKind::Unavailable => {
@@ -1516,7 +1536,11 @@ impl Tools {
         emit: Emit,
     ) -> IdeResult<()> {
         let http = Http::new(&self.system_path)?;
-        emit(InstallEvent::Line { text: "Resolving the latest release…".into() });
+        let message = match source {
+            ReleaseSource::GitHubTag { tag, .. } => format!("Resolving release {tag}…"),
+            _ => "Resolving the latest release…".into(),
+        };
+        emit(InstallEvent::Line { text: message });
         let dl = self.resolve_release(&http, source, assets, cancel)?;
         emit(InstallEvent::Line { text: format!("Downloading {} ({})", dl.name, dl.url) });
         let staging = self.root.join(format!(".staging-{}", spec.name));

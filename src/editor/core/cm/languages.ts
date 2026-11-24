@@ -249,9 +249,14 @@ const OWN_MODES = [
     load: () => import("./django").then((m) => m.django()),
   }),
   LanguageDescription.of({
+    name: "Go Template",
+    alias: ["gotmpl", "tmpl"],
+    extensions: ["gotmpl", "tmpl"],
+    load: () => import("./helm").then((m) => m.goTemplate()),
+  }),
+  LanguageDescription.of({
     name: "Helm Template",
-    alias: ["helm-template", "gotmpl"],
-    extensions: ["gotmpl"],
+    alias: ["helm-template"],
     load: () => import("./helm").then((m) => m.helmTemplate()),
   }),
   LanguageDescription.of({

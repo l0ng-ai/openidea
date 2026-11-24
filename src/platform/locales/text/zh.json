@@ -737,6 +737,8 @@
   "Shell": "Shell",
   "C/C++": "C/C++",
   "Go": "Go",
+  "Go Template": "Go 模板",
+  "Helm Template": "Helm 模板",
   "Rust": "Rust",
   "Python": "Python",
   "JavaScript": "JavaScript",
