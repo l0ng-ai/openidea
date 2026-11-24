@@ -384,3 +384,34 @@ test("file and class results keep distinguishing folders visible in a narrow pop
     }
   }
 });
+
+test("multiline symbol names stay inside their Search Everywhere row", async ({ workbench: page }) => {
+  await stubDesktop(page);
+  const names = ["-hao | v1.7 |\n| v1.6 |\n| v1.5 |", "-haoHandler"];
+  await page.evaluate((names) => {
+    window.__ipc.handlers.find_symbols = () =>
+      names.map((name, line) => ({
+        path: "/dev/acme-api/changelog.md",
+        relPath: "changelog.md",
+        name,
+        kind: "class",
+        container: null,
+        range: { start: { line, col: 0 }, end: { line, col: 4 } },
+        score: 100 - line,
+        indices: [0, 1, 2, 3],
+      }));
+  }, names);
+
+  await doubleShift(page);
+  const dialog = page.getByRole("dialog", { name: "Search Everywhere" });
+  await dialog.getByRole("combobox", { name: "Search query" }).fill("-hao");
+  for (const name of names) {
+    const row = dialog.getByRole("option").filter({ hasText: name.replaceAll("\n", " ") });
+    const match = row.locator("mark");
+    await expect(match).toHaveText("-hao");
+    const bounds = await row.boundingBox();
+    const label = await match.locator("..").boundingBox();
+    expect(label!.y).toBeGreaterThanOrEqual(bounds!.y);
+    expect(label!.y + label!.height).toBeLessThanOrEqual(bounds!.y + bounds!.height);
+  }
+});

@@ -151,6 +151,16 @@ describe("mermaid in the markdown preview", () => {
     expect(root.querySelector("svg")).toBe(svg);
   });
 
+  it("renders repeated diagrams with math labels once in the same pass", async () => {
+    const diagram = '```mermaid\nflowchart LR\n A["$$x^2$$"] --> B\n```\n';
+    const root = preview([diagram, diagram, diagram.replace("x^2", "x^3")].join("\n"));
+    await renderMermaidIn(root).done;
+    const drawings = [...root.querySelectorAll(".mermaid-output svg")];
+    expect(m.render).toHaveBeenCalledTimes(2);
+    expect(drawings).toHaveLength(3);
+    expect(new Set(drawings.map((drawing) => drawing.id)).size).toBe(3);
+  });
+
   it("applies a cached diagram with fresh SVG ids so copies don't share markers", async () => {
     const first = preview(SEQ);
     await renderMermaidIn(first, []).done;

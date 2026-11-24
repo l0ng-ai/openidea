@@ -3,6 +3,7 @@
  * the user select and copy text in the Markdown preview, documentation popups,
  * message dialogs and notifications, while chrome stays unselectable.
  */
+import { Text } from "@codemirror/state";
 import { afterEach, describe, expect, it } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { renderCode, renderMarkup } from "@/editor/lsp/markdown";
@@ -23,8 +24,9 @@ describe("selectable read-only surfaces", () => {
     act(() =>
       useLiveMarkdown.setState({
         "/p/README.md": {
-          text: "# Title\n\nSome *text*",
+          text: Text.of(["# Title", "", "Some *text*"]),
           topLine: 0,
+          sourceAtEnd: false,
           scrollSeq: 0,
           fontZoom: 0,
           caretLine: 0,
