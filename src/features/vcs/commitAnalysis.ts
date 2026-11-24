@@ -67,6 +67,7 @@ async function analyzeWorkingFiles(paths: string[]) {
   const opened: number[] = [];
   for (const path of paths.filter((p) => !analyzed.has(p))) {
     try {
+      // oxlint-disable-next-line no-await-in-loop -- documents are opened one at a time to trigger analysis; their ids are collected in order for cleanup in finally
       opened.push((await call(commands.docOpen(path))).id);
     } catch {
       // Binary or unreadable.

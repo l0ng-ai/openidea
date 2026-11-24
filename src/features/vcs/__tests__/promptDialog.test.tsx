@@ -17,7 +17,10 @@ const open = (initial = "") =>
 
 // The dialog stack is module state: close whatever a test left open.
 afterEach(async () => {
-  for (const cancel of screen.queryAllByRole("button", { name: "Cancel" })) await userEvent.click(cancel);
+  for (const cancel of screen.queryAllByRole("button", { name: "Cancel" })) {
+    // oxlint-disable-next-line no-await-in-loop -- the shared dialog stack changes as each dialog is dismissed
+    await userEvent.click(cancel);
+  }
 });
 
 describe("prompt dialog with a sanitizer (branch name)", () => {
