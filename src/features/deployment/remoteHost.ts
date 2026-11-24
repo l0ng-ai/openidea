@@ -231,9 +231,15 @@ export async function uploadLocalInto(server: DeploymentServerValid, paths: stri
       replace &&
       !(await confirm({
         title: "Replace Existing Files?",
-        message: tx("{count} items already exist in {path}. Replace files and merge folders?")
-          .replace("{count}", String(count))
-          .replace("{path}", target),
+        message:
+          count === 1
+            ? tx("An item with the same name already exists in {path}. Replace files and merge folders?").replace(
+                "{path}",
+                target,
+              )
+            : tx("{count} items already exist in {path}. Replace files and merge folders?")
+                .replace("{count}", String(count))
+                .replace("{path}", target),
         ok: "Replace",
         icon: "warning",
       }))

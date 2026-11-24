@@ -3887,6 +3887,7 @@
   "Upload Files": "Upload Files",
   "Upload Local Files Into Remote Folder": "Upload Local Files Into Remote Folder",
   "Replace Existing Files?": "Replace Existing Files?",
+  "An item with the same name already exists in {path}. Replace files and merge folders?": "An item with the same name already exists in {path}. Replace files and merge folders?",
   "{count} items already exist in {path}. Replace files and merge folders?": "{count} items already exist in {path}. Replace files and merge folders?",
   "Cannot upload files": "Cannot upload files",
   "Desktop uploads are not available in a remote development window": "Desktop uploads are not available in a remote development window",
