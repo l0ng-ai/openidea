@@ -10094,5 +10094,6 @@
   "Mark as Unread": "标记为未读",
   "Archive All Below": "归档下方全部",
   "Mark Agent Tasks as Unread": "将 Agent 任务标记为未读",
-  "Mark Agent Tasks as Read": "将 Agent 任务标记为已读"
+  "Mark Agent Tasks as Read": "将 Agent 任务标记为已读",
+  "Java module '{value}' could not be imported because its build has errors: {problems}. Fix them, then reload the Maven or Gradle project.": "Java 模块 '{value}' 的构建存在错误，无法导入：{problems}。请修复后重新加载 Maven 或 Gradle 项目。"
 }

@@ -7,7 +7,7 @@
 
 use crate::LspManager;
 use crate::server::{Running, Server};
-use ide_core::error::ErrorKind;
+use ide_core::error::{ErrorData, ErrorKind};
 use ide_core::event::LspRefreshKind;
 use ide_core::{CancellationToken, IdeError, IdeResult, LanguageId};
 use serde::{Deserialize, Serialize};
@@ -520,6 +520,30 @@ fn not_imported(e: &IdeError) -> bool {
         || m.contains("cannot find")
 }
 
+const BUILD_FILES: [&str; 5] =
+    ["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"];
+
+/// Errors on the build files of `module` and the builds enclosing it, nearest first, as
+/// `path: message` (relative to `root`). When m2e or Buildship can't configure a module (a build
+/// plugin or parent that doesn't resolve), it stays out of the Java model and these say why.
+fn build_file_errors(diagnostics: &[(PathBuf, lsp_types::Diagnostic)], root: &Path, module: &Path) -> Vec<String> {
+    let mut errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|(path, d)| {
+            d.severity == Some(lsp_types::DiagnosticSeverity::ERROR)
+                && path.file_name().and_then(|n| n.to_str()).is_some_and(|n| BUILD_FILES.contains(&n))
+                && path.parent().is_some_and(|dir| module.starts_with(dir))
+        })
+        .map(|(path, d)| {
+            let message = d.message.lines().next().unwrap_or_default().trim().trim_end_matches(':');
+            (path.components().count(), format!("{}: {message}", path.strip_prefix(root).unwrap_or(path).display()))
+        })
+        .collect();
+    errors.sort_by_key(|(depth, _)| std::cmp::Reverse(*depth));
+    let mut seen = HashSet::new();
+    errors.into_iter().map(|(_, e)| e).filter(|e| seen.insert(e.clone())).collect()
+}
+
 /// The java-debug bundle is not loaded into jdtls.
 fn missing_bundle(e: &IdeError) -> bool {
     let m = e.message.to_ascii_lowercase();
@@ -844,12 +868,27 @@ impl LspManager {
         loop {
             match self.jdtls_command_cancellable(path, command, arguments.clone(), cancel).await {
                 Err(e) if not_imported(&e) && Instant::now() < deadline => {
+                    // An import that failed on the build file won't finish by waiting.
+                    if let Some(unconfigured) = self.unconfigured_module(path, cancel).await? {
+                        return Err(unconfigured);
+                    }
                     tracing::debug!("{command}: {e}; waiting for the project import");
                     cancellable_wait(cancel, tokio::time::sleep(Duration::from_millis(1500))).await?;
                 }
                 r => return r,
             }
         }
+    }
+
+    /// Why jdtls has no Java project for the module at `path`, when its build files say so.
+    async fn unconfigured_module(&self, path: &Path, cancel: &CancellationToken) -> IdeResult<Option<IdeError>> {
+        let (server, _) = self.jdtls(path, cancel).await?;
+        let problems = build_file_errors(&server.diagnostics_snapshot(), &self.project_root, path);
+        Ok((!problems.is_empty()).then(|| IdeError {
+            kind: ErrorKind::InvalidInput,
+            message: format!("{SERVER}: {} is not a Java project: {}", path.display(), problems.join("; ")),
+            data: Some(ErrorData::JavaBuildProblems { problems }),
+        }))
     }
 
     fn running_java_projects<'a>(&self, files: &'a [PathBuf]) -> Vec<(Running, Vec<&'a Path>)> {
@@ -1004,12 +1043,21 @@ impl LspManager {
             };
             let cp = match self.java_classpath(module, test, cancel).await {
                 Ok(cp) => Some(cp),
-                Err(e) if e.kind == ErrorKind::Cancelled => return Err(e),
-                Err(e) if matches!(build, Some(JavaBuildStatus::WithErrors | JavaBuildStatus::Failed)) => {
-                    tracing::debug!("java.project.getClasspaths: {e}; retaining all compile errors");
-                    None
+                Err(e)
+                    if e.kind == ErrorKind::Cancelled
+                        || matches!(e.data, Some(ErrorData::JavaBuildProblems { .. })) =>
+                {
+                    return Err(e);
                 }
-                Err(e) => return Err(e),
+                Err(e) => match self.unconfigured_module(module, cancel).await? {
+                    // The build "fails" on the build file's errors alone, with no compile errors to show.
+                    Some(unconfigured) => return Err(unconfigured),
+                    None if matches!(build, Some(JavaBuildStatus::WithErrors | JavaBuildStatus::Failed)) => {
+                        tracing::debug!("java.project.getClasspaths: {e}; retaining all compile errors");
+                        None
+                    }
+                    None => return Err(e),
+                },
             };
             let java_home = match self.java_vm_location(module, cancel).await {
                 Ok(home) => home,
@@ -1271,6 +1319,36 @@ mod tests {
         let language: ide_language::LanguageConfig =
             toml::from_str(include_str!("../../../languages/java.toml")).unwrap();
         language.language_servers.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn a_module_without_java_configuration_reports_its_build_file_errors() {
+        let at = |path: &str, severity, message: &str| {
+            let d = lsp_types::Diagnostic { severity: Some(severity), message: message.into(), ..Default::default() };
+            (PathBuf::from(path), d)
+        };
+        use lsp_types::DiagnosticSeverity as S;
+        let diagnostics = [
+            at("/w/pom.xml", S::ERROR, "Non-resolvable import POM"),
+            at(
+                "/w/app-server/pom.xml",
+                S::ERROR,
+                "Could not calculate build plan: Plugin x:y:9.9.9 could not be resolved:\nFailure to find…",
+            ),
+            at("/w/app-server/pom.xml", S::WARNING, "Overriding managed version"),
+            at("/w/app-server/src/main/java/Main.java", S::ERROR, "Main cannot be resolved"),
+            at("/w/app-system/pom.xml", S::ERROR, "Another module's error"),
+            at("/w/app-server/build.gradle", S::ERROR, "Could not run phased build action"),
+        ];
+        assert_eq!(
+            build_file_errors(&diagnostics, Path::new("/w"), Path::new("/w/app-server")),
+            [
+                "app-server/pom.xml: Could not calculate build plan: Plugin x:y:9.9.9 could not be resolved",
+                "app-server/build.gradle: Could not run phased build action",
+                "pom.xml: Non-resolvable import POM",
+            ]
+        );
+        assert!(build_file_errors(&diagnostics, Path::new("/w"), Path::new("/w/app-module")).len() == 1);
     }
 
     #[test]
