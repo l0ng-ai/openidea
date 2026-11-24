@@ -597,7 +597,7 @@ fn saved_python_configs_keep_their_explicit_interpreter() {
             config.cwd = Some(Path::new("member").into());
             apply_to_run_configs(std::slice::from_mut(&mut config), root, &settings);
             assert_eq!(config.command, command);
-            assert_eq!(config.env["VIRTUAL_ENV"], root.join("member/.override").to_string_lossy());
+            assert_eq!(config.env["VIRTUAL_ENV"], root.join("member").join(".override").to_string_lossy());
             let saved = without_derived(&config, root, &settings);
             assert_eq!(saved.command, command);
         }
