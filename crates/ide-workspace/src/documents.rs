@@ -201,6 +201,26 @@ fn disk_len(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
 
+fn editorconfig_label(
+    editorconfig: Option<&EditorConfigProps>,
+    detected: &str,
+    has_bom: bool,
+    ascii: bool,
+) -> Option<&'static str> {
+    let (charset, _) = editorconfig?.encoding()?;
+    let compatible = encoding_rs::Encoding::for_label(detected.as_bytes()).is_some_and(|e| e.is_ascii_compatible());
+    (ascii && compatible && !has_bom && !charset.starts_with("utf-16")).then_some(charset)
+}
+
+fn apply_editorconfig_charset(loaded: &mut ide_vfs::LoadedText, editorconfig: Option<&EditorConfigProps>) {
+    if loaded.binary {
+        return;
+    }
+    if let Some(charset) = editorconfig_label(editorconfig, &loaded.encoding, loaded.has_bom, loaded.text.is_ascii()) {
+        loaded.encoding = charset.to_owned();
+    }
+}
+
 fn read_only_error(path: &Path) -> IdeError {
     IdeError::new(ErrorKind::PermissionDenied, format!("{} is read-only", path.display()))
 }
@@ -304,13 +324,32 @@ impl Documents {
 
     /// Closed-file readers use the same decoding as document opening.
     pub fn load_file(&self, path: &Path) -> IdeResult<ide_vfs::LoadedText> {
-        Self::load_with_defaults(path, &self.file_defaults())
+        let defaults = self.file_defaults();
+        Self::load_with_defaults(path, &defaults, self.editorconfig_for(path, &defaults).as_ref())
+    }
+
+    /// Encoding of `bytes`, a revision of `path`, with the same rules as opening the file.
+    pub fn detect_encoding(&self, path: &Path, bytes: &[u8]) -> &'static encoding_rs::Encoding {
+        let defaults = self.file_defaults();
+        let detected = ide_vfs::detect_encoding(bytes, defaults.fallback_for(&absolute(path)));
+        let editorconfig = self.editorconfig_for(path, &defaults);
+        editorconfig_label(editorconfig.as_ref(), detected.name(), false, bytes.is_ascii())
+            .and_then(|label| encoding_rs::Encoding::for_label(label.as_bytes()))
+            .unwrap_or(detected)
+    }
+
+    fn editorconfig_for(&self, path: &Path, defaults: &FileDefaults) -> Option<EditorConfigProps> {
+        if !defaults.editorconfig || ide_vfs::is_archive_path(path) {
+            return None;
+        }
+        self.editorconfig.resolve(&absolute(path))
     }
 
     /// Bounded closed-file snapshots use the same project defaults as open documents.
     pub fn load_file_bounded(&self, path: &Path, max_bytes: usize) -> IdeResult<ide_vfs::LoadedText> {
         let defaults = self.file_defaults();
         let mut loaded = ide_vfs::load_text_bounded(path, defaults.fallback_for(&absolute(path)), max_bytes)?;
+        apply_editorconfig_charset(&mut loaded, self.editorconfig_for(path, &defaults).as_ref());
         if !loaded.binary && defaults.native_to_ascii_for(path) {
             loaded.text = ide_vfs::decode_properties_escapes(&loaded.text);
         }
@@ -321,8 +360,13 @@ impl Documents {
         Self::load_as(path, encoding, self.native_to_ascii_for(path))
     }
 
-    fn load_with_defaults(path: &Path, defaults: &FileDefaults) -> IdeResult<ide_vfs::LoadedText> {
+    fn load_with_defaults(
+        path: &Path,
+        defaults: &FileDefaults,
+        editorconfig: Option<&EditorConfigProps>,
+    ) -> IdeResult<ide_vfs::LoadedText> {
         let mut loaded = ide_vfs::load_text_with_fallback(path, defaults.fallback_for(&absolute(path)))?;
+        apply_editorconfig_charset(&mut loaded, editorconfig);
         if !loaded.binary && defaults.native_to_ascii_for(path) {
             loaded.text = ide_vfs::decode_properties_escapes(&loaded.text);
         }
@@ -407,7 +451,9 @@ impl Documents {
             return Ok(info);
         }
         let defaults = self.file_defaults();
-        let loaded = Self::load_with_defaults(path, &defaults)?;
+        let editorconfig = self.editorconfig_for(path, &defaults);
+        let loaded = Self::load_with_defaults(path, &defaults, editorconfig.as_ref())?;
+        let editorconfig = editorconfig.filter(|_| !loaded.binary);
         let language = (self.detect_language)(path, loaded.text.lines().next());
         let ui_mode = (self.detect_ui_mode)(path, &language);
         // Archive entries (`<jar>!/<entry>`) are read-only and kept from language
@@ -417,11 +463,6 @@ impl Documents {
         let writable = !in_archive && meta.as_ref().map(|m| !m.permissions().readonly()).unwrap_or(true);
         let empty_file = meta.as_ref().is_some_and(|m| m.len() == 0);
         let observed = !(loaded.binary || loaded.too_large || in_archive);
-        let editorconfig = if loaded.binary || in_archive || !defaults.editorconfig {
-            None
-        } else {
-            self.editorconfig.resolve(&absolute(path))
-        };
         let mut doc = Document::new(&loaded.text);
         let (mut encoding, mut has_bom) = (loaded.encoding, loaded.has_bom);
         // An empty file has nothing to detect: Code Style / File Encodings defaults apply.
@@ -434,17 +475,10 @@ impl Documents {
             if let Some(le) = ec.end_of_line {
                 doc.set_line_ending(le);
             }
-            // ASCII bytes read the same in any ASCII-compatible charset.
-            let ascii_bytes = || {
-                encoding_rs::Encoding::for_label(encoding.as_bytes()).is_some_and(|e| e.is_ascii_compatible())
-                    && loaded.text.is_ascii()
-            };
-            if let Some((enc, bom)) = ec.encoding() {
-                if empty_file {
-                    (encoding, has_bom) = (enc.to_owned(), bom);
-                } else if !has_bom && !enc.starts_with("utf-16") && ascii_bytes() {
-                    encoding = enc.to_owned();
-                }
+            if let Some((enc, bom)) = ec.encoding()
+                && empty_file
+            {
+                (encoding, has_bom) = (enc.to_owned(), bom);
             }
         }
         // The loaded text doubles as the IPC copy when normalization had nothing
@@ -1325,7 +1359,7 @@ impl Documents {
                     let loaded = if st.encoding_chosen {
                         Self::load_as(&st.path, &st.encoding, native_to_ascii)?
                     } else {
-                        Self::load_with_defaults(&st.path, &defaults)?
+                        Self::load_with_defaults(&st.path, &defaults, st.editorconfig.as_ref())?
                     };
                     st.native_to_ascii = native_to_ascii;
                     loaded

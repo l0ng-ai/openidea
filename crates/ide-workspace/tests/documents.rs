@@ -1414,3 +1414,36 @@ fn editorconfig_charset_leaves_a_bomless_utf16_file_alone() {
 
     assert_eq!(fs::read(&path).unwrap(), b"a\x00b\x00c\x00d\x00e\x00");
 }
+
+#[test]
+fn an_external_change_keeps_the_editorconfig_charset_of_an_ascii_file() {
+    let f = fixture();
+    latin_project(&f);
+    fs::write(f.root.join(".editorconfig"), "root = true\n[*.java]\ncharset = utf-8\n").unwrap();
+    let path = f.root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "utf-8");
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    fs::write(&path, b"class B {}\n").unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+
+    let reloaded = f.docs.snapshot(doc.id).unwrap();
+    assert_eq!((reloaded.text.as_str(), reloaded.encoding.as_str()), ("class B {}\n", "utf-8"));
+}
+
+#[test]
+fn editorconfig_charset_applies_to_a_native_to_ascii_properties_file() {
+    let f = fixture();
+    let mut defaults = f.docs.file_defaults();
+    defaults.native_to_ascii = true;
+    f.docs.set_file_defaults(defaults);
+    fs::write(f.root.join(".editorconfig"), "root = true\n[*.properties]\ncharset = latin1\n").unwrap();
+    let path = f.root.join("messages.properties");
+    fs::write(&path, b"greeting=Ol\\u00e1\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "windows-1252", "the escapes are ASCII bytes");
+    assert_eq!(f.docs.text_of(&path).as_deref(), Some("greeting=Olá\n"));
+}

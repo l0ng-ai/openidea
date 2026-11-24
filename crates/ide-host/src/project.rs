@@ -1360,17 +1360,15 @@ impl Project {
             return encoding_rs::Encoding::for_label(info.encoding.as_bytes())
                 .ok_or_else(|| ide_core::IdeError::invalid("unknown document encoding"));
         }
-        let defaults = self.documents.file_defaults();
-        let fallback = defaults.fallback_for(path);
         // The working file only when it is a regular file: a path that is a directory there
         // (a committed symlink to a folder, a file replaced by a folder) has only its blob.
         if path.is_file() {
-            let loaded = ide_vfs::load_text_with_fallback(path, fallback)?;
+            let loaded = self.documents.load_file(path)?;
             return encoding_rs::Encoding::for_label(loaded.encoding.as_bytes())
                 .ok_or_else(|| ide_core::IdeError::invalid("unknown file encoding"));
         }
         let bytes = self.with_log_repo_of(path, |r| r.file_bytes_at(path, rev))?.unwrap_or_default();
-        Ok(ide_vfs::detect_encoding(&bytes, fallback))
+        Ok(self.documents.detect_encoding(path, &bytes))
     }
 
     /// Current text of `path`: the open buffer when available, else the file on disk.

@@ -187,3 +187,28 @@ async fn ascii_properties_keep_utf8_for_vcs_by_default() {
     assert_eq!(project.vcs_encoding(&path, Some("HEAD")).unwrap().charset, encoding_rs::UTF_8, "revision");
     host.close_project("main");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn vcs_labels_ascii_files_like_the_editor() {
+    let (_temp, base, root) = repo();
+    std::fs::write(root.join(".editorconfig"), "root = true\n[Utf8.java]\ncharset = utf-8\n").unwrap();
+    let latin = root.join("Latin.java");
+    let utf8 = root.join("Utf8.java");
+    std::fs::write(&latin, b"class Latin {}\n").unwrap();
+    std::fs::write(&utf8, b"class Utf8 {}\n").unwrap();
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-m", "ascii"]);
+    let (host, project) = open(&base, &root).await;
+    let mut defaults = project.documents.file_defaults();
+    defaults.project_fallback = "iso-8859-15".into();
+    project.documents.set_file_defaults(defaults);
+
+    let charset = |path: &Path, rev| project.vcs_encoding(path, rev).unwrap().charset;
+    assert_eq!(charset(&latin, None), encoding_rs::ISO_8859_15, "working file, project encoding");
+    assert_eq!(charset(&utf8, None), encoding_rs::UTF_8, "working file, .editorconfig charset");
+    std::fs::remove_file(&latin).unwrap();
+    std::fs::remove_file(&utf8).unwrap();
+    assert_eq!(charset(&latin, Some("HEAD")), encoding_rs::ISO_8859_15, "revision, project encoding");
+    assert_eq!(charset(&utf8, Some("HEAD")), encoding_rs::UTF_8, "revision, .editorconfig charset");
+    host.close_project("main");
+}

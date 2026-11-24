@@ -809,7 +809,7 @@ impl Documents {
                 let loaded = if state.encoding_chosen {
                     Self::load_as(path, &state.encoding, state.native_to_ascii)?
                 } else {
-                    ide_vfs::load_text_with_fallback(path, defaults.fallback_for(path))?
+                    Self::load_with_defaults(path, &defaults, state.editorconfig.as_ref())?
                 };
                 self.replace_locked(id, state, &loaded.text)?;
                 state.encoding = loaded.encoding;
