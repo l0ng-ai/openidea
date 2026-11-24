@@ -62,7 +62,7 @@ import {
   type Range,
 } from "@/platform/ipc";
 import { isSuppressed, suppressControls, type FactsOf } from "./pythonSuppression";
-import { makeStaticChanges } from "./makeStatic";
+import { makeMethodStatic, makeStaticChanges } from "./makeStatic";
 
 /** The inspection producers, one per rule. */
 const PRODUCERS = [
@@ -518,15 +518,15 @@ export function pythonInheritanceExtension(ctx: EditorDocContext): Extension {
     const reported = inspectionsAt(ctx.path, latest.doc, from).some(
       (i) => i.id === PYTHON_METHOD_MAY_BE_STATIC_INSPECTION,
     );
-    const changes = reported ? makeStaticChanges(latest.doc, latest.facts, from) : null;
-    return changes
+    const fix = reported ? makeStaticChanges(latest.doc, latest.facts, from) : null;
+    return fix
       ? [
           {
             id: "python.make-static",
             label: "Make method static",
             quickFix: true,
             run: () => {
-              if (view.state.doc === latest.doc) view.dispatch({ changes, userEvent: "input" });
+              if (view.state.doc === latest.doc) void makeMethodStatic(view, ctx.path, ctx.doc, fix);
             },
           },
         ]
