@@ -7,10 +7,12 @@ import { IpcError, type BuildEvent, type BuildMessage, type BuildResult } from "
 import { useProject } from "@/platform/project";
 import {
   menuGroupItems,
+  onBuildCompleted,
   provideEditorService,
   provideNotificationService,
   provideToolWindowService,
   useContributions,
+  type BuildCompletedEvent,
   type EditorService,
   type NotificationService,
   type ToolWindowService,
@@ -572,6 +574,28 @@ describe("build feature", () => {
     await act(async () => {
       fake.resolve(result([], true));
     });
+  });
+
+  it("publishes onBuildCompleted only when a build finishes successfully", async () => {
+    const events: BuildCompletedEvent[] = [];
+    const off = onBuildCompleted((e) => events.push(e));
+    try {
+      const single = startCompileFile("/p/core/src/A.java", true);
+      await act(async () => {});
+      fake.resolve(result([], true));
+      await single;
+      expect(events).toEqual([
+        { kind: "compileFile", file: "/p/core/src/A.java", system: "maven", userInitiated: true },
+      ]);
+
+      const failed = startCompileFile("/p/core/src/Broken.java", true);
+      await act(async () => {});
+      fake.resolve(result([err("/p/core/src/Broken.java", 3)], false));
+      await failed;
+      expect(events).toHaveLength(1);
+    } finally {
+      off();
+    }
   });
 
   it("gates Recompile to local Java files and offers context menu labels", () => {

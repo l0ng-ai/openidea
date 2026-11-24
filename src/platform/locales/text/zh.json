@@ -10134,5 +10134,10 @@
   "Could not load the list of PyPI package names. Type a package's exact name to look it up.": "无法加载 PyPI 软件包名称列表。请输入软件包的准确名称进行查询。",
   "Only the first 50 PyPI matches are listed. Type more of the name to narrow them.": "只列出前 50 个 PyPI 匹配项。请输入更完整的名称以缩小范围。",
   "Recompile": "重新编译",
-  "Recompile '{name}'": "重新编译 '{name}'"
+  "Recompile '{name}'": "重新编译 '{name}'",
+  "HotSwap": "HotSwap",
+  "Reload classes after compilation": "编译后重新加载类",
+  "Reload changed classes into running Java debug sessions after Build Project, Build Module, or Recompile succeeds.": "在 Build Project、Build Module 或 Recompile 编译成功后，将修改的类重新加载到运行中的 Java 调试会话。",
+  "Reload '{fileName}' into the running debug session?": "要将 '{fileName}' 重新加载到正在运行的调试会话中吗？",
+  "Tomcat classes updated": "Tomcat 类已更新"
 }

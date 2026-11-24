@@ -3904,5 +3904,10 @@
   "Could not load the list of PyPI package names. Type a package's exact name to look it up.": "Could not load the list of PyPI package names. Type a package's exact name to look it up.",
   "Only the first 50 PyPI matches are listed. Type more of the name to narrow them.": "Only the first 50 PyPI matches are listed. Type more of the name to narrow them.",
   "Recompile": "Recompile",
-  "Recompile '{name}'": "Recompile '{name}'"
+  "Recompile '{name}'": "Recompile '{name}'",
+  "HotSwap": "HotSwap",
+  "Reload classes after compilation": "Reload classes after compilation",
+  "Reload changed classes into running Java debug sessions after Build Project, Build Module, or Recompile succeeds.": "Reload changed classes into running Java debug sessions after Build Project, Build Module, or Recompile succeeds.",
+  "Reload '{fileName}' into the running debug session?": "Reload '{fileName}' into the running debug session?",
+  "Tomcat classes updated": "Tomcat classes updated"
 }

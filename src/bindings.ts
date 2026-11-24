@@ -5671,6 +5671,8 @@ export type DebuggerSettings = {
 	debugServerPage?: boolean,
 	/**  Flutter: saving a Dart file of a running debug session hot reloads the app. */
 	flutterHotReloadOnSave?: boolean,
+	/**  Java: whether to reload changed classes into running debug sessions after compilation. */
+	hotSwapAfterCompile?: HotSwapPolicy,
 	python?: PythonDebuggerSettings,
 };
 
@@ -7921,6 +7923,9 @@ export type HistoryTip = {
 
 /**  What triggered a hot reload; `flutter debug_adapter` takes it as `reason`. */
 export type HotReloadReason = "manual" | "save";
+
+/**  Whether compiled classes are reloaded into running Java debug sessions after compilation. */
+export type HotSwapPolicy = "ask" | "always" | "never";
 
 /**  Result of [`DebugManager::redefine_classes`]. */
 export type HotSwapResult = {

@@ -595,6 +595,7 @@ export function registerDebugActions(): () => void {
           typeof arg === "object" && arg !== null && "configId" in arg && typeof arg.configId === "string"
             ? arg.configId
             : undefined,
+          typeof arg === "object" && arg !== null && "allowBuildErrors" in arg && arg.allowBuildErrors === true,
         ),
     },
     {

@@ -18,6 +18,7 @@ import {
   type RefObject,
 } from "react";
 import type {
+  BuildKind,
   CommitSelection,
   ConsoleRule,
   FileMatches,
@@ -2383,4 +2384,26 @@ export function registerSearchCategory(category: SearchCategory): () => void {
     searchCategoryProviders.delete(category.id);
     searchCategoriesChanged();
   };
+}
+
+export interface BuildCompletedEvent {
+  kind: "compileFile" | BuildKind;
+  file: string | null;
+  system: string;
+  userInitiated: boolean;
+}
+
+const buildCompletedListeners = new Set<(event: BuildCompletedEvent) => void>();
+
+/** Subscribes to successful Build / Rebuild / Recompile completions across workbench features. */
+export function onBuildCompleted(listener: (event: BuildCompletedEvent) => void): () => void {
+  buildCompletedListeners.add(listener);
+  return () => {
+    buildCompletedListeners.delete(listener);
+  };
+}
+
+/** Publishes a successful build completion to listeners (debugger HotSwap, server deployment sync…). */
+export function notifyBuildCompleted(event: BuildCompletedEvent): void {
+  notifyEach(buildCompletedListeners, (listener) => listener(event), "build completed");
 }
