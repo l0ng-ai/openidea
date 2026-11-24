@@ -121,6 +121,9 @@ pub struct FrameworkFiles {
     pub extensions: Vec<String>,
     /// Matched like language servers' `root-markers`, e.g. `manage.py`.
     pub root_markers: Vec<String>,
+    /// Require the marker directly beside `folder`.
+    #[serde(default)]
+    pub root_marker_in_parent: bool,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Type)]
