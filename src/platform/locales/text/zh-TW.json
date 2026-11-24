@@ -9242,5 +9242,6 @@
   "To upper": "轉為大寫",
   "To lower": "轉為小寫",
   "Do not change": "不變更",
-  "Unquoted table, column and alias names; ClickHouse names keep their case.": "未加引號的表名、欄名和別名；ClickHouse 的名稱保持原有大小寫。"
+  "Unquoted table, column and alias names; ClickHouse names keep their case.": "未加引號的表名、欄名和別名；ClickHouse 的名稱保持原有大小寫。",
+  "Another deployment uses this application context": "另一個部署項已使用此應用上下文"
 }
