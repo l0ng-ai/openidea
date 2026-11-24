@@ -35,22 +35,32 @@ fn version_from(text: &str) -> Option<JavaVersion> {
 pub fn java_version_of(pid: u32) -> Option<JavaVersion> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        let exe = std::fs::canonicalize(exe_path(pid)?).ok()?;
-        // `<jdk>/bin/java`, or `<jdk>/jre/bin/java` on JDK 8.
-        let home = exe.parent()?.parent()?;
-        // Only climb out of `jre/`, so a JDK without its own `release` cannot pick up an
-        // unrelated file in a shared parent such as `/usr/lib/jvm`.
-        let outer = if home.file_name().is_some_and(|n| n == "jre") { home.parent() } else { None };
-        [Some(home), outer].into_iter().flatten().find_map(|dir| {
-            let contents = std::fs::read_to_string(dir.join("release")).ok()?;
-            parse_release(&contents)
-        })
+        parse_release(&release_of(&exe_path(pid)?)?)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = pid;
         None
     }
+}
+
+/// The `release` file of the JDK whose `java` executable is `exe`.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn release_of(exe: &std::path::Path) -> Option<String> {
+    let exe = std::fs::canonicalize(exe).ok()?;
+    // `<jdk>/bin/java`, or `<jdk>/jre/bin/java` on JDK 8.
+    let home = exe.parent()?.parent()?;
+    // Only climb out of `jre/`, so a JDK without its own `release` cannot pick up an
+    // unrelated file in a shared parent such as `/usr/lib/jvm`.
+    let outer = if home.file_name().is_some_and(|n| n == "jre") { home.parent() } else { None };
+    [Some(home), outer].into_iter().flatten().find_map(|dir| std::fs::read_to_string(dir.join("release")).ok())
+}
+
+/// OpenJ9 (IBM Semeru) answers SIGQUIT by writing a `javacore` file into its working directory
+/// instead of opening a listener. Its `release` files name it under varying keys.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+pub(crate) fn is_openj9(exe: &std::path::Path) -> bool {
+    release_of(exe).is_some_and(|release| release.to_ascii_lowercase().contains("openj9"))
 }
 
 #[cfg(target_os = "linux")]
@@ -85,6 +95,7 @@ pub fn wants_listener_flag(jvm_args: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn release_versions() {
@@ -98,6 +109,29 @@ mod tests {
     fn vm_version_lines() {
         assert_eq!(parse_vm_version("OpenJDK 64-Bit Server VM version 17.0.21+9\nJDK 17.0.21\n").unwrap().major, 17);
         assert_eq!(parse_vm_version("OpenJDK 64-Bit Server VM version 25.512-b09\nJDK 8.0_512\n").unwrap().major, 8);
+    }
+
+    fn fake_jdk(dir: &Path, java: &str, release: Option<&str>) -> PathBuf {
+        let exe = dir.join(java);
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::write(&exe, "").unwrap();
+        if let Some(release) = release {
+            std::fs::write(dir.join("release"), release).unwrap();
+        }
+        exe
+    }
+
+    #[test]
+    fn openj9_is_told_by_its_release_file() {
+        let root = tempfile::tempdir().unwrap();
+        let semeru = "IMPLEMENTOR=\"IBM Corporation\"\nJAVA_VERSION=\"21.0.5\"\nJVM_VARIANT=\"Openj9\"\n";
+        let temurin = "IMPLEMENTOR=\"Eclipse Adoptium\"\nJAVA_VERSION=\"21.0.5\"\n";
+        let only_build = "JAVA_VERSION=\"17\"\nBUILD_INFO=\"OpenJDK 17 with Eclipse OpenJ9 VM\"\n";
+        assert!(is_openj9(&fake_jdk(&root.path().join("semeru"), "bin/java", Some(semeru))));
+        assert!(is_openj9(&fake_jdk(&root.path().join("other-key"), "bin/java", Some(only_build))));
+        assert!(is_openj9(&fake_jdk(&root.path().join("jdk8"), "jre/bin/java", Some(semeru))));
+        assert!(!is_openj9(&fake_jdk(&root.path().join("temurin"), "bin/java", Some(temurin))));
+        assert!(!is_openj9(&fake_jdk(&root.path().join("bare"), "bin/java", None)));
     }
 
     #[test]

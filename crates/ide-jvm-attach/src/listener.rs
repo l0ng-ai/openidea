@@ -232,7 +232,8 @@ fn effective_user_name() -> Option<String> {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn runs_java(pid: u32) -> bool {
-    crate::jvm::exe_path(pid).is_some_and(|exe| exe.file_name().is_some_and(|name| name == "java"))
+    crate::jvm::exe_path(pid)
+        .is_some_and(|exe| exe.file_name().is_some_and(|name| name == "java") && !crate::jvm::is_openj9(&exe))
 }
 
 #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
@@ -264,6 +265,33 @@ mod tests {
         let _serial = crate::test_serial::hold();
         let sleep = spawn_sleep();
         assert!(!is_hotspot(sleep.0.id()));
+    }
+
+    /// `sleep` copied to `<jdk>/bin/java`: confirmed HotSpot by its name alone, unless the
+    /// JDK's `release` file says OpenJ9.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn sleep_as_java(release: &str) -> (tempfile::TempDir, ChildGuard) {
+        let jdk = tempfile::tempdir().unwrap();
+        let java = jdk.path().join("bin/java");
+        std::fs::create_dir(java.parent().unwrap()).unwrap();
+        let sleep = ["/bin/sleep", "/usr/bin/sleep"].into_iter().find(|p| Path::new(p).exists()).expect("sleep");
+        std::fs::copy(sleep, &java).unwrap();
+        std::fs::write(jdk.path().join("release"), release).unwrap();
+        let child = ChildGuard(Command::new(&java).arg("30").spawn().expect("spawn java"));
+        (jdk, child)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn an_executable_named_java_is_hotspot_unless_its_jdk_is_openj9() {
+        let _serial = crate::test_serial::hold();
+        let (_jdk, hotspot) = sleep_as_java("IMPLEMENTOR=\"Eclipse Adoptium\"\nJAVA_VERSION=\"21.0.5\"\n");
+        assert!(is_hotspot(hotspot.0.id()));
+        let (_jdk, openj9) = sleep_as_java("IMPLEMENTOR=\"IBM Corporation\"\nJVM_VARIANT=\"Openj9\"\n");
+        let pid = openj9.0.id();
+        assert!(!is_hotspot(pid));
+        let result = ensure_listener(pid, Duration::from_millis(500));
+        assert!(matches!(result, Err(AttachError::NotAJvm)), "{result:?}");
     }
 
     #[test]
