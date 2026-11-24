@@ -9232,5 +9232,9 @@
   "Center group": "置中群組",
   "Move to Center": "移到置中",
   "Instance method": "實例方法",
-  "Static method": "靜態方法"
+  "Static method": "靜態方法",
+  "Change Project Icon…": "變更專案圖示…",
+  "Reset Project Icon": "重設專案圖示",
+  "Cannot change the project icon": "無法變更專案圖示",
+  "Cannot reset the project icon": "無法重設專案圖示"
 }

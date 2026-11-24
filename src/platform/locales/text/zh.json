@@ -10181,5 +10181,9 @@
   "Center group": "居中组",
   "Move to Center": "移到居中",
   "Instance method": "实例方法",
-  "Static method": "静态方法"
+  "Static method": "静态方法",
+  "Change Project Icon…": "更改项目图标…",
+  "Reset Project Icon": "重置项目图标",
+  "Cannot change the project icon": "无法更改项目图标",
+  "Cannot reset the project icon": "无法重置项目图标"
 }
