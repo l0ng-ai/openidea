@@ -126,6 +126,26 @@ describe("project view context menu", () => {
     expect(commit).toMatchObject({ kind: "action", action: "vcs.commit", arg: "/p/module" });
   });
 
+  it("offers the GitHub group in the Git menu, like the editor menus do", () => {
+    const dispose = registerActions(
+      ["github.pullRequests", "github.createPullRequest", "github.checkoutPullRequest", "github.openInBrowser"].map(
+        (id) => ({ id, title: id, when: "projectOpen", run: () => undefined }),
+      ),
+    );
+    try {
+      const git = resolveMenuItems(contextMenuItems([node(`${ROOT}/a.py`)])).find((r) => r.label === "Git")!;
+      const subs = git.submenu!.find((i) => "label" in i && i.label === "GitHub")?.submenu;
+      expect(subs && resolveMenuItems(subs).map((i) => i.key)).toEqual([
+        "github.pullRequests",
+        "github.createPullRequest",
+        "github.checkoutPullRequest",
+        "github.openInBrowser",
+      ]);
+    } finally {
+      dispose();
+    }
+  });
+
   it("lists contributed links in Copy Path/Reference…", () => {
     disposers.push(
       registerMenuGroup({
