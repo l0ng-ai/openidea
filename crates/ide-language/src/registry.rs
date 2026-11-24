@@ -33,6 +33,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("gdscript", include_str!("../../../languages/gdscript.toml")),
     ("gdshader", include_str!("../../../languages/gdshader.toml")),
     ("go", include_str!("../../../languages/go.toml")),
+    ("gotmpl", include_str!("../../../languages/gotmpl.toml")),
     ("gherkin", include_str!("../../../languages/gherkin.toml")),
     ("gomod", include_str!("../../../languages/gomod.toml")),
     ("gowork", include_str!("../../../languages/gowork.toml")),
@@ -406,7 +407,14 @@ impl LanguageRegistry {
         if let Some((_, i)) = t.name_globs.iter().find(|(p, _)| wildcard_match(p, file_name)) {
             return languages[*i].id.clone();
         }
-        if let Some(l) = languages.iter().find(|l| l.framework_files.iter().any(|f| is_framework_file(f, path))) {
+        let framework_language = |root_marker_in_parent| {
+            languages.iter().find(|l| {
+                l.framework_files
+                    .iter()
+                    .any(|f| f.root_marker_in_parent == root_marker_in_parent && is_framework_file(f, path))
+            })
+        };
+        if let Some(l) = framework_language(true).or_else(|| framework_language(false)) {
             return l.id.clone();
         }
         let lower = file_name.to_ascii_lowercase();
@@ -429,17 +437,21 @@ impl LanguageRegistry {
     }
 }
 
-/// `path` is one of `files`: its extension is listed, and the nearest folder above it named
-/// `files.folder` has a root marker in a directory above that folder.
+/// `path` has a listed extension and lies under a matching folder with a root marker.
 fn is_framework_file(files: &crate::FrameworkFiles, path: &Path) -> bool {
     let Some(ext) = path.extension().and_then(|e| e.to_str()) else { return false };
     if !files.extensions.iter().any(|e| e.eq_ignore_ascii_case(ext)) {
         return false;
     }
-    path.ancestors()
-        .skip(1)
-        .find(|dir| dir.file_name().is_some_and(|name| name == files.folder.as_str()))
-        .is_some_and(|folder| crate::marked_root(None, folder, &files.root_markers).is_some())
+    let mut folders =
+        path.ancestors().skip(1).filter(|dir| dir.file_name().is_some_and(|name| name == files.folder.as_str()));
+    if files.root_marker_in_parent {
+        folders
+            .filter_map(Path::parent)
+            .any(|parent| crate::marked_root(Some(parent), parent, &files.root_markers).is_some())
+    } else {
+        folders.next().is_some_and(|folder| crate::marked_root(None, folder, &files.root_markers).is_some())
+    }
 }
 
 /// `*` matches any (possibly empty) run of characters, `?` exactly one; everything else is literal.
@@ -486,6 +498,7 @@ mod tests {
         "CQL",
         "CSS",
         "Go",
+        "Go Template",
         "HTML",
         "Java",
         "JavaScript",
@@ -997,19 +1010,50 @@ mod tests {
         std::fs::create_dir_all(root.join("charts/podinfo/templates/tests")).unwrap();
         std::fs::create_dir_all(root.join("k8s/templates")).unwrap();
         std::fs::write(root.join("charts/podinfo/Chart.yaml"), "apiVersion: v2\nname: podinfo\n").unwrap();
-        assert_eq!(detect("charts/podinfo/Chart.yaml"), "yaml");
-        assert_eq!(detect("charts/podinfo/values.yaml"), "yaml");
-        assert_eq!(detect("charts/podinfo/templates/deployment.yaml"), "helm-template");
-        assert_eq!(detect("charts/podinfo/templates/tests/connection.yml"), "helm-template");
-        assert_eq!(detect("charts/podinfo/templates/_helpers.tpl"), "helm-template");
-        assert_eq!(detect("charts/podinfo/templates/NOTES.txt"), "helm-template");
-        // No `Chart.yaml` / `Chart.yml` above this `templates` folder.
-        assert_eq!(detect("k8s/templates/deployment.yaml"), "yaml");
-        assert_eq!(detect("common.gotmpl"), "helm-template");
-        // Outside a chart, `.tpl` belongs to other template engines (Smarty, Terraform).
-        assert_ne!(detect("site/index.tpl"), "helm-template");
+        std::fs::write(root.join("manage.py"), "").unwrap();
+        for file in [
+            "deployment.yaml",
+            "tests/connection.yml",
+            "_helpers.tpl",
+            "NOTES.txt",
+            "dashboard.json",
+            "config.yaml.gotmpl",
+            "config.yaml.go.tmpl",
+            "tests/templates/check.YAML",
+        ] {
+            let path = format!("charts/podinfo/templates/{file}");
+            assert_eq!(detect(&path), "helm-template", "{path}");
+        }
+        for (path, language) in [
+            ("charts/podinfo/Chart.yaml", "yaml"),
+            ("charts/podinfo/values.yaml", "yaml"),
+            ("charts/podinfo/docs/templates/deployment.yaml", "yaml"),
+            ("charts/podinfo/docs/templates/_helpers.tpl", "plaintext"),
+            ("charts/podinfo/docs/templates/sample.tmpl", "gotmpl"),
+            ("charts/podinfo/docs/templates/notes.txt", "django-html"),
+            ("k8s/templates/deployment.yaml", "yaml"),
+            ("site/index.tpl", "plaintext"),
+        ] {
+            assert_eq!(detect(path), language, "{path}");
+        }
         assert!(reg.is_framework_marker(&root.join("charts/podinfo/Chart.yaml")));
         assert!(reg.is_framework_marker(&root.join("charts/podinfo/Chart.yml")));
+    }
+
+    #[test]
+    fn standalone_go_templates_are_detected_by_extension() {
+        let reg = reg();
+        for (path, language) in [
+            ("common.gotmpl", "gotmpl"),
+            ("email.tmpl", "gotmpl"),
+            ("config.go.tmpl", "gotmpl"),
+            ("config.GO.TMPL", "gotmpl"),
+            ("docker-stack.yaml.tmpl", "gotmpl"),
+            ("docker-stack.yaml", "yaml"),
+            ("main.go", "go"),
+        ] {
+            assert_eq!(reg.detect(Path::new(path), None).as_str(), language, "{path}");
+        }
     }
 
     #[test]

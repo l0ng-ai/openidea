@@ -364,8 +364,8 @@ function Summary({ plan }: { plan: JetBrainsImportPlan }) {
     <div className={styles.importSummary}>
       <div>{tx("These settings will be imported:")}</div>
       <dl className={styles.importList}>
-        {plan.rows.map((row, i) => (
-          <Fragment key={i}>
+        {plan.rows.map((row) => (
+          <Fragment key={`${row.label}:${row.value}`}>
             <dt>{row.label}</dt>
             <dd>{row.value}</dd>
           </Fragment>

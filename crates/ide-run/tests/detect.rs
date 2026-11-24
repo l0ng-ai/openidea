@@ -1010,7 +1010,7 @@ fn go_work_external_member_has_a_plain_absolute_working_directory() {
 
 #[test]
 fn go_work_parser_ignores_other_directives_comments_and_malformed_groups() {
-    use ide_run::go::work_modules;
+    use ide_core::go::work_modules;
     assert_eq!(
         work_modules("replace use => ./not-a-member\n// use ./also-not\nuse ./real\n"),
         vec![std::path::PathBuf::from("./real")]
@@ -1021,7 +1021,7 @@ fn go_work_parser_ignores_other_directives_comments_and_malformed_groups() {
 
 #[test]
 fn go_work_paths_decode_go_string_escapes() {
-    use ide_run::go::work_modules;
+    use ide_core::go::work_modules;
     for path in [r#""./\u0061pp""#, r#""./\x61pp""#, r#""./\141pp""#, "`./app`"] {
         assert_eq!(work_modules(&format!("use {path}\n")), vec![std::path::PathBuf::from("./app")]);
     }

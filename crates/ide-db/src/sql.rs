@@ -46,23 +46,6 @@ pub fn databases(templates: bool) -> &'static str {
 /// Databases of managed services that their users cannot use (hidden unless connected to).
 pub const INTERNAL_DATABASES: &[&str] = &["rdsadmin", "azure_maintenance", "azure_sys", "cloudsqladmin"];
 
-/// Oracle system accounts hidden unless `show_system` (see the Schemas tab).
-pub const ORACLE_SYSTEM_SCHEMAS: &[&str] = &[
-    "CTXSYS",
-    "DBSFWUSER",
-    "DVSYS",
-    "GSMADMIN_INTERNAL",
-    "LBACSYS",
-    "MDDATA",
-    "MDSYS",
-    "OLAPSYS",
-    "OUTLN",
-    "SYS",
-    "SYSTEM",
-    "XDB",
-    "XS$NULL",
-];
-
 /// Databases available to this login; offline/restoring databases cannot be selected.
 pub fn sqlserver_databases() -> &'static str {
     "SELECT name FROM sys.databases WHERE state = 0 AND HAS_DBACCESS(name) = 1 ORDER BY name"

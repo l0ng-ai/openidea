@@ -3,7 +3,9 @@
 //! written in its source, so the UI can compute inheritance gutter markers without a
 //! language server's type-hierarchy provider.
 
-use ide_host::{Host, HostConfig, ops};
+mod common;
+
+use ide_host::{Host, ops};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -57,17 +59,7 @@ async fn open() -> Opened {
     std::fs::write(dep.join("dep.py"), "class DepBase:\n    pass\n").unwrap();
 
     let app = tmp.path().join("app");
-    let host = Arc::new(Host::new(HostConfig {
-        config_dir: app.join("config"),
-        data_dir: app.join("data"),
-        local_data_dir: app.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(|_| {})),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    }));
+    let host = Arc::new(Host::new(common::host_config(&app)));
     host.trust.decide(&root, true, false).unwrap();
     ops::project::open(&host, WINDOW, &root).await.unwrap();
 

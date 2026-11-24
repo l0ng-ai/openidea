@@ -43,7 +43,7 @@ import { DocumentationWindow, LspPopups, UsagesStatus } from "./Popups";
 import { DOCUMENTATION_WINDOW } from "./docs";
 import { prefetchMarkdown } from "./markdown";
 import { outsideProjectBanner } from "./outsideProject";
-import { implementationGutter, registerNavigationActions } from "@/editor/navigation";
+import { implementationGutter, pythonStubGutter, registerNavigationActions } from "@/editor/navigation";
 import {
   ChangeSignatureDialog,
   ExtractInterfaceDialog,
@@ -122,6 +122,7 @@ export function activate(): () => void {
     }),
     // After the run icons (order 55), as their own gutter column.
     registerEditorContribution({ id: "lsp.lineMarkers", order: 56, extensions: implementationGutter }),
+    registerEditorContribution({ id: "lsp.pythonStubs", order: 57, extensions: pythonStubGutter }),
     // After the templates (order 90): live template / postfix expansion keeps ⇥ first.
     registerEditorContribution({ id: "lsp.parameterTab", order: 95, extensions: () => parameterTabKeys }),
     registerOverlay({ id: "editor-lsp.popups", component: LspPopups }),

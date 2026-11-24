@@ -42,6 +42,27 @@ describe("database grid", () => {
       .reverse()
       .forEach((dispose) => dispose());
   });
+  it("keeps result columns with identical SQL aliases distinct", () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      render(
+        <Grid
+          columns={[
+            { name: "alias", type: "integer" },
+            { name: "alias", type: "text" },
+          ]}
+          rowCount={1}
+          value={(_, column) => (column === 0 ? "1" : "one")}
+        />,
+      );
+      expect(screen.getAllByRole("columnheader", { name: "alias" })).toHaveLength(2);
+      expect(screen.getAllByRole("gridcell").map((cell) => cell.textContent)).toEqual(["1", "one"]);
+      expect(errors.mock.calls.some(([message]) => String(message).includes("same key"))).toBe(false);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
   it("drags a rectangle and copies it as TSV through the Windows dispatcher", () => {
     useKeymap.setState({ preset: "intellij-windows", overrides: {} });
     const globalCopy = vi.fn();

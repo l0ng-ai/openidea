@@ -5,6 +5,8 @@
 
 pub mod agent_secrets;
 pub mod catalogue;
+#[cfg(unix)]
+pub mod daemon;
 pub mod data_dirs;
 pub mod diagnostics_store;
 mod direnv;
@@ -56,6 +58,27 @@ pub struct HostConfig {
     /// Apply the open project's `devcontainer.json` (`remoteEnv`, `postStartCommand`) to
     /// this process's children: the remote server, which has one project.
     pub project_environment: bool,
+}
+
+#[cfg(test)]
+impl HostConfig {
+    /// A host under `base` for unit tests: `config`, `data` and `data` again for the machine-local
+    /// directory, built-in languages, no grammars, a sink that drops events, the window as its own
+    /// owner, the current tokio runtime and no project environment. Override fields with
+    /// `HostConfig { sink_for: .., ..HostConfig::for_test(base) }`. Call it inside a runtime.
+    pub(crate) fn for_test(base: &Path) -> Self {
+        Self {
+            config_dir: base.join("config"),
+            data_dir: base.join("data"),
+            local_data_dir: base.join("data"),
+            languages: Arc::new(LanguageRegistry::load(None).unwrap()),
+            syntax: Arc::default(),
+            sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
+            owner: |w| w,
+            runtime: tokio::runtime::Handle::current(),
+            project_environment: false,
+        }
+    }
 }
 
 pub struct Host {
@@ -505,6 +528,25 @@ impl Host {
         }
     }
 
+    /// Cleans up per-connection client state when a remote window disconnects from a
+    /// persistent daemon, leaving the project, index, language servers, terminals,
+    /// runs and agent sessions running.
+    pub fn client_disconnected(&self) {
+        let windows: Vec<String> = self.projects.read().keys().cloned().collect();
+        for window in &windows {
+            self.mcp_reports.forget_window(window);
+            self.mcp_requests.forget_window(window);
+            for request in self.project_requests.write().remove(self.owner_window(window)).unwrap_or_default() {
+                self.cancel_request(request);
+            }
+        }
+        self.terminals.detach_output();
+        self.processes.detach_output();
+        for project in self.projects() {
+            project.documents.release_client_refs();
+        }
+    }
+
     /// Stops what this host started: heap snapshots, notebook kernels, language servers, agents,
     /// runs and terminals.
     /// For a process that exits without dropping the host (the remote server).
@@ -512,7 +554,6 @@ impl Host {
         // A capture's dump may hold secrets from the debuggee's memory: delete it before exiting.
         ops::heap::shutdown(self).await;
         self.environment.shutdown();
-        self.processes.kill_all();
         self.terminals.kill_all();
         let projects: Vec<_> = self.projects.write().drain().map(|(_, p)| p).collect();
         for project in &projects {
@@ -532,22 +573,33 @@ impl Host {
             project.notebooks.stop_admission();
             project.agents.shutdown();
         }
+        let stop_processes = async {
+            for project in &projects {
+                self.debugger.stop_under(&project.root).await;
+            }
+            self.processes.shutdown().await;
+        };
         // Kernel cleanup owns its interrupt/termination/reaping deadlines. An
         // outer LSP timeout must never abort it before owned children are reaped.
-        for project in &projects {
-            if let Some(bridge) = &project.kotlin_bridge {
-                bridge.shutdown().await;
+        let stop_kernels = async {
+            for project in &projects {
+                if let Some(bridge) = &project.kotlin_bridge {
+                    bridge.shutdown().await;
+                }
+                project.notebooks.shutdown().await;
             }
-            project.notebooks.shutdown().await;
-        }
+        };
         let stop_language_servers = async {
             for project in &projects {
                 project.lsp.shutdown_all().await;
             }
         };
-        if tokio::time::timeout(std::time::Duration::from_secs(10), stop_language_servers).await.is_err() {
-            tracing::warn!("language servers did not shut down in time");
-        }
+        let stop_lsp = async {
+            if tokio::time::timeout(std::time::Duration::from_secs(10), stop_language_servers).await.is_err() {
+                tracing::warn!("language servers did not shut down in time");
+            }
+        };
+        tokio::join!(stop_processes, stop_kernels, stop_lsp);
     }
 
     // ---- cancellable requests: the UI allocates ids, `cancel_request` cancels ----
@@ -622,17 +674,7 @@ mod tests {
         let root = base.join("project");
         std::fs::create_dir(&root).unwrap();
         std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
-        let host = Host::new(HostConfig {
-            config_dir: base.join("config"),
-            data_dir: base.join("data"),
-            local_data_dir: base.join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(|_| {})),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(HostConfig { local_data_dir: base.join("local"), ..HostConfig::for_test(&base) });
         let project = Arc::downgrade(&host.open_project("main", &root).unwrap());
         host.close_project_detached("main");
         assert!(host.project("main").is_err());

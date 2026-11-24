@@ -1036,6 +1036,29 @@ pub fn document_link(conv: &Conv, path: &Path, l: lsp::DocumentLink) -> Option<D
     })
 }
 
+pub fn document_color(conv: &Conv, path: &Path, server: ServerId, c: lsp::ColorInformation) -> DocumentColor {
+    let unit = |v: f32| if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 };
+    DocumentColor {
+        range: conv.range(path, c.range),
+        red: unit(c.color.red),
+        green: unit(c.color.green),
+        blue: unit(c.color.blue),
+        alpha: unit(c.color.alpha),
+        server,
+    }
+}
+
+/// Without its own edit, a presentation's label replaces the color.
+pub fn color_presentation(conv: &Conv, path: &Path, range: Range, p: lsp::ColorPresentation) -> ColorPresentation {
+    let main = match p.text_edit {
+        Some(e) => conv.text_edit(path, e),
+        None => TextEdit { range, new_text: p.label.clone() },
+    };
+    let mut edits = vec![main];
+    edits.extend(conv.text_edits(path, p.additional_text_edits.unwrap_or_default()));
+    ColorPresentation { label: p.label, edits }
+}
+
 pub fn call_item(conv: &Conv, item: &lsp::CallHierarchyItem, from_ranges: Vec<Range>) -> Option<HierarchyItem> {
     let (path, uri) = uri_target(item.uri.as_str());
     Some(HierarchyItem {
@@ -1632,6 +1655,51 @@ mod tests {
         assert_eq!(loc.path, PathBuf::from("/p/foo.rs"));
         assert_eq!(loc.range.start, p(4, 7));
         assert_eq!(h.kind, InlayKind::Other);
+    }
+
+    #[test]
+    fn document_colors_keep_their_server_and_clamp_components() {
+        let conv = Conv::utf16();
+        let info = serde_json::from_value::<lsp::ColorInformation>(json!({
+            "range": { "start": { "line": 2, "character": 14 }, "end": { "line": 2, "character": 24 } },
+            "color": { "red": 0.937, "green": 0.267, "blue": 0.267, "alpha": 1.5 },
+        }))
+        .unwrap();
+        let c = document_color(&conv, Path::new("/p/a.html"), ServerId(3), info);
+        assert_eq!(c.range, Range::new(p(2, 14), p(2, 24)));
+        assert_eq!((c.red, c.green, c.blue, c.alpha), (0.937, 0.267, 0.267, 1.0));
+        assert_eq!(c.server, ServerId(3));
+    }
+
+    #[test]
+    fn color_presentations_replace_the_color_unless_the_server_gives_an_edit() {
+        let conv = Conv::utf16();
+        let here = Path::new("/p/a.css");
+        let color = Range::new(p(0, 7), p(0, 10));
+        let plain = serde_json::from_value::<lsp::ColorPresentation>(json!({ "label": "#00ff00" })).unwrap();
+        let plain = color_presentation(&conv, here, color, plain);
+        assert_eq!(plain.label, "#00ff00");
+        assert_eq!(plain.edits, vec![TextEdit { range: color, new_text: "#00ff00".into() }]);
+        let edited = serde_json::from_value::<lsp::ColorPresentation>(json!({
+            "label": "rgb(0 255 0)",
+            "textEdit": {
+                "range": { "start": { "line": 0, "character": 7 }, "end": { "line": 0, "character": 10 } },
+                "newText": "rgb(0 255 0)",
+            },
+            "additionalTextEdits": [{
+                "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } },
+                "newText": "/* x */",
+            }],
+        }))
+        .unwrap();
+        let edited = color_presentation(&conv, here, color, edited);
+        assert_eq!(
+            edited.edits,
+            vec![
+                TextEdit { range: color, new_text: "rgb(0 255 0)".into() },
+                TextEdit { range: Range::new(p(0, 0), p(0, 0)), new_text: "/* x */".into() },
+            ]
+        );
     }
 
     #[cfg(unix)]

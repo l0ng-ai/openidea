@@ -27,7 +27,7 @@ When a session's process exits, the terminal prints the exit code; press `Enter`
 
 ### Across restarts
 
-OpenIDEA remembers each project's terminal tabs: their directory, custom names, the shell used and the split layout (up to 32 tabs). After a restart each tab starts a **new** session in its directory. Scrollback and running commands are not restored.
+OpenIDEA remembers each project's terminal tabs: their directory, custom names, the shell used and the split layout (up to 32 tabs). For local projects, a restart starts a **new** session in each tab's directory without restoring scrollback or running commands. In a remote project, closing and reopening the window reattaches to the running PTY sessions on `openidea-server` along with their recent scrollback and active commands.
 
 ## Keys in the terminal
 

@@ -31,6 +31,7 @@ export function CommitCheckSummary({
           <T>Commit checks passed</T>
         ) : (
           result.problems.map((p, i) => (
+            // oxlint-disable-next-line react/no-array-index-key -- problem titles can repeat; position is the identity
             <div key={i}>
               <span className={styles.checkProblemTitle}>{tx(p.title)}</span>
               {" · "}

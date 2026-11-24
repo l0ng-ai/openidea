@@ -769,7 +769,7 @@ pub struct AgentModelCatalog {
     pub error: Option<String>,
 }
 
-/// Streamed to the window that subscribed (`AgentManager::subscribe`).
+/// Streamed to the window that subscribed (`AgentManager::subscribe_as`).
 #[derive(Clone, Debug, Serialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum AgentEvent {

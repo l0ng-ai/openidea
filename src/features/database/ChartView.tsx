@@ -133,6 +133,7 @@ export function ChartView({ columns, rows }: { columns: readonly GridColumn[]; r
             ))}
             {points.map((_, i) => (
               <line
+                // oxlint-disable-next-line react/no-array-index-key -- data rows repeat; point position is the identity
                 key={i}
                 className={styles.chartGrid}
                 x1={PAD.left + band * (i + 1)}
@@ -144,6 +145,7 @@ export function ChartView({ columns, rows }: { columns: readonly GridColumn[]; r
             {kind === "bar"
               ? points.map((p, i) => (
                   <rect
+                    // oxlint-disable-next-line react/no-array-index-key -- data rows repeat; point position is the identity
                     key={i}
                     className={styles.chartBarMark}
                     x={PAD.left + band * i + band * 0.05}
@@ -161,7 +163,14 @@ export function ChartView({ columns, rows }: { columns: readonly GridColumn[]; r
                     points={points.map((p, i) => `${xAt(i)},${yAt(p.value)}`).join(" ")}
                   />,
                   ...points.map((p, i) => (
-                    <circle key={i} className={styles.chartDot} cx={xAt(i)} cy={yAt(p.value)} r={3}>
+                    <circle
+                      // oxlint-disable-next-line react/no-array-index-key -- data rows repeat; point position is the identity
+                      key={i}
+                      className={styles.chartDot}
+                      cx={xAt(i)}
+                      cy={yAt(p.value)}
+                      r={3}
+                    >
                       <title>{`${p.label}: ${p.text}`}</title>
                     </circle>
                   )),
@@ -169,7 +178,14 @@ export function ChartView({ columns, rows }: { columns: readonly GridColumn[]; r
             <line className={styles.chartAxis} x1={PAD.left} x2={PAD.left + plotW} y1={yAt(0)} y2={yAt(0)} />
             {points.map((p, i) =>
               i % labelEvery ? null : (
-                <text key={i} className={styles.chartTick} x={xAt(i)} y={PAD.top + plotH + 14} textAnchor="middle">
+                <text
+                  // oxlint-disable-next-line react/no-array-index-key -- data rows repeat; point position is the identity
+                  key={i}
+                  className={styles.chartTick}
+                  x={xAt(i)}
+                  y={PAD.top + plotH + 14}
+                  textAnchor="middle"
+                >
                   {p.label.length > 14 ? `${p.label.slice(0, 13)}…` : p.label}
                 </text>
               ),

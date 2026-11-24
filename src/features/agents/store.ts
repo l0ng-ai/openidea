@@ -27,8 +27,9 @@ import { auxiliaryWindow, windowLabel } from "@/platform/auxWindow";
 import { routeToWindow, taskWindowDraft, taskWindowFocused, updateTaskWindowDraft } from "./taskWindowRouting";
 import { clearAgentTaskFontZoom, resetAllAgentFontZoom } from "./fontZoom";
 import { clearDismissedAssets } from "./sessionAssetsModel";
-import { useSkillsCatalog } from "./skillsModel";
+import { useSkillsCatalog, useSkillsCatalogSync } from "./skillsModel";
 import { basename, useProject } from "@/platform/project";
+import { projectLocation } from "@/platform/remote";
 import { defaultTaskProject } from "./project";
 import { call, commands, isTauri, nextRequestId } from "@/platform/ipc";
 import { editorService, notifications, notifyTabTitlesChanged, toolWindowService } from "@/workbench/contributions";
@@ -554,7 +555,7 @@ export async function connect(): Promise<void> {
     return;
   }
   if (gen !== generation) return;
-  const organizeRoot = useProject.getState().project?.root ?? null;
+  const organizeRoot = projectLocation(useProject.getState().project?.root);
   useAgents.setState({
     loaded: true,
     error: null,
@@ -1070,6 +1071,8 @@ export function useAgentCommands(
   offered: readonly AgentCommand[],
 ): readonly AgentCommand[] {
   const skillOverrides = useAgents((s) => (task ? s.tasks.get(task)?.skillOverrides : s.draft.skillOverrides));
+  // The server's draft commands omit skills that only this draft has enabled.
+  useSkillsCatalogSync(task === null && Object.values(skillOverrides ?? {}).some((mode) => mode !== "off"));
   const catalogSkills = useSkillsCatalog((s) => s.skills);
   const [found, setFound] = useState<{
     for: unknown[];
@@ -1695,6 +1698,20 @@ export interface ReferenceTarget {
   lines?: { from: number; to: number };
 }
 
+/** The active composer's task and path roots for agent references. */
+export function composerReferenceContext() {
+  const key = activeComposerKey();
+  const task = key === HOME ? null : (useAgents.getState().tasks.get(key) ?? null);
+  const project = useProject.getState().project;
+  const root = (task ? task.cwd : homeProjectRoot()) ?? "";
+  const roots = {
+    root,
+    projectRoot: (task ? (task.projectRoot ?? project?.root) : null) ?? root,
+    members: project?.workspace?.projects,
+  };
+  return { key, task, roots };
+}
+
 /**
  * Adds `@file` references (with an optional line range) to the composer on show (else the one
  * typed in last) and shows it: IDEA-style "send this to the chat". Paths resolve like the
@@ -1718,21 +1735,12 @@ export function appendToComposer(
   compose: (mentions: readonly string[], text: string) => string,
   targets: readonly ReferenceTarget[] = [],
 ): number {
-  const s = useAgents.getState();
-  const key = activeComposerKey();
-  const task = key === HOME ? null : s.tasks.get(key)!;
-  const project = useProject.getState().project;
-  const root = task ? task.cwd : homeProjectRoot();
-  const roots = {
-    root: root ?? "",
-    projectRoot: (task ? (task.projectRoot ?? project?.root) : null) ?? root ?? "",
-    members: project?.workspace?.projects,
-  };
+  const { key, task, roots } = composerReferenceContext();
   const current = composerDraft(key);
   const files: FileRef[] = [];
   const mentions: string[] = [];
   for (const { path, lines } of targets) {
-    const ref = root ? referenceOf(roots, path) : null;
+    const ref = roots.root ? referenceOf(roots, path) : null;
     if (!ref) continue;
     // A folder keeps its trailing slash, so its chip is a folder reference.
     const rel = /[\\/]$/.test(path) && ref.rel !== "." ? `${ref.rel}/` : ref.rel;

@@ -196,6 +196,9 @@ describe("fileIconName", () => {
     ["schema.graphql", "file-graphql"],
     ["api.proto", "file-proto"],
     ["main.go", "file-go"],
+    ["page.gotmpl", "file-go"],
+    ["message.tmpl", "file-go"],
+    ["docker-stack.yaml.go.tmpl", "file-go"],
     ["main.c", "file-c"],
     ["util.h", "file-h"],
     ["util.hpp", "file-h"],
@@ -254,7 +257,7 @@ describe("fileIconName", () => {
     expect(fileIconName(file)).toBe(icon);
   });
 
-  it("gives every detected language file a specific icon", () => {
+  it("gives every built-in filename and extension association a specific icon", () => {
     const dir = path.join(process.cwd(), "languages");
     const list = (src: string, key: string) =>
       [...(new RegExp(`^${key}\\s*=\\s*\\[([^\\]]*)\\]`, "m").exec(src)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map(
@@ -264,7 +267,8 @@ describe("fileIconName", () => {
     const misses: string[] = [];
     for (const file of fs.readdirSync(dir).filter((f) => f.endsWith(".toml"))) {
       if (file === "plaintext.toml") continue;
-      const src = fs.readFileSync(path.join(dir, file), "utf8");
+      // Framework tables describe associations that require project context.
+      const src = fs.readFileSync(path.join(dir, file), "utf8").split(/^\[/m, 1)[0]!;
       const names = [
         ...list(src, "extensions").map((e) => `name.${e}`),
         ...list(src, "filenames").map((n) => n.replace("*", "x")),

@@ -1,4 +1,6 @@
 //! Real Wasm provider dispatch and the document-edit path used locally and over RPC.
+mod common;
+
 use ide_core::{CancellationToken, ChangeSet, Diagnostic, IdeEvent, Pos, Range, TextChange};
 use ide_host::plugins::{Consent, HostWorkspace, PluginEvent, PluginHost, set_editor_providers};
 use ide_host::{Host, HostConfig, ops};
@@ -239,18 +241,11 @@ type Events = Arc<Mutex<Vec<(String, IdeEvent)>>>;
 
 fn runtime_host(base: &Path, events: Events) -> Arc<Host> {
     Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
         sink_for: Box::new(move |window| {
             let (events, window) = (events.clone(), window.to_owned());
             Arc::new(move |event: IdeEvent| events.lock().push((window.clone(), event)))
         }),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
+        ..common::host_config(base)
     }))
 }
 
@@ -434,17 +429,7 @@ async fn typing_is_debounced_versioned_and_scoped_to_document_project_and_window
 
 /// A host with a project open: `problems` and `decorations` need a workspace.
 fn harness(root: &Path) -> Arc<Host> {
-    let host = Arc::new(Host::new(HostConfig {
-        config_dir: root.join("config"),
-        data_dir: root.join("data"),
-        local_data_dir: root.join("local"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    }));
+    let host = Arc::new(Host::new(HostConfig { local_data_dir: root.join("local"), ..common::host_config(root) }));
     host.open_project("main", root).unwrap();
     host
 }

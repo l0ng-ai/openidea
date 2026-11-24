@@ -241,9 +241,18 @@ export function ImportDialog({ id, schema, table }: { id: string; schema: string
           <table>
             <tbody>
               {preview.map((r, i) => (
-                <tr key={i} className={header && i === 0 ? styles.importHeader : undefined}>
+                <tr
+                  // oxlint-disable-next-line react/no-array-index-key -- preview rows are immutable; position is the identity
+                  key={i}
+                  className={header && i === 0 ? styles.importHeader : undefined}
+                >
                   {r.map((v, j) => (
-                    <td key={j}>{v}</td>
+                    <td
+                      // oxlint-disable-next-line react/no-array-index-key -- preview cells repeat; position is the identity
+                      key={j}
+                    >
+                      {v}
+                    </td>
                   ))}
                 </tr>
               ))}
