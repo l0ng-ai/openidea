@@ -121,7 +121,10 @@ test("Git Log settings group display and column options with aligned checkboxes"
 
   for (const width of [1000, 520]) {
     await page.setViewportSize({ width, height: 760 });
-    expect((await tagNames.boundingBox())!.x).toBeCloseTo((await hash.boundingBox())!.x, 0);
+    // Read both rows together once the dialog has finished opening and relaid out.
+    await expect
+      .poll(async () => Math.abs((await tagNames.boundingBox())!.x - (await hash.boundingBox())!.x))
+      .toBeLessThan(0.5);
   }
 
   await expect(hash).not.toBeChecked();

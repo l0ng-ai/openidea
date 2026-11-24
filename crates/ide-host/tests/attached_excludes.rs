@@ -1,5 +1,7 @@
 //! Each project of a workspace keeps its own excluded folders: they apply below that project only.
-use ide_core::{NullSink, RequestId};
+mod common;
+
+use ide_core::RequestId;
 use ide_host::{Host, HostConfig, ops};
 use ide_workspace::settings::SettingsScope;
 use std::path::{Path, PathBuf};
@@ -7,17 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 fn host(base: &Path) -> Host {
-    Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("local"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |window| window,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    })
+    Host::new(HostConfig { local_data_dir: base.join("local"), ..common::host_config(base) })
 }
 
 /// Files containing `needle` that Find in Files reports, by path.

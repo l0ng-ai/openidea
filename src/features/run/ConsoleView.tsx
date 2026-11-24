@@ -74,6 +74,7 @@ const Line = memo(
           const marked = seg.mark ? { "data-find-match": "", "data-find-current": seg.current ? "" : undefined } : {};
           return seg.link ? (
             <a
+              // oxlint-disable-next-line react/no-array-index-key -- segments repeat; position in an immutable line is stable
               key={i}
               href={seg.link.kind === "url" ? seg.link.url : undefined}
               className={styles.link}
@@ -86,10 +87,12 @@ const Line = memo(
               {seg.text}
             </a>
           ) : seg.mark ? (
+            // oxlint-disable-next-line react/no-array-index-key -- segments repeat; position in an immutable line is stable
             <mark key={i} className={styles.match} style={style} {...marked}>
               {seg.text}
             </mark>
           ) : (
+            // oxlint-disable-next-line react/no-array-index-key -- segments repeat; position in an immutable line is stable
             <span key={i} style={style}>
               {seg.text}
             </span>

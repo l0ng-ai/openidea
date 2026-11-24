@@ -3,6 +3,7 @@
 mod archive;
 mod bytes;
 mod compare;
+mod decode_stream;
 mod encoding;
 mod ops;
 mod private;
@@ -30,6 +31,7 @@ pub use compare::{
     DirectoryCompareEntry, DirectoryCompareMode, DirectoryCompareProgress, DirectoryCompareStatus, DirectorySyncAction,
     DirectorySyncFailure, DirectorySyncOperation, DirectorySyncProgress, compare_directories, copy_merge,
 };
+pub use decode_stream::{DecodedReader, decode_stream};
 use encoding::SNIFF_LEN;
 pub use encoding::{
     LARGE_FILE_THRESHOLD, MAX_OPEN_SIZE, READ_ONLY_THRESHOLD, decode_properties_escapes, encode,

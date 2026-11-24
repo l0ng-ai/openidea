@@ -2,9 +2,11 @@
 //! that sends no real window (the desktop shell once passed `""`) never reaches the debugger,
 //! and a project in Restricted Mode never reads the debuggee's memory.
 
-use ide_core::{IdeError, NullSink};
+mod common;
+
+use ide_core::IdeError;
+use ide_host::Host;
 use ide_host::rpc::{self, Dispatcher, Invoke};
-use ide_host::{Host, HostConfig};
 use ide_jsonrpc::{Handler, Peer};
 use serde_json::{Value, json};
 use std::sync::{Arc, OnceLock};
@@ -39,17 +41,7 @@ fn host(trusted: bool) -> (Arc<Host>, tempfile::TempDir) {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("project");
     std::fs::create_dir(&root).unwrap();
-    let host = Arc::new(Host::new(HostConfig {
-        config_dir: tmp.path().join("config"),
-        data_dir: tmp.path().join("data"),
-        local_data_dir: tmp.path().join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    }));
+    let host = Arc::new(Host::new(common::host_config(tmp.path())));
     host.trust.decide(&root, trusted, false).unwrap();
     host.open_project("main", &root).unwrap();
     (host, tmp)

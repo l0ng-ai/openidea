@@ -65,17 +65,17 @@ beforeEach(() => {
 
 it("lists stashes from every root and applies the selected row in its own repository", async () => {
   render(<StashesPanel />);
-  expect(await screen.findByText("front · First")).toBeInTheDocument();
-  expect(await screen.findByText("back · Second")).toBeInTheDocument();
+  expect(await screen.findByText("First")).toBeInTheDocument();
+  expect(await screen.findByText("Second")).toBeInTheDocument();
   act(() => useVcs.setState({ repo: "/p/back" }));
-  await screen.findByText("front · First");
+  await screen.findByText("First");
   fireEvent.click(screen.getByRole("button", { name: "Apply Stash" }));
   expect(apply).toHaveBeenCalledWith(expect.objectContaining({ index: 0, id: "/p/front-stash" }), false, "/p/front");
 });
 
 it("keeps the selected stash when a refresh inserts a new entry above it", async () => {
   render(<StashesPanel />);
-  const original = await screen.findByText("front · First");
+  const original = await screen.findByText("First");
   fireEvent.mouseDown(original, { button: 0 });
   list.mockImplementation(async (repo: string) => ({
     status: "ok",
@@ -88,15 +88,15 @@ it("keeps the selected stash when a refresh inserts a new entry above it", async
         : [],
   }));
   act(() => useVcs.setState((state) => ({ version: state.version + 1 })));
-  expect(await screen.findByText("front · New")).toBeInTheDocument();
-  expect(screen.getByText("front · First").closest('[role="treeitem"]')).toHaveAttribute("aria-selected", "true");
+  expect(await screen.findByText("New")).toBeInTheDocument();
+  expect(screen.getByText("First").closest('[role="treeitem"]')).toHaveAttribute("aria-selected", "true");
   fireEvent.click(screen.getByRole("button", { name: "Apply Stash" }));
   expect(apply).toHaveBeenCalledWith(expect.objectContaining({ index: 1, id: "/p/front-stash" }), false, "/p/front");
 });
 
 it("disables stale stash actions while another repository is loading", async () => {
   render(<StashesPanel />);
-  await screen.findByText("front · First");
+  await screen.findByText("First");
   let resolve!: (value: unknown) => void;
   list.mockImplementation(
     () =>
@@ -105,7 +105,7 @@ it("disables stale stash actions while another repository is loading", async () 
       }),
   );
   act(() => useVcs.setState({ root: "/other", roots: ["/other"], repo: "/other" }));
-  expect(screen.queryByText("front · First")).not.toBeInTheDocument();
+  expect(screen.queryByText("First")).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Apply Stash" })).toBeDisabled();
   await act(async () => {
     resolve({ status: "ok", data: [{ index: 0, message: "On main: New project", timeMs: 0, id: "n", base: "b" }] });
@@ -117,7 +117,7 @@ it("disables stale stash actions while another repository is loading", async () 
 
 it("shows the selected stash's files and opens their diff without applying the stash", async () => {
   render(<StashesPanel />);
-  fireEvent.mouseDown(await screen.findByText("back · Second"), { button: 0 });
+  fireEvent.mouseDown(await screen.findByText("Second"), { button: 0 });
   const file = await within(await screen.findByRole("tree", { name: "Changed files" })).findByText("app.ts");
   expect(files).toHaveBeenCalledWith("/p/back", "/p/back-stash");
   expect(apply).not.toHaveBeenCalled();
@@ -206,7 +206,7 @@ it("ignores stale file results when switching stashes", async () => {
       }),
   );
   render(<StashesPanel />);
-  fireEvent.mouseDown(await screen.findByText("back · Second"), { button: 0 });
+  fireEvent.mouseDown(await screen.findByText("Second"), { button: 0 });
   expect(await screen.findByText("app.ts")).toBeInTheDocument();
   await act(async () => {
     resolve({ status: "ok", data: [{ path: "stale.ts", kind: "modified", oldPath: null }] });

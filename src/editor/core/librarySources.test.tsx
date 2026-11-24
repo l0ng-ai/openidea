@@ -11,6 +11,7 @@ import { VirtualBanner } from "./view/Banner";
 const ipc = vi.hoisted(() => ({ support: vi.fn(), sources: vi.fn(), cancel: vi.fn(), choose: vi.fn() }));
 vi.mock("@/platform/ipc", async (original) => ({
   ...(await original<typeof import("@/platform/ipc")>()),
+  isTauri: () => true,
   commands: { lspCanDownloadSources: ipc.support, lspLibrarySources: ipc.sources, cancelRequest: ipc.cancel },
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: ipc.choose }));

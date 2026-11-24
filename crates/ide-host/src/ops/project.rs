@@ -140,7 +140,10 @@ pub struct WorkspaceMember {
 }
 
 /// The workspace projects outside the window's project folder, for Mark Directory as there.
-#[command(trust = always)]
+/// Each member's `for_project().layer(Project)` re-parses both settings layers and validates the
+/// merged tree against `Settings`; that stack-hungry work must not run on the IPC (main) thread,
+/// whose 1 MiB stack overflows on project open (STATUS_STACK_OVERFLOW).
+#[command(trust = always, desktop_body = spawn)]
 pub fn project_workspace_members(host: &Host, window: &str) -> IdeResult<Vec<WorkspaceMember>> {
     let project = host.project(window)?;
     Ok(project
@@ -156,7 +159,8 @@ pub fn project_workspace_members(host: &Host, window: &str) -> IdeResult<Vec<Wor
 
 /// Sets a `projectStructure.*` key in the settings of `root`, a project attached to the window's
 /// project (Mark Directory as there). Every open window holding that project follows.
-#[command(trust = always)]
+/// Like `project_workspace_members`, its `for_project` settings re-parse runs off the IPC thread.
+#[command(trust = always, desktop_body = spawn)]
 pub fn project_workspace_member_set(
     host: &Arc<Host>,
     window: &str,

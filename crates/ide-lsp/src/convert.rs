@@ -968,6 +968,7 @@ pub fn inlay_hint(conv: &Conv, path: &Path, h: lsp::InlayHint) -> InlayHint {
         _ => InlayKind::Other,
     };
     let tooltip = h.tooltip.map(tooltip_text);
+    let text_edits = conv.text_edits(path, h.text_edits.unwrap_or_default());
     InlayHint {
         position: conv.pos(path, h.position),
         label,
@@ -976,6 +977,7 @@ pub fn inlay_hint(conv: &Conv, path: &Path, h: lsp::InlayHint) -> InlayHint {
         padding_right: h.padding_right.unwrap_or(false),
         tooltip,
         parts,
+        text_edits,
     }
 }
 
@@ -1612,6 +1614,23 @@ mod tests {
         assert!(h.padding_left && !h.padding_right);
         assert_eq!(h.parts.len(), 2);
         assert!(h.parts.iter().all(|p| p.location.is_none()));
+        assert!(h.text_edits.is_empty());
+    }
+
+    #[test]
+    fn inlay_text_edits_carry_over() {
+        let conv = Conv::utf16();
+        let h: lsp::InlayHint = serde_json::from_value(json!({
+            "position": {"line": 2, "character": 5}, "label": ": Any", "kind": 1,
+            "textEdits": [
+                {"range": {"start": {"line": 2, "character": 5}, "end": {"line": 2, "character": 5}}, "newText": ": Any"},
+                {"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": "from typing import Any\n"}
+            ]
+        }))
+        .unwrap();
+        let h = inlay_hint(&conv, Path::new("/a"), h);
+        let edits: Vec<_> = h.text_edits.iter().map(|e| (e.range.start, e.new_text.as_str())).collect();
+        assert_eq!(edits, [(p(2, 5), ": Any"), (p(0, 0), "from typing import Any\n")]);
     }
 
     #[cfg(unix)]

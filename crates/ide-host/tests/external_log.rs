@@ -1,7 +1,8 @@
 //! Explicit external logs allow history reads without adding a writable project root.
-use ide_core::NullSink;
-use ide_host::{Host, HostConfig, ops::vcs};
-use std::{path::Path, process::Command, sync::Arc};
+mod common;
+
+use ide_host::{Host, ops::vcs};
+use std::{path::Path, process::Command};
 
 fn git(root: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
@@ -31,17 +32,7 @@ async fn external_history_is_readable_and_never_becomes_a_write_target() {
     git(&external, &["rm", "deleted.txt"]);
     git(&external, &["commit", "-m", "delete"]);
     let head = git(&external, &["rev-parse", "HEAD"]);
-    let host = Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    });
+    let host = Host::new(common::host_config(&base));
     // A standalone editor needs no project, indexer, or writable VCS root.
     vcs::vcs_open_external_log(&host, "standalone", external.clone()).await.unwrap();
     let standalone = vcs::vcs_log(&host, "standalone", Some(external.clone()), Default::default()).await.unwrap();

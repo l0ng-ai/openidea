@@ -14,7 +14,7 @@ test("double Shift opens Search Everywhere with its tabs; Escape closes it", asy
 });
 
 test("Search Everywhere finds and runs an action", async ({ workbench: page }) => {
-  await doubleShift(page);
+  await page.locator("header").getByRole("button", { name: "Search Everywhere", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Search Everywhere" });
   await dialog.getByRole("combobox").fill("Language Servers");
   const option = dialog.getByRole("option", { name: /Language Servers/ }).first();
@@ -122,7 +122,10 @@ test("Find in Files streams matches by file and opens the chosen one at its line
       const expected = getComputedStyle(probe).backgroundColor;
       probe.remove();
       const own = getComputedStyle(el);
-      return own.backgroundColor === expected && own.color === getComputedStyle(el.parentElement!).color;
+      return (
+        (own.backgroundColor === expected || own.backgroundImage.includes(expected)) &&
+        own.color === getComputedStyle(el.parentElement!).color
+      );
     }),
   ).toBe(true);
   const originalPreview = await preview.textContent();

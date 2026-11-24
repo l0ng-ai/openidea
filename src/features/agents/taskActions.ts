@@ -1,6 +1,6 @@
 import type { AgentTask } from "@/bindings";
 import type { Action } from "@/platform/actions";
-import { tx } from "@/platform/i18n";
+import { t, tx } from "@/platform/i18n";
 import { auxiliaryWindow } from "@/platform/auxWindow";
 import { useProject } from "@/platform/project";
 import type { MenuItem } from "@/ui";
@@ -165,7 +165,7 @@ function arrangeMenu(tasks: AgentTask[], ids: string[]): MenuItem[] {
     {
       kind: "item",
       id: "move-to-group",
-      label: "Move to Group",
+      label: "Group",
       icon: "folder",
       submenu: groupSubmenu(
         ids,
@@ -194,7 +194,7 @@ function groupSubmenu(ids: string[], groups: OrganizeGroup[], current: Array<str
           {
             kind: "item",
             id: "group:none",
-            label: "Remove from Group",
+            label: "No Group",
             run: () => moveTasksToGroup(ids, null),
           },
         ] satisfies MenuItem[])
@@ -213,11 +213,11 @@ export function groupMenu(group: OrganizeGroup): MenuItem[] {
 export const taskActions: Action[] = [
   {
     id: "agents.importSessions",
-    title: "Import Sessions from Other Apps…",
+    title: "Import Sessions…",
     category: "Agents",
     icon: "download",
     when: "projectOpen",
-    keywords: ["import", "claude", "codex", "history", "transcript"],
+    keywords: ["import", "other apps", "claude", "codex", "history", "transcript"],
     run: showImportSessions,
   },
   {
@@ -398,7 +398,14 @@ export function taskMenu(tasks: AgentTask[]): MenuItem[] {
       ? ([
           { kind: "action", action: "agents.renameTask", label: "Rename…", icon: "edit", arg: task.id },
           ...(!auxiliaryWindow()
-            ? ([{ kind: "action", action: "agents.moveToNewWindow", arg: task.id }] satisfies MenuItem[])
+            ? ([
+                {
+                  kind: "action",
+                  action: "agents.moveToNewWindow",
+                  label: t("app.window.askNew"),
+                  arg: task.id,
+                },
+              ] satisfies MenuItem[])
             : []),
           ...(hasTaskTerminal(task, projectRoot)
             ? ([

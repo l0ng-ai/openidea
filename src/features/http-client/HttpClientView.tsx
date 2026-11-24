@@ -130,8 +130,13 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
       {r != null && (r.redirects?.length ?? 0) > 0 && (
         <div className={styles.redirects}>
           {r.redirects?.map((hop, i) => (
-            // A redirect loop repeats locations: the hop's position is its identity.
-            <div key={i} className={styles.redirectHop} title={hop.location}>
+            <div
+              // A redirect loop repeats status and location: the hop's position is its identity.
+              // oxlint-disable-next-line react/no-array-index-key -- redirect loops repeat; position is the identity
+              key={i}
+              className={styles.redirectHop}
+              title={hop.location}
+            >
               {hop.status} {hop.statusText} → {hop.location}
             </div>
           ))}
@@ -252,6 +257,7 @@ function HeaderTable({ headers }: { headers: Array<[string, string]> }) {
     <table className={styles.headers}>
       <tbody>
         {headers.map(([k, v], i) => (
+          // oxlint-disable-next-line react/no-array-index-key -- duplicate HTTP headers are legal; position is the identity
           <tr key={i}>
             <th>{k}</th>
             <td>{v}</td>

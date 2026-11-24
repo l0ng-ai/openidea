@@ -33,7 +33,7 @@ impl AgentSecrets {
         )
     }
 
-    pub fn with_store(store: SecretFile, local: PathBuf) -> Self {
+    fn with_store(store: SecretFile, local: PathBuf) -> Self {
         Self { store, local, lock: Mutex::new(()) }
     }
 

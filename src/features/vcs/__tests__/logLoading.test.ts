@@ -421,6 +421,18 @@ describe("commit navigation", () => {
     expect(useGitLog.getState().selected).toBe(commitKey(commits[2]!));
   });
 
+  it("loads every filtered connection below the page before offering the parents", async () => {
+    // Neither side branch is loaded yet, so the graph defers `right` behind `left` (#5345).
+    const at = (commit: Commit, logPosition: number) => ({ ...commit, logPosition, logTotal: 4 });
+    const tip = { ...at(c("tip", ["hidden"]), 0), graphParents: ["left", "right"], graphDashed: [true, true] };
+    useGitLog.setState({ commits: [{ ...tip, repo: "/repo" }], done: false });
+    api.log
+      .mockResolvedValueOnce(ok([at(c("left", ["base"]), 1)]))
+      .mockResolvedValueOnce(ok([at(c("right", ["base"]), 2), at(c("base"), 3)]));
+    await goToParent(useGitLog.getState().commits[0]!);
+    expect(api.choose.mock.lastCall?.[0].map((x: Commit) => x.id)).toEqual(["left", "right"]);
+  });
+
   it("does not navigate after a reference lookup is superseded by a filter change", async () => {
     let finish!: (value: ReturnType<typeof ok<Commit[]>>) => void;
     api.log.mockImplementationOnce(

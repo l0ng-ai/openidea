@@ -126,6 +126,9 @@
 .stackedRadioBlock {
   margin-inline-end: 0;
 }
+.stackedRadioBlock > .radioLabel {
+  white-space: normal;
+}
 .stackedRadios {
   max-width: 100%;
 }
@@ -135,6 +138,11 @@
 }
 .stackedRadioBlock .radioLabel + .stackedRadios {
   padding-inline-start: calc(var(--space-4) + var(--space-1));
+}
+.tabOverflowChoices {
+  align-items: flex-start;
+  gap: var(--space-1);
+  max-width: 100%;
 }
 .radio {
   display: inline-flex;

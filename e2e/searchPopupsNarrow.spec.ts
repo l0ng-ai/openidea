@@ -3,7 +3,7 @@
  * header on screen: titles stay on one line and every header control lies inside the popup.
  */
 import type { Page } from "@playwright/test";
-import { expect, openFromTree, stubDesktop, test } from "./fixtures";
+import { expect, ipcCalls, openFromTree, stubDesktop, test } from "./fixtures";
 
 const LONG_RESULT_PATH = "config/RegionalOrderReconciliationEndpointsForSandboxEnvironments.txt";
 
@@ -116,6 +116,35 @@ test.describe("search popups at the minimum window width", () => {
     expect(width).toBeGreaterThan(200);
     await expectControlsFit(page);
     await dialog.getByRole("button", { name: /Browse/ }).click({ trial: true });
+  });
+
+  test("multi-line search and replacement leave room for matches and scroll inside their fields", async ({
+    workbench: page,
+  }) => {
+    await stubFindMatches(page);
+    await run(page, "find.replaceInPath");
+    const dialog = page.getByRole("dialog", { name: "Replace in Files" });
+    const search = dialog.getByRole("textbox", { name: "Text to find" });
+    const replacement = dialog.getByRole("textbox", { name: "Replace with" });
+    const query = "base=http://localhost:8080\nregion=eu-west\nmode=batch\nverify=true\nretry=2\ntimeout=30";
+    const changed = query.replace("localhost:8080", "localhost:9443").replace("retry=2", "retry=4");
+    await search.fill(query);
+    await replacement.fill(changed);
+    for (const field of [search, replacement]) {
+      const visibleLines = await field.evaluate((el) => el.clientHeight / parseFloat(getComputedStyle(el).lineHeight));
+      expect(visibleLines).toBeCloseTo(3);
+      await field.press("Control+End");
+      await expect.poll(() => field.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+    }
+    await expect(search).toHaveValue(query);
+    await expect(replacement).toHaveValue(changed);
+    await expect(dialog.getByRole("listbox", { name: "Matches" }).getByRole("option").first()).toBeInViewport();
+    const calls = await ipcCalls(page, "search_start");
+    expect(calls.some(({ query: sent }) => (sent as { pattern: string }).pattern === query)).toBe(true);
+    await expect(dialog.getByRole("button", { name: "Replace All", exact: true })).toBeInViewport({ ratio: 1 });
+
+    await replacement.fill("updated");
+    await expect(replacement).toHaveAttribute("rows", "1");
   });
 
   test("Replace in Files keeps its footer actions together as the window narrows", async ({ workbench: page }) => {

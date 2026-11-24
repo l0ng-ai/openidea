@@ -160,6 +160,8 @@ export interface SpellingValid {
   ideWords: string[];
   projectWords: string[];
   customDictionaries: string[];
+  /** Where "Save '…' to dictionary" writes; empty means project (application without a project). */
+  defaultDictionary: string;
 }
 
 const stringList = (v: unknown): string[] =>
@@ -171,6 +173,7 @@ function validateSpelling(raw: unknown): SpellingValid {
     ideWords: stringList(r.ideWords),
     projectWords: stringList(r.projectWords),
     customDictionaries: stringList(r.customDictionaries),
+    defaultDictionary: typeof r.defaultDictionary === "string" ? r.defaultDictionary : "",
   };
 }
 
@@ -226,7 +229,7 @@ export const DEFAULT_SETTINGS: ValidSettings = {
   cmake: {},
   projectStructure: DEFAULT_PROJECT_STRUCTURE,
   inspections: DEFAULT_INSPECTIONS,
-  spelling: { ideWords: [], projectWords: [], customDictionaries: [] },
+  spelling: { ideWords: [], projectWords: [], customDictionaries: [], defaultDictionary: "" },
   tools: {},
   languageServers: {},
   agents: {

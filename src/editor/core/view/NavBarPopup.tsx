@@ -113,7 +113,7 @@ function NavChildList({
       )}
       {items?.map((child, i) => (
         <div
-          key={`${child.path}:${child.label}:${i}`}
+          key={`${child.kind}:${child.path}:${child.label}`}
           id={`${id}-${i}`}
           role="option"
           aria-selected={i === active}
@@ -251,7 +251,7 @@ function NavBar({ path, line, col, directory }: { path: string; line: number; co
       >
         <div className={styles.bar} ref={strip}>
           {segments.map((s, i) => (
-            <span key={`${i}:${s.path}:${s.label}`} className={styles.segmentWrap}>
+            <span key={`${s.kind}:${s.path}:${s.label}`} className={styles.segmentWrap}>
               {i > 0 && <Icon name="chevron-right" size={12} className={styles.sep} />}
               <button
                 ref={(el) => void (buttons.current[i] = el)}

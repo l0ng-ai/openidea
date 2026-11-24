@@ -1796,7 +1796,6 @@
   "Runs Optimize Imports when the file has no errors, unless it would change the caret line.": "Exécute Optimiser les imports lorsque le fichier ne contient pas d'erreur, sauf si cela modifie la ligne du curseur.",
   "Runs npm scripts and Node-based language servers (vtsls, eslint, pyright…).": "Exécute les scripts npm et les serveurs de langage basés sur Node (vtsls, eslint, pyright…).",
   "Runs sync, builds and Maven run configurations. A chosen home is used instead of the project's mvnw. Bypassed while the Maven daemon is enabled.": "Exécute la synchronisation, les builds et les configurations d'exécution Maven. Un répertoire choisi remplace le mvnw du projet. Ignoré lorsque le démon Maven est activé.",
-  "Runs the language server's Organize Imports action.": "Exécute l'action Organiser les imports du serveur de langage.",
   "Runs the language server's formatter before an explicit save (Actions on Save).": "Exécute le formateur du serveur de langage avant un enregistrement explicite (Actions à l'enregistrement).",
   "Search history": "Historique de recherche",
   "Search history ({previous} / {next})": "Historique de recherche ({previous} / {next})",
@@ -4699,7 +4698,7 @@
   "More Agents…": "Plus d'agents…",
   "More agents…": "Plus d'agents…",
   "Opens Settings › Build, Execution, Deployment › Maven": "Ouvre Paramètres › Build, exécution, déploiement › Maven",
-  "Opens Settings › Tools › Agents: installs, updates or removes agents from the ACP Registry.": "Ouvre Paramètres › Outils › Agents : installe, met à jour ou supprime des agents du registre ACP.",
+  "Install, update, or remove agents from the ACP Registry.": "Installez, mettez à jour ou supprimez des agents du registre ACP.",
   "Search agents": "Rechercher des agents",
   "Agents in the ACP Registry are third-party software. They run on this computer with your permissions and can read and change your files. Install only agents you trust.": "Les agents du registre ACP sont des logiciels tiers. Ils s'exécutent sur cet ordinateur avec vos autorisations et peuvent lire et modifier vos fichiers. N'installez que des agents de confiance.",
   "Cannot load the ACP Registry: {error}": "Impossible de charger le registre ACP : {error}",
@@ -5733,5 +5732,7 @@
   "Methods pulled up to an interface are declared abstract there.": "Les méthodes remontées dans une interface y sont déclarées abstraites.",
   "The file changed; open the dialog again": "Le fichier a changé ; rouvrez la boîte de dialogue",
   "Replace preview": "Aperçu du remplacement",
-  "Select files in the Project view, Commit tool window, or open a file in the editor": "Sélectionnez des fichiers dans la vue Projet, la fenêtre Commit, ou ouvrez un fichier dans l'éditeur"
+  "Select files in the Project view, Commit tool window, or open a file in the editor": "Sélectionnez des fichiers dans la vue Projet, la fenêtre Commit, ou ouvrez un fichier dans l'éditeur",
+  "Agent Reference": "Référence d'agent",
+  "Copy Agent Reference": "Copier la référence d'agent"
 }

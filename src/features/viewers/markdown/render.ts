@@ -69,6 +69,14 @@ export function slugify(text: string): string {
     .replace(/\s/g, "-");
 }
 
+/** The id of the next heading titled `text`, counting repeats in `slugs` as GitHub does (`a`, `a-1`, `a-2`…). */
+function headingId(slugs: Map<string, number>, text: string): string {
+  const base = slugify(text);
+  const n = slugs.get(base) ?? 0;
+  slugs.set(base, n + 1);
+  return n ? `${base}-${n}` : base;
+}
+
 const countLines = (s: string) => {
   let n = 0;
   for (let i = s.indexOf("\n"); i >= 0; i = s.indexOf("\n", i + 1)) n++;
@@ -161,10 +169,8 @@ function blocks(text: string): { line: number; html: string }[] {
     const list = Object.assign([token], { links: tokens.links }) as TokensList;
     let body = marked.parser(list);
     if (token.type === "heading") {
-      const base = slugify((token as Token & { text: string }).text);
-      const n = slugs.get(base) ?? 0;
-      slugs.set(base, n + 1);
-      body = body.replace(/^<h(\d)>/, `<h$1 id="${ANCHOR_PREFIX}${n ? `${base}-${n}` : base}">`);
+      const id = headingId(slugs, (token as Token & { text: string }).text);
+      body = body.replace(/^<h(\d)>/, `<h$1 id="${ANCHOR_PREFIX}${id}">`);
     }
     group ??= { line: start, html: "" };
     group.html += body;
@@ -192,6 +198,25 @@ const wrap = (line: number, html: string) => `<div data-line="${line}">${html}</
 
 const sanitizeWhole = (all: readonly { line: number; html: string }[]) =>
   purify().sanitize(all.map((b) => wrap(b.line, b.html)).join(""), SANITIZE);
+
+/**
+ * 0-based source line of the heading the preview gives the anchor `anchor` (with or without
+ * {@link ANCHOR_PREFIX}), or null when no heading has it. Lets a link to another file open at
+ * that heading.
+ */
+export function headingLine(text: string, anchor: string): number | null {
+  const want = slugify(anchor.startsWith(ANCHOR_PREFIX) ? anchor.slice(ANCHOR_PREFIX.length) : anchor);
+  if (!want) return null;
+  const front = frontMatter(text);
+  const body = front ? text.split("\n").slice(front.lines).join("\n") : text;
+  const slugs = new Map<string, number>();
+  let line = front?.lines ?? 0;
+  for (const token of marked.lexer(body)) {
+    if (token.type === "heading" && headingId(slugs, (token as Token & { text: string }).text) === want) return line;
+    line += countLines(token.raw);
+  }
+  return null;
+}
 
 export function renderMarkdown(text: string): string {
   return sanitizeWhole(blocks(text));

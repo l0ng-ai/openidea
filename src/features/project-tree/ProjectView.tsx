@@ -91,6 +91,7 @@ import {
   explainHiddenPath,
   loadDir,
   loadOutline,
+  previewTabEnabled,
   revealPath,
   selectModel,
   setDropTarget,
@@ -391,6 +392,7 @@ function DecorationSuffix({ segments, color }: DecorationSuffixProps) {
             : undefined;
         return (
           <span
+            // oxlint-disable-next-line react/no-array-index-key -- decoration segments can repeat; position is the identity
             key={i}
             className={styles.suffixSegment}
             role={s.label ? "img" : undefined}
@@ -584,13 +586,10 @@ export function ProjectView() {
     setSelection(next, lead?.key ?? null);
     const { options: o } = useProjectTree.getState();
     if (revealing.current || !o.autoscrollToSource || !lead || lead.dir || lead.placeholder || next.size !== 1) return;
+    const opts = { preview: previewTabEnabled(), focus: false, external: false };
     if (lead.member) {
-      void revealRange(
-        lead.path,
-        { start: lead.member.selection_range.start },
-        { preview: o.previewTab, focus: false, external: false },
-      );
-    } else void openFile(lead.path, { preview: o.previewTab, focus: false, external: false });
+      void revealRange(lead.path, { start: lead.member.selection_range.start }, opts);
+    } else void openFile(lead.path, opts);
   }, []);
 
   const onActivate = useCallback((node: ProjectNode) => {
@@ -633,7 +632,7 @@ export function ProjectView() {
       if (o.singleClickExpand) toggleExpanded(node);
       return;
     }
-    if (!o.singleClickOpen && !o.previewTab) return;
+    if (!o.singleClickOpen && !previewTabEnabled()) return;
     const opts = { preview: o.singleClickOpen ? undefined : true, focus: false };
     if (node.member) void revealRange(node.path, { start: node.member.selection_range.start }, opts);
     else void openFile(node.path, opts);

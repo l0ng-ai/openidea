@@ -1,6 +1,5 @@
 /**
- * Settings › Tools › Agents › Command Permissions: whitelist (auto-approve)
- * and blacklist (auto-reject) command patterns evaluated on agent permission requests.
+ * Command Rules defines the allow and block patterns for agent permission requests.
  */
 import { useMemo, useState } from "react";
 import { tx } from "@/platform/i18n";
@@ -47,7 +46,7 @@ export function AgentPolicyPage() {
   };
 
   return (
-    <section className={styles.body} aria-label="Command Permissions">
+    <section className={styles.body} aria-label={tx("Command Rules")}>
       <p className={styles.notice}>
         <T>
           Allowed commands run without asking, with or without extra arguments. Blocked commands are always rejected,

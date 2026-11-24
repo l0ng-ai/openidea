@@ -10,9 +10,9 @@
  * A transaction whose change lies inside one tag's name is extended with
  * the same edit at the same offset in the counterpart's name — one
  * transaction, so undo takes both back together. Without a matching tag (void
- * and self-closing tags, unclosed elements, a stray close tag) or with the two
- * names already different (malformed markup) nothing follows: the tags stay as
- * they are.
+ * and self-closing tags, unclosed elements, a stray close tag), with either tag
+ * missing its `>` (a tag being deleted piece by piece), or with the two names
+ * already different (malformed markup) nothing follows: the tags stay as they are.
  */
 import { EditorState, type Extension, type Transaction } from "@codemirror/state";
 import { syntaxTree } from "@codemirror/language";
@@ -39,21 +39,31 @@ function tagNameAround(tree: Tree, from: number, to: number): SyntaxNode | null 
   return null;
 }
 
-/** The matching tag's name of the same element, or null without one. */
+/**
+ * Whether a tag still ends in its `>`. A tag that lost it — `</div` while Backspace
+ * works through `</div>` — is being deleted, not renamed.
+ */
+function isComplete(tag: SyntaxNode | null): tag is SyntaxNode {
+  const last = tag?.lastChild?.name;
+  return last === "EndTag" || last === "JSXEndTag";
+}
+
+/** The matching tag's name of the same element, or null without one or while either tag is incomplete. */
 function counterpartName(name: SyntaxNode): SyntaxNode | null {
   const tag = name.parent;
   const element = tag?.parent;
-  if (!tag || !element) return null;
+  if (!isComplete(tag) || !element) return null;
   if (element.name === "JSXElement") {
     const other = element.getChild(tag.name === "JSXOpenTag" ? "JSXCloseTag" : "JSXOpenTag");
-    for (let c = other?.firstChild; c; c = c.nextSibling) if (JSX_NAMES.has(c.name)) return c;
+    if (!isComplete(other)) return null;
+    for (let c = other.firstChild; c; c = c.nextSibling) if (JSX_NAMES.has(c.name)) return c;
     return null;
   }
   if (element.name !== "Element") return null;
   const other = element.getChild(
     /^Open/.test(tag.name) ? tag.name.replace("Open", "Close") : tag.name.replace("Close", "Open"),
   );
-  return other?.getChild("TagName") ?? null;
+  return isComplete(other) ? other.getChild("TagName") : null;
 }
 
 /** Insertions at a name's edge must extend the name; structural characters end it. */

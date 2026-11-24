@@ -261,6 +261,8 @@ pub struct InlayHint {
     /// The label's parts when the server split it (empty for a plain label);
     /// their values concatenate to `label`.
     pub parts: Vec<InlayLabelPart>,
+    /// The edits that turn the hint into code (an annotation and any import it needs).
+    pub text_edits: Vec<TextEdit>,
 }
 
 /// One part of an inlay hint label, e.g. a type name that navigates to its declaration.

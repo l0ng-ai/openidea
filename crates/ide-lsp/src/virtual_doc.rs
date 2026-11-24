@@ -192,9 +192,22 @@ pub(crate) fn archive(uri: &str) -> Option<std::path::PathBuf> {
     }
 }
 
-/// Modification time of the archive a `jar:` or `jdt:` library class comes from.
-pub(crate) fn archive_modified(uri: &str) -> Option<std::time::SystemTime> {
-    std::fs::metadata(archive(uri)?).and_then(|m| m.modified()).ok()
+/// Timestamps for a library document's archive and its replaceable SNAPSHOT attachment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ArchiveStamp {
+    archive: std::time::SystemTime,
+    sources: Option<std::time::SystemTime>,
+}
+
+pub(crate) fn archive_modified(uri: &str) -> Option<ArchiveStamp> {
+    let modified = |path: &std::path::Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
+    let archive = archive(uri)?;
+    let sources = archive
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_suffix("-SNAPSHOT.jar"))
+        .and_then(|name| modified(&archive.with_file_name(format!("{name}-SNAPSHOT-sources.jar"))));
+    Some(ArchiveStamp { archive: modified(&archive)?, sources })
 }
 
 /// Whether `uri` is jdtls' class `package.name`, in any archive.
@@ -433,9 +446,14 @@ mod tests {
         let uri = format!("jar:file://{}!/p/C.class", jar.display());
         assert_eq!(archive(&uri), Some(jar.clone()));
         let before = archive_modified(&uri).unwrap();
+        std::fs::write(dir.path().join("lib-1.0-SNAPSHOT-sources.jar"), b"PK").unwrap();
+        let with_sources = archive_modified(&uri).unwrap();
+        assert_eq!(before.archive, with_sources.archive);
+        assert_ne!(with_sources, before);
+
         let file = std::fs::File::options().write(true).open(&jar).unwrap();
-        file.set_modified(before + std::time::Duration::from_secs(5)).unwrap();
-        assert_ne!(archive_modified(&uri), Some(before));
+        file.set_modified(before.archive + std::time::Duration::from_secs(5)).unwrap();
+        assert_ne!(archive_modified(&uri), Some(with_sources));
         std::fs::remove_file(&jar).unwrap();
         assert_eq!(archive_modified(&uri), None);
     }

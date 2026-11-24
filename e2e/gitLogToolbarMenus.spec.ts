@@ -2,6 +2,7 @@
  * Git Log toolbar buttons close their popup when clicked again, as in IDEA, instead of
  * keeping it open (Branch) or replaying its opening (the menus). Git is stubbed at the IPC layer.
  */
+import type { Page } from "@playwright/test";
 import { expect, stubDesktop, test } from "./fixtures";
 
 test.beforeEach(async ({ workbench: page }) => {
@@ -58,6 +59,98 @@ test.beforeEach(async ({ workbench: page }) => {
     await executeAction("vcs.showLog");
   });
   await expect(page.getByRole("listbox", { name: "Commits" }).getByRole("option").first()).toBeVisible();
+});
+
+async function openLogPathEditor(page: Page) {
+  const toolbar = page.getByRole("toolbar", { name: "Log filters", exact: true });
+  const filter = toolbar.getByRole("button", { name: /^Paths(:|$)/ });
+  const overflow = toolbar.getByRole("button", { name: "More Filters", exact: true });
+  const visible = await filter.isVisible();
+  const anchor = visible ? filter : overflow;
+  await anchor.click();
+  if (!visible) await page.getByRole("menuitem", { name: /^Paths(:|$)/ }).click();
+  await page.getByRole("menuitem", { name: "Select…", exact: true }).click();
+  const editor = page.getByRole("dialog", { name: "Filter by Paths", exact: true });
+  await expect(editor.getByRole("textbox", { name: "Paths", exact: true })).toBeFocused();
+  return { anchor, editor };
+}
+
+test("the Git Log path editor anchors to its filter and wraps long paths", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 1220, height: 760 });
+  await page.evaluate(async () => {
+    const logPath = "/src/features/vcs/logStore.ts";
+    const optionsPath = "/src/features/vcs/logOptions.ts";
+    const { setLogFilters } = await import(/* @vite-ignore */ logPath);
+    const { setLogOptions } = await import(/* @vite-ignore */ optionsPath);
+    setLogOptions({ showBranches: false, showDetails: false });
+    setLogFilters({
+      paths: ["/dev/acme-api/src/" + "settlement-".repeat(12) + "report.ts", "/dev/acme-api/docs/guide.md"],
+    });
+  });
+  const { anchor, editor } = await openLogPathEditor(page);
+  const input = editor.getByRole("textbox", { name: "Paths", exact: true });
+  const popupBox = (await editor.boundingBox())!;
+  const anchorBox = (await anchor.boundingBox())!;
+  const gap = Math.min(
+    Math.abs(popupBox.y - anchorBox.y - anchorBox.height),
+    Math.abs(anchorBox.y - popupBox.y - popupBox.height),
+  );
+  expect(gap).toBeLessThanOrEqual(6);
+  expect((await input.boundingBox())!.height).toBeGreaterThan(120);
+  expect(await input.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+  await expect(editor.getByText("One path per line", { exact: true })).toBeVisible();
+
+  const grip = (await editor.getByRole("separator", { name: "Resize", exact: true }).boundingBox())!;
+  const x = grip.x + grip.width / 2;
+  const y = grip.y + grip.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x, y + 34, { steps: 4 });
+  await page.mouse.up();
+  await expect.poll(async () => (await editor.boundingBox())!.height).toBeGreaterThan(popupBox.height + 20);
+  await input.fill("src\ndocs/draft.md");
+  await page.setViewportSize({ width: 460, height: 550 });
+  const overflow = page.getByRole("toolbar", { name: "Log filters" }).getByRole("button", { name: "More Filters" });
+  await expect(overflow).toBeVisible();
+  await expect(input).toHaveValue("src\ndocs/draft.md");
+  await expect(editor).toBeInViewport({ ratio: 0.98 });
+  await input.press("Escape");
+  await expect(editor).toHaveCount(0);
+});
+
+test("the narrow Git Log path editor applies with the primary shortcut and discards outside clicks", async ({
+  workbench: page,
+}) => {
+  await page.setViewportSize({ width: 460, height: 550 });
+  const { editor } = await openLogPathEditor(page);
+  const input = editor.getByRole("textbox", { name: "Paths", exact: true });
+  await expect(editor.getByRole("separator", { name: "Resize", exact: true })).toBeVisible();
+  await expect(editor.getByRole("button", { name: "OK", exact: true })).toBeInViewport({ ratio: 0.98 });
+  const modifier = await page.evaluate(async () => {
+    const module = "/src/platform/keymap.ts";
+    const { isMacHost } = await import(/* @vite-ignore */ module);
+    return isMacHost() ? "Meta" : "Control";
+  });
+  await input.fill("src");
+  await input.press("End");
+  await input.press("Enter");
+  await expect(input).toHaveValue("src\n");
+  await input.fill("../outside");
+  await input.press(`${modifier}+Enter`);
+  await expect(editor.getByRole("alert")).toHaveText("Choose a path inside a repository.");
+  await input.fill("src\ndocs/guide.md\nsrc");
+  await input.press(`${modifier}+Enter`);
+  await expect(editor).toHaveCount(0);
+
+  const reopened = await openLogPathEditor(page);
+  await expect(input).toHaveValue("src\ndocs/guide.md");
+  await input.fill("discarded");
+  await page.mouse.click(4, 4);
+  await expect(reopened.editor).toHaveCount(0);
+  const again = await openLogPathEditor(page);
+  await expect(input).toHaveValue("src\ndocs/guide.md");
+  await again.anchor.click();
+  await expect(again.editor).toHaveCount(0);
 });
 
 test("Git Log separates commit message typography from compact metadata", async ({ workbench: page }) => {

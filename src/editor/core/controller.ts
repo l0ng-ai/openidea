@@ -52,7 +52,8 @@ import { call, commands, isErrorKind, isTauri } from "@/platform/ipc";
 import { openLightweightEditor } from "./openLightweightEditor";
 import { windowBackgroundHex } from "@/workbench/theme";
 import { hoverActionsAt } from "@/platform/hoverActions";
-import { save as saveFileDialog, type DialogFilter as SaveDialogFilter } from "@/platform/dialog";
+import { chooseSavePath } from "@/platform/choosePath";
+import type { DialogFilter as SaveDialogFilter } from "@/platform/dialog";
 import { isUntitledUri, untitledTitle } from "@/platform/virtualDocs";
 import { isRemoteWindow } from "@/platform/remote";
 import { auxiliaryWindow } from "@/platform/auxWindow";
@@ -116,7 +117,7 @@ import { isClassFile } from "@/platform/classFiles";
 import { isVirtualUri, virtualDocument } from "@/platform/virtualDocs";
 import type { VirtualDocument } from "@/platform/ipc";
 import type { Scheduler } from "./sync/DocSync";
-import { selectedLineContext } from "./selectedLines";
+import { selectedLineContext, selectedLines } from "./selectedLines";
 
 export const fileKey = (path: string) => `file:${path}`;
 export const fileInput = (path: string): EditorInput => ({ kind: "file", key: fileKey(path), path });
@@ -887,6 +888,7 @@ export class EditorController implements SlotHost {
       view.dispatch({ selection: EditorSelection.cursor(pos) });
     const hasSel = !view.state.selection.main.empty;
     const caretLine = view.state.doc.lineAt(view.state.selection.main.head).number - 1;
+    const { first, last } = selectedLines(view.state);
     const hoverItems: MenuItem[] = hoverActionsAt(slot.model.doc, caretLine).map(({ plugin, action }) => ({
       label: action.label,
       verbatim: true,
@@ -940,6 +942,17 @@ export class EditorController implements SlotHost {
         submenu: [
           { kind: "action", action: "editor.copyPathReference" },
           { kind: "action", action: "editor.copyReference" },
+          // A virtual document's `path` is not a file to point an agent at.
+          ...(slot.model.virtual || isVirtualUri(slot.model.path)
+            ? []
+            : ([
+                {
+                  kind: "action",
+                  action: "agents.copyAgentReference",
+                  label: "Copy Agent Reference",
+                  arg: [{ path: slot.model.path, lines: { from: first, to: last } }],
+                },
+              ] as MenuItem[])),
           { kind: "action", action: "code.pasteAsPlainText" },
           { kind: "action", action: "code.pasteFromHistory" },
         ],
@@ -1299,7 +1312,7 @@ export class EditorController implements SlotHost {
    * every tab showing it becomes a file tab.
    */
   private async saveUntitled(model: import("./model/document").DocModel): Promise<boolean> {
-    const path = await saveFileDialog({
+    const path = await chooseSavePath({
       title: tx("Save As"),
       defaultPath: this.saveAsSuggestion(model),
       filters: await languageFilters(),
@@ -2324,6 +2337,9 @@ export class EditorController implements SlotHost {
                       },
                     ] as MenuItem[])
                   : []),
+                // The links the project view and the editor chooser offer (features/vcs: GitHub Link).
+                { kind: "separator" },
+                ...menuGroupItems("copyPath", { paths: [path] }),
               ],
             },
             { kind: "separator" },

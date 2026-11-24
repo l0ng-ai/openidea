@@ -536,7 +536,7 @@ impl Drop for ProjectIndex {
 mod tests;
 
 /// Synthetic in-memory index for benchmarks (`benches/index.rs`); not a stable API.
-#[doc(hidden)]
+#[cfg(any(test, feature = "bench-support"))]
 pub mod bench_support {
     use super::*;
     use crate::data::{FileEntry, FileRecord, IndexData, StoredSymbol};

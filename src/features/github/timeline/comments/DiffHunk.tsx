@@ -16,7 +16,12 @@ export function HunkView({ hunk, anchor }: { hunk: PatchHunk; anchor?: [number, 
       <table>
         <tbody>
           {hunk.lines.map((l, i) => (
-            <tr key={i} data-type={l.type} data-anchor={anchor && i >= anchor[0] && i < anchor[1] ? true : undefined}>
+            <tr
+              // oxlint-disable-next-line react/no-array-index-key -- diff lines repeat; position is the identity
+              key={i}
+              data-type={l.type}
+              data-anchor={anchor && i >= anchor[0] && i < anchor[1] ? true : undefined}
+            >
               <td className={styles.lineNo}>{numbers[i]![0] ?? ""}</td>
               <td className={styles.lineNo}>{numbers[i]![1] ?? ""}</td>
               <td className={styles.code}>{l.text || " "}</td>

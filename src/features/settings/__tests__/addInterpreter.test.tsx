@@ -1,10 +1,13 @@
 import { act, fireEvent, render, screen, waitFor, cleanup } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Sdk } from "@/bindings";
+import { setLocale } from "@/platform/i18n";
 
 const mocks = vi.hoisted(() => ({
   detect: vi.fn(),
   createVenv: vi.fn(),
+  hatchEnvs: vi.fn(),
+  cancel: vi.fn(),
   interpreter: vi.fn(),
   choosePath: vi.fn(),
 }));
@@ -17,8 +20,9 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       ...real.commands,
       sdkDetect: mocks.detect,
       sdkPythonCreateVenv: mocks.createVenv,
+      sdkPythonHatchEnvs: mocks.hatchEnvs,
       sdkPythonInterpreter: mocks.interpreter,
-      cancelRequest: vi.fn(),
+      cancelRequest: mocks.cancel,
     },
   };
 });
@@ -50,6 +54,7 @@ beforeEach(() => {
   Object.assign(window, { __TAURI_INTERNALS__: { transformCallback: () => 1 } });
   mocks.detect.mockResolvedValue(ok([VENV, SYSTEM]));
   mocks.createVenv.mockResolvedValue(new Promise(() => {}));
+  mocks.hatchEnvs.mockResolvedValue(ok(["default", "docs"]));
   mocks.interpreter.mockResolvedValue(ok(null));
   useSdks.setState({ byKind: {}, loading: {}, errors: {} });
 });
@@ -64,10 +69,39 @@ const open = (onAdded = vi.fn()) => {
 };
 
 describe("Add Python Interpreter", () => {
+  it("hides the Hatch environment type for projects without Hatch configuration", async () => {
+    mocks.hatchEnvs.mockResolvedValue(ok([]));
+    await act(async () => {
+      open();
+    });
+    expect(mocks.hatchEnvs).toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Hatch Environment" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Pipenv Environment" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Virtualenv Environment" })).toBeInTheDocument();
+  });
+
+  it("translates the Pipenv and Hatch environment types", async () => {
+    await setLocale("zh");
+    try {
+      open();
+      expect(await screen.findByRole("button", { name: "Hatch 环境" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Pipenv 环境" })).toBeInTheDocument();
+    } finally {
+      await act(() => setLocale("en"));
+    }
+  });
+
   it("lists the environment types PyCharm offers", async () => {
     open();
-    await waitFor(() => expect(mocks.detect).toHaveBeenCalled());
-    for (const label of ["Virtualenv Environment", "Conda Environment", "uv Environment", "Poetry Environment"]) {
+    await screen.findByRole("button", { name: "Hatch Environment" });
+    for (const label of [
+      "Virtualenv Environment",
+      "Conda Environment",
+      "uv Environment",
+      "Poetry Environment",
+      "Pipenv Environment",
+      "Hatch Environment",
+    ]) {
       expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
     }
   });
@@ -82,6 +116,7 @@ describe("Add Python Interpreter", () => {
       "venv",
       "/usr/bin/python3",
       "/project/.venv",
+      false,
       expect.anything(),
       expect.anything(),
     );
@@ -105,6 +140,7 @@ describe("Add Python Interpreter", () => {
         tool,
         "/usr/bin/python3",
         target,
+        false,
         expect.anything(),
         expect.anything(),
       );
@@ -116,6 +152,7 @@ describe("Add Python Interpreter", () => {
       "conda",
       "/usr/bin/python3",
       "ds",
+      false,
       expect.anything(),
       expect.anything(),
     );
@@ -127,9 +164,87 @@ describe("Add Python Interpreter", () => {
       "poetry",
       "/usr/bin/python3",
       "/project/.venv",
+      false,
       expect.anything(),
       expect.anything(),
     );
+    await act(async () => finish(ok(VENV)));
+    // Pipenv keeps its own location too, and installs the Pipfile's packages unless told not to.
+    // A location typed for another tool does not move it out of the project.
+    fireEvent.click(screen.getByRole("button", { name: "Virtualenv Environment" }));
+    fireEvent.change(screen.getByLabelText("Location:"), { target: { value: "/elsewhere/env" } });
+    fireEvent.click(screen.getByRole("button", { name: "Pipenv Environment" }));
+    await waitFor(() => expect(screen.getByLabelText("Location:")).toBeDisabled());
+    expect(screen.getByLabelText("Location:")).toHaveValue("/project/.venv");
+    for (const install of [true, false]) {
+      fireEvent.click(screen.getByRole("button", { name: "OK" }));
+      expect(mocks.createVenv).toHaveBeenLastCalledWith(
+        "pipenv",
+        "/usr/bin/python3",
+        "/project/.venv",
+        install,
+        expect.anything(),
+        expect.anything(),
+      );
+      await act(async () => finish(ok(VENV)));
+      fireEvent.click(screen.getByRole("checkbox", { name: "Install packages from Pipfile" }));
+    }
+  });
+
+  it("creates the Hatch environment picked from the project's own", async () => {
+    let finish: (v: unknown) => void = () => {};
+    mocks.createVenv.mockImplementation(() => new Promise((r) => (finish = r)));
+    open();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Base interpreter" })).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole("button", { name: "Hatch Environment" }));
+    // Hatch decides where the environment goes: its name travels as `<project>/<name>`.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Hatch environment" })).toHaveTextContent("default"));
+    expect(screen.queryByLabelText("Location:")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    expect(mocks.createVenv).toHaveBeenLastCalledWith(
+      "hatch",
+      "/usr/bin/python3",
+      "/project/default",
+      false,
+      expect.anything(),
+      expect.anything(),
+    );
+    await act(async () => finish(ok(VENV)));
+    fireEvent.click(screen.getByRole("button", { name: "Hatch environment" }));
+    fireEvent.click(await screen.findByRole("option", { name: "docs" }));
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    expect(mocks.createVenv).toHaveBeenLastCalledWith(
+      "hatch",
+      "/usr/bin/python3",
+      "/project/docs",
+      false,
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it("stops listing Hatch environments when the dialog closes", async () => {
+    mocks.hatchEnvs.mockReturnValue(new Promise(() => {}));
+    open();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Base interpreter" })).toBeInTheDocument());
+    await waitFor(() => expect(mocks.hatchEnvs).toHaveBeenCalled());
+    const [request] = mocks.hatchEnvs.mock.calls[0] as [unknown];
+    expect(mocks.cancel).not.toHaveBeenCalled();
+    cleanup();
+    expect(mocks.cancel).toHaveBeenCalledWith(request);
+  });
+
+  it("says that Hatch is missing instead of offering to create", async () => {
+    mocks.hatchEnvs.mockResolvedValue({
+      status: "error",
+      error: { kind: "unavailable", message: "Hatch is not installed (install it from https://hatch.pypa.io)" },
+    });
+    open();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Base interpreter" })).toBeInTheDocument());
+    fireEvent.click(await screen.findByRole("button", { name: "Hatch Environment" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Hatch is not installed");
+    expect(screen.getByRole("button", { name: "Hatch environment" })).toHaveTextContent("No environments");
+    expect(screen.getByRole("button", { name: "OK" })).toBeDisabled();
   });
 
   it("adds an existing interpreter without creating anything", async () => {

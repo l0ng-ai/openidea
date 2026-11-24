@@ -536,6 +536,9 @@ pub enum AgentEntry {
         kind: String,
         status: AgentToolStatus,
         locations: Vec<IpcPath>,
+        /// Images returned by the tool, kept separately from its truncated text.
+        #[serde(default)]
+        images: Vec<AgentImage>,
         /// Text the tool reported (command output…), truncated.
         output: Option<String>,
         diffs: Vec<AgentToolDiff>,
@@ -766,7 +769,7 @@ pub struct AgentModelCatalog {
     pub error: Option<String>,
 }
 
-/// Streamed to the window that subscribed (`AgentManager::subscribe`).
+/// Streamed to the window that subscribed (`AgentManager::subscribe_as`).
 #[derive(Clone, Debug, Serialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum AgentEvent {

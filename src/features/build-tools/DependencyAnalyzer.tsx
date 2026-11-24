@@ -288,7 +288,7 @@ function UsageBlock({
           <span className={styles.stepLabel}>{moduleName}</span>
         </li>
         {usage.path.map((d, i) => (
-          <li key={i} className={styles.step} style={{ paddingLeft: (i + 1) * 16 }}>
+          <li key={`${coordinates(d)}:${d.scope}`} className={styles.step} style={{ paddingLeft: (i + 1) * 16 }}>
             <Icon name="library" size={16} className={styles.icon} />
             <span className={clsx(styles.stepLabel, i === usage.path.length - 1 && styles.stepTarget)}>
               {coordinates(d)}
@@ -335,8 +335,14 @@ function UsagesPane({
             </div>
           )}
           <div className={styles.usageList} aria-label={tx("Usages")}>
-            {sortedUsages(artifact.usages).map((u, i) => (
-              <UsageBlock key={i} usage={u} moduleName={moduleName} moduleIcon={moduleIcon} pom={pom} />
+            {sortedUsages(artifact.usages).map((u) => (
+              <UsageBlock
+                key={`${coordinates(u.dependency)}:${u.path.map((d) => coordinates(d)).join("/")}`}
+                usage={u}
+                moduleName={moduleName}
+                moduleIcon={moduleIcon}
+                pom={pom}
+              />
             ))}
           </div>
         </>

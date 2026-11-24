@@ -4,6 +4,7 @@
  * merge UI), rename and delete.
  */
 import { writeClipboardText } from "@/platform/clipboard";
+import { choosePaths } from "@/platform/choosePath";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
@@ -581,12 +582,8 @@ export async function showShelfDiff(arg?: unknown, local = false, newTab = false
 export async function importShelfPatches(paths?: string[]) {
   const repo = currentRepo();
   const picked =
-    paths ??
-    (await import("@/platform/dialog").then(({ open }) =>
-      open({ multiple: true, directory: false, filters: [{ name: "Patch", extensions: ["patch", "diff"] }] }),
-    ));
-  if (!picked) return;
-  for (const path of typeof picked === "string" ? [picked] : picked) {
+    paths ?? (await choosePaths({ directory: false, filters: [{ name: "Patch", extensions: ["patch", "diff"] }] }));
+  for (const path of picked) {
     await runOp(
       tx("Import patches"),
       async () => call(commands.vcsShelfImport(repo, baseName(path), await call(commands.fsReadText(path)))),

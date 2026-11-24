@@ -18,6 +18,8 @@ const listen = vi.fn();
 vi.mock("@tauri-apps/api/webviewWindow", () => ({
   getCurrentWebviewWindow: () => ({ listen }),
 }));
+const holdSplash = vi.fn();
+vi.mock("@/platform/splash", () => ({ holdSplash: (...a: unknown[]) => holdSplash(...a) }));
 vi.mock("@/platform/remote", async (original) => ({
   ...(await original<typeof import("@/platform/remote")>()),
   isRemoteWindow: vi.fn(() => false),
@@ -124,6 +126,7 @@ beforeEach(() => {
   vi.mocked(confirmLeaveProject).mockClear();
   notify.mockClear();
   listen.mockReset();
+  holdSplash.mockClear();
   openEditorFile.mockClear();
   openDiff.mockClear();
   vi.mocked(isRemoteWindow).mockReturnValue(false);
@@ -396,6 +399,43 @@ describe("launch", () => {
     } finally {
       openedProject.resolve();
       await startupLaunchHandled();
+      dispose();
+    }
+  });
+
+  it("uncovers the splash once the launch project starts opening, not only when it finishes", async () => {
+    const opening = deferred();
+    openProject.mockImplementationOnce(async (path) => {
+      useProject.setState({ opening: true, openingPath: path } as never);
+      await opening.promise;
+      const state = projectState(path);
+      useProject.setState({ ...state, opening: false, openingPath: null, lightEdit: false } as never);
+      return state.project;
+    });
+    listen.mockResolvedValue(() => {});
+    windowTakeLaunch.mockResolvedValueOnce({ project: "/p", files: [] });
+    const dispose = installLaunchHandling();
+    try {
+      const shown = holdSplash.mock.calls[0]![0] as Promise<void>;
+      await vi.waitFor(() => expect(openProject).toHaveBeenCalledOnce());
+      // The project is still opening, yet the splash hold has already released.
+      await shown;
+      expect(useProject.getState().opening).toBe(true);
+    } finally {
+      opening.resolve();
+      await startupLaunchHandled();
+      dispose();
+    }
+  });
+
+  it("uncovers the splash when launch setup fails", async () => {
+    listen.mockRejectedValueOnce(new Error("listener unavailable"));
+    const dispose = installLaunchHandling();
+    try {
+      await holdSplash.mock.calls[0]![0];
+      await startupLaunchHandled();
+      expect(windowTakeLaunch).not.toHaveBeenCalled();
+    } finally {
       dispose();
     }
   });

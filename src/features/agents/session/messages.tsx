@@ -7,7 +7,7 @@ import { notifications } from "@/workbench/contributions";
 import clsx from "clsx";
 import { memo, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { AgentReply, MessageActions, ReplyActions } from "../AgentReply";
-import { ImagePreview, imageSrc } from "../ImagePreview";
+import { ImageStrip } from "../ImageStrip";
 import { ReferencedText } from "../ReferenceChip";
 import styles from "../Session.module.css";
 import { SubmitButton } from "../SubmitButton";
@@ -19,7 +19,7 @@ import { isBusy, type ReplyTimes, type ReplyTurn } from "../model";
 import { useRevealedText } from "../reveal";
 import { forkTask, rerunFrom, resendMessage } from "../store";
 import { PermissionLine, QuestionForm, type QuestionAnswer } from "./QuestionForm";
-import { type UserEntry } from "./shared";
+import { samePropsExcept, type UserEntry } from "./shared";
 import { SubagentCard, ThoughtEntry, ToolEntry } from "./toolEntries";
 
 /** When a message was sent, or when the turn behind a reply finished, and how long it took. */
@@ -92,19 +92,7 @@ function AgentMessage({
   );
 }
 
-export const Entry = memo(function Entry({
-  task,
-  entry,
-  turn,
-  turnCount,
-  reply,
-  time,
-  thoughtMs,
-  working,
-  drafts,
-  onOpenSubagent,
-  onDiagramDrawn,
-}: {
+interface EntryProps {
   task: AgentTask;
   entry: AgentEntry;
   /** Number of the turn this message started (from 0), when it started one. */
@@ -120,7 +108,21 @@ export const Entry = memo(function Entry({
   drafts: RefObject<Map<string, QuestionAnswer[]>>;
   onOpenSubagent: (id: string) => void;
   onDiagramDrawn: () => void;
-}) {
+}
+
+function EntryView({
+  task,
+  entry,
+  turn,
+  turnCount,
+  reply,
+  time,
+  thoughtMs,
+  working,
+  drafts,
+  onOpenSubagent,
+  onDiagramDrawn,
+}: EntryProps) {
   switch (entry.type) {
     case "user":
       return <UserMessage task={task} entry={entry} turn={turn} turnCount={turnCount} />;
@@ -155,7 +157,11 @@ export const Entry = memo(function Entry({
             <T>Plan</T>
           </div>
           {entry.items.map((item, i) => (
-            <div key={i} className={clsx(styles.planItem, item.status === "completed" && styles.planDone)}>
+            <div
+              // oxlint-disable-next-line react/no-array-index-key -- plan items can repeat; position is the identity
+              key={i}
+              className={clsx(styles.planItem, item.status === "completed" && styles.planDone)}
+            >
               <Icon
                 name={item.status === "completed" ? "check" : item.status === "in_progress" ? "run" : "minus"}
                 size={12}
@@ -220,7 +226,23 @@ export const Entry = memo(function Entry({
         </div>
       );
   }
-});
+}
+
+/** The reply and its times are rebuilt from the conversation with every chunk: what they say is what counts. */
+export const Entry = memo(
+  EntryView,
+  samePropsExcept<EntryProps>({
+    reply: (a, b) =>
+      a.reply === b.reply ||
+      (!!a.reply &&
+        !!b.reply &&
+        a.reply.turn === b.reply.turn &&
+        a.reply.steered === b.reply.steered &&
+        a.reply.prompt === b.reply.prompt),
+    time: (a, b) =>
+      a.time === b.time || (!!a.time && !!b.time && a.time.sentMs === b.time.sentMs && a.time.doneMs === b.time.doneMs),
+  }),
+);
 
 function AgentErrorText({ message }: { message: string }) {
   return <span>{useAgentErrorText(message)}</span>;
@@ -322,6 +344,7 @@ function UserMessage({
         {files.length > 0 && (
           <div className={styles.attachments}>
             {files.map((a, i) => (
+              // oxlint-disable-next-line react/no-array-index-key -- attachments from different directories can share a basename
               <span key={i} className={styles.attachment}>
                 <Icon name={fileIconName(a)} size={12} />
                 {a}
@@ -422,40 +445,6 @@ function MessageEditor({
           />
         </span>
       </div>
-    </div>
-  );
-}
-
-/** Image thumbnails; a click opens the full image, `onRemove` adds a remove button to each. */
-function ImageStrip({ images, onRemove }: { images: AgentImage[]; onRemove?: (index: number) => void }) {
-  const tx = useTx();
-  const [open, setOpen] = useState<AgentImage | null>(null);
-  if (images.length === 0) return null;
-  return (
-    <div className={styles.images}>
-      {images.map((img, i) => (
-        <span key={i} className={styles.imageItem}>
-          <button
-            type="button"
-            className={styles.imageButton}
-            title={img.name ?? undefined}
-            onClick={() => setOpen(img)}
-          >
-            <img className={styles.image} src={imageSrc(img)} alt={img.name ?? tx("Image")} />
-          </button>
-          {onRemove && (
-            <IconButton
-              type="button"
-              className={styles.removeImage}
-              aria-label={tx("Remove Image")}
-              onClick={() => onRemove(i)}
-              icon="close"
-              size="small"
-            />
-          )}
-        </span>
-      ))}
-      <ImagePreview image={open} onClose={() => setOpen(null)} />
     </div>
   );
 }
