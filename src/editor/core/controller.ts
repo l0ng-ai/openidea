@@ -2171,8 +2171,10 @@ export class EditorController implements SlotHost {
     return this.removeGuarded((s) => closeKey(s, key));
   }
 
-  activeInput(): EditorInput | null {
-    return this.activeTabOf()?.input ?? null;
+  activeInput(options?: { previewOnly?: boolean }): EditorInput | null {
+    const tab = this.activeTabOf();
+    if (options?.previewOnly && (!tab?.preview || !editorPrefs().tabs.previewTab)) return null;
+    return tab?.input ?? null;
   }
 
   onActiveInputChange(fn: (input: EditorInput | null) => void): () => void {
