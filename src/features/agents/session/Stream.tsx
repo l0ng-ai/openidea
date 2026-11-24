@@ -551,6 +551,41 @@ export function Stream({
       ),
     [task, lastIndex, busy, thinking, onDiagramDrawn, renderRow],
   );
+  const agentName = providerName(task.provider);
+  // Switching tabs changes visibility without changing the conversation rows.
+  const renderedRows = useMemo(
+    () =>
+      rows.map((row) => {
+        const images = toolImages(row);
+        return (
+          <div
+            key={row.index}
+            className={styles.conversationRow}
+            data-message={
+              (row.kind === "entry" && (row.entry.type === "user" || row.entry.type === "agent")) || undefined
+            }
+            data-process={row.kind !== "entry" || row.entry.type !== "user" || undefined}
+            data-author={authorHeaders.has(row.index) || undefined}
+          >
+            {authorHeaders.has(row.index) && (
+              <div className={styles.agentAuthor}>
+                <div className={styles.role}>
+                  <Icon name={providerIcon(task.provider)} size={13} />
+                  <span>{agentName}</span>
+                </div>
+              </div>
+            )}
+            {renderConversationRow(row)}
+            {images.length > 0 && (
+              <div className={styles.toolImages}>
+                <ImageStrip images={images} />
+              </div>
+            )}
+          </div>
+        );
+      }),
+    [rows, authorHeaders, task.provider, agentName, renderConversationRow],
+  );
   return (
     <OpenFolds.Provider value={openFolds}>
       <KeepFoldHeader.Provider value={keepFoldHeader}>
@@ -654,37 +689,7 @@ export function Stream({
             ) : entries.length === 0 && !busy && !loadError ? (
               <EmptyState title="No conversation history" />
             ) : (
-              <RowRenderer.Provider value={renderConversationRow}>
-                {rows.map((row) => {
-                  const images = toolImages(row);
-                  return (
-                    <div
-                      key={row.index}
-                      className={styles.conversationRow}
-                      data-message={
-                        (row.kind === "entry" && (row.entry.type === "user" || row.entry.type === "agent")) || undefined
-                      }
-                      data-process={row.kind !== "entry" || row.entry.type !== "user" || undefined}
-                      data-author={authorHeaders.has(row.index) || undefined}
-                    >
-                      {authorHeaders.has(row.index) && (
-                        <div className={styles.agentAuthor}>
-                          <div className={styles.role}>
-                            <Icon name={providerIcon(task.provider)} size={13} />
-                            <span>{providerName(task.provider)}</span>
-                          </div>
-                        </div>
-                      )}
-                      {renderConversationRow(row)}
-                      {images.length > 0 && (
-                        <div className={styles.toolImages}>
-                          <ImageStrip images={images} />
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </RowRenderer.Provider>
+              <RowRenderer.Provider value={renderConversationRow}>{renderedRows}</RowRenderer.Provider>
             )}
             <WorkingRow task={task} entries={entries} subagent={subagent} />
           </div>

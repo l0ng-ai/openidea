@@ -27,7 +27,7 @@ import { auxiliaryWindow, windowLabel } from "@/platform/auxWindow";
 import { routeToWindow, taskWindowDraft, taskWindowFocused, updateTaskWindowDraft } from "./taskWindowRouting";
 import { clearAgentTaskFontZoom, resetAllAgentFontZoom } from "./fontZoom";
 import { clearDismissedAssets } from "./sessionAssetsModel";
-import { useSkillsCatalog } from "./skillsModel";
+import { useSkillsCatalog, useSkillsCatalogSync } from "./skillsModel";
 import { basename, useProject } from "@/platform/project";
 import { projectLocation } from "@/platform/remote";
 import { defaultTaskProject } from "./project";
@@ -1067,6 +1067,8 @@ export function useAgentCommands(
   offered: readonly AgentCommand[],
 ): readonly AgentCommand[] {
   const skillOverrides = useAgents((s) => (task ? s.tasks.get(task)?.skillOverrides : s.draft.skillOverrides));
+  // The server's draft commands omit skills that only this draft has enabled.
+  useSkillsCatalogSync(task === null && Object.values(skillOverrides ?? {}).some((mode) => mode !== "off"));
   const catalogSkills = useSkillsCatalog((s) => s.skills);
   const [found, setFound] = useState<{
     for: unknown[];
