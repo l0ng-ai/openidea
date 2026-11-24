@@ -1196,6 +1196,14 @@ pub mod current {
         })
     }
 
+    pub fn pick_file(_title: &str, _dialog: &crate::FileDialog) -> Result<Option<String>, Error> {
+        let path = with(|s| s.answers.pop_front().flatten()).and_then(|a| a.into_iter().next());
+        if let Some(path) = &path {
+            ui_path(path)?;
+        }
+        Ok(path)
+    }
+
     pub fn pick_directory(_title: &str, initial: Option<&str>) -> Result<Option<String>, Error> {
         if let Some(path) = initial {
             ui_path(path)?;

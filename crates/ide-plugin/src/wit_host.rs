@@ -419,6 +419,17 @@ impl log::Host for StoreData {
 }
 
 impl StoreData {
+    fn pick_path(&mut self, prompt: Prompt) -> Fallible<Option<String>> {
+        let answer = self.ask(prompt);
+        Ok(answer.and_then(|answer| {
+            let path = answer.and_then(|items| items.into_iter().next());
+            if let Some(path) = &path {
+                validate_ui_path(path)?;
+            }
+            Ok(path)
+        }))
+    }
+
     /// Asks the user and waits; the wait doesn't count against the call's
     /// wall-clock budget.
     fn ask(&mut self, prompt: Prompt) -> Result<Option<Vec<String>>, wit::Error> {
@@ -794,14 +805,21 @@ impl ui::Host for StoreData {
         {
             return Ok(Err(error));
         }
-        let answer = self.ask(Prompt::PickDirectory { title: clip(title, MAX_TITLE), initial });
-        Ok(answer.and_then(|answer| {
-            let path = answer.and_then(|items| items.into_iter().next());
-            if let Some(path) = &path {
-                validate_ui_path(path)?;
-            }
-            Ok(path)
-        }))
+        self.pick_path(Prompt::PickDirectory { title: clip(title, MAX_TITLE), initial })
+    }
+
+    fn pick_file(&mut self, title: String, dialog: ui::FileDialog) -> Fallible<Option<String>> {
+        let filters = dialog
+            .filters
+            .into_iter()
+            .map(|f| crate::PluginFileFilter { name: f.name, extensions: f.extensions })
+            .collect();
+        self.pick_path(Prompt::PickFile {
+            title: clip(title, MAX_TITLE),
+            save: dialog.save,
+            name: dialog.name,
+            filters,
+        })
     }
 
     fn pick_many(&mut self, title: String, items: Vec<ui::PickItem>) -> Fallible<Option<Vec<String>>> {

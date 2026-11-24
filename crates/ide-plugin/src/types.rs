@@ -119,6 +119,13 @@ pub struct PickItem {
     pub description: Option<String>,
 }
 
+/// A group of file extensions in a plugin's native chooser.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct PluginFileFilter {
+    pub name: String,
+    pub extensions: Vec<String>,
+}
+
 /// What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`,
 /// `ui.input-multiline`, `ui.confirm`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -132,6 +139,8 @@ pub enum Prompt {
     Confirm { title: String, message: String },
     #[serde(rename_all = "camelCase")]
     PickDirectory { title: String, initial: Option<String> },
+    #[serde(rename_all = "camelCase")]
+    PickFile { title: String, save: bool, name: Option<String>, filters: Vec<PluginFileFilter> },
     /// The host's own question under `net:ask` (never plugin-initiated): the
     /// plugin reached an HTTPS host its manifest does not list.
     #[serde(rename_all = "camelCase")]
