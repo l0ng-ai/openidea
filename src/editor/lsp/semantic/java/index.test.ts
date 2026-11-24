@@ -28,6 +28,21 @@ describe("Java semantic tokens", () => {
     ]);
   });
 
+  it.each(["class", "interface", "enum", "record"])("does not italicise static nested %s names", (type) => {
+    expect(token(type, ["static"], "java")).toEqual(["cm-sem-type"]);
+  });
+
+  it.each([
+    ["property", "cm-sem-property"],
+    ["method", "cm-sem-function"],
+  ])("keeps static %s italic", (type, cls) => {
+    expect(token(type, ["static"], "java")?.sort()).toEqual([cls, "cm-sem-static"]);
+  });
+
+  it("keeps static types italic in other languages", () => {
+    expect(token("class", ["static"], "python")).toContain("cm-sem-static");
+  });
+
   it("leaves defaultLibrary colouring to other languages", () => {
     expect(token("function", ["defaultLibrary"], "python")).toContain("cm-sem-builtin");
   });
