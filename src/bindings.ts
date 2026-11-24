@@ -4224,6 +4224,7 @@ export type CodeEditingSettings = {
 	/**  Next / previous error goes to errors only (skips warnings). */
 	nextErrorErrorsOnly?: boolean,
 	stickyLinesMax?: number,
+	stickyLinesDisabledLanguages?: string[],
 };
 
 export type CodeLens = {
