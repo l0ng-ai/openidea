@@ -15,6 +15,7 @@ import {
   contributedIntentionsAsync,
   contributedQuickFixes,
   intentionProviders,
+  quickFixProviders,
   intentionsChanged,
   whenSynced,
 } from "@/editor/api";
@@ -882,6 +883,9 @@ export function intentionsExtension(): Extension {
     bulbPlugin,
     floatingBulb,
     intentionProviders.of((view) => languageSemantics(docOf(view)?.language)?.intentions?.(view) ?? []),
+    quickFixProviders.of(
+      (view, from, to) => languageSemantics(docOf(view)?.language)?.quickFixes?.(view, from, to) ?? [],
+    ),
     asyncIntentionProviders.of(
       async (view, signal) => (await languageSemantics(docOf(view)?.language)?.asyncIntentions?.(view, signal)) ?? [],
     ),
