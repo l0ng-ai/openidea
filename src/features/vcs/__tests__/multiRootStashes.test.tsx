@@ -213,3 +213,17 @@ it("ignores stale file results when switching stashes", async () => {
   });
   expect(screen.queryByText("stale.ts")).not.toBeInTheDocument();
 });
+
+it("shows repository names as written in Chinese", async () => {
+  const { _resetI18nForTests, setLocale, tx } = await import("@/platform/i18n");
+  await setLocale("zh");
+  try {
+    // Precondition: the zh catalog translates the word, so a translated label would differ.
+    expect(tx("dev")).not.toBe("dev");
+    useVcs.setState({ roots: ["/p/dev", "/p/test"], repo: "/p/dev" });
+    render(<StashesPanel />);
+    expect(await screen.findByRole("button", { name: tx("Repository") })).toHaveTextContent(/^dev$/);
+  } finally {
+    _resetI18nForTests();
+  }
+});

@@ -1959,6 +1959,7 @@ export async function startSampleConsoleOutput({
   const beginText = `${prefix}begin\n`;
   enqueue(id, { kind: "stdout", text: beginText });
   for (let i = 0; i < count;) {
+    // oxlint-disable-next-line no-await-in-loop -- streams one batch of sample output per frame
     await new Promise(requestAnimationFrame);
     const take = Math.min(perFrame, count - i);
     let chunkText = "";

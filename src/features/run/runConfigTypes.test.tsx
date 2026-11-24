@@ -91,6 +91,14 @@ it.each([undefined, false])(
 );
 
 describe("configuration types", () => {
+  it("runs a new Shell Script in a terminal, other new types in the plain console", () => {
+    expect(newConfigOfType(typeFor("shell")!, []).emulateTerminal).toBe(true);
+    expect(newConfigOfType(typeFor("jar-application")!, []).emulateTerminal).toBeUndefined();
+    // A template that turned it off still wins.
+    const template = { ...newConfigOfType(typeFor("shell")!, []), emulateTerminal: false };
+    expect(newConfigOfType(typeFor("shell")!, [], template).emulateTerminal).toBe(false);
+  });
+
   it("shows the JAR fields, validates the path and edits shared working directory and environment", () => {
     const type = typeFor("jar-application")!;
     const config = newConfigOfType(type, []);
@@ -161,6 +169,41 @@ describe("configuration types", () => {
       module: "",
     });
     expect(formParams(saved)).toMatchObject({ mainClass: "a.Main", module: "." });
+  });
+
+  it("shows build module names as written in Chinese", async () => {
+    const { _resetI18nForTests, setLocale, tx } = await import("@/platform/i18n");
+    await setLocale("zh");
+    useProject.setState({ project: { root: "/p" } as never });
+    useBuildPresentation.setState({ modules: new Map([["dev", "maven"]]) });
+    try {
+      // Precondition: the zh catalog translates the word, so a translated label would differ.
+      expect(tx("dev")).not.toBe("dev");
+      const type = typeFor("application")!;
+      const form = (module: string) =>
+        render(
+          <ConfigForm
+            config={withParams(newConfigOfType(type, []), { mainClass: "a.Main", module })}
+            all={[]}
+            type={type}
+            errors={{}}
+            onChange={vi.fn()}
+            modifyRequest={0}
+          />,
+        );
+      // A saved module the build no longer has.
+      const { unmount } = form("test");
+      expect(screen.getByRole("button", { name: tx("Use classpath of module") })).toHaveTextContent(/^test$/);
+      unmount();
+      // The build's modules, loaded when the form opens.
+      form("");
+      fireEvent.click(screen.getByRole("button", { name: tx("Use classpath of module") }));
+      expect(await screen.findByRole("option", { name: "dev" })).toBeInTheDocument();
+    } finally {
+      useProject.setState({ project: null });
+      useBuildPresentation.setState({ modules: new Map() });
+      _resetI18nForTests();
+    }
   });
 
   it("sets the before launch build policy of a Java configuration", async () => {

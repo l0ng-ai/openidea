@@ -27,6 +27,7 @@ import {
   isSameOrInside,
   joinPath,
   nameOf,
+  outermostPaths,
   packageSegments,
   parentOf,
   uniqueName,
@@ -92,8 +93,7 @@ export function leadNode(): ProjectNode | null {
 
 /** Selected paths without entries nested in other selected folders. */
 export function topLevelPaths(nodes: ProjectNode[] = selectedNodes()): string[] {
-  const paths = assetPaths(nodes.map((n) => n.path));
-  return paths.filter((p) => !paths.some((q) => q !== p && isInside(p, q)));
+  return outermostPaths(assetPaths(nodes.map((n) => n.path)));
 }
 
 /** A visible sidecar is already included by the backend asset operation. */
@@ -461,8 +461,9 @@ export async function deleteSelection(nodes: ProjectNode[] = selectedNodes()) {
   if (!root || !paths.length) return;
   // Invoked from the tree (or its context menu): give the tree its focus back afterwards.
   const refocus = typeof document !== "undefined" && !!document.activeElement?.closest('[role="tree"], [role="menu"]');
-  const folders = nodes.filter((n) => n.dir && paths.includes(n.path)).length;
-  const files = nodes.filter((n) => !n.dir && paths.includes(n.path)).map((n) => n.path);
+  const top = new Set(paths);
+  const folders = nodes.filter((n) => n.dir && top.has(n.path)).length;
+  const files = nodes.filter((n) => !n.dir && top.has(n.path)).map((n) => n.path);
   // IDEA's Delete dialog: "Safe delete (with usage search)", remembered.
   const searchable = files.length > 0 && files.length <= SAFE_DELETE_MAX_FILES;
   const answer = await confirmChecked({

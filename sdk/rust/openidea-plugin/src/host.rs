@@ -232,6 +232,16 @@ mod imp {
         wit::ui::pick(title, &pick_items(items)).map_err(error)
     }
 
+    pub fn pick_file(title: &str, dialog: &FileDialog) -> Result<Option<String>, Error> {
+        let filters = dialog
+            .filters
+            .iter()
+            .map(|f| wit::ui::FileFilter { name: f.name.clone(), extensions: f.extensions.clone() })
+            .collect();
+        wit::ui::pick_file(title, &wit::ui::FileDialog { save: dialog.save, name: dialog.name.clone(), filters })
+            .map_err(error)
+    }
+
     pub fn pick_directory(title: &str, initial: Option<&str>) -> Result<Option<String>, Error> {
         wit::ui::pick_directory(title, initial).map_err(error)
     }
@@ -1919,6 +1929,12 @@ pub use imp::{event as __event, range_from as __range_from, range_to as __range_
 /// Only from a command or event of a window; waiting is excluded from the budget.
 pub fn pick_directory(title: &str, initial: Option<&str>) -> Result<Option<String>, Error> {
     imp::pick_directory(title, initial)
+}
+
+/// Choose a file in the invoking window. Returns its absolute host path or `None` on cancellation.
+/// The choice grants no filesystem access and requires an interactive call.
+pub fn pick_file(title: &str, dialog: &FileDialog) -> Result<Option<String>, Error> {
+    imp::pick_file(title, dialog)
 }
 
 /// Requests the normal File > Open flow, including project trust, in the

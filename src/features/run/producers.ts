@@ -483,6 +483,8 @@ function fileConfig(
     detected: true,
     isTest: false,
     debugAdapter,
+    // A script reads and prompts like it would in a shell: run it in a terminal (a PTY, TERM set).
+    ...(kind === "shell" ? { emulateTerminal: true } : {}),
   };
 }
 

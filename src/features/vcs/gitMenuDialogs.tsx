@@ -155,7 +155,9 @@ export function useBranches(repo: string | null, enabled = true, refresh = 0): B
 }
 
 const branchOptions = (list: readonly Branch[]): SelectOption[] =>
-  list.filter((b) => !b.name.endsWith("/HEAD")).map((b) => ({ value: b.name, label: b.name, icon: "branch" }));
+  list
+    .filter((b) => !b.name.endsWith("/HEAD"))
+    .map((b) => ({ value: b.name, label: b.name, icon: "branch", verbatim: true }));
 
 /** Every branch choice in these dialogs: repositories hold hundreds of branches, so type to filter, Enter picks. */
 function BranchSelect(props: Omit<SelectProps, "searchable">) {

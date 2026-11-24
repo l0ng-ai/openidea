@@ -141,3 +141,26 @@ it("resets selection when changing the Gradle build used for completion", () => 
   fireEvent.keyDown(input, { key: "Tab" });
   expect(input).toHaveValue("build ");
 });
+
+it("shows Gradle and Maven project names as written in Chinese", async () => {
+  const { _resetI18nForTests, setLocale, tx } = await import("@/platform/i18n");
+  await setLocale("zh");
+  try {
+    // Precondition: the zh catalog translates the word, so a translated label would differ.
+    expect(tx("dev")).not.toBe("dev");
+    const gradle = { dir: "", projects: [{ path: ":", name: "dev", dir: "", buildFile: null, tasks: [] }] };
+    useBuild.setState({ executeOpen: "gradle", model: { maven: null, gradle: [gradle as unknown as GradleModel] } });
+    const { unmount } = render(<ExecutePopupHost />);
+    expect(screen.getByRole("button", { name: tx("Project to run in") })).toHaveTextContent(/^dev$/);
+    unmount();
+
+    const maven = { pom: "test/pom.xml", dir: "test", displayName: "dev", projects: [] };
+    useBuild.setState({ executeOpen: "maven", model: { maven: { projects: [maven] } as never, gradle: [] } });
+    render(<ExecutePopupHost />);
+    fireEvent.click(screen.getByRole("button", { name: tx("Project to run in") }));
+    const option = within(screen.getByRole("listbox", { name: tx("Project to run in") })).getByRole("option");
+    expect(option).toHaveTextContent(/^devtest$/);
+  } finally {
+    _resetI18nForTests();
+  }
+});
