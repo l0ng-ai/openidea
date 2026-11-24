@@ -381,6 +381,7 @@ pub struct Http {
     https_only: bool,
     revoke_best_effort: bool,
     accept: Option<&'static str>,
+    compressed: bool,
 }
 
 impl Http {
@@ -390,7 +391,15 @@ impl Http {
         let gh = which::which_in("gh", Some(search_path), ".").ok();
         let explicit_github_token = environment_github_token(|key| std::env::var(key).ok());
         let revoke_best_effort = cfg!(windows) && revoke_best_effort(&curl);
-        Ok(Self { curl, gh, explicit_github_token, https_only: false, revoke_best_effort, accept: None })
+        Ok(Self {
+            curl,
+            gh,
+            explicit_github_token,
+            https_only: false,
+            revoke_best_effort,
+            accept: None,
+            compressed: false,
+        })
     }
 
     /// Refuses every protocol but HTTPS, redirects included.
@@ -402,6 +411,12 @@ impl Http {
     /// Sends `Accept: <mime>` (e.g. the npm registry's abbreviated metadata).
     pub fn accept(mut self, mime: &'static str) -> Self {
         self.accept = Some(mime);
+        self
+    }
+
+    /// Asks for a compressed response and decodes it (large JSON documents).
+    pub fn compressed(mut self) -> Self {
+        self.compressed = true;
         self
     }
 
@@ -449,6 +464,9 @@ impl Http {
         }
         if let Some(mime) = self.accept {
             cmd.arg("--header").arg(format!("Accept: {mime}"));
+        }
+        if self.compressed {
+            cmd.arg("--compressed");
         }
         cmd.stdin(Stdio::null());
         if token.is_some() {
@@ -831,6 +849,7 @@ mod tests {
             https_only: false,
             revoke_best_effort: false,
             accept: None,
+            compressed: false,
         };
         for (code, exit, expected) in [(404, 22, Some("[]")), (200, 0, Some("payload")), (403, 22, None), (0, 7, None)]
         {
@@ -984,6 +1003,7 @@ mod github_auth_tests {
                         https_only: false,
                         revoke_best_effort: false,
                         accept: None,
+                        compressed: false,
                     },
                 };
                 fixture.script(
