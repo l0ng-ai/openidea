@@ -200,6 +200,8 @@ interface DatabaseState {
   loaded: boolean;
   /** Connected targets (see `splitTarget`). */
   connected: Set<string>;
+  /** Targets or whole sources deactivated until the next deliberate database operation. */
+  pausedConsoleMetadata: ReadonlySet<string>;
   /** Data source id → databases of its server (PostgreSQL). */
   databases: Record<string, Loaded<DbDatabases>>;
   /** Data source id → what its introspection has read (Snowflake; see `introspection.ts`). */
@@ -279,6 +281,7 @@ export const useDatabase = create<DatabaseState>(() => ({
   sources: [],
   loaded: false,
   connected: new Set(),
+  pausedConsoleMetadata: new Set(),
   databases: {},
   catalogs: {},
   schemas: {},
@@ -358,6 +361,23 @@ export function targetLabel(target: string): string {
 /** Targets of data source `id` that are connected. */
 export function connectedTargets(id: string): string[] {
   return [...useDatabase.getState().connected].filter((t) => splitTarget(t).id === id);
+}
+
+export function allowsPassiveConsoleMetadata(
+  id: string,
+  paused = useDatabase.getState().pausedConsoleMetadata,
+): boolean {
+  return !paused.has(id) && !paused.has(splitTarget(id).id);
+}
+
+function pauseConsoleMetadata(id: string, pause: boolean) {
+  useDatabase.setState((s) => {
+    if (s.pausedConsoleMetadata.has(id) === pause) return s;
+    const pausedConsoleMetadata = new Set(s.pausedConsoleMetadata);
+    if (pause) pausedConsoleMetadata.add(id);
+    else pausedConsoleMetadata.delete(id);
+    return { pausedConsoleMetadata };
+  });
 }
 
 let sourcesRequest = 0;
@@ -638,9 +658,17 @@ export async function withConnection<T>(id: string, op: () => Promise<T>): Promi
       if (!current()) return r;
       connectionIntents.set(id, {});
       lastUsed.set(id, Date.now());
-      if (!useDatabase.getState().connected.has(id)) {
-        useDatabase.setState((s) => ({ connected: new Set(s.connected).add(id) }));
-        applyConnectDefaults(id);
+      const state = useDatabase.getState();
+      const fresh = !state.connected.has(id);
+      if (fresh || !allowsPassiveConsoleMetadata(id, state.pausedConsoleMetadata)) {
+        const pausedConsoleMetadata = new Set(state.pausedConsoleMetadata);
+        pausedConsoleMetadata.delete(id);
+        pausedConsoleMetadata.delete(splitTarget(id).id);
+        useDatabase.setState({
+          connected: fresh ? new Set(state.connected).add(id) : state.connected,
+          pausedConsoleMetadata,
+        });
+        if (fresh) applyConnectDefaults(id);
       }
       return r;
     } catch (e) {
@@ -669,12 +697,20 @@ export async function disconnect(id: string): Promise<void> {
   const targets = splitTarget(id).database ? [id] : connectedTargets(id);
   if (!targets.includes(id)) targets.push(id);
   const current = projectRequest();
-  forget(id);
-  useDatabase.setState((s) => ({ treeExpanded: collapseTarget(s.treeExpanded, id) }));
   const intent = {};
   for (const target of targets) connectionIntents.set(target, intent);
   if (!splitTarget(id).database) sourceConnectionIntents.set(id, {});
-  await Promise.all(targets.map((t) => call(commands.dbDisconnect(t))));
+  const alreadyPaused = useDatabase.getState().pausedConsoleMetadata.has(id);
+  // Dropping the caches can wake up metadata effects in a still-mounted console.
+  pauseConsoleMetadata(id, true);
+  forget(id);
+  useDatabase.setState((s) => ({ treeExpanded: collapseTarget(s.treeExpanded, id) }));
+  try {
+    await Promise.all(targets.map((t) => call(commands.dbDisconnect(t))));
+  } catch (e) {
+    if (current() && connectionIntents.get(id) === intent && !alreadyPaused) pauseConsoleMetadata(id, false);
+    throw e;
+  }
   if (!current()) return;
   if (!splitTarget(id).database) sourceConnectionIntents.set(id, {});
   useDatabase.setState((s) => {
@@ -1017,6 +1053,7 @@ useProject.subscribe((state, previous) => {
   completionLoads.clear();
   preparingConsoles.clear();
   lastUsed.clear();
+  if (useDatabase.getState().pausedConsoleMetadata.size) useDatabase.setState({ pausedConsoleMetadata: new Set() });
 });
 
 // ---- consoles ----------------------------------------------------------------

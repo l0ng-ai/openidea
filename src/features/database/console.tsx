@@ -78,6 +78,7 @@ import {
 import { WHOLE_FILE, sqlSupport, type SqlText } from "./sqlSupport";
 import { snowflakeLanguage } from "./sql/snowflakeHighlight";
 import {
+  allowsPassiveConsoleMetadata,
   bindConsole,
   cancelConsole,
   closeInlineResults,
@@ -602,16 +603,24 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
   const pickedSchema = useDatabase((s) => s.consoleSchemas[path]);
   const defaultSchema = useDatabase((s) => (bound ? s.completion[bound]?.defaultSchema : undefined));
   const schemaList = useDatabase((s) => (bound ? s.schemas[bound] : undefined));
+  const preloadMetadata = useDatabase((s) => !!bound && allowsPassiveConsoleMetadata(bound, s.pausedConsoleMetadata));
   const schema = activeSchema(pickedSchema, defaultSchema);
   useEffect(() => {
-    if (boundId && listsDatabases(sourceById(boundId)) && !useDatabase.getState().databases[boundId])
+    if (
+      preloadMetadata &&
+      boundId &&
+      allowsPassiveConsoleMetadata(boundId) &&
+      listsDatabases(sourceById(boundId)) &&
+      !useDatabase.getState().databases[boundId]
+    )
       void loadDatabases(boundId);
-  }, [boundId]);
+  }, [boundId, preloadMetadata]);
   // Loads the list again after a refresh drops it.
   const schemasMissing = !schemaList;
   useEffect(() => {
-    if (bound && switchable && schemasMissing) void loadSchemas(bound);
-  }, [bound, switchable, schemasMissing]);
+    if (preloadMetadata && bound && allowsPassiveConsoleMetadata(bound) && switchable && schemasMissing)
+      void loadSchemas(bound);
+  }, [bound, preloadMetadata, switchable, schemasMissing]);
   const schemaOptions = useMemo(() => {
     if (!switchable) return [];
     const names = schemaList?.status === "ok" ? schemaList.value : [];
@@ -637,8 +646,8 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
     if (!loaded) void loadSources();
   }, [loaded]);
   useEffect(() => {
-    if (bound) void loadCompletion(bound);
-  }, [bound]);
+    if (preloadMetadata && bound && allowsPassiveConsoleMetadata(bound)) void loadCompletion(bound);
+  }, [bound, preloadMetadata]);
   return (
     <Toolbar className={styles.consoleBar} aria-label="Query Console">
       <IconButton
@@ -737,6 +746,9 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
             placeholder="<schema>"
             options={schemaOptions}
             searchable
+            onOpen={() => {
+              if (bound && !useDatabase.getState().schemas[bound]) void loadSchemas(bound);
+            }}
             onChange={(v) => setConsoleSchema(path, v)}
             disabled={!bound}
           />
@@ -770,6 +782,7 @@ function DatabaseSchemaSwitcher({
   const listed = useDatabase((s) => s.databases[sourceId]);
   const schemas = useDatabase((s) => s.schemas);
   const read = useDatabase((s) => s.catalogs[sourceId]?.databases);
+  const paused = useDatabase((s) => s.pausedConsoleMetadata);
   const current = listed?.status === "ok" ? listed.value.current : null;
   const database = splitTarget(bound).database ?? current;
   // The console's database starts expanded, again whenever the console moves to another one.
@@ -781,11 +794,14 @@ function DatabaseSchemaSwitcher({
   const targetFor = (name: string) => (name === database ? bound : targetOf(sourceId, name, current));
   // Schemas of expanded databases that are not read yet, or were dropped by a refresh.
   const missing = [...expanded]
-    .filter((name) => !read?.[name] && !schemas[targetFor(name)])
+    .filter((name) => !read?.[name])
     .map(targetFor)
+    .filter((target) => !schemas[target] && allowsPassiveConsoleMetadata(target, paused))
     .join("\n");
   useEffect(() => {
-    for (const target of missing ? missing.split("\n") : []) void loadSchemas(target);
+    for (const target of missing ? missing.split("\n") : []) {
+      if (allowsPassiveConsoleMetadata(target) && !useDatabase.getState().schemas[target]) void loadSchemas(target);
+    }
   }, [missing]);
   const rows = useMemo(() => {
     const names = listed?.status === "ok" ? [...listed.value.names] : [];
@@ -809,6 +825,11 @@ function DatabaseSchemaSwitcher({
       options={rows}
       searchable
       renderValue={() => (database ? (schema ? `${database}.${schema}` : database) : tx("<schema>"))}
+      onOpen={() => {
+        const st = useDatabase.getState();
+        if (!st.databases[sourceId]) void loadDatabases(sourceId);
+        if (!st.schemas[bound]) void loadSchemas(bound);
+      }}
       keepOpen={(v) => parseSchemaTreeValue(v).schema === null}
       onChange={(v) => {
         const pick = parseSchemaTreeValue(v);
@@ -818,7 +839,8 @@ function DatabaseSchemaSwitcher({
             next.add(pick.database);
             // Expanding again retries a database whose schemas could not be read.
             const target = targetFor(pick.database);
-            if (useDatabase.getState().schemas[target]?.status === "error") void loadSchemas(target);
+            const status = useDatabase.getState().schemas[target]?.status;
+            if (status === "error" || (!status && !read?.[pick.database])) void loadSchemas(target);
           }
           setOpened({ at: database, open: next });
           return;
@@ -1031,6 +1053,7 @@ function catalogOf(id: string): SqlCatalog | undefined {
 
 /** Loads what `database.` / `database.schema.` at the caret needs before it is completed. */
 async function loadQualified(id: string, qualifier: readonly string[]): Promise<void> {
+  if (!allowsPassiveConsoleMetadata(id)) return;
   const current = databaseRequest(id);
   const sourceId = splitTarget(id).id;
   // Introspection has it: nothing to load (and no reason to connect for it).
@@ -1046,8 +1069,9 @@ async function loadQualified(id: string, qualifier: readonly string[]): Promise<
   if (!database) return;
   if (useDatabase.getState().catalogs[sourceId]?.databases[database]) return;
   const target = targetOf(sourceId, database, dbs.value.current);
+  if (!allowsPassiveConsoleMetadata(target)) return;
   if (!useDatabase.getState().schemas[target]) await loadSchemas(target);
-  if (!current()) return;
+  if (!current() || !allowsPassiveConsoleMetadata(target)) return;
   if (qualifier.length < 2) return;
   const list = useDatabase.getState().schemas[target];
   const schema = list?.status === "ok" ? list.value.find((s) => same(s, qualifier[1]!)) : undefined;
@@ -1066,7 +1090,7 @@ export function completionSource(path: string, sql: SqlText = WHOLE_FILE): Compl
     // identifiers; its URL does (`jdbc:oracle:thin:@…`). Quoting follows that dialect.
     const dialect = driver === "jdbc" ? jdbcDialect(source?.url) : null;
     const model = id ? (useDatabase.getState().completion[id] ?? null) : null;
-    if (id && !model) void loadCompletion(id);
+    if (id && !model && allowsPassiveConsoleMetadata(id)) void loadCompletion(id);
     // Unqualified names resolve in the console's active schema (IDEA's schema dropdown).
     const schema = consoleSchema(path);
     const scoped = model && schema ? { ...model, defaultSchema: schema } : model;

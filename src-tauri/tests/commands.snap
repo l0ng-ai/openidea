@@ -100,6 +100,7 @@ coverage_import                              always             project_host bin
 coverage_prepare                             trusted            project_host bindings async
 cucumber_sources                             trusted            desktop      bindings async
 db_apply_edits                               trusted            project_host bindings async
+db_approve_external_tunnel                   trusted            desktop      bindings async
 db_approve_jdbc_source                       trusted            project_host bindings sync
 db_completion                                trusted            project_host bindings async
 db_connect                                   trusted            project_host bindings async
@@ -145,6 +146,7 @@ db_table_details                             trusted            project_host bin
 db_table_page                                trusted            project_host bindings async
 db_tables                                    trusted            project_host bindings async
 db_test                                      trusted            project_host bindings async
+db_test_external_tunnel                      trusted            desktop      bindings async
 db_test_tunnel                               trusted            project_host bindings async
 db_tool_installs                             trusted            desktop      bindings async
 db_tool_options                              trusted            desktop      bindings async

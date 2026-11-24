@@ -4320,6 +4320,7 @@ dependencies = [
  "ide-http",
  "ide-sdk",
  "ide-ssh",
+ "libc",
  "notify",
  "open",
  "oracledb",
@@ -4339,6 +4340,7 @@ dependencies = [
  "toml_edit 0.25.17+spec-1.1.0",
  "tracing",
  "uuid",
+ "windows-sys 0.61.2",
  "zeroize",
  "zip",
 ]

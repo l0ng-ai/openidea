@@ -753,7 +753,8 @@ impl Host {
                 self.data_dir.join("db-history.json"),
                 self.ssh.clone(),
             )
-            .with_global_sources(self.data_dir.clone()),
+            .with_global_sources(self.data_dir.clone())
+            .with_local_external_tunnels(self.local_database_tunnels),
         );
         let http_history = Arc::new(ide_http::History::new(self.data_dir.join("http-history").join(project_key)));
         let agents = Arc::new(ide_agent::AgentManager::new(

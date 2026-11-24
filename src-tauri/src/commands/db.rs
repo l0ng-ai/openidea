@@ -95,7 +95,43 @@ pub async fn db_server_version(window: Window, state: State<'_, AppState>, id: S
     ide_host::ops::db::server_version(&state.host, window.label(), &id).await
 }
 
+/// Records the exact helper and destination reviewed in the local data-source dialog.
+#[desktop_command(trust = trusted)]
+#[tauri::command]
+#[specta::specta]
+pub async fn db_approve_external_tunnel(
+    window: Window,
+    state: State<'_, AppState>,
+    source: ide_db::DataSource,
+) -> IdeResult<()> {
+    state.host.project(window.label())?.db.approve_external_tunnel(&source).await
+}
+
+/// Tests the reviewed helper once, without persisting approval for subsequent connections.
+#[desktop_command(trust = trusted)]
+#[tauri::command]
+#[specta::specta]
+pub async fn db_test_external_tunnel(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    source: ide_db::DataSource,
+    password: Option<String>,
+) -> IdeResult<String> {
+    let db = state.host.project(window.label())?.db.clone();
+    let cancel = state.host.begin_project_request(window.label(), request);
+    let result = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(ide_core::IdeError::cancelled()),
+        result = db.test_external_tunnel(&source, password) => result,
+    };
+    state.host.end_request(request);
+    result
+}
+
 ide_command::desktop_domain!(
+    db_approve_external_tunnel,
+    db_test_external_tunnel,
     db_dump_info,
     db_export_file,
     db_run_tool,

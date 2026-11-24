@@ -360,6 +360,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             windows::flush_auxiliary_geometry(app);
             if let Some(state) = app.try_state::<AppState>() {
+                ide_db::stop_external_tunnels_on_exit();
                 state.host.stop_processes_on_exit();
                 state.host.mcp.stop(&state.host);
                 state.host.clear_workspace_edit_history_on_exit();
