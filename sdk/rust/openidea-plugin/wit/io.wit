@@ -1,4 +1,4 @@
-package openidea:plugin@1.15.0;
+package openidea:plugin@1.16.0;
 
 /// Problems in files, shown in the editor and the Problems view.
 interface diagnostics {

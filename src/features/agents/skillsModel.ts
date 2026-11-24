@@ -153,13 +153,15 @@ export async function refreshSkillsCatalog(backend: SkillsBackend = defaultSkill
   if (skills) useSkillsCatalog.setState({ skills, loaded: true });
 }
 
-export function useSkillsCatalogSync(backend: SkillsBackend = defaultSkillsBackend): void {
+export function useSkillsCatalogSync(eager: boolean, backend: SkillsBackend = defaultSkillsBackend): void {
   const root = useProject((s) => s.project?.root);
   useEffect(() => {
     if (!isTauri()) return;
-    void refreshSkillsCatalog(backend);
     const onFocus = () => void refreshSkillsCatalog(backend);
-    window.addEventListener("focus", onFocus);
+    if (eager) {
+      onFocus();
+      window.addEventListener("focus", onFocus);
+    }
     if (!listenerAttached && typeof onIdeEvent === "function") {
       listenerAttached = true;
       onIdeEvent("settingsChanged", (e) => {
@@ -169,5 +171,5 @@ export function useSkillsCatalogSync(backend: SkillsBackend = defaultSkillsBacke
       });
     }
     return () => window.removeEventListener("focus", onFocus);
-  }, [root, backend]);
+  }, [eager, root, backend]);
 }

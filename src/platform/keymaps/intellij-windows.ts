@@ -252,7 +252,8 @@ export const intellijWindows: Record<string, string[]> = {
 
   // Build
   "build.buildProject": ["Ctrl+F9"],
-  "build.buildModule": ["Ctrl+Shift+F9"],
+  "build.buildModule": [],
+  "build.compileFile": ["Ctrl+Shift+F9"],
   "build.rebuildProject": [],
   "build.buildArtifacts": [],
 
@@ -404,6 +405,8 @@ export const intellijWindows: Record<string, string[]> = {
   "agents.cycleEffort": ["Alt+T"],
   "agents.showToolWindow": [],
   "agents.sendToAgent": [],
+  // Agents task list (when it has focus)
+  "agents.archiveTasks": ["Ctrl+Shift+E"],
   // Database tool window (when the tree has focus; `db.openConsole` anywhere).
   "db.openConsole": ["Ctrl+Shift+Q"],
   "db.newDataSource": [],

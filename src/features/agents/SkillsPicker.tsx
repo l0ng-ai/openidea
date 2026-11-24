@@ -67,7 +67,7 @@ export function SkillsPicker({
   testData,
 }: SkillsPickerProps) {
   const tx = useTx();
-  useSkillsCatalogSync(backend);
+  useSkillsCatalogSync(!hideTrigger, backend);
   const catalogSkills = useSkillsCatalog((s) => s.skills);
   const skills = testData?.skills ?? catalogSkills;
   const resolved = useMemo(() => resolveSessionSkills(skills, overrides ?? {}), [skills, overrides]);

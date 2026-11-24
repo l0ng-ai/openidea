@@ -162,21 +162,30 @@ fn classpath(entries: &[String]) -> String {
     entries.join(if cfg!(windows) { ";" } else { ":" })
 }
 
-/// `--release N` from JDK 9 on; older compilers only know `-source` / `-target`.
-fn release_args(level: Option<u32>, jdk: Option<&StructureJdk>) -> Vec<String> {
-    let Some(level) = level else { return Vec::new() };
-    if jdk.is_none_or(|j| j.major >= 9) {
-        vec!["--release".into(), level.to_string()]
-    } else {
-        vec!["-source".into(), format!("1.{level}"), "-target".into(), format!("1.{level}")]
-    }
-}
-
 /// `"17"`, `"1.8"`, `"JDK_17"` → the release number.
 pub fn language_release(level: &str) -> Option<u32> {
     let digits = level.trim().trim_start_matches("JDK_").trim_start_matches("jdk").replace('_', ".");
     let digits = digits.strip_prefix("1.").unwrap_or(&digits);
     digits.split(['.', ' ']).next()?.parse().ok().filter(|n| *n > 0)
+}
+
+fn structure_compiler(
+    root: &Path,
+    ps: &ProjectStructureSettings,
+    jdk: Option<&StructureJdk>,
+    language_level: &str,
+) -> (Option<u32>, BTreeMap<String, String>, String) {
+    let module = root_module(root, ps);
+    let level = module
+        .map(|m| m.language_level.as_str())
+        .filter(|l| !l.trim().is_empty())
+        .or(Some(language_level))
+        .and_then(language_release);
+    let env: BTreeMap<String, String> = jdk
+        .map(|j| BTreeMap::from([("JAVA_HOME".to_owned(), j.home.to_string_lossy().into_owned())]))
+        .unwrap_or_default();
+    let javac = find_javac(&env);
+    (level, env, javac)
 }
 
 /// The Build / Rebuild plan of a project without a build tool, or `None` when it has no
@@ -203,16 +212,7 @@ pub fn structure_plan(
         return Ok(None);
     }
     let (main_out, test_out) = structure_outputs(root, ps);
-    let module = root_module(root, ps);
-    let level = module
-        .map(|m| m.language_level.as_str())
-        .filter(|l| !l.trim().is_empty())
-        .or(Some(language_level))
-        .and_then(language_release);
-    let env: BTreeMap<String, String> = jdk
-        .map(|j| BTreeMap::from([("JAVA_HOME".to_owned(), j.home.to_string_lossy().into_owned())]))
-        .unwrap_or_default();
-    let javac = find_javac(&env);
+    let (level, env, javac) = structure_compiler(root, ps, jdk, language_level);
     let args_dir = cache.join("javac");
     fs::create_dir_all(&args_dir)
         .map_err(|e| IdeError::internal(format!("cannot create {} ({e})", args_dir.display())))?;
@@ -241,7 +241,7 @@ pub fn structure_plan(
         if !cp.is_empty() {
             step.args.extend(["-cp".into(), classpath(cp)]);
         }
-        step.args.extend(release_args(level, jdk));
+        step.args.extend(single::release_args(level, jdk.map(|j| j.major)));
         step.args.push(format!("@{}", args_file.to_string_lossy()));
         step.env = env.clone();
         step.mkdirs = vec![out.to_path_buf()];
@@ -279,6 +279,47 @@ pub fn structure_plan(
         }
     }
     Ok(Some(BuildPlan { system: BuildSystem::Javac, title: module_name(root), steps }))
+}
+
+/// Single-file `javac` plan for a Java project without a build tool (Project Structure).
+pub fn structure_compile_file_plan(
+    root: &Path,
+    ps: &ProjectStructureSettings,
+    roots: &StructureRoots,
+    jdk: Option<&StructureJdk>,
+    language_level: &str,
+    file: &Path,
+) -> IdeResult<BuildPlan> {
+    let name = single::is_java_file(file)?;
+    let rel = rel_str(root, file);
+    let test = if roots.tests.is_empty() {
+        single::is_test_source(&rel)
+    } else {
+        let file_norm = normalize(file);
+        roots.tests.iter().any(|t| file_norm.starts_with(normalize(t)))
+    };
+    let (main_out, test_out) = structure_outputs(root, ps);
+    let out_dir = if test { &test_out } else { &main_out };
+    let mut cp: Vec<String> = Vec::new();
+    if test && test_out.is_dir() {
+        cp.push(test_out.to_string_lossy().into_owned());
+    }
+    if main_out.is_dir() {
+        cp.push(main_out.to_string_lossy().into_owned());
+    }
+    cp.extend(library_entries(root, ps, test));
+    let cp = single::join_classpath(cp);
+
+    let mut src_roots: Vec<PathBuf> = Vec::new();
+    if test {
+        src_roots.extend(roots.tests.iter().filter(|p| p.is_dir()).cloned());
+    }
+    src_roots.extend(roots.sources.iter().filter(|p| p.is_dir()).cloned());
+
+    let (level, env, javac) = structure_compiler(root, ps, jdk, language_level);
+    let release = single::release_args(level, jdk.map(|j| j.major));
+    let step = single::build_javac_step(&javac, root, out_dir, &cp, &src_roots, release, file, env)?;
+    Ok(BuildPlan { system: BuildSystem::Javac, title: format!("Compile {name}"), steps: vec![step] })
 }
 
 /// Where an artifact goes: its output folder, else `out/artifacts/<name>`.
@@ -1007,5 +1048,100 @@ mod tests {
         write(&record, "/elsewhere\nc.jar");
         layout(&["a.jar"]).run(&CancellationToken::new()).unwrap();
         assert!(project.join("c.jar").is_file());
+    }
+
+    #[test]
+    fn plans_single_file_javac_for_main_test_and_jdk8() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("shop");
+        write(&root.join("src/com/a/Main.java"), "package com.a; class Main {}");
+        write(&root.join("test/com/a/MainTest.java"), "package com.a; class MainTest {}");
+        write(&root.join("out/production/shop/com/a/Helper.class"), "");
+        let ps = ProjectStructureSettings {
+            libraries: vec![
+                ProjectLibrary { name: "core".into(), classes: vec!["lib/core.jar".into()], ..Default::default() },
+                ProjectLibrary {
+                    name: "junit".into(),
+                    classes: vec!["lib/junit.jar".into()],
+                    scope: DependencyScope::Test,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let roots =
+            StructureRoots { sources: vec![root.join("src")], tests: vec![root.join("test")], ..Default::default() };
+
+        let jdk21 = StructureJdk { home: PathBuf::from("/jdk21"), major: 21 };
+        let main_plan =
+            structure_compile_file_plan(&root, &ps, &roots, Some(&jdk21), "17", &root.join("src/com/a/Main.java"))
+                .unwrap();
+        assert_eq!(main_plan.system, BuildSystem::Javac);
+        assert_eq!(main_plan.title, "Compile Main.java");
+        let main_step = &main_plan.steps[0];
+        let cp = &main_step.args[main_step.args.iter().position(|a| a == "-cp").unwrap() + 1];
+        assert!(cp.contains("core.jar") && !cp.contains("junit.jar"), "{cp}");
+        assert!(main_step.args.windows(2).any(|w| w == ["--release", "17"]));
+        assert!(main_step.args.iter().any(|a| a == "-implicit:none"));
+
+        let jdk8 = StructureJdk { home: PathBuf::from("/jdk8"), major: 8 };
+        let test_plan =
+            structure_compile_file_plan(&root, &ps, &roots, Some(&jdk8), "8", &root.join("test/com/a/MainTest.java"))
+                .unwrap();
+        let test_step = &test_plan.steps[0];
+        let test_cp = &test_step.args[test_step.args.iter().position(|a| a == "-cp").unwrap() + 1];
+        assert!(test_cp.contains("out/production/shop") || test_cp.contains("out\\production\\shop"), "{test_cp}");
+        assert!(test_cp.contains("junit.jar"), "{test_cp}");
+        assert!(test_step.args.windows(4).any(|w| w == ["-source", "1.8", "-target", "1.8"]));
+        assert!(test_step.args.windows(2).any(|w| w[0] == "-d" && Path::new(&w[1]).ends_with("out/test/shop")));
+    }
+
+    #[test]
+    fn compiles_only_the_target_java_file_and_reports_errors() {
+        let exe = if cfg!(windows) { "javac.exe" } else { "javac" };
+        if !std::process::Command::new(exe).arg("-version").output().is_ok_and(|o| o.status.success()) {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap().join("demo");
+        let good = root.join("src/p/Good.java");
+        let broken_sibling = root.join("src/p/BrokenSibling.java");
+        let bad_target = root.join("src/p/BadTarget.java");
+        write(&good, "package p;\npublic class Good { public static int ok() { return 1; } }\n");
+        write(&broken_sibling, "package p;\npublic class BrokenSibling { MissingType field; }\n");
+        write(&bad_target, "package p;\npublic class BadTarget {\n    UnknownSymbol field;\n}\n");
+
+        let ps = ProjectStructureSettings::default();
+        let roots = StructureRoots { sources: vec![root.join("src")], ..Default::default() };
+        let cancel = CancellationToken::new();
+
+        // 1. Valid file compiles cleanly without touching or failing on BrokenSibling.java.
+        let plan = structure_compile_file_plan(&root, &ps, &roots, None, "", &good).unwrap();
+        let events = std::sync::Mutex::new(Vec::new());
+        let result = run(&root, &plan, &cancel, &|e| events.lock().unwrap().push(e)).unwrap();
+        assert!(result.success, "expected single-file compile to succeed: {:?}", result.messages);
+        assert_eq!(result.errors, 0);
+        assert!(root.join("out/production/demo/p/Good.class").is_file());
+        assert!(!root.join("out/production/demo/p/BrokenSibling.class").exists());
+
+        // 2. Broken target fails, streams raw compiler output, and produces structured diagnostics.
+        let plan = structure_compile_file_plan(&root, &ps, &roots, None, "", &bad_target).unwrap();
+        let bad_events = std::sync::Mutex::new(Vec::new());
+        let bad_result = run(&root, &plan, &cancel, &|e| bad_events.lock().unwrap().push(e)).unwrap();
+        assert!(!bad_result.success);
+        assert!(bad_result.errors >= 1, "{bad_result:?}");
+        assert!(
+            bad_events.lock().unwrap().iter().any(|e| matches!(e, BuildEvent::Output { .. })),
+            "expected streamed output"
+        );
+        assert!(
+            bad_result.messages.iter().any(|m| {
+                m.severity == Severity::Error
+                    && m.path.as_ref().is_some_and(|p| <ide_core::IpcPath as AsRef<Path>>::as_ref(p) == bad_target)
+                    && m.range.is_some_and(|r| r.start.line == 2)
+            }),
+            "messages={:?}",
+            bad_result.messages
+        );
     }
 }

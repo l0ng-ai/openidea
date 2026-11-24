@@ -4,7 +4,7 @@
  */
 import { openPolicy } from "./projectWindow";
 import { setContext } from "@/platform/context";
-import { isRemoteWindow, useRemote } from "@/platform/remote";
+import { isRemoteWindow, projectLocation, useRemote } from "@/platform/remote";
 import { useProject } from "@/platform/project";
 import {
   provideNotificationService,
@@ -42,25 +42,29 @@ export function activateWorkbench(): () => void {
   const syncProjectContext = () => {
     const project = useProject.getState().project;
     setContext("projectLocal", !!project && !isRemoteWindow() && !useProject.getState().lightEdit);
+    setContext("projectRemote", !!project && isRemoteWindow());
     setContext("workspaceOpen", !!project?.workspace);
     setContext("projectAttached", !!project?.workspace && project.workspace.projects[0] === project.root);
     setContext("workspaceContainer", !!project?.workspace && project.workspace.projects[0] !== project.root);
     setContext("projectOpenAsk", openPolicy() === "ask");
   };
   // Synchronous so the frame's first render after opening already has the project's layout.
-  const onProject = (root: string | null) => {
-    setContext("projectOpen", root !== null);
+  let prevLocation = projectLocation(useProject.getState().project?.root);
+  const onProject = (scope: string | null) => {
+    setContext("projectOpen", scope !== null);
     syncProjectContext();
     setContext("lightEdit", useProject.getState().lightEdit);
-    if (root !== null) loadToolWindowLayout(root);
+    if (scope !== null) loadToolWindowLayout(scope);
   };
-  onProject(useProject.getState().project?.root ?? null);
+  onProject(prevLocation);
   const unsubProject = useProject.subscribe((s, prev) => {
     syncProjectContext();
-    if (s.project?.root === prev.project?.root && s.lightEdit === prev.lightEdit) return;
+    const nextLocation = projectLocation(s.project?.root);
+    if (nextLocation === prevLocation && s.lightEdit === prev.lightEdit) return;
+    prevLocation = nextLocation;
     // The previous project's notifications (and their actions) no longer apply.
     if (prev.project) clearProjectNotifications();
-    onProject(s.project?.root ?? null);
+    onProject(nextLocation);
   });
 
   const disposers = [

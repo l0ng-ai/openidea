@@ -234,11 +234,10 @@ export const commands = {
 	/**  Applies a (previewed) workspace edit, e.g. after rename confirmation. */
 	applyWorkspaceEdit: (edit: WorkspaceEdit) => typedError<null, IdeError>(__TAURI_INVOKE("apply_workspace_edit", { edit })),
 	/**
-	 *  Build › Compile File: compiles one Java source of a linked Maven module with
-	 *  `javac`, streaming the console and messages on `on_event`; cancellable with
-	 *  `cancel_request(request)`. Diagnostics of `clear` (the files of the previous
-	 *  build) are cleared first; the new messages are published as `build`
-	 *  diagnostics.
+	 *  Build › Recompile: compiles one Java source file with `javac`, streaming the
+	 *  console and messages on `on_event`; cancellable with `cancel_request(request)`.
+	 *  Diagnostics of `clear` (the files of the previous build) are cleared first;
+	 *  the new messages are published as `build` diagnostics.
 	 */
 	buildCompileFile: (file: string, request: RequestId, clear: string[], onEvent: Channel<BuildEvent>) => typedError<BuildResult, IdeError>(__TAURI_INVOKE("build_compile_file", { file, request, clear, onEvent })),
 	/**  Maven and Gradle projects of the window's project, from the build files plus the last sync. */
@@ -339,8 +338,8 @@ export const commands = {
 	dbDropDatabase: (id: string, database: string, statement: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_drop_database", { id, database, statement })),
 	/**  What made the dump at `path` and whether it creates its own database (from its first bytes). */
 	dbDumpInfo: (path: string) => typedError<DbDumpInfo, IdeError>(__TAURI_INVOKE("db_dump_info", { path })),
-	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], skip: number, maxRows: number, schema: string | null) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, skip, maxRows, schema })),
-	dbExecuteStream: (request: RequestId, id: string, statements: SqlStatement[], maxRows: number, schema: string | null, onProgress: Channel<ExecutionEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("db_execute_stream", { request, id, statements, maxRows, schema, onProgress })),
+	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], skip: number, maxRows: number, schema: string | null, cellLimit: number | null) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, skip, maxRows, schema, cellLimit })),
+	dbExecuteStream: (request: RequestId, id: string, statements: SqlStatement[], maxRows: number, schema: string | null, cellLimit: number | null, onProgress: Channel<ExecutionEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("db_execute_stream", { request, id, statements, maxRows, schema, cellLimit, onProgress })),
 	dbExplain: (request: RequestId, id: string, statement: string, schema: string | null) => typedError<DbPlanNode[], IdeError>(__TAURI_INVOKE("db_explain", { request, id, statement, schema })),
 	/**
 	 *  Writes exported result data (CSV, JSON, SQL…) to `path`. Stays in the
@@ -353,8 +352,15 @@ export const commands = {
 	dbJdbcDriverClasses: (jars: string[]) => typedError<string[], IdeError>(__TAURI_INVOKE("db_jdbc_driver_classes", { jars })),
 	dbJdbcDrivers: () => typedError<DbJdbcDriver_Serialize[], IdeError>(__TAURI_INVOKE("db_jdbc_drivers")),
 	dbObjectDdl: (id: string, schema: string, kind: DbObjectKind, name: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_object_ddl", { id, schema, kind, name })),
+	/**  Closes what the pages of a result keep open on the server (its result tab was closed). */
+	dbReleaseResult: (id: string, statement: string, schema: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_release_result", { id, statement, schema })),
 	dbRemoveHistory: (id: string, texts: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_remove_history", { id, texts })),
 	dbRemoveJdbcDriver: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_remove_jdbc_driver", { id })),
+	/**
+	 *  Row `row` (from 0) of the result of `statement`, whole: what a page of a run with a
+	 *  `cell_limit` shows cut short.
+	 */
+	dbResultRow: (request: RequestId, id: string, statement: SqlStatement, row: number, schema: string | null) => typedError<DbQueryResult, IdeError>(__TAURI_INVOKE("db_result_row", { request, id, statement, row, schema })),
 	dbRetainCatalog: (id: string, databases: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("db_retain_catalog", { id, databases })),
 	/**
 	 *  Runs `job` against target `id` and streams the tool's output; returns its exit code. Stays
@@ -637,6 +643,8 @@ export const commands = {
 	dockerSettings: () => typedError<DockerSettings, IdeError>(__TAURI_INVOKE("docker_settings")),
 	/**  Availability plus containers, images, volumes and networks. */
 	dockerSnapshot: (endpoint: DockerEndpoint) => typedError<DockerSnapshot, IdeError>(__TAURI_INVOKE("docker_snapshot", { endpoint })),
+	/**  Disk usage per volume name (`docker system df -v`). */
+	dockerVolumeSizes: (endpoint: DockerEndpoint) => typedError<{ [key in string]: string }, IdeError>(__TAURI_INVOKE("docker_volume_sizes", { endpoint })),
 	/**
 	 *  "Clear caches": drops syntax trees and EditorConfig files of the window's
 	 *  project, shrinks the in-memory index and compacts its on-disk cache.
@@ -1410,6 +1418,11 @@ export const commands = {
 	versions: string[],
 } | null, IdeError>(__TAURI_INVOKE("pypi_package", { name, request })),
 	/**
+	 *  PyPI project names containing `query`, best match first, 51 at most (50 are shown). Answers from a cached copy of
+	 *  PyPI's name list, which the first search downloads and a search a day later refreshes.
+	 */
+	pypiSearch: (query: string, request: RequestId) => typedError<string[], IdeError>(__TAURI_INVOKE("pypi_search", { query, request })),
+	/**
 	 *  The requirements of a `requirements*.txt` / `pyproject.toml` the project's interpreter
 	 *  doesn't satisfy; `None` for other files, or with no local interpreter to ask.
 	 */
@@ -1456,6 +1469,8 @@ export const commands = {
 	/**  `linux`, `macos` or `windows`: the OS the project's commands run on. */
 	os: string,
 	commands: string[],
+	idlePolicy?: RemoteIdlePolicy | null,
+	takenOver?: boolean,
 } | null>("remote_current"),
 	remoteDelete: (connection: FsConnection, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_delete", { connection, path })),
 	remoteDisconnect: () => __TAURI_INVOKE<void>("remote_disconnect"),
@@ -1473,6 +1488,11 @@ export const commands = {
 	remoteForwardPort: (remotePort: number) => typedError<ForwardedPort, IdeError>(__TAURI_INVOKE("remote_forward_port", { remotePort })),
 	/**  The remote ports this window forwards to this machine. */
 	remoteForwardedPorts: () => __TAURI_INVOKE<ForwardedPort[]>("remote_forwarded_ports"),
+	/**
+	 *  Read the same host-wide value for the close dialog and the idle timer: another project's
+	 *  daemon may have edited the file since this host loaded its settings.
+	 */
+	remoteIdleTimeoutMinutes: () => typedError<number, IdeError>(__TAURI_INVOKE("remote_idle_timeout_minutes")),
 	/**  A client OS file belongs to this machine even when its destination is remote. */
 	remoteImportLocal: (from: string, to: string, request: RequestId) => typedError<string[], IdeError>(__TAURI_INVOKE("remote_import_local", { from, to, request })),
 	/**
@@ -1486,12 +1506,18 @@ export const commands = {
 	remoteOf: (path: IpcPath) => __TAURI_INVOKE<[FsConnection, string] | null>("remote_of", { path }),
 	remoteOpen: (connection: FsConnection, path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("remote_open", { connection, path })),
 	remoteRename: (connection: FsConnection, from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_rename", { connection, from, to })),
+	/**
+	 *  Stops the persistent `openidea-server` daemon for this window's remote project,
+	 *  terminating its terminals, runs, language servers and agent sessions, then disconnects.
+	 */
+	remoteStopBackend: () => typedError<null, IdeError>(__TAURI_INVOKE("remote_stop_backend")),
 	/**  Stops forwarding `remote_port` of `host` (`None`: the remote host itself). */
 	remoteStopForwarding: (remotePort: number, host: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("remote_stop_forwarding", { remotePort, host })),
 	/**  Records the user's trust decision for the window's remote project on this machine. */
 	remoteTrustSet: (trusted: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("remote_trust_set", { trusted })),
 	/**  This machine's trust decision for the window's remote project (see [`Connection::authorize`]). */
 	remoteTrustStatus: () => typedError<TrustStatus, IdeError>(__TAURI_INVOKE("remote_trust_status")),
+	remoteUploadInto: (connection: FsConnection, paths: IpcPath[], target: string, replace: boolean, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("remote_upload_into", { connection, paths, target, replace, request })),
 	removeRecent: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remove_recent", { path })),
 	removeRecentProject: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remove_recent_project", { path })),
 	/**
@@ -1514,6 +1540,11 @@ export const commands = {
 	runApplicationPublish: (config: RunConfig_Deserialize, classPaths: string[], mainClass: string) => typedError<null, IdeError>(__TAURI_INVOKE("run_application_publish", { config, classPaths, mainClass })),
 	/**  Kept temporary configurations with the current settings applied. */
 	runApplySettings: (configs: RunConfig_Deserialize[]) => typedError<RunConfig_Serialize[], IdeError>(__TAURI_INVOKE("run_apply_settings", { configs })),
+	/**
+	 *  Reattaches to a running process `id` on this host, returning its buffered output
+	 *  and configuration while streaming subsequent chunks to `on_output`.
+	 */
+	runAttach: (id: RunId, onOutput: Channel<OutputChunk>) => typedError<RunAttach_Serialize, IdeError>(__TAURI_INVOKE("run_attach", { id, onOutput })),
 	runCloseStdin: (id: RunId) => typedError<null, IdeError>(__TAURI_INVOKE("run_close_stdin", { id })),
 	/**  Detected configs followed by user-defined ones (user ids win on conflict). */
 	runConfigs: () => typedError<RunConfig_Serialize[], IdeError>(__TAURI_INVOKE("run_configs")),
@@ -1853,6 +1884,11 @@ export const commands = {
 	 *  already registered to another app. Empty everywhere but Windows.
 	 */
 	systemProbeHotkeys: (combos: string[]) => typedError<string[], IdeError>(__TAURI_INVOKE("system_probe_hotkeys", { combos })),
+	/**
+	 *  Reattaches to an existing terminal session `id`, returning its buffered output
+	 *  and streaming subsequent chunks to `on_output`.
+	 */
+	termAttach: (id: TerminalId, cols: number, rows: number, onOutput: Channel<string>) => typedError<TerminalAttach, IdeError>(__TAURI_INVOKE("term_attach", { id, cols, rows, onOutput })),
 	/**  Installed shells for the Terminal's "New Predefined Session" menu. */
 	termAvailableShells: () => __TAURI_INVOKE<string[]>("term_available_shells"),
 	/**  Shell used when Settings › Terminal › Shell path is empty. */
@@ -1863,6 +1899,8 @@ export const commands = {
 	 */
 	termIsBusy: (id: TerminalId) => typedError<boolean, IdeError>(__TAURI_INVOKE("term_is_busy", { id })),
 	termKill: (id: TerminalId) => typedError<null, IdeError>(__TAURI_INVOKE("term_kill", { id })),
+	/**  Live terminal sessions of this window, for reattaching after a reconnect. */
+	termList: () => __TAURI_INVOKE<TerminalSessionInfo[]>("term_list"),
 	termResize: (id: TerminalId, cols: number, rows: number) => typedError<null, IdeError>(__TAURI_INVOKE("term_resize", { id, cols, rows })),
 	/**
 	 *  Async to stay off the main thread: forking the IDE (its whole address space)
@@ -2638,6 +2676,12 @@ export type AgentEvent_Deserialize =
  *  `from` UTF-16 units of its text when the previous event for it was sent.
  */
 ({ type: "append"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
+/**
+ *  Text was appended to the output of tool entry `index`: it read the first `from` UTF-16
+ *  units of its output when the previous event for it was sent. Any other change of the
+ *  tool (status, title, diffs…) arrives as an `Entry`.
+ */
+({ type: "toolOutput"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
 /**  An agent reported the usage limits of its account (shared by every task of `provider`). */
 ({ type: "limits"; provider: string; limits: AgentLimit[] }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
 /**  A model lookup started or completed, including unsuccessful lookups. */
@@ -2660,6 +2704,12 @@ export type AgentEvent_Serialize =
  *  `from` UTF-16 units of its text when the previous event for it was sent.
  */
 ({ type: "append"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
+/**
+ *  Text was appended to the output of tool entry `index`: it read the first `from` UTF-16
+ *  units of its output when the previous event for it was sent. Any other change of the
+ *  tool (status, title, diffs…) arrives as an `Entry`.
+ */
+({ type: "toolOutput"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
 /**  An agent reported the usage limits of its account (shared by every task of `provider`). */
 ({ type: "limits"; provider: string; limits: AgentLimit[] }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
 /**  A model lookup started or completed, including unsuccessful lookups. */
@@ -5305,6 +5355,8 @@ export type DbQueryResult = {
 	elapsedMs: number | null,
 	/**  Until the server's first answer; the rest of `elapsed_ms` is fetching. */
 	executionMs: number | null,
+	/**  Cells of `rows` cut short by [`QueryResult::cap_cells`], in row order. */
+	truncated: DbTruncatedCell[],
 };
 
 export type DbResultColumn = {
@@ -5482,6 +5534,19 @@ export type DbTriggerInfo = {
 	timing: string,
 	/**  `insert`, `update or delete`… */
 	events: string,
+};
+
+/**  A cell of a [`QueryResult`] whose text was cut to a prefix. */
+export type DbTruncatedCell = {
+	row: number,
+	column: number,
+	/**  Length of the whole value in UTF-16 code units (what a JavaScript string counts). */
+	length: number,
+	/**
+	 *  FNV-1a (32 bits) of the whole value's UTF-16 code units, each taken as one 16-bit step,
+	 *  so a client that reads the value again can tell whether it is the one that was cut.
+	 */
+	hash: number,
 };
 
 /**  Transaction control of the data source's consoles. */
@@ -6626,7 +6691,12 @@ report?: PushReport | null } |
 /**  Git updated some refs before a later ref or push URL failed. */
 { type: "pushPartiallyApplied"; report: PushReport } | 
 /**  A conflicted history replay left an amend commit ready to keep separately. */
-{ type: "amendConflict"; commit: string };
+{ type: "amendConflict"; commit: string } | 
+/**
+ *  jdtls could not set a module up as a Java project: the errors on its build files and
+ *  the builds enclosing it (`path: message`, the path relative to the project), nearest first.
+ */
+{ type: "javaBuildProblems"; problems: string[] };
 
 export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "invalidInput" | 
 /**  The requested state is stale; the UI must use the current snapshot. */
@@ -7972,11 +8042,8 @@ export type IdeEvent =
 { type: "mcpBackgroundProjectsChanged" } | 
 /**  A window entered or left full screen, itself or as a member of a full-screen window group. */
 { type: "windowFullscreenChanged" } | 
-/**
- *  This remote window's connection to its host ended on its own (network loss, the host or
- *  its server went away); the window's project is unreachable until it reconnects.
- */
-{ type: "remoteConnectionLost"; host: string } | { type: "projectTrustChanged"; root: IpcPath; trusted: boolean } | 
+/**  This remote window's connection ended or another window took over the session. */
+{ type: "remoteConnectionLost"; host: string; takenOver?: boolean } | { type: "projectTrustChanged"; root: IpcPath; trusted: boolean } | 
 /**
  *  The project's direnv environment (`.envrc`) could not be loaded, or a file it is read
  *  from changed and it can be reloaded.
@@ -11442,6 +11509,13 @@ export type PythonMethodFacts = {
 	/**  Decorated with `override` from `typing` / `typing_extensions`. */
 	overrideDecorated: boolean,
 	body: MethodBody,
+	/**
+	 *  For 'Method may be static': the receiver parameter up to the next parameter (what
+	 *  Make method static deletes), when the method is undecorated and not a dunder, and its
+	 *  body does more than `pass`, `...`, a docstring or one `raise` without ever naming the
+	 *  receiver, `super` or `__class__`.
+	 */
+	unusedReceiver: Range | null,
 };
 
 export type PythonPackage = {
@@ -11724,6 +11798,12 @@ export type Remote = {
 	resolvedUrl?: string | null,
 };
 
+/**  Tools › Remote Development. This is a user setting on the remote host. */
+export type RemoteDevelopmentSettings = {
+	/**  Zero disables idle shutdown. Positive values from older configurations keep their meaning. */
+	idleTimeoutMinutes?: number,
+};
+
 /**  Manage Remotes edits. */
 export type RemoteEdit = { op: "add"; name: string; url: string } | { op: "remove"; name: string } | 
 /**  Renames `name` to `new_name` (when different) and sets its URL. */
@@ -11741,6 +11821,11 @@ export type RemoteEntry = {
 	mtime: number | null,
 	/**  `rwxr-xr-x`. */
 	permissions: string,
+};
+
+/**  Advertised only by a persistent backend with an editable idle timeout. */
+export type RemoteIdlePolicy = {
+	overrideSeconds: number | null,
 };
 
 /**  A project folder on an SSH host, in a WSL distribution or in a dev container. */
@@ -11795,6 +11880,7 @@ export type RemoteProject_Deserialize = {
 	host: string,
 	serverVersion: string,
 	os: string,
+	idlePolicy?: RemoteIdlePolicy | null,
 	/**  Commands routed to the server (the rest run locally). */
 	commands: string[],
 	project: ProjectInfo_Deserialize,
@@ -11807,18 +11893,34 @@ export type RemoteProject_Serialize = {
 	host: string,
 	serverVersion: string,
 	os: string,
+	idlePolicy?: RemoteIdlePolicy | null,
 	/**  Commands routed to the server (the rest run locally). */
 	commands: string[],
 	project: ProjectInfo_Serialize,
 };
 
-export type RemoteSession = {
+export type RemoteSession = RemoteSession_Serialize | RemoteSession_Deserialize;
+
+export type RemoteSession_Deserialize = {
 	target: RemoteTarget,
 	root: string,
 	host: string,
 	/**  `linux`, `macos` or `windows`: the OS the project's commands run on. */
 	os: string,
 	commands: string[],
+	idlePolicy?: RemoteIdlePolicy | null,
+	takenOver?: boolean,
+};
+
+export type RemoteSession_Serialize = {
+	target: RemoteTarget,
+	root: string,
+	host: string,
+	/**  `linux`, `macos` or `windows`: the OS the project's commands run on. */
+	os: string,
+	commands: string[],
+	idlePolicy?: RemoteIdlePolicy | null,
+	takenOver?: boolean,
 };
 
 export type RemoteSkillBrowseResult = {
@@ -11995,6 +12097,23 @@ export type RouteSource = {
 export type RubySettings = {
 	/**  Project interpreter executable; empty = auto-detect (`.ruby-version`, mise / asdf, else `ruby` on PATH). */
 	interpreter?: string,
+};
+
+/**  Snapshot and live output binding returned when reattaching to a running process. */
+export type RunAttach = RunAttach_Serialize | RunAttach_Deserialize;
+
+/**  Snapshot and live output binding returned when reattaching to a running process. */
+export type RunAttach_Deserialize = {
+	info: RunInfo,
+	config: RunConfig_Deserialize,
+	buffered: OutputChunk[],
+};
+
+/**  Snapshot and live output binding returned when reattaching to a running process. */
+export type RunAttach_Serialize = {
+	info: RunInfo,
+	config: RunConfig_Serialize,
+	buffered: OutputChunk[],
 };
 
 export type RunConfig = RunConfig_Serialize | RunConfig_Deserialize;
@@ -12373,6 +12492,11 @@ export type SearchQuery = {
 	 *  adds none of the project's exclusions either).
 	 */
 	includeExcluded?: boolean,
+	/**
+	 *  Leave out files over [`MAX_CODE_INSIGHT_FILE_BYTES`], as IDEA's TODO and word indexes do:
+	 *  a background scan never reads a log or a database dump.
+	 */
+	skipLargeFiles?: boolean,
 };
 
 export type SearchScope = { kind: "project" } | { kind: "directory"; path: IpcPath } | { kind: "files"; paths: IpcPath[] } | 
@@ -12506,7 +12630,7 @@ export type SettingsWindowInit = SettingsWindowInit_Serialize | SettingsWindowIn
 
 export type SettingsWindowInit_Deserialize = {
 	launch: Launch_Deserialize | null,
-	remote: RemoteSession | null,
+	remote: RemoteSession_Deserialize | null,
 	project: ProjectInfo_Deserialize | null,
 	globalSettings: Settings_Deserialize,
 	updates: boolean,
@@ -12514,7 +12638,7 @@ export type SettingsWindowInit_Deserialize = {
 
 export type SettingsWindowInit_Serialize = {
 	launch: Launch_Serialize | null,
-	remote: RemoteSession | null,
+	remote: RemoteSession_Serialize | null,
 	project: ProjectInfo_Serialize | null,
 	globalSettings: Settings_Serialize,
 	updates: boolean,
@@ -12575,6 +12699,7 @@ export type Settings_Deserialize = {
 	spelling?: SpellingSettings,
 	/**  Tools › SSH Configurations. */
 	ssh?: SshSettings,
+	remoteDevelopment?: RemoteDevelopmentSettings,
 	/**  Build, Execution, Deployment › Deployment. */
 	deployment?: DeploymentSettings,
 	/**  Build, Execution, Deployment › Run Targets. */
@@ -12651,6 +12776,7 @@ export type Settings_Serialize = {
 	spelling: SpellingSettings,
 	/**  Tools › SSH Configurations. */
 	ssh: SshSettings,
+	remoteDevelopment: RemoteDevelopmentSettings,
 	/**  Build, Execution, Deployment › Deployment. */
 	deployment: DeploymentSettings,
 	/**  Build, Execution, Deployment › Run Targets. */
@@ -13316,6 +13442,12 @@ export type TableSort = {
 /**  A long-running background task shown in the status bar. */
 export type TaskId = number;
 
+/**  Snapshot and live binding returned when reattaching to an existing session. */
+export type TerminalAttach = {
+	session: TerminalSessionInfo,
+	buffered: string,
+};
+
 /**  TerminalExited data exchanged with the IDE. */
 export type TerminalExited = {
 	id: string,
@@ -13343,6 +13475,16 @@ export type TerminalOptions = {
 	rows: number,
 	/**  Make zsh / bash / fish report their working directory (OSC 7) at every prompt. */
 	shellIntegration?: boolean,
+};
+
+/**  Live terminal session state for reattaching across window reconnects. */
+export type TerminalSessionInfo = {
+	id: TerminalId,
+	title: string,
+	pid: number | null,
+	cwd: string,
+	appTitle: string | null,
+	commandRunning: boolean,
 };
 
 /**  Tools › Terminal. */

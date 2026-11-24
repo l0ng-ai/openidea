@@ -242,6 +242,15 @@ pub struct RunInfo {
     pub pty: bool,
 }
 
+/// Snapshot and live output binding returned when reattaching to a running process.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RunAttach {
+    pub info: RunInfo,
+    pub config: RunConfig,
+    pub buffered: Vec<OutputChunk>,
+}
+
 pub use external::{EXTERNAL_PREFIX, ExternalDetection, set_external_detection};
 
 /// Detects configs from package.json scripts, Cargo.toml targets, build.gradle(.kts),

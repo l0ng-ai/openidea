@@ -7,7 +7,7 @@
 import { lazyComponent, lazyWhen, type MenuItem } from "@/ui";
 import { activeEditor, lazyEditorExtension, registerEditorContribution } from "@/editor/api";
 import { tx } from "@/platform/i18n";
-import { onIdeEvent } from "@/platform/ipc";
+import { call, commands, onIdeEvent } from "@/platform/ipc";
 import { registerActions, type ActionContext } from "@/platform/actions";
 import { activeCellGrid } from "./cellActions";
 import {
@@ -81,21 +81,58 @@ function tableTarget(arg: unknown): TableCommandTarget {
   return { rows: activeCellGrid()?.selectedRows() ?? [], editor: null };
 }
 
-export function activate(): () => void {
-  const disposers = [
-    onIdeEvent("dbSourcesChanged", () => {
-      void loadSources();
-    }),
-    registerToolWindow({
+/** The Database window, on the stripe by default only while the project has data sources. */
+function registerDatabaseWindow(): () => void {
+  let withSources: boolean | null = null;
+  let dispose = () => {};
+  const sync = (next: boolean) => {
+    if (next === withSources) return;
+    withSources = next;
+    // Registering the same id again replaces the contribution in place.
+    dispose = registerToolWindow({
       id: DB_TOOL_WINDOW,
       title: "Database",
       icon: "toolwindow-database",
       anchor: "right",
       order: 20,
+      ...(next ? {} : { stripe: "onUse" as const }),
       component: lazyComponent(() => import("./DatabaseView").then((m) => m.DatabaseView)),
       headerMenu: useDatabaseHeaderMenu,
       headerActions: lazyComponent(() => import("./DatabaseView").then((m) => m.DatabaseHeaderActions)),
+    });
+  };
+  // Until the window loads the sources, a quiet probe decides; a failed one leaves it under "…".
+  let probe = 0;
+  const check = () => {
+    const seq = ++probe;
+    sync(false);
+    if (!useProject.getState().project) return;
+    call(commands.dbSources()).then(
+      (sources) => seq === probe && !useDatabase.getState().loaded && sync(sources.length > 0),
+      () => {},
+    );
+  };
+  check();
+  const offSources = useDatabase.subscribe((s) => {
+    if (s.loaded) sync(s.sources.length > 0);
+  });
+  const offProject = useProject.subscribe((s, prev) => {
+    if (s.project?.root !== prev.project?.root) check();
+  });
+  return () => {
+    probe++;
+    offSources();
+    offProject();
+    dispose();
+  };
+}
+
+export function activate(): () => void {
+  const disposers = [
+    onIdeEvent("dbSourcesChanged", () => {
+      void loadSources();
     }),
+    registerDatabaseWindow(),
     registerServiceView({
       id: RESULTS_VIEW,
       title: "Database",

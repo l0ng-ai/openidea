@@ -1,5 +1,5 @@
 //! An in-process SSH server for tests (feature `testing`): password `dev` /
-//! `secret`, commands answered by a closure, SFTP served from a local
+//! `secret`, commands answered by a closure or an explicitly allowed process, SFTP served from a local
 //! folder (remote `/x` is `<root>/x`), and a shell that echoes its input
 //! (`exit` ends it with status 0). `direct-tcpip` channels are forwarded to local TCP
 //! ports, and refused when nothing listens there.
@@ -10,15 +10,34 @@ use russh_sftp::protocol::{Attrs, Data, File, FileAttributes, Handle, Name, Open
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
+use tokio::process::Command;
 use tokio::sync::Mutex;
 
 /// Reply of a command: (stdout, exit status).
 pub type ExecFn = Arc<dyn Fn(&str) -> (String, u32) + Send + Sync>;
+type SpawnFn = Arc<dyn Fn(&str) -> Option<Command> + Send + Sync>;
+
+#[derive(Clone)]
+enum Exec {
+    Reply(ExecFn),
+    Process(SpawnFn),
+}
 
 /// Starts the server; returns its port. `root` backs SFTP.
 pub async fn sshd(root: PathBuf, exec: ExecFn) -> u16 {
+    start(root, Exec::Reply(exec)).await
+}
+
+/// Serves stdio of an explicitly chosen command over an SSH exec channel.
+pub async fn sshd_with_process(root: PathBuf, exec: impl Fn(&str) -> Option<Command> + Send + Sync + 'static) -> u16 {
+    start(root, Exec::Process(Arc::new(exec))).await
+}
+
+async fn start(root: PathBuf, exec: Exec) -> u16 {
     let config = Arc::new(server::Config {
         keys: vec![russh::keys::decode_secret_key(include_str!("../tests/fixtures/ssh/host"), None).expect("host key")],
         auth_rejection_time: std::time::Duration::from_millis(10),
@@ -37,7 +56,7 @@ pub async fn sshd(root: PathBuf, exec: ExecFn) -> u16 {
 #[derive(Clone)]
 struct Sshd {
     root: PathBuf,
-    exec: ExecFn,
+    exec: Exec,
 }
 
 impl server::Server for Sshd {
@@ -49,7 +68,7 @@ impl server::Server for Sshd {
 
 struct Conn {
     root: PathBuf,
-    exec: ExecFn,
+    exec: Exec,
     channels: Arc<Mutex<HashMap<ChannelId, Channel<Msg>>>>,
     shells: std::collections::HashSet<ChannelId>,
 }
@@ -99,7 +118,44 @@ impl server::Handler for Conn {
         data: &[u8],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        let (out, code) = (self.exec)(&String::from_utf8_lossy(data));
+        let command = String::from_utf8_lossy(data);
+        let Exec::Reply(exec) = &self.exec else {
+            let Exec::Process(spawn) = &self.exec else { unreachable!() };
+            let Some(ch) = self.channels.lock().await.remove(&channel) else {
+                session.channel_failure(channel)?;
+                return Ok(());
+            };
+            let Some(mut cmd) = spawn(&command) else {
+                session.channel_failure(channel)?;
+                return Ok(());
+            };
+            let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).kill_on_drop(true).spawn()?;
+            let mut input = child.stdin.take().expect("piped stdin");
+            let mut output = child.stdout.take().expect("piped stdout");
+            session.channel_success(channel)?;
+            tokio::spawn(async move {
+                let (mut reader, mut writer) = tokio::io::split(ch.into_stream());
+                let feed = async {
+                    let _ = tokio::io::copy(&mut reader, &mut input).await;
+                    drop(input);
+                };
+                let drain = async {
+                    let _ = tokio::io::copy(&mut output, &mut writer).await;
+                    let _ = writer.shutdown().await;
+                };
+                tokio::pin!(drain);
+                // EOF from the SSH client closes the child stdin; EOF from the child completes the channel.
+                tokio::select! {
+                    _ = &mut drain => {}
+                    _ = feed => {
+                        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), &mut drain).await;
+                    }
+                }
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await;
+            });
+            return Ok(());
+        };
+        let (out, code) = exec(&command);
         session.channel_success(channel)?;
         session.data(channel, out.into_bytes())?;
         session.exit_status_request(channel, code)?;

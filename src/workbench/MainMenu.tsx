@@ -1,6 +1,7 @@
 /** Main menu for the frameless title bar, with hamburger and persistent title modes. */
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
+import { useContextKeys } from "@/platform/context";
 import { useProject } from "@/platform/project";
 import { lookup, t, useI18n } from "@/platform/i18n";
 import { commands, type MenuNode } from "@/platform/ipc";
@@ -8,18 +9,13 @@ import { usePlatform } from "@/platform/platformInfo";
 import { Icon, MenuList, Popup, type MenuItem } from "@/ui";
 import { useChromeIconSize } from "@/ui/density";
 import menuStyles from "@/ui/Menu.module.css";
-import { isDistractionFree } from "./distractionFree";
-import { toolWindowsRestorable } from "./toolwindows/store";
+import { javaFileNameOf, menuLabelParams } from "./menuLabels";
 import styles from "./TitleBar.module.css";
 
 function label(id: string, fallback: string): string {
   const key = `menu.${id}`;
   if (lookup(key) === undefined) return fallback;
-  return t(key, {
-    os: usePlatform.getState().os,
-    distractionFree: isDistractionFree() ? "on" : "off",
-    toolWindows: toolWindowsRestorable() ? "hidden" : "shown",
-  });
+  return t(key, menuLabelParams(usePlatform.getState().os));
 }
 
 type Submenu = Extract<MenuNode, { kind: "submenu" }>;
@@ -102,6 +98,7 @@ export function MainMenu({ row = false, ...props }: MainMenuProps) {
 
 function MainMenuBar({ merged, row, onExpandedChange }: MainMenuProps & { merged: boolean; row: boolean }) {
   useI18n((s) => s.locale);
+  useContextKeys((s) => javaFileNameOf(s.editorPath));
   const iconSize = useChromeIconSize();
   const [menus, setMenus] = useState<Submenu[]>([]);
   const [expanded, setExpanded] = useState(false);

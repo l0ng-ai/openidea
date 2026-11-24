@@ -248,7 +248,7 @@ function CrumbNav({
         const current = i === segments.length - 1;
         const icon = s.nav?.kind === "dir" && !s.nav.root && !current ? undefined : s.icon;
         return (
-          <Fragment key={s.title}>
+          <Fragment key={`${i}:${s.title}`}>
             {i > 0 && <Icon name="chevron-right" size={12} className={styles.statusSep} />}
             <BarButton
               className={styles.crumbButton}

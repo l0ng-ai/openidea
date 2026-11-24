@@ -9,21 +9,31 @@ const found = (name: string) => ({ name, summary: "", latest: "1.0", versions: [
 
 describe("package rows", () => {
   it("lists the installed packages with their newer release", () => {
-    const rows = listRows(INSTALLED, new Map([["requests", "2.34.2"]]), null, "");
+    const rows = listRows(INSTALLED, new Map([["requests", "2.34.2"]]), null, [], "");
     expect(rows.map(rowKey)).toEqual(["section:installed", "installed:requests", "installed:typing_extensions"]);
     expect(rows[1]).toMatchObject({ version: "2.31.0", latest: "2.34.2" });
     expect(rows[2]).toMatchObject({ latest: null });
   });
 
   it("filters the installed packages and adds the PyPI project the query names", () => {
-    const rows = listRows(INSTALLED, null, found("six"), " SIX ");
+    const rows = listRows(INSTALLED, null, found("six"), [], " SIX ");
     expect(rows.map(rowKey)).toEqual(["section:pypi", "pypi:six"]);
-    expect(listRows(INSTALLED, null, null, "quest").map(rowKey)).toEqual(["section:installed", "installed:requests"]);
+    expect(listRows(INSTALLED, null, null, [], "quest").map(rowKey)).toEqual([
+      "section:installed",
+      "installed:requests",
+    ]);
+  });
+
+  it("lists the search results after the exact match, without what is installed or repeated", () => {
+    const rows = listRows(INSTALLED, null, found("six"), ["Six", "sixer", "typing.extensions", "django-six"], "six");
+    expect(rows.map(rowKey)).toEqual(["section:pypi", "pypi:six", "pypi:sixer", "pypi:django-six"]);
+    expect(rows[1]).toMatchObject({ latest: "1.0" });
+    expect(rows[2]).toMatchObject({ latest: null });
   });
 
   it("filters the installed packages by their normalised names", () => {
     for (const query of ["typing-extensions", "Typing.Extensions", "typing_ext"]) {
-      expect(listRows(INSTALLED, null, found("typing-extensions"), query).map(rowKey)).toEqual([
+      expect(listRows(INSTALLED, null, found("typing-extensions"), [], query).map(rowKey)).toEqual([
         "section:installed",
         "installed:typing_extensions",
       ]);
@@ -31,7 +41,7 @@ describe("package rows", () => {
   });
 
   it("does not list an installed package again under PyPI, however its name is spelled", () => {
-    const rows = listRows(INSTALLED, null, found("typing-extensions"), "typing");
+    const rows = listRows(INSTALLED, null, found("typing-extensions"), [], "typing");
     expect(rows.map(rowKey)).toEqual(["section:installed", "installed:typing_extensions"]);
   });
 });

@@ -4,9 +4,11 @@
 //! even for a one-row page. A page now stats `HEAD`, `packed-refs` and the directories under
 //! `refs/` instead: git replaces a loose ref by renaming a lock file over it, which changes
 //! the modification time of the ref's directory, and rewrites `packed-refs` the same way.
+//! Branch lists reuse the same snapshot because their ref walk and ahead/behind work are
+//! otherwise repeated for every VCS view refresh.
 
-use crate::Repo;
 use crate::repo::absolute;
+use crate::{Branch, Repo};
 use gix::ObjectId;
 use ide_core::IdeResult;
 use std::collections::HashMap;
@@ -24,6 +26,7 @@ pub(crate) type Decorations = Arc<HashMap<ObjectId, Vec<String>>>;
 #[derive(Default)]
 pub(crate) struct RefDecorations {
     snapshot: Option<Snapshot>,
+    branches: Option<BranchSnapshot>,
     /// Changes when the decorations do, so cached views of them can be keyed by it.
     generation: u64,
 }
@@ -34,9 +37,35 @@ struct Snapshot {
     reusable: bool,
 }
 
+struct BranchSnapshot {
+    branches: Vec<Branch>,
+    generation: u64,
+    /// The exact ref stamp also catches a checkout of another branch at the same commit.
+    references: Vec<(PathBuf, Stat)>,
+    trusted: bool,
+    configuration: Vec<(PathBuf, Stat)>,
+    reusable: bool,
+}
+
 fn stat(path: &Path) -> Stat {
     let metadata = std::fs::metadata(path).ok()?;
     Some((metadata.modified().ok()?, metadata.len()))
+}
+
+fn reusable(stamp: &[(PathBuf, Stat)], taken: SystemTime) -> bool {
+    stamp.iter().all(|(_, stat)| stat.is_none_or(|(modified, _)| modified + RACY_WINDOW <= taken))
+}
+
+fn configuration_stamp(git_dir: &Path, common_dir: &Path) -> Vec<(PathBuf, Stat)> {
+    [
+        common_dir.join("config"),
+        git_dir.join("config.worktree"),
+        common_dir.join("config.worktree"),
+        common_dir.join("shallow"),
+    ]
+    .into_iter()
+    .map(|path| (path.clone(), stat(&path)))
+    .collect()
 }
 
 /// `HEAD`, `packed-refs` and every directory under `refs/`.
@@ -64,7 +93,7 @@ impl RefDecorations {
         let taken = SystemTime::now();
         let stamp = stamp(git_dir, common_dir);
         let map = crate::history::decorations(repo)?;
-        let reusable = stamp.iter().all(|(_, stat)| stat.is_none_or(|(modified, _)| modified + RACY_WINDOW <= taken));
+        let reusable = reusable(&stamp, taken);
         let unchanged = self.snapshot.as_ref().is_some_and(|old| *old.map == map);
         let map = match &self.snapshot {
             Some(old) if unchanged => old.map.clone(),
@@ -76,6 +105,45 @@ impl RefDecorations {
         self.snapshot = Some(Snapshot { map: map.clone(), stamp, reusable });
         Ok((map, self.generation))
     }
+
+    fn branches(
+        &mut self,
+        repo: &gix::Repository,
+        git_dir: &Path,
+        common_dir: &Path,
+        trusted: bool,
+    ) -> IdeResult<Vec<Branch>> {
+        let (_, generation) = self.get(repo, git_dir, common_dir)?;
+        let references = self
+            .snapshot
+            .as_ref()
+            .ok_or_else(|| ide_core::IdeError::internal("reference cache did not populate a snapshot"))?
+            .stamp
+            .clone();
+        let taken = SystemTime::now();
+        let configuration = configuration_stamp(git_dir, common_dir);
+        if let Some(snapshot) = &self.branches
+            && snapshot.reusable
+            && snapshot.generation == generation
+            && snapshot.references == references
+            && snapshot.trusted == trusted
+            && snapshot.configuration == configuration
+        {
+            return Ok(snapshot.branches.clone());
+        }
+        let branches = crate::refs::branches(repo)?;
+        let reusable =
+            self.snapshot.as_ref().is_some_and(|snapshot| snapshot.reusable) && reusable(&configuration, taken);
+        self.branches = Some(BranchSnapshot {
+            branches: branches.clone(),
+            generation,
+            references,
+            trusted,
+            configuration,
+            reusable,
+        });
+        Ok(branches)
+    }
 }
 
 impl Repo {
@@ -83,6 +151,17 @@ impl Repo {
     pub(crate) fn ref_decorations(&self, repo: &gix::Repository) -> IdeResult<(Decorations, u64)> {
         let common_dir = absolute(repo.common_dir())?;
         self.ref_decorations.lock().unwrap_or_else(|p| p.into_inner()).get(repo, &self.git_dir, &common_dir)
+    }
+
+    pub(crate) fn cached_branches(&self, repo: &gix::Repository) -> IdeResult<Vec<Branch>> {
+        let common_dir = absolute(repo.common_dir())?;
+        let trusted = self.execution_allowed.load(std::sync::atomic::Ordering::Acquire);
+        self.ref_decorations.lock().unwrap_or_else(|p| p.into_inner()).branches(
+            repo,
+            &self.git_dir,
+            &common_dir,
+            trusted,
+        )
     }
 }
 
@@ -112,11 +191,18 @@ mod tests {
         git(dir, &["rev-parse", "HEAD"])
     }
 
-    /// Sets the modification time of `HEAD`, `packed-refs` and every directory under `refs/`.
+    /// Sets the modification time of every metadata path used by the ref and branch caches.
     fn set_ref_times(repo: &Repo, time: SystemTime) {
-        let git = repo.git_dir.clone();
-        let mut paths = vec![git.join("HEAD"), git.join("packed-refs")];
-        let mut pending = vec![git.join("refs")];
+        let [git, common] = repo.metadata_dirs().unwrap();
+        let mut paths = vec![
+            git.join("HEAD"),
+            common.join("packed-refs"),
+            common.join("config"),
+            git.join("config.worktree"),
+            common.join("config.worktree"),
+            common.join("shallow"),
+        ];
+        let mut pending = vec![common.join("refs")];
         while let Some(dir) = pending.pop() {
             pending.extend(std::fs::read_dir(&dir).unwrap().flatten().filter(|e| e.path().is_dir()).map(|e| e.path()));
             paths.push(dir);
@@ -173,6 +259,68 @@ mod tests {
             assert_eq!(page(&repo, skip, 10).len(), 10);
         }
         assert_eq!(decorations_scans(), after_first, "a warm page listed the refs again");
+    }
+
+    #[test]
+    fn warm_log_refs_do_not_list_the_refs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        git(dir, &["init", "-q"]);
+        commit(dir, "first");
+        for i in 0..20 {
+            git(dir, &["branch", &format!("b{i}")]);
+        }
+        let repo = Repo::discover(dir).unwrap().unwrap();
+        settle(&repo);
+        let after_first = decorations_scans();
+        for _ in 0..5 {
+            assert!(repo.log_refs().unwrap().contains_key("main"));
+        }
+        assert_eq!(decorations_scans(), after_first, "warm log refs listed the refs again");
+    }
+
+    #[test]
+    fn warm_branch_lists_reuse_the_ref_walk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        git(dir, &["init", "-q"]);
+        let first = commit(dir, "first");
+        git(dir, &["remote", "add", "origin", "."]);
+        git(dir, &["update-ref", "refs/remotes/origin/main", &first]);
+        let repo = Repo::discover(dir).unwrap().unwrap();
+        repo.set_execution_allowed(true);
+        set_ref_times(&repo, SystemTime::now() - Duration::from_secs(3600));
+        let scans = crate::refs::branch_scans();
+        assert!(repo.branches().unwrap().iter().any(|branch| branch.name == "origin/main"));
+        let after_first = crate::refs::branch_scans();
+        assert!(after_first > scans);
+        for _ in 0..5 {
+            repo.branches().unwrap();
+        }
+        assert_eq!(crate::refs::branch_scans(), after_first, "warm branch list walked the refs again");
+
+        git(dir, &["branch", "side"]);
+        assert!(repo.branches().unwrap().iter().any(|branch| branch.name == "side"));
+        assert!(crate::refs::branch_scans() > after_first, "branch creation did not invalidate the cache");
+
+        git(dir, &["checkout", "-q", "side"]);
+        let at_side = repo.branches().unwrap();
+        assert!(at_side.iter().any(|branch| branch.name == "side" && branch.current));
+        assert!(!at_side.iter().any(|branch| branch.name == "main" && branch.current));
+
+        let scans = crate::refs::branch_scans();
+        git(dir, &["config", "branch.main.remote", "origin"]);
+        git(dir, &["config", "branch.main.merge", "refs/heads/main"]);
+        let main = repo.branches().unwrap().into_iter().find(|branch| branch.name == "main").unwrap();
+        assert_eq!(main.upstream.as_deref(), Some("origin/main"));
+        assert!(crate::refs::branch_scans() > scans, "config change did not invalidate the cache");
+
+        repo.set_execution_allowed(false);
+        let restricted = repo.branches().unwrap().into_iter().find(|branch| branch.name == "main").unwrap();
+        assert_eq!(restricted.upstream, None);
+        repo.set_execution_allowed(true);
+        let trusted = repo.branches().unwrap().into_iter().find(|branch| branch.name == "main").unwrap();
+        assert_eq!(trusted.upstream.as_deref(), Some("origin/main"));
     }
 
     #[test]

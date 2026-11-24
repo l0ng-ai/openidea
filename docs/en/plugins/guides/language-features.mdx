@@ -115,6 +115,13 @@ These are methods of `providers::Providers` (WIT `providers`):
   (`$1`, `${1:name}`, `$0`), replace a `replace` range, match on `filter_text` instead of its
   label, sort by `sort_text`, carry `documentation`, and bring `additional_edits` elsewhere
   in the document (an import).
+- **`completion_list(doc, at, trigger)`** (API 1.16) returns the same items with an
+  `incomplete` flag, for completions computed from what has been typed (GORM's
+  `findByTitleAndAuthor…`). While the user types on in the same word, the host asks this
+  plugin again with the new text instead of filtering its items; the language server and
+  the other plugins are not asked again. Override it in your `Providers` and register it
+  too: `register_plugin!(T, providers, completion_list)`. By default it returns
+  `completion`'s items, complete; `MockHost::completion_list` calls it in tests.
 - **`inline_completion(doc, at)`** returns ghost text at the caret
   (`InlineSuggestion { insert_text, replace }`).
   [AI Completion](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/ai-completion)
