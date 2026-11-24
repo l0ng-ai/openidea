@@ -177,6 +177,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "code.pasteFromHistory": [],
   "code.sortLines": [],
   "code.reverseLines": [],
+  "code.fillParagraph": [],
   "code.unwrap": [],
   "code.foldSelection": [],
   "editor.toggleColumnSelection": [],

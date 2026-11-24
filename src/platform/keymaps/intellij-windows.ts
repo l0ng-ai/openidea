@@ -160,6 +160,7 @@ export const intellijWindows: Record<string, string[]> = {
   "code.pasteFromHistory": ["Ctrl+Shift+V"],
   "code.sortLines": [],
   "code.reverseLines": [],
+  "code.fillParagraph": [],
   "code.unwrap": ["Ctrl+Shift+Delete"],
   "code.foldSelection": ["Ctrl+."],
   "editor.toggleColumnSelection": ["Alt+Shift+Insert"],
