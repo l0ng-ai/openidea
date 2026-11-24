@@ -1594,6 +1594,7 @@
   "Get from Version Control…": "從版本控制取得…",
   "Project from Version Control…": "來自版本控制的專案…",
   "Gevent compatible": "相容 Gevent",
+  "Git Branch": "Git 分支",
   "Git Branches": "Git 分支",
   "Git Log": "Git 記錄",
   "Git Reset": "Git 重設",
