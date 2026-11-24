@@ -375,6 +375,72 @@ export async function explainInView(view: EditorView, path: string) {
 
 const consolePath = Facet.define<string, string>({ combine: (v) => v[0] ?? "" });
 
+const setPreview = StateEffect.define<readonly { from: number; to: number }[]>();
+
+/**
+ * The range the console's next Execute would submit, bordered on the text (DataGrip's current
+ * statement border): the caret's statement, or the selection's — the statements `db_statements`
+ * splits that range into, the very call the run itself makes.
+ */
+const previewField = StateField.define<readonly { from: number; to: number }[]>({
+  create: () => [],
+  update(value, tr) {
+    for (const e of tr.effects) if (e.is(setPreview)) return e.value;
+    if (!tr.docChanged) return value;
+    // The preview is of the text it was computed for; edits only move where that is.
+    const next: { from: number; to: number }[] = [];
+    for (const r of value) {
+      const from = tr.changes.mapPos(r.from, 1);
+      const to = tr.changes.mapPos(r.to, -1);
+      if (from < to) next.push({ from, to });
+    }
+    return next;
+  },
+  provide: (f) =>
+    EditorView.decorations.compute([f, runField], (state) => {
+      const ex = state.field(runField).executing;
+      // A run in progress keeps its submitted range bordered, whatever the caret does.
+      const spans = ex?.spans.length
+        ? [{ from: ex.spans[0]!.from, to: ex.spans[ex.spans.length - 1]!.to }]
+        : state.field(f);
+      return Decoration.set(
+        spans
+          .filter((r) => r.from < r.to)
+          .map((r) => Decoration.mark({ class: "cm-openidea-db-preview" }).range(r.from, r.to)),
+        true,
+      );
+    }),
+});
+
+/** Re-splits the caret's (or the selection's) range for the preview, as `executeConsole` does. */
+const previewSync = ViewPlugin.define((view) => {
+  const path = view.state.facet(consolePath);
+  let run = 0;
+  const preview = () => {
+    const id = consoleSource(path);
+    if (!id) return;
+    const sent = view.state.doc;
+    const sel = view.state.selection.main;
+    const token = ++run;
+    void call(commands.dbStatements(id, sent.toString(), sel.from, sel.to))
+      .then((statements) => {
+        // A newer move, an edit or a run started since: what came back no longer applies.
+        if (token !== run || view.state.doc !== sent || view.state.field(runField, false)?.executing) return;
+        view.dispatch({ effects: setPreview.of(statements.map((st) => ({ from: st.from, to: st.to }))) });
+      })
+      .catch(() => {});
+  };
+  preview();
+  return {
+    update(u) {
+      const executing = (s: EditorState) => !!s.field(runField, false)?.executing;
+      if (executing(u.startState) && !executing(u.state)) preview();
+      // While a run is in progress its submitted range stays; the caret is not followed.
+      else if ((u.docChanged || u.selectionSet) && !executing(u.state)) preview();
+    },
+  };
+});
+
 /** An in-editor result and the statement it shows under (mapped through edits). */
 interface InlineAnchor {
   id: number;
@@ -1207,6 +1273,8 @@ export function consoleExtension(ctx: EditorDocContext): Extension {
     consolePath.of(ctx.path),
     runField,
     runGutter,
+    previewField,
+    previewSync,
     inlineField,
     syncInline,
     showPanel.of(consolePanel(ctx.path)),

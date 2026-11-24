@@ -752,6 +752,13 @@
 :global(.cm-openidea-db-executing) {
   background: var(--accent-soft);
 }
+/* The range the console's next run would submit (DataGrip's current-statement border). */
+:global(.cm-openidea-db-preview) {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+  border-radius: 2px;
+}
 :global(.cm-openidea-db-elapsed) {
   font-variant-numeric: tabular-nums;
 }
