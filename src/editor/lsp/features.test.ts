@@ -71,8 +71,9 @@ describe("semanticRanges", () => {
       data: [0, 0, 3, 0, 1, 0, 4, 3, 1, 1, 0, 8, 3, 0, 2],
     };
     expect(semanticRanges(doc, input, false, "typescript")).toEqual([
-      { from: 0, to: 3, className: "cm-sem-function cm-sem-declaration" },
-      { from: 4, to: 7, className: "cm-sem-function cm-sem-declaration" },
+      { from: 0, to: 3, className: "cm-sem-function cm-sem-declaration cm-sem-js-instance-method" },
+      { from: 4, to: 7, className: "cm-sem-function cm-sem-declaration cm-sem-js-instance-method" },
+      // A library's method keeps the Predefined style.
       { from: 8, to: 11, className: "cm-sem-function cm-sem-builtin" },
     ]);
   });

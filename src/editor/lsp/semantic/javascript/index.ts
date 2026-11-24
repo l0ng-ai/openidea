@@ -2,7 +2,7 @@
  * JavaScript and TypeScript (tsserver), coloured as WebStorm does: a decorator's
  * whole name (`@Component`, `@Outer.Inner`) is a decorator, not the class or
  * function the server reports; a variable or function without tsserver's `local`
- * modifier is a module-level global.
+ * modifier is a module-level global; methods are instance or static methods.
  */
 import { Tree, TreeBuffer, type NodeSet, type SyntaxNode } from "@lezer/common";
 import { registerLanguageSemantics, type LanguageSemantics, type SemanticRange } from "../languages";
@@ -75,6 +75,10 @@ export function decoratorRanges(tree: Tree, probe?: { visited: number }): Semant
 const javascriptSemantics: LanguageSemantics = {
   syntaxRanges: (tree) => decoratorRanges(tree),
   tokenClasses({ type, modifiers, classes, marksLocals }) {
+    // WebStorm's Instance / Static member function: a method's declaration and its calls (a
+    // library's own keep the Predefined style).
+    if ((type === "method" || type === "member") && !modifiers.includes("defaultLibrary"))
+      classes.push(modifiers.includes("static") ? "cm-sem-js-static-method" : "cm-sem-js-instance-method");
     if (!marksLocals || modifiers.includes("local") || modifiers.includes("defaultLibrary")) return;
     if (type === "variable" && !classes.includes("cm-sem-constant")) classes.push("cm-sem-global");
     else if (type === "function") classes.push("cm-sem-global-function");

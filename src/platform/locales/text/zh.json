@@ -10179,5 +10179,7 @@
   "Resize hover card from the left": "从左边缘调整悬浮卡片大小",
   "Resize hover card from the corner": "从角部调整悬浮卡片大小",
   "Center group": "居中组",
-  "Move to Center": "移到居中"
+  "Move to Center": "移到居中",
+  "Instance method": "实例方法",
+  "Static method": "静态方法"
 }
