@@ -6,23 +6,6 @@
   min-width: 0;
 }
 
-.scriptsRow {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  min-width: 0;
-}
-
-.scriptsStrong {
-  font-weight: 500;
-}
-
-.scriptsMeta {
-  flex: none;
-  color: var(--fg-subtle);
-  font-size: var(--fs-small);
-}
-
 .tabs {
   min-width: 0;
   border: 0;
