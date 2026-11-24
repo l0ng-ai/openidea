@@ -90,6 +90,7 @@ export const intellijMacos: Record<string, string[]> = {
   "code.showIntentions": ["Alt+Enter"],
   "code.applyQuickFix": ["Alt+Shift+Enter"],
   "code.reformat": ["Meta+Alt+L"],
+  "code.rearrange": [],
   "code.reformatDialog": ["Meta+Alt+Shift+L"],
   "code.optimizeImports": ["Ctrl+Alt+O"],
   "code.commentLine": ["Meta+/"],
