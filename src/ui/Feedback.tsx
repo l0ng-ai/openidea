@@ -81,6 +81,7 @@ export type ToastLevel = "info" | "warning" | "error" | "success";
 export interface ToastProps {
   level: ToastLevel;
   title: ReactNode;
+  variant?: "balloon" | "history";
   body?: ReactNode;
   actions?: Array<{ label: string; run: () => void }>;
   onClose?: () => void;
@@ -93,10 +94,11 @@ export interface ToastProps {
 
 const LEVEL_ICON: Record<ToastLevel, IconName> = { info: "info", warning: "warning", error: "error", success: "check" };
 
-/** IDEA-style notification balloon. */
+/** Notification balloon or entry in a notification history list. */
 export function Toast({
   level,
   title,
+  variant = "balloon",
   body,
   actions,
   onClose,
@@ -108,31 +110,29 @@ export function Toast({
   const tx = useTx();
   return (
     <div
-      className={clsx(styles.toast, className)}
+      className={clsx(styles.toast, variant === "history" && styles.toastHistory, className)}
       role={level === "error" ? "alert" : "status"}
       data-level={level}
       onPointerEnter={onPointerEnter}
       onPointerLeave={onPointerLeave}
     >
       <Icon name={LEVEL_ICON[level]} size={16} className={clsx(styles.toastIcon, styles[`level-${level}`])} />
-      <div className={styles.toastMain}>
-        <div className={styles.toastHead}>
-          <span className={clsx(styles.toastTitle, selectableText)}>
-            {typeof title === "string" ? <Given>{title}</Given> : title}
-          </span>
-          {meta && <span className={styles.toastMeta}>{meta}</span>}
-        </div>
-        {body && <div className={styles.toastBody}>{typeof body === "string" ? <Given>{body}</Given> : body}</div>}
-        {actions && actions.length > 0 && (
-          <div className={styles.toastActions}>
-            {actions.map((a) => (
-              <button key={a.label} type="button" className={styles.link} onClick={a.run}>
-                <Given>{a.label}</Given>
-              </button>
-            ))}
-          </div>
-        )}
+      <div className={styles.toastHead}>
+        <span className={clsx(styles.toastTitle, selectableText)}>
+          {typeof title === "string" ? <Given>{title}</Given> : title}
+        </span>
+        {meta && <span className={styles.toastMeta}>{meta}</span>}
       </div>
+      {body && <div className={styles.toastBody}>{typeof body === "string" ? <Given>{body}</Given> : body}</div>}
+      {actions && actions.length > 0 && (
+        <div className={styles.toastActions}>
+          {actions.map((a) => (
+            <button key={a.label} type="button" className={styles.link} onClick={a.run}>
+              <Given>{a.label}</Given>
+            </button>
+          ))}
+        </div>
+      )}
       {onClose && (
         <IconButton
           icon="close"

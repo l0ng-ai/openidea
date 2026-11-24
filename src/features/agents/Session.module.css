@@ -47,10 +47,6 @@
 .fitWidth .composerArea {
   max-width: none;
 }
-.fitWidth .questionCard {
-  width: calc(100% - var(--space-3) * 2);
-  max-width: none;
-}
 
 /* Under the composer: where the task works on the left; changes, meters and terminal on the right. */
 .statusBar {
@@ -206,6 +202,8 @@
   overflow-x: hidden;
   overflow-anchor: none;
   padding: var(--space-3);
+  /* Room below the end that keeps the header of a section folded there in place (`Stream`). */
+  padding-bottom: calc(var(--space-3) + var(--stream-slack, 0px));
   display: flex;
   flex-direction: column;
   font-size: var(--agent-fs-ui, var(--fs-ui));
@@ -231,6 +229,10 @@
 /* Laid out once, an off-screen row skips rendering at its remembered size (`useOffscreenRows`). */
 .conversationRow[data-measured] {
   content-visibility: auto;
+}
+/* WebKit leaves a stale selection highlight on rows that skipped rendering (`useOffscreenRows`). */
+.conversationRow[data-measured][data-selection] {
+  content-visibility: visible;
 }
 /* Keep turns distinct and the work within a turn close to its author. Not `* + *`: a
    universal adjacent-sibling rule makes Chromium restyle whole sibling subtrees on every
@@ -558,8 +560,12 @@
 }
 .codeBlock:hover > .codeCopy,
 .markdown :global([data-mermaid]:hover) .codeCopy,
-.codeCopy:focus-visible {
+.codeCopy:focus-visible,
+.codeCopy[data-copied] {
   opacity: 1;
+}
+.codeCopy[data-copied] {
+  color: var(--success);
 }
 /* A drawn diagram carries its own tools at the top-right; Copy moves aside. */
 .markdown :global([data-mermaid][data-mermaid-state="ok"]) .codeCopy {
@@ -1195,6 +1201,15 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-small);
 }
+.toolImages,
+.toolImages .imageItem,
+.toolImages .imageButton {
+  max-width: 100%;
+}
+.toolImages .image {
+  max-width: min(100%, 640px);
+  max-height: 320px;
+}
 .removeImage {
   position: absolute;
   top: 4px;
@@ -1274,7 +1289,7 @@
 }
 .changesScope {
   flex: none;
-  padding: 6px 10px 2px;
+  padding: 0 4px;
 }
 .changesSummary {
   flex: none;
@@ -1559,24 +1574,30 @@
   text-overflow: ellipsis;
 }
 
-/* An open AskUserQuestion: every question with its options, answered at once above the composer. */
+/* An open AskUserQuestion: every question with its options, answered at once in the conversation. */
 .questionCard {
-  flex: none;
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  max-height: 50vh;
-  overflow-y: auto;
-  /* The composer's width, so the card sits exactly over the box it belongs to. */
-  width: 100%;
-  max-width: var(--session-content-width);
-  margin: 0 auto 8px;
   padding: 12px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-control);
   background: var(--bg-elev);
   font-size: var(--agent-fs-ui, var(--fs-ui));
   container: question-card / inline-size;
+}
+/* A question that outlived its turn waits above the composer, at the composer's width. */
+.questionCardPinned {
+  flex: none;
+  max-height: 50vh;
+  overflow-y: auto;
+  width: 100%;
+  max-width: var(--session-content-width);
+  margin: 0 auto 8px;
+}
+.fitWidth .questionCardPinned {
+  width: calc(100% - var(--space-3) * 2);
+  max-width: none;
 }
 .questionTabCheck {
   flex: none;
@@ -1587,10 +1608,6 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   min-width: 0;
-}
-.questionPanelsPaged {
-  min-height: 0;
-  overflow-y: auto;
 }
 .questionPanel {
   grid-area: 1 / 1;
@@ -1638,11 +1655,6 @@
   border-radius: var(--radius-row);
 }
 /* Each option is a card of its own: separate targets, not one list with hairlines. */
-.questionChoices {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1-5);
-}
 .question .questionChoices > * {
   border: 1px solid var(--border);
   border-radius: var(--radius-row);

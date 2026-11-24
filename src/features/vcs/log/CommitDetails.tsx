@@ -21,6 +21,7 @@ import {
   type TreeHandle,
 } from "@/ui";
 import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
+import clsx from "clsx";
 import {
   useCallback,
   useContext,
@@ -35,6 +36,7 @@ import { DIFF_KIND, diffInput, vcsDiffInFront } from "../diffInput";
 import { buildFileTree, dirKeys, type FileTreeNode } from "../fileTree";
 import styles from "../GitLog.module.css";
 import {
+  canApplySelectedChanges,
   absolutePath,
   filesUnder,
   flatFileNodes,
@@ -76,7 +78,7 @@ function fileNodeAt<F>(nodes: readonly FileTreeNode<F>[], key: string): FileTree
  * The selected commits' changes: one commit's files against its first parent, or, for several
  * (IDEA), their combined changes with every selected commit listed below.
  */
-export function CommitDetails({ commits }: { commits: Commit[] }) {
+export function CommitDetails({ commits, fileHistory = false }: { commits: Commit[]; fileHistory?: boolean }) {
   const scope = useContext(LogIdContext);
   const [menuBelow, dropdown] = useDropdownMenu();
   const shown = useGitLog((s) => s.shownLog);
@@ -175,21 +177,21 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
   const treeRef = useRef<TreeHandle>(null);
   const [diffToReveal, setDiffToReveal] = useState<{ key: string } | null>(null);
   const syncingDiff = useRef(false);
+  const affectedPaths = filters.paths?.length ? filters.paths : filters.path;
   const changes = useMemo(() => {
     const changes = files ?? [];
-    const paths = filters.paths?.length ? filters.paths : filters.path ? [filters.path] : [];
-    return onlyAffected && paths.length
-      ? changes.filter((c) =>
-          paths.some((p) => {
-            const matches = (rel: string) => {
-              const abs = absolutePath(rel, c.repo);
-              return abs === p || abs.startsWith(`${p}/`) || (!many && commit?.historyPath === rel);
-            };
-            return matches(c.path) || (c.oldPath != null && matches(c.oldPath));
-          }),
-        )
-      : changes;
-  }, [files, commit, many, filters.path, filters.paths, onlyAffected]);
+    if (!onlyAffected || !affectedPaths) return changes;
+    const paths = typeof affectedPaths === "string" ? [affectedPaths] : affectedPaths;
+    return changes.filter((c) =>
+      paths.some((p) => {
+        const matches = (rel: string) => {
+          const abs = absolutePath(rel, c.repo);
+          return abs === p || abs.startsWith(`${p}/`) || (!many && commit?.historyPath === rel);
+        };
+        return matches(c.path) || (c.oldPath != null && matches(c.oldPath));
+      }),
+    );
+  }, [files, commit, many, affectedPaths, onlyAffected]);
   const lineTotals = useMemo(() => {
     if (!showLineStats || !changes.length) return null;
     if (changes.some((f) => f.added === undefined || f.removed === undefined)) return null;
@@ -288,10 +290,12 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
       { kind: "header", label: "Group By" },
       { kind: "action", action: "vcs.log.changes.groupByDirectory" },
       { kind: "separator" },
-      { kind: "action", action: "vcs.log.changes.diffPreview" },
-      toggle("Show Only Affected Changes", logOptions(), "showOnlyAffected"),
+      { kind: "header", label: "Show" },
       toggle("Show lines added and deleted", logOptions(), "showLineStats"),
       toggle("Show Changes from Parents", logOptions(), "changesFromParents"),
+      { kind: "separator" },
+      { kind: "header", label: "Layout" },
+      { kind: "action", action: "vcs.log.changes.diffPreview" },
       {
         label: "Diff Preview Location",
         submenu: (["editor", "right", "bottom"] as const).map((location) => ({
@@ -307,12 +311,46 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
     const target = sel.has(node.key) ? filesUnder(tree, sel) : filesUnder([node]);
     if (!target.length) return;
     e.preventDefault();
-    showContextMenu(e, changesMenu(target));
+    const source =
+      !readOnly && chosen.length === 1 && commit.parents.length <= 1 && files
+        ? { commit, total: files.length }
+        : undefined;
+    showContextMenu(e, changesMenu(target, source));
   };
 
+  const messagePanel = (
+    <SplitPanel id="message" style={PANE_STYLE} minSize={fileHistory ? "30%" : "60px"}>
+      <div
+        className={clsx(styles.messageBox, fileHistory && styles.historyMessageBox)}
+        role={fileHistory ? "region" : undefined}
+        aria-label={fileHistory ? tx("Commit message") : undefined}
+      >
+        {many ? (
+          chosen.map((c) => <CommitMessage key={commitKey(c)} commit={c} compact />)
+        ) : (
+          <CommitMessage commit={commit} />
+        )}
+      </div>
+    </SplitPanel>
+  );
   const details = (
-    <SplitGroup orientation="vertical" id="git-log-details" storageKey="openidea.vcs.logDetailsSplit">
-      <SplitPanel id="files" style={PANE_STYLE} defaultSize="60%" minSize="60px">
+    <SplitGroup
+      orientation={fileHistory ? "horizontal" : "vertical"}
+      id={fileHistory ? "git-file-history-details" : "git-log-details"}
+      storageKey={fileHistory ? "openidea.vcs.fileHistoryDetailsSplit" : "openidea.vcs.logDetailsSplit"}
+    >
+      {fileHistory && (
+        <>
+          {messagePanel}
+          <SplitHandle />
+        </>
+      )}
+      <SplitPanel
+        id="files"
+        style={PANE_STYLE}
+        defaultSize={fileHistory ? "32%" : "60%"}
+        minSize={fileHistory ? "25%" : "60px"}
+      >
         <div
           className={styles.filesPane}
           onFocusCapture={() => setContext("vcsLogChangesFocus", true)}
@@ -337,6 +375,9 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
               actionArg={chosenChanges}
               disabled={readOnly || !chosenChanges.length || new Set(chosenChanges.map((c) => c.repo)).size > 1}
             />
+            {affectedPaths && (
+              <IconButton icon="folder" action="vcs.log.changes.showOnlyAffected" size="small" pressed={onlyAffected} />
+            )}
             <IconButton icon="eye" title="View Options" size="small" aria-haspopup="menu" onClick={openViewOptions} />
             {!many && fromParents && commit.parents.length > 1 && (
               <button
@@ -411,16 +452,12 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
           )}
         </div>
       </SplitPanel>
-      <SplitHandle />
-      <SplitPanel id="message" style={PANE_STYLE} minSize="60px">
-        <div className={styles.messageBox}>
-          {many ? (
-            chosen.map((c) => <CommitMessage key={commitKey(c)} commit={c} compact />)
-          ) : (
-            <CommitMessage commit={commit} />
-          )}
-        </div>
-      </SplitPanel>
+      {!fileHistory && (
+        <>
+          <SplitHandle />
+          {messagePanel}
+        </>
+      )}
     </SplitGroup>
   );
   const embedded = preview && diffLocation !== "editor";
@@ -431,8 +468,8 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
       {embedded ? (
         <SplitGroup
           orientation={diffLocation === "right" ? "horizontal" : "vertical"}
-          id={`git-log-preview-${diffLocation}`}
-          storageKey={`openidea.vcs.logPreviewSplit.${diffLocation}`}
+          id={`git-${fileHistory ? "file-history" : "log"}-preview-${diffLocation}`}
+          storageKey={`openidea.vcs.${fileHistory ? "fileHistory" : "log"}PreviewSplit.${diffLocation}`}
         >
           <SplitPanel id="changes" style={PANE_STYLE} defaultSize="55%" minSize="20%">
             {details}
@@ -471,8 +508,9 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
 }
 
 /** IDEA's changes browser context menu in the Git Log; `changes` = the files it acts on. */
-export function changesMenu(changes: LogChange[]): MenuItem[] {
+export function changesMenu(changes: LogChange[], source?: { commit: Commit; total: number }): MenuItem[] {
   const one = changes.length === 1 ? changes[0]! : null;
+  const edit = source ? { arg: { commit: source.commit, changes }, disabled: changes.length >= source.total } : null;
   return [
     { kind: "action", action: "vcs.log.changes.showDiff", arg: changes },
     { kind: "action", action: "vcs.log.changes.compareWithLocal", arg: changes, disabled: !one?.after || one.readOnly },
@@ -492,6 +530,12 @@ export function changesMenu(changes: LogChange[]): MenuItem[] {
     { kind: "separator" },
     {
       kind: "action",
+      action: "vcs.log.changes.apply",
+      arg: changes,
+      disabled: !canApplySelectedChanges(changes),
+    },
+    {
+      kind: "action",
       action: "vcs.log.changes.revert",
       arg: changes,
       disabled: changes.some((c) => c.readOnly) || new Set(changes.map((c) => c.repo)).size > 1,
@@ -502,6 +546,12 @@ export function changesMenu(changes: LogChange[]): MenuItem[] {
       arg: changes,
       disabled: changes.some((c) => c.readOnly),
     },
+    ...(edit
+      ? ([
+          { kind: "action", action: "vcs.log.changes.extract", ...edit },
+          { kind: "action", action: "vcs.log.changes.drop", ...edit },
+        ] satisfies MenuItem[])
+      : []),
     { kind: "separator" },
     ...(one?.readOnly
       ? [{ label: "Show History for File", run: () => openLogTab("history", absolutePath(one.path, one.repo)) }]

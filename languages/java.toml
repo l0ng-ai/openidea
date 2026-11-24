@@ -26,6 +26,8 @@ adapter = "java-debug"
 command = "com.microsoft.java.debug.plugin.jar"
 transport = "tcp"
 install-hint = "Install Microsoft java-debug (Settings › Languages & Frameworks › Language Servers › Java Debugger)"
+# Its lazy values are toString() of objects whose class overrides it.
+resolve-lazy-variables = true
 
 [[language-servers]]
 name = "jdtls"

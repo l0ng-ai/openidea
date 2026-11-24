@@ -16,13 +16,14 @@ import { closeConnectDialog, openConnectDialog } from "./model";
 import { restorePorts, usePorts } from "./ports";
 import { installReconnect, reconnectNow } from "./reconnect";
 
-/** Forwarded ports are available while this window is connected to an SSH host or a dev container. */
+/** Forwarded ports are available while this window is connected to an SSH host, a WSL distribution or a dev container. */
 function trackPortsWindow(): () => void {
   let off: (() => void) | null = null;
   let session = useRemote.getState().session;
   const sync = () => {
     const next = useRemote.getState().session;
-    const connected = next?.target.kind === "ssh" || next?.target.kind === "devContainer";
+    const connected =
+      next?.target.kind === "ssh" || next?.target.kind === "wsl" || next?.target.kind === "devContainer";
     if (connected && (next !== session || !off)) {
       usePorts.setState({ ports: [] });
       void restorePorts();
@@ -71,7 +72,7 @@ export function activate(): () => void {
         title: "Remote Development…",
         description: "Opens a project folder on an SSH host; the IDE backend runs on that host.",
         category: "File",
-        icon: "folder",
+        icon: "remote",
         keywords: ["ssh", "remote", "server", "gateway", "connect", "host"],
         run: () => openConnectDialog(),
       },

@@ -8,6 +8,8 @@ import { showChangesDiff, type LogChange } from "../logChanges";
 
 const front = vi.hoisted(() => ({ diff: vi.fn(), merge: vi.fn() }));
 vi.mock("../diffDialog", () => ({ openDiffDialog: front.diff, openMergeDiffDialog: front.merge }));
+const separate = vi.hoisted(() => vi.fn());
+vi.mock("../DiffWindow", () => ({ showDiffWindow: separate }));
 
 /** Editor tabs the diffs open in (openDiff → the editor service). */
 const openInput = vi.fn(async () => undefined);
@@ -74,4 +76,16 @@ it("opens a commit's file diff in the preview tab with the non-modal interface",
   const file = { ...merge, mergeParents: undefined } as LogChange;
   await showChangesDiff([file]);
   expect(openInput).toHaveBeenLastCalledWith(expect.objectContaining({ kind: "diff" }), { preview: true, focus: true });
+});
+
+it("opens diffs in a separate window when Open diff as editor tab is off", async () => {
+  useProject.setState({ settings: { vcs: { diffAsEditorTab: false } } as Settings });
+  await getAction("diff.compareTexts")!.run({ arg: texts, ctx: {} });
+  expect(separate).toHaveBeenCalledWith(expect.objectContaining({ path: "/p/a.ts" }), expect.any(Function));
+  expect(openInput).not.toHaveBeenCalled();
+  // The modal commit interface still shows them in its front window.
+  useProject.setState({ settings: { vcs: { diffAsEditorTab: false, commit: { nonModal: false } } } as Settings });
+  await getAction("diff.compareTexts")!.run({ arg: texts, ctx: {} });
+  expect(front.diff).toHaveBeenCalledTimes(1);
+  expect(separate).toHaveBeenCalledTimes(1);
 });

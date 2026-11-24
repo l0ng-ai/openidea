@@ -9,6 +9,7 @@ import { EditorView } from "@codemirror/view";
 import { BRACKET_COLORS } from "./rainbowBrackets";
 import { LINE_INSET } from "./lineInset";
 import { GUIDE_COLORS } from "./indentGuides";
+import { inlineBackground, inlineFramedFallback, inlineFramedModern } from "./inlineBg";
 
 /** How much of its palette colour a rainbow indent guide takes. */
 const RAINBOW_GUIDE_STRENGTH = "55%";
@@ -19,10 +20,12 @@ export const findLocals = {
   "--editor-search-current": "var(--bg-search-match-current, color-mix(in srgb, var(--warning) 48%, transparent))",
 };
 
+const FIND_CURRENT_FRAME = "color-mix(in srgb, var(--editor-search-current) 60%, var(--fg-strong))";
+
 /** Find in file highlights (cm/find.ts), also for viewers with their own theme (diff). */
 export const findStyles = {
   ".cm-openidea-findMatch": {
-    backgroundColor: "var(--editor-search)",
+    ...inlineBackground("var(--editor-search)"),
     color: "var(--fg-search-match, inherit)",
     // Its own colour, over the text fill of an identifier highlight around the match.
     WebkitTextFillColor: "currentcolor",
@@ -32,13 +35,13 @@ export const findStyles = {
     textDecoration: "line-through",
     textDecorationColor: "var(--fg-muted)",
   },
-  ".cm-openidea-findScope": {
-    backgroundColor: "var(--editor-selection-inactive, var(--bg-editor-selection-inactive))",
-  },
+  ".cm-openidea-findScope": inlineBackground("var(--editor-selection-inactive, var(--bg-editor-selection-inactive))"),
   ".cm-openidea-findMatch-current": {
-    backgroundColor: "var(--editor-search-current)",
+    ...inlineFramedFallback("var(--editor-search-current)", FIND_CURRENT_FRAME),
     color: "var(--fg-search-match, inherit)",
-    outline: "1px solid color-mix(in srgb, var(--editor-search-current) 60%, var(--fg-strong))",
+  },
+  "@supports (height: 1lh)": {
+    ".cm-openidea-findMatch-current": inlineFramedModern("var(--editor-search-current)", FIND_CURRENT_FRAME),
   },
 };
 
@@ -167,15 +170,14 @@ export const openideaTheme = EditorView.theme({
     "--editor-fold-chip": "var(--bg-fold-placeholder, color-mix(in srgb, var(--fg-muted) 14%, transparent))",
   },
   "&.cm-focused": { outline: "none" },
-  ".cm-scroller": {
-    // The scroll container keeps the arrow cursor so its scrollbar does not turn into the I-beam.
+  ".cm-scroller, .cm-openidea-sticky, .cm-openidea-scopeContext": {
     fontFamily: "var(--openidea-editor-font, var(--font-mono))",
     fontWeight: "var(--fw-code, 400)",
     fontSize: "var(--openidea-editor-font-size, var(--fs-code))",
     lineHeight: "var(--openidea-editor-line-height, var(--lh-code))",
     fontVariantLigatures: "none",
-    overscrollBehavior: "contain",
   },
+  ".cm-scroller": { overscrollBehavior: "contain" },
   ".cm-content": {
     // no top padding: the first line starts at the top edge, as in IDEA, and so does its selection
     padding: "0 0 8px 0",
@@ -185,7 +187,7 @@ export const openideaTheme = EditorView.theme({
   // The right side also leaves room for the floating corner widgets (core/cm/cornerInset.ts).
   ".cm-line": { padding: `0 calc(16px + var(--cm-corner-inset, 0px)) 0 ${LINE_INSET}px` },
   ...caretStyles,
-  "&.cm-openidea-ligatures .cm-scroller, &.cm-openidea-ligatures .cm-openidea-sticky": {
+  "&.cm-openidea-ligatures :is(.cm-scroller, .cm-openidea-sticky, .cm-openidea-scopeContext)": {
     fontVariantLigatures: "normal",
   },
   "&.cm-openidea-methodSeparators .cm-openidea-methodSeparator": {
@@ -223,30 +225,30 @@ export const openideaTheme = EditorView.theme({
     background: "var(--openidea-line-bg)",
     pointerEvents: "none",
   },
-  ".cm-selectionMatch": {
-    backgroundColor: "var(--bg-identifier-under-caret, color-mix(in srgb, var(--fg) 9%, transparent))",
-  },
+  ".cm-selectionMatch": inlineBackground(
+    "var(--bg-identifier-under-caret, color-mix(in srgb, var(--fg) 9%, transparent))",
+  ),
   // IDEA paints these with IDENTIFIER_UNDER_CARET_ATTRIBUTES, except the selection itself.
   ".cm-selectionMatch:not(.cm-selectionMatch-main)": { WebkitTextFillColor: "var(--fg-identifier-under-caret)" },
   // IDEA's MATCHED_BRACE_ATTRIBUTES (bold in dark schemes only) and MATCHED_TAG_NAME (never bold).
   ".cm-matchingBracket, &.cm-focused .cm-matchingBracket": {
-    backgroundColor: "var(--editor-brace)",
+    ...inlineBackground("var(--editor-brace)"),
     color: "inherit",
     fontWeight: "var(--matched-brace-weight, var(--fw-code-bold, 700))",
     borderRadius: "1px",
   },
   ".cm-matchingTag, &.cm-focused .cm-matchingTag": {
-    backgroundColor: "var(--bg-matched-tag, var(--editor-brace))",
+    ...inlineBackground("var(--bg-matched-tag, var(--editor-brace))"),
     fontWeight: "inherit",
   },
   ".cm-nonmatchingBracket, &.cm-focused .cm-nonmatchingBracket": {
     color: "var(--danger)",
-    backgroundColor: "color-mix(in srgb, var(--danger) 14%, transparent)",
+    ...inlineBackground("color-mix(in srgb, var(--danger) 14%, transparent)"),
   },
   ".cm-specialChar": { color: "var(--danger)" },
 
   // Gutter: numbers | VCS bar | fold chevrons | hairline
-  ".cm-gutters": {
+  ".cm-gutters, .cm-openidea-stickyGutter": {
     cursor: "default",
     backgroundColor: "var(--bg-editor-gutter, var(--bg-editor, var(--bg-island, var(--bg-app))))",
     color: "var(--editor-line-number)",
@@ -255,9 +257,10 @@ export const openideaTheme = EditorView.theme({
     WebkitUserSelect: "none",
     userSelect: "none",
   },
-  ".cm-lineNumbers .cm-gutterElement": {
-    minWidth: "32px",
-    padding: "0 8px 0 10px",
+  ".cm-lineNumbers .cm-gutterElement, .cm-openidea-stickyNumber": {
+    minWidth: "calc(max(16px, var(--openidea-editor-font-size, var(--fs-code))) + var(--space-2))",
+    paddingInline: "var(--space-1)",
+    fontSize: "max(1px, calc(var(--openidea-editor-font-size, var(--fs-code)) - 1px))",
     textAlign: "right",
     fontVariantNumeric: "tabular-nums",
   },
@@ -303,9 +306,9 @@ export const openideaTheme = EditorView.theme({
     cursor: "pointer",
     transition: "opacity var(--dur-fast) var(--ease)",
   },
-  ".cm-foldGutter .cm-openidea-foldOpen": { opacity: "0", display: "inline-flex" },
-  ".cm-foldGutter .cm-openidea-foldClosed": { display: "inline-flex" },
-  ".cm-gutters:hover .cm-foldGutter .cm-openidea-foldOpen": { opacity: "1" },
+  ".cm-foldGutter .cm-openidea-foldOpen, .cm-foldGutter .cm-openidea-foldClosed": { display: "inline-flex" },
+  ".cm-foldGutter .cm-openidea-foldOnHover": { opacity: "0" },
+  ".cm-gutters:hover .cm-foldGutter .cm-openidea-foldOnHover": { opacity: "1" },
   ".cm-foldGutter .cm-gutterElement:hover": { color: "var(--fg-secondary)" },
   ".cm-foldPlaceholder": {
     backgroundColor: "var(--editor-fold-chip)",
@@ -363,7 +366,7 @@ export const openideaTheme = EditorView.theme({
   ...findStyles,
   ...markWidgetStyles,
   // Find in Files preview matches (search/find/parts.tsx)
-  ".cm-openidea-searchResult": { backgroundColor: "var(--bg-search-result)" },
+  ".cm-openidea-searchResult": inlineBackground("var(--bg-search-result)"),
 
   // Overlays
   ".cm-tooltip": {
@@ -395,31 +398,38 @@ export const openideaTheme = EditorView.theme({
   // Sticky lines (cm/stickyScroll.ts)
   ".cm-openidea-sticky": {
     position: "absolute",
-    top: "0",
-    left: "0",
-    right: "12px",
-    zIndex: "4",
+    zIndex: "2",
+    boxSizing: "border-box",
     backgroundColor: "var(--bg-editor, var(--bg-island, var(--bg-app)))",
     borderBottom: "1px solid var(--editor-gutter-border)",
     boxShadow: "0 3px 6px -2px color-mix(in srgb, var(--fg-strong) 12%, transparent)",
-    fontFamily: "var(--openidea-editor-font, var(--font-mono))",
-    fontWeight: "var(--fw-code, 400)",
-    fontSize: "var(--openidea-editor-font-size, var(--fs-code))",
-    lineHeight: "var(--openidea-editor-line-height, var(--lh-code))",
     overflow: "hidden",
     cursor: "pointer",
   },
   ".cm-openidea-stickyLine": { display: "flex", whiteSpace: "pre" },
   ".cm-openidea-stickyLine:hover": { backgroundColor: "var(--editor-caret-row)" },
+  ".cm-openidea-stickyGutter": { flex: "none", boxSizing: "border-box" },
   ".cm-openidea-stickyNumber": {
-    flex: "none",
-    textAlign: "right",
-    color: "var(--editor-line-number)",
+    display: "block",
     boxSizing: "border-box",
-    paddingRight: "8px",
   },
   ".cm-openidea-stickyText": { flex: "1", overflow: "hidden", position: "relative" },
   ".cm-openidea-stickyInner": { position: "relative" },
+  ".cm-openidea-scopeContext": {
+    position: "absolute",
+    zIndex: "3",
+    boxSizing: "border-box",
+    width: "max-content",
+    overflow: "hidden",
+    pointerEvents: "none",
+    backgroundColor: "var(--bg-popup)",
+    border: "1px solid var(--border-popup)",
+    borderRadius: "var(--radius-popup)",
+    boxShadow: "var(--shadow-popup)",
+    padding: "var(--space-0-5) var(--space-2) var(--space-0-5) 0",
+  },
+  ".cm-openidea-scopeLine": { display: "flex", whiteSpace: "pre" },
+  ".cm-openidea-scopeCode": { minWidth: "0", overflow: "hidden", textOverflow: "ellipsis" },
   // The selection on a pinned line, under its text (as the selection layer in the editor).
   ".cm-openidea-stickySelection": {
     position: "absolute",

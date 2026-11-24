@@ -15,6 +15,7 @@ import { canSend, emptyDraft } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
 import { HermesProfilePicker } from "./HermesProfilePicker";
 import { McpPicker } from "./McpPicker";
+import { SkillsPicker } from "./SkillsPicker";
 import { useEffortFocus } from "./effortFocus";
 import { useAgentFontZoomSurface } from "./fontZoom";
 import { HOME_KEY, providerIcon } from "./model";
@@ -23,10 +24,10 @@ import {
   HOME,
   NO_COMMANDS,
   draftConfig,
-  draftModelSettings,
   refreshProviders,
   refreshModels,
   setDraftMcpOverrides,
+  setDraftSkillOverrides,
   setDraftOption,
   startTask,
   updateDraft,
@@ -66,6 +67,7 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [mcpOpenRequest, setMcpOpenRequest] = useState(0);
+  const [skillsOpenRequest, setSkillsOpenRequest] = useState(0);
   // Kept mounted while another tab shows: what changed meanwhile is read again when it shows.
   const shown = useEditorShown();
 
@@ -163,6 +165,7 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
     (!project?.workspace || repoState?.root === root);
 
   const openMcp = () => setMcpOpenRequest((n) => n + 1);
+  const openSkills = () => setSkillsOpenRequest((n) => n + 1);
   // The agent shows as its icon; its name and version are in the tooltip.
   const agentTitle = [provider?.name ?? tx("Agent"), probe?.version].filter(Boolean).join(" ");
 
@@ -208,8 +211,16 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
           onConfig={setDraftOption}
           onSubmit={start}
           onOpenMcp={openMcp}
+          onOpenSkills={openSkills}
           disabled={!canStart}
-          addMenu={provider ? [{ id: "mcp", label: "MCP Servers…", icon: "plugin", run: openMcp }] : undefined}
+          addMenu={
+            provider
+              ? [
+                  { id: "mcp", label: "MCP Servers…", icon: "plugin", run: openMcp },
+                  { id: "skills", label: "Skills…", icon: "bulb", run: openSkills },
+                ]
+              : undefined
+          }
           toolbar={
             <>
               <span className={styles.agentPicker} {...tooltipAttrs(agentTitle, undefined, true)}>
@@ -231,10 +242,7 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
               <ConfigPickers
                 key={provider?.id}
                 config={config}
-                onChange={(option, value, forModel) => {
-                  if (forModel && model) setDraftOption(model.id, forModel);
-                  setDraftOption(option, value);
-                }}
+                onChange={setDraftOption}
                 modelRefresh={
                   provider?.installed
                     ? {
@@ -247,16 +255,6 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
                             : null,
                         error: !requestingModels && currentModelRequest ? (catalog?.error ?? null) : null,
                         onRefresh: () => void executeAction("agents.refreshModels", null),
-                        preview: {
-                          settingsFor: (id) =>
-                            draftModelSettings(
-                              (catalog ?? provider).thoughtLevels?.[id],
-                              draft.thoughtLevels?.[id],
-                              providerDefaults,
-                            ),
-                          load: (id) => void refreshModels(provider.id, false, id),
-                          errorFor: (id) => (requestTarget === id ? catalog?.error : null),
-                        },
                       }
                     : undefined
                 }
@@ -267,6 +265,15 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
                   overrides={draft.mcpOverrides}
                   onChange={setDraftMcpOverrides}
                   openRequest={mcpOpenRequest}
+                  hideTrigger
+                />
+              )}
+              {provider && (
+                <SkillsPicker
+                  provider={provider.id}
+                  overrides={draft.skillOverrides}
+                  onChange={setDraftSkillOverrides}
+                  openRequest={skillsOpenRequest}
                   hideTrigger
                 />
               )}

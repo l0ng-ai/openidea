@@ -96,6 +96,18 @@ describe("Git Log branches pane", () => {
     expect(screen.getByText("feature").closest("[data-row]")).toHaveAttribute("aria-selected", "true");
   });
 
+  it("passes the selected branch to New Worktree", async () => {
+    render(
+      <>
+        <BranchesPanel />
+        <ContextMenuHost />
+      </>,
+    );
+    fireEvent.contextMenu(screen.getByText("feature"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "New Worktree from 'feature'…" }));
+    expect(execute).toHaveBeenCalledWith("vcs.newWorktree", { repo: "/p", source: "refs/heads/feature" });
+  });
+
   it.each([
     [2, 0],
     [0, 3],
@@ -193,7 +205,7 @@ describe("Git Log branches pane", () => {
 
 describe("Git Log branches pane with several repositories", () => {
   const aBranches = [b("main", { current: true }), b("dev"), b("solo")];
-  const bBranches = [b("main"), b("dev", { current: true })];
+  const bBranches = [b("main"), b("dev", { current: true }), b("other")];
   beforeEach(() => {
     localStorage.removeItem("openidea.vcs.branchesPane.groupByRepository");
     repoData.branches = { "/p/a": aBranches, "/p/b": bBranches };
@@ -206,7 +218,7 @@ describe("Git Log branches pane with several repositories", () => {
       branches: aBranches,
     });
   });
-  afterEach(() => useVcs.setState({ roots: [], heads: {} }));
+  afterEach(() => useVcs.setState({ roots: [], branchRoots: {}, heads: {} }));
 
   it("lists branches once, naming the repositories of partial ones", async () => {
     render(<BranchesPanel />);
@@ -214,6 +226,50 @@ describe("Git Log branches pane with several repositories", () => {
     expect(solo.closest("[data-row]")).toHaveTextContent("(a)");
     expect(screen.getAllByText("dev")).toHaveLength(1);
     expect(screen.getByText("dev").closest("[data-row]")).not.toHaveTextContent("(");
+  });
+
+  it("shows only branches of the repository selected by Paths", async () => {
+    render(<BranchesPanel />);
+    expect(await screen.findByText("solo")).toBeInTheDocument();
+    expect(screen.getByText("other")).toBeInTheDocument();
+
+    act(() => useGitLog.setState({ filters: { ...emptyFilters(), paths: ["/p/b"] } }));
+    expect(screen.queryByText("solo")).toBeNull();
+    expect(screen.getByText("other")).toBeInTheDocument();
+    expect(screen.getByText("dev").closest("[data-row]")).toHaveTextContent("current");
+
+    act(() => useGitLog.setState({ filters: { ...emptyFilters(), repositories: ["/p/a"] } }));
+    expect(screen.getByText("solo")).toBeInTheDocument();
+    expect(screen.queryByText("other")).toBeNull();
+
+    act(() => useGitLog.setState({ filters: emptyFilters() }));
+    expect(screen.getByText("solo")).toBeInTheDocument();
+    expect(screen.getByText("other")).toBeInTheDocument();
+  });
+
+  it("groups linked worktrees together and honors an explicit worktree path filter", async () => {
+    const linked = "/p/linked";
+    const worktreeBranches = aBranches.map((branch) => ({ ...branch, current: branch.name === "dev" }));
+    repoData.branches[linked] = worktreeBranches;
+    useVcs.setState({ roots: [linked, "/p/a", "/p/b"], branchRoots: { [linked]: "/p/a" } });
+    render(
+      <>
+        <BranchesPanel />
+        <ContextMenuHost />
+      </>,
+    );
+    expect((await screen.findByText("solo")).closest("[data-row]")).toHaveTextContent("(a)");
+    expect(screen.queryByText("(a, linked)")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Group by Repository" }));
+    expect(await screen.findAllByText("dev")).toHaveLength(2);
+    expect(screen.queryByText("linked")).toBeNull();
+
+    act(() => useGitLog.setState({ filters: { ...emptyFilters(), paths: [linked] } }));
+    expect(await screen.findByText("solo")).toBeInTheDocument();
+    expect(screen.queryByText("other")).toBeNull();
+    expect(screen.getByText("dev").closest("[data-row]")).toHaveTextContent(/dev\s*current/);
+    fireEvent.doubleClick(screen.getByText("dev"));
+    expect(useGitLog.getState().filters).toMatchObject({ branches: ["dev"], paths: [linked], repositories: [linked] });
   });
 
   it("keeps the current marker ahead of the repository names, which may be cut off", async () => {
@@ -232,12 +288,28 @@ describe("Git Log branches pane with several repositories", () => {
     expect(localStorage.getItem("openidea.vcs.branchesPane.groupByRepository")).toBe("true");
   });
 
-  it("double click filters the log to the repositories that have the branch", async () => {
+  it("sums merged branch counts and reveals exact counts in the tooltip and grouped rows", async () => {
+    const outgoing = { remote: "fork", branch: "dev", reference: "refs/remotes/fork/dev" };
+    repoData.branches = {
+      "/p/a": [b("dev", { behind: 2, ahead: 55, outgoing: { ...outgoing, count: 60 } })],
+      "/p/b": [b("dev", { behind: 3, ahead: 8, outgoing: { ...outgoing, count: 42 } })],
+    };
+    render(<BranchesPanel />);
+    expect(await screen.findByLabelText("102 outgoing commits in 2 repositories")).toHaveTextContent("99+");
+    expect(screen.getByLabelText("5 incoming commits in 2 repositories")).toHaveTextContent("5");
+    fireEvent.click(screen.getByRole("button", { name: "Group by Repository" }));
+    expect(screen.getByLabelText("60 outgoing commits")).toHaveTextContent("60");
+    expect(screen.getByLabelText("42 outgoing commits")).toHaveTextContent("42");
+    expect(screen.getByLabelText("2 incoming commits")).toHaveTextContent("2");
+    expect(screen.getByLabelText("3 incoming commits")).toHaveTextContent("3");
+  });
+
+  it("double click filters the log to the repositories that have the branch within the visible scope", async () => {
     render(<BranchesPanel />);
     fireEvent.doubleClick(await screen.findByText("solo"));
     expect(useGitLog.getState().filters).toMatchObject({ branches: ["solo"], repositories: ["/p/a"] });
     fireEvent.doubleClick(screen.getByText("dev"));
-    expect(useGitLog.getState().filters).toMatchObject({ branches: ["dev"], repositories: [] });
+    expect(useGitLog.getState().filters).toMatchObject({ branches: ["dev"], repositories: ["/p/a"] });
   });
 
   it("a branch in several repositories gets the common menu", async () => {

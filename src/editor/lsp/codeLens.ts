@@ -7,13 +7,13 @@
  * panel runs (including the plugin indexers' anchors), scoped to what the
  * server analyses: opening candidate files or the libraries for every count
  * would trigger expensive server analysis, so only an explicit Find Usages
- * widens the server's scope, and a widened search can find more. Beside each
- * count, the declaration's last author from VCS blame (`authorLens`).
+ * widens the server's scope, and a widened search can find more. Library
+ * sources get no counts (`isLibrarySource`). Beside each count, the declaration's last author from VCS blame (`authorLens`).
  */
 import { Channel } from "@tauri-apps/api/core";
 import { EditorSelection, MapMode, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
-import { codeLenses, onEditorEvent, shownAgain, type CodeLens } from "@/editor/api";
+import { codeLenses, isLibrarySource, onEditorEvent, shownAgain, type CodeLens } from "@/editor/api";
 import { onNavigationProvidersChanged } from "@/editor/navigationProviders";
 import { executeAction } from "@/platform/actions";
 import { commands, nextRequestId, onIdeEvent, type OutlineItem, type RequestId, type SymbolKind } from "@/platform/ipc";
@@ -24,6 +24,8 @@ import { featureBackoff, onLspRefresh, onServerSettled } from "./availability";
 import { editorPrefs } from "@/platform/editorSettings";
 import { authorLabel, authorSummary, authorTooltip, blameFor, onBlameInvalidated } from "./authorLens";
 import { tx } from "@/platform/i18n";
+import { languageInfo, languagesForPath } from "@/editor/core/cm/languages";
+import { overrideKey, userFileType, validateFileTypeOverrides, validateFileTypes } from "@/platform/fileTypes";
 
 const LENS_KINDS = new Set<SymbolKind>([
   "class",
@@ -49,6 +51,32 @@ const MARGIN_LINES = 10;
  */
 const INCOMPLETE_RETRIES = 3;
 const usagesBackoff = featureBackoff();
+
+/**
+ * Whether a change on disk can alter a reference count: some changed path is a file a language
+ * server analyses. A path no language claims counts too when it has no extension (a folder, or a
+ * script told by its first line), and so does any path while the languages are not loaded: a
+ * missed recount leaves a stale number, an extra one only repeats a pass.
+ */
+function touchesSource(e: { created: string[]; modified: string[]; removed: string[] }): boolean {
+  const { settings, project } = useProject.getState();
+  const assoc = validateFileTypes(settings?.files?.fileTypes);
+  const overrides = validateFileTypeOverrides(settings?.files?.fileTypeOverrides);
+  const root = project?.root ?? null;
+  const served = (l: { languageServers?: string[] }) => !!l.languageServers?.length;
+  const isSource = (path: string) => {
+    const name = path.slice(path.lastIndexOf("/") + 1);
+    const assigned = overrides[overrideKey(path, root)] ?? userFileType(assoc, name);
+    if (assigned) {
+      const info = languageInfo(assigned);
+      return !info || served(info);
+    }
+    const languages = languagesForPath(path);
+    if (!languages) return true;
+    return languages.length ? languages.some(served) : name.lastIndexOf(".") <= 0;
+  };
+  return e.created.some(isSource) || e.modified.some(isSource) || e.removed.some(isSource);
+}
 
 export interface LensTarget {
   name: string;
@@ -172,7 +200,9 @@ class UsagesLensPlugin {
     });
     const offBackend = [
       onIdeEvent("workspaceEditApplied", () => this.invalidate()),
-      onIdeEvent("fsChanged", () => this.invalidate()),
+      onIdeEvent("fsChanged", (e) => {
+        if (touchesSource(e)) this.invalidate();
+      }),
       onNavigationProvidersChanged(() => this.invalidate()),
     ];
     this.offChanges = () => {
@@ -214,7 +244,7 @@ class UsagesLensPlugin {
     const doc = docOf(view);
     if (!doc) return;
     const gen = this.generation;
-    const usagesWanted = usagesEnabled();
+    const usagesWanted = usagesEnabled() && !isLibrarySource(doc);
     const usages = usagesWanted && !usagesBackoff.active(doc.doc);
     const authors = authorEnabled() && !doc.virtual;
     if (!usagesWanted && !authors) {

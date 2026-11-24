@@ -313,11 +313,11 @@ impl StoreData {
 
     /// `path` as the real path an `fs.read:…` grant covers, or what the plugin
     /// should be told instead (`denied` naming the capability to declare).
+    /// The private plugin-dir and the install directory are readable without a
+    /// grant; writing still needs `fs.write` or the private dir.
     fn granted_file(&self, path: &str) -> Result<PathBuf, wit::Error> {
         let mut granted = self.granted.clone();
-        if let Ok(dir) = self.host.plugin_dir() {
-            granted.push(Capability::FsRead(to_ipc(&dir)));
-        }
+        granted.extend(self.builtin_read_roots());
         sandbox::resolve_granted(&granted, path).map_err(Into::into)
     }
 
@@ -329,6 +329,19 @@ impl StoreData {
             granted.push(Capability::FsWrite(to_ipc(&dir)));
         }
         sandbox::resolve_writable(&granted, path).map_err(Into::into)
+    }
+
+    /// Private plugin-dir and install directory: readable without an `fs.read`
+    /// grant; `editor.open` / `open-location` may use them without project.read.
+    fn builtin_read_roots(&self) -> Vec<Capability> {
+        let mut roots = Vec::new();
+        if let Ok(dir) = self.host.plugin_dir() {
+            roots.push(Capability::FsRead(to_ipc(&dir)));
+        }
+        if let Ok(dir) = self.host.install_dir() {
+            roots.push(Capability::FsRead(to_ipc(&dir)));
+        }
+        roots
     }
 
     fn client(&self) -> Option<&str> {
@@ -1144,9 +1157,7 @@ impl StoreData {
         sandbox::resolve_in_root(root, path).map_err(wit::Error::Invalid)
     }
     fn openable_path(&self, path: &str) -> Result<PathBuf, wit::Error> {
-        if let Ok(dir) = self.host.plugin_dir()
-            && let Ok(real) = sandbox::resolve_granted(&[Capability::FsRead(to_ipc(&dir))], path)
-        {
+        if let Ok(real) = sandbox::resolve_granted(&self.builtin_read_roots(), path) {
             return Ok(real);
         }
         self.require(Capability::ProjectRead)?;
@@ -1851,6 +1862,10 @@ fn to_output(output: crate::types::ProcessOutput) -> process::Output {
     process::Output { status: output.status, stdout: output.stdout, stderr: output.stderr }
 }
 
+fn to_process_options(opts: process::ProcessOptions) -> crate::types::ProcessOptions {
+    crate::types::ProcessOptions { max_output_bytes: opts.max_output_bytes, buffer_bytes: opts.buffer_bytes }
+}
+
 impl process::Host for StoreData {
     fn run(
         &mut self,
@@ -1900,6 +1915,47 @@ impl process::Host for StoreData {
         };
         let cwd = self.cwd_of(cwd)?;
         let id = match self.host.start_process(cmd, cwd.as_deref(), self.invocation.client.as_deref()) {
+            Ok(id) => id,
+            Err(e) => return Ok(Err(to_wit(e))),
+        };
+        self.push(ChildRes { id, host: self.host.clone() }).map(Ok)
+    }
+
+    fn run_captured(
+        &mut self,
+        cmd: process::Command,
+        cwd: Option<Resource<ProjectRes>>,
+        stdin: Option<String>,
+        options: Option<process::ProcessOptions>,
+    ) -> Fallible<process::Output> {
+        let cmd = match self.command(cmd) {
+            Ok(cmd) => cmd,
+            Err(e) => return Ok(Err(e)),
+        };
+        let cwd = self.cwd_of(cwd)?;
+        let token = self.cancel.token();
+        let timeout = self.io_timeout();
+        let opts = options.map(to_process_options);
+        let outcome = self.host.run_process_with_options(cmd, cwd.as_deref(), stdin, &token, timeout, opts);
+        if outcome.is_err() {
+            self.grant_io_error_grace();
+        }
+        Ok(outcome.map(to_output).map_err(to_wit))
+    }
+
+    fn start_stream(
+        &mut self,
+        cmd: process::Command,
+        cwd: Option<Resource<ProjectRes>>,
+        options: Option<process::ProcessOptions>,
+    ) -> Fallible<Resource<ChildRes>> {
+        let cmd = match self.command(cmd) {
+            Ok(cmd) => cmd,
+            Err(e) => return Ok(Err(e)),
+        };
+        let cwd = self.cwd_of(cwd)?;
+        let opts = options.map(to_process_options);
+        let id = match self.host.start_process_stream(cmd, cwd.as_deref(), self.invocation.client.as_deref(), opts) {
             Ok(id) => id,
             Err(e) => return Ok(Err(to_wit(e))),
         };
@@ -2078,9 +2134,7 @@ impl views::Host for StoreData {
     }
 
     fn open_location(&mut self, path: String, line: u32, column: u32) -> Fallible<()> {
-        if let Ok(dir) = self.host.plugin_dir()
-            && let Ok(real) = sandbox::resolve_granted(&[Capability::FsRead(to_ipc(&dir))], &path)
-        {
+        if let Ok(real) = sandbox::resolve_granted(&self.builtin_read_roots(), &path) {
             if let Err(e) = self.require_interactive() {
                 return Ok(Err(e));
             }

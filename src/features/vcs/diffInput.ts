@@ -1,7 +1,8 @@
 /** Diff editor inputs and helpers to open them. */
-import type { ChangedFile, RevisionChange } from "@/bindings";
+import type { ChangedFile, FileStatus, RevisionChange } from "@/bindings";
 import { COMBINED_DIFF_KIND, combinedOf, type CombinedDiffData } from "./allInOneDiff";
 import { call, commands, type LineEnding } from "@/platform/ipc";
+import { tx } from "@/platform/i18n";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { editorService, type EditorInput } from "@/workbench/contributions";
 import { baseName, effectiveKind } from "./model";
@@ -9,19 +10,33 @@ import { readWorkingText } from "./ops";
 import { changeFileNodes, groupFileNodes, renamedFromPath, stagingSide, type ChangeNode } from "./changes";
 import { currentRepoRoot, statusOf } from "./store";
 import { repositoryPath } from "./repositoryPaths";
+import { stagingAreaOn } from "./staging";
+import { stagingVersions } from "./stagingVersions";
+import type { StagingRange } from "./stagingRange";
 
-export type DiffSide =
+type GitDiffSide =
   /** File content at a git revision (`HEAD`, `:0` = index, a commit id, `<id>^`). */
   | { type: "rev"; rev: string; path?: string; label?: string }
   /** The working file (unsaved editor buffer included). */
-  | { type: "worktree"; label?: string }
+  | { type: "worktree"; label?: string; labelDetail?: string };
+
+export type DiffSide =
+  | GitDiffSide
   /** Another file (Compare With…, Compare Files); editable like the working file. */
   | { type: "file"; path: string; label?: string }
   /**
    * `absent`: the file doesn't exist on this side (added / deleted), as IDEA's EmptyContent.
    * `editable`: a scratch text the user edits in the diff (Open Blank Diff Window).
    */
-  | { type: "text"; text: string; label: string; absent?: boolean; editable?: boolean }
+  | {
+      type: "text";
+      text: string;
+      label: string;
+      labelDetail?: string;
+      absent?: boolean;
+      editable?: boolean;
+      gitlinkSource?: GitDiffSide;
+    }
   /** A Local History revision. */
   | { type: "history"; id: string; label: string };
 
@@ -40,11 +55,15 @@ export interface DiffData {
   /** Absolute path of the file (the right side's path). */
   path: string;
   left: DiffSide;
+  /** The index side of a three-version staging area diff. */
+  middle?: DiffSide;
+  /** The editor's selected change and its coordinates in the three Git versions. */
+  stagingRange?: StagingRange;
   right: DiffSide;
   /** Reveal this 0-based line (of the right side, unless `lineSide` says otherwise). */
   line?: number;
   /** The side `line` is on. */
-  lineSide?: "left" | "right";
+  lineSide?: "left" | "middle" | "right";
   /** UTF-16 column on `line` for the caret (the line start when absent). */
   col?: number;
   /** Tab title instead of the default "name (left ↔ right)". */
@@ -123,7 +142,17 @@ export function sideLabel(s: DiffSide): string {
   }
 }
 
-const diffKey = (data: DiffData) => `diff:${data.path}:${sideKey(data.left)}:${sideKey(data.right)}`;
+const diffKey = (data: DiffData) => {
+  const key = (side: DiffSide) => sideKey(diffSideSource(side));
+  const ends = `diff:${data.path}:${key(data.left)}:${key(data.right)}`;
+  return data.middle ? `${ends}:middle:${key(data.middle)}` : ends;
+};
+
+export const diffSideSource = (side: DiffSide): DiffSide => (side.type === "text" && side.gitlinkSource) || side;
+
+export function hasGitlink(data: DiffData): boolean {
+  return [data.left, data.middle, data.right].some((side) => side?.type === "text" && !!side.gitlinkSource);
+}
 
 /** Each diff's caret by tab key, most recent last, so Back returns to it there. */
 const carets = new Map<string, { line: number; col: number; side: "left" | "right" }>();
@@ -163,6 +192,9 @@ export function chainNeighbour(data: DiffData, dir: 1 | -1): DiffData | null {
 
 export function diffTitle(data: DiffData): string {
   if (data.title) return data.title;
+  if (data.stagingRange) return tx("Show Diff for Lines");
+  if (data.middle)
+    return `${baseName(data.path)} (${sideLabel(data.left)} ↔ ${sideLabel(data.middle)} ↔ ${sideLabel(data.right)})`;
   if (data.left.type === "file") return `${baseName(data.left.path)} ↔ ${baseName(data.path)}`;
   return `${baseName(data.path)} (${sideLabel(data.left)} ↔ ${sideLabel(data.right)})`;
 }
@@ -209,14 +241,40 @@ export const opensDiffOnActivate = () => {
  * (`vcs.openDiff`, with review comments) call openDiff directly.
  */
 export async function openVcsDiff(data: DiffData, opts: { preview?: boolean; focus?: boolean } = {}) {
-  if (!vcsDiffInFront()) return openDiff(data, opts);
+  if (!vcsDiffInFront()) {
+    // Settings › Version Control › Confirmation: "Open diff as editor tab" off.
+    if (workflowSettings().vcs.diffAsEditorTab || combinedOf(data)) return openDiff(data, opts);
+    const { showDiffWindow } = await import("./DiffWindow");
+    return showDiffWindow(data, () => void openDiff(data, opts));
+  }
   const { openDiffDialog } = await import("./diffDialog");
   openDiffDialog(data);
 }
 
 /** A changes-tree file's working diff, on its side of the index under a "by staging state" group. */
 export function changeNodeDiff(node: ChangeNode, line?: number): DiffData {
-  return workingDiffData(node.path!, line, stagingSide(node.group, node.files[0]!));
+  if (node.historicalDiff) return { ...node.historicalDiff, line };
+  const file = node.files[0]!;
+  const side =
+    stagingAreaOn() && (node.group === "staged" || node.group === "unstaged")
+      ? node.group
+      : stagingSide(node.group, file);
+  return workingDiffData(node.path!, line, side, file);
+}
+
+export function stagingGutterDiffData(path: string, line?: number, range?: StagingRange): DiffData {
+  const status = statusOf(path);
+  const versions = status && stagingVersions(status);
+  return {
+    ...(versions || {
+      path,
+      left: { type: "rev", rev: "HEAD", label: "HEAD" },
+      middle: { type: "rev", rev: ":0" },
+      right: { type: "worktree", label: "Local Version" },
+    }),
+    line,
+    stagingRange: range,
+  };
 }
 
 /** A changes-tree file's diff, with the files of its group (in tree order) as the F7 chain. */
@@ -243,14 +301,21 @@ export function changeTreeDiffData(roots: readonly ChangeNode[], node: ChangeNod
 }
 
 /** Default local-changes diff for a working file: HEAD (or empty) vs the working copy. */
-export function workingDiffData(path: string, line?: number, side?: "staged" | "unstaged" | null): DiffData {
+export function workingDiffData(
+  path: string,
+  line?: number,
+  side?: "staged" | "unstaged" | null,
+  st: FileStatus | undefined = statusOf(path),
+): DiffData {
+  const versions = side && st ? stagingVersions(st) : undefined;
   if (side === "staged") {
+    if (versions) return { path, left: versions.left, right: versions.middle, line };
     return { path, left: { type: "rev", rev: "HEAD" }, right: { type: "rev", rev: ":0", label: "Index" }, line };
   }
   if (side === "unstaged") {
+    if (versions) return { path, left: versions.middle, right: versions.right, line };
     return { path, left: { type: "rev", rev: ":0", label: "Index" }, right: { type: "worktree" }, line };
   }
-  const st = statusOf(path);
   const kind = st ? effectiveKind(st) : null;
   const left: DiffSide =
     kind === "untracked" || kind === "added"
@@ -309,19 +374,23 @@ export function revisionChangeDiffData(change: RevisionChange, root = currentRep
   return { path, left, right };
 }
 
-export async function loadSide(path: string, side: DiffSide): Promise<string> {
+export async function readDiffSide(path: string, side: DiffSide): Promise<string | null> {
   switch (side.type) {
     case "rev":
-      return (await call(commands.vcsFileAt(side.path ?? path, side.rev))) ?? "";
+      return call(commands.vcsFileAt(side.path ?? path, side.rev));
     case "worktree":
-      return (await readWorkingText(path)) ?? "";
+      return readWorkingText(path);
     case "file":
-      return (await readWorkingText(side.path)) ?? "";
+      return readWorkingText(side.path);
     case "text":
-      return side.text;
+      return side.absent ? null : side.text;
     case "history":
       return call(commands.historyContent(side.id));
   }
+}
+
+export async function loadSide(path: string, side: DiffSide): Promise<string> {
+  return (await readDiffSide(path, side)) ?? "";
 }
 
 /**
@@ -344,7 +413,8 @@ export const isWorktree = (s: DiffSide) => s.type === "worktree";
 /** Path of a side backed by a file on disk (editable in the diff), else null. */
 export const sideFile = (s: DiffSide, path: string): string | null =>
   s.type === "worktree" ? path : s.type === "file" ? s.path : null;
-export const isIndex = (s: DiffSide) => s.type === "rev" && (s.rev === ":0" || s.rev === ":");
+export const isIndex = (s: DiffSide): s is Extract<DiffSide, { type: "rev" }> & { rev: ":0" | ":" } =>
+  s.type === "rev" && (s.rev === ":0" || s.rev === ":");
 
 /** The dominant line ending of `text` (`lf` for ties and no breaks), like the backend's detection. */
 export function detectLineEnding(text: string): LineEnding {

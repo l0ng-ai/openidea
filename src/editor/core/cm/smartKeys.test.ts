@@ -3,13 +3,17 @@ import { EditorSelection, EditorState, type Extension } from "@codemirror/state"
 import { EditorView } from "@codemirror/view";
 import { indentService, indentUnit, LanguageSupport, StreamLanguage } from "@codemirror/language";
 import { closeBrackets, insertBracket } from "@codemirror/autocomplete";
+import { history, undo } from "@codemirror/commands";
 import { java } from "@codemirror/lang-java";
 import { javascript } from "@codemirror/lang-javascript";
 import { languages as cmLanguages } from "@codemirror/language-data";
 import { kotlin, csharp } from "@codemirror/legacy-modes/mode/clike";
+import { python } from "@codemirror/legacy-modes/mode/python";
 import { validateEditorExtras } from "@/platform/editorSettings";
 import {
   autoIndentBackspace,
+  skipClosingBracket,
+  enterInStringLiteral,
   insertTab,
   smartBackspace,
   smartBackspaceApplies,
@@ -71,6 +75,44 @@ function show(view: EditorView): string {
       : out.slice(0, r.from) + "[" + out.slice(r.from, r.to) + "]" + out.slice(r.to);
   return out;
 }
+
+describe("Enter in a string literal", () => {
+  const enter = (text: string, language: string, ext: Extension) => {
+    const v = make(text, ext, "    ");
+    const handled = enterInStringLiteral(language)(v);
+    return handled ? show(v) : null;
+  };
+
+  it("splits a Java string into two joined with +, keeping the value", () => {
+    expect(enter('class A {\n    String t = "hello|world";\n}', "java", java())).toBe(
+      'class A {\n    String t = "hello" +\n            "|world";\n}',
+    );
+  });
+
+  it("uses the literal's own quote in JavaScript", () => {
+    expect(enter("const t = 'ab|cd';", "javascript", javascript())).toBe("const t = 'ab' +\n    '|cd';");
+  });
+
+  it("leaves text blocks, escapes, other languages and positions outside the literal alone", () => {
+    expect(enter('String t = """\n  a|b\n  """;', "java", java())).toBeNull();
+    expect(enter('String t = "a\\|nb";', "java", java())).toBeNull();
+    expect(enter('String t = |"ab";', "java", java())).toBeNull();
+    expect(enter('t = "a|b"', "python", [])).toBeNull();
+    expect(enter("char c = 'a|';", "java", java())).toBeNull();
+  });
+
+  it("splits a string of a language without a Lezer string node, and not a multi-line one", () => {
+    const kt = StreamLanguage.define(interpolationParser(kotlin, "Kotlin"));
+    expect(enter('fun f() {\n    val t = "hello|world"\n}', "kotlin", kt)).toBe(
+      'fun f() {\n    val t = "hello" +\n            "|world"\n}',
+    );
+    expect(enter('val t = """\n  a|b\n  """', "kotlin", kt)).toBeNull();
+  });
+
+  it("splits after an escaped backslash", () => {
+    expect(enter('String t = "a\\\\|b";', "java", java())).toBe('String t = "a\\\\" +\n        "|b";');
+  });
+});
 
 describe("tab", () => {
   it("inserts whitespace up to the next indent stop at each caret", () => {
@@ -179,6 +221,107 @@ describe("tab out of pairs", () => {
   });
 });
 
+describe("quote pairs per language", () => {
+  const typed = (language: string, support: Extension, text: string, chars: string) => {
+    const v = make(text, [
+      support,
+      closeBrackets(),
+      prefsExtension({
+        prefs: validateEditorExtras({}),
+        path: "",
+        softWrap: false,
+        showWhitespace: false,
+        hardWrapAt: 120,
+        readOnly: false,
+        language,
+      }),
+    ]);
+    for (const ch of chars) {
+      const tr = insertBracket(v.state, ch);
+      if (tr) v.dispatch(tr);
+      else v.dispatch(v.state.update(v.state.replaceSelection(ch), { userEvent: "input.type" }));
+    }
+    return show(v);
+  };
+
+  it("pairs template literal backticks in TypeScript", () => {
+    expect(typed("typescript", javascript({ typescript: true }), "const g = |", "`")).toBe("const g = `|`");
+  });
+
+  it("pairs Python's prefixed and triple-quoted strings", () => {
+    const py = StreamLanguage.define(python);
+    expect(typed("python", py, "label = f|", '"')).toBe('label = f"|"');
+    expect(typed("python", py, "p = rb|", "'")).toBe("p = rb'|'");
+    expect(typed("python", py, "    |", '"""')).toBe('    """|"""');
+  });
+
+  it("keeps plain quotes for other languages and respects the options", () => {
+    expect(typed("java", java(), "String s = |", '"')).toBe('String s = "|"');
+    expect(typed("java", java(), "String s = |", "`")).toBe("String s = `|");
+  });
+});
+
+describe("typing over a closing bracket", () => {
+  const typed = (support: Extension, text: string, ch: string) => {
+    const v = make(text, [support, skipClosingBracket]);
+    const r = v.state.selection.main;
+    const insert = () => v.state.update(v.state.replaceSelection(ch), { userEvent: "input.type" });
+    if (!v.state.facet(EditorView.inputHandler).some((h) => h(v, r.from, r.to, ch, insert))) v.dispatch(insert());
+    return show(v);
+  };
+  const py = StreamLanguage.define(python);
+
+  it("steps over a bracket that already closes a pair, typed or not", () => {
+    expect(typed(java(), "int v = (1 + 2|);", ")")).toBe("int v = (1 + 2)|;");
+    expect(typed(java(), "var a = new int() {1, 2|};", "}")).toBe("var a = new int() {1, 2}|;");
+    expect(typed(py, "value = f(1, 2|)", ")")).toBe("value = f(1, 2)|");
+    expect(typed(java(), "foo(\n  a\n|);", ")")).toBe("foo(\n  a\n)|;");
+  });
+
+  it("inserts the bracket where the line still lacks one", () => {
+    expect(typed(java(), "f(g(x|);", ")")).toBe("f(g(x)|);");
+    expect(typed(java(), "x = |)", ")")).toBe("x = )|)");
+  });
+});
+
+describe("Rust lifetimes", () => {
+  const typed = (text: string, chars: string) => {
+    const v = make(text, [
+      closeBrackets(),
+      prefsExtension({
+        prefs: validateEditorExtras({}),
+        path: "",
+        softWrap: false,
+        showWhitespace: false,
+        hardWrapAt: 120,
+        readOnly: false,
+        language: "rust",
+      }),
+    ]);
+    for (const ch of chars) {
+      const r = v.state.selection.main;
+      const insert = () => v.state.update(v.state.replaceSelection(ch), { userEvent: "input.type" });
+      if (!v.state.facet(EditorView.inputHandler).some((h) => h(v, r.from, r.to, ch, insert))) {
+        const tr = insertBracket(v.state, ch);
+        v.dispatch(tr ?? insert());
+      }
+    }
+    return show(v);
+  };
+
+  it("keeps a lifetime's apostrophe single", () => {
+    expect(typed("fn borrow<|>() {}", "'a")).toBe("fn borrow<'a|>() {}");
+    expect(typed("fn f(x: &|str) {}", "'a ")).toBe("fn f(x: &'a |str) {}");
+    expect(typed("struct S<'a, |> {}", "'b")).toBe("struct S<'a, 'b|> {}");
+    expect(typed("fn f<T: |>() {}", "'static")).toBe("fn f<T: 'static|>() {}");
+  });
+
+  it("still pairs a char literal", () => {
+    expect(typed("let c = |;", "'")).toBe("let c = '|';");
+    expect(typed("f('a', |)", "'")).toBe("f('a', '|')");
+  });
+});
+
 describe("smart angle brackets", () => {
   /** The real wiring: prefsExtension attaches the `<` handler for the document's language. */
   const prefs = (language: string | undefined, smartKeys: Record<string, unknown> = {}) =>
@@ -217,8 +360,27 @@ describe("smart angle brackets", () => {
   const KOTLIN = StreamLanguage.define(interpolationParser(kotlin, "Kotlin"));
   const CSHARP = StreamLanguage.define(interpolationParser(csharp, "C#"));
   let RUST: LanguageSupport;
+  let CPP: LanguageSupport;
   beforeAll(async () => {
     RUST = (await cmLanguages.find((l) => l.name === "Rust")!.load()) as LanguageSupport;
+    CPP = (await cmLanguages.find((l) => l.name === "C++")!.load()) as LanguageSupport;
+  });
+
+  it("pairs include brackets in C and C++, and template arguments in C++", () => {
+    pair("c", CPP, "#include |", "#include <|>");
+    pair("cpp", CPP, "#include |", "#include <|>");
+    pair("cpp", CPP, "std::vector|", "std::vector<|>");
+    pair("cpp", CPP, "auto p = std::make_unique|", "auto p = std::make_unique<|>");
+    pair("cpp", CPP, "auto n = static_cast|", "auto n = static_cast<|>");
+    pair("cpp", CPP, "template |", "template <|>");
+    pair("cpp", CPP, "Box|", "Box<|>");
+  });
+
+  it("does not pair comparisons, shifts or macros in C and C++", () => {
+    pair("c", CPP, "int f() { return a |", "int f() { return a <|");
+    pair("cpp", CPP, "for (int i = 0; i|", "for (int i = 0; i<|");
+    pair("cpp", CPP, "std::cout |", "std::cout <|");
+    pair("cpp", CPP, "if (x < MAX|", "if (x < MAX<|");
   });
 
   it("pairs after a type name in Java: fields, type arguments and class declarations", () => {
@@ -278,6 +440,20 @@ describe("smart angle brackets", () => {
     pair("kotlin", KOTLIN, "fun |", "fun <|>");
     // Lowercase values are comparisons, not types.
     pair("kotlin", KOTLIN, "fun f() {\n  val c = a |\n}", "fun f() {\n  val c = a <|\n}");
+    pair("kotlin", KOTLIN, "fun f() {\n  val c = count|\n}", "fun f() {\n  val c = count<|\n}");
+    // …but a generic factory call written against its `<` takes type arguments.
+    pair("kotlin", KOTLIN, "fun f() {\n  val v = mutableListOf|\n}", "fun f() {\n  val v = mutableListOf<|>\n}");
+    pair("kotlin", KOTLIN, "fun f() {\n  val m = emptyMap|\n}", "fun f() {\n  val m = emptyMap<|>\n}");
+    pair("kotlin", KOTLIN, "fun f() {\n  val ok = listOf |\n}", "fun f() {\n  val ok = listOf <|\n}");
+  });
+
+  it("pairs a string template's braces", () => {
+    const v = make('fun f() {\n  val s = "$|"\n}', [KOTLIN, prefs("kotlin", {})]);
+    type(v, "{");
+    expect(show(v)).toBe('fun f() {\n  val s = "${|}"\n}');
+    const outside = make("fun f() {\n  val s = $|x\n}", [KOTLIN, prefs("kotlin", {})]);
+    type(outside, "{");
+    expect(show(outside)).toBe("fun f() {\n  val s = ${|x\n}");
   });
 
   it("pairs capitalized type positions in C# (stream parser)", () => {
@@ -333,5 +509,144 @@ describe("smart angle brackets", () => {
     // Once out, Tab inserts whitespace again.
     insertTab(v);
     expect(show(v)).toBe("class A {\n  java.util.List<>  |\n}");
+  });
+});
+
+describe("semicolon at statement end", () => {
+  const prefs = (language: string | undefined, smartKeys: Record<string, unknown> = {}) =>
+    prefsExtension({
+      prefs: validateEditorExtras({ smartKeys }),
+      path: "",
+      softWrap: false,
+      showWhitespace: false,
+      hardWrapAt: 120,
+      readOnly: false,
+      language,
+    });
+
+  const type = (v: EditorView, ch: string) => {
+    const r = v.state.selection.main;
+    const insert = () => v.state.update(v.state.replaceSelection(ch), { userEvent: "input.type" });
+    if (!v.state.facet(EditorView.inputHandler).some((h) => h(v, r.from, r.to, ch, insert)))
+      v.dispatch(v.state.replaceSelection(ch), { userEvent: "input.type" });
+  };
+
+  const JAVA = java();
+  const JS = javascript();
+  const CSHARP = StreamLanguage.define(interpolationParser(csharp, "C#"));
+  /** A Java statement inside a method body. */
+  const inJava = (body: string) => `class A {\n  void f() {\n    ${body}\n  }\n}`;
+
+  const semi = (language: string | undefined, support: Extension, text: string, expected: string, keys = {}) => {
+    const v = make(text, [support, prefs(language, keys)]);
+    type(v, ";");
+    expect(show(v)).toBe(expected);
+  };
+  const stmt = (body: string, expected: string) => semi("java", JAVA, inJava(body), inJava(expected));
+
+  it("moves ; typed before the closing parenthesis to the end of the statement", () => {
+    stmt('System.out.println("hello world"|)', 'System.out.println("hello world");|');
+    stmt("foo(|)", "foo();|");
+    stmt("int n = size(list|)", "int n = size(list);|");
+    stmt("return compute(a, b|)", "return compute(a, b);|");
+  });
+
+  it("steps over every closing parenthesis of nested calls", () => {
+    stmt("foo(bar(baz|))", "foo(bar(baz));|");
+    stmt("foo(bar(baz)|)", "foo(bar(baz));|");
+    stmt("list.forEach(x -> use(x|))", "list.forEach(x -> use(x));|");
+  });
+
+  it("puts ; right after the parenthesis, before trailing whitespace", () => {
+    stmt("foo(x|)   ", "foo(x);|   ");
+  });
+
+  it("completes a call whose arguments span lines", () => {
+    stmt("foo(a,\n        b|)", "foo(a,\n        b);|");
+  });
+
+  it("completes a do-while condition", () => {
+    stmt("do {\n    } while (more(|))", "do {\n    } while (more());|");
+  });
+
+  it("works in JavaScript and TypeScript", () => {
+    semi("javascript", JS, "console.log(x|)", "console.log(x);|");
+    semi("typescript", javascript({ typescript: true }), "const n: number = f(a|)", "const n: number = f(a);|");
+  });
+
+  it("works with stream parsers and without a syntax tree", () => {
+    semi("csharp", CSHARP, "Console.WriteLine(x|)", "Console.WriteLine(x);|");
+    semi("c", [], 'printf("%d", n|)', 'printf("%d", n);|');
+  });
+
+  it("types a plain ; in comments, literals and directives without a Lezer tree", () => {
+    const lineComments = EditorState.languageData.of(() => [{ commentTokens: { line: "//" } }]);
+    semi("c", lineComments, "f(); // call(x|)", "f(); // call(x;|)");
+    semi("c", [], "#define CALL(x|)", "#define CALL(x;|)");
+    semi("c", [], " * call(x|)", " * call(x;|)");
+    semi("java", [], "@Deprecated(x|)", "@Deprecated(x;|)");
+    semi("csharp", CSHARP, 'var s = @"call(x|)\n";', 'var s = @"call(x;|)\n";');
+  });
+
+  it("types a plain ; at the end of the line or before other code", () => {
+    stmt("foo(x)|", "foo(x);|");
+    stmt("foo(x|);", "foo(x;|);");
+    stmt("foo(a|, b)", "foo(a;|, b)");
+    stmt("foo(x|) + 1", "foo(x;|) + 1");
+    stmt("foo(x|) // note", "foo(x;|) // note");
+  });
+
+  it("types a plain ; in strings and comments", () => {
+    stmt("// call(x|)", "// call(x;|)");
+    semi("java", JAVA, "class A {\n  /**\n   * call(x|)\n   */\n}", "class A {\n  /**\n   * call(x;|)\n   */\n}");
+    semi("javascript", JS, "const s = `call(x|)\n`", "const s = `call(x;|)\n`");
+  });
+
+  it("types a plain ; in for headers, try-with-resources and other control statements", () => {
+    stmt("for (int i = 0|)", "for (int i = 0;|)");
+    stmt("for (int i = size(a|))", "for (int i = size(a;|))");
+    stmt("try (var r = open(path|))", "try (var r = open(path;|))");
+    stmt("if (ready(x|))", "if (ready(x;|))");
+    stmt("} else if (ready(x|))", "} else if (ready(x;|))");
+    stmt("while (next(|))", "while (next(;|))");
+    stmt("switch (kind(x|))", "switch (kind(x;|))");
+    stmt("synchronized (lock(|))", "synchronized (lock(;|))");
+  });
+
+  it("types a plain ; in declarations and annotations", () => {
+    semi("java", JAVA, "class A {\n  void run(int a|)\n  {\n  }\n}", "class A {\n  void run(int a;|)\n  {\n  }\n}");
+    semi(
+      "java",
+      JAVA,
+      "class A {\n  @SuppressWarnings(x|)\n  void f() {}\n}",
+      "class A {\n  @SuppressWarnings(x;|)\n  void f() {}\n}",
+    );
+    semi("javascript", JS, "function f(a|)", "function f(a;|)");
+  });
+
+  it("types a plain ; when the statement continues on the next line", () => {
+    stmt("builder.add(x|)\n        .build();", "builder.add(x;|)\n        .build();");
+    stmt("boolean ok = check(a|)\n        && check(b);", "boolean ok = check(a;|)\n        && check(b);");
+  });
+
+  it("only applies to languages that end statements with ;", () => {
+    semi("python", [], "print(x|)", "print(x;|)");
+  });
+
+  it("is off when the Smart Keys option is cleared", () => {
+    semi("java", JAVA, inJava("foo(x|)"), inJava("foo(x;|)"), { semicolonAtStatementEnd: false });
+  });
+
+  it("moves ; for every caret", () => {
+    const v = make(inJava("foo(a|)\n    bar(b|)"), [JAVA, prefs("java")]);
+    type(v, ";");
+    expect(show(v)).toBe(inJava("foo(a);|\n    bar(b);|"));
+  });
+
+  it("is one undoable step", () => {
+    const v = make(inJava("foo(x|)"), [JAVA, prefs("java"), history()]);
+    type(v, ";");
+    undo(v);
+    expect(show(v)).toBe(inJava("foo(x|)"));
   });
 });

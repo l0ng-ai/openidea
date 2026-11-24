@@ -34,6 +34,12 @@
   align-items: center;
   gap: var(--space-1-5);
 }
+.inlineChoices {
+  flex-wrap: wrap;
+  min-height: var(--h-field);
+  max-width: 100%;
+  gap: var(--space-1) var(--space-4);
+}
 .inlineLabel::after {
   content: ":";
 }
@@ -42,6 +48,26 @@
 }
 .inlineText {
   width: 180px;
+}
+.checkWithField {
+  align-items: flex-start;
+  gap: var(--space-1) var(--space-2);
+}
+.checkWithField > label {
+  min-width: 0;
+  min-height: var(--h-field);
+}
+.inlineField {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  width: 280px;
+  max-width: 100%;
+}
+.inlineFieldHint {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  line-height: 1.4;
 }
 .suffix {
   color: var(--fg);
@@ -91,6 +117,32 @@
   align-items: center;
   flex-wrap: wrap;
   gap: var(--space-1) var(--space-4);
+}
+.stackedRadioBlock,
+.stackedRadios {
+  flex-direction: column;
+  align-items: flex-start;
+}
+.stackedRadioBlock {
+  margin-inline-end: 0;
+}
+.stackedRadioBlock > .radioLabel {
+  white-space: normal;
+}
+.stackedRadios {
+  max-width: 100%;
+}
+.stackedRadios .radio {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.stackedRadioBlock .radioLabel + .stackedRadios {
+  padding-inline-start: calc(var(--space-4) + var(--space-1));
+}
+.tabOverflowChoices {
+  align-items: flex-start;
+  gap: var(--space-1);
+  max-width: 100%;
 }
 .radio {
   display: inline-flex;
@@ -507,6 +559,28 @@
   display: inline-flex;
   align-items: center;
   gap: 1px;
+}
+
+/* Diff & Merge preview embeds a three-pane merge view (the `mergeSchemePreview` editor kind)
+   painted with the real diff decorations; clicking a coloured line selects its attribute. */
+.diffPreview {
+  margin: 14px 0 0;
+  border-radius: var(--radius-small);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  background: var(--bg-editor, var(--bg-island));
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 300px;
+}
+.diffLoading {
+  padding: var(--space-3);
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.diffPreview :global(.cm-editor) {
+  font-size: var(--fs-code);
 }
 
 /* Code Style tables */

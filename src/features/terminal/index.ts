@@ -122,8 +122,15 @@ export function activate(): () => void {
       icon: "toolwindow-terminal",
       anchor: "bottom",
       order: 10,
-      component: lazyComponent(() => loadTerminalRuntime().then((rt) => rt.TerminalView)),
+      component: lazyComponent(() => loadTerminalRuntime().then((rt) => rt.TerminalView), { prefetch: true }),
       headerContent: lazyComponent(() => loadTerminalRuntime().then((rt) => rt.TerminalTabs)),
+      plainTitle: true,
+      headerMenu: [
+        { kind: "action", action: "terminal.splitRight" },
+        { kind: "action", action: "terminal.splitDown" },
+        { kind: "separator" },
+        { kind: "action", action: "file.settings", arg: "tools.terminal", label: "Settings", icon: "settings" },
+      ],
     }),
     // Terminal sessions moved to the editor (#2202): saved with the editor session, kept alive while hidden.
     registerEditorKind({

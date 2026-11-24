@@ -18,7 +18,6 @@ pub mod ruby_reporter;
 pub mod scope;
 pub mod tomcat;
 mod utf8;
-pub mod which;
 pub mod wrap;
 
 pub use detect::cmake::{build_configs as cmake_build_configs, prepare as prepare_cmake};
@@ -182,6 +181,12 @@ pub struct RunExtras {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(optional)]
     pub target: Option<String>,
+    /// The test framework a test configuration runs when detection recognised one that the
+    /// command line doesn't name (a `package.json` script running `playwright test`): picks the
+    /// test output parser and how a single test is selected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(optional)]
+    pub test_runner: Option<String>,
 }
 
 impl Default for RunExtras {
@@ -205,6 +210,7 @@ impl Default for RunExtras {
             emulate_terminal: false,
             stop_command: None,
             target: None,
+            test_runner: None,
         }
     }
 }

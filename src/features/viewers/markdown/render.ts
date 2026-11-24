@@ -11,6 +11,9 @@ import { Marked, type Token, type TokensList } from "marked";
 import DOMPurify from "dompurify";
 import { mathExtension } from "@/editor/lsp/markdownMath";
 import { opensOtherShare } from "@/platform/paths";
+import { footnoteExtension, renderFootnotes } from "./footnotes";
+
+export const ANCHOR_PREFIX = "user-content-";
 
 const escapeHtml = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -24,7 +27,7 @@ const marked = new Marked({
       return `<div data-mermaid=""><pre><code class="language-mermaid">${escapeHtml(text)}</code></pre></div>\n`;
     },
   },
-}).use(mathExtension());
+}).use(mathExtension(), footnoteExtension(ANCHOR_PREFIX));
 
 // Own instance: hooks must not leak into the hover / documentation renderer.
 let purifier: ReturnType<typeof DOMPurify> | null = null;
@@ -56,12 +59,6 @@ function purify(): ReturnType<typeof DOMPurify> {
   return p;
 }
 
-/**
- * Heading ids carry GitHub's prefix: bare ids like `title` would clobber
- * `document` properties, so the sanitizer drops them.
- */
-export const ANCHOR_PREFIX = "user-content-";
-
 /** GitHub-style heading anchor: lower case, punctuation dropped, spaces → dashes. */
 export function slugify(text: string): string {
   return text
@@ -70,6 +67,14 @@ export function slugify(text: string): string {
     .replace(/<[^>]*>/g, "")
     .replace(/[^\p{L}\p{N}\s_-]/gu, "")
     .replace(/\s/g, "-");
+}
+
+/** The id of the next heading titled `text`, counting repeats in `slugs` as GitHub does (`a`, `a-1`, `a-2`…). */
+function headingId(slugs: Map<string, number>, text: string): string {
+  const base = slugify(text);
+  const n = slugs.get(base) ?? 0;
+  slugs.set(base, n + 1);
+  return n ? `${base}-${n}` : base;
 }
 
 const countLines = (s: string) => {
@@ -160,14 +165,12 @@ function blocks(text: string): { line: number; html: string }[] {
   for (const token of tokens) {
     const start = line;
     line += countLines(token.raw);
-    if (token.type === "space") continue;
+    if (token.type === "space" || token.type === "footnoteDefinition") continue;
     const list = Object.assign([token], { links: tokens.links }) as TokensList;
     let body = marked.parser(list);
     if (token.type === "heading") {
-      const base = slugify((token as Token & { text: string }).text);
-      const n = slugs.get(base) ?? 0;
-      slugs.set(base, n + 1);
-      body = body.replace(/^<h(\d)>/, `<h$1 id="${ANCHOR_PREFIX}${n ? `${base}-${n}` : base}">`);
+      const id = headingId(slugs, (token as Token & { text: string }).text);
+      body = body.replace(/^<h(\d)>/, `<h$1 id="${ANCHOR_PREFIX}${id}">`);
     }
     group ??= { line: start, html: "" };
     group.html += body;
@@ -177,6 +180,8 @@ function blocks(text: string): { line: number; html: string }[] {
     group = null;
   }
   if (group) out.push(group);
+  const footnotes = renderFootnotes(marked, tokens);
+  if (footnotes) out.push({ line: countLines(text), html: footnotes });
   return out;
 }
 
@@ -193,6 +198,25 @@ const wrap = (line: number, html: string) => `<div data-line="${line}">${html}</
 
 const sanitizeWhole = (all: readonly { line: number; html: string }[]) =>
   purify().sanitize(all.map((b) => wrap(b.line, b.html)).join(""), SANITIZE);
+
+/**
+ * 0-based source line of the heading the preview gives the anchor `anchor` (with or without
+ * {@link ANCHOR_PREFIX}), or null when no heading has it. Lets a link to another file open at
+ * that heading.
+ */
+export function headingLine(text: string, anchor: string): number | null {
+  const want = slugify(anchor.startsWith(ANCHOR_PREFIX) ? anchor.slice(ANCHOR_PREFIX.length) : anchor);
+  if (!want) return null;
+  const front = frontMatter(text);
+  const body = front ? text.split("\n").slice(front.lines).join("\n") : text;
+  const slugs = new Map<string, number>();
+  let line = front?.lines ?? 0;
+  for (const token of marked.lexer(body)) {
+    if (token.type === "heading" && headingId(slugs, (token as Token & { text: string }).text) === want) return line;
+    line += countLines(token.raw);
+  }
+  return null;
+}
 
 export function renderMarkdown(text: string): string {
   return sanitizeWhole(blocks(text));
@@ -334,10 +358,14 @@ export function previewOffsetForLine(
 
 /** Source line of the block at the top of a preview scrolled to `offset`: the first one if none is above it. */
 export function previewLineAtOffset(blocks: ReadonlyArray<{ line: number; top: number }>, offset: number): number {
-  let line = blocks[0]?.line ?? 0;
-  for (const b of blocks) {
-    if (b.top > offset + 1) break;
-    line = b.line;
+  // Read only the offsets needed for the lookup. Reading every block's layout on each
+  // scroll frame stutters on dense previews, and cached offsets would miss later reflows.
+  let lo = 0;
+  let hi = blocks.length;
+  while (lo < hi) {
+    const mid = lo + Math.floor((hi - lo) / 2);
+    if (blocks[mid]!.top <= offset + 1) lo = mid + 1;
+    else hi = mid;
   }
-  return line;
+  return blocks[Math.max(0, lo - 1)]?.line ?? 0;
 }

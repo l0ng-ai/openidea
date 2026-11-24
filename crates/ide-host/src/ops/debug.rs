@@ -44,7 +44,15 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
         && config.request == "launch"
         && let Ok(project) = host.project(window)
     {
-        super::python::prepare_debug(&mut config, &super::python::paths(&project))?;
+        let python = super::python::debug_python(&config);
+        let paths = super::python::with_user_paths(
+            super::python::paths(&project),
+            &host.config_dir,
+            &project,
+            python.as_deref(),
+            config.cwd.as_deref(),
+        );
+        super::python::prepare_debug(&mut config, &paths)?;
     }
     let label = window;
     let (sink, flush_output) = output::coalescing_sink(host.window_sink(label));
@@ -129,7 +137,8 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
     };
     host.require_trust(window)?;
     let server_port = debug_server_port(&config);
-    let result = host.debugger.start_with(config, owner, custom).await;
+    let exception_classes = server_port.and_then(|port| exception_class_backend(host, window, port));
+    let result = host.debugger.start_with_exception_classes(config, owner, custom, exception_classes).await;
     flush_output();
     if let Ok(id) = &result {
         let sink = host.window_sink(label);
@@ -206,6 +215,18 @@ fn attach_jvm_inspector(host: &Host, window: &str, session: DebugSessionId, port
     if let Err(e) = host.debugger.set_stream_tracer(session, tracer) {
         tracing::debug!("stream tracer for session {session:?}: {e}");
     }
+}
+
+/// Given before the session starts, unlike the inspector: the breakpoints are armed before
+/// `configurationDone`, so a throw in `main`'s first line stops.
+fn exception_class_backend(
+    host: &Host,
+    window: &str,
+    port: u16,
+) -> Option<std::sync::Arc<dyn ide_jvm_inspect::ExceptionClassBreakpoints>> {
+    let project = host.project(window).ok()?;
+    let module = project.lsp.java_debug_server_module(port)?;
+    Some(std::sync::Arc::new(ide_lsp::JdtExceptionBreakpoints::new(project.lsp.clone(), module)))
 }
 
 /// A JVM the debugger starts itself: an Application or Spring Boot configuration, launched by
@@ -343,6 +364,11 @@ pub async fn debug_variables(host: &Host, session: DebugSessionId, reference: i6
 }
 
 #[command(trust = trusted)]
+pub async fn debug_resolve_variable(host: &Host, session: DebugSessionId, variable: Variable) -> IdeResult<Variable> {
+    host.debugger.resolve_variable(session, variable).await
+}
+
+#[command(trust = trusted)]
 pub async fn debug_evaluate(
     host: &Host,
     session: DebugSessionId,
@@ -446,6 +472,16 @@ pub async fn debug_set_exception_breakpoints(
     choices: std::collections::BTreeMap<String, bool>,
 ) -> IdeResult<()> {
     host.debugger.set_exception_breakpoints(choices).await
+}
+
+/// Exception breakpoints on chosen classes (all sessions that take them, and later ones).
+#[command(trust = trusted)]
+pub async fn debug_set_exception_class_breakpoints(
+    host: &Host,
+    breakpoints: Vec<ExceptionClassBreakpoint>,
+) -> IdeResult<()> {
+    host.debugger.set_exception_class_breakpoints(breakpoints).await;
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -834,6 +870,7 @@ ide_command::domain!(
     debug_listen_for_jvm,
     debug_pause,
     debug_redefine_classes,
+    debug_resolve_variable,
     debug_restart_frame,
     debug_resume,
     debug_run_to,
@@ -843,6 +880,7 @@ ide_command::domain!(
     debug_set_breakpoints,
     debug_set_data_breakpoints,
     debug_set_exception_breakpoints,
+    debug_set_exception_class_breakpoints,
     debug_set_function_breakpoints,
     debug_set_variable,
     debug_stack_trace,

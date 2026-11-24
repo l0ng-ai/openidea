@@ -1,7 +1,7 @@
-use ide_core::NullSink;
+mod common;
+
 use ide_host::{Host, HostConfig, ops};
 use ide_workspace::settings::SettingsScope;
-use std::sync::Arc;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_maven_link_persists_reloads_and_unlink_keeps_files() {
@@ -17,17 +17,7 @@ async fn external_maven_link_persists_reloads_and_unlink_keeps_files() {
     std::fs::write(root.join("core/pom.xml"), "<project><artifactId>core</artifactId></project>").unwrap();
     std::fs::write(sibling.join("pom.xml"), b_pom).unwrap();
     let config = base.join("config");
-    let host = Host::new(HostConfig {
-        config_dir: config.clone(),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("local"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |window| window,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    });
+    let host = Host::new(HostConfig { local_data_dir: base.join("local"), ..common::host_config(&base) });
     host.open_project("main", &root).unwrap();
     host.set_project_trust(&root, true, false).await.unwrap();
 
@@ -49,7 +39,7 @@ async fn external_maven_link_persists_reloads_and_unlink_keeps_files() {
     assert_eq!(b.pom, canonical);
     assert_eq!(dunce::canonicalize(root.join(&b.dir)).unwrap(), sibling);
     assert_eq!(host.project("main").unwrap().content_roots(), vec![sibling.clone()]);
-    assert_eq!(host.project("main").unwrap().lsp.jdtls_import_roots(), vec![sibling.clone()]);
+    assert_eq!(import_roots(&host, |roots| !roots.is_empty()).await, vec![sibling.clone()]);
 
     let reloaded = ops::build::build_model(&host, "main").await.unwrap();
     assert_eq!(
@@ -63,11 +53,25 @@ async fn external_maven_link_persists_reloads_and_unlink_keeps_files() {
     let gone = ops::build::build_model(&host, "main").await.unwrap();
     assert!(gone.maven.unwrap().projects.iter().all(|p| p.artifact_id != "b"));
     assert!(host.project("main").unwrap().content_roots().is_empty());
-    assert!(host.project("main").unwrap().lsp.jdtls_import_roots().is_empty());
+    assert!(import_roots(&host, |roots| roots.is_empty()).await.is_empty());
     assert_eq!(saved(), Vec::<String>::new());
     assert_eq!(std::fs::read_to_string(root.join("pom.xml")).unwrap(), a_pom);
     assert_eq!(std::fs::read_to_string(sibling.join("pom.xml")).unwrap(), b_pom);
     host.shutdown().await;
+}
+
+/// The language server's Maven import roots once `ready` holds: a settings change refreshes them in
+/// the background. The deadline is generous because a loaded CI runner can take well over a few
+/// seconds to re-import.
+async fn import_roots(host: &Host, ready: impl Fn(&[std::path::PathBuf]) -> bool) -> Vec<std::path::PathBuf> {
+    for _ in 0..600 {
+        let roots = host.project("main").unwrap().lsp.jdtls_import_roots();
+        if ready(&roots) {
+            return roots;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    host.project("main").unwrap().lsp.jdtls_import_roots()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -86,17 +90,7 @@ async fn reactor_module_beside_a_trusted_project_is_a_content_root_until_removed
     std::fs::write(root.join("pom.xml"), reactor("<module>core</module><module>../service-a</module>")).unwrap();
     std::fs::write(root.join("core/pom.xml"), "<project><artifactId>core</artifactId></project>").unwrap();
     std::fs::write(service.join("pom.xml"), "<project><artifactId>service-a</artifactId></project>").unwrap();
-    let host = Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("local"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |window| window,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    });
+    let host = Host::new(HostConfig { local_data_dir: base.join("local"), ..common::host_config(&base) });
     host.open_project("main", &root).unwrap();
     let project = || host.project("main").unwrap();
     assert!(project().content_roots().is_empty(), "Restricted Mode does not widen the index");

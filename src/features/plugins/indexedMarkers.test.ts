@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { EditorState, type RangeSet, type StateEffect } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { iconAreaExtension } from "@/editor/core/cm/iconArea";
-import { offsetsToRange } from "@/editor/lsp/positions";
+import { offsetsToRange } from "@/editor/api";
 import type { FileMarkers } from "@/platform/ipc";
 import { indexedMarkers } from "./indexedMarkers";
 import { projectMarkerIcon } from "./markerIcons";

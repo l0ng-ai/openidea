@@ -17,6 +17,8 @@ import { djangoLabel, djangoTestsOf } from "./djangoTypes";
 import { scanJvmTargets, simpleClassName } from "./jvmTargets";
 import { escapeRegExp } from "./testing/rerun";
 import { pestFilter, phpunitArgs, phpunitFilter } from "./testing/phpunit";
+import { frameworkFor } from "./testing";
+import { withNodeTestNamePattern } from "./testing/nodeTest";
 
 export type TargetKind = "main" | "test" | "suite" | "generate";
 
@@ -132,8 +134,9 @@ function rustTargets(lines: string[], relPath: string): RunTarget[] {
   );
 }
 
+/** Jest / Vitest `describe` / `test` / `it` (Mocha's `specify` too), and Playwright's `test.describe` and modifiers. */
 const JS_RE =
-  /^(\s*)(describe|suite|context|test|it)\b(?:\.(?:only|skip|todo|concurrent|failing|sequential))*(\.each\s*(?:\(.*?\)|`[^`]*`))?\s*\(\s*(['"`])((?:\\.|(?!\4).)*)\4/;
+  /^(\s*)(test\.describe|describe|suite|context|test|it|specify)\b(?:\.(?:only|skip|todo|concurrent|failing|sequential|fixme|fail|serial|parallel))*(\.each\s*(?:\(.*?\)|`[^`]*`))?\s*\(\s*(['"`])((?:\\.|(?!\4).)*)\4/;
 
 function jsTargets(lines: string[]): RunTarget[] {
   const out: RunTarget[] = [];
@@ -146,7 +149,7 @@ function jsTargets(lines: string[]): RunTarget[] {
     const name = m[5]!.replace(/\\(.)/g, "$1");
     const parameterized = !!m[3] || (m[4] === "`" && name.includes("${")) || /%[sdifjo#%p]|\$\w+/.test(name);
     const path = [...stack.map((s) => s.name), name];
-    const isSuite = m[2] === "describe" || m[2] === "suite" || m[2] === "context";
+    const isSuite = m[2] === "test.describe" || m[2] === "describe" || m[2] === "suite" || m[2] === "context";
     out.push({ line: i, kind: isSuite ? "suite" : "test", name: path.join(" > "), path, parameterized });
     if (isSuite) stack.push({ indent, name });
   }
@@ -349,10 +352,6 @@ function jvmTargets(lines: string[], relPath: string): RunTarget[] {
   return out;
 }
 
-/**
- * Run targets of a file (relative path picks the language). `django`: a Django project, where
- * `tests.py` (Django's default test module) holds tests too.
- */
 /** Zig: a top-level `pub fn main` and `test "name" {` / `test name {` blocks, nested ones too. */
 export function zigTargets(content: string): RunTarget[] {
   if (content.length > MAX_SCAN) return [];
@@ -369,7 +368,17 @@ export function zigTargets(content: string): RunTarget[] {
   return out;
 }
 
-export function detectRunTargets(text: string, relPath: string, django = false): RunTarget[] {
+/** Whether the project tests with Mocha or `node --test`, which look in `test/` by default, whatever a file's name. */
+export function testsInTestDirectory(configs: readonly RunConfig[]): boolean {
+  return configs.some((c) => c.isTest && ["mocha", "node-test"].includes(frameworkFor(c)));
+}
+
+/**
+ * Run targets of a file (relative path picks the language). `django`: a Django project, where
+ * `tests.py` (Django's default test module) holds tests too. `testDirectory`: JS files in `test/`
+ * hold tests whatever their name (`testsInTestDirectory`).
+ */
+export function detectRunTargets(text: string, relPath: string, django = false, testDirectory = false): RunTarget[] {
   if (text.length > MAX_SCAN) return [];
   const lines = text.split("\n");
   switch (targetLanguage(relPath)) {
@@ -378,7 +387,10 @@ export function detectRunTargets(text: string, relPath: string, django = false):
     case "rust":
       return rustTargets(lines, relPath);
     case "js":
-      return /\.(test|spec)\.[cm]?[jt]sx?$|(^|\/)__tests__\//.test(relPath) ? jsTargets(lines) : [];
+      return /\.(test|spec)\.[cm]?[jt]sx?$|(^|\/)__tests__\//.test(relPath) ||
+        (testDirectory && /(^|\/)test\//.test(relPath))
+        ? jsTargets(lines)
+        : [];
     case "python":
       return pythonTargets(lines).filter(
         (t) =>
@@ -469,6 +481,12 @@ export function targetConfig(
     env: { ...file.env },
     detected: true,
   });
+  // Playwright selects by declaration line (`file:line`), which also covers a describe block.
+  if (frameworkFor(file) === "playwright") return named(withLast(file.args, (f) => `${f}:${target.line + 1}`));
+  // node:test selects by full name, through NODE_OPTIONS (see `nodeTest.ts`).
+  if (frameworkFor(file) === "node-test")
+    return { ...named(file.args), env: withNodeTestNamePattern(file.env, jsNamePattern(target)) };
+  if (frameworkFor(file) === "mocha") return named([...file.args, "--grep", jsNamePattern(target)]);
   switch (file.kind) {
     case "dotnet-test": {
       const methods =
@@ -482,6 +500,7 @@ export function targetConfig(
     case "npm":
     case "bun":
     case "deno":
+    case "node":
       return named([...file.args, "-t", jsNamePattern(target)]);
     case "pytest":
     case "python":

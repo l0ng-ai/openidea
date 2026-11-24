@@ -124,6 +124,33 @@ describe("in-place rename edits elsewhere", () => {
     expect(view.state.doc.toString()).toBe("let foo = 1; foo + foo;");
   });
 
+  it("puts a clicked suggestion in, and finishes on a double click", () => {
+    const view = new EditorView({
+      parent: document.body,
+      state: EditorState.create({ doc: "let foo = 1; foo + foo;", extensions: [inplaceRenameExtension()] }),
+    });
+    views.push(view);
+    const commit = vi.fn();
+    startInplaceRename(view, {
+      primary: { from: 4, to: 7 },
+      others: [{ from: 13, to: 16 }],
+      hint: "",
+      suggestions: ["count", "total"],
+      commit,
+      dialog: vi.fn(),
+    });
+    const item = (name: string) =>
+      [...view.dom.querySelectorAll<HTMLButtonElement>(".cm-lsp-inplace-suggestions button")].find(
+        (button) => button.textContent === name,
+      )!;
+    item("total").dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, detail: 1 }));
+    expect(view.state.doc.toString()).toBe("let total = 1; total + foo;");
+    expect(inplaceRenameActive(view.state)).toBe(true);
+    item("count").dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, detail: 2 }));
+    expect(commit).toHaveBeenCalledWith("count");
+    expect(inplaceRenameActive(view.state)).toBe(false);
+  });
+
   it("leaves the arrows alone without suggestions", () => {
     const { view } = session();
     expect(cycleSuggestion(view, 1)).toBe(false);

@@ -7,12 +7,12 @@ OpenIDEA is a Tauri 2 app: a Rust backend (`crates/`, `src-tauri/`) and a React 
 
 ## Prerequisites
 
-| Tool                      | Version               | Notes                                                                                                     |
-| ------------------------- | --------------------- | --------------------------------------------------------------------------------------------------------- |
-| Rust                      | stable, at least 1.96 | `rust-version` in the root `Cargo.toml`. Install `clippy` and `rustfmt` too.                              |
-| Node.js                   | 22.18 or newer        | The repo's scripts (`scripts/*.ts`, `perf/*.ts`) are run directly by Node as TypeScript. CI uses Node 22. |
-| pnpm                      | 11                    | The version CI uses.                                                                                      |
-| Tauri system dependencies | —                     | Per OS: see [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).                             |
+| Tool                      | Version                | Notes                                                                                                              |
+| ------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Rust                      | stable, at least 1.96  | `rust-version` in the root `Cargo.toml`. Install `clippy` and `rustfmt` too.                                       |
+| Node.js                   | 22.x, at least 22.22.2 | CI uses Node 22. Node runs the TypeScript scripts directly; the locked jsdom requires this patch or newer on 22.x. |
+| pnpm                      | 11                     | The version CI uses.                                                                                               |
+| Tauri system dependencies | —                      | Per OS: see [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).                                      |
 
 On Linux (Ubuntu 22.04, as in CI) the system packages are:
 
@@ -53,6 +53,21 @@ Other everyday commands:
 | `pnpm build`        | Typecheck and bundle the frontend, then check the bundle against the WebKit floor (`scripts/check-webkit.ts`). |
 | `pnpm gen:bindings` | Regenerate `src/bindings.ts` from the Rust command signatures.                                                 |
 | `pnpm dev`          | Vite alone: the UI in a plain browser with in-memory backends (no Rust).                                       |
+
+## Optional: use mise
+
+Instead of installing Rust, Node.js and pnpm separately, [install mise](https://mise.jdx.dev/installing-mise.html). You still need the Tauri system dependencies above. From the cloned worktree, after reviewing `mise.toml`, run:
+
+```sh
+mise trust
+mise install
+mise run setup
+mise run dev
+```
+
+`setup` runs `pnpm install` in this worktree. `dev` and `dev:app` use the same worktree-aware launchers as the direct commands. No shell activation is needed for `mise run`.
+
+Run `mise tasks` to list all tasks. `mise run build` builds the frontend (not a desktop installer); `mise run dogfood:build` and `mise run dogfood:install` build and locally install a grey-icon dogfood desktop app that shares settings and data with the release app. Only one of the two apps runs at a time, since they share one instance; settings written by the newer dogfood build can make an older release ignore the settings file. The dogfood app never updates itself: run `dogfood:install` again to pick up new changes. `mise run dogfood:remote <remote_name>` builds and stages `openidea-server` on an SSH host configured in **Tools › SSH Configurations** (`--clean` removes the override). `mise run test` runs Vitest and `cargo test --workspace`; `mise run check` runs the format, lint, type and unused-code checks, then both test suites. Neither requires nextest or the plugin WASM target.
 
 ## Worktrees
 

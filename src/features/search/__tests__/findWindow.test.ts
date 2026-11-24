@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { provideToolWindowService, type ToolWindowService } from "@/workbench/contributions";
 import type { FileMatches, SearchQuery } from "@/platform/ipc";
-import { buildFindTree } from "../find/FindToolWindow";
+import { buildFindTree } from "../find/findTree";
 import type { FindDeps } from "../find/session";
 import {
   closeFindTab,
@@ -85,6 +85,14 @@ describe("buildFindTree", () => {
     const roots = buildFindTree(files);
     expect(roots.map((n) => n.kind)).toEqual(["file", "file", "file"]);
     expect(roots.map((n) => n.key)).toEqual(["f:/p/a.ts", "f:/p/src/a.ts", "f:/p/src/b.ts"]);
+  });
+
+  it("keeps each window of a long line as its own node", () => {
+    const long = file("min.js");
+    long.matches.push({ ...long.matches[0]!, textOffset: 2000 });
+    const [f] = buildFindTree([long]);
+    const children = f?.kind === "file" ? f.children : [];
+    expect(new Set(children.map((n) => n.key)).size).toBe(2);
   });
 
   it("groups files by directory on request", () => {

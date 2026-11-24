@@ -15,7 +15,7 @@ import { isUntitledUri } from "@/platform/virtualDocs";
 import { formatDocument } from "@/editor/lsp/format";
 import { chooserTitle, locationItems, pinToFind } from "@/editor/lsp/navigation";
 import { openPopup } from "@/editor/lsp/popupStore";
-import { editorController } from "./controller";
+import { editorController, useTabs } from "./controller";
 import { attachDocument } from "./model/attachment";
 import { previewExtensions } from "./cm/preview";
 import { registerEditorActions } from "./actions";
@@ -55,6 +55,7 @@ export function activate(): void | (() => void) {
       [...ctrl.manager.byId.values()].filter((m) => isUntitledUri(m.path) && m.getMeta().dirty).map((m) => m.doc),
     focus: () => ctrl.focus(),
     openPaths: () => ctrl.openPaths(),
+    onOpenTabsChange: (fn) => useTabs.subscribe(fn),
     openTabs: () => ctrl.openTabs(),
     tabInput: (paneId, tabId) => ctrl.tabInput(paneId, tabId),
     activeInput: () => ctrl.activeInput(),

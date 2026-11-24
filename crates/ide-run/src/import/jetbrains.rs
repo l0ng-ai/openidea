@@ -715,13 +715,7 @@ impl Cx<'_> {
         };
         let manager = match self.path(c.value("package-manager"))? {
             Some(pm) if ["npm", "pnpm", "yarn", "bun"].contains(&command_name(&pm)) => command_name(&pm).to_owned(),
-            _ => {
-                let pkg = std::fs::read_to_string(dir.join("package.json"))
-                    .ok()
-                    .and_then(|t| serde_json::from_str(&t).ok())
-                    .unwrap_or_default();
-                crate::detect::package_manager(&dir, &pkg).to_owned()
-            }
+            _ => ide_core::project_roots::package_manager(&dir).to_owned(),
         };
         let command = self.text(c.value("command"))?.unwrap_or_else(|| "run".into());
         let scripts: Vec<&str> = c

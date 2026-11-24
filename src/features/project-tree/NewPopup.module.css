@@ -1,31 +1,33 @@
 /* IDEA's New popup: search field over a list of file kinds. */
 .popup {
-  width: 280px;
+  width: 304px;
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  padding-bottom: 4px;
+  padding-bottom: var(--space-1);
 }
 .search {
+  flex: none;
   display: flex;
   align-items: center;
-  gap: var(--space-1-5);
-  height: var(--h-row);
-  padding: 0 10px;
+  gap: var(--space-2);
+  padding: var(--space-1);
   border-bottom: 1px solid var(--border-popup);
-  margin-bottom: 4px;
+  margin: 0 var(--space-3) var(--space-1);
 }
 .searchIcon {
   flex: none;
   color: var(--fg-muted);
 }
-.input {
+.search .input {
   flex: 1;
   min-width: 0;
+  height: var(--h-row);
 }
 .list {
+  --list-inset: var(--space-2);
   max-height: 420px;
-  height: auto;
+  font-size: var(--fs-ui);
 }
 .row {
   display: flex;
@@ -53,8 +55,9 @@
 }
 .shortcut {
   flex: none;
-  margin-left: 16px;
+  margin-left: var(--space-2);
   font-family: var(--font-keys);
+  font-size: var(--fs-small);
   color: var(--fg-muted);
 }
 .separator {
@@ -63,7 +66,7 @@
   background: var(--border-popup);
 }
 .empty {
-  padding: 6px 10px;
+  padding: var(--space-2) var(--space-3);
   color: var(--fg-faint);
   font-size: var(--fs-small);
 }

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 
 const mocks = vi.hoisted(() => ({
   worktree: vi.fn(),
@@ -126,6 +126,47 @@ describe("CompareToolWindow", () => {
     expect(mocks.openFile).toHaveBeenCalledWith("/workspace/client/src/app.ts", { focus: true });
   });
 
+  it("groups working-tree diffs by the requested repositories and opens the selected copy of a common path", async () => {
+    const roots = ["/workspace/client", "/workspace/server"];
+    useVcs.setState({ roots: [...roots, "/workspace/tools"], repo: "/workspace/tools" });
+    const ref = { rev: "refs/heads/main", label: "main" };
+    useCompareTool.getState().show(ref, null, roots);
+    mocks.worktree.mockResolvedValue({ status: "ok", data: [modified] });
+    mocks.openDiff.mockResolvedValue(undefined);
+    render(<CompareToolWindow />);
+
+    const files = await screen.findAllByText("app.ts");
+    expect(files).toHaveLength(2);
+    expect(screen.getByText("client")).toBeInTheDocument();
+    expect(screen.getByText("server")).toBeInTheDocument();
+    expect(mocks.worktree.mock.calls).toEqual(roots.map((root) => [root, ref.rev]));
+    fireEvent.doubleClick(files[1]!);
+    expect(mocks.openDiff).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: "/workspace/server/src/app.ts",
+        left: expect.objectContaining({ rev: ref.rev }),
+      }),
+    );
+
+    act(() => useCompareTool.getState().show(ref, null, [roots[0]!]));
+    expect(await screen.findAllByText("app.ts")).toHaveLength(1);
+    expect(mocks.worktree).toHaveBeenLastCalledWith(roots[0], ref.rev);
+
+    act(() => useCompareTool.getState().show(ref, null, [roots[0]!]));
+    expect(await screen.findAllByText("app.ts")).toHaveLength(1);
+    expect(mocks.worktree).toHaveBeenCalledTimes(4);
+  });
+
+  it("keeps results from repositories it can compare and names the repository that failed", async () => {
+    useCompareTool.getState().show(from, null, ["/workspace/client", "/workspace/server"]);
+    mocks.worktree
+      .mockResolvedValueOnce({ status: "ok", data: [modified] })
+      .mockRejectedValueOnce(new Error("revision unavailable"));
+    render(<CompareToolWindow />);
+    expect(await screen.findByText("app.ts")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Cannot compare server against main: revision unavailable");
+  });
+
   it("shows Java and Kotlin declarations from the compared repository and skips deleted files", async () => {
     const base = "/workspace/client/src/";
     mocks.worktree.mockResolvedValue({
@@ -165,6 +206,36 @@ describe("CompareToolWindow", () => {
     render(<ChangesBetweenDialog from={from} to={{ rev: "next", label: "next" }} onClose={() => {}} />);
     expect(await screen.findByTestId("icon-file-java")).toBeInTheDocument();
     expect(mocks.presentations).not.toHaveBeenCalled();
+  });
+
+  it("opens the selected revision diff from the native comparison toolbar", async () => {
+    mocks.revisions.mockResolvedValue({ status: "ok", data: [modified] });
+    const onShowDiff = vi.fn();
+    const onClose = vi.fn();
+    render(
+      <ChangesBetweenDialog
+        from={from}
+        to={{ rev: "next", label: "next" }}
+        onClose={onClose}
+        onShowDiff={onShowDiff}
+        native
+      />,
+    );
+
+    const toolbar = screen.getByRole("toolbar", { name: "Comparison actions" });
+    const showDiff = within(toolbar).getByRole("button", { name: "Show Diff" });
+    expect(showDiff).toBeDisabled();
+    fireEvent.mouseDown(await screen.findByText("app.ts"), { button: 0 });
+    expect(await screen.findByTestId("diff")).toBeInTheDocument();
+    expect(showDiff).toBeEnabled();
+    fireEvent.click(showDiff);
+    expect(onShowDiff).toHaveBeenCalledWith({
+      path: "/workspace/client/src/app.ts",
+      left: { type: "rev", rev: "main", label: "main", path: undefined },
+      right: { type: "rev", rev: "next", label: "next" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(onClose).toHaveBeenCalledOnce();
   });
 
   it("lists files without an inline diff and opens a file's diff in the editor", async () => {

@@ -27,6 +27,7 @@ import type {
   RunId,
   SymbolKind,
 } from "@/bindings";
+import { getContext } from "@/platform/context";
 import { notifyEach } from "@/platform/listeners";
 import type { ProjectType } from "@/ui/projectType";
 import type { MenuItem } from "@/ui/Menu";
@@ -174,7 +175,7 @@ export interface EditorKindContribution {
    * the dirty mark, Save All, autosave and the close prompts. Tabs with equal
    * `input.key` (splits) share one document.
    */
-  document?: EditorDocumentLifecycle;
+  document?: EditorDocumentLifecycle | ((input: EditorInput) => EditorDocumentLifecycle | undefined);
 }
 
 /**
@@ -183,6 +184,8 @@ export interface EditorKindContribution {
  * document. Call `notifyEditorDocumentChanged` whenever `isDirty` may change.
  */
 export interface EditorDocumentLifecycle {
+  /** A clean document can use the preview slot. Any edit promotes its tabs. */
+  allowPreview?: boolean;
   /** Unsaved changes, pending edits not committed yet included. */
   isDirty(input: EditorInput): boolean;
   /** Commits pending edits; rejects when they can't be. */
@@ -201,6 +204,7 @@ export interface EditorDocumentLifecycle {
   /** Releases the document (and its kernel…) once no tab shows it any more. Called once per open. */
   close(input: EditorInput): Promise<void>;
   /** Edit › Undo / Redo while the editor has focus. */
+  handlesHistory?(input: EditorInput): boolean;
   undo?(input: EditorInput): Promise<void>;
   redo?(input: EditorInput): Promise<void>;
 }
@@ -288,6 +292,8 @@ export interface ServiceProviderContribution {
   menu?(item: ServiceTreeItem): MenuItem[];
   /** Double click / Enter. */
   activate?(item: ServiceTreeItem): void;
+  /** Jump to Source (F4 / ⌘↓); a provider without it activates the node instead. */
+  jumpToSource?(item: ServiceTreeItem): void;
   /** A node of this provider became the lead selection. */
   select?(item: ServiceTreeItem): void;
   /** A node of this provider was expanded or collapsed. */
@@ -385,6 +391,27 @@ export function registerGitLogChecks(cell: GitLogChecksCell): () => void {
   useGitLogChecks.setState({ cell });
   return () => {
     if (useGitLogChecks.getState().cell === cell) useGitLogChecks.setState({ cell: null });
+  };
+}
+
+export interface WorktreeReview {
+  title: string;
+  open: () => Promise<void>;
+}
+
+export interface WorktreeReviewQuery {
+  root: string;
+  paths: string[];
+  branches: string[];
+}
+
+type WorktreeReviewProvider = (query: WorktreeReviewQuery) => Promise<ReadonlyMap<string, WorktreeReview>>;
+export const useWorktreeReviewProvider = create<{ lookup: WorktreeReviewProvider | null }>(() => ({ lookup: null }));
+
+export function registerWorktreeReviewProvider(lookup: WorktreeReviewProvider): () => void {
+  useWorktreeReviewProvider.setState({ lookup });
+  return () => {
+    if (useWorktreeReviewProvider.getState().lookup === lookup) useWorktreeReviewProvider.setState({ lookup: null });
   };
 }
 
@@ -571,13 +598,30 @@ export function registerExternalFileOpenHandler(handler: ExternalFileOpenHandler
   };
 }
 
+/** Default custom editors that should open in the IDE instead of an associated app. */
+const externalOpenSuppressions = new Map<string, (path: string) => boolean>();
+
+/** Skip associated-application open for paths a default custom editor claims. */
+export function registerExternalOpenSuppression(id: string, matches: (path: string) => boolean): () => void {
+  externalOpenSuppressions.set(id, matches);
+  return () => {
+    if (externalOpenSuppressions.get(id) === matches) externalOpenSuppressions.delete(id);
+  };
+}
+
+function externalOpenSuppressed(path: string): boolean {
+  return [...externalOpenSuppressions.values()].some((matches) => matches(path));
+}
+
 /** Whether opening `path` would hand it to another application. */
 export function opensExternally(path: string): boolean {
+  if (externalOpenSuppressed(path)) return false;
   return [...externalFileOpenHandlers.values()].some((h) => h.matches(path));
 }
 
 /** Opens `path` with another application; false when no handler took it. Handler failures fall through. */
 export async function openFileExternally(path: string): Promise<boolean> {
+  if (externalOpenSuppressed(path)) return false;
   const handlers = [...externalFileOpenHandlers.values()].sort(
     (a, b) => (a.order ?? 100) - (b.order ?? 100) || a.id.localeCompare(b.id),
   );
@@ -603,6 +647,8 @@ export interface TextEditorWrapperContribution {
   component: ComponentType<{ path: string; tabId: string; children: ReactNode; actionsInTabs?: boolean }>;
   /** Layout controls in the tab strip; the wrapper supplies a floating fallback when tabs are hidden. */
   tabActions?: ComponentType<{ path: string; tabId: string }>;
+  /** Hook: true while the wrapper hides the source editor of `tabId` (a preview-only layout), which drops its code breadcrumbs. */
+  useSourceHidden?: (tabId: string) => boolean;
 }
 
 export const useTextEditorWrappers = create<{ wrappers: Map<string, TextEditorWrapperContribution> }>(() => ({
@@ -718,6 +764,8 @@ export interface EditorService {
   focus?(): void;
   /** Paths of the documents open in editor tabs (all panes, tab order). */
   openPaths?(): string[];
+  /** Observe tab changes, including open or closed background tabs. */
+  onOpenTabsChange?(fn: () => void): () => void;
   /** Every open tab, files or not, most recently active first (Switcher). */
   openTabs?(): OpenEditorTab[];
   /** Input of the tab `tabId` in pane `paneId` (dragging tabs between views), null if there is none. */
@@ -851,12 +899,27 @@ export interface RunOutputService {
   subscribe(process: RunId, listener: (kind: "stdout" | "stderr" | "system", text: string) => void): () => void;
 }
 
+export interface RunConfigurationCheckResult {
+  name: string;
+  status: "notStarted" | "stopped" | "finished";
+  exitCode?: number | null;
+  failedTests?: number;
+  review?: () => void;
+}
+
+export interface RunConfigurationCheckService {
+  configurations(): readonly RunConfig[];
+  subscribe(listener: () => void): () => void;
+  run(id: string, signal: AbortSignal): Promise<RunConfigurationCheckResult[]>;
+}
+
 const services: {
   editor?: EditorService;
   toolWindows?: ToolWindowService;
   notifications?: NotificationService;
   embeddedTerminal?: EmbeddedTerminalFactory;
   runOutput?: RunOutputService;
+  runConfigurationChecks?: RunConfigurationCheckService;
   hasRunConfiguration?: (kind: string, directory: string) => boolean;
 } = {};
 
@@ -870,6 +933,9 @@ export const provideToolWindowService = (s: ToolWindowService) => void (services
 export const provideNotificationService = (s: NotificationService) => void (services.notifications = s);
 export const provideEmbeddedTerminal = (f: EmbeddedTerminalFactory | undefined) => void (services.embeddedTerminal = f);
 export const provideRunOutput = (s: RunOutputService | undefined) => void (services.runOutput = s);
+export const provideRunConfigurationChecks = (s: RunConfigurationCheckService | undefined) =>
+  void (services.runConfigurationChecks = s);
+export const runConfigurationChecks = () => services.runConfigurationChecks;
 export const provideRunConfigurationLookup = (lookup: typeof services.hasRunConfiguration) =>
   void (services.hasRunConfiguration = lookup);
 export const hasRunConfiguration = (kind: string, directory: string): boolean =>
@@ -1502,6 +1568,11 @@ export interface ProjectViewLead {
  * editor takes over (focus, tab switch). `null` = the editor is the context.
  */
 export const useProjectViewLead = create<{ lead: ProjectViewLead | null }>(() => ({ lead: null }));
+
+/** The Project view lead while the editor does not have focus. */
+export function projectViewContextLead(): ProjectViewLead | null {
+  return getContext().editorFocus ? null : useProjectViewLead.getState().lead;
+}
 
 export function setProjectViewLead(lead: ProjectViewLead | null) {
   const prev = useProjectViewLead.getState().lead;

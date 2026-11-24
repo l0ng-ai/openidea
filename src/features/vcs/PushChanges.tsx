@@ -10,6 +10,7 @@ import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { Button, IconButton, Spinner, SplitGroup, SplitHandle, SplitPanel, T } from "@/ui";
+import { CommitMessageContent } from "./CommitMessageContent";
 import { ComparisonTree } from "./ComparisonTree";
 import { buildFileTree } from "./fileTree";
 import { flatFileNodes, toLogChanges, type LogChange } from "./logChanges";
@@ -151,14 +152,9 @@ export function PushChanges({
 
 /** The selected commit's full message, revision, author and time. */
 function PushCommitDetails({ commit }: { commit: Commit }) {
-  const date = commit.timeMs ? new Date(commit.timeMs).toLocaleString() : null;
   return (
     <section className={styles.pushCommitDetails} aria-label={tx("Commit details")}>
-      <div className={styles.pushCommitMessage}>{commit.message.trimEnd() || commit.summary}</div>
-      <div className={styles.fileDir}>
-        {commit.shortId} {commit.author} &lt;{commit.email}&gt;
-        {date ? " " + tx`on ${date}` : ""}
-      </div>
+      <CommitMessageContent commit={commit} message={commit.message.trimEnd() || commit.summary} />
     </section>
   );
 }

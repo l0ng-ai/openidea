@@ -1,3 +1,4 @@
+import { SearchHistoryMenu } from "@/ui/SearchHistoryMenu";
 import {
   useEffect,
   useId,
@@ -11,10 +12,11 @@ import {
 import clsx from "clsx";
 import { openEditorPaths, useEditorRegistry } from "@/editor/api";
 import { executeAction } from "@/platform/actions";
+import { choosePath } from "@/platform/choosePath";
 import { setContext } from "@/platform/context";
-import { t, useTxTemplate, tx } from "@/platform/i18n";
-import { formatBinding, hostBinding, shortcutLabel } from "@/platform/keymap";
-import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
+import { t, useTxTemplate, tx, txPart } from "@/platform/i18n";
+import { formatBinding, hostBinding, registerKeyClaim, shortcutLabel } from "@/platform/keymap";
+import { call, commands, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { useProjectModules } from "@/platform/projectRoots";
 import { EDIT_SCOPES_ACTION, useCustomScopeList } from "@/platform/search";
@@ -39,14 +41,12 @@ import {
 } from "@/ui";
 import { useRowHeight } from "@/ui/density";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
-import { confirm } from "@/workbench/messages";
 import { basename, dirname, openLocation } from "../common/open";
 import { CodePreview, MatchText, ReplaceDiffPreview } from "./parts";
 import { clearPreviewCache } from "./preview";
+import { confirmReplacement } from "./ReplaceAllConfirmation";
 import {
   NO_MARKS,
-  confirmAllText,
-  confirmText,
   countUsages,
   groupState,
   loadReplacePreview,
@@ -74,7 +74,6 @@ import {
   customScopeName,
   customScopeValue,
   describeQuery,
-  findHistory,
   hideFindPopup,
   recentMasks,
   rememberFindString,
@@ -100,15 +99,7 @@ import styles from "./FindInFiles.module.css";
 
 /** The Directory scope's browse button: a folder chooser opened at the current directory. */
 async function chooseDirectory(current: string): Promise<string | null> {
-  if (!isTauri()) return null;
-  const { open } = await import("@/platform/dialog");
-  const picked = await open({
-    directory: true,
-    multiple: false,
-    title: tx("Select Search Directory"),
-    defaultPath: current || undefined,
-  });
-  return (Array.isArray(picked) ? picked[0] : picked) ?? null;
+  return choosePath({ directory: true, title: tx("Select Search Directory"), defaultPath: current });
 }
 
 const POPUP_MAX_MATCHES = 2000;
@@ -193,7 +184,19 @@ function FindInFilesDialog() {
   // Hidden popup actions (⌘G, F4, ⌥↓ …) win over the editor's bindings while this is set.
   useEffect(() => {
     setContext("findPopupOpen", true);
-    return () => setContext("findPopupOpen", false);
+    const release = registerKeyClaim(
+      (e) =>
+        e.key === "Enter" &&
+        (e.ctrlKey || e.metaKey) &&
+        !e.altKey &&
+        !e.shiftKey &&
+        e.target instanceof HTMLElement &&
+        e.target.matches("[data-find-field] :is(input, textarea)"),
+    );
+    return () => {
+      release();
+      setContext("findPopupOpen", false);
+    };
   }, []);
 
   useEffect(() => {
@@ -272,6 +275,8 @@ function FindInFilesDialog() {
   const rows = useMemo(() => matchRows(state.files), [state.files]);
   const active = rows.length ? Math.min(sel.lead, rows.length - 1) : -1;
   const selected = active >= 0 ? rows[active] : undefined;
+  const previewDirectory = selected?.relPath.includes("/") ? dirname(selected.relPath) : "";
+  const previewParentStart = Math.max(0, previewDirectory.lastIndexOf("/"));
   const chosen = useMemo(() => selectedRows(rows, sel), [rows, sel]);
   const fileHighlights = useMemo(() => {
     if (stale || !selected) return [];
@@ -334,22 +339,11 @@ function FindInFilesDialog() {
       void replaceAll(usages);
       return;
     }
-    const ok = await confirm({
-      title: "Replace All",
-      ok: "Replace",
-      message: (
-        <>
-          {allInScope
-            ? confirmAllText(s.pattern, s.replacement || "")
-            : confirmText(counts, s.pattern, s.replacement || "")}
-          {marks.excluded.size > 0 && (
-            <>
-              {" "}
-              <T>Excluded usages are skipped.</T>
-            </>
-          )}
-        </>
-      ),
+    const ok = await confirmReplacement({
+      counts: allInScope ? null : counts,
+      pattern: s.pattern,
+      replacement: s.replacement || "",
+      hasExclusions: marks.excluded.size > 0,
     });
     if (ok) void replaceAll(usages, allInScope);
   };
@@ -491,8 +485,7 @@ function FindInFilesDialog() {
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
-    const inField =
-      (target.tagName === "INPUT" || target.tagName === "TEXTAREA") && target.closest("[data-find-field]");
+    const inField = target.matches("[data-find-field] :is(input, textarea)");
     if (e.key === "Backspace" && e.altKey && e.shiftKey && !e.metaKey && !e.ctrlKey) {
       e.preventDefault();
       clearOptions();
@@ -552,19 +545,6 @@ function FindInFilesDialog() {
     checked: m === s.mask ? true : undefined,
     run: () => set({ mask: m, maskEnabled: true }),
   }));
-  const historyItems = (kind: "find" | "replace"): MenuItem[] => {
-    const h = findHistory(kind);
-    return h.length
-      ? [
-          { kind: "header", label: kind === "find" ? "Recent Searches" : "Recent Replacements" },
-          ...h.map((q) => ({
-            label: q,
-            verbatim: true,
-            run: () => set(kind === "find" ? { pattern: q } : { replacement: q }),
-          })),
-        ]
-      : [{ label: kind === "find" ? "No recent searches" : "No recent replacements", disabled: true }];
-  };
   const contextItems: MenuItem[] = SEARCH_CONTEXTS.map((c) => ({
     label: c.label,
     checked: c.value === s.context ? true : undefined,
@@ -611,6 +591,7 @@ function FindInFilesDialog() {
         }
         renderItem={(r, st) => {
           const state = s.replace ? groupState(r, marks) : "pending";
+          const repeatedFile = !st.active && rows[st.index - 1]?.path === r.path;
           return (
             <>
               <span
@@ -626,13 +607,20 @@ function FindInFilesDialog() {
                   source={{ path: r.path, line: r.line, col: r.textCol }}
                 />
               </span>
-              <span className={clsx(styles.rowFile, st.active && styles.rowFileActive)}>
-                {state === "done" && (
-                  <span className={styles.rowLine}>
-                    <T>replaced ·</T>{" "}
-                  </span>
-                )}
-                {workspace ? r.relPath : basename(r.relPath)} <span className={styles.rowLine}>{r.line + 1}</span>
+              <span className={clsx(styles.rowLocation, st.active && styles.rowLocationActive)}>
+                <span
+                  className={clsx(styles.rowFile, repeatedFile && styles.rowFileRepeated)}
+                  title={r.relPath}
+                  dir="auto"
+                >
+                  {state === "done" && (
+                    <>
+                      <T>replaced ·</T>{" "}
+                    </>
+                  )}
+                  {workspace ? r.relPath : basename(r.relPath)}
+                </span>{" "}
+                <span className={styles.rowLine}>{r.line + 1}</span>
               </span>
             </>
           );
@@ -722,6 +710,7 @@ function FindInFilesDialog() {
               invalid={state.status === "invalid"}
               className={styles.field}
               multiline
+              maxRows={3}
               onHistory={() => setHistoryMenu("find")}
               toggles={[
                 {
@@ -762,6 +751,7 @@ function FindInFilesDialog() {
                 aria-label="Replace with"
                 className={styles.field}
                 multiline
+                maxRows={3}
                 onHistory={() => setHistoryMenu("replace")}
                 toggles={[
                   {
@@ -871,16 +861,21 @@ function FindInFilesDialog() {
               </SplitPanel>
               <SplitHandle hairline={false} />
               <SplitPanel id="preview" minSize={96}>
-                <div className={styles.previewHeader}>
-                  {selected ? (
-                    <span className={styles.previewPath}>
-                      <span className={styles.previewName}>{basename(selected.relPath)}</span>
-                      {selected.relPath.includes("/") && dirname(selected.relPath)}
-                    </span>
-                  ) : (
-                    <span />
-                  )}
-                </div>
+                {selected && (
+                  <div className={styles.previewHeader} title={selected.relPath}>
+                    <span className={styles.previewName}>{basename(selected.relPath)}</span>
+                    {previewDirectory && (
+                      <span className={styles.previewDirectory} dir="ltr">
+                        {previewParentStart > 0 && (
+                          <span className={styles.previewSegment}>{previewDirectory.slice(0, previewParentStart)}</span>
+                        )}
+                        <span className={clsx(styles.previewSegment, styles.previewParent)}>
+                          {previewDirectory.slice(previewParentStart)}
+                        </span>
+                      </span>
+                    )}
+                  </div>
+                )}
                 <div className={styles.previewBox}>
                   {!stale && previewMode && s.replace && selected ? (
                     <ReplaceDiffPreview
@@ -903,30 +898,37 @@ function FindInFilesDialog() {
           )}
         </div>
         <footer className={styles.footer}>
-          <Checkbox
-            checked={s.newTab}
-            onChange={setFindPopupNewTab}
-            label={<Mnemonic text={tx("Open results in new tab")} char="B" />}
-          />
-          {s.replace && <Checkbox checked={previewMode} onChange={setPreviewMode} label="Preview" />}
+          <div className={styles.footerOptions}>
+            <Checkbox
+              checked={s.newTab}
+              onChange={setFindPopupNewTab}
+              label={<Mnemonic text={tx("Open results in new tab")} char="B" />}
+            />
+            {s.replace && <Checkbox checked={previewMode} onChange={setPreviewMode} label="Preview" />}
+          </div>
           {navigationHint && <span className={styles.hint}>{navigationHint}</span>}
-          <span className={styles.spacer} />
-          {s.replace && progress && (
-            <span className={styles.hint} aria-live="polite">
-              {tx`Replacing… ${progress.done}/${progress.total} files`}
-            </span>
+          {s.replace && (progress || running) && (
+            <div className={styles.footerGroup}>
+              {progress && (
+                <span className={styles.hint} aria-live="polite">
+                  {tx`Replacing… ${progress.done}/${progress.total} files`}
+                </span>
+              )}
+              {running && (
+                <Button onClick={() => running.cancel()}>
+                  <T>Stop</T>
+                </Button>
+              )}
+            </div>
           )}
-          {s.replace && running && (
-            <Button onClick={() => running.cancel()}>
-              <T>Stop</T>
+          <div className={styles.footerGroup}>
+            <kbd className={styles.okHint}>{formatBinding(hostBinding("Meta+Enter"))}</kbd>
+            <Button disabled={!query?.pattern} onClick={pin}>
+              <T>Open in Find Window</T>
             </Button>
-          )}
-          <span className={styles.okHint}>{formatBinding(hostBinding("Meta+Enter"))}</span>
-          <Button disabled={!query?.pattern} onClick={pin}>
-            <T>Open in Find Window</T>
-          </Button>
+          </div>
           {s.replace && (
-            <>
+            <div className={styles.footerGroup}>
               <Button
                 title={formatBinding("Shift+Alt+Enter")}
                 disabled={stale || !rows.length || busy || state.status === "searching"}
@@ -937,7 +939,7 @@ function FindInFilesDialog() {
               <Button variant="primary" disabled={stale || !selected || busy} onClick={() => void replaceSelected()}>
                 {pendingSelected > 1 ? txt(`Replace ${pendingSelected} Occurrences`) : <T>Replace</T>}
               </Button>
-            </>
+            </div>
           )}
         </footer>
       </div>
@@ -948,12 +950,10 @@ function FindInFilesDialog() {
         placement="bottom-end"
         onClose={() => setMaskMenu(false)}
       />
-      <Menu
-        open={historyMenu !== null}
+      <SearchHistoryMenu
+        kind={historyMenu}
         anchor={historyMenu === "replace" ? replaceBoxRef : patternBoxRef}
-        items={historyMenu ? historyItems(historyMenu) : []}
-        placement="bottom-start"
-        aria-label="Recent searches"
+        onSelect={(value) => set(historyMenu === "replace" ? { replacement: value } : { pattern: value })}
         onClose={() => setHistoryMenu(null)}
       />
       <Menu
@@ -1032,7 +1032,7 @@ function EmptyResults({
       ) : used.length ? (
         <div className={styles.emptyOptions}>
           {used.length === 1 ? (
-            <div>{tx`Search option used: ${tx(used[0]!.label)}`}</div>
+            <div>{tx`Search option used: ${txPart(used[0]!.label)}`}</div>
           ) : (
             <>
               <div>

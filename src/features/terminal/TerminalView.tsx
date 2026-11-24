@@ -48,7 +48,7 @@ import {
   type GroupLayout,
   type TerminalTab,
 } from "./store";
-import { TerminalFindBar } from "./FindBar";
+import { openTerminalFind, TerminalFindBar } from "./FindBar";
 import styles from "./Terminal.module.css";
 
 const TAB_PREFIX = "openidea-terminal";
@@ -58,11 +58,11 @@ const TAB_PREFIX = "openidea-terminal";
  */
 const TAB_MIME = "application/x-openidea-terminal-tab";
 
-/** Full title when the label is trimmed, then the working directory. */
+/** Session title and working directory, even when available space trims the label. */
 function tabTooltip(tab: TerminalTab, sessions: Parameters<typeof tabTitle>[1]): string | undefined {
   const full = tabFullTitle(tab, sessions);
   const cwd = sessions?.[tab.session]?.cwd;
-  if (full === tabTitle(tab, sessions)) return cwd;
+  if (full === tab.name) return cwd;
   return cwd ? `${full}\n${cwd}` : full;
 }
 
@@ -106,6 +106,20 @@ function paneMenu(e: MouseEvent, key: string) {
   const exited = session.state.status === "exited" || session.state.status === "error";
   const mac = usePlatform.getState().os === "macos";
   const items: MenuItem[] = [
+    { label: "Find in Terminal", icon: "search", shortcut: mac ? "⌘F" : undefined, run: openTerminalFind },
+    { kind: "action", action: "terminal.new" },
+    ...(exited ? [{ label: "Restart Session", icon: "rerun", run: () => session.restart() }] : []),
+    {
+      label: "Close Session",
+      icon: "close",
+      run: () =>
+        void requestCloseSession(key).then((closed) => {
+          if (!closed) return;
+          if (useTerminals.getState().tabs.length === 0) toolWindowService().hide("terminal");
+          else requestAnimationFrame(() => activeSession()?.focus());
+        }),
+    },
+    { kind: "separator" },
     {
       label: "Copy",
       icon: "copy",
@@ -124,24 +138,7 @@ function paneMenu(e: MouseEvent, key: string) {
     { kind: "separator" },
     { kind: "action", action: "terminal.splitRight" },
     { kind: "action", action: "terminal.splitDown" },
-    {
-      label: "Close Session",
-      icon: "close",
-      run: () =>
-        void requestCloseSession(key).then((closed) => {
-          if (!closed) return;
-          if (useTerminals.getState().tabs.length === 0) toolWindowService().hide("terminal");
-          else requestAnimationFrame(() => activeSession()?.focus());
-        }),
-    },
   ];
-  if (exited)
-    items.splice(
-      0,
-      0,
-      { label: "Restart Session", icon: "rerun", run: () => session.restart() },
-      { kind: "separator" },
-    );
   showContextMenu(e, items);
 }
 
@@ -430,15 +427,9 @@ function GroupTabs({ group }: { group: string }) {
   };
 
   const renameTarget = renaming && tabs.find((t) => t.id === renaming.id);
-  const moreItems: MenuItem[] = [
-    { kind: "action", action: "terminal.new" },
-    { kind: "separator" },
-    { kind: "header", label: "New Predefined Session" },
+  const sessionItems: MenuItem[] = [
     ...shellItems(shells),
     { kind: "action", action: "ssh.startSession", label: "SSH Session…" },
-    { kind: "separator" },
-    { kind: "action", action: "terminal.splitRight" },
-    { kind: "action", action: "terminal.splitDown" },
     { kind: "separator" },
     { kind: "action", action: "file.settings", arg: "tools.terminal", label: "Settings", icon: "settings" },
   ];
@@ -457,6 +448,7 @@ function GroupTabs({ group }: { group: string }) {
     >
       <Tabs
         variant="compact"
+        layout="fit"
         className={styles.tabStrip}
         aria-label="Terminal sessions"
         items={items}
@@ -490,7 +482,7 @@ function GroupTabs({ group }: { group: string }) {
               ref={menuRef}
               icon="toolbar-expand"
               size="small"
-              title="More Terminal Options"
+              title="New Predefined Session"
               aria-haspopup="menu"
               aria-expanded={menuOpen}
               onClick={() => {
@@ -501,7 +493,13 @@ function GroupTabs({ group }: { group: string }) {
                 setMenuOpen((v) => !v);
               }}
             />
-            <Menu open={menuOpen} anchor={menuRef} items={moreItems} onClose={() => setMenuOpen(false)} />
+            <Menu
+              open={menuOpen}
+              anchor={menuRef}
+              items={sessionItems}
+              aria-label={tx("New Predefined Session")}
+              onClose={() => setMenuOpen(false)}
+            />
           </div>
         }
       />

@@ -161,10 +161,10 @@ function offerQuickFix(view: EditorView, before: HTMLElement, from: number, to: 
 /**
  * Whether the plain hover (problems + quick documentation) stays out: while
  * ⌘/Ctrl is held the ⌘-hover link and its brief info (`navigation.ts`) own the
- * pointer, as in IDEA; and over an inlay hint, which has its own tooltip.
+ * pointer, as in IDEA. Inlay hints and folded code have their own tooltips.
  */
 export function hoverYields(): boolean {
-  return navigationModifierHeld() || !!pointerTarget()?.closest?.(".cm-lsp-inlay");
+  return navigationModifierHeld() || !!pointerTarget()?.closest?.(".cm-lsp-inlay, .cm-foldPlaceholder");
 }
 
 /** Problems always; quick documentation per Settings › Editor › Code Editing. */
@@ -413,12 +413,14 @@ export async function quickDefinition(view: EditorView, kind: "definition" | "ty
       showHint(view, "Cannot read the definition's file");
       return;
     }
+    const { fontFamily, fontSize, fontWeight, lineHeight, tabSize } = getComputedStyle(view.contentDOM);
     openPopup({
       kind: "definition",
       anchor: caretAnchor(view, pos),
       targets,
       index: 0,
       themeClasses: view.themeClasses,
+      codeStyle: { fontFamily, fontSize, fontWeight, lineHeight, tabSize },
     });
   } catch (e) {
     if (!stale()) reportLspError(view, e, true);

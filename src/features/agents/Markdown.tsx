@@ -234,6 +234,27 @@ async function linkSymbols(root: HTMLElement, spans: HTMLElement[], cwd: string)
   );
 }
 
+const COPIED_MS = 2000;
+const copiedTimers = new WeakMap<HTMLElement, ReturnType<typeof setTimeout>>();
+
+function setCopyState(button: HTMLElement, copied: boolean) {
+  const label = tx(copied ? "Copied" : "Copy Code");
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.replaceChildren(iconNode(copied ? "check" : "copy", 14));
+  button.toggleAttribute("data-copied", copied);
+}
+
+/** Shows a check on a code block's Copy button for a moment. */
+function flashCopied(button: HTMLElement) {
+  clearTimeout(copiedTimers.get(button));
+  setCopyState(button, true);
+  copiedTimers.set(
+    button,
+    setTimeout(() => setCopyState(button, false), COPIED_MS),
+  );
+}
+
 /** Highlighting, Copy buttons and file links over freshly rendered `root`. */
 function enhance(root: HTMLElement, cwd: string, images: MessageImages): () => void {
   let alive = true;
@@ -255,10 +276,7 @@ function enhance(root: HTMLElement, cwd: string, images: MessageImages): () => v
     const copy = document.createElement("button");
     copy.type = "button";
     copy.className = styles.codeCopy!;
-    const label = tx("Copy Code");
-    copy.title = label;
-    copy.setAttribute("aria-label", label);
-    copy.appendChild(iconNode("copy", 14));
+    setCopyState(copy, false);
     copy.dataset.copy = text;
     const block = pre.parentElement!;
     block.appendChild(copy);
@@ -280,7 +298,10 @@ function enhance(root: HTMLElement, cwd: string, images: MessageImages): () => v
   });
   return () => {
     alive = false;
-    copies.forEach((copy) => copy.remove());
+    copies.forEach((copy) => {
+      clearTimeout(copiedTimers.get(copy));
+      copy.remove();
+    });
     disposeImages();
   };
 }
@@ -421,7 +442,7 @@ export function Markdown({
         const target = e.target as HTMLElement;
         const copy = target.closest<HTMLElement>("button[data-copy]");
         if (copy) {
-          void copyText(copy.dataset.copy ?? "");
+          void copyText(copy.dataset.copy ?? "").then(() => flashCopied(copy));
           return;
         }
         const code = target.closest<HTMLElement>("code");

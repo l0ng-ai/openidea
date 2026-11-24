@@ -668,8 +668,8 @@ async fn text_search(call: Call, is_regex: bool) -> IdeResult<Output> {
         if hits.len() > limit {
             break;
         }
-        // Find in Files keeps a window of very long lines and drops the matches outside it:
-        // such lines are matched again in the file's whole text.
+        // Find in Files reports a very long line in windows cut around its matches: such lines
+        // are matched again in the file's whole text, so a match keeps its real end.
         let long = |m: &ide_search::LineMatch| m.text_offset > 0 || m.text.encode_utf16().count() + 1 >= LINE_WINDOW;
         let whole = if file.matches.iter().any(long) {
             crate::ops::fs::fs_read_text(&host, call.window(), file.path.0.clone())
@@ -679,11 +679,15 @@ async fn text_search(call: Call, is_regex: bool) -> IdeResult<Output> {
         } else {
             None
         };
+        // One window per far-apart match: a line is expanded once.
+        let mut expanded = std::collections::HashSet::new();
         for m in &file.matches {
             if let Some((ranges, text)) = &whole
                 && long(m)
             {
-                hits.extend(line_hits(path, text, ranges, m.line));
+                if expanded.insert(m.line) {
+                    hits.extend(line_hits(path, text, ranges, m.line));
+                }
                 continue;
             }
             let line_end = m.text_offset + m.text.encode_utf16().count() as u32;
@@ -833,8 +837,6 @@ async fn file_search(call: Call) -> IdeResult<Output> {
         .add(build_glob(&normalize_glob(&q, call.root(), &[])?)?)
         .build()
         .map_err(|_| IdeError::invalid(format!("Invalid glob pattern: {q}")))?;
-    // Ignored names and "Exclude files" patterns, which `read_dir` does not flag.
-    let excludes = if include_excluded { None } else { Some(FileMask::new(&[], &call.project().search_excludes())?) };
     let root = call.root().to_path_buf();
     let content = call.project().content_roots();
     // Where a folder's exclusions are matched from: the content root holding it, or the project.
@@ -858,6 +860,15 @@ async fn file_search(call: Call) -> IdeResult<Output> {
             .map(|r| (r.clone(), r))
             .collect(),
     };
+    // Ignored names and "Exclude files" patterns, which `read_dir` does not flag, by walked root.
+    let mut excludes = Vec::new();
+    if !include_excluded {
+        for (_, base) in &roots {
+            if !excludes.iter().any(|(b, _)| b == base) {
+                excludes.push((base.clone(), FileMask::new(&[], &call.project().search_excludes_in(base))?));
+            }
+        }
+    }
     let host = call.host();
     let walk = Walk {
         host: host.clone(),
@@ -894,7 +905,7 @@ struct Walk {
     window: String,
     root: PathBuf,
     include_excluded: bool,
-    excludes: Option<FileMask>,
+    excludes: Vec<(PathBuf, FileMask)>,
     glob: GlobSet,
     scope: PathScope,
     limit: usize,
@@ -927,7 +938,8 @@ impl Walk {
                 continue;
             }
             let Ok(in_base) = entry.path.strip_prefix(base) else { continue };
-            if self.excludes.as_ref().is_some_and(|m| !m.matches(&in_base.to_string_lossy().replace('\\', "/"))) {
+            let mask = self.excludes.iter().find(|(b, _)| b == base).map(|(_, m)| m);
+            if mask.is_some_and(|m| !m.matches(&in_base.to_string_lossy().replace('\\', "/"))) {
                 continue;
             }
             match entry.kind {

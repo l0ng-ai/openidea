@@ -5,10 +5,8 @@
  * files change, then the move itself — one step that Undo reverts.
  */
 import type { FileMove, UndoOutcome, WorkspaceEdit } from "@/bindings";
-import { openEditorPaths } from "@/editor/api";
-import { notifyFilesMoved, trackFileMove } from "@/platform/fileOps";
-import { call, commands, emitLocalIdeEvent, isCancelled, isTauri, nextRequestId } from "@/platform/ipc";
-import { useProject } from "@/platform/project";
+import { saveAllQuietly, withEditorsFollowing } from "@/editor/fileMoves";
+import { call, commands, isCancelled, isTauri, nextRequestId } from "@/platform/ipc";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
 import { projectFs } from "./fs";
 import { isSameOrInside, nameOf, parentOf } from "./paths";
@@ -164,54 +162,6 @@ export function touchesOtherFiles(edit: WorkspaceEdit, moves: readonly FileMove[
   return edit.files.some(
     (f) => f.kind === "edit" && f.edits.length && !moves.some((m) => isSameOrInside(f.path, m.from)),
   );
-}
-
-// ---------------------------------------------------------------------------
-// Editors follow the move
-
-async function saveAllQuietly(editor: { saveAll(): Promise<void> }) {
-  try {
-    await editor.saveAll();
-  } catch {
-    /* unsaved files are reported by the editor */
-  }
-}
-
-/** `path` after `moves`. */
-export function movedPath(path: string, moves: readonly FileMove[]): string {
-  let p = path;
-  for (const m of moves) if (isSameOrInside(p, m.from)) p = m.to + p.slice(m.from.length);
-  return p;
-}
-
-/** IDEA retargets editors of moved files: unsaved changes are saved first, tabs reopen at the new paths. */
-async function withEditorsFollowing<T>(run: () => Promise<T>, done: (r: T) => FileMove[]): Promise<T> {
-  const projectRoot = () => useProject.getState().project?.root ?? null;
-  const root = projectRoot();
-  const editor = maybeEditorService();
-  const openBefore = editor ? openEditorPaths() : [];
-  if (editor) await saveAllQuietly(editor);
-  const active = editor?.activePath() ?? null;
-  const { result, applied } = await trackFileMove(root, async () => {
-    const result = await run();
-    const applied = done(result);
-    if (root === projectRoot()) await notifyFilesMoved(applied);
-    return { result, applied };
-  });
-  if (root !== projectRoot()) return result;
-  const open = openBefore.filter((p) => applied.some((m) => isSameOrInside(p, m.from)));
-  if (applied.length)
-    emitLocalIdeEvent({
-      type: "fsChanged",
-      created: applied.map((m) => m.to),
-      modified: [],
-      removed: applied.map((m) => m.from),
-    });
-  if (!editor || !open.length) return result;
-  const ordered = active && open.includes(active) ? [...open.filter((p) => p !== active), active] : open;
-  for (const p of ordered) await editor.openFile(movedPath(p, applied), { focus: false }).catch(() => {});
-  if (active && !open.includes(active)) await editor.openFile(active, { focus: false }).catch(() => {});
-  return result;
 }
 
 // ---------------------------------------------------------------------------

@@ -116,10 +116,6 @@ impl ExtensionRegistry {
         Ok(())
     }
 
-    pub fn point_ids(&self) -> Vec<&'static str> {
-        self.points.read().keys().copied().collect()
-    }
-
     pub fn placement(&self, point: &str) -> Option<Placement> {
         self.points.read().get(point).map(|p| p.placement())
     }
@@ -270,6 +266,12 @@ impl ExtensionRegistry {
                 let prepared = point
                     .prepare(pkg, decl)
                     .map_err(|e| format!("contributes.{point_id}[{i}]: {}", strip_prefix(&e, point_id)))?;
+                if let Some(warning) = prepared.warning {
+                    let msg = format!("contributes.{point_id}[{i}]: {}", strip_prefix(&warning, point_id));
+                    tracing::warn!(plugin = %pkg.id(), "{msg}");
+                    set.warnings.push(msg);
+                    continue;
+                }
                 for cap in &prepared.capabilities {
                     if !set.capabilities.contains(cap) {
                         set.capabilities.push(cap.clone());

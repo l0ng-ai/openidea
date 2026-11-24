@@ -37,6 +37,8 @@ import { activate as scratch } from "./scratch";
 import { activate as libraries } from "./libraries";
 import { activate as viewers } from "./viewers";
 import { activate as notebook } from "./notebook";
+import { activate as pythonConsole } from "./python-console";
+import { activate as pythonPackages } from "./python-packages";
 import { activate as web } from "./web";
 import { activate as analysis } from "./analysis";
 import { activate as services } from "./services";
@@ -91,6 +93,8 @@ const features: Array<[string, Activate]> = [
   ["scratch", scratch],
   ["libraries", libraries],
   ["notebook", notebook],
+  ["python-console", pythonConsole],
+  ["python-packages", pythonPackages],
   ["viewers", viewers],
   ["web", web],
   ["analysis", analysis],

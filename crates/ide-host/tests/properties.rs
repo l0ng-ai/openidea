@@ -1,6 +1,8 @@
-use ide_core::{ChangeSet, NullSink, RequestId, TextChange};
+mod common;
+
+use ide_core::{ChangeSet, RequestId, TextChange};
 use ide_host::{
-    Host, HostConfig,
+    Host,
     ops::{doc, search, vcs},
 };
 use ide_search::{SearchQuery, SearchScope};
@@ -17,17 +19,7 @@ fn git(root: &Path, args: &[&str]) {
 }
 
 fn host(base: &Path) -> Host {
-    Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    })
+    Host::new(common::host_config(base))
 }
 
 async fn find(host: &Host, paths: Vec<PathBuf>, pattern: &str) -> Vec<ide_search::FileMatches> {
@@ -140,7 +132,9 @@ async fn properties_search_git_and_document_coordinates_agree() {
     let selected = &hunks[0];
     let options = ide_vcs::CommitOptions {
         partial: vec![ide_vcs::PartialCommitFile {
+            prepared: None,
             path: path.clone().into(),
+            line_hunks: vec![],
             hunks: vec![ide_vcs::HunkRange {
                 start: selected.start,
                 lines: selected.lines,

@@ -670,21 +670,34 @@ pub fn workspace_edit(conv: &Conv, e: lsp::WorkspaceEdit) -> WorkspaceEdit {
                 for op in ops {
                     match op {
                         lsp::DocumentChangeOperation::Edit(e) => doc_edit(&mut files, e),
+                        // An operation its `ignoreIfExists` / `ignoreIfNotExists` makes a no-op is
+                        // left out (vtsls' extractions "create" the file they then edit).
                         lsp::DocumentChangeOperation::Op(lsp::ResourceOp::Create(c)) => {
                             if let Some(path) = uri_path(&c.uri) {
-                                let overwrite = c.options.and_then(|o| o.overwrite).unwrap_or(false);
-                                files.push(FileEdit::Create { path: path.into(), overwrite });
+                                let overwrite = c.options.as_ref().and_then(|o| o.overwrite).unwrap_or(false);
+                                let ignore = c.options.and_then(|o| o.ignore_if_exists).unwrap_or(false);
+                                if !(ignore && !overwrite && path.exists()) {
+                                    files.push(FileEdit::Create { path: path.into(), overwrite });
+                                }
                             }
                         }
                         lsp::DocumentChangeOperation::Op(lsp::ResourceOp::Rename(r)) => {
                             if let (Some(from), Some(to)) = (uri_path(&r.old_uri), uri_path(&r.new_uri)) {
-                                files.push(FileEdit::Rename { from: from.into(), to: to.into() });
+                                let o = r.options.as_ref();
+                                let overwrite = o.and_then(|o| o.overwrite).unwrap_or(false);
+                                let ignore = o.and_then(|o| o.ignore_if_exists).unwrap_or(false);
+                                if !(ignore && !overwrite && to.exists()) {
+                                    files.push(FileEdit::Rename { from: from.into(), to: to.into() });
+                                }
                             }
                         }
                         lsp::DocumentChangeOperation::Op(lsp::ResourceOp::Delete(d)) => {
                             if let Some(path) = uri_path(&d.uri) {
-                                let recursive = d.options.and_then(|o| o.recursive).unwrap_or(false);
-                                files.push(FileEdit::Delete { path: path.into(), recursive });
+                                let recursive = d.options.as_ref().and_then(|o| o.recursive).unwrap_or(false);
+                                let ignore = d.options.and_then(|o| o.ignore_if_not_exists).unwrap_or(false);
+                                if !(ignore && !path.exists()) {
+                                    files.push(FileEdit::Delete { path: path.into(), recursive });
+                                }
                             }
                         }
                     }
@@ -955,6 +968,7 @@ pub fn inlay_hint(conv: &Conv, path: &Path, h: lsp::InlayHint) -> InlayHint {
         _ => InlayKind::Other,
     };
     let tooltip = h.tooltip.map(tooltip_text);
+    let text_edits = conv.text_edits(path, h.text_edits.unwrap_or_default());
     InlayHint {
         position: conv.pos(path, h.position),
         label,
@@ -963,6 +977,7 @@ pub fn inlay_hint(conv: &Conv, path: &Path, h: lsp::InlayHint) -> InlayHint {
         padding_right: h.padding_right.unwrap_or(false),
         tooltip,
         parts,
+        text_edits,
     }
 }
 
@@ -1427,6 +1442,34 @@ mod tests {
     }
 
     #[test]
+    fn workspace_edit_leaves_out_operations_their_ignore_options_make_no_ops() {
+        let conv = Conv::utf16();
+        let dir = tempfile::tempdir().unwrap();
+        let existing = dir.path().join("e.ts");
+        std::fs::write(&existing, "").unwrap();
+        let missing = dir.path().join("m.ts");
+        let uri = |p: &Path| crate::uri::path_to_uri_string(p);
+        let e: lsp::WorkspaceEdit = serde_json::from_value(json!({
+            "documentChanges": [
+                { "kind": "create", "uri": uri(&existing), "options": { "ignoreIfExists": true } },
+                { "kind": "create", "uri": uri(&missing), "options": { "ignoreIfExists": true } },
+                { "kind": "rename", "oldUri": uri(&missing), "newUri": uri(&existing), "options": { "ignoreIfExists": true } },
+                { "kind": "delete", "uri": uri(&dir.path().join("gone.ts")), "options": { "ignoreIfNotExists": true } },
+                { "kind": "delete", "uri": uri(&existing), "options": { "ignoreIfNotExists": true } }
+            ]
+        }))
+        .unwrap();
+        let w = workspace_edit(&conv, e);
+        assert_eq!(
+            w.files,
+            [
+                FileEdit::Create { path: missing.into(), overwrite: false },
+                FileEdit::Delete { path: existing.into(), recursive: false },
+            ]
+        );
+    }
+
+    #[test]
     fn workspace_edit_document_changes() {
         let conv = Conv::utf16();
         let e: lsp::WorkspaceEdit = serde_json::from_value(json!({
@@ -1548,6 +1591,23 @@ mod tests {
         assert!(h.padding_left && !h.padding_right);
         assert_eq!(h.parts.len(), 2);
         assert!(h.parts.iter().all(|p| p.location.is_none()));
+        assert!(h.text_edits.is_empty());
+    }
+
+    #[test]
+    fn inlay_text_edits_carry_over() {
+        let conv = Conv::utf16();
+        let h: lsp::InlayHint = serde_json::from_value(json!({
+            "position": {"line": 2, "character": 5}, "label": ": Any", "kind": 1,
+            "textEdits": [
+                {"range": {"start": {"line": 2, "character": 5}, "end": {"line": 2, "character": 5}}, "newText": ": Any"},
+                {"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": "from typing import Any\n"}
+            ]
+        }))
+        .unwrap();
+        let h = inlay_hint(&conv, Path::new("/a"), h);
+        let edits: Vec<_> = h.text_edits.iter().map(|e| (e.range.start, e.new_text.as_str())).collect();
+        assert_eq!(edits, [(p(2, 5), ": Any"), (p(0, 0), "from typing import Any\n")]);
     }
 
     #[cfg(unix)]

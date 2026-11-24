@@ -21,7 +21,8 @@ export function reportProblems(): () => void {
     if (!reset) for (const path of reported.keys()) if (!map.has(path)) files.push({ path, items: [] });
     if (!files.length && !reset) return;
     const wasReset = reset;
-    reported = map;
+    // The store updates its map in place; keep our own copy to diff the next flush against.
+    reported = new Map(map);
     reset = false;
     void call(commands.mcpReportProblems(wasReset, files)).catch(() => {
       reset = true;

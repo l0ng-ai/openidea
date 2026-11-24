@@ -12,10 +12,10 @@ import { repositoryPath } from "./repositoryPaths";
 import styles from "./common.module.css";
 
 interface CompareToolState {
-  target: { from: Revision; to: Revision | null } | null;
+  target: { id: number; from: Revision; to: Revision | null; repositories?: readonly string[] } | null;
   swapped: boolean;
   current: ComparisonFile | null;
-  show: (from: Revision, to: Revision | null) => void;
+  show: (from: Revision, to: Revision | null, repositories?: readonly string[]) => void;
   close: () => void;
   toggleSwapped: () => void;
   select: (file: ComparisonFile | null) => void;
@@ -25,7 +25,8 @@ export const useCompareTool = create<CompareToolState>()((set) => ({
   target: null,
   swapped: false,
   current: null,
-  show: (from, to) => set({ target: { from, to }, swapped: false, current: null }),
+  show: (from, to, repositories) =>
+    set((s) => ({ target: { id: (s.target?.id ?? 0) + 1, from, to, repositories }, swapped: false, current: null })),
   close: () => set({ target: null, swapped: false, current: null }),
   toggleSwapped: () => set((s) => ({ swapped: !s.swapped })),
   select: (current) => set({ current }),
@@ -50,8 +51,8 @@ function disposeCompareWindowNow() {
 }
 
 /** Worktree diff of `rev` in the sidebar's Compare tool window (no dialog). */
-export function showWorktreeComparison(rev: string, label: string) {
-  useCompareTool.getState().show({ rev, label }, null);
+export function showWorktreeComparison(rev: string, label: string, repositories?: readonly string[]) {
+  useCompareTool.getState().show({ rev, label }, null, repositories);
   ensureCompareWindow();
   showToolWindow("compare", true);
 }
@@ -89,9 +90,10 @@ export function CompareToolWindow() {
       </div>
       <div className={styles.comparisonWindowBody}>
         <ChangesBetweenDialog
-          key={target.from.rev}
+          key={target.id}
           from={target.from}
           to={target.to}
+          repositories={target.repositories}
           native
           listOnly
           swapped={swapped}

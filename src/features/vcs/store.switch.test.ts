@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { BranchInfo, FileStatus, ProjectInfo, VcsRoot } from "@/bindings";
+import type { Branch, BranchInfo, FileStatus, ProjectInfo, VcsRoot } from "@/bindings";
 import { commands, isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { deferred } from "@/test/deferred";
 import { getFileDecoration } from "@/workbench/contributions";
 import {
+  applyStatus,
   discoverRoots,
   installVcsStore,
-  onConflictsAppeared,
+  onConflictsChanged,
   onConflictsCleared,
   refreshNow,
   refreshPathsNow,
@@ -29,7 +30,16 @@ const branch: BranchInfo = {
   behind: 0,
   operation: "merge",
 };
-const roots: VcsRoot[] = [{ root: git.root, head: branch.head, headCommit: branch.headCommit, operation: "merge" }];
+const roots: VcsRoot[] = [
+  {
+    root: git.root,
+    branchRoot: git.root,
+    head: branch.head,
+    headCommit: branch.headCommit,
+    operation: "merge",
+    shallow: false,
+  },
+];
 const conflicted: FileStatus = {
   path: "/a/src/conflict.ts",
   relPath: "src/conflict.ts",
@@ -56,14 +66,14 @@ beforeEach(() => {
   vi.spyOn(commands, "vcsRoots").mockResolvedValue(ok(roots));
   vi.spyOn(commands, "vcsStatus").mockResolvedValue(ok(status));
   vi.spyOn(commands, "vcsBranchInfo").mockResolvedValue(ok(branch));
-  onConflictsAppeared(appeared);
+  onConflictsChanged(appeared);
   onConflictsCleared(cleared);
   dispose = installVcsStore();
 });
 
 afterEach(() => {
   dispose();
-  onConflictsAppeared(() => undefined);
+  onConflictsChanged(() => undefined);
   onConflictsCleared(() => undefined);
   appeared.mockClear();
   cleared.mockClear();
@@ -71,6 +81,18 @@ afterEach(() => {
   vi.mocked(isTauri).mockReset();
   useProject.setState(useProject.getInitialState(), true);
   useVcs.setState(useVcs.getInitialState(), true);
+});
+
+it("updates the notification as conflicts are resolved and reopened", () => {
+  const sibling: FileStatus = { ...modified, unstaged: "conflicted" };
+  applyStatus([conflicted, sibling], branch);
+  applyStatus([conflicted, modified], branch);
+  applyStatus([conflicted, modified], branch);
+  applyStatus([conflicted, sibling], branch);
+  applyStatus([modified], branch);
+
+  expect(appeared.mock.calls).toEqual([[[conflicted, sibling]], [[conflicted]], [[conflicted, sibling]]]);
+  expect(cleared).toHaveBeenCalledOnce();
 });
 
 describe("VCS status ownership", () => {
@@ -174,7 +196,15 @@ describe("VCS status ownership", () => {
       await vi.waitFor(() => expect(request).toHaveBeenCalledWith([conflicted.path]));
       const nextBranch = { ...branch, head: "main", operation: null };
       vi.mocked(commands.vcsRoots).mockResolvedValue(
-        ok([{ root: nonGit.root, head: nextBranch.head, headCommit: nextBranch.headCommit, operation: null }]),
+        ok([
+          {
+            root: nonGit.root,
+            branchRoot: nonGit.root,
+            head: nextBranch.head,
+            headCommit: nextBranch.headCommit,
+            operation: null,
+          },
+        ]),
       );
       vi.mocked(commands.vcsStatus).mockResolvedValue(ok([]));
       vi.mocked(commands.vcsBranchInfo).mockResolvedValue(ok(nextBranch));
@@ -204,5 +234,74 @@ describe("VCS status ownership", () => {
     expect(getFileDecoration(modified.path)?.color).toBe("var(--vcs-modified)");
     expect(appeared).toHaveBeenCalledExactlyOnceWith([conflicted]);
     expect(cleared).not.toHaveBeenCalled();
+  });
+
+  it("clears the previous Git state when Directory Mappings removes the last repository", async () => {
+    useProject.setState({ project: git });
+    await refreshNow();
+    expect(getFileDecoration(modified.path)?.color).toBe("var(--vcs-modified)");
+
+    vi.mocked(commands.vcsRoots).mockResolvedValue(ok([]));
+    vi.mocked(commands.vcsStatus).mockRejectedValue(new Error("project is not a git repository"));
+    vi.mocked(commands.vcsBranchInfo).mockRejectedValue(new Error("repository was removed"));
+    await refreshNow();
+
+    expect(useVcs.getState()).toMatchObject({
+      root: git.root,
+      available: false,
+      roots: [],
+      repo: null,
+      status: [],
+      branch: null,
+      branches: [],
+      heads: {},
+      operations: {},
+      error: null,
+    });
+    expect(getFileDecoration(modified.path)).toBeUndefined();
+  });
+
+  it("refreshes branch lists and status when Directory Mappings removes the selected repository", async () => {
+    useProject.setState({ project: git });
+    await refreshNow();
+    useVcs.setState({ branchesLoaded: true });
+    const remaining = "/a/remaining";
+    const remainingBranch: Branch = {
+      name: "main",
+      remote: false,
+      current: true,
+      upstream: null,
+      ahead: 0,
+      behind: 0,
+      lastCommitMs: 0,
+      commit: "def1234",
+    };
+    const remainingStatus = { ...modified, path: remaining + "/src/edited.ts" };
+    vi.mocked(commands.vcsRoots).mockResolvedValue(
+      ok([{ root: remaining, branchRoot: remaining, head: "main", headCommit: "def1234", operation: null }]),
+    );
+    vi.mocked(commands.vcsStatus).mockResolvedValue(ok([remainingStatus]));
+    vi.mocked(commands.vcsBranchInfo).mockImplementation(async (repo) => {
+      if (repo === git.root) throw new Error("repository was removed");
+      return ok({ ...branch, head: "main", headCommit: "def1234", operation: null });
+    });
+    const listBranches = vi.spyOn(commands, "vcsBranches").mockImplementation(async (repo) => {
+      if (repo === git.root) throw new Error("repository was removed");
+      return ok([remainingBranch]);
+    });
+
+    await refreshNow();
+    await vi.waitFor(() =>
+      expect(useVcs.getState()).toMatchObject({
+        available: true,
+        roots: [remaining],
+        repo: remaining,
+        status: [remainingStatus],
+        branches: [remainingBranch],
+      }),
+    );
+    expect(listBranches).toHaveBeenLastCalledWith(remaining);
+    expect(getFileDecoration(modified.path)).toBeUndefined();
+    expect(getFileDecoration(remainingStatus.path)?.color).toBe("var(--vcs-modified)");
   });
 });

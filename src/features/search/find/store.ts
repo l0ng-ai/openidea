@@ -164,11 +164,10 @@ export function hideFindPopup() {
 }
 
 const MASKS_KEY = "openidea.search.fileMasks.v1";
-const PROJECT_MASKS = 5;
 
 /**
- * `*.ext` masks of the project's most common language file types. IDEA seeds its
- * mask list with the IDE's languages; a multi-language IDE takes the project's.
+ * `*.ext` masks of every language file type in the project, most common first. IDEA
+ * seeds its mask list with the IDE's languages; a multi-language IDE takes the project's.
  */
 export const useProjectMasks = create<{ masks: string[] }>(() => ({ masks: [] }));
 
@@ -176,10 +175,7 @@ export async function refreshProjectMasks() {
   try {
     const [counts, languages] = await Promise.all([call(commands.indexFileExtensions()), commands.languages()]);
     const known = new Set(languages.flatMap((l) => l.extensions.map((e) => e.toLowerCase())));
-    const masks = counts
-      .filter((c) => known.has(c.extension))
-      .slice(0, PROJECT_MASKS)
-      .map((c) => `*.${c.extension}`);
+    const masks = counts.filter((c) => known.has(c.extension)).map((c) => `*.${c.extension}`);
     useProjectMasks.setState({ masks });
   } catch {
     /* no project index (welcome screen, tests) */

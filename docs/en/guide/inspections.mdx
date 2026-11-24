@@ -72,9 +72,10 @@ The **Proofreading › Typo** inspection checks words in comments, string litera
 On a typo, `⌥↵` / `Alt+Enter` offers:
 
 - **Typo: Change to…** (comments, strings, text) or **Typo: Rename to…** (a declared name, done through Rename so references follow);
-- saving the word to the project-level or application-level dictionary.
+- saving the word to the project-level or application-level dictionary, or to one of your custom dictionaries (listed by their configured paths; the word is appended to the file, created when missing — a Hunspell `.dic` keeps its word count line);
+- when no custom dictionary is configured, opening the Spelling settings to add one.
 
-Manage the project and application dictionaries, and add your own dictionary files, in **Settings › Editor › Natural Languages › Spelling**. Typo's severity and options are in **Settings › Editor › Inspections** like any other inspection.
+Manage the project and application dictionaries, and add your own dictionary files, in **Settings › Editor › Natural Languages › Spelling**. The page's **Default dictionary** selects where the plain "Save '…' to dictionary" row writes (project dictionary by default); the → submenu always offers every dictionary. Typo's severity and options are in **Settings › Editor › Inspections** like any other inspection.
 
 ## Before committing
 

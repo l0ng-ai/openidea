@@ -36,6 +36,32 @@ describe(".icls schemes", () => {
     expect(parseIcls(xml).scheme.attributes).toMatchObject(scheme.attributes);
   });
 
+  it("round trips Diff & Merge change types, error stripes and the separator wave", () => {
+    const { scheme } = parseIcls(`<scheme name="Diff" parent_scheme="Darcula"><colors>
+      <option name="DIFF_SEPARATOR_WAVE" value="555555"/>
+    </colors><attributes>
+      <option name="DIFF_MODIFIED"><value>
+        <option name="BACKGROUND" value="385570"/><option name="ERROR_STRIPE_COLOR" value="43698d"/>
+      </value></option>
+      <option name="DIFF_INSERTED"><value>
+        <option name="BACKGROUND" value="294436"/><option name="ERROR_STRIPE_COLOR" value="447152"/>
+      </value></option>
+      <option name="DIFF_DELETED"><value>
+        <option name="BACKGROUND" value="484a4a"/><option name="ERROR_STRIPE_COLOR" value="656e76"/>
+      </value></option>
+      <option name="DIFF_CONFLICT"><value><option name="ERROR_STRIPE_COLOR" value="8f5247"/></value></option>
+    </attributes></scheme>`);
+    expect(scheme.attributes.diffChanged).toEqual({ background: "#385570", errorStripeColor: "#43698d" });
+    expect(scheme.attributes.diffConflict).toEqual({ errorStripeColor: "#8f5247" });
+    expect(scheme.attributes.diffSeparatorWave).toEqual({ foreground: "#555555" });
+    const { id, customs } = importScheme({}, scheme);
+    const xml = exportIcls(id, customs);
+    expect(xml).toContain('<option name="DIFF_SEPARATOR_WAVE" value="555555" />');
+    expect(xml).toContain('name="DIFF_MODIFIED"');
+    expect(xml).toContain('<option name="ERROR_STRIPE_COLOR" value="43698d" />');
+    expect(parseIcls(xml).scheme.attributes).toMatchObject(scheme.attributes);
+  });
+
   it("round trips the selection foreground through SELECTION_FOREGROUND (#2446)", () => {
     const { scheme } = parseIcls(`<scheme name="Sel" parent_scheme="Default"><colors>
       <option name="SELECTION_BACKGROUND" value="214283"/>
@@ -164,23 +190,58 @@ describe(".icls schemes", () => {
     expect([applied, skipped]).toEqual([16, 2]);
   });
 
-  it("maps WebStorm's JavaScript and TypeScript keys, TypeScript first, then JavaScript, then defaults", () => {
+  it("imports IntelliJ's Kotlin call and enum entry keys into their own entries (#4059)", () => {
+    const opt = (name: string, value: string, font = "0") =>
+      `<option name="${name}"><value><option name="FOREGROUND" value="${value}"/><option name="FONT_TYPE" value="${font}"/></value></option>`;
+    const { scheme } = parseIcls(
+      `<scheme name="K"><attributes>${opt("KOTLIN_FUNCTION_CALL", "bcbec4")}${opt(
+        "KOTLIN_EXTENSION_FUNCTION_CALL",
+        "56a8f5",
+      )}${opt("KOTLIN_PACKAGE_FUNCTION_CALL", "57aaf7", "2")}${opt("KOTLIN_ENUM_ENTRY", "c77dbb", "2")}</attributes></scheme>`,
+    );
+    expect(scheme.attributes["kotlin.functionCall"]?.foreground).toBe("#bcbec4");
+    expect(scheme.attributes["kotlin.extensionCall"]?.foreground).toBe("#56a8f5");
+    expect(scheme.attributes["kotlin.packageCall"]).toEqual({ foreground: "#57aaf7", bold: false, italic: true });
+    expect(scheme.attributes["kotlin.enumEntry"]).toEqual({ foreground: "#c77dbb", bold: false, italic: true });
+  });
+
+  it("maps WebStorm's JavaScript and TypeScript keys to their page, TypeScript first, then JavaScript", () => {
     const { scheme, applied, skipped } = parseIcls(fixture("webstorm-darcula"));
     const fg = (id: string) => scheme.attributes[id]?.foreground;
-    expect(scheme.attributes.keyword).toEqual({ foreground: "#e89c45", bold: false, italic: false });
+    expect(scheme.attributes["javascript.keyword"]).toEqual({ foreground: "#e89c45", bold: false, italic: false });
+    // Language Defaults keep the DEFAULT_* keys.
+    expect(fg("keyword")).toBe("#cc7832");
     expect(fg("string")).toBe("#8bb770");
-    // A global function's key colours its calls too, and wins over the member function key.
-    expect(fg("functionDeclaration")).toBe("#6dacff");
-    expect(fg("functionCall")).toBe("#6dacff");
-    expect(fg("globalVariable")).toBe("#c678dd");
-    expect(fg("field")).toBe("#ef8a80");
-    expect(fg("constant")).toBe("#c580ea");
-    expect(fg("className")).toBe("#6fa4e5");
-    expect(fg("docCommentTagValue")).toBe("#e5c07b");
+    // Global functions have their own entry; the member function key colours declarations and calls.
+    expect(fg("javascript.globalFunction")).toBe("#6dacff");
+    expect(fg("javascript.functionDeclaration")).toBe("#e06c75");
+    expect(fg("javascript.functionCall")).toBe("#e06c75");
+    expect(fg("javascript.globalVariable")).toBe("#c678dd");
+    expect(fg("javascript.field")).toBe("#ef8a80");
+    expect(fg("javascript.constant")).toBe("#c580ea");
+    expect(fg("javascript.className")).toBe("#6fa4e5");
+    expect(fg("javascript.docCommentTagValue")).toBe("#e5c07b");
     expect(fg("regexp")).toBe("#56b6c2");
     // Superseded keys and DEFAULT_SEMICOLON are counted as skipped.
     expect(scheme.attributes.operator).toEqual(DARCULA_ATTRIBUTES.operator);
-    expect([applied, skipped]).toEqual([10, 6]);
+    expect([applied, skipped]).toEqual([12, 4]);
+  });
+
+  it("imports WebStorm's decorator and global keys into the JavaScript and TypeScript page (#4059)", () => {
+    const opt = (name: string, value: string) =>
+      `<option name="${name}"><value><option name="FOREGROUND" value="${value}"/><option name="FONT_TYPE" value="2"/></value></option>`;
+    const { scheme } = parseIcls(
+      `<scheme name="W"><attributes>${opt("TS.DECORATOR", "b3ae60")}${opt("JS.DECORATOR", "111111")}${opt(
+        "TS.GLOBAL_VARIABLE",
+        "c77dba",
+      )}${opt("TS.GLOBAL_FUNCTION", "56a8f5")}</attributes></scheme>`,
+    );
+    expect(scheme.attributes["javascript.decorator"]).toEqual({ foreground: "#b3ae60", bold: false, italic: true });
+    expect(scheme.attributes["javascript.globalVariable"]?.foreground).toBe("#c77dba");
+    expect(scheme.attributes["javascript.globalFunction"]?.foreground).toBe("#56a8f5");
+    // Other languages keep their own colours.
+    expect(scheme.attributes.metadata).toBeUndefined();
+    expect(scheme.attributes.globalVariable).toBeUndefined();
   });
 
   it("maps punctuation only from keys that do not spread one colour to other punctuation", () => {
@@ -396,6 +457,43 @@ describe(".icls schemes", () => {
     const { id, customs } = importScheme({}, parseIcls(xml).scheme);
     const attrs = parseIcls(exportIcls(id, customs)).scheme.attributes;
     for (const [name, value] of names) expect(attrs[name]?.foreground).toBe(`#${value}`);
+  });
+
+  it("imports PyCharm's function call, class, parameter and f-string keys and exports them by those keys", () => {
+    const keys = [
+      ["PY.FUNCTION_CALL", "pyFunctionCall", "d56075"],
+      ["PY.CLASS_DEFINITION", "pyClassDefinition", "7bcbff"],
+      ["PY.PARAMETER", "pyParameter", "101010"],
+      ["PY.LOCAL_VARIABLE", "pyLocalVariable", "202020"],
+      ["PY.TYPE_PARAMETER", "pyTypeParameter", "303030"],
+      ["PY.INVALID_STRING_ESCAPE", "pyInvalidEscape", "404040"],
+      ["PY.FSTRING_FRAGMENT_BRACES", "pyFString", "e89c45"],
+      ["PY.FSTRING_FORMAT_SPEC_NUMBER", "pyFormat", "505050"],
+    ] as const;
+    const xml = `<scheme name="PyCharm" parent_scheme="Darcula"><attributes>${keys
+      .map(
+        ([key, , value]) =>
+          `<option name="${key}"><value><option name="FOREGROUND" value="${value}"/></value></option>`,
+      )
+      .join("")}<option name="JS.GLOBAL_FUNCTION"><value><option name="FOREGROUND" value="6dacff"/></value></option>
+    </attributes></scheme>`;
+    const { scheme, skipped } = parseIcls(xml);
+    expect(skipped).toBe(0);
+    for (const [, id, value] of keys) expect(scheme.attributes[id]?.foreground).toBe(`#${value}`);
+    // A WebStorm function colour goes to the JavaScript and TypeScript page; Python calls keep PyCharm's.
+    expect(scheme.attributes["javascript.globalFunction"]?.foreground).toBe("#6dacff");
+    expect(scheme.attributes.functionCall?.foreground).not.toBe("#6dacff");
+    const { id, customs } = importScheme({}, scheme);
+    const exported = exportIcls(id, customs);
+    for (const [key] of keys) expect(exported).toContain(`name="${key}"`);
+    expect(exported).not.toContain('name="PY.STRING.F"');
+  });
+
+  it("still reads Python attributes that earlier versions exported under OPENIDEA_ names", () => {
+    const xml =
+      '<scheme name="Old"><attributes><option name="OPENIDEA_pyFunctionCall"><value>' +
+      '<option name="FOREGROUND" value="d56075"/></value></option></attributes></scheme>';
+    expect(parseIcls(xml).scheme.attributes.pyFunctionCall?.foreground).toBe("#d56075");
   });
 
   it("imports the Python f-string colour", () => {

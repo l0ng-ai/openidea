@@ -4,6 +4,7 @@
  * it follows the caret and closes when the server reports no signature;
  * ⇥ / ⇧⇥ move to the next / previous argument.
  */
+import { hasLinkedSnippetField } from "@/editor/core/cm/linkedSnippet";
 import { EditorSelection, Prec, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { completionStatus, hasNextSnippetField, hasPrevSnippetField } from "@codemirror/autocomplete";
 import {
@@ -62,10 +63,11 @@ function signatureTooltip(s: SigState): Tooltip {
     above: true,
     strictSide: false,
     create: (view) => {
+      const { signatures, activeSignature, activeParameter } = s.help;
       const dom = document.createElement("div");
       dom.className = "cm-lsp-signature";
+      dom.classList.toggle("cm-lsp-signature-overloads", signatures.length > 1);
       dom.setAttribute("role", "tooltip");
-      const { signatures, activeSignature, activeParameter } = s.help;
       let active: HTMLElement | null = null;
       signatures.forEach((sig, i) => {
         const row = document.createElement("div");
@@ -94,13 +96,9 @@ function signatureTooltip(s: SigState): Tooltip {
       }
       const fit = ({ left, right }: { left: number; right: number }) => {
         const width = `${Math.max(0, Math.floor(right - left))}px`;
-        const fontSize = getComputedStyle(view.contentDOM).fontSize;
-        const changed = dom.style.getPropertyValue("--cm-signature-width") !== width || dom.style.fontSize !== fontSize;
-        if (changed) {
-          dom.style.setProperty("--cm-signature-width", width);
-          dom.style.fontSize = fontSize;
-        }
-        return changed;
+        if (dom.style.getPropertyValue("--cm-signature-width") === width) return false;
+        dom.style.setProperty("--cm-signature-width", width);
+        return true;
       };
       // Reveal the current parameter after wrapping or a vertical clamp. Leave manual scrolling alone.
       let fittedWidth = 0;
@@ -292,7 +290,8 @@ function moveToArgument(view: EditorView, dir: 1 | -1): boolean {
   if (!state.field(signatureField, false) || state.readOnly) return false;
   if (state.selection.ranges.length > 1 || completionStatus(state) === "active") return false;
   // Snippet / template fields and the in-place rename own ⇥.
-  if (dir > 0 ? hasNextSnippetField(state) : hasPrevSnippetField(state)) return false;
+  if (hasLinkedSnippetField(state, dir) || (dir > 0 ? hasNextSnippetField(state) : hasPrevSnippetField(state)))
+    return false;
   if (inplaceRenameActive(state)) return false;
   const head = state.selection.main.head;
   const to = argumentStop(state.doc.toString(), head, dir);

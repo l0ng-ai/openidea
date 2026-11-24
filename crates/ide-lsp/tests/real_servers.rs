@@ -462,35 +462,54 @@ fn main() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires ty on PATH"]
 async fn ty_python_end_to_end() {
+    python_server_end_to_end("ty").await;
+}
+
+/// Pyright loads the workspace only after `workspace/didChangeConfiguration`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires pyright-langserver on PATH"]
+async fn pyright_python_end_to_end() {
+    python_server_end_to_end("pyright").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires basedpyright on PATH"]
+async fn basedpyright_python_end_to_end() {
+    python_server_end_to_end("basedpyright").await;
+}
+
+/// Definition and diagnostics from `name` alone, in a project without configuration.
+async fn python_server_end_to_end(name: &str) {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
     let path = root.join("example.py");
     let source = "def greet(name: str) -> str:\n    return name\n\nresult = greet('Ada')\nbad: int = 'wrong'\n";
     std::fs::write(&path, source).unwrap();
     let mut python = LanguageRegistry::load(None).unwrap().get(&LanguageId::new("python")).unwrap();
-    python.language_servers.retain(|server| server.name == "ty");
+    python.language_servers.retain(|server| server.name == name);
     assert_eq!(python.language_servers.len(), 1);
+    python.language_servers[0].fallback = false;
     let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![python]));
     let doc = DocId::next();
     mgr.did_open(doc, &path, &LanguageId::new("python"), 1, source);
-    retry("ty ready", Duration::from_secs(30), || {
-        let status = last_status(&events, "ty");
+    retry(&format!("{name} ready"), Duration::from_secs(30), || {
+        let status = last_status(&events, name);
         if let Some((ServerStatus::Crashed | ServerStatus::Missing | ServerStatus::Misconfigured, msg)) = &status {
-            panic!("ty failed: {msg:?}");
+            panic!("{name} failed: {msg:?}");
         }
         async move { matches!(status, Some((ServerStatus::Ready | ServerStatus::Busy, _))).then_some(()) }
     })
     .await;
-    let defs = retry("ty definition", Duration::from_secs(30), || {
+    let defs = retry(&format!("{name} definition"), Duration::from_secs(30), || {
         let mgr = mgr.clone();
         async move { mgr.goto(doc, Pos::new(3, 10), GotoKind::Definition).await.ok().filter(|d| !d.is_empty()) }
     })
     .await;
     assert_eq!(defs[0].path, path);
     assert_eq!(defs[0].range.start.line, 0);
-    retry("ty diagnostics", Duration::from_secs(30), || {
+    retry(&format!("{name} diagnostics"), Duration::from_secs(30), || {
         let found = events.lock().iter().any(
-            |event| matches!(event, IdeEvent::Diagnostics { source, items, .. } if source == "ty" && !items.is_empty()),
+            |event| matches!(event, IdeEvent::Diagnostics { source, items, .. } if source == name && !items.is_empty()),
         );
         async move { found.then_some(()) }
     })
@@ -920,11 +939,78 @@ async fn angular_language_server_end_to_end() {
     assert_eq!((edited_lines(&edit, &app_ts), edited_lines(&edit, &app_html)), (vec![7], vec![0]), "{edit:?}");
     // Its usage in the template, the declaration left out, from either file.
     for (doc, pos) in [(ts, title), (html, Pos::new(0, 8))] {
-        let refs = mgr.references(doc, pos, false, false, Default::default()).await.unwrap();
+        let refs = mgr.references_streaming(doc, pos, false, false, true, Default::default(), None).await.unwrap();
         let found: Vec<(std::path::PathBuf, u32)> =
             refs.locations.iter().map(|l| (l.path.to_path_buf(), l.range.start.line)).collect();
         assert_eq!(found, [(app_html.clone(), 0)]);
     }
+    tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+}
+
+/// The Tailwind CSS server on `fixtures/tailwind-app` (Tailwind 4, `@theme` colours), with
+/// the built-in definitions: class completion in JSX and `@apply`, hover with the generated
+/// CSS, and the class conflict warning. Set `OPENIDEA_TEST_NPM_TOOLS` to a dir with
+/// `npm i @tailwindcss/language-server`; the fixture's own `tailwindcss` isn't needed.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires @tailwindcss/language-server (OPENIDEA_TEST_NPM_TOOLS)"]
+async fn tailwindcss_language_server_end_to_end() {
+    let tools = std::path::PathBuf::from(std::env::var("OPENIDEA_TEST_NPM_TOOLS").expect("OPENIDEA_TEST_NPM_TOOLS"));
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/tailwind-app");
+    for file in ["package.json", "index.html", "src/app.css", "src/App.tsx"] {
+        std::fs::create_dir_all(root.join(file).parent().unwrap()).unwrap();
+        std::fs::copy(fixture.join(file), root.join(file)).unwrap();
+    }
+    let builtin = LanguageRegistry::load(None).unwrap();
+    let languages = ["typescriptreact", "css"].map(|id| {
+        let mut cfg = builtin.get(&LanguageId::new(id)).unwrap();
+        cfg.language_servers.retain(|s| s.name == "tailwindcss-language-server");
+        let bin = tools.join("node_modules/.bin/tailwindcss-language-server");
+        cfg.language_servers[0].command = bin.to_string_lossy().into_owned();
+        cfg
+    });
+    let (mgr, events) = manager(&root, LanguageRegistry::from_configs(languages.to_vec()));
+    let (tsx, css) = (DocId::next(), DocId::next());
+    let tsx_path = root.join("src/App.tsx");
+    let css_path = root.join("src/app.css");
+    let tsx_text = std::fs::read_to_string(&tsx_path).unwrap();
+    let css_text = std::fs::read_to_string(&css_path).unwrap();
+    mgr.did_open(tsx, &tsx_path, &LanguageId::new("typescriptreact"), 1, &tsx_text);
+    mgr.did_open(css, &css_path, &LanguageId::new("css"), 1, &css_text);
+    let at = |text: &str, needle: &str, offset: usize| {
+        let (line, l) = text.lines().enumerate().find(|(_, l)| l.contains(needle)).unwrap();
+        Pos::new(line as u32, (l.find(needle).unwrap() + offset) as u32)
+    };
+
+    // The project's own `@theme` colour, in `className` and after `@apply`.
+    let in_class = at(&tsx_text, "className=\"flex flex-col", "className=\"".len());
+    let in_apply = at(&css_text, "@apply rounded-md", "@apply ".len());
+    for (doc, pos) in [(tsx, in_class), (css, in_apply)] {
+        retry("class completion", Duration::from_secs(60), || {
+            let mgr = mgr.clone();
+            async move {
+                let list = mgr.completion(doc, pos, None, Default::default()).await.ok()?;
+                list.items.iter().any(|i| i.label == "bg-brand-500").then_some(())
+            }
+        })
+        .await;
+    }
+    let hover = mgr.hover(tsx, at(&tsx_text, "bg-white", 1), Default::default()).await.unwrap().unwrap();
+    assert!(hover.contents.value.contains("background-color"), "{}", hover.contents.value);
+    let hover = mgr.hover(tsx, at(&tsx_text, "text-brand-700", 1), Default::default()).await.unwrap().unwrap();
+    assert!(hover.contents.value.contains("--color-brand-700"), "{}", hover.contents.value);
+
+    // `flex block`: both set `display`.
+    retry("class conflict", Duration::from_secs(30), || {
+        let found = events.lock().iter().any(|e| {
+            matches!(e, IdeEvent::Diagnostics { path, items, .. }
+                if path.ends_with("src/App.tsx")
+                    && items.iter().any(|d| d.message.contains("applies the same CSS properties")))
+        });
+        async move { found.then_some(()) }
+    })
+    .await;
     tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
 }
 

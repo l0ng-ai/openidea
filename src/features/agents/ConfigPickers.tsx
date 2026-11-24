@@ -7,6 +7,7 @@ import type { AgentConfigOption } from "@/bindings";
 import { useTx } from "@/platform/i18n";
 import { Icon, IconButton, Popup, Select, T, Toggle } from "@/ui";
 import { SelectListbox, type SelectOption } from "@/ui/Select";
+import { Spinner } from "@/ui/Spinner";
 import { isContextOption, mainOptions, modelConfigOptions, modeIcon } from "./composerModel";
 import { togglePinnedModel, useAgents } from "./store";
 import styles from "./Composer.module.css";
@@ -76,7 +77,7 @@ function switchValues(option: AgentConfigOption): { on: string; off: string } | 
 const selected = (option: AgentConfigOption, value: string | null) =>
   option.values.find((v) => v.value === value) ?? null;
 
-type ChangeOption = (option: string, value: string, forModel?: string) => void;
+type ChangeOption = (option: string, value: string) => void;
 
 interface ModelRefresh {
   draft?: boolean;
@@ -86,12 +87,6 @@ interface ModelRefresh {
   error: string | null;
   onOpen?: () => void;
   onRefresh: () => void;
-  preview?: {
-    /** Undefined until discovery; an empty array means the agent reported no settings. */
-    settingsFor: (model: string) => AgentConfigOption[] | undefined;
-    load: (model: string) => void;
-    errorFor: (model: string) => string | null | undefined;
-  };
 }
 
 export function ConfigPickers({
@@ -168,11 +163,7 @@ export function ConfigPickers({
           ) : (
             <ConfigPicker option={o} value={valueOf(o)} onChange={onChange} />
           )}
-          {o === model && modelRefresh?.loadingSettings && (
-            <span className={styles.pickerValue} role="status">
-              <T>Loading model settings…</T>
-            </span>
-          )}
+          {o === model && !combinedModel && modelRefresh?.loadingSettings && <LoadingSettingsChip />}
         </span>
       ))}
       {secondary.length > 0 && (
@@ -261,8 +252,8 @@ function ConfigPicker({
   );
 }
 
-/** Effort levels that fit the popup's segmented control; more (Codex has six) get a dropdown. */
-const SEGMENTED_EFFORT_MAX = 5;
+/** Values a setting shows as a segmented control; a longer list (Codex has six effort levels) is listed. */
+const SEGMENTED_MAX = 5;
 
 function settingName(option: AgentConfigOption) {
   return option.category === "thought_level"
@@ -299,7 +290,8 @@ function ModelPicker({
   modelRefresh?: ModelRefresh;
 }) {
   const tx = useTx();
-  const [page, setPage] = useState<"models" | { model: string | null } | null>(null);
+  // The model chip picks a model; the settings chip next to it holds the model's settings.
+  const [open, setOpen] = useState<"models" | "settings" | null>(null);
   const pinnedModels = useAgents((s) => s.pinnedModels);
   const anchor = useRef<HTMLSpanElement>(null);
   const selectedModel = selected(model, modelValue);
@@ -307,15 +299,12 @@ function ModelPicker({
   const modelName = unavailable
     ? tx`${modelValue} (unavailable)`
     : (selectedModel?.name ?? (modelRefresh ? modelValue : null) ?? tx("Default"));
-
-  const summary = settingsSummary(settings, tx);
-  const settingsFor = (id: string | null) =>
-    id === modelValue ? settings : id ? modelRefresh?.preview?.settingsFor(id) : undefined;
-  const details = page && page !== "models" && (page.model === modelValue || selected(model, page.model)) ? page : null;
-  const inspectedModel = details ? selected(model, details.model) : null;
-  const openModels = () => {
-    modelRefresh?.onOpen?.();
-    setPage("models");
+  const shown = settings.filter((o) => o.values.length > 0);
+  const summary = settingsSummary(shown, tx);
+  const toggle = (which: "models" | "settings") => {
+    if (open === which) return setOpen(null);
+    if (which === "models") modelRefresh?.onOpen?.();
+    setOpen(which);
   };
 
   return (
@@ -325,46 +314,41 @@ function ModelPicker({
         className={styles.chip}
         aria-label={tx(model.name)}
         aria-haspopup="dialog"
-        aria-expanded={!!page && !details}
+        aria-expanded={open === "models"}
         title={`${tx(model.name)}: ${modelName}`}
-        onClick={() => (page && !details ? setPage(null) : openModels())}
+        onClick={() => toggle("models")}
       >
         <span className={styles.chipValue}>{modelName}</span>
         <Icon name="chevron-down" size={14} className={styles.chipChevron} />
       </button>
-      {summary && !unavailable && (
-        <button
-          type="button"
-          className={clsx(styles.chip, styles.modelDetail)}
-          aria-label={tx`Model settings: ${summary}`}
-          title={tx`Configure ${modelName}…`}
-          aria-haspopup="dialog"
-          aria-expanded={!!details && details.model === modelValue}
-          onClick={() => setPage(details && details.model === modelValue ? null : { model: modelValue })}
-        >
-          <span className={styles.chipValue}>{summary}</span>
-        </button>
+      {!unavailable && modelRefresh?.loadingSettings ? (
+        <LoadingSettingsChip />
+      ) : (
+        summary &&
+        !unavailable && (
+          <button
+            type="button"
+            className={clsx(styles.chip, styles.modelDetail)}
+            aria-label={tx`Model settings: ${summary}`}
+            title={tx`Configure ${modelName}…`}
+            aria-haspopup="dialog"
+            aria-expanded={open === "settings"}
+            onClick={() => toggle("settings")}
+          >
+            <span className={styles.chipValue}>{summary}</span>
+            <Icon name="chevron-down" size={14} className={styles.chipChevron} />
+          </button>
+        )
       )}
       <Popup
-        open={!!page}
+        open={!!open}
         anchor={anchor}
-        onClose={() => setPage(null)}
-        aria-label={tx(details ? "Model settings" : "Model")}
+        onClose={() => setOpen(null)}
+        aria-label={tx(open === "settings" ? "Model settings" : "Model")}
         className={styles.modelEffortPopup}
       >
-        {details ? (
-          <ModelSettings
-            key={details.model}
-            id={details.model}
-            name={inspectedModel?.name ?? modelName}
-            settings={settingsFor(details.model)}
-            modelRefresh={modelRefresh}
-            onBack={openModels}
-            onChange={(option, value) => {
-              if (details.model && details.model !== modelValue) onChange(option, value, details.model);
-              else onChange(option, value);
-            }}
-          />
+        {open === "settings" ? (
+          <ModelSettings settings={shown} onChange={onChange} onDone={() => setOpen(null)} />
         ) : (
           <>
             {unavailable && (
@@ -381,16 +365,12 @@ function ModelPicker({
                 listClassName={styles.modelList}
                 onChoose={(v) => {
                   onChange(model.id, v);
-                  setPage(null);
+                  setOpen(null);
                 }}
                 renderAction={(opt) => {
                   const raw = model.values.find((v) => v.value === opt.value);
                   if (!raw) return null;
                   const pinned = pinnedModels.includes(raw.value);
-                  const rowSettings = settingsFor(raw.value);
-                  const configurable = rowSettings
-                    ? rowSettings.some((o) => o.values.length > 0)
-                    : !!modelRefresh?.preview;
                   return (
                     <>
                       <CostBadge category={raw.costCategory} />
@@ -404,23 +384,6 @@ function ModelPicker({
                       >
                         <Icon name="pin" size={12} />
                       </button>
-                      {configurable && (
-                        <button
-                          type="button"
-                          className={clsx(
-                            styles.modelRowConfigure,
-                            styles.modelRowSettings,
-                            raw.value === modelValue && styles.currentRowSettings,
-                          )}
-                          title={tx`Configure ${opt.label}…`}
-                          aria-label={tx`Configure ${opt.label}…`}
-                          aria-haspopup="dialog"
-                          onClick={() => setPage({ model: raw.value })}
-                        >
-                          {rowSettings && <span>{settingsSummary(rowSettings, tx)}</span>}
-                          <Icon name="chevron-right" size={14} />
-                        </button>
-                      )}
                     </>
                   );
                 }}
@@ -438,79 +401,69 @@ function ModelPicker({
   );
 }
 
+/**
+ * The current model's settings (effort, context size, fast mode…), each a click away: an on/off
+ * setting as a switch, a short list as a segmented control, a longer one listed. A model with
+ * one setting closes on a choice.
+ */
 function ModelSettings({
-  id,
-  name,
   settings,
-  modelRefresh,
-  onBack,
   onChange,
+  onDone,
 }: {
-  id: string | null;
-  name: string;
-  settings: AgentConfigOption[] | undefined;
-  modelRefresh?: ModelRefresh;
-  onBack: () => void;
+  settings: AgentConfigOption[];
   onChange: ChangeOption;
+  onDone: () => void;
 }) {
   const tx = useTx();
-  const attempted = useRef(false);
-  const lookup = modelRefresh?.preview;
-  const refreshing = modelRefresh?.refreshing;
-  useEffect(() => {
-    if (!id || settings || !lookup || refreshing || attempted.current) return;
-    attempted.current = true;
-    lookup.load(id);
-  }, [id, settings, lookup, refreshing]);
-  const loading = modelRefresh?.loadingSettings || (!settings && refreshing);
-  const error = !settings && id && lookup?.errorFor(id);
+  const only = settings.length === 1;
   return (
     <div className={styles.quickSettings}>
-      <div className={styles.modelSettingsHeader}>
-        <IconButton autoFocus icon="arrow-left" title="Back to models" size="small" onClick={onBack} />
-        <strong>{name}</strong>
-      </div>
-      {loading ? (
-        <p role="status">
-          <T>Loading model settings…</T>
-        </p>
-      ) : error ? (
-        <p role="alert" className={styles.catalogError}>{tx`Could not refresh models: ${error}`}</p>
-      ) : !settings?.some((o) => o.values.length) ? (
-        <p role="status">
-          <T>No settings reported for this model.</T>
-        </p>
-      ) : (
-        settings
-          .filter((o) => o.values.length > 0)
-          .map((o) => {
-            const label = tx(settingName(o));
-            const segmented =
-              isContextOption(o.id) || (o.category === "thought_level" && o.values.length <= SEGMENTED_EFFORT_MAX);
-            return (
-              <div key={o.id} className={styles.quickRow}>
-                <span className={styles.quickLabel} title={o.description ?? undefined}>
-                  {label}
-                </span>
-                {segmented ? (
-                  <SegmentedControl
-                    ariaLabel={label}
-                    options={o.values.map((v) => ({
-                      value: v.value,
-                      label: v.name,
-                      description: v.description ?? undefined,
-                    }))}
-                    value={settingValue(o)!.value}
-                    onChange={(v) => onChange(o.id, v)}
-                  />
-                ) : (
-                  <ConfigPicker option={o} value={o.current} onChange={onChange} framed />
-                )}
-              </div>
-            );
-          })
-      )}
+      {settings.map((o) => {
+        const label = tx(settingName(o));
+        const control = switchValues(o) ? (
+          <ConfigPicker option={o} value={o.current} onChange={onChange} framed />
+        ) : o.values.length <= SEGMENTED_MAX ? (
+          <SegmentedControl
+            ariaLabel={label}
+            options={o.values.map((v) => ({ value: v.value, label: v.name, description: v.description ?? undefined }))}
+            value={settingValue(o)!.value}
+            onChange={(v) => {
+              onChange(o.id, v);
+              if (only) onDone();
+            }}
+          />
+        ) : (
+          <SelectListbox
+            aria-label={label}
+            value={settingValue(o)?.value ?? null}
+            options={o.values.map((v) => ({ value: v.value, label: v.name, detail: v.description ?? undefined }))}
+            onChoose={(v) => {
+              onChange(o.id, v);
+              if (only) onDone();
+            }}
+          />
+        );
+        return (
+          <div key={o.id} className={styles.quickRow}>
+            <span className={styles.quickLabel} title={o.description ?? undefined}>
+              {label}
+            </span>
+            {control}
+          </div>
+        );
+      })}
     </div>
+  );
+}
+
+/** Where the model's settings chip appears once they arrive. */
+function LoadingSettingsChip() {
+  const tx = useTx();
+  return (
+    <span className={clsx(styles.chip, styles.chipLoading)} title={tx("Loading model settings…")}>
+      <Spinner size={12} label={tx("Loading model settings…")} />
+    </span>
   );
 }
 

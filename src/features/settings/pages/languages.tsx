@@ -24,10 +24,12 @@ const PrettierPage = lazyPage("languages.prettier", () =>
   import("../languages/FormatterPage").then((m) => m.PrettierPage),
 );
 const OxfmtPage = lazyPage("languages.oxfmt", () => import("../languages/FormatterPage").then((m) => m.OxfmtPage));
+const BiomePage = lazyPage("languages.biome", () => import("../languages/FormatterPage").then((m) => m.BiomePage));
 const DocstringsPage = lazyPage("python.docstrings", () =>
   import("../languages/DocstringsPage").then((m) => m.DocstringsPage),
 );
 const RuffPage = lazyPage("python.ruff", () => import("../languages/FormatterPage").then((m) => m.RuffPage));
+const BlackPage = lazyPage("python.black", () => import("../languages/FormatterPage").then((m) => m.BlackPage));
 const PhpPage = lazyPage("languages.php", () => import("../languages/LanguagePages").then((m) => m.PhpPage));
 const RubyPage = lazyPage("languages.ruby", () => import("../languages/LanguagePages").then((m) => m.RubyPage));
 const RustPage = lazyPage("languages.rust", () => import("../languages/LanguagePages").then((m) => m.RustPage));
@@ -169,7 +171,16 @@ export const LANGUAGE_PAGES: PageSpec[] = [
     title: "Markdown",
     group: LANGUAGES_GROUP,
     order: 400,
-    keywords: ["markdown", "preview", "font size", "jupyter", "notebook", "run commands", "code block"],
+    keywords: [
+      "markdown",
+      "preview layout",
+      "stacked",
+      "font size",
+      "jupyter",
+      "notebook",
+      "run commands",
+      "code block",
+    ],
     component: MarkdownPage,
   },
   {
@@ -191,6 +202,16 @@ export const LANGUAGE_PAGES: PageSpec[] = [
     order: 403.6,
     keywords: ["formatter", "oxfmt", "oxc", ".oxfmtrc.json", "format on save", "node_modules"],
     component: OxfmtPage,
+  },
+  {
+    id: "languages.biome",
+    projectScope: true,
+    defaultScope: "project",
+    title: "Biome",
+    group: LANGUAGES_GROUP,
+    order: 403.7,
+    keywords: ["formatter", "linter", "biome", "biome.json", "format on save", "node_modules"],
+    component: BiomePage,
   },
   {
     id: "python.docstrings",
@@ -226,6 +247,16 @@ export const LANGUAGE_PAGES: PageSpec[] = [
       "format on save",
     ],
     component: RuffPage,
+  },
+  {
+    id: "python.black",
+    projectScope: true,
+    defaultScope: "project",
+    title: "Black formatter",
+    group: LANGUAGES_GROUP,
+    order: 403.4,
+    keywords: ["formatter", "black", "python", "pyproject.toml", "tool.black", "format on save"],
+    component: BlackPage,
   },
   {
     id: "languages.php",

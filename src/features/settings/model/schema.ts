@@ -160,6 +160,8 @@ export interface SpellingValid {
   ideWords: string[];
   projectWords: string[];
   customDictionaries: string[];
+  /** Where "Save '…' to dictionary" writes; empty means project (application without a project). */
+  defaultDictionary: string;
 }
 
 const stringList = (v: unknown): string[] =>
@@ -171,6 +173,7 @@ function validateSpelling(raw: unknown): SpellingValid {
     ideWords: stringList(r.ideWords),
     projectWords: stringList(r.projectWords),
     customDictionaries: stringList(r.customDictionaries),
+    defaultDictionary: typeof r.defaultDictionary === "string" ? r.defaultDictionary : "",
   };
 }
 
@@ -226,7 +229,7 @@ export const DEFAULT_SETTINGS: ValidSettings = {
   cmake: {},
   projectStructure: DEFAULT_PROJECT_STRUCTURE,
   inspections: DEFAULT_INSPECTIONS,
-  spelling: { ideWords: [], projectWords: [], customDictionaries: [] },
+  spelling: { ideWords: [], projectWords: [], customDictionaries: [], defaultDictionary: "" },
   tools: {},
   languageServers: {},
   agents: {
@@ -245,6 +248,7 @@ export const DEFAULT_SETTINGS: ValidSettings = {
     newTaskApprovals: "bypass",
     defaults: {},
     mcpServers: {},
+    skills: {},
   },
   mcpServer: {
     enabled: false,
@@ -310,6 +314,15 @@ function agentMcpServers(v: unknown): Required<AgentSettings>["mcpServers"] {
       ...(Object.keys(headers).length ? { headers } : {}),
       ...(agents.length ? { agents } : {}),
     };
+  }
+  return out;
+}
+
+function agentSkillPolicies(v: unknown): Required<AgentSettings>["skills"] {
+  const out: Required<AgentSettings>["skills"] = {};
+  for (const [name, raw] of Object.entries(obj(v))) {
+    if (!name.trim()) continue;
+    out[name] = { mode: oneOf(obj(raw).mode, ["auto", "slashOnly", "off"] as const, "auto") };
   }
   return out;
 }
@@ -448,6 +461,7 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
       newTaskApprovals: oneOf(agents.newTaskApprovals, ["bypass", "ask"] as const, d.agents.newTaskApprovals),
       defaults: agentDefaults(agents.defaults),
       mcpServers: agentMcpServers(agents.mcpServers),
+      skills: agentSkillPolicies(agents.skills),
     },
     mcpServer: {
       enabled: bool(obj(root.mcpServer).enabled, d.mcpServer.enabled),

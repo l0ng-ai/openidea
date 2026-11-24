@@ -6,7 +6,7 @@
  * The viewer's toggle shows at once and is undone when the request fails.
  */
 import { useState } from "react";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 import { IconButton, Popup, tooltipAttrs } from "@/ui";
 import type { GHReaction, GHReactionContent } from "../../api/types";
 import { useGhRepository } from "../../data/repository";
@@ -101,7 +101,7 @@ export function Reactions({ state, canReact }: ReactionsProps) {
             className={styles.pill}
             data-own={g.isReactedByCurrentUser || undefined}
             disabled={!canReact}
-            {...tooltipAttrs(tx`${users} reacted with '${name}' emoji`)}
+            {...tooltipAttrs(tx`${users} reacted with '${txPart(name)}' emoji`)}
             onClick={() => toggle(g.content)}
           >
             <span className={styles.emoji}>{r.emoji}</span>

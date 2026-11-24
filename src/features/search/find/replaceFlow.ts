@@ -91,15 +91,10 @@ export function countUsages(usages: readonly Usage[]): ReplaceCounts {
 }
 
 /** "Replace 3 occurrences in 2 files" for the confirmation dialog. */
-export function confirmText(c: ReplaceCounts, pattern: string, replacement: string): string {
-  const occ = `${c.usages} occurrence${c.usages === 1 ? "" : "s"}`;
-  const files = `${c.files} file${c.files === 1 ? "" : "s"}`;
-  return `Replace ${occ} of '${pattern}' with '${replacement}' in ${files}?`;
-}
-
-/** Confirmation for Replace All once the search hit its limit (the count shown is not the total). */
-export function confirmAllText(pattern: string, replacement: string): string {
-  return tx`Replace every occurrence of '${pattern}' with '${replacement}' in the scope? The search hit its limit, so it runs again to find the occurrences not listed.`;
+export function confirmText({ usages, files }: ReplaceCounts): string {
+  if (usages === 1) return tx("Replace 1 occurrence in 1 file?");
+  if (files === 1) return tx`Replace ${usages} occurrences in 1 file?`;
+  return tx`Replace ${usages} occurrences in ${files} files?`;
 }
 
 /** Toggles exclusion of every usage in `groups` (all excluded → include them again). */

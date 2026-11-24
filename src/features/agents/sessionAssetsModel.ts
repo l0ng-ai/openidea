@@ -330,8 +330,13 @@ const DASHBOARD_HOST_PATTERNS = [
   /linear\.app$/i,
 ];
 
-function isDashboardOrDocUrl(u: URL): boolean {
-  return DASHBOARD_HOST_PATTERNS.some((re) => re.test(u.hostname));
+function isDashboardOrDocUrl(url: string | URL): boolean {
+  try {
+    const { hostname } = typeof url === "string" ? new URL(url) : url;
+    return DASHBOARD_HOST_PATTERNS.some((re) => re.test(hostname));
+  } catch {
+    return false; // not a URL
+  }
 }
 
 function formatWebsiteTitle(u: URL): string {
@@ -359,6 +364,97 @@ function formatWebsiteTitle(u: URL): string {
   return `${host}${shownPath}`;
 }
 
+type ForgeItem = Exclude<ClassifiedUrl, null | { kind: "website" }>;
+
+interface ForgeRoute {
+  kind: ForgeItem["kind"];
+  /** Captures the repository path, then the item number (or commit sha). */
+  pattern: RegExp;
+  /** Path between the repository and the item id in the canonical URL. */
+  urlSegment: string;
+  /** Prefix of the item id in keys and labels. */
+  sigil: "#" | "!";
+}
+
+interface Forge {
+  isHost: (host: string) => boolean;
+  routes: readonly ForgeRoute[];
+  bareRepoRoot?: RegExp;
+  /** The `owner/repo` GitHub repository an item can be looked up in, when the forge is GitHub. */
+  githubRepo: (host: string, repo: string) => string | null;
+}
+
+function forgeRoute(
+  kind: ForgeRoute["kind"],
+  repo: string,
+  segment: string,
+  urlSegment = segment,
+  sigil: ForgeRoute["sigil"] = "#",
+): ForgeRoute {
+  const id = kind === "commit" ? "([0-9a-f]{7,40})" : "(\\d+)";
+  return {
+    kind,
+    pattern: new RegExp(`^/${repo}/${segment}/${id}(?:[/?#]|$)`, kind === "commit" ? "i" : ""),
+    urlSegment,
+    sigil,
+  };
+}
+
+const GITHUB_REPO = "([^/]+/[^/]+)";
+const GITLAB_REPO = "(.+?)/-";
+
+const FORGES: readonly Forge[] = [
+  // `github.com` or GHE `github.*`
+  {
+    isHost: (host) => host === "github.com" || host.startsWith("github.") || host.includes(".github."),
+    routes: [
+      forgeRoute("pr", GITHUB_REPO, "pulls?", "pull"),
+      forgeRoute("issue", GITHUB_REPO, "issues"),
+      forgeRoute("discussion", GITHUB_REPO, "discussions"),
+      forgeRoute("commit", GITHUB_REPO, "commit"),
+    ],
+    bareRepoRoot: /^\/[^/]+\/[^/]+\/?$/,
+    githubRepo: (host, repo) => (host === "github.com" ? repo : null),
+  },
+  {
+    isHost: (host) => host === "gitlab.com" || host.startsWith("gitlab.") || host.includes(".gitlab."),
+    routes: [
+      forgeRoute("pr", GITLAB_REPO, "merge_requests", "-/merge_requests", "!"),
+      forgeRoute("issue", GITLAB_REPO, "issues", "-/issues"),
+      forgeRoute("commit", GITLAB_REPO, "commit", "-/commit"),
+    ],
+    githubRepo: () => null,
+  },
+];
+
+function forgeItem(forge: Forge, route: ForgeRoute, m: RegExpExecArray, u: URL, host: string): ForgeItem {
+  const repo = m[1]!;
+  // Numbers are normalised (`012` → `12`); a commit keeps its sha as written.
+  const id = route.kind === "commit" ? m[2]! : String(Number(m[2]!));
+  const url = `${u.protocol}//${u.host}/${repo}/${route.urlSegment}/${id}`;
+  const repoKey = `${host}/${repo.toLowerCase()}`;
+  switch (route.kind) {
+    case "commit": {
+      const sha = id.slice(0, 7);
+      return { kind: "commit", key: `commit:${repoKey}@${sha.toLowerCase()}`, repo, idLabel: sha, url };
+    }
+    case "discussion":
+      return { kind: "discussion", key: `discussion:${repoKey}#${id}`, repo, idLabel: `#${id}`, url };
+    case "pr":
+    case "issue":
+      return {
+        kind: route.kind,
+        key: `${route.kind}:${repoKey}${route.sigil}${id}`,
+        host,
+        repo,
+        number: Number(id),
+        idLabel: `${route.sigil}${id}`,
+        url,
+        githubRepo: forge.githubRepo(host, repo),
+      };
+  }
+}
+
 export function classifyUrl(raw: string, allowLoopback = false): ClassifiedUrl {
   let u: URL;
   try {
@@ -372,111 +468,14 @@ export function classifyUrl(raw: string, allowLoopback = false): ClassifiedUrl {
   if (!allowLoopback && LOOPBACK_HOSTS.has(host)) return null;
   const pathname = u.pathname;
 
-  // GitHub-style hosts (`github.com` or GHE `github.*`)
-  if (host === "github.com" || host.startsWith("github.") || host.includes(".github.")) {
-    const pr = /^\/([^/]+\/[^/]+)\/pulls?\/(\d+)(?:[/?#]|$)/.exec(pathname);
-    if (pr) {
-      const repo = pr[1]!;
-      const number = Number(pr[2]!);
-      return {
-        kind: "pr",
-        key: `pr:${host}/${repo.toLowerCase()}#${number}`,
-        host,
-        repo,
-        number,
-        idLabel: `#${number}`,
-        url: `${u.protocol}//${u.host}/${repo}/pull/${number}`,
-        githubRepo: host === "github.com" ? repo : null,
-      };
+  for (const forge of FORGES) {
+    if (!forge.isHost(host)) continue;
+    for (const route of forge.routes) {
+      const m = route.pattern.exec(pathname);
+      if (m) return forgeItem(forge, route, m, u, host);
     }
-    const issue = /^\/([^/]+\/[^/]+)\/issues\/(\d+)(?:[/?#]|$)/.exec(pathname);
-    if (issue) {
-      const repo = issue[1]!;
-      const number = Number(issue[2]!);
-      return {
-        kind: "issue",
-        key: `issue:${host}/${repo.toLowerCase()}#${number}`,
-        host,
-        repo,
-        number,
-        idLabel: `#${number}`,
-        url: `${u.protocol}//${u.host}/${repo}/issues/${number}`,
-        githubRepo: host === "github.com" ? repo : null,
-      };
-    }
-    const discussion = /^\/([^/]+\/[^/]+)\/discussions\/(\d+)(?:[/?#]|$)/.exec(pathname);
-    if (discussion) {
-      const repo = discussion[1]!;
-      const number = Number(discussion[2]!);
-      return {
-        kind: "discussion",
-        key: `discussion:${host}/${repo.toLowerCase()}#${number}`,
-        repo,
-        idLabel: `#${number}`,
-        url: `${u.protocol}//${u.host}/${repo}/discussions/${number}`,
-      };
-    }
-    const commit = /^\/([^/]+\/[^/]+)\/commit\/([0-9a-f]{7,40})(?:[/?#]|$)/i.exec(pathname);
-    if (commit) {
-      const repo = commit[1]!;
-      const sha = commit[2]!;
-      return {
-        kind: "commit",
-        key: `commit:${host}/${repo.toLowerCase()}@${sha.slice(0, 7).toLowerCase()}`,
-        repo,
-        idLabel: sha.slice(0, 7),
-        url: `${u.protocol}//${u.host}/${repo}/commit/${sha}`,
-      };
-    }
-    // Bare repository root or `.git` clone URLs are not standalone website artifacts.
-    if (/^\/[^/]+\/[^/]+\/?$/.test(pathname) || pathname.endsWith(".git")) return null;
-  }
-
-  // GitLab hosts
-  if (host === "gitlab.com" || host.startsWith("gitlab.") || host.includes(".gitlab.")) {
-    const mr = /^\/(.+?)\/-\/merge_requests\/(\d+)(?:[/?#]|$)/.exec(pathname);
-    if (mr) {
-      const repo = mr[1]!;
-      const number = Number(mr[2]!);
-      return {
-        kind: "pr",
-        key: `pr:${host}/${repo.toLowerCase()}!${number}`,
-        host,
-        repo,
-        number,
-        idLabel: `!${number}`,
-        url: `${u.protocol}//${u.host}/${repo}/-/merge_requests/${number}`,
-        githubRepo: null,
-      };
-    }
-    const issue = /^\/(.+?)\/-\/issues\/(\d+)(?:[/?#]|$)/.exec(pathname);
-    if (issue) {
-      const repo = issue[1]!;
-      const number = Number(issue[2]!);
-      return {
-        kind: "issue",
-        key: `issue:${host}/${repo.toLowerCase()}#${number}`,
-        host,
-        repo,
-        number,
-        idLabel: `#${number}`,
-        url: `${u.protocol}//${u.host}/${repo}/-/issues/${number}`,
-        githubRepo: null,
-      };
-    }
-    const commit = /^\/(.+?)\/-\/commit\/([0-9a-f]{7,40})(?:[/?#]|$)/i.exec(pathname);
-    if (commit) {
-      const repo = commit[1]!;
-      const sha = commit[2]!;
-      return {
-        kind: "commit",
-        key: `commit:${host}/${repo.toLowerCase()}@${sha.slice(0, 7).toLowerCase()}`,
-        repo,
-        idLabel: sha.slice(0, 7),
-        url: `${u.protocol}//${u.host}/${repo}/-/commit/${sha}`,
-      };
-    }
-    if (pathname.endsWith(".git")) return null;
+    // Bare repository root URLs are not standalone website artifacts.
+    if (forge.bareRepoRoot?.test(pathname)) return null;
   }
 
   // Linear issues (`https://linear.app/<workspace>/issue/<ENG-123>/<optional-slug>`)
@@ -829,6 +828,67 @@ function relativeIfUnder(bases: readonly string[], absPath: string): string | nu
   return null;
 }
 
+type FileAsset = Extract<SessionArtifact, { kind: "file" }>;
+
+/** The artifact a path names for the session, or `null` when it is no artifact. */
+function fileAsset(
+  rawPath: string,
+  source: "edit" | "read" | "mention",
+  cwd: string,
+  bases: readonly string[],
+): FileAsset | null {
+  const trimmed = rawPath.trim();
+  if (!trimmed || /^[a-z][a-z\d+.-]*:/i.test(trimmed)) return null;
+  const abs = trimmed.startsWith("/") ? resolveTyped("", trimmed) : resolveTyped(cwd, trimmed);
+  if (!isArtifactCandidate(abs, source)) return null;
+  return {
+    key: `file:${abs}`,
+    kind: "file",
+    name: basename(abs) || abs,
+    path: abs,
+    rel: relativeIfUnder(bases, abs),
+    externalBinary: EXTERNAL_BINARY_EXTENSIONS.has(extOf(abs)),
+  };
+}
+
+type ForgeItemFields<T> = Omit<T, "title" | "state" | "hasExplicitTitle" | "hasExplicitState">;
+
+interface IssueTouch {
+  created?: boolean;
+  title?: string | null;
+  fallbackTitle?: string | null;
+  state?: IssueAssetState | null;
+}
+
+/** What one entry says about the session's assets, in the order it says it. */
+type Finding =
+  | {
+      kind: "pr";
+      item: ForgeItemFields<SessionPullRequest>;
+      title?: string | null;
+      state?: PullRequestAssetState | null;
+    }
+  | { kind: "issue"; item: ForgeItemFields<SessionIssue>; opts: IssueTouch }
+  | {
+      kind: "reference";
+      refKind: "commit" | "discussion";
+      key: string;
+      idLabel: string;
+      repo: string;
+      url: string;
+      title?: string | null;
+    }
+  | { kind: "website"; key: string; url: string; fallbackTitle: string; label?: string | null }
+  | { kind: "file"; asset: FileAsset };
+
+/**
+ * Findings of each entry, kept while the entry is the same object. A streamed chunk replaces
+ * the last entry and leaves the rest as they were, so only the replaced one is read again.
+ * Findings depend on where the task runs: the same entry read for another folder or default
+ * repository is read again.
+ */
+const findings = new WeakMap<AgentEntry, { scope: string; found: Finding[] }>();
+
 export interface ExtractAssetsOptions {
   task: Pick<AgentTask, "cwd" | "projectRoot">;
   entries: readonly AgentEntry[] | null;
@@ -862,7 +922,7 @@ export function extractSessionAssets({
   let seq = 0;
 
   const touchPr = (
-    item: Omit<SessionPullRequest, "title" | "state" | "hasExplicitTitle" | "hasExplicitState">,
+    item: ForgeItemFields<SessionPullRequest>,
     title?: string | null,
     state?: PullRequestAssetState | null,
     bumpOrder = true,
@@ -891,15 +951,7 @@ export function extractSessionAssets({
     });
   };
 
-  const touchIssue = (
-    item: Omit<SessionIssue, "title" | "state" | "hasExplicitTitle" | "hasExplicitState">,
-    opts: {
-      created?: boolean;
-      title?: string | null;
-      fallbackTitle?: string | null;
-      state?: IssueAssetState | null;
-    } = {},
-  ) => {
+  const touchIssue = (item: ForgeItemFields<SessionIssue>, opts: IssueTouch = {}) => {
     const cleanTitle = opts.title?.trim() || null;
     if (opts.created || createdIssues.has(item.key)) {
       // Promote from `references` if it was seen before `gh issue create` completed.
@@ -1009,27 +1061,20 @@ export function extractSessionAssets({
     });
   };
 
-  const touchFile = (rawPath: string, source: "edit" | "read" | "mention") => {
-    const trimmed = rawPath.trim();
-    if (!trimmed || /^[a-z][a-z\d+.-]*:/i.test(trimmed)) return;
-    const abs = trimmed.startsWith("/") ? resolveTyped("", trimmed) : resolveTyped(task.cwd, trimmed);
-    if (!isArtifactCandidate(abs, source)) return;
-    const key = `file:${abs}`;
-    const existing = files.get(key);
+  const touchFile = (asset: FileAsset) => {
+    const existing = files.get(asset.key);
     if (existing) {
       existing.seq = ++seq;
       return;
     }
-    const ext = extOf(abs);
-    files.set(key, {
-      key,
-      kind: "file",
-      name: basename(abs) || abs,
-      path: abs,
-      rel: relativeIfUnder(bases, abs),
-      externalBinary: EXTERNAL_BINARY_EXTENSIONS.has(ext),
-      seq: ++seq,
-    });
+    files.set(asset.key, { ...asset, seq: ++seq });
+  };
+
+  /** What the entry being read says about assets, in the order it says it. */
+  let found: Finding[] = [];
+  const foundFile = (rawPath: string, source: "edit" | "read" | "mention") => {
+    const asset = fileAsset(rawPath, source, task.cwd, bases);
+    if (asset) found.push({ kind: "file", asset });
   };
 
   const ingestUrl = (
@@ -1044,40 +1089,83 @@ export function extractSessionAssets({
     if (!classified) return;
     switch (classified.kind) {
       case "pr":
-        touchPr(classified, meaningfulLabel(label, classified.idLabel));
+        found.push({ kind: "pr", item: classified, title: meaningfulLabel(label, classified.idLabel) });
         break;
       case "issue":
-        touchIssue(classified, {
-          created: opts.createdIssue,
-          title: meaningfulLabel(label, classified.idLabel),
-          fallbackTitle: classified.fallbackTitle ?? null,
+        found.push({
+          kind: "issue",
+          item: classified,
+          opts: {
+            created: opts.createdIssue,
+            title: meaningfulLabel(label, classified.idLabel),
+            fallbackTitle: classified.fallbackTitle ?? null,
+          },
         });
         break;
       case "discussion":
-        touchOtherReference(
-          "discussion",
-          classified.key,
-          classified.idLabel,
-          classified.repo,
-          classified.url,
-          meaningfulLabel(label, classified.idLabel),
-        );
+        found.push({
+          kind: "reference",
+          refKind: "discussion",
+          key: classified.key,
+          idLabel: classified.idLabel,
+          repo: classified.repo,
+          url: classified.url,
+          title: meaningfulLabel(label, classified.idLabel),
+        });
         break;
       case "commit":
-        touchOtherReference(
-          "commit",
-          classified.key,
-          classified.idLabel,
-          classified.repo,
-          classified.url,
-          meaningfulLabel(label, classified.idLabel),
-        );
+        found.push({
+          kind: "reference",
+          refKind: "commit",
+          key: classified.key,
+          idLabel: classified.idLabel,
+          repo: classified.repo,
+          url: classified.url,
+          title: meaningfulLabel(label, classified.idLabel),
+        });
         break;
       case "website":
         if (opts.allowWebsites) {
-          touchWebsite(classified.key, classified.url, classified.fallbackTitle, label);
+          found.push({
+            kind: "website",
+            key: classified.key,
+            url: classified.url,
+            fallbackTitle: classified.fallbackTitle,
+            label,
+          });
         }
         break;
+    }
+  };
+
+  /** Structured JSON metadata and links in a tool's output; `created*` carry what a `gh … create` command announced. */
+  const ingestToolOutput = (
+    output: string,
+    created: { createdIssue: boolean; issueTitle: string | null; linkLabel: string | null } = {
+      createdIssue: false,
+      issueTitle: null,
+      linkLabel: null,
+    },
+  ) => {
+    for (const meta of extractJsonMetadata(output)) {
+      const classified = classifyUrl(meta.url);
+      if (classified?.kind === "pr") {
+        found.push({ kind: "pr", item: classified, title: meta.title, state: meta.state });
+      } else if (classified?.kind === "issue") {
+        const state: IssueAssetState | null = meta.state === "closed" ? "closed" : meta.state ? "open" : null;
+        found.push({
+          kind: "issue",
+          item: classified,
+          opts: { created: created.createdIssue, title: meta.title ?? created.issueTitle, state },
+        });
+      }
+    }
+    for (const link of extractLinks(output)) {
+      ingestUrl(link.url, link.label ?? created.linkLabel, {
+        allowWebsites: isDashboardOrDocUrl(link.url),
+        allowLoopback: false,
+        createdIssue: created.createdIssue,
+      });
     }
   };
 
@@ -1089,18 +1177,18 @@ export function extractSessionAssets({
     // Markdown relative/absolute file links (`[Report](docs/report.md)`).
     for (const m of prose.matchAll(/\[([^\][\n]{1,200})\]\(\s*([^)\s]+)\s*\)/g)) {
       const file = fileHref(m[2]!, task.cwd);
-      if (file) touchFile(file.path, "mention");
+      if (file) foundFile(file.path, "mention");
     }
     // `@file` mentions in messages.
     for (const tok of messageTokens(prose)) {
       if (tok.kind !== "file") continue;
       const mention = parseMention(tok.value);
-      if (mention && !mention.dir) touchFile(mention.rel, "mention");
+      if (mention && !mention.dir) foundFile(mention.rel, "mention");
     }
     // Inline code spans naming an artifact file (`storage_session_spec.docx`, `/tmp/report.md`).
     for (const m of prose.matchAll(/`([^`\n]{3,240})`/g)) {
       const link = pathLink(m[1]!, task.cwd);
-      if (link) touchFile(link.path, "mention");
+      if (link) foundFile(link.path, "mention");
     }
   };
 
@@ -1112,28 +1200,28 @@ export function extractSessionAssets({
     touchPr(classified, bpr.title, state);
   }
 
-  for (const entry of entries ?? []) {
+  const readEntry = (entry: AgentEntry) => {
     if (entry.type === "user") {
       ingestProse(entry.text);
       const imageCount = entry.images?.length ?? 0;
       const attachedFiles = entry.attachments.slice(0, Math.max(0, entry.attachments.length - imageCount));
-      for (const a of attachedFiles) touchFile(a, "mention");
-      continue;
+      for (const a of attachedFiles) foundFile(a, "mention");
+      return;
     }
     if (entry.type === "agent" || entry.type === "message") {
       ingestProse(entry.text);
-      continue;
+      return;
     }
     if (entry.type === "subagent") {
       if (entry.prompt) ingestProse(entry.prompt);
       if (entry.reply) ingestProse(entry.reply);
-      continue;
+      return;
     }
     if (entry.type === "tool") {
       const edited = entry.kind === "edit" || entry.kind === "move" || entry.diffs.length > 0;
-      for (const diff of entry.diffs) touchFile(diff.path, "edit");
+      for (const diff of entry.diffs) foundFile(diff.path, "edit");
       if (edited || entry.kind === "read") {
-        for (const loc of entry.locations) touchFile(loc, edited ? "edit" : "read");
+        for (const loc of entry.locations) foundFile(loc, edited ? "edit" : "read");
       }
       if (entry.kind === "fetch") {
         for (const link of extractLinks(entry.title)) {
@@ -1163,61 +1251,52 @@ export function extractSessionAssets({
           }
         }
         if (entry.output) {
-          for (const meta of extractJsonMetadata(entry.output)) {
-            const classified = classifyUrl(meta.url);
-            if (classified?.kind === "pr") {
-              touchPr(classified, meta.title, meta.state);
-            } else if (classified?.kind === "issue") {
-              const issueState: IssueAssetState | null =
-                meta.state === "closed" ? "closed" : meta.state ? "open" : null;
-              touchIssue(classified, {
-                created: !!createsIssue,
-                title: meta.title ?? createsIssue?.titleFlag ?? null,
-                state: issueState,
-              });
-            }
-          }
-          for (const link of extractLinks(entry.output)) {
-            let allowDashboard = false;
-            try {
-              allowDashboard = isDashboardOrDocUrl(new URL(link.url));
-            } catch {
-              /* invalid URL */
-            }
-            ingestUrl(link.url, link.label ?? (createsPr?.titleFlag || createsIssue?.titleFlag || null), {
-              allowWebsites: allowDashboard,
-              allowLoopback: false,
-              createdIssue: !!createsIssue,
-            });
-          }
+          ingestToolOutput(entry.output, {
+            createdIssue: !!createsIssue,
+            issueTitle: createsIssue?.titleFlag ?? null,
+            linkLabel: createsPr?.titleFlag || createsIssue?.titleFlag || null,
+          });
         }
-        continue;
+        return;
       }
       // Other tools (e.g. GitHub / Linear / Datadog MCP calls): inspect structured JSON and explicit links.
       for (const link of extractLinks(entry.title)) {
         ingestUrl(link.url, link.label, { allowWebsites: false, allowLoopback: false });
       }
-      if (entry.output) {
-        for (const meta of extractJsonMetadata(entry.output)) {
-          const classified = classifyUrl(meta.url);
-          if (classified?.kind === "pr") {
-            touchPr(classified, meta.title, meta.state);
-          } else if (classified?.kind === "issue") {
-            const issueState: IssueAssetState | null = meta.state === "closed" ? "closed" : meta.state ? "open" : null;
-            touchIssue(classified, { title: meta.title, state: issueState });
-          }
-        }
-        for (const link of extractLinks(entry.output)) {
-          let allowDashboard = false;
-          try {
-            allowDashboard = isDashboardOrDocUrl(new URL(link.url));
-          } catch {
-            /* invalid URL */
-          }
-          ingestUrl(link.url, link.label, { allowWebsites: allowDashboard, allowLoopback: false });
-        }
-      }
+      if (entry.output) ingestToolOutput(entry.output);
     }
+  };
+
+  const touch = (finding: Finding) => {
+    switch (finding.kind) {
+      case "pr":
+        touchPr(finding.item, finding.title, finding.state);
+        break;
+      case "issue":
+        touchIssue(finding.item, finding.opts);
+        break;
+      case "reference":
+        touchOtherReference(finding.refKind, finding.key, finding.idLabel, finding.repo, finding.url, finding.title);
+        break;
+      case "website":
+        touchWebsite(finding.key, finding.url, finding.fallbackTitle, finding.label);
+        break;
+      case "file":
+        touchFile(finding.asset);
+        break;
+    }
+  };
+
+  const scope = `${task.cwd}\0${task.projectRoot ?? ""}\0${defaultGithubRepo ?? ""}`;
+  for (const entry of entries ?? []) {
+    let known = findings.get(entry);
+    if (known?.scope !== scope) {
+      found = [];
+      readEntry(entry);
+      known = { scope, found };
+      findings.set(entry, known);
+    }
+    known.found.forEach(touch);
   }
 
   // Apply live `gh api` metadata enrichment (`title` and `state`).

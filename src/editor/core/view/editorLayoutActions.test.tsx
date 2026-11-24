@@ -6,7 +6,7 @@ import { registerTextEditorWrapper } from "@/workbench/contributions";
 import { useDistractionFree } from "@/workbench/distractionFree";
 import { MarkdownEditor } from "@/features/viewers/markdown/MarkdownEditor";
 import { MarkdownLayoutActions } from "@/features/viewers/markdown/MarkdownLayoutActions";
-import { setMarkdownMode, useMarkdownModes } from "@/features/viewers/markdown/modes";
+import { setMarkdownMode, useMarkdownModes, useMarkdownSourceHidden } from "@/features/viewers/markdown/modes";
 import { useTabs } from "../controller";
 import type { Tab } from "../model/tabs";
 import { EditorAreaView } from "./EditorArea";
@@ -18,7 +18,9 @@ vi.mock("../controller", async (original) => ({
 vi.mock("./TextEditorHost", () => ({ TextEditorHost: () => <input aria-label="Source" /> }));
 vi.mock("./FindBar", () => ({ FindBar: () => null }));
 vi.mock("./Banner", () => ({ EditorBanners: () => null, VirtualBanner: () => null }));
-vi.mock("./StatusItems", () => ({ CodeBreadcrumbs: () => null }));
+vi.mock("./StatusItems", () => ({
+  CodeBreadcrumbs: ({ position }: { position: string }) => <nav aria-label={`Code breadcrumbs ${position}`} />,
+}));
 
 const md = (id: string, path: string): Tab => ({
   id,
@@ -46,6 +48,7 @@ beforeEach(() => {
       matches: (path) => path.endsWith(".md"),
       component: MarkdownEditor,
       tabActions: MarkdownLayoutActions,
+      useSourceHidden: useMarkdownSourceHidden,
     }),
     registerActions([
       { id: "markdown.editorOnly", title: "Editor Only", run: ({ arg }) => setMarkdownMode(String(arg), "editor") },
@@ -136,5 +139,17 @@ describe("Markdown layout controls", () => {
     expect(useMarkdownModes.getState().byTab[second.id]).toBe("preview");
     act(() => useDistractionFree.setState({ active: true }));
     expect(screen.getAllByRole("toolbar", { name: "Markdown editor layout" })).toHaveLength(2);
+  });
+
+  it("drops the code breadcrumbs only while the source is hidden", () => {
+    useProject.setState({ settings: null });
+    render(<EditorAreaView />);
+    expect(screen.getByRole("navigation", { name: "Code breadcrumbs top" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Editor and Preview" }));
+    expect(screen.getByRole("navigation", { name: "Code breadcrumbs bottom" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Preview Only" }));
+    expect(screen.queryByRole("navigation", { name: /^Code breadcrumbs/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Editor Only" }));
+    expect(screen.getByRole("navigation", { name: "Code breadcrumbs top" })).toBeInTheDocument();
   });
 });

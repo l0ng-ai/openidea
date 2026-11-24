@@ -24,6 +24,7 @@ import { installSelectionHighlights, type SelectionHighlightController } from ".
 import { installLinkHighlights, xtermLink, type LinkHighlightController } from "./linkHighlights";
 import { installTerminalPaste, pasteIntoTerminal, pasteTerminalClipboard } from "./paste";
 import { ImeCommitGate } from "./imeCommit";
+import { installImeAnchor } from "./imeAnchor";
 import { ownTerminalInput } from "./imeInput";
 import { findTerminalLinks, resolvePath, type TerminalLink } from "./links";
 import { parseShellCommand } from "@/platform/commandLine";
@@ -254,6 +255,8 @@ export class TerminalSession {
   private opened = false;
   /** `focus()` arrived before the textarea existed (the pane is focused while xterm is still closed). */
   private pendingFocus = false;
+  /** What had focus when `pendingFocus` was set: a later move elsewhere cancels it. */
+  private pendingFocusFrom: Element | null = null;
   /** Bounds retries when the pane has no box yet, or xterm cannot measure a cell. */
   private fitAttempts = 0;
   private disposed = false;
@@ -679,7 +682,18 @@ export class TerminalSession {
       this.opts.onFocus(this.key);
     });
     this.watchImeCommit();
-    if (this.pendingFocus) this.focus();
+    this.disposables.push({ dispose: installImeAnchor({ host: this.host, term: this.term }) });
+    if (this.pendingFocus) {
+      this.pendingFocus = false;
+      if (this.focusStayedHere()) this.focus();
+    }
+  }
+
+  /** Whether focus is still where the deferred `focus()` left it, or in this terminal's own window. */
+  private focusStayedHere(): boolean {
+    const active = document.activeElement;
+    if (!active || active === document.body || active === this.pendingFocusFrom) return true;
+    return this.host.contains(active) || !!this.host.closest("[data-toolwindow]")?.contains(active);
   }
 
   detach(container: HTMLElement) {
@@ -844,6 +858,8 @@ export class TerminalSession {
       }
       this.ptyId = info.id;
       this.update({ status: "running", title: info.title || "Local" });
+      // Send the new size if it changed while the program was starting.
+      if (this.term.cols !== cols || this.term.rows !== rows) this.resizePty(this.term.cols, this.term.rows);
       this.flushPendingInput();
     } catch (e) {
       this.pendingInput = "";
@@ -990,6 +1006,7 @@ export class TerminalSession {
     this.clearUnseenDone();
     if (!this.opened || !this.term.textarea) {
       this.pendingFocus = true;
+      this.pendingFocusFrom = document.activeElement;
       this.scheduleFit();
       return;
     }

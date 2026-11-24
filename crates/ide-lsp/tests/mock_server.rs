@@ -2,7 +2,7 @@
 
 use ide_core::event::{LspRefreshKind, ServerStatus};
 use ide_core::{
-    CancellationToken, DocId, FileEdit, IdeEvent, LanguageId, Pos, Range, ServerId, Severity, WorkspaceEdit,
+    CancellationToken, DocId, FileEdit, IdeEvent, LanguageId, Pos, Range, ServerId, Severity, TaskId, WorkspaceEdit,
 };
 use ide_jsonrpc::{Handler, NoopHandler, Peer};
 use ide_language::{LanguageConfig, LanguageRegistry, LanguageServerConfig};
@@ -635,11 +635,12 @@ async fn java_sharing_cancels_a_retiring_initialize_before_starting_its_replacem
     let old = state.peer();
     shared.store(true, Ordering::SeqCst);
     let switched = tokio::time::timeout(Duration::from_secs(2), h.mgr.reconfigure()).await;
-    let closed_before_response = old.is_closed();
-    gate.open();
     switched.expect("initialize cancellation must not wait for its response");
+    // The retiring transport closes asynchronously; wait for it before releasing
+    // the initialize response so the ordering check does not race the close.
+    eventually(|| old.is_closed()).await;
+    gate.open();
     eventually(|| state.requested("initialize").len() == 2).await;
-    assert!(closed_before_response, "the old transport must close before its initialize response is released");
     assert_eq!(h.mgr.servers().len(), 1);
     assert_eq!(h.mgr.servers()[0].root.as_ref(), h.root.as_path());
     h.mgr.shutdown_all().await;
@@ -1322,6 +1323,36 @@ async fn initialize_and_incremental_sync() {
     assert_eq!(infos[0].name, "mock");
     assert_eq!(infos[0].root, h.root);
     assert_eq!(infos[0].status, ServerStatus::Ready);
+}
+
+/// Pyright, told the client has workspace folders, asks for its configuration and loads the
+/// workspace only after a `workspace/didChangeConfiguration`: every server gets one at startup.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_server_hears_its_configuration_once_initialized() {
+    let cases = [
+        (None, None, json!({})),
+        (Some(json!({ "flag": true })), None, json!({ "flag": true })),
+        (
+            None,
+            Some(json!({ "python": { "pythonPath": "/venv/bin/python" } })),
+            json!({ "python": { "pythonPath": "/venv/bin/python" } }),
+        ),
+        (Some(json!({ "flag": true })), Some(json!({ "other": 2 })), json!({ "flag": true, "other": 2 })),
+    ];
+    for (init, settings, expected) in cases {
+        let h = harness_configured("mock", "mk", &[("pyright", incremental_caps())], |cfg| {
+            cfg.initialization_options = init.clone().map(|v| toml::Value::try_from(v).unwrap());
+            cfg.settings = settings.clone();
+        });
+        h.open("a.mk", "x");
+        h.wait_status("pyright", ServerStatus::Ready).await;
+        let s = h.launcher.state("pyright");
+        eventually(|| !s.notified("workspace/didChangeConfiguration").is_empty()).await;
+        assert_eq!(s.notified("workspace/didChangeConfiguration"), vec![json!({ "settings": expected })]);
+        let order: Vec<String> = s.notifications.lock().iter().map(|(m, _)| m.clone()).collect();
+        let at = |m: &str| order.iter().position(|n| n == m).unwrap();
+        assert!(at("initialized") < at("workspace/didChangeConfiguration"));
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2099,7 +2130,9 @@ async fn replacing_progress_keeps_cancellation_reports_and_indexing_on_the_new_t
     h.wait_status("mock", ServerStatus::Busy).await;
     let old = task_of("Old work").unwrap();
     let mgr = h.mgr.clone();
-    let search = tokio::spawn(async move { mgr.references(doc, Pos::new(0, 1), true, true, Default::default()).await });
+    let search = tokio::spawn(async move {
+        mgr.references_streaming(doc, Pos::new(0, 1), true, true, true, Default::default(), None).await
+    });
     eventually(|| !s.requested("textDocument/references").is_empty()).await;
 
     peer.notify("$/progress", begin("New work")).unwrap();
@@ -2120,7 +2153,8 @@ async fn replacing_progress_keeps_cancellation_reports_and_indexing_on_the_new_t
     assert_eq!(s.notified("window/workDoneProgress/cancel"), [json!({ "token": 7 })]);
     assert_eq!(h.statuses("mock").last(), Some(&ServerStatus::Busy));
     assert!(!search.is_finished(), "replacement must not release a search waiting for idle");
-    let refs = h.mgr.references(doc, Pos::new(0, 1), true, false, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 1), true, false, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.incomplete, Some(ReferencesIncomplete::Indexing));
 
     for _ in 0..2 {
@@ -2150,6 +2184,51 @@ async fn replacing_progress_keeps_cancellation_reports_and_indexing_on_the_new_t
             .iter()
             .any(|e| matches!(e, IdeEvent::Task { id, message: Some(m), .. } if *id == old && m == "Halfway"))
     );
+}
+
+/// A server that ignores `window/workDoneProgress/cancel` (Pyright waiting on a workspace
+/// that never loads) does not keep the task "Cancelling…": it ends after a grace period,
+/// once, and later reports on the token change nothing. A server that ends it in time ends it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancelled_progress_the_server_never_ends_ends_on_its_own() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let peer = s.peer();
+    let begin = |token: &str, title: &str| json!({ "token": token, "value": { "kind": "begin", "title": title, "cancellable": true } });
+    let task_of = |title: &str| {
+        h.events.lock().iter().find_map(|e| match e {
+            IdeEvent::Task { id, title: t, done: false, .. } if t == title => Some(*id),
+            _ => None,
+        })
+    };
+    let ends = |task: TaskId| {
+        h.events.lock().iter().filter(|e| matches!(e, IdeEvent::Task { id, done: true, .. } if *id == task)).count()
+    };
+    peer.notify("$/progress", begin("ignored", "Finding references")).unwrap();
+    peer.notify("$/progress", begin("honoured", "Indexing")).unwrap();
+    eventually(|| task_of("Finding references").is_some() && task_of("Indexing").is_some()).await;
+    h.wait_status("mock", ServerStatus::Busy).await;
+    let (ignored, honoured) = (task_of("Finding references").unwrap(), task_of("Indexing").unwrap());
+
+    assert!(ide_core::task::cancel(ignored));
+    assert!(ide_core::task::cancel(honoured));
+    eventually(|| s.notified("window/workDoneProgress/cancel").len() == 2).await;
+    peer.notify("$/progress", json!({ "token": "honoured", "value": { "kind": "end" } })).unwrap();
+    eventually(|| ends(honoured) == 1).await;
+    assert_eq!(ends(ignored), 0, "the server still has its grace period");
+
+    eventually(|| ends(ignored) == 1).await;
+    h.wait_status("mock", ServerStatus::Ready).await;
+    // Late reports on the token reach no task.
+    peer.notify("$/progress", json!({ "token": "ignored", "value": { "kind": "report", "message": "late" } })).unwrap();
+    peer.notify("$/progress", json!({ "token": "ignored", "value": { "kind": "end" } })).unwrap();
+    peer.notify("$/progress", begin("after", "After")).unwrap();
+    eventually(|| task_of("After").is_some()).await;
+    assert_eq!(ends(ignored), 1);
+    assert_eq!(ends(honoured), 1);
+    assert!(!h.events.lock().iter().any(|e| matches!(e, IdeEvent::Task { message: Some(m), .. } if m == "late")));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2650,7 +2729,16 @@ async fn configuration_answer_resyncs_open_documents_of_opted_in_servers() {
         .await;
     assert_eq!(s.notified("textDocument/didChange").len(), 2, "one re-sync per answer");
     let methods: Vec<String> = extra.notifications.lock().iter().map(|(m, _)| m.clone()).collect();
-    assert_eq!(methods, ["initialized", "textDocument/didOpen", "textDocument/didChange", "textDocument/didSave"]);
+    assert_eq!(
+        methods,
+        [
+            "initialized",
+            "workspace/didChangeConfiguration",
+            "textDocument/didOpen",
+            "textDocument/didChange",
+            "textDocument/didSave"
+        ]
+    );
     assert_eq!(s.launches.load(Ordering::SeqCst), 1);
 }
 
@@ -2706,9 +2794,9 @@ async fn settings_changes_reach_servers_without_restarts() {
     let s = h.launcher.state("mock");
     *settings.lock() = Some(json!({ "nested": { "other": 2 } }));
     h.mgr.reconfigure().await;
-    eventually(|| !s.notified("workspace/didChangeConfiguration").is_empty()).await;
+    eventually(|| s.notified("workspace/didChangeConfiguration").len() == 2).await;
     assert_eq!(
-        s.notified("workspace/didChangeConfiguration")[0],
+        s.notified("workspace/didChangeConfiguration")[1],
         json!({ "settings": { "flag": true, "nested": { "deep": 1, "other": 2 } } })
     );
     assert_eq!(s.launches.load(Ordering::SeqCst), 1);
@@ -3078,6 +3166,34 @@ async fn open_java_files_are_checked_again_after_a_project_update() {
     let mut expected = vec![json!(uri_of(&a)), json!(uri_of(&b))];
     expected.sort_by_key(|u| u.to_string());
     eventually(|| refreshed() == expected).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_project_update_refreshes_java_tokens_and_inheritance() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let _ = h.open("A.java", "class A { private String name; }");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let state = h.launcher.state("jdtls");
+    let refreshes = || {
+        h.events
+            .lock()
+            .iter()
+            .filter_map(|e| match e {
+                IdeEvent::LspRefresh { kind, .. } => Some(*kind),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    state
+        .peer()
+        .notify("language/status", json!({ "type": "Message", "message": "Updating project configurations..." }))
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(refreshes().is_empty());
+
+    // A later import may add tokens and implementation targets to open editors.
+    state.peer().notify("language/status", json!({ "type": "ProjectStatus", "message": "OK" })).unwrap();
+    eventually(|| refreshes() == [LspRefreshKind::SemanticTokens, LspRefreshKind::Inheritance]).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -3631,6 +3747,92 @@ async fn stream_collect_fails_cleanly_on_a_step_beyond_u16() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn exception_breakpoints_send_the_whole_list_and_decode_states() {
+    use ide_jvm_inspect::{ExceptionArmState, ExceptionClassBreakpoints, ExceptionClassSpec};
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let (_, path) = h.open("Sample.java", "class Sample {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let client = ide_lsp::JdtExceptionBreakpoints::new(h.mgr.clone(), path);
+    let specs = [
+        ExceptionClassSpec {
+            id: "a".into(),
+            class_name: "com.acme.Boom".into(),
+            caught: true,
+            uncaught: false,
+            enabled: true,
+            class_filters: vec!["com.acme.*".into()],
+            class_exclusion_filters: vec![],
+        },
+        ExceptionClassSpec {
+            id: "b".into(),
+            class_name: "java.lang.IllegalStateException".into(),
+            caught: true,
+            uncaught: true,
+            enabled: false,
+            class_filters: vec![],
+            class_exclusion_filters: vec!["*Test".into()],
+        },
+    ];
+    s.respond(
+        "workspace/executeCommand",
+        json!({"ok": [{"id": "a", "state": "pending"}, {"id": "b", "state": "disabled"}]}),
+    );
+    let states = client.set(&stream_launch_target(), &specs).await.unwrap();
+    assert_eq!(states, vec![("a".into(), ExceptionArmState::Pending), ("b".into(), ExceptionArmState::Disabled)]);
+    let asked = s.requested("workspace/executeCommand");
+    assert_eq!(asked[0]["command"], "openidea.jvm.exceptions.set");
+    assert_eq!(
+        asked[0]["arguments"],
+        json!([
+            {"pid": 42, "host": null, "port": null, "generation": 3},
+            {"breakpoints": [
+                {"id": "a", "className": "com.acme.Boom", "caught": true, "uncaught": false, "enabled": true,
+                 "classFilters": ["com.acme.*"], "classExclusionFilters": []},
+                {"id": "b", "className": "java.lang.IllegalStateException", "caught": true, "uncaught": true,
+                 "enabled": false, "classFilters": [], "classExclusionFilters": ["*Test"]},
+            ]},
+        ])
+    );
+
+    s.respond("workspace/executeCommand", json!({"error": "noSession", "detail": "hotCodeReplace is never?"}));
+    assert_eq!(
+        client.set(&stream_launch_target(), &specs).await.unwrap_err(),
+        ide_jvm_inspect::InspectError::NoSession
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn exception_class_at_asks_the_extension_and_is_none_without_it() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.exceptionType"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let (doc, path) = h.open("Main.java", "class Main {\n  void f() { throw new Failure(); }\n}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    s.respond("workspace/executeCommand", json!({"qualifiedName": "app.Main$Failure", "displayName": "Failure"}));
+    let found = h.mgr.exception_class_at(doc, Pos::new(1, 23), Default::default()).await.unwrap();
+    assert_eq!(
+        found,
+        Some(ide_lsp::types::ExceptionClassRef {
+            qualified_name: "app.Main$Failure".into(),
+            display_name: "Failure".into()
+        })
+    );
+    let asked = s.requested("workspace/executeCommand");
+    assert_eq!(asked[0]["command"], "openidea.java.exceptionType");
+    assert_eq!(asked[0]["arguments"], json!([uri_of(&path), 1, 23]));
+    s.respond("workspace/executeCommand", json!(null));
+    assert_eq!(h.mgr.exception_class_at(doc, Pos::new(0, 1), Default::default()).await.unwrap(), None);
+
+    let plain = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let (doc, _) = plain.open("Main.java", "class Main {}");
+    plain.wait_status("jdtls", ServerStatus::Ready).await;
+    assert_eq!(plain.mgr.exception_class_at(doc, Pos::new(0, 7), Default::default()).await.unwrap(), None);
+    assert!(plain.launcher.state("jdtls").requested("workspace/executeCommand").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn debug_server_port_maps_to_module() {
     let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
     let (_, path) = h.open("Sample.java", "class Sample {}");
@@ -4036,6 +4238,156 @@ async fn java_dependency_implementations_point_at_the_method() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn formatting_a_snapshot_never_changes_an_open_document() {
+    let caps = json!({
+        "positionEncoding": "utf-8",
+        "textDocumentSync": { "openClose": true, "change": 2 },
+        "documentFormattingProvider": true,
+    });
+    let h = harness(&[("mock", caps)]);
+    let (_, path) = h.open("a.mk", "different working text\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    s.respond(
+        "textDocument/formatting",
+        json!([{ "range": { "start": { "line": 0, "character": 4 }, "end": { "line": 0, "character": 5 } }, "newText": "X" }]),
+    );
+    let options = FormatOptions { tab_size: 2, insert_spaces: true, on_save: false, tool: None };
+    let edits = h.mgr.format_text(&path, &LanguageId("mock".into()), "🙂b\n", options).await.unwrap();
+    assert_eq!(edits, vec![ide_core::TextEdit { range: rng(0, 2, 0, 3), new_text: "X".into() }]);
+
+    let uri = uri_of(&path);
+    let requests = s.requested("textDocument/formatting");
+    let shadow = requests[0]["textDocument"]["uri"].as_str().unwrap();
+    assert_ne!(shadow, uri);
+    let opens = s.notified("textDocument/didOpen");
+    let snapshot = opens.iter().find(|n| n["textDocument"]["uri"] == shadow).unwrap();
+    assert_eq!(snapshot["textDocument"]["text"], "🙂b\n");
+    assert!(s.notified("textDocument/didChange").is_empty());
+    eventually(|| uris(&s.notified("textDocument/didClose")) == vec![shadow.to_owned()]).await;
+    assert!(s.docs.lock().contains_key(&uri));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn snapshot_diagnostics_collect_pull_and_push_without_publishing_problems() {
+    let mut pull_caps = incremental_caps();
+    pull_caps["diagnosticProvider"] = json!({ "interFileDependencies": false, "workspaceDiagnostics": false });
+    let mut push_caps = incremental_caps();
+    push_caps["positionEncoding"] = json!("utf-8");
+    let h = harness(&[("mock", pull_caps), ("push", push_caps)]);
+    let pull = h.launcher.state("mock");
+    *pull.responder.lock() = Some(pull_responder());
+    let (_, path) = h.open("a.mk", "clean editor\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    h.wait_status("push", ServerStatus::Ready).await;
+    let push = h.launcher.state("push");
+    let live = uri_of(&path);
+    let shadow = || {
+        push.notified("textDocument/didOpen")
+            .into_iter()
+            .find(|n| n["textDocument"]["text"] == "🙂bad\n")
+            .and_then(|n| n["textDocument"]["uri"].as_str().map(str::to_owned))
+    };
+    let send = async {
+        eventually(|| shadow().is_some()).await;
+        let uri = shadow().unwrap();
+        for (version, message) in [(1, "wrong version"), (0, "snapshot only")] {
+            push.peer()
+                .notify(
+                    "textDocument/publishDiagnostics",
+                    json!({
+                        "uri": uri, "version": version, "diagnostics": [{
+                            "range": {"start": {"line":0,"character":4}, "end": {"line":0,"character":7}},
+                            "severity": 2, "message": message
+                        }]
+                    }),
+                )
+                .unwrap();
+        }
+        uri
+    };
+    let language = LanguageId("mock".into());
+    let cancel = Default::default();
+    let (result, shadow) = tokio::join!(h.mgr.snapshot_diagnostics(&path, &language, "🙂bad\n", &cancel), send);
+    assert_ne!(shadow, live);
+    let mut items = result.unwrap();
+    items.sort_by(|a, b| a.message.cmp(&b.message));
+    assert_eq!(items.iter().map(|d| d.message.as_str()).collect::<Vec<_>>(), ["bad", "snapshot only"]);
+    assert_eq!(items[1].range, rng(0, 2, 0, 5));
+    eventually(|| uris(&push.notified("textDocument/didClose")) == vec![shadow.clone()]).await;
+    assert!(uris(&push.notified("textDocument/didChange")).is_empty());
+    assert!(push.docs.lock().contains_key(&live));
+    assert!(!h.events.lock().iter().any(|event| matches!(
+        event,
+        IdeEvent::Diagnostics { items, .. } if !items.is_empty()
+    )));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_actions_use_snapshot_text_and_accept_only_its_passive_edits() {
+    let caps = json!({
+        "positionEncoding": "utf-8",
+        "textDocumentSync": { "openClose": true, "change": 2 },
+        "codeActionProvider": { "resolveProvider": true },
+    });
+    let h = harness(&[("mock", caps)]);
+    let (_, path) = h.open("a.mk", "the live editor\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let uri = uri_of(&path);
+    let original = uri.clone();
+    *s.responder.lock() = Some(Arc::new(move |_, method, params| {
+        let edit = json!({ "range": {
+            "start": { "line": 0, "character": 4 }, "end": { "line": 0, "character": 5 }
+        }, "newText": "X" });
+        match method {
+            "textDocument/codeAction" => {
+                let shadow = params["textDocument"]["uri"].as_str().unwrap();
+                assert_ne!(shadow, original);
+                assert_eq!(params["range"]["end"], json!({ "line": 0, "character": 5 }));
+                assert_eq!(params["context"]["diagnostics"], json!([]));
+                let kind = params["context"]["only"][0].as_str().unwrap();
+                if kind == "source.fixAll" {
+                    return Some(json!([{ "title": "Cleanup", "kind": kind, "edit": { "documentChanges": [{
+                        "textDocument": { "uri": shadow, "version": 0 }, "edits": [edit]
+                    }] }}]));
+                }
+                assert_eq!(kind, "source.organizeImports");
+                Some(json!([
+                    { "title": "Cross-file edit", "kind": kind, "isPreferred": true,
+                      "edit": { "changes": { shadow: [edit.clone()], original.clone(): [edit.clone()] } } },
+                    { "title": "Command", "kind": kind, "isPreferred": true,
+                      "command": { "title": "Command", "command": "mock.organize" },
+                      "edit": { "changes": { shadow: [edit] } } },
+                    { "title": "Organize", "kind": kind, "data": { "snapshot": shadow } }
+                ]))
+            }
+            "codeAction/resolve" => {
+                let shadow = params["data"]["snapshot"].as_str().unwrap();
+                Some(json!({ "title": "Organize", "edit": { "changes": { shadow: [edit] } } }))
+            }
+            _ => None,
+        }
+    }));
+    for kind in ["source.organizeImports", "source.fixAll"] {
+        let edits = h
+            .mgr
+            .source_action_text(&path, &LanguageId("mock".into()), "🙂b", kind, &Default::default())
+            .await
+            .unwrap();
+        assert_eq!(edits, vec![ide_core::TextEdit { range: rng(0, 2, 0, 3), new_text: "X".into() }]);
+    }
+    assert!(s.requested("workspace/executeCommand").is_empty());
+    assert!(s.notified("textDocument/didChange").is_empty());
+    eventually(|| s.notified("textDocument/didClose").len() == 2).await;
+    let snapshots: Vec<_> =
+        s.notified("textDocument/didOpen").into_iter().filter(|notice| notice["textDocument"]["uri"] != uri).collect();
+    assert_eq!(snapshots.len(), 2);
+    assert!(snapshots.iter().all(|notice| notice["textDocument"]["text"] == "🙂b"));
+    assert!(s.docs.lock().contains_key(&uri));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn navigation_rename_format_and_decorations() {
     let h = harness(&[("mock", incremental_caps())]);
     let (doc, path) = h.open("a.mk", "fn foo() {}\nfoo();\n");
@@ -4054,7 +4406,12 @@ async fn navigation_rename_format_and_decorations() {
     assert_eq!(err.kind, ide_core::error::ErrorKind::Unavailable);
 
     s.respond("textDocument/references", json!([{ "uri": uri, "range": r(0,3,0,6) }, { "uri": uri, "range": r(1,0,1,3) }, { "uri": uri, "range": r(1,0,1,3) }]));
-    let refs = h.mgr.references(doc, Pos::new(1, 1), true, true, Default::default()).await.unwrap().locations;
+    let refs = h
+        .mgr
+        .references_streaming(doc, Pos::new(1, 1), true, true, true, Default::default(), None)
+        .await
+        .unwrap()
+        .locations;
     assert_eq!(refs.len(), 2);
     assert_eq!(s.requested("textDocument/references")[0]["context"]["includeDeclaration"], true);
 
@@ -4285,7 +4642,9 @@ async fn angular_references_leave_out_the_declaration_unless_asked() {
 
     let mgr = &h.mgr;
     let found = |include_declaration: bool| async move {
-        let refs = mgr.references(doc, Pos::new(0, 11), include_declaration, false, Default::default()).await;
+        let refs = mgr
+            .references_streaming(doc, Pos::new(0, 11), include_declaration, false, true, Default::default(), None)
+            .await;
         let mut v: Vec<(PathBuf, Range)> =
             refs.unwrap().locations.iter().map(|l| (l.path.to_path_buf(), l.range)).collect();
         v.sort();
@@ -4580,7 +4939,12 @@ async fn virtual_locations_and_text_document_content() {
         "textDocument/references",
         json!([{ "uri": uri_of(&path), "range": r(0, 4, 0, 9) }, { "uri": lib, "range": r(2, 4, 2, 9) }]),
     );
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap().locations;
+    let refs = h
+        .mgr
+        .references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None)
+        .await
+        .unwrap()
+        .locations;
     assert_eq!(refs.iter().map(|l| l.uri.is_some()).collect::<Vec<_>>(), vec![false, true]);
     s.respond(
         "textDocument/prepareTypeHierarchy",
@@ -5537,7 +5901,8 @@ async fn covered_candidates_do_not_count_toward_the_open_limit() {
         let seen = grep_candidates(&h);
         let (doc, _) = h.open("a.mk", "def target\n");
         h.wait_status("mock", ServerStatus::Ready).await;
-        let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+        let refs =
+            h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
         assert!(seen.lock().iter().all(|q| q.limit > ide_lsp::MAX_CANDIDATES));
         let opened = s.notified("textDocument/didOpen").len() - 1;
         if covers_all {
@@ -5578,7 +5943,7 @@ async fn candidates_skip_the_directories_the_server_covers() {
         let seen = grep_candidates(&h);
         let (doc, _) = h.open("a.mk", "def target\n");
         h.wait_status("mock", ServerStatus::Ready).await;
-        h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
         let skipped: Vec<Vec<PathBuf>> = seen.lock().iter().map(|q| q.skip.clone()).collect();
         let expected = if commands.as_array().unwrap().len() == 2 && reported.is_array() { vec![src] } else { vec![] };
         assert_eq!(skipped, vec![expected], "{commands} {reported}");
@@ -5598,7 +5963,8 @@ async fn references_open_unopened_files_that_mention_the_name() {
     h.wait_status("mock", ServerStatus::Ready).await;
     eventually(|| s.docs.lock().len() == 2).await;
 
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     let mut paths: Vec<PathBuf> = refs.locations.iter().map(|l| l.path.to_path_buf()).collect();
     paths.sort();
     assert_eq!(paths, vec![a.clone(), b.clone(), d.clone()]);
@@ -5622,12 +5988,13 @@ async fn references_open_unopened_files_that_mention_the_name() {
 
     // When every candidate file is already in the answer, no second request is made.
     std::fs::remove_file(&b).unwrap();
-    h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     assert_eq!(s.requested("textDocument/references").len(), 3);
 
     // Without project_wide only the server's scope counts: no project search.
     std::fs::write(&b, "call target\n").unwrap();
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, false, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 2);
     assert_eq!(seen.lock().len(), 2);
 }
@@ -5784,7 +6151,8 @@ async fn go_searches_open_nothing_when_no_other_module_uses_the_declaration() {
     h.wait_status("gopls", ServerStatus::Ready).await;
     eventually(|| s.docs.lock().len() == 1).await;
 
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 2);
     assert_eq!(uris(&s.notified("textDocument/didOpen")).len(), 1, "only a.go");
     assert!(s.requested("textDocument/definition").len() <= 1);
@@ -5803,7 +6171,8 @@ async fn references_never_reopen_or_close_the_users_files() {
     h.wait_status("mock", ServerStatus::Ready).await;
     eventually(|| s.docs.lock().len() == 2).await;
 
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 1);
     assert_eq!(uris(&s.notified("textDocument/didOpen")).iter().filter(|u| **u == uri_of(&d)).count(), 1);
     assert!(s.notified("textDocument/didClose").is_empty());
@@ -5822,7 +6191,8 @@ async fn references_report_a_capped_candidate_search() {
     let (doc, _) = h.open("a.mk", "def target\n");
     h.wait_status("mock", ServerStatus::Ready).await;
     eventually(|| s.docs.lock().len() == 1).await;
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 2);
     assert_eq!(refs.incomplete, Some(ReferencesIncomplete::TooManyFiles));
 }
@@ -5855,10 +6225,12 @@ async fn classified_java_references_widen_without_losing_metadata() {
     h.wait_status("jdtls", ServerStatus::Ready).await;
     eventually(|| s.docs.lock().len() == 1).await;
     let seen = grep_candidates(&h);
-    let scoped = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap();
+    let scoped =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, false, true, Default::default(), None).await.unwrap();
     assert_eq!(scoped.locations.len(), 1);
     assert!(seen.lock().is_empty());
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 2);
     assert_eq!(refs.classified.len(), 2);
     assert!(refs.classified.iter().all(|r| matches!(r.access, Some(ReferenceAccess::ReadWrite))));
@@ -5875,7 +6247,8 @@ async fn classified_java_references_widen_without_losing_metadata() {
             files: vec![skipped.clone()],
             limit_hit,
         }));
-        let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+        let refs =
+            h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
         assert_eq!(
             refs.incomplete,
             Some(if limit_hit { ReferencesIncomplete::TooManyFiles } else { ReferencesIncomplete::FilesSkipped })
@@ -5925,18 +6298,21 @@ async fn java_usages_of_an_unused_method_do_not_wait_for_background_work() {
         .unwrap();
     h.wait_status("jdtls", ServerStatus::Busy).await;
     // Until the project is imported, finding nothing may only mean it is not indexed yet.
-    let refs = h.mgr.references(doc, Pos::new(0, 6), true, false, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 6), true, false, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.incomplete, Some(ReferencesIncomplete::Indexing));
     s.peer().notify("language/status", json!({"type": "ServiceReady", "message": "ServiceReady"})).unwrap();
     for _ in 0..200 {
-        let refs = h.mgr.references(doc, Pos::new(0, 6), true, false, Default::default()).await.unwrap();
+        let refs =
+            h.mgr.references_streaming(doc, Pos::new(0, 6), true, false, true, Default::default(), None).await.unwrap();
         if refs.incomplete.is_none() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     let started = std::time::Instant::now();
-    let refs = h.mgr.references(doc, Pos::new(0, 6), true, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 6), true, true, true, Default::default(), None).await.unwrap();
     assert!(started.elapsed() < Duration::from_secs(2), "waited {:?}", started.elapsed());
     assert!(refs.locations.is_empty());
     assert_eq!(refs.incomplete, None);
@@ -6029,7 +6405,8 @@ async fn java_usages_in_the_sources_arrive_before_the_dependencies() {
         s.requested("workspace/executeCommand")[3..].iter().map(|p| p["arguments"].get(4).cloned()).collect();
     assert_eq!(scopes, [Some(json!("sources")), Some(json!("sources"))]);
     // Scoped probes (code lenses) search everything at once.
-    let scoped = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap();
+    let scoped =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, false, true, Default::default(), None).await.unwrap();
     assert_eq!(scoped.locations.len(), 2);
 }
 
@@ -6045,7 +6422,11 @@ async fn failed_java_command_falls_back_to_unclassified_native_references() {
         let (doc, path) = h.open("a.java", "int target;");
         h.wait_status("jdtls", ServerStatus::Ready).await;
         eventually(|| s.docs.lock().len() == 1).await;
-        let refs = h.mgr.references(doc, Pos::new(0, 5), true, project_wide, Default::default()).await.unwrap();
+        let refs = h
+            .mgr
+            .references_streaming(doc, Pos::new(0, 5), true, project_wide, true, Default::default(), None)
+            .await
+            .unwrap();
         assert_eq!(refs.locations.len(), 1);
         assert_eq!(refs.locations[0].path, path);
         assert!(refs.classified.is_empty());
@@ -6084,7 +6465,8 @@ async fn failed_widened_java_command_retries_with_native_references() {
     let (doc, _) = h.open("a.java", "int target;");
     h.wait_status("jdtls", ServerStatus::Ready).await;
     eventually(|| s.docs.lock().len() == 1).await;
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 2);
     assert!(refs.classified.is_empty());
     assert_eq!(s.requested("workspace/executeCommand").len(), 2);
@@ -6108,7 +6490,8 @@ async fn superseded_java_command_does_not_fall_back() {
         // Invalid extension response after the source version changed.
         Some(json!({"failed": true}))
     }));
-    let err = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap_err();
+    let err =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, false, true, Default::default(), None).await.unwrap_err();
     assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
     assert!(s.requested("textDocument/references").is_empty());
 }
@@ -6122,7 +6505,8 @@ async fn cancelled_java_command_does_not_fall_back() {
     s.errors.lock().insert("workspace/executeCommand".into(), (-32800, "cancelled".into()));
     let (doc, _) = h.open("a.java", "int target;");
     h.wait_status("jdtls", ServerStatus::Ready).await;
-    let err = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap_err();
+    let err =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, false, true, Default::default(), None).await.unwrap_err();
     assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
     assert!(s.requested("textDocument/references").is_empty());
 }
@@ -6132,7 +6516,7 @@ async fn incomplete_reports(h: &Harness, doc: DocId) -> Vec<(&'static str, Optio
     let at = Pos::new(0, 5);
     let cancel = ide_core::CancellationToken::new;
     vec![
-        ("references", h.mgr.references(doc, at, true, true, cancel()).await.unwrap().incomplete),
+        ("references", h.mgr.references_streaming(doc, at, true, true, true, cancel(), None).await.unwrap().incomplete),
         ("rename", h.mgr.rename(doc, at, "renamed".into(), cancel()).await.unwrap().incomplete),
         ("callers", h.mgr.call_hierarchy(doc, at, HierarchyDirection::Incoming, cancel()).await.unwrap().incomplete),
     ]
@@ -6251,7 +6635,7 @@ async fn cancelling_a_references_search_stops_the_candidate_search_and_closes_fi
         tokio::time::sleep(Duration::from_millis(100)).await;
         later.cancel();
     });
-    let err = h.mgr.references(doc, Pos::new(0, 5), true, true, cancel).await.unwrap_err();
+    let err = h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, cancel, None).await.unwrap_err();
     assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
 
     // Cancelled while the server answers with a file opened for the search.
@@ -6272,7 +6656,7 @@ async fn cancelling_a_references_search_stops_the_candidate_search_and_closes_fi
     let mgr = h.mgr.clone();
     let search = tokio::spawn({
         let cancel = cancel.clone();
-        async move { mgr.references(doc, Pos::new(0, 5), true, true, cancel).await }
+        async move { mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, cancel, None).await }
     });
     eventually(|| gate.entered()).await;
     cancel.cancel();
@@ -6305,7 +6689,8 @@ async fn diagnostics_of_files_opened_for_a_search_stay_out_of_problems() {
     h.wait_status("mock", ServerStatus::Ready).await;
     eventually(|| s.docs.lock().len() == 1).await;
 
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 2);
     // Published right after the didClose (analysis still running): dropped too.
     s.peer().notify("textDocument/publishDiagnostics", json!({ "uri": uri_of(&b), "diagnostics": diag })).unwrap();
@@ -6336,7 +6721,9 @@ async fn opening_a_file_during_a_search_takes_it_over() {
     eventually(|| s.docs.lock().len() == 1).await;
 
     let mgr = h.mgr.clone();
-    let search = tokio::spawn(async move { mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await });
+    let search = tokio::spawn(async move {
+        mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await
+    });
     // The server answers with the copy opened for the search.
     eventually(|| gate.entered()).await;
     let user_doc = DocId::next();
@@ -6387,7 +6774,8 @@ async fn an_empty_answer_while_indexing_is_retried_when_indexing_ends() {
         eventually(|| answered.load(Ordering::SeqCst)).await;
         peer.notify("$/progress", json!({ "token": "idx", "value": { "kind": "end" } })).unwrap();
     });
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 1);
     assert_eq!(refs.incomplete, None);
     assert_eq!(s.requested("textDocument/references").len(), 2);
@@ -6397,10 +6785,12 @@ async fn an_empty_answer_while_indexing_is_retried_when_indexing_ends() {
         .notify("$/progress", json!({ "token": "again", "value": { "kind": "begin", "title": "Indexing" } }))
         .unwrap();
     h.wait_status("mock", ServerStatus::Busy).await;
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     assert_eq!((refs.locations.len(), refs.incomplete), (1, None));
     s.respond("textDocument/references", json!([]));
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, false, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 0);
     assert_eq!(refs.incomplete, Some(ReferencesIncomplete::Indexing));
 }
@@ -6524,11 +6914,13 @@ async fn external_projects_carry_plugin_files_and_module_aliases() {
     let geterr = s.requested("workspace/executeCommand").into_iter().find(|r| r["arguments"][0] == "geterr").unwrap();
     assert_eq!(geterr["arguments"][1]["files"], json!([app]), "an open file has a project in tsserver");
     assert_eq!(geterr["arguments"][2]["isAsync"], true);
-    let refs = h.mgr.references(doc, Pos::new(0, 18), false, false, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 18), false, false, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.incomplete, Some(ReferencesIncomplete::Indexing));
     diagnostics.open();
     h.wait_status("vtsls", ServerStatus::Ready).await;
-    let refs = h.mgr.references(doc, Pos::new(0, 18), false, false, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 18), false, false, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.incomplete, None);
     let requests = s.requested("workspace/executeCommand");
     let args = &requests[0]["arguments"][1];
@@ -6832,10 +7224,12 @@ async fn configuration_usages_merge_native_and_unsaved_profiles_without_sibling_
         1,
         "app:\n  time-out: still-wrong\n",
     );
-    let scoped = h.mgr.references(doc, Pos::new(0, 6), false, false, Default::default()).await.unwrap();
+    let scoped =
+        h.mgr.references_streaming(doc, Pos::new(0, 6), false, false, true, Default::default(), None).await.unwrap();
     assert_eq!(scoped.locations.len(), 1);
     assert!(s.requested("workspace/executeCommand").is_empty());
-    let refs = h.mgr.references(doc, Pos::new(0, 6), false, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 6), false, true, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 4, "{refs:?}");
     assert!(refs.locations.iter().all(|l| !l.path.to_path_buf().starts_with(&sibling)));
     assert!(refs.locations.iter().any(|l| l.path.to_path_buf() == overlay));
@@ -7650,7 +8044,8 @@ async fn injected_documents_route_and_resolve_without_exposing_virtual_files() {
             assert_eq!(locations[0].path.0, path);
             assert_eq!(locations[0].range, rng(0, 4, 0, 7));
         }
-        let refs = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap();
+        let refs =
+            h.mgr.references_streaming(doc, Pos::new(0, 5), true, false, true, Default::default(), None).await.unwrap();
         assert_eq!(refs.locations[0].path.0, path);
         let highlights = h.mgr.document_highlights(doc, Pos::new(0, 5)).await.unwrap();
         assert_eq!(highlights[0].range, rng(0, 4, 0, 7));

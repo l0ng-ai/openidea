@@ -32,15 +32,15 @@ export function mergeRepoLogs(streams: readonly RepoCommit[][], limit: number): 
   const result: RepoCommit[] = [];
   while (result.length < limit) {
     let best = -1;
+    let latest = -Infinity;
     for (let i = 0; i < streams.length; i++) {
       const c = streams[i]![offsets[i]!];
-      if (
-        c &&
-        (best < 0 ||
-          (c.commitTimeMs ?? c.timeMs ?? 0) >
-            (streams[best]![offsets[best]!]!.commitTimeMs ?? streams[best]![offsets[best]!]!.timeMs ?? 0))
-      )
+      if (!c) continue;
+      const time = c.logMergeTimeMs ?? c.commitTimeMs ?? c.timeMs ?? 0;
+      if (time > latest) {
         best = i;
+        latest = time;
+      }
     }
     if (best < 0) break;
     result.push(streams[best]![offsets[best]!]!);

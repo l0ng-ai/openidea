@@ -6,8 +6,8 @@
  * request file's folder.
  */
 import type { Text } from "@codemirror/state";
+import { registerNavigationProvider } from "@/editor/api";
 import { docOf } from "@/editor/lsp/lsp";
-import { registerNavigationProvider } from "@/editor/navigationProviders";
 import { call, commands } from "@/platform/ipc";
 import { HTTP_LANGUAGE } from "./editor";
 

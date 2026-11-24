@@ -2,7 +2,7 @@
   "name": "openidea",
   "private": true,
   "description": "An open-source IDE inspired by IntelliJ IDEA",
-  "version": "0.1.49",
+  "version": "0.1.50",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
@@ -33,7 +33,10 @@
     "perf": "node perf/run.ts",
     "perf:rust": "node perf/rust.ts",
     "eval": "node evals/run.ts",
-    "release:prepare": "node scripts/release-prepare.ts"
+    "release:prepare": "node scripts/release-prepare.ts",
+    "dogfood:build": "node scripts/dogfood.ts build",
+    "dogfood:install": "node scripts/dogfood.ts install",
+    "dogfood:remote": "node scripts/dogfood-remote.ts"
   },
   "simple-git-hooks": {
     "pre-commit": "pnpm lint-staged"
@@ -64,9 +67,11 @@
     "@floating-ui/react-dom": "^2.1.9",
     "@fontsource-variable/inter": "^5.3.0",
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
-    "@lezer/common": "^1.5.3",
+    "@lezer/common": "^1.5.6",
     "@lezer/highlight": "^1.2.5",
     "@lezer/lr": "^1.4.11",
+    "@mathjax/mathjax-tex-font": "4.1.3",
+    "@mathjax/src": "4.1.3",
     "@plutojl/lang-julia": "^1.2.0",
     "@replit/codemirror-vim": "6.4.0",
     "@tanstack/react-virtual": "^3.14.21",
@@ -92,6 +97,7 @@
   },
   "devDependencies": {
     "@lezer/generator": "^1.8.1",
+    "@noble/hashes": "^2.4.0",
     "@playwright/test": "^1.64.1",
     "@tauri-apps/cli": "^2",
     "@testing-library/jest-dom": "^7.0.1",
@@ -110,6 +116,7 @@
     "tsrs": "^0.20.0-ts7.1.0-beta",
     "typescript": "~6.0.3",
     "vite": "^8.0.16",
-    "vitest": "^5.0.5"
+    "vitest": "^5.0.5",
+    "yaml": "^2.9.1"
   }
 }

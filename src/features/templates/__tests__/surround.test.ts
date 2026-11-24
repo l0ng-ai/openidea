@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
 import type { StructuralRanges, SyntaxNode } from "@/bindings";
-import { offsetToPos } from "@/editor/lsp/positions";
+import { offsetToPos } from "@/editor/api";
 import { multiLineStatement } from "../editor";
 
 const DOC = "fun f() {\n    if (a) {\n        b()\n    }\n    c(); d()\n}\n";

@@ -169,9 +169,12 @@ fn make_manager_at(root: &Path, models_file: &Path, catalogs: Arc<AgentCatalogs>
 
 fn events(manager: &AgentManager) -> mpsc::UnboundedReceiver<AgentEvent> {
     let (tx, rx) = mpsc::unbounded_channel();
-    manager.subscribe(Arc::new(move |event| {
-        let _ = tx.send(event);
-    }));
+    manager.subscribe_as(
+        "",
+        Arc::new(move |event| {
+            let _ = tx.send(event);
+        }),
+    );
     rx
 }
 
@@ -230,11 +233,9 @@ async fn successful_refresh_replaces_models_and_efforts_and_old_sessions_cannot_
     let manager = make_manager(tmp.path(), catalogs.clone(), &harness);
     let mut events = events(&manager);
     let old = config::options_of(&response(&["old", "retained"], &["low", "high"]));
-    manager.shared.remember(PROVIDER, Some(&old), None, Some("old"));
     let cached = manager.refresh_models(PROVIDER, false, None).unwrap();
     assert!(cached.refreshing);
-    assert_eq!(model_values(&cached), ["old", "retained"]);
-    assert!(cached.refreshed_at_ms.is_none(), "session reports are not fresh discovery");
+    assert!(model_values(&cached).is_empty(), "nothing is offered before the first discovery");
     let pending = harness.next().await;
     assert_eq!(pending.params["mcpServers"], json!([]));
     pending.reply.send(Ok(response(&["retained", "new"], &["medium"]))).unwrap();
@@ -258,7 +259,10 @@ async fn successful_refresh_replaces_models_and_efforts_and_old_sessions_cannot_
     assert_eq!(provider.config, fresh.config);
     restored.shared.remember(PROVIDER, Some(&old), None, Some("old"));
     assert_eq!(restored.shared.known_config(PROVIDER), fresh.config);
-    assert_eq!(restored.shared.known.lock()[PROVIDER].refreshed_at_ms, fresh.refreshed_at_ms);
+    assert_eq!(
+        restored.shared.paths.catalogs.cached(&restored.shared, PROVIDER).refreshed_at_ms,
+        fresh.refreshed_at_ms
+    );
     assert!(!tmp.path().join("store").exists(), "refresh never creates tasks");
 }
 
@@ -309,6 +313,11 @@ async fn discovered_model_reloads_the_same_session_on_the_next_message() {
 }
 
 #[tokio::test]
+async fn discovered_model_from_an_aged_catalog_can_still_be_selected() {
+    switch_chat_model(ChatSwitch::Aged).await;
+}
+
+#[tokio::test]
 async fn discovered_model_leaves_the_original_session_intact_after_resume_failure() {
     switch_chat_model(ChatSwitch::ResumeFails).await;
 }
@@ -356,6 +365,7 @@ async fn discovered_model_lookup_does_not_overwrite_a_newer_selection() {
 #[derive(Clone, Copy)]
 enum ChatSwitch {
     Live,
+    Aged,
     Resume,
     ResumeFails,
     Unavailable,
@@ -376,7 +386,8 @@ async fn switch_chat_model(scenario: ChatSwitch) {
     let mut harness = Harness::with_initialize(json!({
         "protocolVersion": 1, "agentCapabilities": { "loadSession": true }
     }));
-    let mut manager = make_manager(tmp.path(), Arc::default(), &harness);
+    let catalogs = Arc::new(AgentCatalogs::default());
+    let mut manager = make_manager(tmp.path(), catalogs.clone(), &harness);
     let task = manager
         .create(NewAgentTask {
             prompt: AgentPrompt { text: "first".into(), ..Default::default() },
@@ -443,7 +454,11 @@ async fn switch_chat_model(scenario: ChatSwitch) {
     }
     assert_eq!(manager.task(&task.id).unwrap().state.lock().task.config, before_config);
 
-    let live = matches!(scenario, ChatSwitch::Live);
+    let live = matches!(scenario, ChatSwitch::Live | ChatSwitch::Aged);
+    if matches!(scenario, ChatSwitch::Aged) {
+        // The catalog stays what the picker offers however long ago it was read.
+        advance(&catalogs, 20 * 60);
+    }
     let resumed_launch = if missing_settings { 3 } else { 2 };
     let load_fails = matches!(scenario, ChatSwitch::ResumeFails);
     let unavailable = matches!(scenario, ChatSwitch::Unavailable);
@@ -477,7 +492,7 @@ async fn switch_chat_model(scenario: ChatSwitch) {
                 set.reply.send(Err("Sign in required".into())).unwrap();
                 let error = switching.await.unwrap_err().to_string();
                 assert!(error.contains("Sign in required"), "{error}");
-                assert_eq!(manager.subscribe(Arc::new(|_| {})).remove(0).config, before_config);
+                assert_eq!(manager.subscribe_as("", Arc::new(|_| {})).remove(0).config, before_config);
                 assert!(harness.pending.try_recv().is_err());
                 manager.shutdown();
                 return;
@@ -486,7 +501,7 @@ async fn switch_chat_model(scenario: ChatSwitch) {
                 manager.set_config(&task.id, "model", "old".into()).await.unwrap();
                 set.reply.send(Ok(response(&["new", "old"], &["quick", "thorough"]))).unwrap();
                 switching.await.unwrap();
-                let task = manager.subscribe(Arc::new(|_| {})).remove(0);
+                let task = manager.subscribe_as("", Arc::new(|_| {})).remove(0);
                 assert_eq!(task.config.iter().find(|o| o.id == "model").unwrap().current.as_deref(), Some("old"));
                 assert_eq!(task.config.iter().find(|o| o.id == "effort").unwrap().current.as_deref(), Some("low"));
                 assert!(harness.pending.try_recv().is_err());
@@ -517,7 +532,7 @@ async fn switch_chat_model(scenario: ChatSwitch) {
         let effort = update.config.iter().find(|o| o.id == "effort").unwrap();
         assert_eq!(effort.values.iter().map(|v| v.value.as_str()).collect::<Vec<_>>(), ["quick", "thorough"]);
     }
-    let snapshot = |manager: &AgentManager| manager.subscribe(Arc::new(|_| {})).remove(0);
+    let snapshot = |manager: &AgentManager| manager.subscribe_as("", Arc::new(|_| {})).remove(0);
     let current = snapshot(&manager);
     assert_eq!(current.config.iter().find(|o| o.id == "model").unwrap().current.as_deref(), Some("new"));
     assert_eq!(current.model.as_deref(), Some(if live { "new" } else { "old" }));
@@ -684,7 +699,7 @@ async fn next_chat_request(
 }
 
 #[tokio::test]
-async fn legacy_cache_loads_without_claiming_authoritative_freshness() {
+async fn a_cache_from_before_project_catalogs_offers_nothing_until_discovery_succeeds() {
     let tmp = tempfile::tempdir().unwrap();
     configure(tmp.path(), "one");
     let options = config::options_of(&response(&["legacy"], &["low"]));
@@ -700,12 +715,11 @@ async fn legacy_cache_loads_without_claiming_authoritative_freshness() {
     let manager = make_manager(tmp.path(), Arc::default(), &harness);
     let mut events = events(&manager);
     let cached = manager.refresh_models(PROVIDER, false, None).unwrap();
-    assert_eq!(model_values(&cached), ["legacy"]);
+    assert!(model_values(&cached).is_empty());
     assert!(cached.refreshing && cached.refreshed_at_ms.is_none());
-    harness.next().await.reply.send(Err("Sign in required".into())).unwrap();
-    let failed = completed(&mut events).await;
-    assert_eq!(failed.config, cached.config);
-    assert!(failed.error.as_deref().unwrap().contains("Sign in required"));
+    harness.next().await.reply.send(Ok(response(&["current"], &["low"]))).unwrap();
+    let found = completed(&mut events).await;
+    assert_eq!(model_values(&found), ["current"]);
 }
 
 #[tokio::test]

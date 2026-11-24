@@ -10,35 +10,42 @@
 }
 .empty {
   flex: 1;
+  min-height: 0;
+  min-width: 0;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  padding: 24px;
-  overflow: hidden;
+  padding: var(--space-4);
+  overflow: auto;
+  font-family: var(--font-ui);
+  font-size: calc(var(--fs-ui) + 3px);
+  line-height: 1.8;
+}
+.empty::before {
+  content: "";
+  flex: 0 1 calc(37.5% - 1.5em);
 }
 .hints {
-  display: grid;
-  grid-template-columns: auto auto;
-  column-gap: var(--space-4);
-  row-gap: var(--space-2);
+  flex: none;
+  max-inline-size: 100%;
   margin: 0;
   color: var(--fg-muted);
 }
 .hint {
-  display: contents;
-}
-.hint dt {
-  text-align: right;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  column-gap: var(--space-2);
+  overflow-wrap: anywhere;
 }
 .hint:last-child dt {
-  grid-column: 1 / -1;
-  text-align: center;
-  margin-top: 6px;
-  color: var(--fg-faint);
+  color: var(--fg-subtle);
 }
 .hintButton {
   color: inherit;
   border-radius: var(--radius-small);
+  text-align: start;
+  max-inline-size: 100%;
   transition: color var(--dur-fast) var(--ease);
 }
 .hintButton:hover {
@@ -47,5 +54,8 @@
 .keys {
   margin: 0;
   font-family: var(--font-keys);
-  color: var(--link);
+  color: var(--fg-strong);
+}
+.keys:empty {
+  display: none;
 }

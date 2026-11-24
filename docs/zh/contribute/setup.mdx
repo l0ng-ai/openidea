@@ -7,12 +7,12 @@ OpenIDEA 是一个 Tauri 2 应用：Rust 后端（`crates/`、`src-tauri/`）加
 
 ## 前置条件
 
-| 工具           | 版本              | 说明                                                                                       |
-| -------------- | ----------------- | ------------------------------------------------------------------------------------------ |
-| Rust           | stable，至少 1.96 | 见根目录 `Cargo.toml` 的 `rust-version`。同时安装 `clippy` 和 `rustfmt`。                  |
-| Node.js        | 22.18 及以上      | 仓库脚本（`scripts/*.ts`、`perf/*.ts`）由 Node 直接按 TypeScript 运行。CI 用的是 Node 22。 |
-| pnpm           | 11                | 与 CI 一致。                                                                               |
-| Tauri 系统依赖 | —                 | 各平台要求见 [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)。            |
+| 工具           | 版本               | 说明                                                                                        |
+| -------------- | ------------------ | ------------------------------------------------------------------------------------------- |
+| Rust           | stable，至少 1.96  | 见根目录 `Cargo.toml` 的 `rust-version`。同时安装 `clippy` 和 `rustfmt`。                   |
+| Node.js        | 22.x，至少 22.22.2 | CI 使用 Node 22。Node 直接运行 TypeScript 脚本；锁定的 jsdom 在 22.x 上至少需要此补丁版本。 |
+| pnpm           | 11                 | 与 CI 一致。                                                                                |
+| Tauri 系统依赖 | —                  | 各平台要求见 [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)。             |
 
 Linux（与 CI 一样以 Ubuntu 22.04 为例）需要的系统包：
 
@@ -53,6 +53,21 @@ sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librs
 | `pnpm build`        | 前端类型检查并打包，然后按 WebKit 最低版本检查产物（`scripts/check-webkit.ts`）。 |
 | `pnpm gen:bindings` | 根据 Rust 命令签名重新生成 `src/bindings.ts`。                                    |
 | `pnpm dev`          | 只起 Vite：在普通浏览器里运行 UI，后端用内存实现（不需要 Rust）。                 |
+
+## 可选：使用 mise
+
+如果不想分别安装 Rust、Node.js 和 pnpm，可以[安装 mise](https://mise.jdx.dev/installing-mise.html)。上面列出的 Tauri 系统依赖仍需单独安装。在克隆的 worktree 中查看 `mise.toml`，然后运行：
+
+```sh
+mise trust
+mise install
+mise run setup
+mise run dev
+```
+
+`setup` 在当前 worktree 中执行 `pnpm install`。`dev` 和 `dev:app` 都沿用原来的启动脚本，保留 worktree 隔离。使用 `mise run` 不需要在 shell 中激活 mise。
+
+运行 `mise tasks` 可以查看全部任务。`mise run build` 构建前端，不生成桌面安装包；`mise run dogfood:build` 和 `mise run dogfood:install` 用于构建并在本地安装灰色图标的 dogfood 桌面版（与正式版共享设置和数据）。两者共用同一个实例，同一时间只能运行一个；较新的 dogfood 版写入的设置可能让较旧的正式版忽略整个设置文件。dogfood 版不会自动更新，需要更新时重新运行 `dogfood:install`。`mise run dogfood:remote <remote_name>` 在 **工具 › SSH 配置** 中指定的远程主机上构建并部署 `openidea-server`（`--clean` 可移除覆盖）。`mise run test` 运行 Vitest 和 `cargo test --workspace`；`mise run check` 先检查格式、代码规范、类型和未使用的代码，再运行这两套测试。两者都不需要 nextest 或插件的 WASM 目标。
 
 ## Worktree
 

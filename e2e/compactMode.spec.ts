@@ -2,7 +2,7 @@ import { expect, test } from "./fixtures";
 
 /** Heights IDEA's Islands theme uses in compact mode (`*.compact` keys), against the defaults. */
 const SIZES = {
-  normal: { titleBar: 40, treeRow: 24, stripeIcon: 20, statusBar: 34, runButton: 30 },
+  normal: { titleBar: 40, treeRow: 24, stripeIcon: 20, statusBar: 30, runButton: 30 },
   compact: { titleBar: 32, treeRow: 22, stripeIcon: 16, statusBar: 24, runButton: 26 },
 };
 

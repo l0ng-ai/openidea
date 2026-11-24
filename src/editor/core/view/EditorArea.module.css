@@ -64,6 +64,11 @@
   content-visibility: hidden;
   z-index: -1;
 }
+/* WebKit leaves a stale selection highlight on a subtree whose rendering was skipped when the selection cleared. */
+.keptHidden[data-selection] {
+  content-visibility: visible;
+  opacity: 0;
+}
 .host {
   flex: 1;
   min-height: 0;
@@ -71,9 +76,55 @@
   position: relative;
   overflow: hidden;
 }
-.host > :global(.cm-editor) {
+.editorMount,
+.editorMount > :global(.cm-editor) {
   position: absolute;
   inset: 0;
+}
+.fontZoomIndicator {
+  position: absolute;
+  z-index: 5;
+  left: 50%;
+  bottom: var(--space-3);
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: calc(100% - var(--space-4));
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1) var(--space-2);
+  padding: var(--space-0-5) var(--space-2);
+  background: var(--bg-floating-toolbar);
+  color: var(--fg-strong);
+  border: 1px solid var(--border-popup);
+  border-radius: var(--radius-floating-toolbar);
+  box-shadow: var(--shadow-popup);
+  font: var(--fs-ui) / 1.4 var(--font-ui);
+}
+.fontZoomSize {
+  font-variant-numeric: tabular-nums;
+}
+.fontZoomActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  max-width: 100%;
+}
+.fontZoomReset {
+  min-width: 0;
+  padding: var(--space-1);
+  border-radius: var(--radius-small);
+  color: var(--link);
+  font: inherit;
+  overflow-wrap: anywhere;
+}
+.fontZoomReset:not(:disabled):hover {
+  text-decoration: underline;
+}
+.fontZoomReset:disabled {
+  color: var(--fg-faint);
 }
 .loading {
   flex: 1;
@@ -97,12 +148,30 @@
   gap: var(--space-0-5);
   padding: 0 6px 0 8px;
 }
-.pin {
-  color: var(--fg-muted);
-  margin-left: -2px;
-}
 .deprecated {
   text-decoration-line: line-through;
+}
+.tabPath {
+  --tab-directory-min: min(5ch, 25%);
+  display: flex;
+}
+.tabDirectory > span,
+.tabFilename {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tabDirectory {
+  flex: 0 1000 max-content;
+  /* Leave space for a short prefix without stretching one that already fits. */
+  width: var(--tab-directory-min);
+  color: var(--fg-subtle);
+}
+.tabDirectory > span {
+  display: block;
+}
+.tabFilename {
+  flex: none;
+  max-width: calc(100% - var(--tab-directory-min));
 }
 .dupe {
   color: var(--fg-faint);
@@ -111,43 +180,64 @@
 .banner {
   flex: none;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2);
-  min-height: 36px;
-  padding: 0 12px;
+  gap: var(--space-1-5) var(--space-4);
+  padding: 10px var(--space-3);
   background: var(--bg-editor-banner, color-mix(in srgb, var(--accent) 7%, var(--bg-editor, var(--bg-elev))));
   border-bottom: 1px solid var(--border-editor-tabs, var(--border));
+  font-size: var(--fs-ui);
   color: var(--fg-strong);
 }
-.bannerIcon {
-  color: var(--fg-muted);
+:global(:root[data-compact]) .banner {
+  padding-block: var(--space-1-5);
 }
-/* Library class notice (IDEA's yellowish decompiled-file bar). */
-.libraryBanner {
-  flex-wrap: wrap;
+.warningBanner {
   background: var(--bg-feedback-warning);
   border-bottom-color: var(--border-feedback-warning);
 }
-.virtualBannerText {
-  flex: none;
+.bannerMessage {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: flex-start;
+  gap: var(--space-2);
   min-width: 0;
-  padding: 8px 0;
-  white-space: nowrap;
 }
-.bannerText {
+.bannerIcon {
   flex: none;
-  white-space: nowrap;
-}
-.bannerDetail {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  margin-block-start: 1px;
   color: var(--fg-muted);
 }
-.bannerSpacer {
-  flex: 1;
+.bannerText {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.bannerDetail {
+  color: var(--fg-muted);
+}
+.bannerActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-1) var(--space-4);
+  max-width: 100%;
+  margin-inline-start: auto;
+}
+.bannerLink {
+  min-width: 0;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--link);
+  font: inherit;
+  text-align: start;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.bannerLink:hover {
+  color: var(--link-hover);
+  text-decoration: underline;
 }
 
 /* Find / replace bar */
@@ -160,16 +250,14 @@
 }
 .find {
   display: grid;
-  grid-template-columns: [mode] auto [field] minmax(0, 420px) [actions] fit-content(50%) [close] minmax(
-      min-content,
-      1fr
-    );
+  grid-template-columns: [mode] auto [field] minmax(0, max(240px, 33%)) [actions] fit-content(50%) minmax(0, 1fr);
   align-items: start;
   row-gap: var(--space-1);
   padding: var(--space-1-5) var(--space-2);
 }
 .findExpand {
   grid-area: 1 / mode;
+  margin-block-start: var(--space-1);
   margin-inline-end: var(--space-1);
 }
 .findField {
@@ -181,15 +269,6 @@
 .findField,
 .replaceField {
   min-width: 0;
-}
-.findClose {
-  grid-area: 1 / close;
-  justify-self: end;
-  margin-inline-start: var(--space-1);
-}
-.findExpand,
-.findClose {
-  margin-block-start: var(--space-1);
 }
 .findButtons,
 .replaceButtons {
@@ -222,7 +301,7 @@
 
 @container editor-find (width < 500px) {
   .find {
-    grid-template-columns: [mode] auto [field] minmax(0, 1fr) [close] auto;
+    grid-template-columns: [mode] auto [field] minmax(0, 1fr);
   }
   .findButtons,
   .replaceButtons {
@@ -254,8 +333,7 @@
   .replaceButtons {
     grid-column: mode / -1;
   }
-  .findExpand,
-  .findClose {
+  .findExpand {
     grid-row: 2;
     margin-block-start: 0;
   }
@@ -497,19 +575,4 @@
 }
 .codeCrumbsBottom {
   border-top: 1px solid var(--border-editor-tabs, var(--border));
-}
-
-/* Contributed editor banners (registerEditorBanner): text, then right-aligned links. */
-.bannerLink {
-  flex: none;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--link);
-  font: inherit;
-  cursor: pointer;
-}
-.bannerLink:hover {
-  color: var(--link-hover);
-  text-decoration: underline;
 }

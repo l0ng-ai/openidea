@@ -1,4 +1,5 @@
 /** IPC helpers shared by the code-insight views. */
+import { openCodeLocation } from "@/editor/api";
 import type { EditorView } from "@codemirror/view";
 import { activeEditor, editorsFor, whenSynced } from "@/editor/api";
 import { isVirtualUri, virtualDocument } from "@/platform/virtualDocs";
@@ -144,5 +145,5 @@ export async function withDocument<T>(path: string, fn: (doc: number) => Promise
 }
 
 export function openLocation(path: string, line: number, col: number): Promise<void> {
-  return maybeEditorService()?.openFile(path, { selection: { line, col }, focus: true }) ?? Promise.resolve();
+  return openCodeLocation(path, { line, col });
 }

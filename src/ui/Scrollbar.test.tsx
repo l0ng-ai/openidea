@@ -35,12 +35,45 @@ describe("Scrollbar", () => {
     const track = container.querySelector<HTMLElement>("[aria-hidden]")!;
     const thumb = track.firstElementChild as HTMLElement;
     track.setPointerCapture = () => {};
-    thumb.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, clientY: 10 }));
-    track.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientY: 46 }));
+    track.hasPointerCapture = () => false;
+    thumb.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 1, button: 0, clientY: 10 }));
+    expect(document.querySelector("[data-scrollbar-drag-surface]")).not.toBeNull();
+    document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 2 }));
+    expect(document.querySelector("[data-scrollbar-drag-surface]")).not.toBeNull();
+    track.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerId: 1, clientY: 46 }));
 
     // A 32px thumb travels 68px of the track for 900px of content: 36px ≈ 476px.
     expect(top).toBeCloseTo((36 / 68) * 900);
     expect(onScroll).toHaveBeenCalledTimes(1);
     expect(onScroll).toHaveBeenLastCalledWith(top);
+    track.dispatchEvent(new PointerEvent("lostpointercapture", { bubbles: true, pointerId: 1 }));
+    expect(document.querySelector("[data-scrollbar-drag-surface]")).toBeNull();
+
+    thumb.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerId: 1, button: 0, clientY: 10 }));
+    expect(thumb.dataset.dragging).toBe("");
+    window.dispatchEvent(new Event("blur"));
+    expect(thumb.dataset.dragging).toBeUndefined();
+    expect(document.querySelector("[data-scrollbar-drag-surface]")).toBeNull();
+  });
+
+  it.each([
+    [318, 318, false],
+    // WebKit after a splitter drag: one commit row, scrollHeight a pixel over the viewport.
+    [318, 319, false],
+    [318, 320, true],
+    [100, 1000, true],
+  ])("shows the track for clientHeight %i and scrollHeight %i: %s", (clientHeight, scrollHeight, shown) => {
+    const { getByTestId, container } = render(<Harness onScroll={() => {}} />);
+    const scroller = getByTestId("scroller");
+    Object.defineProperties(scroller, {
+      clientHeight: { value: clientHeight },
+      scrollHeight: { value: scrollHeight },
+      scrollTop: { value: 0 },
+    });
+    act(() => {
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    const track = container.querySelector<HTMLElement>("[aria-hidden]")!;
+    expect(track.style.display !== "none").toBe(shown);
   });
 });

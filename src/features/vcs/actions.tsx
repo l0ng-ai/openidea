@@ -1,32 +1,64 @@
 import { showShelfDiff } from "./shelf";
+import type { Stash } from "@/bindings";
 import { commitRepo } from "./multiRoot";
 /** VCS actions (ids match keymaps/intellij-macos.ts where bound). */
-import { executeAction, registerActions, type Action } from "@/platform/actions";
+import { executeAction, registerActions, useRunningActions, type Action } from "@/platform/actions";
 import { getContext } from "@/platform/context";
+import { loadSettings, useProject } from "@/platform/project";
+import { call, commands } from "@/platform/ipc";
+import { workflowSettings } from "@/platform/workflowSettings";
 import { activeEditor, editorsFor } from "@/editor/api";
 import { Menu, type MenuItem } from "@/ui";
 import {
   editorService,
   maybeEditorService,
   notifications,
+  projectViewContextLead,
   projectViewSelection,
   toolWindowService,
+  type WorktreeReview,
 } from "@/workbench/contributions";
 import { annotationsShown, toggleAnnotations } from "./blame";
 import { showBranchesPopup } from "./BranchWidget";
-import { checkoutRevision, newBranch, newBranchInRepos } from "./branchOps";
+import { rebaseOntoBranch, type BranchRebaseTarget } from "./branchRebase";
+import {
+  canCheckoutRevision,
+  checkoutAndRebase,
+  checkoutRevision,
+  deleteTag,
+  mergeIntoCurrent,
+  newBranch,
+  newBranchInRepos,
+  pullRemoteBranch,
+  pushTag,
+  type CheckoutRebaseTarget,
+  type CheckoutRevisionScope,
+  type RemoteBranchPull,
+} from "./branchOps";
 import {
   addToVcs,
+  addToVcsTargets,
+  checkCommitChanges,
+  clearStashes,
   commitChanges,
-  isNestedRepoEntry,
+  hasSelectedApplyOperation,
+  KEEP_AMEND_COMMIT,
+  keepPreparedAmend,
   rollbackCandidates,
   showRollbackDialog,
+  stageAllChanges,
+  stageWithoutContent,
   stashChanges,
+  stashSilently,
+  showUnstashAsDialog,
   showUnstashDialog,
 } from "./changeOps";
-import { setAmend, useCommit } from "./commitStore";
+import { setAmend, showsIgnoredFiles, toggleIgnoredFiles, useCommit } from "./commitStore";
+import { amendPreviewNode } from "./amendPreview";
+import { SELECT_AMEND_TARGET, type EarlierAmend } from "./amendTargets";
+import { TOGGLE_IGNORED_FILES } from "./ignoredFiles";
 import { currentPlan } from "./commitSelection";
-import { gotoConflict, resolveAtCaret, showConflictsDialog } from "./conflictsUi";
+import { canRevertResolved, gotoConflict, resolveAtCaret, revertResolved, showConflictsDialog } from "./conflictsUi";
 import { focusedDiffNavigator } from "./diffNavigator";
 import { showDiffWindow } from "./DiffWindow";
 import {
@@ -34,33 +66,66 @@ import {
   changeNodeDiffData,
   openDiff,
   openVcsDiff,
+  stagingGutterDiffData,
   withChain,
   workingDiffData,
   type DiffData,
 } from "./diffInput";
-import { buildChangeTree, changeFileNodes, changeGroupPaths, type ChangeNode } from "./changes";
+import { buildChangeTree, changeFileNodes, changeGroupPaths, selectedChangeNodes, type ChangeNode } from "./changes";
 import { useChangelists } from "./changelists";
 import { openDialog } from "./dialogs";
-import { gotoChange, hunksInSelection, rollbackSelectedLines } from "./gutter";
+import {
+  editableHunk,
+  equivalentStagingHunk,
+  gotoChange,
+  hunksInSelection,
+  rollbackSelectedLines,
+  updateStagedLines,
+  type GutterChangeTarget,
+} from "./gutter";
 import { openLocalHistory } from "./localHistoryKind";
 import { showSelectionHistory } from "./selectionHistoryKind";
 import { openLogTab, revealCommit, selectGitTab, useGitLog } from "./logStore";
-import { commitFromContext, isModalCommit, pushAfterCommit } from "./commitUi";
-import { allRepos, runRemote } from "./ops";
-import { showPushDialog, showUpdateDialog, type PushTarget, type UpdateTarget } from "./remoteUi";
+import { commitFromContext, isModalCommit, openCommit, pushAfterCommit, showLocalChanges } from "./commitUi";
+import { allRepos, errorMessage, runRemote, saveAll } from "./ops";
+import { showWorktreeComparison } from "./compareTool";
+import {
+  fetchAndReviewPush,
+  showPushDialog,
+  showUpdateDialog,
+  type PushReviewTarget,
+  type PushTarget,
+  type UpdateTarget,
+} from "./remoteUi";
 import { comparePathsWithRevision, showDirectoryWorkingDiff } from "./comparePaths";
 import { showCloneDialog } from "./clone";
 import { createRepository } from "./createRepository";
 import {
+  showDefineRemote,
   showManageRemotes,
   showMergeDialog,
-  showNewWorktree,
   showPullDialog,
   showRebaseDialog,
-  showWorktrees,
+  type DefineRemoteTarget,
 } from "./gitMenuDialogs";
-import { currentRepo, refreshNow, repoName, repoOf, statusOf, useVcs } from "./store";
-import { stagingAreaOn } from "./staging";
+import { showNewWorktree } from "./NewWorktreeDialog";
+import { OPEN_WORKTREE_REVIEW } from "./worktreeReviews";
+import { currentRepo, currentRepoRoot, refreshNow, repoName, repoOf, statusOf, useVcs } from "./store";
+import {
+  bulkStagePaths,
+  canRestoreUnstaged,
+  ROLLBACK_UNSTAGED,
+  STAGE_ALL_TRACKED,
+  STAGE_WITHOUT_CONTENT,
+  STASH_SILENTLY,
+  TOGGLE_STAGED_REPOSITORIES,
+  stashableRoots,
+  stagedRepositoryScope,
+  stagingAreaOn,
+} from "./staging";
+import { stagingRange } from "./stagingRange";
+import { focusedStashDiff, showStashDiff, type StashDiffRequest } from "./stashDiff";
+import { showStashChanges, type StashEntry } from "./StashChanges";
 import { showSyncCommitsForCurrent } from "./SyncCommitsPopup";
 import { tx } from "@/platform/i18n";
 
@@ -69,6 +134,17 @@ import { hasFileHistory, showCurrentRevision, trackFileHistory } from "./fileRev
 
 const VCS = "vcsAvailable";
 const IN_COMMIT_WINDOW = "vcsAvailable && activeToolWindow == commit";
+
+function canStageAll(includeUntracked: boolean): boolean {
+  const { running } = useRunningActions.getState();
+  return (
+    stagingAreaOn() &&
+    !useCommit.getState().operation &&
+    !running.has(STAGE_ALL_TRACKED) &&
+    !running.has("vcs.stageAll") &&
+    bulkStagePaths(useVcs.getState().status, includeUntracked).length > 0
+  );
+}
 
 function argPath(arg: unknown): string | undefined {
   if (typeof arg === "string") return arg;
@@ -98,6 +174,24 @@ export const commitWindowFocused = () => {
   const active = getContext().activeToolWindow;
   return active === "commit" || (active === "git" && useGitLog.getState().tab === "changes");
 };
+
+/** The same grouping the Changes tree uses, for actions invoked outside its row menu. */
+export function currentChangeTree(): ChangeNode[] {
+  const state = useVcs.getState();
+  const commit = useCommit.getState();
+  const staging = stagingAreaOn();
+  return buildChangeTree(
+    state.status,
+    state.root ?? "",
+    commit.groupByDir,
+    staging ? undefined : useChangelists.getState().state,
+    state.roots,
+    commit.groupByStaging || staging,
+    undefined,
+    commit.groupByRepo,
+    commit.showUnversionedSeparately,
+  );
+}
 
 /** A changed file's working diff, with the other files of its group (in tree order) as the F7 chain. */
 function groupDiffData(tree: readonly ChangeNode[], path: string): DiffData {
@@ -135,6 +229,34 @@ function changedPaths(arg: unknown): string[] {
   return commitWindowFocused() ? sel : [];
 }
 
+function unstagedRollbackFiles(arg: unknown) {
+  if (!stagingAreaOn()) return [];
+  const paths = argPaths(arg) ?? (commitWindowFocused() ? useCommit.getState().unstagedSelection : []);
+  return [...new Set(paths)].flatMap((path) => {
+    const file = statusOf(path);
+    return file && canRestoreUnstaged(file) ? [file] : [];
+  });
+}
+
+function gutterSelection(arg: unknown): GutterChangeTarget | undefined {
+  if (arg && typeof arg === "object" && "view" in arg && "hunks" in arg && "path" in arg) {
+    return arg as GutterChangeTarget;
+  }
+  const editor = activeEditor();
+  if (editor) return { view: editor.view, path: editor.ctx.path, hunks: hunksInSelection(editor.view.state) };
+}
+
+function gutterTarget(arg: unknown, flag: "staged" | "unstaged"): GutterChangeTarget | undefined {
+  const target = gutterSelection(arg);
+  if (!target) return;
+  const { view, path } = target;
+  const hunks = target.hunks.flatMap((hunk) => {
+    const live = equivalentStagingHunk(view, hunk);
+    return live?.staging?.[flag] && editableHunk(view, live) ? [live] : [];
+  });
+  return hunks.length ? { view, path, hunks } : undefined;
+}
+
 /** Files the current context refers to: argument, commit view selection, or the active file. */
 function contextPaths(arg: unknown): string[] {
   const changed = changedPaths(arg);
@@ -151,8 +273,19 @@ function contextPaths(arg: unknown): string[] {
 function selectedPaths(arg: unknown): string[] {
   const changed = changedPaths(arg);
   if (changed.length) return changed;
+  if (commitWindowFocused() && useCommit.getState().selectionKeys.some((key) => key.startsWith("amend:"))) return [];
+  if (commitWindowFocused() && stagingAreaOn() && showsIgnoredFiles(useVcs.getState().root ?? "")) {
+    const { selectionKeys } = useCommit.getState();
+    if (selectionKeys.length && selectionKeys.every((key) => key === "group:ignored" || key.startsWith("ignored:")))
+      return [];
+  }
   const project = projectViewSelection();
   return project.length ? project : contextPaths(arg);
+}
+
+/** Uses the Project view's selection while the tree has focus or owns the context. */
+function focusedPaths(arg: unknown, ctx: { projectViewFocus?: unknown }): string[] {
+  return ctx.projectViewFocus || projectViewContextLead() ? selectedPaths(arg) : contextPaths(arg);
 }
 
 /**
@@ -207,20 +340,25 @@ const OPERATIONS: MenuItem[] = [
   { kind: "action", action: "vcs.worktrees" },
   { kind: "action", action: "vcs.addToVcs" },
   { kind: "action", action: "vcs.resolveConflicts" },
+  { kind: "action", action: "vcs.revertResolved" },
+  { kind: "separator" },
+  { kind: "action", action: "vcs.localHistory" },
+];
+
+const OPERATIONS_WITHOUT_VCS: MenuItem[] = [
+  { kind: "action", action: "vcs.createRepository" },
   { kind: "separator" },
   { kind: "action", action: "vcs.localHistory" },
 ];
 
 function showOperations() {
-  openDialog((close) => (
-    <Menu
-      open
-      onClose={close}
-      anchor={{ x: Math.max(16, window.innerWidth / 2 - 140), y: Math.round(window.innerHeight * 0.18) }}
-      items={OPERATIONS}
-      aria-label="VCS Operations"
-    />
-  ));
+  const items = getContext().vcsAvailable ? OPERATIONS : OPERATIONS_WITHOUT_VCS;
+  openDialog((close) => <Menu open onClose={close} anchor="center" items={items} title="VCS Operations" numbers />);
+}
+
+interface TagTarget {
+  tag: string;
+  repo: string | null;
 }
 
 export function registerVcsActions(): () => void {
@@ -243,6 +381,18 @@ export function registerVcsActions(): () => void {
       run: commitFromContext,
     },
     {
+      id: "vcs.runCommitChecks",
+      title: "Run Commit Checks",
+      category: "Git",
+      icon: "check",
+      when: VCS,
+      enabled: () => !useCommit.getState().operation,
+      run: ({ arg }) => {
+        if (arg !== "current") openCommit();
+        return checkCommitChanges();
+      },
+    },
+    {
       id: "vcs.commitAndPush",
       title: "Commit and Push…",
       category: "Git",
@@ -251,9 +401,9 @@ export function registerVcsActions(): () => void {
       run: async () => {
         const { message, amend } = useCommit.getState();
         // Nothing to commit with yet (or the modal interface): IDEA shows where the message is typed.
-        if (isModalCommit() || (!message.trim() && !amend)) return commitFromContext();
-        const id = await commitChanges();
-        if (id !== undefined) await pushAfterCommit();
+        if (isModalCommit() || (!message.trim() && !amend && !hasSelectedApplyOperation())) return commitFromContext();
+        const committed = await commitChanges(undefined, { requireSyncChecks: true });
+        if (committed) await pushAfterCommit(committed);
       },
     },
     {
@@ -264,6 +414,21 @@ export function registerVcsActions(): () => void {
       keyWhen: IN_COMMIT_WINDOW,
       toggled: () => useCommit.getState().amend,
       run: () => void setAmend(!useCommit.getState().amend),
+    },
+    {
+      id: SELECT_AMEND_TARGET,
+      title: "Choose Commit to Amend",
+      category: "Git",
+      enabled: () => useVcs.getState().roots.length === 1 && !useCommit.getState().operation,
+      hidden: true,
+      run: ({ arg }) => setAmend(true, arg ? (arg as EarlierAmend) : null),
+    },
+    {
+      id: KEEP_AMEND_COMMIT,
+      title: "Create Amend Commit Anyway",
+      category: "Git",
+      hidden: true,
+      run: ({ arg }) => keepPreparedAmend(arg),
     },
     {
       id: "vcs.showMessageHistory",
@@ -309,6 +474,14 @@ export function registerVcsActions(): () => void {
       run: ({ arg }) => void showPushDialog(arg && typeof arg === "object" ? (arg as PushTarget) : {}),
     },
     {
+      id: "vcs.push.fetchAndReview",
+      title: "Fetch and Review…",
+      category: "Git",
+      when: VCS,
+      enabled: ({ arg }) => Array.isArray(arg) && arg.length > 0,
+      run: ({ arg }) => fetchAndReviewPush(arg as PushReviewTarget[]),
+    },
+    {
       id: "vcs.update",
       title: "Update Project…",
       category: "Git",
@@ -324,6 +497,18 @@ export function registerVcsActions(): () => void {
       icon: "git-pull",
       when: VCS,
       run: ({ arg }) => showPullDialog(operationRepo(arg)),
+    },
+    {
+      id: "vcs.pullRemoteBranch",
+      title: "Pull…",
+      category: "Git",
+      when: VCS,
+      hidden: true,
+      run: ({ arg }) => {
+        const target = arg as RemoteBranchPull | undefined;
+        if (target && typeof target.branch === "string" && typeof target.rebase === "boolean")
+          return pullRemoteBranch(target);
+      },
     },
     {
       id: "vcs.merge",
@@ -350,12 +535,35 @@ export function registerVcsActions(): () => void {
       run: showManageRemotes,
     },
     {
+      id: "vcs.defineRemote",
+      title: "Define Remote",
+      category: "Git",
+      when: VCS,
+      run: ({ arg }) => showDefineRemote(arg as DefineRemoteTarget | undefined),
+    },
+    {
       id: "vcs.newWorktree",
       title: "New Worktree…",
       category: "Git",
       when: VCS,
       keywords: ["worktree"],
-      run: () => showNewWorktree(),
+      run: ({ arg }) =>
+        showNewWorktree({
+          repo: operationRepo(arg),
+          source:
+            arg && typeof arg === "object" && "source" in arg && typeof arg.source === "string"
+              ? arg.source
+              : undefined,
+        }),
+    },
+    {
+      id: OPEN_WORKTREE_REVIEW,
+      title: "Open Review",
+      category: "Git",
+      icon: "toolwindow-pull-requests",
+      when: VCS,
+      hidden: true,
+      run: ({ arg }) => (arg as WorktreeReview | undefined)?.open?.(),
     },
     {
       id: "vcs.worktrees",
@@ -363,15 +571,39 @@ export function registerVcsActions(): () => void {
       category: "Git",
       when: VCS,
       keywords: ["worktree"],
-      run: showWorktrees,
+      run: () => {
+        selectGitTab("worktrees");
+        showGitWindow();
+      },
     },
     {
       id: "vcs.fetch",
       title: "Fetch",
       category: "Git",
       icon: "git-fetch",
-      when: VCS,
-      run: () => void runRemote({ op: "fetch" }, undefined, allRepos()),
+      when: `${VCS} && !vcsFetchDisabled`,
+      enabled: () => !useRunningActions.getState().running.has("vcs.fetch"),
+      indicatesRunning: true,
+      run: async ({ arg }) => {
+        if (arg && typeof arg === "object" && "remote" in arg && typeof arg.remote === "string") {
+          await runRemote({ op: "fetchRemote", remote: arg.remote }, arg.remote, [operationRepo(arg)]);
+        } else {
+          await runRemote({ op: "fetch" }, undefined, allRepos());
+        }
+      },
+    },
+    {
+      id: "vcs.unshallow",
+      title: "Fetch Full History",
+      category: "Git",
+      icon: "git-fetch",
+      when: "vcsAvailable && vcsShallowRepositories",
+      keywords: ["shallow clone", "unshallow", "download history"],
+      enabled: ({ arg }) => !!useVcs.getState().heads[operationRepo(arg) ?? currentRepoRoot() ?? ""]?.shallow,
+      run: async ({ arg }) => {
+        const repo = operationRepo(arg) ?? currentRepoRoot();
+        if (repo) await runRemote({ op: "unshallow" }, repoName(repo), [repo]);
+      },
     },
     {
       id: "vcs.refresh",
@@ -380,6 +612,104 @@ export function registerVcsActions(): () => void {
       icon: "refresh",
       when: VCS,
       run: () => void refreshNow(),
+    },
+    {
+      id: TOGGLE_IGNORED_FILES,
+      title: "Show Ignored Files",
+      category: "Git",
+      when: VCS,
+      enabled: () => stagingAreaOn() && !!useVcs.getState().root,
+      toggled: () => showsIgnoredFiles(useVcs.getState().root ?? ""),
+      run: () => {
+        const root = useVcs.getState().root;
+        if (root) toggleIgnoredFiles(root);
+      },
+    },
+    {
+      id: TOGGLE_STAGED_REPOSITORIES,
+      title: "Toggle Repository Inclusion",
+      category: "Git",
+      when: VCS,
+      hidden: true,
+      run: ({ arg }) => {
+        const { status, roots } = useVcs.getState();
+        const { groupByRepo, excludedStagedRepos } = useCommit.getState();
+        const scope = stagedRepositoryScope(status, roots, stagingAreaOn() && groupByRepo);
+        if (!scope) return;
+        const repos = (argPaths(arg) ?? []).filter((repo) => scope.has(repo));
+        if (!repos.length) return;
+        const include = repos.some((repo) => excludedStagedRepos.has(repo));
+        const next = new Set(excludedStagedRepos);
+        for (const repo of repos) {
+          if (include) next.delete(repo);
+          else next.add(repo);
+        }
+        useCommit.setState({ excludedStagedRepos: next });
+      },
+    },
+    {
+      id: STAGE_ALL_TRACKED,
+      title: "Stage All Tracked",
+      category: "Git",
+      icon: "plus",
+      when: VCS,
+      indicatesRunning: true,
+      enabled: () => canStageAll(false),
+      run: () => stageAllChanges(false),
+    },
+    {
+      id: "vcs.stageAll",
+      title: "Stage All",
+      category: "Git",
+      icon: "plus",
+      when: VCS,
+      indicatesRunning: true,
+      enabled: () => canStageAll(true),
+      run: () => stageAllChanges(true),
+    },
+    {
+      id: "vcs.toggleCommitAllWhenNothingStaged",
+      title: "Commit All when Nothing Is Staged",
+      category: "Git",
+      when: VCS,
+      indicatesRunning: true,
+      enabled: () =>
+        stagingAreaOn() && !useRunningActions.getState().running.has("vcs.toggleCommitAllWhenNothingStaged"),
+      toggled: () => workflowSettings().vcs.commit.commitAllWhenNothingStaged,
+      run: async () => {
+        const value = !workflowSettings().vcs.commit.commitAllWhenNothingStaged;
+        try {
+          await call(commands.settingsSet("global", "vcs.commit.commitAllWhenNothingStaged", JSON.stringify(value)));
+          await loadSettings();
+        } catch (error) {
+          notifications().notify({
+            group: "vcs",
+            level: "error",
+            title: "Could not save settings",
+            body: errorMessage(error),
+          });
+        }
+      },
+    },
+    {
+      id: STAGE_WITHOUT_CONTENT,
+      title: "Stage Without Content",
+      category: "Git",
+      when: VCS,
+      enabled: ({ arg }) => stagingAreaOn() && addToVcsTargets(changedPaths(arg), useVcs.getState().status).length > 0,
+      run: ({ arg }) => stageWithoutContent(changedPaths(arg)),
+    },
+    {
+      id: ROLLBACK_UNSTAGED,
+      title: "Rollback Unstaged Changes",
+      category: "Git",
+      icon: "undo",
+      when: VCS,
+      enabled: ({ arg }) => unstagedRollbackFiles(arg).length > 0,
+      run: ({ arg }) => {
+        const files = unstagedRollbackFiles(arg);
+        if (files.length) showRollbackDialog(files, undefined, "unstaged");
+      },
     },
     {
       id: "vcs.rollback",
@@ -392,11 +722,17 @@ export function registerVcsActions(): () => void {
         const explicit = argPaths(arg);
         // IDEA: in the editor, with the caret on changed lines, ⌥⌘Z is Rollback Lines.
         const ed = activeEditor();
-        if (!explicit?.length && ed?.view.hasFocus && rollbackSelectedLines(ed.view)) return;
+        if (!explicit?.length && ed?.view.hasFocus) {
+          if (rollbackSelectedLines(ed.view, ed.ctx.path) || stagingAreaOn()) return;
+        }
         // The Commit window's subject is its tree selection; when the selection holds
         // nothing rollbackable (unversioned files, stale paths), the checked changes are
         // instead — as IDEA's toolbar Rollback acts on the checked changes there.
         const focused = commitWindowFocused();
+        if (focused && stagingAreaOn() && !explicit?.length) {
+          void executeAction(ROLLBACK_UNSTAGED, useCommit.getState().unstagedSelection);
+          return;
+        }
         const sel = useCommit.getState().selection;
         const fromSel = focused && sel.length ? rollbackCandidates(sel) : null;
         const paths = explicit?.length
@@ -406,18 +742,7 @@ export function registerVcsActions(): () => void {
             : focused
               ? currentPlan().included.map((f) => f.path)
               : undefined;
-        if (paths?.length) {
-          const candidates = rollbackCandidates(paths);
-          const submodule = paths.find((p) => isNestedRepoEntry(p));
-          if (!candidates.length && submodule)
-            return notifications().notify({
-              group: "vcs",
-              level: "info",
-              title: "Submodule changes cannot be rolled back here",
-              body: tx`${repoName(submodule)} points to another commit. Check out the recorded commit in the submodule (git submodule update) to revert it.`,
-            });
-          return showRollbackDialog(candidates);
-        }
+        if (paths?.length) return showRollbackDialog(rollbackCandidates(paths));
         const active = maybeEditorService()?.activePath();
         const activeChanged = active ? rollbackCandidates([active]) : [];
         showRollbackDialog(activeChanged.length ? activeChanged : rollbackCandidates());
@@ -434,6 +759,17 @@ export function registerVcsActions(): () => void {
       keyWhen: "!editorTextFocus && !diffEditorFocus && !vcsLogChangesFocus && !vcsLogRevisionFocus",
       run: async ({ arg, ctx }) => {
         if (ctx.shelfFocus && arg === undefined) return showShelfDiff();
+        const stash = arg === undefined ? focusedStashDiff() : null;
+        if (stash) return showStashDiff(stash, workflowSettings().vcs.git.stashDiffTarget);
+        if (arg === undefined && getContext().activeToolWindow === "commit") {
+          const { amend, amendPreview, groupByDir, selectionKeys } = useCommit.getState();
+          if (amend && amendPreview && selectionKeys.some((key) => key.startsWith("amend:"))) {
+            const { roots, heads } = useVcs.getState();
+            const node = amendPreviewNode(amendPreview, groupByDir, roots, heads[amendPreview.root]?.headCommit);
+            const file = node && changeFileNodes(selectedChangeNodes([node], new Set(selectionKeys)))[0];
+            if (node && file) return openVcsDiff(changeNodeDiffData([node], file), { preview: true });
+          }
+        }
         const line =
           arg && typeof arg === "object" && "line" in arg ? Number((arg as { line: unknown }).line) : undefined;
         const paths = selectedPaths(arg);
@@ -442,20 +778,7 @@ export function registerVcsActions(): () => void {
           return;
         }
         if (await showDirectoryWorkingDiff(paths)) return;
-        const state = useVcs.getState();
-        // The tree the Commit tool window shows: with the staging area, Staged / Unstaged and no lists.
-        const staging = stagingAreaOn();
-        const tree = buildChangeTree(
-          state.status,
-          state.root ?? "",
-          useCommit.getState().groupByDir,
-          staging ? undefined : useChangelists.getState().state,
-          state.roots,
-          useCommit.getState().groupByStaging || staging,
-          undefined,
-          useCommit.getState().groupByRepo,
-          useCommit.getState().showUnversionedSeparately,
-        );
+        const tree = currentChangeTree();
         // The selected rows while the tree has focus: a file under Staged or Unstaged diffs that side.
         const targets = showDiffTargets(tree, paths, !argPaths(arg)?.length && commitWindowFocused());
         // The modal interface has one front diff window (#1863): a file with its group
@@ -476,7 +799,7 @@ export function registerVcsActions(): () => void {
         }
         for (const target of targets.slice(0, 5)) {
           const data = typeof target === "string" ? groupDiffData(tree, target) : changeNodeDiffData(tree, target);
-          await openDiff({ ...data, line }, { preview: targets.length === 1 });
+          await openVcsDiff({ ...data, line }, { preview: targets.length === 1 });
         }
       },
     },
@@ -511,6 +834,23 @@ export function registerVcsActions(): () => void {
           return;
         }
         await comparePathsWithRevision(paths);
+      },
+    },
+    {
+      id: "vcs.diffWithWorkingTree",
+      title: "Show Diff with Working Tree",
+      category: "Git",
+      when: VCS,
+      hidden: true,
+      run: async ({ arg }) => {
+        const target = arg as { rev?: string; label?: string; repositories?: readonly string[] } | undefined;
+        if (!target?.rev) return;
+        const project = useProject.getState().project;
+        const repo = currentRepoRoot();
+        const repositories = target.repositories ?? (repo ? [repo] : undefined);
+        await saveAll();
+        if (useProject.getState().project !== project) return;
+        showWorktreeComparison(target.rev, target.label ?? target.rev, repositories);
       },
     },
     {
@@ -552,24 +892,51 @@ export function registerVcsActions(): () => void {
       },
     },
     {
+      id: "vcs.stageGutterChange",
+      title: "Stage Change",
+      category: "Git",
+      icon: "plus",
+      when: VCS,
+      enabled: ({ arg }) => !!gutterTarget(arg, "unstaged"),
+      run: ({ arg }) => {
+        const target = gutterTarget(arg, "unstaged");
+        if (target) return updateStagedLines(target, "stage");
+      },
+    },
+    {
+      id: "vcs.unstageGutterChange",
+      title: "Unstage Change",
+      category: "Git",
+      icon: "minus",
+      when: VCS,
+      enabled: ({ arg }) => !!gutterTarget(arg, "staged"),
+      run: ({ arg }) => {
+        const target = gutterTarget(arg, "staged");
+        if (target) return updateStagedLines(target, "unstage");
+      },
+    },
+    {
       // The diff of the file at the changed lines under the caret or selection (the change marker popup's Show Diff).
       id: "vcs.showDiffForLines",
       title: "Show Diff for Lines",
       category: "Git",
       icon: "diff",
       when: VCS,
-      enabled: () => {
-        const ed = activeEditor();
-        return !!ed && hunksInSelection(ed.view.state).length > 0;
-      },
-      run: () => {
-        const ed = activeEditor();
-        const [hunk] = ed ? hunksInSelection(ed.view.state) : [];
-        if (!ed || !hunk) return;
-        const { state } = ed.view;
+      enabled: ({ arg }) => !!gutterSelection(arg)?.hunks.length,
+      run: async ({ arg }) => {
+        const target = gutterSelection(arg);
+        const hunk = target?.hunks[0];
+        if (!target || !hunk) return;
+        const { view, path } = target;
+        const { state } = view;
         const head = state.selection.main.head;
         const line = hunk.from <= head && head <= hunk.to ? state.doc.lineAt(head).number - 1 : hunk.start;
-        return executeAction("vcs.showDiff", { path: ed.ctx.path, line });
+        if (!hunk.staging) return executeAction("vcs.showDiff", { path, line });
+        const live = equivalentStagingHunk(view, hunk);
+        const range = live && editableHunk(view, live) && stagingRange(live, state.doc);
+        if (!range) return;
+        const { openDiffDialog } = await import("./diffDialog");
+        openDiffDialog(stagingGutterDiffData(path, line, range));
       },
     },
     {
@@ -631,11 +998,77 @@ export function registerVcsActions(): () => void {
       },
     },
     {
+      id: "vcs.rebaseOntoBranch",
+      title: "Rebase Current Branch",
+      category: "Git",
+      when: VCS,
+      hidden: true,
+      enabled: ({ arg }) => !!(arg as BranchRebaseTarget | undefined)?.branch,
+      run: ({ arg }) => rebaseOntoBranch(arg as BranchRebaseTarget),
+    },
+    {
+      id: "vcs.checkoutAndRebase",
+      title: "Checkout and Rebase",
+      category: "Git",
+      when: VCS,
+      hidden: true,
+      enabled: ({ arg }) => !!(arg as CheckoutRebaseTarget | undefined)?.branch,
+      run: ({ arg }) => void checkoutAndRebase(arg as CheckoutRebaseTarget),
+    },
+    {
       id: "vcs.checkoutRevision",
       title: "Checkout Tag or Revision…",
       category: "Git",
       when: VCS,
-      run: () => void checkoutRevision(),
+      enabled: ({ arg }) => canCheckoutRevision(arg as CheckoutRevisionScope | undefined),
+      run: ({ arg }) => checkoutRevision(arg as CheckoutRevisionScope | undefined),
+    },
+    {
+      id: "vcs.mergeTag",
+      title: "Merge Tag",
+      category: "Git",
+      when: VCS,
+      hidden: true,
+      enabled: ({ arg }) => typeof (arg as TagTarget | undefined)?.tag === "string",
+      run: ({ arg }) => {
+        const { tag, repo } = arg as TagTarget;
+        return mergeIntoCurrent(tag, repo, `refs/tags/${tag}`);
+      },
+    },
+    {
+      id: "vcs.pushTag",
+      title: "Push Tag",
+      category: "Git",
+      when: VCS,
+      hidden: true,
+      enabled: ({ arg }) => typeof (arg as { remote?: string } | undefined)?.remote === "string",
+      run: ({ arg }) => {
+        const { tag, repo, remote } = arg as TagTarget & { remote: string };
+        return pushTag(tag, remote, repo);
+      },
+    },
+    {
+      id: "vcs.deleteTag",
+      title: "Delete Tag",
+      category: "Git",
+      when: VCS,
+      hidden: true,
+      enabled: ({ arg }) => typeof (arg as TagTarget | undefined)?.tag === "string",
+      run: ({ arg }) => {
+        const { tag, repo } = arg as TagTarget;
+        return deleteTag(tag, repo);
+      },
+    },
+    {
+      id: "vcs.showConsole",
+      title: "Show Git Console",
+      category: "Git",
+      icon: "terminal",
+      when: VCS,
+      run: () => {
+        selectGitTab("console");
+        showGitWindow();
+      },
     },
     {
       id: "vcs.showLog",
@@ -658,8 +1091,8 @@ export function registerVcsActions(): () => void {
       category: "Git",
       icon: "history",
       when: VCS,
-      run: ({ arg }) => {
-        const path = contextPaths(arg)[0];
+      run: ({ arg, ctx }) => {
+        const path = focusedPaths(arg, ctx)[0];
         if (!path) return;
         openLogTab("history", path);
         showGitWindow();
@@ -714,7 +1147,7 @@ export function registerVcsActions(): () => void {
       category: "Git",
       when: VCS,
       keywords: ["ignore", "unversioned", "exclude"],
-      run: ({ arg }) => addToIgnore(contextPaths(arg), destination),
+      run: ({ arg, ctx }) => addToIgnore(focusedPaths(arg, ctx), destination),
     })),
     {
       id: "vcs.addToVcs",
@@ -723,9 +1156,7 @@ export function registerVcsActions(): () => void {
       icon: "plus",
       when: VCS,
       keywords: ["git add", "stage"],
-      run: ({ arg }) => {
-        return addToVcs(contextPaths(arg));
-      },
+      run: ({ arg, ctx }) => addToVcs(focusedPaths(arg, ctx)),
     },
     {
       id: "vcs.stash",
@@ -734,6 +1165,23 @@ export function registerVcsActions(): () => void {
       icon: "stash",
       when: VCS,
       run: () => void stashChanges(),
+    },
+    {
+      id: STASH_SILENTLY,
+      title: "Stash Silently",
+      category: "Git",
+      icon: "stash",
+      when: VCS,
+      indicatesRunning: true,
+      enabled: () => {
+        const { status, roots } = useVcs.getState();
+        return (
+          stagingAreaOn() &&
+          !useRunningActions.getState().running.has(STASH_SILENTLY) &&
+          stashableRoots(status, roots).length > 0
+        );
+      },
+      run: () => stashSilently(),
     },
     {
       id: "vcs.stashSelected",
@@ -755,6 +1203,65 @@ export function registerVcsActions(): () => void {
       },
     },
     {
+      id: "vcs.stash.showChanges",
+      title: "Show Changes",
+      category: "Git",
+      when: VCS,
+      hidden: true,
+      run: ({ arg }) => {
+        if (arg) showStashChanges(arg as StashEntry);
+      },
+    },
+    {
+      id: "vcs.stash.showDiff",
+      title: "Show Diff",
+      category: "Git",
+      icon: "diff",
+      when: VCS,
+      hidden: true,
+      run: ({ arg }) => {
+        if (arg) return showStashDiff(arg as StashDiffRequest, workflowSettings().vcs.git.stashDiffTarget);
+      },
+    },
+    {
+      id: "vcs.stash.compareWithLocal",
+      title: "Compare with Local",
+      category: "Git",
+      when: VCS,
+      hidden: true,
+      run: ({ arg }) => {
+        if (arg) return showStashDiff(arg as StashDiffRequest, "local");
+      },
+    },
+    {
+      id: "vcs.showStashes",
+      title: "Show Stash",
+      category: "Git",
+      when: VCS,
+      run: () => showLocalChanges("stashes"),
+    },
+    {
+      id: "vcs.clearStashes",
+      title: "Clear Stashes…",
+      category: "Git",
+      when: VCS,
+      hidden: true,
+      run: async ({ arg }) => {
+        if (arg === null || typeof arg === "string") await clearStashes(arg);
+      },
+    },
+    {
+      id: "vcs.unstashAs",
+      title: "Unstash As…",
+      category: "Git",
+      when: VCS,
+      hidden: true,
+      run: ({ arg }) => {
+        const stash = arg as (Stash & { repo: string | null }) | undefined;
+        if (stash?.id) showUnstashAsDialog(stash, stash.repo);
+      },
+    },
+    {
       id: "vcs.unstash",
       title: "Unstash Changes…",
       category: "Git",
@@ -767,7 +1274,16 @@ export function registerVcsActions(): () => void {
       category: "Git",
       when: VCS,
       keywords: ["merge"],
-      run: showConflictsDialog,
+      run: ({ arg }) => showConflictsDialog(arg),
+    },
+    {
+      id: "vcs.revertResolved",
+      title: "Revert Resolved",
+      category: "Git",
+      icon: "undo",
+      when: VCS,
+      enabled: ({ arg }) => canRevertResolved(selectedPaths(arg)),
+      run: ({ arg }) => void revertResolved(selectedPaths(arg)),
     },
     {
       id: "vcs.acceptYours",

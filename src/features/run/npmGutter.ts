@@ -283,6 +283,7 @@ export async function scriptMenuItems(entry: ScriptEntry, path: string, content:
   return [
     {
       label: tx`Run '${label}'`,
+      preserveLabelEnd: true,
       icon: "run",
       shortcut: shortcutLabel("run.runContext"),
       run: () =>
@@ -292,6 +293,7 @@ export async function scriptMenuItems(entry: ScriptEntry, path: string, content:
     },
     {
       label: tx`Debug '${label}'`,
+      preserveLabelEnd: true,
       icon: "debug",
       shortcut: shortcutLabel("run.debugContext"),
       run: () => void executeAction("run.debugConfig", config),

@@ -64,6 +64,19 @@ describe("semanticRanges", () => {
     ]);
   });
 
+  it("colours typescript-language-server's `member` (a method) like vtsls's `method`", () => {
+    const input = {
+      tokenTypes: ["member", "method"],
+      tokenModifiers: ["declaration", "defaultLibrary"],
+      data: [0, 0, 3, 0, 1, 0, 4, 3, 1, 1, 0, 8, 3, 0, 2],
+    };
+    expect(semanticRanges(doc, input, false, "typescript")).toEqual([
+      { from: 0, to: 3, className: "cm-sem-function cm-sem-declaration" },
+      { from: 4, to: 7, className: "cm-sem-function cm-sem-declaration" },
+      { from: 8, to: 11, className: "cm-sem-function cm-sem-builtin" },
+    ]);
+  });
+
   it("colours rust-analyzer's `self` as a keyword", () => {
     const input = { tokenTypes: ["selfKeyword"], tokenModifiers: [], data: [0, 0, 3, 0, 0] };
     expect(semanticRanges(doc, input)[0]?.className).toBe("cm-sem-keyword");

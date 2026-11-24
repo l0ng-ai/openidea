@@ -8,8 +8,11 @@
 .group {
   flex: 1;
 }
-.group:has(> :global([data-separator="active"])) * {
+.group:has(> :global([data-separator="active"][aria-orientation="vertical"])) * {
   cursor: col-resize !important;
+}
+.group:has(> :global([data-separator="active"][aria-orientation="horizontal"])) * {
+  cursor: row-resize !important;
 }
 .editor {
   flex: 1;
@@ -17,6 +20,13 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
+}
+/* Keep the thumb clear of the side-by-side divider's mouse hit area. */
+.mode-split
+  .group:has(> :global([data-separator][aria-orientation="vertical"]))
+  .editor
+  :global(.cm-openidea-overviewThumb) {
+  right: 5px;
 }
 .mode-preview > :global([data-group]) > :global([data-panel]:first-child) {
   display: none !important;
@@ -59,6 +69,16 @@
 .preview :global(h2) {
   padding-bottom: 0.3em;
   border-bottom: 1px solid var(--border-strong);
+}
+.preview :global([role="doc-footnote"]) {
+  display: flex;
+  gap: var(--space-2);
+}
+.preview :global([role="doc-footnote"] > div > :first-child) {
+  margin-block-start: 0;
+}
+.preview :global([role="doc-footnote"] > div > :last-child) {
+  margin-block-end: 0;
 }
 .preview :global(h1),
 .preview :global(h2),
@@ -124,6 +144,23 @@
   color: var(--fg-editor, var(--fg-secondary));
   opacity: 0.8;
 }
+.preview :global([data-math-svg]) {
+  position: relative;
+}
+.preview :global([data-math-svg="display"]) {
+  display: block;
+  margin: 1em 0;
+  overflow: auto hidden;
+  padding: 2px 0;
+  text-align: center;
+}
+.preview :global(mjx-assistive-mml) {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  user-select: none;
+}
 .preview :global(table) {
   display: block;
   width: max-content;
@@ -149,12 +186,40 @@
   border-top: 1px solid var(--border-strong);
   margin: 1.5em 0;
 }
+.preview :global([role="doc-endnotes"] > hr) {
+  margin-block-end: 2.5em;
+}
 .preview :global(img) {
   max-width: calc(100% * var(--markdown-zoom-scale, 1));
 }
 .preview :global(img[data-natural-width]) {
   width: calc(min(var(--image-width), 100%) * var(--markdown-zoom-scale, 1));
   height: auto;
+}
+/* the wrapper takes the image's size, so the image fills it */
+.preview :global(.image-zoom) {
+  display: inline-block;
+  max-width: calc(100% * var(--markdown-zoom-scale, 1));
+}
+.preview :global(.image-zoom[data-natural-width]) {
+  width: calc(min(var(--image-width), 100%) * var(--markdown-zoom-scale, 1));
+}
+.preview :global(.image-zoom > .pan-zoom-content > img) {
+  width: 100%;
+  max-width: none;
+  height: auto;
+}
+.preview :global(.image-zoom[data-zoomed="true"]) {
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.preview :global(.image-zoom[data-zoomed="true"] img) {
+  -webkit-user-drag: none;
+}
+.preview :global(.image-zoom[data-dragging="true"]) {
+  cursor: grabbing;
 }
 .preview :global(ul.contains-task-list) {
   list-style: none;

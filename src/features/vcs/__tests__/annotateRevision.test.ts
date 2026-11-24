@@ -10,7 +10,6 @@ import {
   showRevisionDiff,
 } from "../annotateRevision";
 import { activateRevisionAnnotations } from "../annotateRevisionProvider";
-import type { DiffData } from "../diffInput";
 import { createDiffViewerContributions, type DiffViewerHost } from "../diffViewerProviders";
 import { useVcs } from "../store";
 
@@ -95,9 +94,11 @@ describe("annotate previous revision", () => {
     );
   });
 
-  it("annotates the left pane of a diff that asks for it, once", async () => {
+  it.each([undefined, "old/a.py"])("annotates the historical left pane once (%s)", async (historyPath) => {
     activateRevisionAnnotations();
-    const data = previousRevisionDiffData("/repo/a.py", commit([parent])) as DiffData;
+    const data = historyPath
+      ? revisionDiffData("/repo/a.py", "/repo", { id: parent, shortId: parent.slice(0, 8), historyPath })
+      : previousRevisionDiffData("/repo/a.py", commit([parent]))!;
     const view = new EditorView({ parent: document.body, state: EditorState.create({ doc: "old one\nold two" }) });
     const host = {
       panes: () => [{ side: "left" as const, view }],
@@ -107,7 +108,7 @@ describe("annotate previous revision", () => {
     expect(contribution).toBeDefined();
     contribution!.attach?.(host);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(mocks.blame).toHaveBeenCalledWith("/repo/a.py", "old one\nold two", parent);
+    expect(mocks.blame).toHaveBeenCalledWith(historyPath ? "/repo/old/a.py" : "/repo/a.py", "old one\nold two", parent);
     // A second attach (panes rebuilt) must not reopen annotations the user closed.
     contribution!.attach?.(host);
     await new Promise((resolve) => setTimeout(resolve, 0));

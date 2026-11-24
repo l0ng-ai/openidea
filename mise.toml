@@ -1,0 +1,50 @@
+[tools]
+node = "22.23.5"
+# Use the JS distribution: pnpm's standalone release doesn't cover Intel Macs.
+"npm:pnpm" = "11.28.12"
+rust = { version = "1.100.0", profile = "minimal", components = ["rustfmt", "clippy"] }
+
+[tasks.setup]
+description = "Install frontend dependencies for this worktree"
+run = "pnpm install"
+
+[tasks.dev]
+description = "Launch the desktop app with worktree isolation"
+run = "pnpm tauri dev"
+
+[tasks."dev:app"]
+description = "Launch the desktop app with the global Tauri API enabled"
+run = "pnpm dev:app"
+
+[tasks.build]
+description = "Typecheck, bundle and verify the frontend"
+run = "pnpm build"
+
+[tasks."dogfood:build"]
+description = "Build a local dogfood desktop app bundle"
+run = "pnpm dogfood:build"
+
+[tasks."dogfood:install"]
+description = "Build and install the local dogfood desktop app"
+depends = ["dogfood:build"]
+run = "pnpm dogfood:install --no-build"
+
+[tasks."dogfood:remote"]
+description = "Build and install a local dogfood openidea-server on a configured SSH remote"
+run = "pnpm dogfood:remote"
+
+[tasks.test]
+description = "Run the frontend and Rust workspace tests"
+run = ["pnpm test", "cargo test --workspace"]
+
+[tasks.check]
+description = "Check formatting, lint, types and unused code, then run the tests"
+run = [
+  "pnpm format:check",
+  "pnpm lint",
+  "pnpm typecheck",
+  "pnpm knip",
+  "cargo fmt --all --check",
+  "cargo clippy --workspace --all-targets -- -D warnings",
+  { task = "test" },
+]

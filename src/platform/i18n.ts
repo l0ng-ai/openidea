@@ -41,11 +41,13 @@ export const DEFAULT_LOCALE = "en";
 export const LOCALES = {
   en: { name: "English", tag: "en" },
   zh: { name: "简体中文 (Chinese, Simplified)", tag: "zh-CN" },
+  "zh-TW": { name: "繁體中文 (Chinese, Traditional)", tag: "zh-TW" },
   ko: { name: "한국어 (Korean)", tag: "ko" },
   fr: { name: "Français (French)", tag: "fr" },
   pl: { name: "Polski (Polish)", tag: "pl" },
   pt: { name: "Português (Portuguese)", tag: "pt-BR" },
   es: { name: "Español (Spanish)", tag: "es-MX" },
+  tr: { name: "Türkçe (Turkish)", tag: "tr-TR" },
 } as const;
 export type Locale = keyof typeof LOCALES;
 export const SUPPORTED_LOCALES = Object.keys(LOCALES) as Locale[];
@@ -68,11 +70,12 @@ interface I18nState {
 
 export const useI18n = create<I18nState>(() => ({ locale: DEFAULT_LOCALE, messages: en as Catalog, texts: {} }));
 
-/** Maps settings values / BCP 47 tags to a supported locale (`zh-CN` → `zh`, `ko-KR` → `ko`, `system` → browser). */
+/** Maps settings values / BCP 47 tags to a supported locale (`zh-CN` → `zh`, `zh-Hant-HK` → `zh-TW`, `ko-KR` → `ko`, `system` → browser). */
 export function resolveLocale(input: string | null | undefined): Locale {
   let tag = (input ?? "").trim();
   if (!tag || tag === "system" || tag === "auto")
     tag = typeof navigator !== "undefined" ? (navigator.language ?? DEFAULT_LOCALE) : DEFAULT_LOCALE;
+  if (/^zh[-_](tw|hk|mo|hant)\b/i.test(tag)) return "zh-TW";
   const base = tag.toLowerCase().split(/[-_]/)[0] ?? "";
   return (SUPPORTED_LOCALES as readonly string[]).includes(base) ? (base as Locale) : DEFAULT_LOCALE;
 }
@@ -171,7 +174,8 @@ export function useT(): Translate {
  *
  * As a tag it translates text built at runtime: `` tx`Remove data source '${name}'?` ``
  * looks up `"Remove data source '{name}'?"` (whatever the placeholder names) and fills
- * in the values, each translated as text when the catalog has it. The result is
+ * in the values as written: a file called `tasks` stays `tasks`. UI text among the
+ * values is marked with {@link txPart} to be translated as well. The result is
  * remembered, so the UI primitives, which pass their strings through `tx` as they
  * render, translate it again after a locale change or once the catalog has loaded.
  */
@@ -218,6 +222,17 @@ export function useGivenTx(): typeof tx {
   return useContext(VerbatimTextContext) ? asWritten : bound;
 }
 
+/** UI text filling a `tx` template, translated with it: `` tx`Rename ${txPart(kind)} '${name}'` ``. */
+class TxPart {
+  constructor(readonly text: string) {}
+  toString() {
+    return this.text;
+  }
+}
+
+/** Marks a `tx` tag value as UI text to translate; other values are inserted as written. */
+export const txPart = (text: string): unknown => new TxPart(text);
+
 function translateSource(texts: Catalog, text: string | TemplateStringsArray | undefined, values: unknown[]) {
   // A tag without `${}` spells out its whole text, which is looked up as written.
   if (text !== undefined && typeof text !== "string" && !values.length) text = text[0]!;
@@ -259,7 +274,10 @@ const interleave = (strings: readonly string[], parts: readonly string[]) =>
   strings.reduce((out, s, i) => out + parts[i - 1] + s);
 
 function formatBuilt(texts: Catalog, { strings, values }: Built): string {
-  const parts = values.map((v) => (typeof v === "string" ? (texts[v] ?? rebuild(texts, v) ?? v) : String(v)));
+  const parts = values.map((v) => {
+    if (v instanceof TxPart) return texts[v.text] ?? rebuild(texts, v.text) ?? v.text;
+    return typeof v === "string" ? (rebuild(texts, v) ?? v) : String(v);
+  });
   const shape = shapesOf(texts).get(strings.join("{}"));
   if (!shape) return interleave(strings, parts);
   const params: MessageParams = {};

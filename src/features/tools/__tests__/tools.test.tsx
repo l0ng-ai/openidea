@@ -232,7 +232,7 @@ describe("missing language server prompt", () => {
       alternatives: [],
       companion: false,
     });
-    await promptInstall("ruff", true, new Set(), true);
+    await promptInstall("ruff", true, new Set(), "formatter");
     expect(notes.at(-1)).toMatchObject({
       title: "Ruff is not installed",
       body: "Reformat Code needs Ruff. Install it via uv (virtualenv)?",
@@ -254,6 +254,27 @@ describe("missing language server prompt", () => {
     });
     expect(await promptInstall("pylsp")).toBe(false);
     expect(notes).toEqual([]);
+  });
+
+  it("offers a companion server when one of its refactorings is invoked", async () => {
+    const installed = sampleTools().find((t) => t.name === "basedpyright")!;
+    backend.tools.push({
+      ...installed,
+      name: "pylsp",
+      displayName: "pylsp-rope (Python refactorings)",
+      command: "pylsp",
+      status: "missing",
+      installMethod: "uv (virtualenv)",
+      alternatives: [],
+      companion: true,
+    });
+    // basedpyright (installed) serves Python: the refactoring still needs pylsp-rope.
+    expect(await promptInstall("pylsp", true, new Set(), { refactoring: "Extract Method" })).toBe(true);
+    expect(notes.at(-1)).toMatchObject({
+      title: "pylsp-rope (Python refactorings) is not installed",
+      body: "Extract Method needs pylsp-rope (Python refactorings). Install it via uv (virtualenv)?",
+      key: missingKey("pylsp"),
+    });
   });
 
   it("stays silent when an installed alternative serves the same languages", async () => {

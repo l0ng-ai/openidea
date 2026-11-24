@@ -5,6 +5,8 @@
 //! this machine's Python must not have Django installed.
 #![cfg(unix)]
 
+mod common;
+
 use ide_core::IdeEvent;
 use ide_host::{Host, HostConfig, ops};
 use ide_run::{OutputChunk, RunConfig};
@@ -18,11 +20,6 @@ type Events = Arc<Mutex<Vec<IdeEvent>>>;
 
 fn host(base: &Path, events: &Events) -> Arc<Host> {
     Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
         sink_for: Box::new({
             let events = events.clone();
             move |_| {
@@ -30,9 +27,7 @@ fn host(base: &Path, events: &Events) -> Arc<Host> {
                 Arc::new(move |e: IdeEvent| events.lock().unwrap().push(e))
             }
         }),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
+        ..common::host_config(base)
     }))
 }
 

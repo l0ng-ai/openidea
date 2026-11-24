@@ -544,7 +544,7 @@ export function windowActions(): Action[] {
       id: "file.newUntitled",
       title: t("app.action.newFile"),
       category: t("app.category.file"),
-      icon: "plus",
+      icon: "file-new",
       keywords: ["new", "create", "untitled", "file", "light edit"],
       run: async () => {
         if (desktopOnly()) return;
@@ -676,7 +676,20 @@ export function installLaunchHandling(): () => void {
     }
   });
   provideStartupLaunch(launch);
-  holdSplash(launch);
+  // Uncover once the launch project starts opening — the opening view shows the title bar and its
+  // own progress — rather than holding the splash over it until the project is fully open.
+  const shown = new Promise<void>((resolve) => {
+    const done = () => {
+      off();
+      resolve();
+    };
+    const off = useProject.subscribe((s) => {
+      if (s.openingPath !== null) done();
+    });
+    if (useProject.getState().openingPath !== null) done();
+    void launch.then(done, done);
+  });
+  holdSplash(shown);
   return () => {
     disposed = true;
     unlisten?.();

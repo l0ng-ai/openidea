@@ -73,10 +73,14 @@ Shared agent skills live in `.agents/skills/` (`.claude/skills/` links to them):
 
 ## Commands
 
-- `pnpm tauri dev` — run the app with worktree isolation (Node 22.18+).
+- Optional: `mise install` provisions the contributor toolchain; `mise tasks` lists the task aliases.
+  See [Development setup](docs/en/contribute/setup.mdx). The direct commands below still work without mise.
+- `pnpm tauri dev` — run the app with worktree isolation. Use Node 22.22.2 or later on the 22.x line.
   `pnpm dev:app` also enables the global Tauri API. `pnpm dev:status` reports
   this worktree's running MCP bridges and actual ports.
 - `pnpm build` — typecheck + bundle frontend.
+- `pnpm dogfood:build` / `pnpm dogfood:install` (or `mise run dogfood:build` / `mise run dogfood:install`) — build and locally install the grey-icon dogfood desktop app sharing release settings and data.
+- `pnpm dogfood:remote <remote_name> [--restart | --no-restart] [--clean]` (or `mise run dogfood:remote <remote_name>`) — sync backend sources to a host from **Tools › SSH Configurations**, build `openidea-server`, and stage it for Remote Development.
 - `cargo nextest run --workspace` (or `cargo test`), `cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all`.
 - `cargo test -p ide-host --test language_smoke -- --ignored --exact <language>` — code intelligence
   on `fixtures/` with that language's real server installed (CI: `Language smoke`, pinned versions).

@@ -25,12 +25,15 @@ import {
   EditorView,
   ViewPlugin,
   keymap,
+  repositionTooltips,
   showTooltip,
   type Tooltip,
   type ViewUpdate,
 } from "@codemirror/view";
 import { completionStatus } from "@codemirror/autocomplete";
 import { isExternalChange } from "@/editor/api";
+import { tooltipBounds } from "@/editor/core/cm/setup";
+import { tx } from "@/platform/i18n";
 
 export interface Span {
   from: number;
@@ -51,6 +54,8 @@ export interface InplaceSession {
   dialog: (typed: string) => void;
   /** Name suggestions listed under the name; ↑ / ↓ put the previous / next one in (Introduce Variable). */
   suggestions?: readonly string[];
+  /** Runs when the session ends, however it ends (after `commit`). */
+  onEnd?: () => void;
 }
 
 const startSession = StateEffect.define<InplaceSession>();
@@ -92,29 +97,11 @@ const sessionField = StateField.define<InplaceSession | null>({
             pos: s.primary.from,
             above: false,
             create: (view) => {
+              if (s.suggestions?.length) return nameLookup(view, s, s.suggestions);
               const dom = document.createElement("div");
               dom.className = "cm-lsp-hint cm-lsp-inplace-hint";
               dom.setAttribute("role", "status");
-              if (s.suggestions?.length) {
-                const current = view.state.sliceDoc(s.primary.from, s.primary.to);
-                const list = document.createElement("ul");
-                list.className = "cm-lsp-inplace-suggestions";
-                list.setAttribute("aria-label", "Suggested names");
-                for (const name of s.suggestions) {
-                  const li = document.createElement("li");
-                  li.textContent = name;
-                  if (name === current) li.className = "cm-lsp-inplace-suggestion-active";
-                  li.addEventListener("mousedown", (e) => {
-                    e.preventDefault();
-                    putSuggestion(view, name);
-                  });
-                  list.appendChild(li);
-                }
-                dom.appendChild(list);
-              }
-              const hint = document.createElement("div");
-              hint.textContent = s.hint;
-              dom.appendChild(hint);
+              dom.textContent = s.hint;
               return { dom };
             },
           }
@@ -122,6 +109,86 @@ const sessionField = StateField.define<InplaceSession | null>({
     ),
   ],
 });
+
+function nameLookup(view: EditorView, session: InplaceSession, suggestions: readonly string[]) {
+  const dom = document.createElement("div");
+  dom.className = "cm-lsp-inplace-lookup";
+  const current = view.state.sliceDoc(session.primary.from, session.primary.to);
+  const list = document.createElement("ul");
+  list.className = "cm-lsp-inplace-suggestions";
+  list.setAttribute("role", "list");
+  list.setAttribute("aria-label", tx("Suggested names"));
+  for (const name of suggestions) {
+    const row = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.tabIndex = -1;
+    button.textContent = name;
+    button.title = name;
+    if (name === current) button.setAttribute("aria-current", "true");
+    // A click puts the name in; a double click also finishes, like Enter.
+    button.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      putSuggestion(view, name);
+      if (event.detail >= 2) endInplaceRename(view, "commit");
+    });
+    button.addEventListener("click", (event) => {
+      if (event.detail === 0) putSuggestion(view, name);
+    });
+    button.addEventListener("dblclick", () => {
+      if (putSuggestion(view, name)) endInplaceRename(view, "commit");
+    });
+    row.appendChild(button);
+    list.appendChild(row);
+  }
+  dom.appendChild(list);
+  const selected = list.querySelector('button[aria-current="true"]');
+  if (session.hint) {
+    const hint = document.createElement("div");
+    hint.className = "cm-lsp-inplace-footer";
+    hint.setAttribute("role", "status");
+    hint.textContent = session.hint;
+    dom.appendChild(hint);
+  }
+
+  // The body-level tooltip needs the font and available width from its own editor.
+  const measure = () =>
+    view.requestMeasure({
+      key: dom,
+      read: () => {
+        const { left, right } = tooltipBounds(view);
+        const { fontFamily, fontSize, fontWeight } = getComputedStyle(view.contentDOM);
+        return { maxWidth: `${Math.min(480, Math.max(0, right - left))}px`, fontFamily, fontSize, fontWeight };
+      },
+      write: ({ maxWidth, fontFamily, fontSize, fontWeight }) => {
+        if (!dom.isConnected) return;
+        if (
+          dom.style.maxWidth === maxWidth &&
+          dom.style.fontFamily === fontFamily &&
+          dom.style.fontWeight === fontWeight &&
+          dom.style.getPropertyValue("--openidea-editor-font-size") === fontSize
+        )
+          return;
+        Object.assign(dom.style, { maxWidth, fontFamily, fontWeight });
+        dom.style.setProperty("--openidea-editor-font-size", fontSize);
+        repositionTooltips(view);
+      },
+    });
+  return {
+    dom,
+    offset: { x: -13, y: 0 },
+    mount: measure,
+    update: (update: ViewUpdate) => {
+      if (update.geometryChanged) measure();
+    },
+    positioned: () => {
+      if (!selected || list.scrollHeight <= list.clientHeight) return;
+      const row = selected.getBoundingClientRect();
+      const bounds = list.getBoundingClientRect();
+      list.scrollTop += Math.min(0, row.top - bounds.top) + Math.max(0, row.bottom - bounds.bottom);
+    },
+  };
+}
 
 const primaryMark = Decoration.mark({ class: "cm-lsp-inplace cm-lsp-inplace-primary" });
 const occurrenceMark = Decoration.mark({ class: "cm-lsp-inplace" });
@@ -211,6 +278,7 @@ export function endInplaceRename(view: EditorView, how: "commit" | "cancel" | "r
     annotations: [inplaceEdit.of(true), Transaction.addToHistory.of(false)],
   });
   if (how === "commit") s.commit(typed);
+  s.onEnd?.();
   return typed;
 }
 

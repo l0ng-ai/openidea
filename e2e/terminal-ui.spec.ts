@@ -1,5 +1,45 @@
 import { expect, test } from "./fixtures";
 
+test("terminal output menu groups session, clipboard and split actions and opens Find", async ({ workbench: page }) => {
+  await page.evaluate(async () => {
+    const path = "/src/workbench/toolwindows/store.ts";
+    const layout = await import(path);
+    layout.moveToolWindow("terminal", "right");
+    layout.showToolWindow("terminal", true);
+    layout.setToolWindowSize("right", 220);
+  });
+  const terminal = page.getByRole("region", { name: "Terminal", exact: true });
+  const output = terminal.getByRole("tabpanel").locator(".xterm");
+  await expect(terminal.locator(".xterm-helper-textarea")).toBeFocused();
+  await output.click({ button: "right", position: { x: 25, y: 50 } });
+  const menu = page.getByRole("menu", { name: "Context menu" });
+  const find = menu.getByRole("menuitem", { name: /^Find in Terminal/ });
+  await expect(find).toBeEnabled();
+  const rows = menu.locator(':scope > [role="separator"], :scope > [role="menuitem"]');
+  await expect(rows).toHaveText([
+    /^Find in Terminal/,
+    /^New Terminal Tab/,
+    "Restart Session",
+    "Close Session",
+    "",
+    /^Copy/,
+    /^Paste/,
+    "Select All",
+    "",
+    /^Clear Buffer/,
+    "",
+    "Split Right",
+    "Split Down",
+  ]);
+  await expect(menu.getByRole("menuitem", { name: /^Copy/ })).toBeDisabled();
+  await find.press("Enter");
+  const field = terminal.getByRole("textbox", { name: "Find in terminal" });
+  await expect(menu).toBeHidden();
+  await expect(field).toBeFocused();
+  await field.press("Escape");
+  await expect(terminal.locator(".xterm-helper-textarea")).toBeFocused();
+});
+
 for (const { width, split } of [{ width: 220 }, { width: 280 }, { width: 520 }, { width: 520, split: true }]) {
   test(`terminal search fits a ${width}px ${split ? "split" : "panel"} and its buttons work from the keyboard`, async ({
     workbench: page,
@@ -31,7 +71,15 @@ for (const { width, split } of [{ width: 220 }, { width: 280 }, { width: 520 }, 
     const search = terminal.getByRole("search", { name: "Find in terminal" });
     const input = search.getByRole("textbox", { name: "Find in terminal" });
     await input.fill("alpha");
-    await expect(search.locator("[aria-live=polite]")).toHaveText(/\d+\/3/);
+    const count = search.locator("[aria-live=polite]");
+    await expect(count).toHaveText(/\d+\/3/);
+    await expect(count).toHaveCSS("font-size", "13px");
+    const match = await count.textContent();
+    // The incremental search can report after the first Enter; retry until Enter moves on.
+    await expect(async () => {
+      await input.press("Enter");
+      await expect(count).not.toHaveText(match!, { timeout: 1000 });
+    }).toPass();
     if (process.env.OPENIDEA_TERMINAL_SHOTS)
       await terminal.screenshot({
         path: `${process.env.OPENIDEA_TERMINAL_SHOTS}/terminal-${width}${split ? "-split" : ""}.png`,
@@ -43,9 +91,19 @@ for (const { width, split } of [{ width: 220 }, { width: 280 }, { width: 520 }, 
       expect(rect.x).toBeGreaterThanOrEqual(bounds.x);
       expect(rect.x + rect.width).toBeLessThanOrEqual(bounds.x + bounds.width + 1);
     }
-    expect((await input.boundingBox())!.width).toBeGreaterThan(40);
-
     const matchCase = search.getByRole("button", { name: "Match Case", exact: true });
+    const inputBox = (await input.boundingBox())!;
+    if (width <= 280 || split) {
+      expect(inputBox.width).toBeGreaterThan(bounds.width * 0.62);
+      expect((await matchCase.boundingBox())!.y).toBeGreaterThan(inputBox.y + inputBox.height);
+    } else {
+      expect(inputBox.width).toBeGreaterThan(80);
+    }
+    const countBox = (await count.boundingBox())!;
+    const previousBox = (await search.getByRole("button", { name: "Previous Occurrence", exact: true }).boundingBox())!;
+    expect(previousBox.x - countBox.x - countBox.width).toBeLessThanOrEqual(4);
+    expect(countBox.y + countBox.height / 2).toBeCloseTo(previousBox.y + previousBox.height / 2, 0);
+
     await matchCase.focus();
     await page.keyboard.press("Enter");
     await expect(matchCase).toHaveAttribute("aria-pressed", "true");
@@ -90,7 +148,7 @@ test("wide terminal search leaves the grid in place and avoids covering the acti
   const top = (await search.boundingBox())!;
   expect(top.y).toBeCloseTo(before.y, 0);
   expect(top.x + top.width).toBeCloseTo(before.x + before.width, 0);
-  expect(top.width).toBeLessThan(before.width);
+  expect(top.width).toBeLessThan(420);
 
   await input.fill("right-edge");
   await expect(search.locator("[aria-live=polite]")).toHaveText("1/1");

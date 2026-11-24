@@ -163,21 +163,33 @@
   display: flex;
   align-items: center;
   gap: var(--space-1);
-  padding: 4px 8px;
+  padding: var(--space-1) var(--space-2);
   background: var(--bg-elev);
   border-bottom: 1px solid var(--border);
+  font-size: var(--fs-ui);
 }
 .findField {
-  flex: 1;
-  min-width: 160px;
+  width: calc(14ch + 2 * var(--h-control-small) + var(--space-4));
+  min-width: 0;
+}
+.findControls,
+.findOptions,
+.findActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-0-5);
+}
+.findControls {
+  gap: var(--space-1);
 }
 .findCount {
-  font-size: var(--fs-small);
+  font-size: var(--fs-ui);
   font-variant-numeric: tabular-nums;
   color: var(--fg-subtle);
-  padding: 0 6px;
+  min-inline-size: 7ch;
+  padding-inline: var(--space-1);
+  text-align: center;
   white-space: nowrap;
-  min-width: 56px;
 }
 .findCountNone {
   color: var(--danger);
@@ -188,7 +200,8 @@
     top: 0;
     right: 0;
     z-index: 6;
-    width: 500px;
+    width: max-content;
+    max-width: 100%;
     border-left: 1px solid var(--border);
   }
   .find[data-match-covered] {
@@ -201,11 +214,16 @@
 
 @container terminal-output (max-width: 360px) {
   .find {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) repeat(3, var(--h-control-small));
+    flex-direction: column;
+    align-items: stretch;
   }
   .findField {
-    grid-column: 1 / -1;
-    min-width: 0;
+    width: 100%;
+  }
+  .findControls {
+    flex-wrap: wrap;
+  }
+  .findClose {
+    margin-inline-start: auto;
   }
 }

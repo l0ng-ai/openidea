@@ -22,6 +22,7 @@ import { registerDevToolsWindows } from "./flutter/devTools";
 import { registerDebugTabActions } from "./tabActions";
 import { loadBreakpoints } from "./breakpoints/store";
 import { loadExceptionBreakpoints } from "./breakpoints/exceptions";
+import { loadExceptionClasses } from "./breakpoints/exceptionClasses";
 import { loadJsBreakpoints, watchPageSessions } from "./js/eventBreakpoints";
 import { watchNetworkSessions } from "./js/networkSessions";
 import { loadResponseOverrides, watchOverrideSessions } from "./js/responseOverrides";
@@ -31,6 +32,7 @@ import { breakpointGutter } from "./editor/breakpointGutter";
 import { executionPoint } from "./editor/execution";
 import { runToCursorInlay } from "./editor/runToCursor";
 import { installSmartStepPicking, smartStepTargets } from "./editor/smartStep";
+import { exceptionBreakpointIntention } from "./editor/exceptionBreakpointIntention";
 import { hotSwapMenuItems, onHotCodeReplace } from "./hotswap";
 import { installFlutterHotReloadOnSave } from "./flutterReload";
 import {
@@ -67,7 +69,8 @@ const useAnyOverlay = () =>
         s.attach ||
         s.smartStep ||
         s.streamChooser ||
-        s.streamAbort != null
+        s.streamAbort != null ||
+        s.tableView
       ),
   );
 
@@ -85,6 +88,7 @@ export function activate(): () => void {
   publishContext();
   loadBreakpoints(useProject.getState().project?.root ?? null);
   loadExceptionBreakpoints(useProject.getState().project?.root ?? null);
+  loadExceptionClasses(useProject.getState().project?.root ?? null);
   loadSpecialBreakpoints(useProject.getState().project?.root ?? null);
   loadJsBreakpoints(useProject.getState().project?.root ?? null);
   loadResponseOverrides(useProject.getState().project?.root ?? null);
@@ -153,6 +157,7 @@ export function activate(): () => void {
         selectionValueTooltip(),
         quickEvaluateMouse(),
         smartStepTargets(ctx),
+        exceptionBreakpointIntention(ctx),
       ],
     }),
     installSmartStepPicking(),
@@ -180,6 +185,7 @@ export function activate(): () => void {
         loadWatches(root);
         loadBreakpoints(root);
         loadExceptionBreakpoints(root);
+        loadExceptionClasses(root);
         loadSpecialBreakpoints(root);
         loadJsBreakpoints(root);
         loadResponseOverrides(root);

@@ -1,6 +1,7 @@
-import type { AgentChange, AgentCommit, AgentConfigOption, AgentEntry, AgentTask } from "@/bindings";
+import type { AgentChange, AgentCommit, AgentConfigOption, AgentEntry, AgentQueued, AgentTask } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { tx, useTx } from "@/platform/i18n";
+import { isErrorKind } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { Icon, IconButton, T, type IconName } from "@/ui";
 import { notifications, useEditorShown } from "@/workbench/contributions";
@@ -10,6 +11,7 @@ import { Composer } from "../Composer";
 import { ConfigPickers } from "../ConfigPickers";
 import { HermesProfilePicker } from "../HermesProfilePicker";
 import { McpPicker } from "../McpPicker";
+import { SkillsPicker } from "../SkillsPicker";
 import styles from "../Session.module.css";
 import { SessionAssets } from "../SessionAssets";
 import { SubmitButton } from "../SubmitButton";
@@ -27,6 +29,7 @@ import {
   sendQueuedNow,
   setTaskConfig,
   setTaskMcpOverrides,
+  setTaskSkillOverrides,
   stopBackgroundTask,
   useAgentCommands,
   useAgents,
@@ -160,7 +163,6 @@ export function SessionComposer({
   const provider = useAgents((s) => s.providers.find((p) => p.id === task.provider));
   const catalog = useAgents((s) => s.modelCatalogs.get(task.provider));
   const requestingModels = useAgents((s) => s.modelRequests.has(task.provider));
-  const requestTarget = useAgents((s) => s.modelRequestTargets.get(task.provider));
   const model = task.config.find((o) => o.category === "model");
   const catalogModel = (catalog?.config ?? provider?.config)?.find((o) => o.category === "model");
   const canRefreshModels =
@@ -185,18 +187,20 @@ export function SessionComposer({
           : { ...catalogModel, current: task.model ?? catalogModel.current };
       return [...task.config, recovered];
     }
-    const candidateModels = catalogModel?.values;
-    if (!candidateModels?.length) return task.config;
-    const sessionModels = new Set(model.values.map((v) => v.value));
-    const extra = candidateModels.filter((v) => !sessionModels.has(v.value));
-    if (!extra.length) return task.config;
-    const pickerModel = { ...model, values: [...model.values, ...extra] };
-    return task.config.map((o) => (o === model ? pickerModel : o));
-  }, [task.config, task.model, model, catalogModel, canRefreshModels]);
+    // The agent's current catalog is what a chat can switch to. The session's own list only
+    // keeps the model it runs selectable when the catalog no longer offers it.
+    const offered = catalogModel?.values;
+    if (!offered?.length) return task.config;
+    const kept = model.values.filter(
+      (v) => (v.value === model.current || v.value === task.model) && !offered.some((o) => o.value === v.value),
+    );
+    return task.config.map((o) => (o === model ? { ...model, values: [...offered, ...kept] } : o));
+  }, [task.config, task.model, model, model?.current, catalogModel, canRefreshModels]);
   const [sending, setSending] = useState(false);
   const configChange = useRef<{ loadingModel: boolean } | null>(null);
   const [configuring, setConfiguring] = useState<typeof configChange.current>(null);
   const [mcpOpenRequest, setMcpOpenRequest] = useState(0);
+  const [skillsOpenRequest, setSkillsOpenRequest] = useState(0);
   const [assetFocus, setAssetFocus] = useState(0);
   const agentCommands = useAgentCommands(task.provider, task.id, task.commands);
   const busy = isBusy(task.status);
@@ -226,28 +230,17 @@ export function SessionComposer({
       )
       .finally(() => setSending(false));
   };
-  const setOption = (id: string, value: string, forModel?: string) => {
+  const setOption = (id: string, value: string) => {
     const pickerModel = pickerConfig.find((o) => o.category === "model");
     const changingModel = id === pickerModel?.id;
-    const loadingModel = !!forModel || (changingModel && !model?.values.some((v) => v.value === value));
+    const loadingModel = changingModel && !model?.values.some((v) => v.value === value);
     const pendingModel = model?.current != null && model.current !== task.model;
     const change = loadingModel || (changingModel && configChange.current) || pendingModel ? { loadingModel } : null;
     if (change) {
       configChange.current = change;
       setConfiguring(change);
     }
-    const apply = async () => {
-      if (forModel && pickerModel) {
-        await setTaskConfig(task.id, pickerModel.id, forModel);
-        // A later model choice supersedes both halves of this edit.
-        const latest = useAgents.getState().tasks.get(task.id);
-        const selected = latest?.config.find((o) => o.category === "model")?.current ?? latest?.model;
-        if (configChange.current !== change) return;
-        if (selected !== forModel) throw new Error(tx("The model changed before its setting could be applied."));
-      }
-      await setTaskConfig(task.id, id, value);
-    };
-    void apply()
+    void setTaskConfig(task.id, id, value)
       .catch((e: unknown) =>
         notifications().notify({
           level: "error",
@@ -263,6 +256,7 @@ export function SessionComposer({
       });
   };
   const openMcp = () => setMcpOpenRequest((n) => n + 1);
+  const openSkills = () => setSkillsOpenRequest((n) => n + 1);
   const shown = useEditorShown();
   const effortAnnouncement = useEffortFocus(focusRoot, shown && task.status !== "archived", task.config, setOption);
   return (
@@ -307,9 +301,11 @@ export function SessionComposer({
         onConfig={setOption}
         onSubmit={send}
         onOpenMcp={openMcp}
+        onOpenSkills={openSkills}
         disabled={task.status === "archived"}
         addMenu={[
           { id: "mcp", label: "MCP Servers…", icon: "plugin", disabled: task.status === "archived", run: openMcp },
+          { id: "skills", label: "Skills…", icon: "bulb", disabled: task.status === "archived", run: openSkills },
         ]}
         toolbar={
           <>
@@ -326,11 +322,6 @@ export function SessionComposer({
                       error: requestingModels ? null : (catalog?.error ?? null),
                       onOpen: () => void refreshTaskModels(task.id, false),
                       onRefresh: () => void executeAction("agents.refreshModels", task.id),
-                      preview: {
-                        settingsFor: (id) => (catalog ?? provider)?.thoughtLevels?.[id],
-                        load: (id) => void refreshTaskModels(task.id, false, id),
-                        errorFor: (id) => (requestTarget === id ? catalog?.error : null),
-                      },
                     }
                   : undefined
               }
@@ -344,6 +335,23 @@ export function SessionComposer({
               hideTrigger
               onChange={(next) =>
                 void setTaskMcpOverrides(task.id, next).catch((e: unknown) =>
+                  notifications().notify({
+                    level: "error",
+                    title: "Couldn't change the setting",
+                    body: String(e),
+                  }),
+                )
+              }
+            />
+            <SkillsPicker
+              provider={task.provider}
+              overrides={task.skillOverrides}
+              disabled={task.status === "archived"}
+              busy={busy}
+              openRequest={skillsOpenRequest}
+              hideTrigger
+              onChange={(next) =>
+                void setTaskSkillOverrides(task.id, next).catch((e: unknown) =>
                   notifications().notify({
                     level: "error",
                     title: "Couldn't change the setting",
@@ -422,25 +430,39 @@ function BackgroundTasks({ task }: { task: AgentTask }) {
 }
 
 function Queue({ task }: { task: AgentTask }) {
-  const fail = (e: unknown) =>
-    notifications().notify({
-      level: "error",
-      title: "Couldn't update the queue",
-      body: String(e),
-    });
   return (
     <div className={styles.queue} aria-label={tx("Queued messages")}>
       {task.queue.map((q) => (
-        <div key={q.id} className={styles.queued}>
-          <Icon name="pause" size={12} className={styles.muted} />
-          <span className={styles.queuedText} title={q.prompt.text}>
-            {q.prompt.text || <T>Image</T>}
-          </span>
-          <IconButton icon="arrow-up" title="Send now" onClick={() => void sendQueuedNow(task.id, q.id).catch(fail)} />
-          <IconButton icon="edit" title="Edit" onClick={() => void editQueued(task.id, q.id).catch(fail)} />
-          <IconButton icon="close" title="Remove" onClick={() => void removeQueued(task.id, q.id).catch(fail)} />
-        </div>
+        <QueueRow key={q.id} task={task.id} item={q} />
       ))}
+    </div>
+  );
+}
+
+function QueueRow({ task, item }: { task: string; item: AgentQueued }) {
+  const [pending, setPending] = useState(false);
+  async function run(action: (task: string, queued: string) => Promise<unknown>) {
+    if (pending) return;
+    setPending(true);
+    try {
+      await action(task, item.id);
+    } catch (e) {
+      // The backend already published the current queue when it found the item gone.
+      if (!isErrorKind(e, "outOfSync"))
+        notifications().notify({ level: "error", title: "Couldn't update the queue", body: String(e) });
+    } finally {
+      setPending(false);
+    }
+  }
+  return (
+    <div className={styles.queued}>
+      <Icon name="pause" size={12} className={styles.muted} />
+      <span className={styles.queuedText} title={item.prompt.text}>
+        {item.prompt.text || <T>Image</T>}
+      </span>
+      <IconButton icon="arrow-up" title="Send now" disabled={pending} onClick={() => void run(sendQueuedNow)} />
+      <IconButton icon="edit" title="Edit" disabled={pending} onClick={() => void run(editQueued)} />
+      <IconButton icon="close" title="Remove" disabled={pending} onClick={() => void run(removeQueued)} />
     </div>
   );
 }

@@ -8,12 +8,13 @@
  * Exclude with Preserve Case, Esc closes. `FindPanel` is the bar itself, for
  * any CodeMirror view (the diff viewer's sides); `FindBar` is it on an editor pane.
  */
+import { SearchHistoryMenu } from "@/ui/SearchHistoryMenu";
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { create } from "zustand";
 import clsx from "clsx";
 import type { EditorView } from "@codemirror/view";
 import { Button, IconButton, Menu, SearchField, T, type MenuItem } from "@/ui";
-import { SEARCH_CONTEXTS, rememberSearch, searchHistory } from "@/platform/search";
+import { SEARCH_CONTEXTS, rememberSearch } from "@/platform/search";
 import { editorController, useFindBars, useTabs } from "../controller";
 import {
   countMatches,
@@ -30,6 +31,7 @@ import {
   setFindOpen,
   setFindScope,
   setQuery,
+  setReplacePreview,
   type FindOptions,
   type FindScope,
 } from "../cm/find";
@@ -440,14 +442,16 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
     shown.current = { target, version, opts, inChanges };
     const valid = !opts.regexp || regexValid(opts.search);
     setQuery(view, valid ? { ...opts, inChanges } : { ...opts, search: "" });
-    view.dispatch({ effects: setFindOpen.of(true) });
+    view.dispatch({
+      effects: [setFindOpen.of(true), setReplacePreview.of(replace && opts.regexp ? !!opts.preserveCase : null)],
+    });
     if (changed && valid && opts.search && useFindPreferences.getState().scrollToResults) {
       const from = view.state.selection.main.from;
       view.dispatch({ selection: { anchor: from } });
       findNext(view);
     }
     recount(target);
-  }, [opts, target, version, inChanges]);
+  }, [opts, target, version, inChanges, replace]);
 
   // Keep the counter current while the document / selection changes.
   useEffect(() => {
@@ -554,19 +558,6 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
         ? "0 results"
         : `${count.current || "?"}/${count.total}${count.capped ? "+" : ""}`;
 
-  const historyItems = (kind: "find" | "replace"): MenuItem[] => {
-    const h = searchHistory(kind);
-    return h.length
-      ? [
-          { kind: "header", label: kind === "find" ? "Recent Searches" : "Recent Replacements" },
-          ...h.map((q) => ({
-            label: q.replace(/\n/g, "⏎"),
-            verbatim: true,
-            run: () => setOpts(kind === "find" ? { search: q } : { replace: q }),
-          })),
-        ]
-      : [{ label: kind === "find" ? "No recent searches" : "No recent replacements", disabled: true }];
-  };
   const filterItems: MenuItem[] = [
     {
       label: "Search In Selection",
@@ -649,6 +640,7 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
             aria-label="Find"
             invalid={invalid || none}
             multiline
+            maxRows={3}
             onHistory={() => setHistoryMenu("find")}
             onKeyDown={(e) => onKeyDown(e, "find")}
             className={styles.findInput}
@@ -707,8 +699,8 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
             onClick={() => setFilterMenu(true)}
           />
           <IconButton ref={moreRef} icon="more" title="More" size="small" onClick={() => setMoreMenu(true)} />
+          <IconButton icon="close" title="Close" shortcut="⎋" size="small" onClick={close} />
         </div>
-        <IconButton icon="close" title="Close" shortcut="⎋" size="small" className={styles.findClose} onClick={close} />
         {replace && (
           <>
             <div ref={replaceBoxRef} className={styles.replaceField}>
@@ -719,6 +711,7 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
                 placeholder="Replace"
                 aria-label="Replace"
                 multiline
+                maxRows={3}
                 onHistory={() => setHistoryMenu("replace")}
                 onKeyDown={(e) => onKeyDown(e, "replace")}
                 toggles={[
@@ -762,12 +755,10 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
             </div>
           </>
         )}
-        <Menu
-          open={historyMenu !== null}
+        <SearchHistoryMenu
+          kind={historyMenu}
           anchor={historyMenu === "replace" ? replaceBoxRef : findBoxRef}
-          items={historyMenu ? historyItems(historyMenu) : []}
-          placement="bottom-start"
-          aria-label="Recent searches"
+          onSelect={(value) => setOpts(historyMenu === "replace" ? { replace: value } : { search: value })}
           onClose={() => setHistoryMenu(null)}
         />
         <Menu

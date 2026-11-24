@@ -109,13 +109,14 @@
   display: flex;
   align-items: center;
   flex: none;
-  height: 30px;
+  height: var(--h-field);
   padding: 0 var(--space-1);
   border-bottom: 1px solid var(--border);
 }
 
 .threadSelect {
-  max-width: 100%;
+  width: 100%;
+  font-size: var(--fs-ui);
 }
 
 .frameList {
@@ -209,13 +210,27 @@
 }
 
 .evalField {
-  height: 30px;
+  min-height: var(--h-field);
   flex: none;
   display: flex;
   align-items: center;
   gap: var(--space-1);
-  padding: 0 4px 0 12px;
+  padding: var(--space-0-5) var(--space-1) var(--space-0-5) var(--space-2);
+  background: var(--bg-input);
   border-bottom: 1px solid var(--border);
+}
+.evalField:focus-within {
+  box-shadow: inset 0 -1px var(--focus-ring);
+}
+.evalField > button {
+  flex: none;
+}
+.evalField .evalInput {
+  padding: 0;
+}
+.evalHistory {
+  padding-block: var(--space-1);
+  overflow-x: hidden;
 }
 
 .repl {

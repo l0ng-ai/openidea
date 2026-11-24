@@ -20,7 +20,72 @@ pub struct IdeError {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum ErrorData {
-    Tool { tool: String, missing: bool },
+    Tool {
+        tool: String,
+        missing: bool,
+    },
+    /// A non-fast-forward push from the current branch to its configured upstream.
+    PushRejected {
+        source: String,
+        upstream: String,
+        divergence: Option<Box<PushDivergence>>,
+        /// Other refs may already have been published in the same push.
+        #[specta(optional)]
+        report: Option<Box<PushReport>>,
+    },
+    /// Git updated some refs before a later ref or push URL failed.
+    PushPartiallyApplied {
+        report: Box<PushReport>,
+    },
+    /// A conflicted history replay left an amend commit ready to keep separately.
+    AmendConflict {
+        commit: String,
+    },
+}
+
+/// Git's reported result for each destination ref. A remote with several push URLs can
+/// report more than one result for the same ref.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct PushReport {
+    pub remote: Option<String>,
+    pub refs: Vec<PushRefResult>,
+}
+
+impl PushReport {
+    pub fn new(remote: Option<String>) -> Self {
+        Self { remote, refs: Vec::new() }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct PushRefResult {
+    pub reference: String,
+    pub status: PushRefStatus,
+    /// The number of commits between the tips Git reports for a fast-forward.
+    pub commits: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum PushRefStatus {
+    FastForward,
+    Forced,
+    Created,
+    UpToDate,
+    Deleted,
+}
+
+/// The two tips shown in the rejected-push dialog. A retry must use this lease
+/// even if a fetch advances the remote-tracking branch while the dialog is open.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PushDivergence {
+    pub source: String,
+    pub remote: String,
+    pub target: String,
+    pub local_tip: String,
+    pub remote_tip: String,
+    pub remote_commits: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -30,7 +95,7 @@ pub enum ErrorKind {
     AlreadyExists,
     PermissionDenied,
     InvalidInput,
-    /// Document version mismatch; the UI must resync the full text.
+    /// The requested state is stale; the UI must use the current snapshot.
     OutOfSync,
     Cancelled,
     TimedOut,
@@ -114,5 +179,14 @@ mod tests {
             serde_json::to_value(error).unwrap(),
             serde_json::json!({"kind":"unavailable","message":"no server","data":null})
         );
+    }
+
+    #[test]
+    fn older_tracked_push_rejections_need_no_report() {
+        let data: ErrorData = serde_json::from_str(
+            r#"{"type":"pushRejected","source":"main","upstream":"origin/main","divergence":null}"#,
+        )
+        .unwrap();
+        assert!(matches!(data, ErrorData::PushRejected { report: None, .. }));
     }
 }

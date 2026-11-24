@@ -26,6 +26,7 @@ import { addContributedFileTemplate } from "@/workbench/contributions";
 import {
   addContributedSnippets,
   registerEditorKind,
+  registerExternalOpenSuppression,
   registerFileEditorProvider,
   registerCommitCheckProvider,
   registerMenuGroup,
@@ -476,24 +477,29 @@ export function defineViewUiPoints(): () => void {
       project: ({ pluginId, decl }) => {
         const matches = (path: string) => decl.patterns.some((p) => matchesPattern(p, basename(path)));
         const beside = decl.layout === "split" || decl.layout === "preview";
+        const editorId = `plugin.${pluginId}.${decl.id}`;
         // A side-by-side editor wraps the text editor the file opens in; the others open their own tab.
+        // Default-priority editors beat Settings › Files opened in associated applications.
+        const suppressExternal =
+          decl.priority === "default" ? registerExternalOpenSuppression(editorId, matches) : () => {};
         const provider =
           decl.priority !== "default"
             ? () => {}
             : beside
               ? registerTextEditorWrapper({
-                  id: `plugin.${pluginId}.${decl.id}`,
+                  id: editorId,
                   matches,
                   component: layoutWrapper(pluginId, decl),
                   tabActions: layoutActions(pluginId, decl),
                 })
               : registerFileEditorProvider({
-                  id: `plugin.${pluginId}.${decl.id}`,
+                  id: editorId,
                   order: 40,
                   resolve: (path) => (matches(path) ? customEditorInput(pluginId, decl, path) : null),
                 });
         openWith.set(`${pluginId}/${decl.id}`, { pluginId, decl, matches });
         return () => {
+          suppressExternal();
           provider();
           openWith.delete(`${pluginId}/${decl.id}`);
         };

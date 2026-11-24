@@ -464,6 +464,22 @@ impl LspManager {
     }
 }
 
+/// A separate URI in the source directory, with the language's existing extension.
+pub(crate) fn snapshot_path(path: &Path, purpose: &str) -> IdeResult<PathBuf> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let name = path.file_name().ok_or_else(|| IdeError::invalid("a text snapshot requires a file path"))?;
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    loop {
+        let serial = NEXT.fetch_add(1, Ordering::Relaxed);
+        let mut unique = std::ffi::OsString::from(format!(".openidea-{purpose}-{}-{serial}-", std::process::id()));
+        unique.push(name);
+        let candidate = path.with_file_name(unique);
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+}
+
 /// Files opened by [`LspManager::open_transient`]; closed on drop.
 pub(crate) struct TransientFiles<'a> {
     mgr: &'a LspManager,
@@ -477,9 +493,30 @@ pub(crate) struct TransientFiles<'a> {
 impl TransientFiles<'_> {
     /// Opens one file outside a references search (a file operation needs a loaded project).
     pub(crate) fn hold(&mut self, path: &Path, language: &LanguageId, text: &str) {
+        self.hold_file(path, language, text, false);
+    }
+
+    pub(crate) fn hold_for_diagnostics(
+        &mut self,
+        path: &Path,
+        language: &LanguageId,
+        text: &str,
+    ) -> tokio::sync::watch::Receiver<Vec<lsp::Diagnostic>> {
+        self.hold_file(path, language, text, true).expect("diagnostics subscription")
+    }
+
+    fn hold_file(
+        &mut self,
+        path: &Path,
+        language: &LanguageId,
+        text: &str,
+        diagnostics: bool,
+    ) -> Option<tokio::sync::watch::Receiver<Vec<lsp::Diagnostic>>> {
         let _docs = self.mgr.docs.lock();
         let uri = crate::uri::path_to_uri(path);
-        if self.server.hold_transient(path, self.run.generation) {
+        let open = self.server.hold_transient(path, self.run.generation);
+        let receiver = diagnostics.then(|| self.server.watch_transient_diagnostics(path));
+        if open {
             let params =
                 json!({ "textDocument": { "uri": uri, "languageId": language.as_str(), "version": 0, "text": text } });
             if let Err(e) = self.run.peer.notify("textDocument/didOpen", params) {
@@ -487,6 +524,7 @@ impl TransientFiles<'_> {
             }
         }
         self.files.push((path.to_owned(), uri));
+        receiver
     }
 }
 

@@ -167,6 +167,7 @@ export function uninstallPlugin(id: string): Promise<boolean> {
   return withBusy(id, `Could not uninstall ${name}`, async () => {
     await pluginsBackend().uninstall(id);
     notifications().notify({ group: "plugins", level: "info", title: `Uninstalled ${name}` });
+    await refreshMarket(false);
   });
 }
 

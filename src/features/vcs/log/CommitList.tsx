@@ -1,5 +1,6 @@
 import type { Commit } from "@/bindings";
 import { setContext } from "@/platform/context";
+import { registerKeyClaim } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { Scrollbar, Spinner, T, hideNativeScrollbar } from "@/ui";
@@ -44,7 +45,7 @@ import { currentRepo, currentRepoRoot, useVcs } from "../store";
 import { ColumnHeaders } from "./ColumnHeaders";
 import { CommitSignature } from "./CommitMessage";
 import { CommitRow } from "./CommitRow";
-import { ROW, type LogColumn, type RowEvents } from "./shared";
+import { ROW, SUBJECT_COLUMN, type LogColumn, type RowEvents } from "./shared";
 
 const remoteNameSets = new WeakMap<readonly string[], ReadonlySet<string>>();
 
@@ -56,11 +57,12 @@ function rowRemoteNames(own: readonly string[] | undefined, shared: ReadonlySet<
   return set;
 }
 
-export function CommitList() {
+export function CommitList({ fileHistory = false }: { fileHistory?: boolean }) {
   const scope = useContext(LogIdContext);
   const shown = useGitLog((s) => s.shownLog);
   const active = !scope || scope === shown;
   const all = useGitLog((s) => s.commits);
+  const unmatchedByRepo = useGitLog((s) => s.cherryHighlight?.unmatched);
   const selection = useGitLog((s) => s.selection);
   const fileHistoryTarget = useGitLog((s) => {
     const id = scope ?? s.shownLog;
@@ -76,7 +78,12 @@ export function CommitList() {
       return (c.logPosition ?? 0) > 0;
     });
   }, [all]);
-  const opts = useLogOptions();
+  const options = useLogOptions();
+  const opts = useMemo(() => {
+    if (!fileHistory || options.columnOrder.includes(SUBJECT_COLUMN.id)) return options;
+    const extraColumns = options.columnOrder.filter((id) => id !== "author" && id !== "date");
+    return { ...options, columnOrder: ["author", "date", SUBJECT_COLUMN.id, ...extraColumns] };
+  }, [fileHistory, options]);
   const ChecksCell = useGitLogChecks((s) => s.cell);
   const bookmarks = useGitLog((s) => s.bookmarks);
   const fragments = useGitLog((s) => s.fragments);
@@ -151,12 +158,14 @@ export function CommitList() {
       ),
     [all, heads, headCommit],
   );
+  // Only these options shape the graph: resizing a column or toggling the author must not lay it out again.
+  const { collapseLinear, linearizeMerges, longEdges } = opts;
   const keep = useMemo(
     () =>
-      opts.collapseLinear || fragments.collapsed.size
+      collapseLinear || fragments.collapsed.size
         ? new Set([...headKeys, ...selection, ...Object.keys(bookmarks)])
         : null,
-    [opts.collapseLinear, fragments.collapsed, headKeys, selection, bookmarks],
+    [collapseLinear, fragments.collapsed, headKeys, selection, bookmarks],
   );
   const {
     commits,
@@ -164,7 +173,10 @@ export function CommitList() {
     linear,
     collapsed,
     graph: displayedGraph,
-  } = useMemo(() => presentLogGraph(all, opts, fragments, keep ?? new Set()), [all, opts, fragments, keep]);
+  } = useMemo(
+    () => presentLogGraph(all, { collapseLinear, linearizeMerges, longEdges }, fragments, keep ?? new Set()),
+    [all, collapseLinear, linearizeMerges, longEdges, fragments, keep],
+  );
   const { edges: highlighted, nodes: highlightedNodes } = useMemo(() => {
     const empty = { edges: new Set<string>(), nodes: new Set<string>() };
     if (!hoverColor) return empty;
@@ -220,6 +232,19 @@ export function CommitList() {
   const selectedSet = useMemo(() => new Set(selection), [selection]);
   const revealTick = useGitLog((s) => s.revealTick);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // While a speed search is active, F3 moves between its matches instead of toggling a bookmark.
+  const speedSearchRef = useRef(speedSearch);
+  speedSearchRef.current = speedSearch;
+  useEffect(
+    () =>
+      registerKeyClaim(
+        (e, stroke) =>
+          !!speedSearchRef.current &&
+          (stroke === "F3" || stroke === "Shift+F3") &&
+          !!scrollRef.current?.contains(e.target as Node | null),
+      ),
+    [],
+  );
   // Commit rows shrink in compact mode; the column header (the scroll margin) keeps ROW.
   const row = useRowHeight(ROW);
   const selectedIndex = useMemo(
@@ -534,9 +559,14 @@ export function CommitList() {
         aria-multiselectable
         aria-activedescendant={selectedIndex >= 0 ? `commit-${scope ?? "log"}-${selectedIndex}` : undefined}
         tabIndex={0}
-        onFocusCapture={() => setContext("vcsLogRevisionFocus", !!active && !!fileHistoryTarget)}
+        onFocusCapture={() => {
+          setContext("vcsLogRevisionFocus", !!active && !!fileHistoryTarget);
+          setContext("vcsLogCommitsFocus", !!active);
+        }}
         onBlurCapture={(e) => {
-          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setContext("vcsLogRevisionFocus", false);
+          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+          setContext("vcsLogRevisionFocus", false);
+          setContext("vcsLogCommitsFocus", false);
         }}
         onScroll={(e) => {
           if (!e.currentTarget.hasAttribute("data-hover-paused")) e.currentTarget.dataset.hoverPaused = "";
@@ -607,6 +637,7 @@ export function CommitList() {
                 head={headKeys.has(commitKey(c))}
                 mine={opts.highlightMine && isMine(c, user)}
                 onBranch={!!onBranch?.has(commitKey(c))}
+                outsideUnpicked={unmatchedByRepo?.get(commitRepo(c) ?? null)?.has(c.id) === false}
                 opts={opts}
                 remoteNames={rowRemoteNames((c as RepoCommit).remoteNames, remoteNames)}
                 onPick={pick}

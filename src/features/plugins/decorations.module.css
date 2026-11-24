@@ -1,18 +1,28 @@
+.highlight,
+.search,
+.added,
+.modified,
+.removed {
+  background-color: var(--plugin-mark-bg);
+  background: linear-gradient(var(--plugin-mark-bg), var(--plugin-mark-bg)) center / 100% 1lh no-repeat;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
 .highlight {
-  background: var(--accent-soft);
+  --plugin-mark-bg: var(--accent-soft);
 }
 .search {
-  background: var(--bg-search-match);
+  --plugin-mark-bg: var(--bg-search-match);
   color: var(--fg-search-match);
 }
 .added {
-  background: color-mix(in srgb, var(--vcs-added) 18%, transparent);
+  --plugin-mark-bg: color-mix(in srgb, var(--vcs-added) 18%, transparent);
 }
 .modified {
-  background: color-mix(in srgb, var(--vcs-modified) 18%, transparent);
+  --plugin-mark-bg: color-mix(in srgb, var(--vcs-modified) 18%, transparent);
 }
 .removed {
-  background: color-mix(in srgb, var(--vcs-deleted) 18%, transparent);
+  --plugin-mark-bg: color-mix(in srgb, var(--vcs-deleted) 18%, transparent);
 }
 .warning {
   text-decoration: underline wavy var(--warning);

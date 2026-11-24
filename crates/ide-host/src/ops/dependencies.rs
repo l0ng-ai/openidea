@@ -2,7 +2,10 @@
 use crate::Host;
 use ide_command::command;
 use ide_core::{CancellationToken, DocId, IdeError, IdeResult, RequestId};
-use ide_workspace::dependencies::{DependencyVersionSource, DependencyVersions, cargo, go, maven, npm};
+use ide_workspace::dependencies::{
+    DependencyVersionSource, DependencyVersions, PythonRequirements, UnsatisfiedRequirement, cargo, go, maven, npm,
+    pypi, python,
+};
 use std::collections::BTreeMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -254,11 +257,83 @@ pub async fn dependency_versions(
     result
 }
 
+/// The requirements of a `requirements*.txt` / `pyproject.toml` the project's interpreter
+/// doesn't satisfy; `None` for other files, or with no local interpreter to ask.
+#[command(trust = trusted)]
+pub async fn python_requirements(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    request: RequestId,
+) -> IdeResult<Option<PythonRequirements>> {
+    let project = host.project(window)?;
+    let config_dir = host.config_dir.clone();
+    let cancel = host.begin_project_read_request(window, request);
+    let result = host
+        .blocking(move || {
+            let snap = project.documents.snapshot(doc)?;
+            let name = snap.path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+            if snap.large || snap.read_only {
+                return Ok(None);
+            }
+            let dependencies = python::requirements(name, &snap.text);
+            if dependencies.is_empty() {
+                return Ok(None);
+            }
+            // Running the interpreter runs project code (sitecustomize, .pth files).
+            project.require_trust()?;
+            let Some(python) = crate::ops::sdk::effective_python(&config_dir, &project, snap.path.parent()) else {
+                return Ok(None);
+            };
+            let requirements: Vec<&str> = dependencies.iter().map(|d| d.requirement.as_str()).collect();
+            let states = ide_sdk::python::unsatisfied_requirements(&python, &requirements, &cancel)?;
+            let unsatisfied = dependencies
+                .into_iter()
+                .zip(states)
+                .filter_map(|(dependency, state)| {
+                    state.map(|s| UnsatisfiedRequirement { dependency, installed: s.installed })
+                })
+                .collect();
+            Ok(Some(PythonRequirements { python: python.into(), unsatisfied }))
+        })
+        .await;
+    host.end_request(request);
+    result
+}
+
+/// A project on pypi.org by its exact name; `None` when PyPI has no such project.
+#[command(trust = outside_restricted)]
+pub async fn pypi_package(
+    host: &Host,
+    window: &str,
+    name: String,
+    request: RequestId,
+) -> IdeResult<Option<pypi::PypiPackage>> {
+    let url = pypi::project_url(name.trim()).ok_or_else(|| IdeError::invalid("not a package name"))?;
+    let cancel = host.begin_project_read_request(window, request);
+    let result = host
+        .blocking(move || {
+            let search_path = std::env::var_os("PATH").unwrap_or_default();
+            let text = ide_tools::Http::new(&search_path)?.https_only().get_text_limited_or_empty_on_404(
+                &url,
+                16 * 1024 * 1024,
+                &cancel,
+            )?;
+            // The helper's body for a 404.
+            if text == "[]" {
+                return Ok(None);
+            }
+            pypi::parse_project(&text).map(Some).ok_or_else(|| IdeError::internal("invalid PyPI response"))
+        })
+        .await;
+    host.end_request(request);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::HostConfig;
-    use std::sync::Arc;
 
     struct Source;
     impl DependencyVersionSource for Source {
@@ -279,17 +354,7 @@ mod tests {
         let text = "# 中文 😀\n[dependencies]\ntokio = { version = \"0.2\", features = [\"full\"] }\nserde = \"1.0.100\"\nlocal = { path = \"../x\", version = \"0.2\" }\n";
         let path = root.join("Cargo.toml");
         std::fs::write(&path, text).unwrap();
-        let host = Host::new(HostConfig {
-            config_dir: base.join("config"),
-            data_dir: base.join("data"),
-            local_data_dir: base.join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(|_| {})),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(HostConfig { local_data_dir: base.join("local"), ..HostConfig::for_test(&base) });
         let project = host.open_project("main", &root).unwrap();
         let info = project.documents.open(&path).unwrap();
         for package in ["tokio", "serde"] {
@@ -310,6 +375,46 @@ mod tests {
         std::fs::write(&other, text).unwrap();
         let info = project.documents.open(&other).unwrap();
         assert!(dependency_versions(&host, "main", info.id, None, RequestId(414)).await.unwrap().is_empty());
+        host.close_project("main");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn requirements_are_checked_against_the_project_virtualenv() {
+        let Some(base) = ide_core::tool_path::find_command(
+            "python3",
+            &ide_core::tool_path::search_path_in(&std::env::temp_dir()),
+            &std::env::temp_dir(),
+        ) else {
+            return;
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let base_dir = dunce::canonicalize(temp.path()).unwrap();
+        let root = base_dir.join("project");
+        std::fs::create_dir(&root).unwrap();
+        let status = std::process::Command::new(base)
+            .args(["-I", "-m", "venv", "--without-pip"])
+            .arg(root.join(".venv"))
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let text = "# 中文\nopenidea-missing-xyz>=1\n-r other.txt\n";
+        let path = root.join("requirements.txt");
+        std::fs::write(&path, text).unwrap();
+        let host = Host::new(HostConfig { local_data_dir: base_dir.join("local"), ..HostConfig::for_test(&base_dir) });
+        let project = host.open_project("main", &root).unwrap();
+        let info = project.documents.open(&path).unwrap();
+        // Restricted Mode never runs the interpreter.
+        assert!(python_requirements(&host, "main", info.id, RequestId(429)).await.is_err());
+        project.trusted.store(true, std::sync::atomic::Ordering::Release);
+        let found = python_requirements(&host, "main", info.id, RequestId(430)).await.unwrap().unwrap();
+        assert!(found.python.0.starts_with(root.join(".venv")));
+        assert_eq!(found.unsatisfied.len(), 1);
+        assert_eq!(found.unsatisfied[0].dependency.package, "openidea-missing-xyz");
+        assert_eq!(found.unsatisfied[0].installed, None);
+        let other = root.join("notes.txt");
+        std::fs::write(&other, text).unwrap();
+        let info = project.documents.open(&other).unwrap();
+        assert!(python_requirements(&host, "main", info.id, RequestId(431)).await.unwrap().is_none());
         host.close_project("main");
     }
 
@@ -335,17 +440,7 @@ mod tests {
         let text = "{\n  \"devDependencies\": { \"@types/node\": \"^20\" }\n}\n";
         let path = root.join("package.json");
         std::fs::write(&path, text).unwrap();
-        let host = Host::new(HostConfig {
-            config_dir: base.join("config"),
-            data_dir: base.join("data"),
-            local_data_dir: base.join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(|_| {})),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(HostConfig { local_data_dir: base.join("local"), ..HostConfig::for_test(&base) });
         let project = host.open_project("main", &root).unwrap();
         let info = project.documents.open(&path).unwrap();
         host.dependency_versions.versions(&CachedNpm, "@types/node", &CancellationToken::new()).unwrap();
@@ -361,4 +456,4 @@ mod tests {
     }
 }
 
-ide_command::domain!(dependencies: dependency_versions);
+ide_command::domain!(dependencies: dependency_versions, python_requirements, pypi_package);

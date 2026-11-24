@@ -1,11 +1,13 @@
 /**
- * Text editor wrapper of Markdown files: the editor, a live preview, or both
- * side by side, switched from the tab strip or a floating toolbar. The
+ * Text editor wrapper of Markdown files: the editor, a live preview, or both,
+ * switched from the tab strip or a floating toolbar. The
  * preview follows the editor's scroll position in the split layout; Preview
  * only, it follows navigation in the hidden editor and reports the line on
  * screen (Structure's Autoscroll from Source).
  */
 import {
+  Suspense,
+  use,
   useDeferredValue,
   useEffect,
   useLayoutEffect,
@@ -20,11 +22,11 @@ import {
 import clsx from "clsx";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { editorPrefs, useEditorPrefs } from "@/platform/editorSettings";
-import { useMarkdownPreviewFontSize } from "@/platform/languageSettings";
+import { useMarkdownPreviewFontSize, useMarkdownPreviewLayout } from "@/platform/languageSettings";
 import { maybeEditorService, registerFontZoomSurface } from "@/workbench/contributions";
 import { editorsFor, setShownLine } from "@/editor/api";
 import { highlightInto } from "@/editor/lsp/markdown";
-import { FloatingToolbar, SplitGroup, SplitHandle, SplitPanel, selectableText } from "@/ui";
+import { FloatingToolbar, Spinner, SplitGroup, SplitHandle, SplitPanel, selectableText } from "@/ui";
 import {
   FIND_CURRENT_HIGHLIGHT,
   FIND_HIGHLIGHT,
@@ -42,11 +44,13 @@ import { publishPreviewSelection, publishPreviewTop, stepMarkdownPreviewFontZoom
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { hasMermaid, MERMAID_SELECTOR, renderMermaidIn } from "./mermaid";
 import { renderMath } from "@/editor/lsp/markdownMath";
+import type { renderMathSvg } from "./mathSvg";
 import { modeOf, pinMarkdownMode, useMarkdownModes } from "./modes";
 import { MarkdownLayoutActions } from "./MarkdownLayoutActions";
 import {
   ANCHOR_PREFIX,
   createMarkdownRenderer,
+  headingLine,
   previewLineAtOffset,
   previewOffsetForLine,
   resolveLink,
@@ -56,6 +60,8 @@ import { applyImageZoomWidth, svgDataUrlSize } from "@/ui/svgSize";
 import styles from "./Markdown.module.css";
 import { tx } from "@/platform/i18n";
 import { wheelZoomStep } from "@/platform/wheelZoom";
+import { isMarkdownPath } from "../fileKinds";
+import { attachPanZoom } from "../panZoom";
 
 /** Loaded local images by absolute path (data URLs), shared by all previews. */
 const imageCache = new Map<string, Promise<string>>();
@@ -72,12 +78,37 @@ function imageUrl(path: string): Promise<string> {
   return p;
 }
 
+/**
+ * Line of the heading `anchor` in the Markdown file `path`, from an open editor's text (unsaved
+ * edits included) or else the file on disk; undefined when the file is not Markdown, cannot be
+ * read or has no such heading.
+ */
+async function anchorLine(path: string, anchor: string): Promise<number | undefined> {
+  if (!isMarkdownPath(path, "source")) return undefined;
+  const open = editorsFor(path)[0];
+  const text = open ? open.view.state.doc.toString() : await call(commands.fsReadText(path)).catch(() => null);
+  return (text === null ? null : headingLine(text, anchor)) ?? undefined;
+}
+
 function openExternal(url: string) {
   if (isTauri()) void import("@tauri-apps/plugin-opener").then((m) => m.openUrl(url)).catch(() => {});
   else window.open(url, "_blank", "noopener");
 }
 
+/** Wrapper that gives each preview image its own ⌘/Ctrl+wheel pan/zoom, like a Mermaid diagram. */
+const IMAGE_ZOOM = "image-zoom";
+
+function attachImagePanZoom(img: HTMLImageElement): void {
+  if (img.closest(`.${IMAGE_ZOOM}`)) return;
+  const box = document.createElement("span");
+  box.className = IMAGE_ZOOM;
+  img.replaceWith(box);
+  box.append(img);
+  attachPanZoom(box);
+}
+
 const SPLIT_STORAGE_KEY = "openidea.markdown.split";
+const DEFAULT_SPLIT_LAYOUT = { editor: 50, preview: 50 };
 
 export function MarkdownEditor({
   path,
@@ -91,6 +122,7 @@ export function MarkdownEditor({
   actionsInTabs?: boolean;
 }) {
   const mode = useMarkdownModes((s) => modeOf(s, tabId));
+  const stacked = useMarkdownPreviewLayout() === "stacked";
   useEffect(() => pinMarkdownMode(tabId), [tabId]);
   const ref = useRef<HTMLDivElement>(null);
   const editorRef = useRef<HTMLDivElement>(null);
@@ -115,13 +147,15 @@ export function MarkdownEditor({
   }, [path, tabId]);
 
   const splitBounds = mode === "split" ? { minSize: "10%", maxSize: "90%" } : {};
+  const storageKey = stacked ? `${SPLIT_STORAGE_KEY}.stacked` : SPLIT_STORAGE_KEY;
   return (
     <div ref={ref} className={clsx(styles.split, styles[`mode-${mode}`])}>
       <SplitGroup
-        orientation="horizontal"
+        orientation={stacked ? "vertical" : "horizontal"}
         disableCursor
         className={styles.group}
-        storageKey={mode === "split" ? SPLIT_STORAGE_KEY : undefined}
+        storageKey={mode === "split" ? storageKey : undefined}
+        defaultLayout={mode === "split" ? DEFAULT_SPLIT_LAYOUT : undefined}
       >
         {/* Hidden but mounted in Preview only (its caret drives the preview). Disabled, it leaves the group a
             single resizable panel: two enabled panels without a separator get an implicit resize region between
@@ -134,7 +168,15 @@ export function MarkdownEditor({
         {mode === "split" && <SplitHandle aria-label={tx("Resize Markdown preview")} />}
         {mode !== "editor" && (
           <SplitPanel id="preview" style={{ overflow: "hidden" }} {...splitBounds}>
-            <MarkdownPreview path={path} sync={mode === "split"} />
+            <Suspense
+              fallback={
+                <div className={styles.preview}>
+                  <Spinner label={tx("Loading")} />
+                </div>
+              }
+            >
+              <MarkdownPreview path={path} sync={mode === "split"} />
+            </Suspense>
           </SplitPanel>
         )}
       </SplitGroup>
@@ -150,8 +192,19 @@ export function MarkdownEditor({
 const blocksOf = (root: HTMLElement) =>
   [...root.querySelectorAll<HTMLElement>(":scope > [data-line]")].map((el) => ({
     line: Number(el.dataset.line),
-    top: el.offsetTop,
+    get top() {
+      return el.offsetTop;
+    },
   }));
+
+let svgRenderer: Promise<typeof renderMathSvg | null> | undefined;
+
+function loadSvgRenderer() {
+  return (svgRenderer ??= import("./mathSvg").then(
+    (module) => module.renderMathSvg,
+    () => null,
+  ));
+}
 
 function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   const text = useLiveMarkdown((s) => s[path]?.text);
@@ -168,7 +221,10 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   const deferred = useDeferredValue(text ?? "");
   const [render] = useState(createMarkdownRenderer);
   const html = useMemo(() => render(deferred), [render, deferred]);
+  const renderSvg = html.includes(' data-math="') ? use(loadSvgRenderer()) : null;
   const ref = useRef<HTMLDivElement>(null);
+  const linkRequest = useRef(0);
+  const blocks = useRef<ReturnType<typeof blocksOf>>([]);
   const theme = useSyncExternalStore(subscribeTheme, themeKey, () => "");
   const diagrams = useRef<Node[]>([]);
   const [diagramsDrawn, setDiagramsDrawn] = useState(0);
@@ -182,7 +238,12 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   /** `<details>` the reader opened or closed, by position: each edit re-renders them as written. */
   const toggled = useRef(new Map<number, boolean>());
 
-  useLayoutEffect(() => toggled.current.clear(), [path]);
+  useLayoutEffect(() => {
+    toggled.current.clear();
+    return () => {
+      linkRequest.current++;
+    };
+  }, [path]);
   useLayoutEffect(() => {
     ref.current?.querySelectorAll("details").forEach((d, i) => {
       const open = toggled.current.get(i);
@@ -193,9 +254,11 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   // Math before the preview index: typesetting changes the blocks' heights.
   useLayoutEffect(() => {
     if (!ref.current) return;
+    renderSvg?.(ref.current);
     renderMath(ref.current);
+    blocks.current = blocksOf(ref.current);
     invalidatePreviewIndex(ref.current);
-  }, [html]);
+  }, [html, renderSvg]);
 
   // Mermaid diagrams: before paint, so cached ones don't flash their source.
   useLayoutEffect(() => {
@@ -215,15 +278,17 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     const root = ref.current;
     if (!root) return;
     let live = true;
+    const size = (img: HTMLImageElement, intrinsic?: { w: number; h: number } | null) =>
+      applyImageZoomWidth(img, intrinsic, img.closest<HTMLElement>(`.${IMAGE_ZOOM}`) ?? img);
     const bindImageUrl = (img: HTMLImageElement, url: string, asyncLoad: boolean) => {
       const svgSize = svgDataUrlSize(url);
-      if (svgSize && applyImageZoomWidth(img, svgSize) && asyncLoad) {
+      if (svgSize && size(img, svgSize) && asyncLoad) {
         setDiagramsDrawn((n) => n + 1);
       }
       img.onload = () => {
         if (!live) return;
         if (!img.hasAttribute("data-natural-width") && img.naturalWidth > 0 && img.naturalHeight > 0) {
-          if (applyImageZoomWidth(img, { w: img.naturalWidth, h: img.naturalHeight })) {
+          if (size(img, { w: img.naturalWidth, h: img.naturalHeight })) {
             setDiagramsDrawn((n) => n + 1);
           }
         } else if (asyncLoad) {
@@ -232,12 +297,13 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       };
       img.src = url;
       if (!img.hasAttribute("data-natural-width") && img.complete && img.naturalWidth > 0 && img.naturalHeight > 0) {
-        applyImageZoomWidth(img, { w: img.naturalWidth, h: img.naturalHeight });
+        size(img, { w: img.naturalWidth, h: img.naturalHeight });
       }
     };
     const imgs = [...root.querySelectorAll<HTMLImageElement>("img[data-src]")];
     imgs.forEach((img) => {
-      applyImageZoomWidth(img);
+      attachImagePanZoom(img);
+      size(img);
       const src = img.dataset.src ?? "";
       if (/^data:image\//i.test(src)) {
         bindImageUrl(img, src, false);
@@ -271,7 +337,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   useLayoutEffect(() => {
     const root = ref.current;
     if (!root || !sync) return;
-    root.scrollTop = topLine <= 0 ? 0 : previewOffsetForLine(blocksOf(root), topLine, root.scrollHeight);
+    root.scrollTop = topLine <= 0 ? 0 : previewOffsetForLine(blocks.current, topLine, root.scrollHeight);
   }, [html, topLine, scrollSeq, sync, diagramsDrawn, fontZoom, fontSize]);
 
   // Keep the split preview anchored to `topLine` as dragging the divider or resizing the window reflows text.
@@ -283,7 +349,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       if (root.clientWidth === width) return;
       width = root.clientWidth;
       const top = useLiveMarkdown.getState()[path]?.topLine ?? 0;
-      root.scrollTop = top <= 0 ? 0 : previewOffsetForLine(blocksOf(root), top, root.scrollHeight);
+      root.scrollTop = top <= 0 ? 0 : previewOffsetForLine(blocks.current, top, root.scrollHeight);
     });
     ro.observe(root);
     return () => ro.disconnect();
@@ -336,6 +402,8 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   useLayoutEffect(() => {
     const root = ref.current;
     if (!root || caretSeq === seenCaret.current) return;
+    // First-open navigation can arrive before the destination's deferred Markdown is rendered.
+    if (!sync && deferred !== text) return;
     seenCaret.current = caretSeq;
     if (sync) return;
     if (find && find.currentMatchIndex >= 0) {
@@ -350,15 +418,14 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
         }
       }
     }
-    const blocks = blocksOf(root);
     // Back / Forward return to the line on screen: keep the restored offset within it.
-    if (previewLineAtOffset(blocks, root.scrollTop) !== caretLine) {
-      root.scrollTop = previewOffsetForLine(blocks, caretLine, root.scrollHeight);
+    if (previewLineAtOffset(blocks.current, root.scrollTop) !== caretLine) {
+      root.scrollTop = previewOffsetForLine(blocks.current, caretLine, root.scrollHeight);
       scrolledTo.current = root.scrollTop;
       restoreRetry.current = null;
     }
     setShownLine(path, caretLine);
-  }, [caretSeq, caretLine, sync, path, find]);
+  }, [caretSeq, caretLine, sync, path, find, deferred, text]);
 
   // Search (⌘F) and selection occurrence highlights in the preview.
   useLayoutEffect(() => {
@@ -448,7 +515,8 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       if (!editorPrefs().general.wheelZoom) return;
       const zoom = wheelZoomStep(e);
       if (zoom === null) return;
-      if ((e.target as Element | null)?.closest?.('.mermaid-output[data-zoomed="true"]')) return;
+      // a zoomed-in diagram or image keeps the wheel for its own zoom
+      if ((e.target as Element | null)?.closest?.('[data-zoomed="true"]')) return;
       e.preventDefault();
       e.stopPropagation();
       if (zoom) stepMarkdownPreviewFontZoom(path, root, zoom);
@@ -466,7 +534,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   useEffect(() => {
     const root = ref.current;
     if (!root || sync) return;
-    setShownLine(path, previewLineAtOffset(blocksOf(root), root.scrollTop));
+    setShownLine(path, previewLineAtOffset(blocks.current, root.scrollTop));
     return () => setShownLine(path, null);
   }, [sync, path]);
   useEffect(() => () => cancelAnimationFrame(scrollFrame.current), []);
@@ -480,7 +548,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       if (own) return;
       scrolledTo.current = null;
       restoreRetry.current = null;
-      setShownLine(path, previewLineAtOffset(blocksOf(root), root.scrollTop));
+      setShownLine(path, previewLineAtOffset(blocks.current, root.scrollTop));
     });
   };
 
@@ -496,16 +564,28 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     e.preventDefault();
     const target = resolveLink(path, a.getAttribute("href") ?? "");
     if (!target) return;
-    const scrollTo = (id: string) =>
-      ref.current?.querySelector(`[id="${CSS.escape(ANCHOR_PREFIX + slugify(id))}"]`)?.scrollIntoView();
+    const request = ++linkRequest.current;
+    const scrollTo = (id: string) => {
+      const root = ref.current;
+      if (!root) return;
+      const heading = root.querySelector(`[id="${CSS.escape(ANCHOR_PREFIX + slugify(id))}"]`);
+      const footnote = id.startsWith(ANCHOR_PREFIX)
+        ? root.querySelector(`[id="${CSS.escape(id)}"]:is([role="doc-footnote"], [role="doc-noteref"])`)
+        : null;
+      (footnote ?? heading)?.scrollIntoView();
+    };
     if (target.kind === "external") openExternal(target.url);
     else if (target.kind === "anchor") scrollTo(target.id);
     else if (target.path === path && target.anchor) scrollTo(target.anchor);
     else
-      void maybeEditorService()?.openFile(target.path, {
-        focus: true,
-        ...(target.line !== undefined ? { selection: { line: target.line, col: 0 } } : {}),
-      });
+      void (async () => {
+        const line = target.line ?? (target.anchor ? await anchorLine(target.path, target.anchor) : undefined);
+        if (request !== linkRequest.current) return;
+        await maybeEditorService()?.openFile(target.path, {
+          focus: true,
+          ...(line !== undefined ? { selection: { line, col: 0 } } : {}),
+        });
+      })();
   };
 
   return (

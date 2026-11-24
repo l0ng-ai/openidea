@@ -67,6 +67,7 @@ pub struct Link {
 }
 
 /// An element `distinct` discarded, with the kept element equal to it.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct DistinctDrop {

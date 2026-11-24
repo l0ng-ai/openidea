@@ -25,7 +25,7 @@ pub mod rpc;
 pub mod shell_env;
 pub mod trust;
 
-pub use project::{Project, apply_git_executable, history_retention};
+pub use project::{Project, history_retention};
 
 use ide_core::{CancellationToken, IdeError, IdeResult, RequestId, SharedSink};
 use ide_language::{LanguageRegistry, Syntax};
@@ -34,7 +34,7 @@ use ide_terminal::TerminalManager;
 use ide_workspace::SettingsStore;
 use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 /// Event sink for one window (by label).
@@ -58,6 +58,27 @@ pub struct HostConfig {
     pub project_environment: bool,
 }
 
+#[cfg(test)]
+impl HostConfig {
+    /// A host under `base` for unit tests: `config`, `data` and `data` again for the machine-local
+    /// directory, built-in languages, no grammars, a sink that drops events, the window as its own
+    /// owner, the current tokio runtime and no project environment. Override fields with
+    /// `HostConfig { sink_for: .., ..HostConfig::for_test(base) }`. Call it inside a runtime.
+    pub(crate) fn for_test(base: &Path) -> Self {
+        Self {
+            config_dir: base.join("config"),
+            data_dir: base.join("data"),
+            local_data_dir: base.join("data"),
+            languages: Arc::new(LanguageRegistry::load(None).unwrap()),
+            syntax: Arc::default(),
+            sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
+            owner: |w| w,
+            runtime: tokio::runtime::Handle::current(),
+            project_environment: false,
+        }
+    }
+}
+
 pub struct Host {
     pub(crate) mcp_executable: Arc<RwLock<Option<PathBuf>>>,
     pub mcp: mcp::McpService,
@@ -72,7 +93,7 @@ pub struct Host {
     /// Projects the MCP server serves without a window.
     pub mcp_background: mcp::BackgroundProjects,
     pub(crate) agent_catalogs: Arc<ide_agent::AgentCatalogs>,
-    pub trust: trust::TrustStore,
+    pub trust: std::sync::Arc<trust::TrustStore>,
     pub(crate) mcp_approvals: Arc<trust::McpServerApprovals>,
     pub config_dir: PathBuf,
     /// Persistent user state, including credentials and recovery history.
@@ -92,6 +113,7 @@ pub struct Host {
     /// The window that owns each open heap snapshot; its project's close closes them.
     pub(crate) heap_windows: Mutex<HashMap<ide_heap::HeapSnapshotId, String>>,
     pub(crate) heap_requests: ops::heap::HeapRequests,
+    pub(crate) rebase_editors: Arc<ops::vcs::RebaseEditors>,
     /// SSH connections of Settings › SSH Configurations.
     pub ssh: Arc<ide_ssh::SshManager>,
     /// SFTP deployment, remote file editing and runs on run targets.
@@ -169,7 +191,7 @@ impl Host {
             mcp_agent_runs: Default::default(),
             mcp_background: Default::default(),
             agent_catalogs: Arc::default(),
-            trust: trust::TrustStore::load(&config_dir, &data_dir),
+            trust: std::sync::Arc::new(trust::TrustStore::load(&config_dir, &data_dir)),
             mcp_approvals: Arc::new(trust::McpServerApprovals::load(&data_dir)),
             proxy_password: ide_ssh::secrets::SecretFile::new(data_dir.join("proxy-password.json")),
             proxy_session_password: Mutex::default(),
@@ -190,6 +212,7 @@ impl Host {
             heap: Arc::new(ide_heap::HeapRegistry::new(ide_heap::snapshots_root(&local_data_dir))),
             heap_windows: Mutex::default(),
             heap_requests: Default::default(),
+            rebase_editors: Default::default(),
             languages,
             syntax,
             config_dir,
@@ -207,6 +230,7 @@ impl Host {
         };
         host.apply_proxy();
         host.apply_added_jdks();
+        host.apply_git_executable();
         // Before any project starts jdtls; the deleting itself can take a while.
         let unused =
             ide_sdk::jdtls_workspaces::take_unused(&host.local_data_dir, ide_sdk::jdtls_workspaces::UNUSED_FOR);
@@ -345,7 +369,7 @@ impl Host {
         }
         if let Some(plugins) = plugins::editor_plugin_host() {
             plugins.invalidate_client_navigation(&project.root, Some(window), None);
-            plugins.set_active_file(window, None);
+            plugins.set_active_file(window, None, None);
         }
         if !project.light {
             self.environment.project_closed();
@@ -598,6 +622,14 @@ impl Host {
         let homes = self.global_settings.effective().languages.java.added_jdks;
         ide_sdk::java::set_added_jdks(homes.into_iter().map(PathBuf::from));
     }
+
+    /// Global Settings › Version Control › Git › Path to Git executable, for git started outside
+    /// a project's repositories (clone, init, agents, gh, plugins). A project's own value stays
+    /// with its repositories ([`Project::repos`]).
+    pub fn apply_git_executable(&self) {
+        let exe = self.global_settings.read_effective(|s| s.vcs.git.executable.trim().to_owned());
+        ide_vcs::set_default_git_executable((!exe.is_empty()).then(|| Path::new(&exe)));
+    }
 }
 
 #[cfg(test)]
@@ -611,17 +643,7 @@ mod tests {
         let root = base.join("project");
         std::fs::create_dir(&root).unwrap();
         std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
-        let host = Host::new(HostConfig {
-            config_dir: base.join("config"),
-            data_dir: base.join("data"),
-            local_data_dir: base.join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(|_| {})),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(HostConfig { local_data_dir: base.join("local"), ..HostConfig::for_test(&base) });
         let project = Arc::downgrade(&host.open_project("main", &root).unwrap());
         host.close_project_detached("main");
         assert!(host.project("main").is_err());

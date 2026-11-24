@@ -36,7 +36,7 @@ sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.14.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.15.0`, world
 `plugin`).
 
 ## 1. Quick start
@@ -145,6 +145,7 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `runDetectors`      | `id`, `name`, `files`, `command`, `args?`, `test?`, `framework?` (API 1.4; §6.2)                                                                                                                                                       | no            |
 | `runConfigurations` | `files`: marker files for the optional `run-configurations` export (API 1.4)                                                                                                                                                           | yes           |
 | `javaAgents`        | `path` (a jar in the package), `args?`, `vmOptions?`, `jdk?` — a Java agent for Java run configurations, behind `java.agent` (API 1.10; `vmOptions`/`jdk` in 1.14; _Java agents_)                                                      | no            |
+| `skills`            | `path` (`skills/<name>/SKILL.md` in the package) — agent skill folder staged into coding-agent sessions (API 1.15)                                                                                                                     | no            |
 | `mcpTools`          | `name`, `description`, `inputSchema` (package JSON Schema path), `readOnly`, `destructive` (API 1.4; see _Plugin MCP tools_)                                                                                                           | yes           |
 | `snippets`          | `language`, `path` (named JSON snippets; API 1.4)                                                                                                                                                                                      | no            |
 | `providers`         | `kinds`, `languages` (editor providers, see _Providers_)                                                                                                                                                                               | yes           |
@@ -425,6 +426,25 @@ are always available. Calling a gated function without its capability returns
 (Git Toolbox still shows the branch without `vcs.write`).
 
 ## 3. Writing code (Rust SDK)
+
+### API 1.15
+
+API 1.15.0 is in development on `main`. Use `engines.openidea = "^1.15"` and the
+matching SDK. Plugins for 1.14 and earlier keep working. New in 1.15:
+
+- [Events](#events): `caret-moved` (API 1.15) delivers `{path, line, col,
+  settled}` with 0-based UTF-16 positions when the caret moves in the focused
+  editor, so line-scoped labels follow it. `settled` is true for the final
+  position once the caret rests: defer costly work (loading data behind a
+  hover) until then. Subscribe at run time or declare `on-event:caret-moved`;
+  requires `events`.
+- **Agent skills (`[[contributes.skills]]`).** Declarative `path =
+  "skills/<name>/SKILL.md"` entries expose bundled `SKILL.md` folders (up to
+  2 MiB per skill, no symlinks leaving the package) under the **Plugins** group
+  in Settings › Agents › Skills and the Composer picker, staged into agent
+  sessions while the plugin is enabled; workspace and user skills take
+  precedence on a name clash, and invalid entries report a plugin load warning
+  rather than failing the plugin.
 
 ### API 1.14
 
@@ -772,7 +792,7 @@ then run `openidea-plugin check`.
 | `host::mcp_stdio_command()`                                                                                    | `mcp.stdio-command`                          | API 1.4: invoking project bridge argv, `None` while off. No URL/token.                                                                                                                                                                                                                                                                                    |
 | `McpProvider::call(tool, arguments, ctx)`                                                                      | export `mcp-provider.call`                   | API 1.4: declared tools under plugin grants and command budget. See _Plugin MCP tools_.                                                                                                                                                                                                                                                                   |
 | `host::open_editors()`                                                                                         | `editor.open-editors`                        | API 1.4: invoking window's path/language/dirty/active snapshots; requires `editor.read`. Commands/events of a window only.                                                                                                                                                                                                                                |
-| `host::open_editor(path, selection)`                                                                           | `editor.open`                                | API 1.4: open/select a project file (`project.read`) or plugin-dir file; same path rules as `views.open-location`. Commands/events of a window only.                                                                                                                                                                                                      |
+| `host::open_editor(path, selection)`                                                                           | `editor.open`                                | API 1.4: open/select a project file (`project.read`), plugin-dir file, or install-directory file (read-only); same path rules as `views.open-location`. Commands/events of a window only.                                                                                                                                                                 |
 | `TextEditor::set_selections(ranges)`, `reveal(range)`                                                          | `editor.text-editor`                         | API 1.4: selections or scrolling in this window's already open editor; no capability. Commands/events only, UTF-16 coordinates.                                                                                                                                                                                                                           |
 | `host::set_decorations`, `clear_decorations`                                                                   | `decorations.{set,clear}`                    | API 1.4: project-scoped editor annotations cleared on plugin stop. Requires `project.read`.                                                                                                                                                                                                                                                               |
 | `host::set_file_decoration`, `clear_file_decorations`                                                          | `decorations.{set-file,clear-file}`          | API 1.4: project-tree badges/styles. Requires `project.read`.                                                                                                                                                                                                                                                                                             |
@@ -1878,14 +1898,20 @@ leaves out a field type it doesn't know.
 
 Showing a view activates the plugin (`on-view:<id>`). `views` become tool
 windows; a `customEditors` file (`priority = "default"`) opens in the
-plugin's editor, or through _Open With_ for `option`. For a custom editor
-`ctx.editor()` is its document: read it with `document()` and change it with
-`apply_edits(version, …)` — the text editor of the same file follows,
+plugin's editor (ahead of **Settings › Editor › File Types › Files opened in
+associated applications**), or through _Open With_ for `option`. For a custom
+editor `ctx.editor()` is its document: read it with `document()` and change it
+with `apply_edits(version, …)` — the text editor of the same file follows,
 Undo / Redo are one history with it, and Save, the dirty mark and the close
 prompts are the document's. _Open as Text_ opens the text editor. For a
 tool window `ctx.editor()` is the window's active text editor, as for a
 command, so a view's buttons can act on what the user is editing (a click in
 the tool window doesn't change which editor that is).
+
+`editor.open` / `open_location` and `fs.read-*` may use absolute paths under the
+plugin's install directory (the package folder) read-only, without `project.read`
+— the same as `fs.plugin-dir()`. Writing the install directory still needs an
+`fs.write:` grant.
 
 API 1.3 adds optional `group`, `when` and `secondary` fields to `[[contributes.views]]`;
 using any of them requires `engines.openidea = "^1.3"`. `secondary = true`
@@ -2995,7 +3021,7 @@ the API itself follows _Evolving the plugin API_ below.
 
 Released versions are frozen: 1.0.0 shipped with OpenIDEA 0.1.36, 1.1.0
 with 0.1.37, 1.2.0 with 0.1.38, 1.3.0 with 0.1.39 and 1.4.0 with 0.1.40.
-API 1.5.0 shipped with 0.1.41, 1.6.0 with 0.1.43, 1.7.0 with 0.1.44 and 1.8.0 with 0.1.45 and 1.9.0 with 0.1.46 and 1.10.0 with 0.1.47; API 1.11.0, 1.12.0, 1.13.0 and 1.14.0 are in development on `main`. wasmtime decides what stays compatible: it resolves interface names
+API 1.5.0 shipped with 0.1.41, 1.6.0 with 0.1.43, 1.7.0 with 0.1.44, 1.8.0 with 0.1.45, 1.9.0 with 0.1.46 and 1.10.0 with 0.1.47; API 1.11.0, 1.12.0, 1.13.0, 1.14.0 and 1.15.0 are in development on `main`. wasmtime decides what stays compatible: it resolves interface names
 by semver (a component importing `openidea:plugin/x@1.0.0` links against a
 host defining `@1.1.0`, and the host finds its exports the same way), but
 function types must match exactly — a record with another field count, or a

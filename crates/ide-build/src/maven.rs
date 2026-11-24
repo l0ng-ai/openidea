@@ -31,40 +31,6 @@ pub const LOCAL_REPO_TRACKING_ARG: &str = "-Daether.enhancedLocalRepository.trac
 pub const LIFECYCLE: &[&str] =
     &["clean", "validate", "compile", "test", "package", "verify", "install", "site", "deploy"];
 
-/// Every phase of the clean, default and site lifecycles (Execute Maven Goal completion).
-pub const ALL_PHASES: &[&str] = &[
-    "pre-clean",
-    "clean",
-    "post-clean",
-    "validate",
-    "initialize",
-    "generate-sources",
-    "process-sources",
-    "generate-resources",
-    "process-resources",
-    "compile",
-    "process-classes",
-    "generate-test-sources",
-    "process-test-sources",
-    "generate-test-resources",
-    "process-test-resources",
-    "test-compile",
-    "process-test-classes",
-    "test",
-    "prepare-package",
-    "package",
-    "pre-integration-test",
-    "integration-test",
-    "post-integration-test",
-    "verify",
-    "install",
-    "deploy",
-    "pre-site",
-    "site",
-    "post-site",
-    "site-deploy",
-];
-
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct MavenModel {

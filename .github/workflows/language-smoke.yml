@@ -8,6 +8,9 @@ name: Language smoke
 # (Run, Run tests, the test tree, Rerun Failed Tests): smoke/run.test.ts; and debugging its
 # entry point with the debugger the IDE installs (breakpoint, frames, variables, evaluate,
 # Step Over, Resume): smoke/debug.test.ts.
+# The paths below and the Changes step's patterns must cover every file the smoke loads and
+# every crate it runs: scripts/smoke-paths.test.ts checks them (`node scripts/smoke-paths.ts
+# [file…]` lists what they miss, or the languages a change runs).
 on:
   push:
     branches: [main]
@@ -20,10 +23,32 @@ on:
       - "Cargo.lock"
       - "src/features/run/**"
       - "src/features/debugger/**"
+      - "src/features/build-tools/**"
       - "src/platform/**"
+      - "src/workbench/**"
+      - "src/ui/**"
+      - "src/editor/api.ts"
+      - "src/editor/navigationProviders.ts"
+      - "src/editor/relatedProviders.ts"
+      - "src/editor/core/cm/cornerInset.ts"
+      - "src/editor/core/cm/iconArea.ts"
+      - "src/editor/lsp/availability.ts"
+      - "src/editor/lsp/diagnostics.ts"
+      - "src/editor/lsp/files.ts"
+      - "src/editor/lsp/hint.ts"
+      - "src/editor/lsp/lsp.ts"
+      - "src/editor/lsp/positions.ts"
+      - "src/bindings.ts"
+      - "src/styles/tokens.css"
+      - "src/test/setup.ts"
+      - "src-tauri/icons/128x128.png"
       - "smoke/**"
+      - "vite.config.ts"
+      - "tsconfig.json"
       - "package.json"
       - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "patches/**"
       - ".github/workflows/language-smoke.yml"
       - ".github/tool-versions.env"
   pull_request:
@@ -70,10 +95,12 @@ jobs:
             --jq '.[] | .filename, (.previous_filename // empty)' > files.txt
           cat files.txt
           # Crates outside what the smoke runs (language servers, debuggers, run configurations,
-          # SDKs, build tools and the project model): cargo metadata, deps of ide-lsp/dap/run/sdk/tools.
-          unused='^crates/(ide-agent|ide-analysis|ide-android|ide-cli|ide-clipboard|ide-coverage|ide-db|ide-docker|ide-fonts|ide-github|ide-http|ide-mcp|ide-notebook|ide-profiler|ide-scaffold|ide-search|ide-spell|ide-ssh|ide-streams|ide-vcs|ide-web)/'
+          # SDKs, build tools, the project model, Find Usages candidates, debug stream traces):
+          # cargo metadata, ide-host's direct deps ide-search/ide-streams and the deps of
+          # ide-lsp/dap/run/sdk/tools.
+          unused='^crates/(ide-agent|ide-analysis|ide-android|ide-cli|ide-clipboard|ide-coverage|ide-db|ide-docker|ide-fonts|ide-github|ide-http|ide-mcp|ide-notebook|ide-profiler|ide-scaffold|ide-spell|ide-ssh|ide-vcs|ide-web)/'
           # The workflow's paths, less those handled per language below.
-          smoke='^(crates/|Cargo\.(toml|lock)$|src/features/(run|debugger)/|src/platform/|smoke/|package\.json$|pnpm-lock\.yaml$|\.github/workflows/language-smoke\.yml$|\.github/tool-versions\.env$)'
+          smoke='^(crates/|Cargo\.(toml|lock)$|src/features/(run|debugger|build-tools)/|src/platform/|src/workbench/|src/ui/|src/editor/(api|navigationProviders|relatedProviders|core/cm/(cornerInset|iconArea)|lsp/(availability|diagnostics|files|hint|lsp|positions))\.ts$|src/bindings\.ts$|src/styles/tokens\.css$|src/test/setup\.ts$|src-tauri/icons/128x128\.png$|smoke/|vite\.config\.ts$|tsconfig\.json$|package\.json$|pnpm-(lock|workspace)\.yaml$|patches/|\.github/workflows/language-smoke\.yml$|\.github/tool-versions\.env$)'
           langs=""
           while read -r f; do
             case "$f" in

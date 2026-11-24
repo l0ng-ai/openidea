@@ -6,6 +6,7 @@ import { useProject } from "@/platform/project";
 import { Checkbox, Dialog, Input, T } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { openDialog } from "./dialogs";
+import { readConfiguredGitIdentity } from "./gitIdentity";
 import styles from "./common.module.css";
 
 export interface CommitIdentity {
@@ -13,21 +14,6 @@ export interface CommitIdentity {
   email: string;
   /** Written to the user's global Git config instead of each repository's. */
   global: boolean;
-}
-
-interface Configured {
-  name: string | null;
-  email: string | null;
-}
-
-async function configured(root: string | null): Promise<Configured> {
-  const get = (key: string) =>
-    call(commands.vcsConfigGet(root, key)).then(
-      (v) => v?.trim() || null,
-      () => null,
-    );
-  const [name, email] = await Promise.all([get("user.name"), get("user.email")]);
-  return { name, email };
 }
 
 /** The account name in the project path (`/Users/<name>/…`), as the proposed user name. */
@@ -48,7 +34,7 @@ export function identityError(name: string, email: string): string | null {
  * or they could not be set.
  */
 export async function ensureCommitIdentity(roots: readonly (string | null)[], amend: boolean): Promise<boolean> {
-  const found = await Promise.all(roots.map(async (root) => ({ root, ...(await configured(root)) })));
+  const found = await Promise.all(roots.map(async (root) => ({ root, ...(await readConfiguredGitIdentity(root)) })));
   const missing = found.filter((r) => !r.name || !r.email);
   if (!missing.length) return true;
   // A user that every other repository agrees on is proposed (IDEA does the same).

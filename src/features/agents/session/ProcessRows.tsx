@@ -1,14 +1,23 @@
-import type { AgentEntry, AgentTask } from "@/bindings";
+import type { AgentTask } from "@/bindings";
 import { useTx } from "@/platform/i18n";
 import { Icon } from "@/ui";
 import clsx from "clsx";
-import { memo, useLayoutEffect, useRef, type ReactNode } from "react";
+import { createContext, memo, useContext, useLayoutEffect, useRef, type ReactNode } from "react";
 import { formatDuration } from "../conversation";
 import styles from "../Session.module.css";
 import { summarizeWork, workParts, type WorkSummary } from "../timeline";
-import { liveTool, type ConversationRow, type IndexedEntry, type ToolEntryData } from "./conversationRows";
+import {
+  liveTool,
+  rowEntries,
+  sameRow,
+  type ConversationRow,
+  type IndexedEntry,
+  type ProcessRow,
+  type ToolEntryData,
+  type TurnRow,
+} from "./conversationRows";
 import { Fold } from "./Folds";
-import { shortTitle } from "./shared";
+import { samePropsExcept, shortTitle } from "./shared";
 import { ThoughtEntry, ToolEntry } from "./toolEntries";
 
 /** "Edited 2 files · Read 4 files": what a run of work did; "Reasoning" when it only thought. */
@@ -19,41 +28,80 @@ function workSummaryText(work: WorkSummary, tx: ReturnType<typeof useTx>, toolCa
   return parts;
 }
 
-/** A finished turn's work, folded under its message: one line saying what it did and for how long. */
-export function TurnFold({
-  row,
-  entries,
-  children,
-}: {
-  row: Extract<ConversationRow, { kind: "turn" }>;
-  entries: readonly AgentEntry[];
-  children: ReactNode;
-}) {
-  const tx = useTx();
-  const { turn } = row;
-  const work = summarizeWork(entries.slice(turn.user + 1, turn.reply));
-  const parts = workSummaryText(work, tx, 0);
-  const messages = entries.slice(turn.user + 1, turn.reply).filter((e) => e.type === "agent").length;
-  if (messages) parts.push(tx(messages === 1 ? "1 message" : "{count} messages").replace("{count}", String(messages)));
-  const took = turn.sentMs != null && turn.doneMs != null ? formatDuration(turn.doneMs - turn.sentMs) : null;
+/** Renders the rows inside an open turn; the stream owns what a row needs (`Stream`). */
+export const RowRenderer = createContext<(row: ConversationRow) => ReactNode>(() => null);
+
+/** A finished turn's work, opened: its rows, painted only while the turn is open. */
+function TurnBody({ row }: { row: TurnRow }) {
+  const renderRow = useContext(RowRenderer);
   return (
-    <Fold
-      id={`turn:${turn.user}`}
-      className={clsx(styles.turnFold, styles.process)}
-      summary={
-        <summary className={styles.processSummary}>
-          <Icon name="chevron-right" size={12} className={styles.processChevron} />
-          <span className={styles.processParts}>{parts.join(" · ")}</span>
-          {work.added > 0 && <span className={styles.added}>+{work.added}</span>}
-          {work.removed > 0 && <span className={styles.removed}>−{work.removed}</span>}
-          {took && <span className={styles.muted}>{took}</span>}
-        </summary>
-      }
-    >
-      <div className={styles.turnBody}>{children}</div>
-    </Fold>
+    <div className={styles.turnBody}>
+      {row.rows.map((inner) => (
+        <div key={inner.index} className={styles.conversationRow}>
+          {renderRow(inner)}
+        </div>
+      ))}
+    </div>
   );
 }
+
+/** A finished turn's work, folded under its message: one line saying what it did and for how long. */
+export const TurnFold = memo(
+  function TurnFold({ row }: { row: TurnRow }) {
+    const tx = useTx();
+    const { turn } = row;
+    const entries = row.rows.flatMap(rowEntries);
+    const work = summarizeWork(entries);
+    const parts = workSummaryText(work, tx, 0);
+    const messages = entries.filter((e) => e.type === "agent").length;
+    if (messages)
+      parts.push(tx(messages === 1 ? "1 message" : "{count} messages").replace("{count}", String(messages)));
+    const took = turn.sentMs != null && turn.doneMs != null ? formatDuration(turn.doneMs - turn.sentMs) : null;
+    return (
+      <Fold
+        id={`turn:${turn.user}`}
+        className={clsx(styles.turnFold, styles.process)}
+        summary={
+          <summary className={styles.processSummary}>
+            <Icon name="chevron-right" size={12} className={styles.processChevron} />
+            <span className={styles.processParts}>{parts.join(" · ")}</span>
+            {work.added > 0 && <span className={styles.added}>+{work.added}</span>}
+            {work.removed > 0 && <span className={styles.removed}>−{work.removed}</span>}
+            {took && <span className={styles.muted}>{took}</span>}
+          </summary>
+        }
+      >
+        <TurnBody row={row} />
+      </Fold>
+    );
+  },
+  (a, b) => sameRow(a.row, b.row),
+);
+
+interface ProcessRunProps {
+  row: ProcessRow;
+  task: AgentTask;
+  lastIndex: number;
+  busy: boolean;
+  /** How long each finished thought took, by entry index. */
+  thinking: ReadonlyMap<number, number> | null;
+  onDiagramDrawn: () => void;
+}
+
+/** Whether the run holds what the agent is doing right now. */
+const holdsLive = ({ row, busy, lastIndex }: ProcessRunProps) =>
+  busy && row.entries.some(({ index }) => index === lastIndex);
+
+/** The rows, the thought durations and the last entry are rebuilt with every chunk: compare what the run paints. */
+const sameRun = samePropsExcept<ProcessRunProps>({
+  row: (a, b) => sameRow(a.row, b.row),
+  busy: () => true,
+  lastIndex: (a, b) => holdsLive(a) === holdsLive(b),
+  thinking: (a, b) =>
+    a.row.entries.every(
+      ({ index, entry }) => entry.type !== "thought" || a.thinking?.get(index) === b.thinking?.get(index),
+    ),
+});
 
 /** Reasoning and tool calls between messages, folded into one row. */
 export const ProcessRun = memo(function ProcessRun({
@@ -63,15 +111,7 @@ export const ProcessRun = memo(function ProcessRun({
   busy,
   thinking,
   onDiagramDrawn,
-}: {
-  row: Extract<ConversationRow, { kind: "process" }>;
-  task: AgentTask;
-  lastIndex: number;
-  busy: boolean;
-  /** How long each finished thought took, by entry index. */
-  thinking: ReadonlyMap<number, number> | null;
-  onDiagramDrawn: () => void;
-}) {
+}: ProcessRunProps) {
   const tx = useTx();
   const tools = row.entries.filter(
     (item): item is IndexedEntry & { entry: ToolEntryData } => item.entry.type === "tool",
@@ -134,4 +174,4 @@ export const ProcessRun = memo(function ProcessRun({
       </div>
     </Fold>
   );
-});
+}, sameRun);

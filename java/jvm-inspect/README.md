@@ -3,7 +3,7 @@
 An OSGi bundle loaded into JDT LS next to microsoft java-debug. While a Java debug session is
 suspended, it lists the instances of a class, the fields of an object and the objects that refer to
 it, and counts the instances of every loaded class; it also traces a stream chain while the program
-runs it. It works on java-debug's own JDI connection to the debuggee, so no second debugger connects
+runs it, and stops on the exceptions of a chosen class. It works on java-debug's own JDI connection to the debuggee, so no second debugger connects
 to the JVM.
 
 ## Commands
@@ -123,6 +123,13 @@ ordinary `executeCommand` error.
   invoke go on (ide-dap does that unseen while the trace runs).
   The outcome is forced into the frame before it is pinned, so the pending return keeps it reachable;
   should it be collected before that, the program gets the cancel exception and the trace fails.
+- An exception the terminal threw (the cancel exception of `abort` included) ends the client's
+  `stepOut` in the program's catch. Nothing catching it, the thread would die with no stop left to
+  `collect` in, so before parking the bundle adds an uncaught-exception request on the thread,
+  suspending it: the step-out ends at that throw instead, as a java-debug `exception` stop, and a
+  resume lets the exception end the thread as it would have. Skipped when an enabled request of
+  java-debug's already reports uncaught throws of that type (one stop, not two). `collect` deletes it;
+  after `collect` a release no longer resumes the parked event, since that stop keeps the parked frames.
 - `wait` returns as soon as the trace leaves `running`, or after `ms`, at most 30 000. While the
   terminal runs it also checks every 500 ms whether the VM began to shut down
   (`jdk.internal.misc.VM.initLevel`): `System.exit` in a lambda makes the VM wait forever to report
@@ -151,6 +158,33 @@ ordinary `executeCommand` error.
 waiting behind the command time out too. These two commands raise it to at least 60 000 ms and,
 when done, put back the old value unless something else changed it meanwhile (java-debug applies its
 timeout setting to every VM when it changes).
+
+## Exception breakpoints
+
+`openidea.jvm.exceptions.set` takes `target` first, then `{breakpoints: [{id, className, caught,
+uncaught, enabled, classFilters, classExclusionFilters}]}`, and replaces the VM's whole list. `ok`
+is `[{id, state}]` in the same order, `state` being `armed`, `pending` (the class is not loaded yet),
+`disabled` (off, or neither `caught` nor `uncaught`) or `deferred`. A missing `id` or `className` is
+an `executeCommand` error; a VM whose session java-debug did not register gives `noSession`.
+
+- Each breakpoint is a JDI exception request on every loaded class of that name, subclasses
+  included, plus a class-prepare request that arms classes loaded later or by another class loader.
+  java-debug turns every exception event into a stop, whoever made the request, so the stop, the
+  stack and `exceptionInfo` are java-debug's own.
+- `classFilters` / `classExclusionFilters` are JDI class patterns (`com.acme.*`, `*Test`) matched
+  against the class whose code throws.
+- java-debug deletes every exception request when it handles `setExceptionBreakpoints`. Send the
+  list again after each one, and before `configurationDone` to stop on a throw in `main`'s first line.
+- One throw matched by two requests gives two stops. A request leaves out the caught or uncaught
+  throws that java-debug's enabled all-exception filters report, or an enabled breakpoint without
+  class filters on a superclass, or on the same class when that one comes earlier in the list or this
+  one has filters. Two breakpoints that both have class filters can still both stop on one throw.
+- No conditions and no catch-location filters: java-debug stops on every exception event it gets,
+  and an event-hub subscriber cannot keep it from stopping.
+- While a stream trace silences the VM's breakpoints, a new list is `deferred` and applied when the
+  trace ends, as is a class prepared meanwhile. Its requests are silenced and restored with the
+  rest; a trace that ends at an uncaught throw watches the throw itself only when no java-debug
+  request, nor a breakpoint without class filters, already stops there.
 
 ## Internals it depends on
 
@@ -204,7 +238,7 @@ Java 21. The recorder is compiled by the `javac` on `PATH` with `--release 8`, s
 run Java 8. Build twice and compare: two builds of the checked-in jar gave
 
 ```
-22980a16bd8e303d67ed2e04d76d8974f2d3981120c26e6d9afa47ba361b1503  openidea-jvm-inspect.jar
+5278f1d38325551c5d4ab50b5140551f91c3bf5b9db536aeb276713578e0fd49  openidea-jvm-inspect.jar
 ```
 
 Change `Bundle-Version` whenever the jar changes: OSGi caches bundles by version.
@@ -235,4 +269,14 @@ with the distribution's ECJ, as JDT LS builds a project. `--bundle` takes a jar 
 PATH=/path/to/jdk25/bin:$PATH \
 OPENIDEA_TEST_JAVA=/path/to/jdk11/bin/java:/path/to/jdk21/bin/java \
 python3 -I tests/stream.py /path/to/jdtls /path/to/com.microsoft.java.debug.plugin-0.53.2.jar --bundle x.jar
+```
+
+`tests/exceptions.py` checks `openidea.jvm.exceptions.set` on the `java` on `PATH`: a throw in
+`main`'s first line in a launch and in an attach, a class loaded late, class filters, the re-arm
+after `setExceptionBreakpoints`, no double stop with java-debug's filters or a superclass breakpoint,
+and a hot swap of the throwing class. It takes `--bundle` too:
+
+```sh
+PATH=/path/to/jdk25/bin:$PATH \
+python3 -I tests/exceptions.py /path/to/jdtls /path/to/com.microsoft.java.debug.plugin-0.53.2.jar
 ```

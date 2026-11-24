@@ -68,6 +68,7 @@ import { cloneCaretAbove, cloneCaretBelow } from "./cm/verticalMotion";
 import { pasteAsPlainText, pasteFromHistory, unwrapAtCaret } from "./extras";
 import { cyclicExpandWord } from "./wordCompletion";
 import { copyReferenceToClipboard, declaredName, qualifiedReference, referenceOffset } from "./copyReference";
+import { selectedLineContext, selectedLines } from "./selectedLines";
 import { declarationChain } from "./view/outline";
 import { recordClipboard } from "./clipboardHistory";
 import { useDocMeta, useOutline } from "./model/document";
@@ -589,28 +590,17 @@ function copyReference(reference: Promise<string>) {
   }
 }
 
-/** The selected lines (1-based), leaving out the one a selection ends at the start of. */
-function selectedLines(state: EditorState): { first: number; last: number } {
-  const { doc, selection } = state;
-  const { from, to } = selection.main;
-  const first = doc.lineAt(from).number;
-  const last = Math.max(first, doc.lineAt(to).number - (to > from && doc.lineAt(to).from === to ? 1 : 0));
-  return { first, last };
-}
-
 /** `path:12`, or `path:12-18` for a selection over several lines. */
-function pathWithLines(state: EditorState, path: string): string {
+function pathWithLines(state: EditorState, path: string, kind: "relative" | "absolute" = "relative"): string {
   const { first, last } = selectedLines(state);
-  return `${pathToCopy("relative", path)}:${first}${last > first ? `-${last}` : ""}`;
+  return `${pathToCopy(kind, path)}:${first}${last > first ? `-${last}` : ""}`;
 }
 
 function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
   const path = slot.model.path;
-  const { first, last } = selectedLines(view.state);
   const contributed = menuGroupItems("copyPath", {
     paths: [path],
-    line: first - 1,
-    endLine: last > first ? last - 1 : undefined,
+    ...selectedLineContext(view.state),
   }).flatMap((item) =>
     (item.kind ?? "item") === "item" && "run" in item && item.id && item.run && item.preview
       ? [
@@ -626,6 +616,11 @@ function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
   );
   const flavours = [
     { id: "project.copyAbsolutePath", label: "Absolute Path", value: pathToCopy("absolute", path) },
+    {
+      id: "editor.copyAbsolutePathWithLineNumber",
+      label: "Absolute Path with line number",
+      value: pathWithLines(view.state, path, "absolute"),
+    },
     { id: "project.copyFileName", label: "File Name", value: pathToCopy("name", path) },
     { id: "project.copyRelativePath", label: "Path From Content Root", value: pathToCopy("relative", path) },
     { id: "project.copySourceRootPath", label: "Path From Source Root", value: pathToCopy("source", path) },
@@ -638,6 +633,7 @@ function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
   const popup: Extract<LspPopup, { kind: "list" }> = {
     kind: "list",
     title: tx("Copy Path/Reference…"),
+    layout: "copyPath",
     anchor: caretAnchor(view, view.state.selection.main.head),
     items: [
       ...flavours
@@ -648,7 +644,9 @@ function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
           preview: f.value!,
           shortcut: shortcutLabel(f.id),
           run: () => {
-            void executeAction(f.id, f.id === "editor.copyPathWithLineNumber" ? f.value : path);
+            const lineNumbered =
+              f.id === "editor.copyPathWithLineNumber" || f.id === "editor.copyAbsolutePathWithLineNumber";
+            void executeAction(f.id, lineNumbered ? f.value : path);
           },
         })),
       ...contributed,
@@ -1037,7 +1035,7 @@ export function registerEditorActions(): () => void {
       title: "Reset Font Size",
       category: "View",
       keywords: ["zoom", "font size", "mouse wheel"],
-      when: "projectOpen",
+      when: "projectOpen || lightEdit",
       run: resetFontSize,
     },
     {
@@ -1330,6 +1328,16 @@ export function registerEditorActions(): () => void {
       run: ({ arg }) => {
         if (typeof arg === "string") copyEditorPath(arg);
         else withView((view, slot) => copyEditorPath(pathWithLines(view.state, slot.model.path)))();
+      },
+    },
+    {
+      id: "editor.copyAbsolutePathWithLineNumber",
+      title: "Copy Absolute Path with Line Number",
+      category: "Edit",
+      when: TEXT_WHEN,
+      run: ({ arg }) => {
+        if (typeof arg === "string") copyEditorPath(arg);
+        else withView((view, slot) => copyEditorPath(pathWithLines(view.state, slot.model.path, "absolute")))();
       },
     },
     {

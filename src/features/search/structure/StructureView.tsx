@@ -1,5 +1,4 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { create } from "zustand";
 import clsx from "clsx";
 import { shortcutLabel } from "@/platform/keymap";
 import {
@@ -24,83 +23,62 @@ import { badgeKind, basename, openLocation } from "../common/open";
 import { useTracking } from "../common/tracking";
 import {
   allKeys,
-  applyViewFilter,
   filterOutline,
   hasFields,
   hasVisibility,
   isWidgetBuild,
-  keyOutline,
-  onlyWidgets,
   parentKeys,
-  sortOutline,
   symbolPathAt,
   visibleCount,
   widgetLetter,
-  withInherited,
   type OutlineNode,
 } from "./outline";
-import { useLiveOutline, useOutline, useStructureOptions } from "./store";
+import { useCollapsedStructure, useLiveOutline, useOutline, useOutlineNodes, useStructureOptions } from "./store";
 import styles from "./StructureView.module.css";
 import { tx } from "@/platform/i18n";
 
-/** The shown outline; with `widgets`, a Flutter file's widget tree instead of its symbols. */
-function useOutlineNodes(widgets = false) {
-  const items = useOutline((s) => s.items);
-  const flutter = useOutline((s) => (widgets ? s.flutter : null));
-  const widgetsOnly = useStructureOptions((s) => s.showOnlyWidgets);
-  const alphabetical = useStructureOptions((s) => s.alphabetical);
-  const byVisibility = useStructureOptions((s) => s.sortByVisibility);
-  const fields = useStructureOptions((s) => s.showFields);
-  const nonPublic = useStructureOptions((s) => s.showNonPublic);
-  const showInherited = useStructureOptions((s) => s.showInherited);
-  const supported = useOutline((s) => s.inheritedSupported);
-  const inherited = useOutline((s) => s.inherited);
-  const extra = showInherited && supported ? inherited : null;
-  return useMemo(() => {
-    const nodes = sortOutline(
-      applyViewFilter(withInherited(keyOutline(flutter ?? items ?? []), extra), { fields, nonPublic }),
-      alphabetical,
-      byVisibility,
-    );
-    return flutter && widgetsOnly ? onlyWidgets(nodes) : nodes;
-  }, [items, flutter, widgetsOnly, extra, alphabetical, byVisibility, fields, nonPublic]);
-}
-
-/**
- * IDEA's view options: Show Fields, Show Non-Public and Sort by Visibility (only when the outline
- * knows visibility); the Flutter plugin's Show Only Widgets for a widget tree.
- */
-function viewOptionItems(items: readonly OutlineItem[], widgets: boolean): MenuItem[] {
+function viewOptionItems(items: readonly OutlineItem[], widgets: boolean, inheritedSupported: boolean): MenuItem[] {
   const o = useStructureOptions.getState();
-  const out: MenuItem[] = [];
-  if (widgets)
-    out.push({
-      label: "Show Only Widgets",
-      checked: o.showOnlyWidgets,
-      run: () => useStructureOptions.setState({ showOnlyWidgets: !o.showOnlyWidgets }),
+  const visibility = hasVisibility(items);
+  const sort: MenuItem[] = [
+    {
+      label: "Sort Alphabetically",
+      checked: o.alphabetical,
+      run: () => useStructureOptions.setState({ alphabetical: !o.alphabetical }),
+    },
+  ];
+  if (visibility)
+    sort.push({
+      label: "Sort by Visibility",
+      checked: o.sortByVisibility,
+      run: () => useStructureOptions.setState({ sortByVisibility: !o.sortByVisibility }),
     });
+  const filters: MenuItem[] = [];
   if (hasFields(items) || !o.showFields)
-    out.push({
+    filters.push({
       label: "Show Fields",
       checked: o.showFields,
       run: () => useStructureOptions.setState({ showFields: !o.showFields }),
     });
-  if (hasVisibility(items)) {
-    out.push(
-      {
-        label: "Show Non-Public",
-        checked: o.showNonPublic,
-        run: () => useStructureOptions.setState({ showNonPublic: !o.showNonPublic }),
-      },
-      { kind: "separator" },
-      {
-        label: "Sort by Visibility",
-        checked: o.sortByVisibility,
-        run: () => useStructureOptions.setState({ sortByVisibility: !o.sortByVisibility }),
-      },
-    );
-  }
-  return out;
+  if (visibility)
+    filters.push({
+      label: "Show Non-Public",
+      checked: o.showNonPublic,
+      run: () => useStructureOptions.setState({ showNonPublic: !o.showNonPublic }),
+    });
+  if (inheritedSupported)
+    filters.push({
+      label: "Show Inherited",
+      checked: o.showInherited,
+      run: () => useStructureOptions.setState({ showInherited: !o.showInherited }),
+    });
+  if (widgets)
+    filters.push({
+      label: "Show Only Widgets",
+      checked: o.showOnlyWidgets,
+      run: () => useStructureOptions.setState({ showOnlyWidgets: !o.showOnlyWidgets }),
+    });
+  return filters.length ? [...sort, { kind: "separator" }, ...filters] : sort;
 }
 
 /** The Flutter plugin's widget icon: a disc with the class's initial, pink for a private class. */
@@ -148,8 +126,6 @@ function SymbolRow({
   );
 }
 
-const useCollapsed = create<{ keys: ReadonlySet<string> }>(() => ({ keys: new Set() }));
-
 /** The file itself, shown as the tree root like IDEA. */
 interface FileRoot {
   key: string;
@@ -173,7 +149,7 @@ export function StructureView() {
   const autoscroll = useStructureOptions((s) => s.autoscrollFromSource);
   const caret = useTracking((s) => s.caret);
   const shownLine = useShownLine(path);
-  const collapsed = useCollapsed((s) => s.keys);
+  const collapsed = useCollapsedStructure((s) => s.keys);
   const nodes = useOutlineNodes(true);
   const tree = useRef<TreeHandle>(null);
   const revealing = useRef(false);
@@ -201,7 +177,7 @@ export function StructureView() {
     if (hidden.length) {
       const next = new Set(collapsed);
       hidden.forEach((k) => next.delete(k));
-      useCollapsed.setState({ keys: next });
+      useCollapsedStructure.setState({ keys: next });
       return; // re-runs once the ancestors are expanded
     }
     revealing.current = true;
@@ -225,7 +201,6 @@ export function StructureView() {
 
   return (
     <div className={styles.root}>
-      <StructureToolbar nodes={nodes} />
       <Tree<StructNode>
         className={styles.tree}
         aria-label="Structure"
@@ -238,7 +213,9 @@ export function StructureView() {
         getChildren={(n) => (n.children.length ? n.children : undefined)}
         isExpandable={(n) => n.children.length > 0}
         expanded={expanded}
-        onExpandedChange={(next) => useCollapsed.setState({ keys: new Set(expandable.filter((k) => !next.has(k))) })}
+        onExpandedChange={(next) =>
+          useCollapsedStructure.setState({ keys: new Set(expandable.filter((k) => !next.has(k))) })
+        }
         onSelectionChange={(_next, lead) => {
           if (revealing.current || !lead || isFile(lead)) return;
           if (useStructureOptions.getState().autoscrollToSource) navigate(path, lead, false);
@@ -266,87 +243,48 @@ export function StructureView() {
   );
 }
 
-function StructureToolbar({ nodes }: { nodes: readonly OutlineNode[] }) {
-  const alphabetical = useStructureOptions((s) => s.alphabetical);
-  const autoscroll = useStructureOptions((s) => s.autoscrollFromSource);
-  const autoscrollToSource = useStructureOptions((s) => s.autoscrollToSource);
-  const showInherited = useStructureOptions((s) => s.showInherited);
+export function StructureHeaderActions() {
+  const path = useOutline((s) => (s.items === null ? null : s.path));
+  return path ? <StructureViewOptions key={path} /> : null;
+}
+
+function StructureViewOptions() {
   const inheritedSupported = useOutline((s) => s.inheritedSupported);
   const flutter = useOutline((s) => s.flutter);
   const items = useOutline((s) => s.flutter ?? s.items);
-  const filterRef = useRef<HTMLButtonElement>(null);
-  const [menu, setMenu] = useState<MenuItem[] | null>(null);
-  // Subscribed so the menu's availability and pressed state follow the options.
+  const anchor = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
   const narrowed = useStructureOptions(
-    (s) => !s.showFields || !s.showNonPublic || s.sortByVisibility || (!!flutter && s.showOnlyWidgets),
+    (s) =>
+      s.alphabetical ||
+      !s.showFields ||
+      !s.showNonPublic ||
+      s.sortByVisibility ||
+      (inheritedSupported && s.showInherited) ||
+      (!!flutter && s.showOnlyWidgets),
   );
-  const options = () => viewOptionItems(items ?? [], !!flutter);
-  const hasOptions = options().length > 0;
   return (
-    <div className={styles.toolbar} role="toolbar" aria-label={tx("Structure actions")}>
+    <>
       <IconButton
-        icon="sort"
-        title="Sort Alphabetically"
+        ref={anchor}
+        icon="filter"
+        title="View Options"
         size="small"
         iconSize={16}
-        pressed={alphabetical}
-        onClick={() => useStructureOptions.setState({ alphabetical: !alphabetical })}
+        pressed={narrowed}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
       />
-      {hasOptions && (
-        <IconButton
-          ref={filterRef}
-          icon="filter"
-          title="View Options"
-          size="small"
-          iconSize={16}
-          pressed={narrowed}
-          onClick={() => setMenu(options())}
-        />
-      )}
-      {inheritedSupported && (
-        <IconButton
-          icon="hierarchy"
-          title="Show Inherited"
-          size="small"
-          iconSize={16}
-          pressed={showInherited}
-          onClick={() => useStructureOptions.setState({ showInherited: !showInherited })}
-        />
-      )}
-      <Menu open={!!menu} anchor={filterRef} items={menu ?? []} onClose={() => setMenu(null)} />
-      <span className={styles.sep} />
-      <IconButton
-        icon="autoscroll-to-source"
-        title="Autoscroll to Source"
-        size="small"
-        iconSize={16}
-        pressed={autoscrollToSource}
-        onClick={() => useStructureOptions.setState({ autoscrollToSource: !autoscrollToSource })}
+      <Menu
+        open={open}
+        anchor={anchor}
+        items={open ? viewOptionItems(items ?? [], !!flutter, inheritedSupported) : []}
+        onClose={() => setOpen(false)}
+        placement="bottom-end"
+        aria-label="View Options"
       />
-      <IconButton
-        icon="autoscroll-from-source"
-        title="Autoscroll from Source"
-        size="small"
-        iconSize={16}
-        pressed={autoscroll}
-        onClick={() => useStructureOptions.setState({ autoscrollFromSource: !autoscroll })}
-      />
-      <span className={styles.grow} />
-      <IconButton
-        icon="expand-all"
-        title="Expand All"
-        size="small"
-        iconSize={16}
-        onClick={() => useCollapsed.setState({ keys: new Set() })}
-      />
-      <IconButton
-        icon="collapse-all"
-        title="Collapse All"
-        size="small"
-        iconSize={16}
-        onClick={() => useCollapsed.setState({ keys: new Set(allKeys(nodes)) })}
-      />
-    </div>
+    </>
   );
 }
 
@@ -377,10 +315,12 @@ function FileStructureDialog() {
   const inheritedSupported = useOutline((s) => s.inheritedSupported);
   const nodes = useOutlineNodes();
   const [query, setQuery] = useState("");
+  const [showOptions, setShowOptions] = useState(false);
   // IDEA opens the popup fully expanded.
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
   const caret = useMemo(() => useTracking.getState().caret, []);
   const tree = useRef<TreeHandle>(null);
+  const optionsButton = useRef<HTMLButtonElement>(null);
 
   const filter = useMemo(() => filterOutline(nodes, query, narrowDown), [nodes, query, narrowDown]);
   const parents = useMemo(() => parentKeys(filter.nodes), [filter.nodes]);
@@ -469,6 +409,7 @@ function FileStructureDialog() {
   };
 
   const height = Math.min(420, Math.max(1, visibleCount(filter.nodes, collapsed)) * rowHeight + 8);
+  const name = path ? basename(path) : tx("File Structure");
   return (
     <Dialog
       open
@@ -476,20 +417,78 @@ function FileStructureDialog() {
       width={540}
       position="top"
       transparentBackdrop
+      className={styles.structurePopup}
       aria-label="File Structure"
       title={
         <span className={styles.popupTitle}>
-          {path ? basename(path) : tx("File Structure")}
+          <span className={styles.popupName} title={name}>
+            {name}
+          </span>
           <span className={styles.popupHint}>{shortcutLabel("navigate.fileStructure")}</span>
         </span>
       }
     >
+      <div className={styles.popupToolbar}>
+        <div className={styles.popupOptions} role="group" aria-label={tx("Structure actions")}>
+          {(hasFields(items ?? []) || !showFields) && (
+            <Checkbox
+              label="Show fields"
+              checked={showFields}
+              onChange={(v) => useStructureOptions.setState({ showFields: v })}
+            />
+          )}
+          {hasVisibility(items ?? []) && (
+            <Checkbox
+              label="Show non-public"
+              checked={showNonPublic}
+              onChange={(v) => useStructureOptions.setState({ showNonPublic: v })}
+            />
+          )}
+          {inheritedSupported && (
+            <Checkbox
+              label="Show inherited members"
+              checked={showInherited}
+              onChange={(v) => useStructureOptions.setState({ showInherited: v })}
+            />
+          )}
+        </div>
+        <IconButton
+          ref={optionsButton}
+          icon="settings"
+          title="View Options"
+          size="small"
+          aria-haspopup="menu"
+          aria-expanded={showOptions}
+          onClick={() => setShowOptions((open) => !open)}
+        />
+        <Menu
+          open={showOptions}
+          onClose={() => setShowOptions(false)}
+          anchor={optionsButton}
+          placement="bottom-end"
+          aria-label={tx("View Options")}
+          items={[
+            {
+              label: "Sort Alphabetically",
+              checked: alphabetical,
+              run: () => useStructureOptions.setState({ alphabetical: !alphabetical }),
+            },
+            { kind: "separator" },
+            {
+              label: "Narrow down on typing",
+              checked: narrowDown,
+              run: () => useStructureOptions.setState({ narrowDown: !narrowDown }),
+            },
+          ]}
+        />
+      </div>
       <div className={styles.filterRow}>
+        <Icon name="search" size={16} />
         <input
           data-autofocus
           className={styles.filter}
           value={query}
-          placeholder={path ? "Type to filter symbols" : "No active editor"}
+          placeholder={path ? tx("Type to filter symbols") : tx("No active editor")}
           aria-label={tx("Filter symbols")}
           spellCheck={false}
           autoComplete="off"
@@ -503,41 +502,6 @@ function FileStructureDialog() {
           <span className={styles.filterStatus} role="status">
             {tx("No matches")}
           </span>
-        )}
-        <IconButton
-          icon="sort"
-          title="Sort Alphabetically"
-          size="small"
-          pressed={alphabetical}
-          onClick={() => useStructureOptions.setState({ alphabetical: !alphabetical })}
-        />
-      </div>
-      <div className={styles.popupOptions}>
-        <Checkbox
-          label="Narrow down on typing"
-          checked={narrowDown}
-          onChange={(v) => useStructureOptions.setState({ narrowDown: v })}
-        />
-        {(hasFields(items ?? []) || !showFields) && (
-          <Checkbox
-            label="Show fields"
-            checked={showFields}
-            onChange={(v) => useStructureOptions.setState({ showFields: v })}
-          />
-        )}
-        {hasVisibility(items ?? []) && (
-          <Checkbox
-            label="Show non-public"
-            checked={showNonPublic}
-            onChange={(v) => useStructureOptions.setState({ showNonPublic: v })}
-          />
-        )}
-        {inheritedSupported && (
-          <Checkbox
-            label="Show inherited members"
-            checked={showInherited}
-            onChange={(v) => useStructureOptions.setState({ showInherited: v })}
-          />
         )}
       </div>
       <div className={styles.popupList} style={{ height }}>

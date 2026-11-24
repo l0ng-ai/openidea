@@ -43,6 +43,18 @@ enabled = "never"
 [language-servers.initialization-options.javascript.updateImportsOnFileMove]
 enabled = "never"
 
+# Inlay hints (off in vtsls by default): parameter names at literal arguments, inferred
+# variable types and enum member values. Editor › Inlay Hints decides which are shown.
+[language-servers.initialization-options.typescript.inlayHints]
+parameterNames = { enabled = "literals", suppressWhenArgumentMatchesName = true }
+variableTypes = { enabled = true, suppressWhenTypeMatchesName = true }
+enumMemberValues = { enabled = true }
+
+[language-servers.initialization-options.javascript.inlayHints]
+parameterNames = { enabled = "literals", suppressWhenArgumentMatchesName = true }
+variableTypes = { enabled = true, suppressWhenTypeMatchesName = true }
+enumMemberValues = { enabled = true }
+
 [[language-servers]]
 name = "oxlint"
 command = "oxlint"
@@ -75,6 +87,17 @@ codeAction = { disableRuleComment = { enable = true, location = "separateLine" }
 # vscode-eslint reads it for every source.fixAll request (Actions on Save, Code Cleanup).
 # No `rules`: an empty list there means no rule gets fixed.
 codeActionOnSave = { mode = "all" }
+
+# Tailwind CSS: class completion, hover and diagnostics, only in a project that uses Tailwind
+# (`tailwind.config.*` or `tailwindcss` in package.json). After the language's own servers,
+# which answer hover first.
+[[language-servers]]
+name = "tailwindcss-language-server"
+command = "tailwindcss-language-server"
+args = ["--stdio"]
+root-markers = ["tailwind.config.*", "package.json#dependencies.tailwindcss", "package.json#devDependencies.tailwindcss"]
+require-root-marker = true
+install-hint = "npm i -g @tailwindcss/language-server"
 
 # Components run in the browser: breakpoints in them are hit by a JavaScript Debug configuration.
 [debugger]

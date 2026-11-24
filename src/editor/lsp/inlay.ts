@@ -5,12 +5,11 @@
  * offers to disable hints of that kind.
  */
 import { StateEffect, StateField, type Extension } from "@codemirror/state";
-import { shownAgain } from "@/editor/api";
+import { openCodeLocation, shownAgain } from "@/editor/api";
 import { Decoration, EditorView, ViewPlugin, WidgetType, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import { call, commands, isTauri, type InlayHint } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
 import { isNavigationGesture, navigationModifierHeld, onNavigationModifier } from "@/platform/navigationModifier";
-import { maybeEditorService } from "@/workbench/contributions";
 import { showContextMenu, type MenuItem } from "@/ui";
 import { useProject } from "@/platform/project";
 import { editorPrefs } from "@/platform/editorSettings";
@@ -18,7 +17,7 @@ import { debounce, docOf, isUnavailable, lspRequest } from "./lsp";
 import { offsetsToRange, posToOffset } from "./positions";
 import { featureBackoff, onLspRefresh, onServerSettled, anyServerBusy } from "./availability";
 import { gotoTargets } from "./navigation";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 
 const KIND_LABEL: Record<InlayHint["kind"], string> = {
   type: "Type hints",
@@ -43,7 +42,7 @@ function typeHintOffset(view: EditorView, at: number): number | null {
 /** Right-click on a hint: turn its kind off (IDEA's "Disable '…' hints"), or open the settings. */
 export function inlayMenuItems(kind: InlayHint["kind"]): MenuItem[] {
   return [
-    { label: tx`Disable ${KIND_LABEL[kind]}`, run: () => void setEditorSetting(`inlay.${kind}`, false) },
+    { label: tx`Disable ${txPart(KIND_LABEL[kind])}`, run: () => void setEditorSetting(`inlay.${kind}`, false) },
     { kind: "separator" },
     { label: "Inlay Hints Settings…", run: () => void executeAction("file.settings", "editor.inlayHints") },
   ];
@@ -84,10 +83,7 @@ class InlayWidget extends WidgetType {
             if (e.button !== 0 || !isNavigationGesture(e)) return;
             e.preventDefault();
             e.stopPropagation();
-            void maybeEditorService()?.openFile(loc.path, {
-              selection: { line: loc.range.start.line, col: loc.range.start.col },
-              focus: true,
-            });
+            void openCodeLocation(loc.path, { line: loc.range.start.line, col: loc.range.start.col });
           });
         }
         el.appendChild(span);

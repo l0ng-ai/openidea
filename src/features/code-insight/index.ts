@@ -21,7 +21,7 @@ import { UsagesPopup } from "./UsagesPopup";
 import { findUsages, rerunActiveUsages, resetUsages, showUsageResults, showUsagesPopup } from "./usages";
 import { HierarchyTabs, HierarchyView } from "./HierarchyView";
 import { resetHierarchy, showHierarchy } from "./hierarchy";
-import { eslintCovers, installServerEvents } from "./servers";
+import { installServerEvents, linterCovers } from "./servers";
 import { ServerStatus } from "./ServerStatus";
 import { reportProblems } from "./problemsReport";
 import { installWorkspaceEditUndo } from "./workspaceUndo";
@@ -60,15 +60,21 @@ export function activate(): () => void {
     reportProblems(),
     installProblemDecorations(),
     installServerEvents(),
-    // WebStorm's editor popup offers Fix ESLint Problems wherever ESLint lints the file.
+    // WebStorm's editor popup offers Fix ESLint / Stylelint Problems wherever that linter lints the file.
     registerMenuGroup({
       id: "codeInsight.eslint",
       menus: ["editor"],
       order: 40,
-      items: (_menu, { paths }) =>
-        paths.length === 1 && eslintCovers(paths[0]!, getContext().editorLangId as string | null)
-          ? [{ kind: "action", action: "code.fixEslintProblems" }]
-          : [],
+      items: (_menu, { paths }) => {
+        if (paths.length !== 1) return [];
+        const language = getContext().editorLangId as string | null;
+        return [
+          ["eslint", "code.fixEslintProblems"],
+          ["stylelint", "code.fixStylelintProblems"],
+        ]
+          .filter(([server]) => linterCovers(server!, paths[0]!, language))
+          .map(([, action]) => ({ kind: "action" as const, action: action! }));
+      },
     }),
     installWorkspaceEditUndo(),
     registerToolWindow({

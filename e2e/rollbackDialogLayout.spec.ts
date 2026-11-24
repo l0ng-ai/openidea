@@ -1,4 +1,5 @@
 import { expect, ipcCalls, stubDesktop, test } from "./fixtures";
+import type { DiffEntryRequest, FileStatus } from "../src/bindings";
 
 test("Rollback fits a short window and scopes its options to checked files", async ({ workbench: page }) => {
   await page.setViewportSize({ width: 410, height: 330 });
@@ -71,4 +72,51 @@ test("Rollback fits a short window and scopes its options to checked files", asy
   await expect(dialog).toBeHidden();
   await expect.poll(() => ipcCalls(page, "vcs_discard")).toEqual([{ paths: [modified[0]] }]);
   expect(await ipcCalls(page, "vcs_unstage")).toEqual([]);
+});
+
+test("a selected submodule can restore the parent index and checkout separately", async ({ workbench: page }) => {
+  await stubDesktop(page);
+  const root = "/dev/parent";
+  const path = root + "/libs/module";
+  await page.evaluate(
+    async ({ root, path }) => {
+      const branch = { head: "main", headCommit: "a", upstream: null, ahead: 0, behind: 0, operation: null };
+      const status: FileStatus[] = [
+        { path, relPath: "libs/module", staged: "modified", unstaged: "modified", renamedFrom: null },
+        { path: path + "/child.txt", relPath: "child.txt", staged: null, unstaged: "modified", renamedFrom: null },
+      ];
+      const h = window.__ipc.handlers;
+      h.vcs_branch_info = () => branch;
+      h.vcs_roots = () => [root, path].map((root) => ({ root, ...branch }));
+      h.vcs_status = () => status;
+      h.vcs_diff_entries = ({ entries }) =>
+        (entries as DiffEntryRequest[]).map((entry) =>
+          entry.path === path
+            ? { mode: "160000", gitlink: entry.rev === "HEAD" ? "a" : entry.rev === ":0" ? "b" : "c" }
+            : null,
+        );
+      h.vcs_rollback_submodules = () => null;
+      const storeModule = "/src/features/vcs/store.ts";
+      const contextModule = "/src/platform/context.ts";
+      const actionsModule = "/src/platform/actions.ts";
+      const { useVcs } = await import(/* @vite-ignore */ storeModule);
+      const { setContext } = await import(/* @vite-ignore */ contextModule);
+      const { executeAction } = await import(/* @vite-ignore */ actionsModule);
+      useVcs.setState({ available: true, root, repo: root, roots: [root, path], branch, status });
+      setContext("vcsAvailable", true);
+      await executeAction("vcs.rollback", [path]);
+    },
+    { root, path },
+  );
+  const dialog = page.getByRole("dialog", { name: "Rollback Changes", exact: true });
+  const checkout = dialog.getByRole("checkbox", { name: "Restore selected submodule checkouts" });
+  await expect(checkout).toBeChecked();
+  await expect(dialog.getByText("child.txt", { exact: true })).toHaveCount(0);
+  await checkout.uncheck();
+  await dialog.getByRole("button", { name: "Rollback", exact: true }).click();
+  await expect
+    .poll(() => ipcCalls(page, "vcs_rollback_submodules"))
+    .toEqual([{ paths: [path], source: "head", restoreCheckout: false }]);
+  expect(await ipcCalls(page, "vcs_unstage")).toEqual([]);
+  expect(await ipcCalls(page, "vcs_discard")).toEqual([]);
 });

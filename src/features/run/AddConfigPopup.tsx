@@ -1,6 +1,17 @@
-import { useMemo, useState, type KeyboardEvent } from "react";
+import { useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
-import { HighlightedText, Icon, List, Popup, SearchField, fuzzyMatch, listNavigate, T, type PopupAnchor } from "@/ui";
+import {
+  HighlightedText,
+  Icon,
+  List,
+  Popup,
+  SearchField,
+  firstSelectable,
+  fuzzyMatch,
+  listNavigate,
+  T,
+  type PopupAnchor,
+} from "@/ui";
 import { useRowHeight } from "@/ui/density";
 import { useRunConfigTypes, runConfigTypes, type RunConfigTypeContribution } from "@/workbench/contributions";
 import styles from "./Run.module.css";
@@ -64,12 +75,11 @@ export function AddConfigPopup({
   const [query, setQuery] = useState("");
   const rows = useMemo(() => typeRows(runConfigTypes(types), query), [types, query]);
   const isSection = (r: TypeRow) => r.kind === "group";
-  const first = Math.max(
-    0,
-    rows.findIndex((r) => r.kind === "type"),
-  );
-  const [active, setActive] = useState(first);
+  const [active, setActive] = useState(-1);
   const clamped = Math.min(active, rows.length - 1);
+  const selected = rows[clamped]?.kind === "type" ? clamped : firstSelectable(rows, isSection);
+  const viewport = useRef<HTMLDivElement>(null);
+  const height = Math.max(1, Math.min(rows.length, 30)) * rowHeight;
 
   const pick = (row: TypeRow | undefined) => {
     if (row?.kind !== "type") return;
@@ -80,10 +90,11 @@ export function AddConfigPopup({
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      pick(rows[clamped]);
+      pick(rows[selected]);
       return;
     }
-    const next = listNavigate(e.key, { items: rows, active: clamped, isSection, wrap: true });
+    const pageSize = Math.max(1, Math.floor((viewport.current?.clientHeight ?? height) / rowHeight) - 1);
+    const next = listNavigate(e.key, { items: rows, active: selected, isSection, pageSize, wrap: true });
     if (next !== null) {
       e.preventDefault();
       setActive(next);
@@ -97,7 +108,7 @@ export function AddConfigPopup({
       onClose={onClose}
       placement="bottom-start"
       aria-label="Add New Configuration"
-      className={styles.chooser}
+      className={clsx(styles.chooser, styles.typeChooser)}
       trapFocus
     >
       <div className={styles.chooserCaption}>
@@ -108,7 +119,7 @@ export function AddConfigPopup({
           value={query}
           onChange={(v) => {
             setQuery(v);
-            setActive(0);
+            setActive(-1);
           }}
           placeholder="Search types"
           aria-label="Search configuration types"
@@ -117,7 +128,7 @@ export function AddConfigPopup({
           variant="bare"
         />
       </div>
-      <div style={{ height: Math.max(rowHeight, Math.min(rows.length * rowHeight, 14 * rowHeight)) }}>
+      <div ref={viewport} className={styles.chooserViewport} style={{ height }}>
         <List<TypeRow>
           aria-label="Configuration types"
           className={styles.chooserList}
@@ -125,7 +136,7 @@ export function AddConfigPopup({
           getKey={(r) => r.key}
           isSection={isSection}
           renderSection={(r) => (r.kind === "group" ? r.label : null)}
-          activeIndex={rows[clamped]?.kind === "type" ? clamped : first}
+          activeIndex={selected}
           onActiveChange={setActive}
           focusable={false}
           hoverSelects
@@ -139,7 +150,7 @@ export function AddConfigPopup({
           renderItem={(r) =>
             r.kind === "type" ? (
               <span className={clsx(styles.chooserRow, r.nested && styles.typeNested)} title={r.type.description}>
-                <Icon name={r.type.icon} size={13} className={styles.chooserIcon} />
+                <Icon name={r.type.icon} size={16} className={styles.chooserIcon} />
                 <span className={styles.chooserName}>
                   {r.indices?.length ? <HighlightedText text={r.type.label} indices={r.indices} /> : r.type.label}
                 </span>

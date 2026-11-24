@@ -18,10 +18,28 @@
   border: 1px solid var(--border-popup);
   border-radius: var(--radius-small);
 }
-.toolbar:has(+ .preview) {
+.toolbar:has(+ .preview),
+.toolbar:has(+ .versions) {
   border-bottom: 0;
   border-end-start-radius: 0;
   border-end-end-radius: 0;
+}
+.versions {
+  max-width: var(--hunk-surface-width);
+  max-height: 280px;
+  overflow: auto;
+  border: 1px solid var(--border-popup);
+  border-radius: 0 var(--radius-small) var(--radius-small) var(--radius-small);
+}
+.versionLabel {
+  padding: var(--space-1) var(--space-2);
+  background: var(--bg-popup);
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+}
+.versions .preview {
+  border: 0;
+  border-radius: 0;
 }
 .title {
   display: flex;

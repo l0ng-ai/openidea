@@ -1,6 +1,6 @@
 /**
  * Form pieces of the Version Control / Build, Execution, Deployment / Tools
- * pages: bound checkboxes, "[x] Limit … to: [N] unit" rows, radio rows,
+ * pages: bound checkboxes, "[x] Limit … to: [N] unit" rows,
  * two-column grids, string lists and editable two-column tables.
  */
 import { useId, useState, type KeyboardEvent, type ReactNode } from "react";
@@ -8,7 +8,7 @@ import clsx from "clsx";
 import { Checkbox, IconButton, Input } from "@/ui";
 import { NumberInput, Row, SearchLabel, Toggle } from "../components/Form";
 import { useLabelMatch, useSetting } from "../components/context";
-import { selectPage } from "../model/staging";
+import { selectPage, type Scope } from "../model/staging";
 import styles from "./Workflow.module.css";
 
 export function BoundToggle({
@@ -16,13 +16,15 @@ export function BoundToggle({
   label,
   hint,
   disabled,
+  scope,
 }: {
   k: string;
   label: string;
   hint?: ReactNode;
   disabled?: boolean;
+  scope?: Scope;
 }) {
-  const [value, set] = useSetting<boolean>(k);
+  const [value, set] = useSetting<boolean>(k, scope);
   return <Toggle label={label} checked={!!value} onChange={set} hint={hint} disabled={disabled} />;
 }
 
@@ -49,6 +51,7 @@ export function ToggleNumber({
   min,
   max,
   hint,
+  disableWhenOff,
 }: {
   toggleKey: string;
   numberKey: string;
@@ -57,6 +60,7 @@ export function ToggleNumber({
   min: number;
   max: number;
   hint?: ReactNode;
+  disableWhenOff?: boolean;
 }) {
   const [on, setOn] = useSetting<boolean>(toggleKey);
   const [n, setN] = useSetting<number>(numberKey);
@@ -72,7 +76,15 @@ export function ToggleNumber({
           </>
         }
       />
-      <NumberInput value={n} onChange={setN} min={min} max={max} integer aria-label={label} />
+      <NumberInput
+        value={n}
+        onChange={setN}
+        min={min}
+        max={max}
+        integer
+        disabled={disableWhenOff && !on}
+        aria-label={label}
+      />
       {unit && <span className={clsx(styles.unit, !on && styles.disabled)}>{unit}</span>}
       {hint && <span className={styles.inlineHint}>{hint}</span>}
     </div>
@@ -90,13 +102,15 @@ export function RadioRow<V extends string>({
   label,
   choices,
   hint,
+  scope,
 }: {
   k: string;
   label: string;
   choices: readonly RadioChoice<V>[];
   hint?: ReactNode;
+  scope?: Scope;
 }) {
-  const [value, set] = useSetting<V>(k);
+  const [value, set] = useSetting<V>(k, scope);
   const name = useId();
   return (
     <Row label={label} hint={hint}>

@@ -43,9 +43,10 @@ pub fn app_info(state: State<'_, AppState>) -> AppInfo {
         #[cfg(not(target_os = "linux"))]
         wayland: false,
         #[cfg(target_os = "linux")]
-        window_buttons: crate::linux_window_state::decoration_layout()
-            .and_then(|layout| ide_core::platform::WindowButtonLayout::from_gtk_decoration_layout(&layout))
-            .unwrap_or_default(),
+        window_buttons: ide_core::platform::WindowButtonLayout::for_linux(
+            crate::linux_window_state::decoration_layout().as_deref(),
+            |key| std::env::var(key).ok(),
+        ),
         #[cfg(not(target_os = "linux"))]
         window_buttons: Default::default(),
     }
@@ -312,6 +313,7 @@ pub async fn settings_import(window: Window, state: State<'_, AppState>, path: P
     crate::commands::ssh::apply_ssh_settings(&state);
     state.host.mcp.apply(&state.host);
     state.host.apply_proxy();
+    state.host.apply_git_executable();
     state.updates.wake.notify_one();
     state.sink.emit(ide_core::IdeEvent::SettingsChanged { key: String::new() });
     let settings = ide_host::ops::project::settings_get(&state.host, window.label());
@@ -342,6 +344,21 @@ pub async fn settings_list_jetbrains_ides() -> IdeResult<Vec<ide_host::plugins::
 pub(crate) fn project_current(window: Window) -> Option<ProjectInfo> {
     let state = window.state::<AppState>();
     state.project(window.label()).ok().filter(|p| !p.light).map(|p| project_info(&p))
+}
+
+// Off the IPC thread: each member's `for_project().layer(Project)` re-parses both settings layers
+// and validates the merge against the whole `Settings` type, which a debug build's stack-heavy
+// recursion can overflow from the WebView2 callback (see the `settings_set` note above).
+pub(crate) fn project_workspace_members(window: Window) -> IdeResult<Vec<ide_host::ops::project::WorkspaceMember>> {
+    let state = window.state::<AppState>();
+    state.note_ipc();
+    ide_host::ops::project::project_workspace_members(&state.host, window.label())
+}
+
+pub(crate) fn project_workspace_member_set(window: Window, root: PathBuf, key: String, value: String) -> IdeResult<()> {
+    let state = window.state::<AppState>();
+    state.note_ipc();
+    ide_host::ops::project::project_workspace_member_set(&state.host, window.label(), root, key, value)
 }
 
 #[derive(Serialize, Deserialize, Type)]

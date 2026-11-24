@@ -1,26 +1,22 @@
 import { EditorState, StateEffect, StateField, type Extension } from "@codemirror/state";
-import { ViewPlugin, type EditorView } from "@codemirror/view";
+import type { EditorView } from "@codemirror/view";
 import type { CompletionContext, CompletionResult } from "@codemirror/autocomplete";
 import {
   intentionProviders,
   intentionsChanged,
+  offsetsToRange,
   quickFixProviders,
   registerEditorContribution,
   whenSynced,
   type ContributedIntention,
   type EditorDocContext,
 } from "@/editor/api";
-import { setFileDiagnostics } from "@/editor/lsp/diagnostics";
-import { offsetsToRange } from "@/editor/lsp/positions";
-import { call, commands, isTauri, nextRequestId, type DependencyVersions, type RequestId } from "@/platform/ipc";
-import {
-  DEPENDENCY_INSPECTION,
-  DEPENDENCY_PRODUCER,
-  inspectionProfile,
-  subscribeInspectionProfile,
-} from "@/platform/inspections";
+import { call, commands, isTauri, nextRequestId, type DependencyVersions } from "@/platform/ipc";
+import { DEPENDENCY_INSPECTION, DEPENDENCY_PRODUCER } from "@/platform/inspections";
 import { useProject } from "@/platform/project";
 import { tx } from "@/platform/i18n";
+import { checkEnabled, manifestCheck, type ManifestCheck } from "./manifestCheck";
+import { isPythonManifest, pythonRequirements, registerPythonRequirements } from "./python";
 
 const setVersions = StateEffect.define<DependencyVersions[]>();
 const versionsField = StateField.define<DependencyVersions[]>({
@@ -32,12 +28,8 @@ const versionsField = StateField.define<DependencyVersions[]>({
   },
 });
 
-const viewers = new Map<string, number>();
-
-const enabled = () => inspectionProfile()[DEPENDENCY_INSPECTION]?.enabled !== false;
-
 export function dependencyFixes(view: EditorView, from: number, to: number): ContributedIntention[] {
-  if (!enabled() || view.state.readOnly) return [];
+  if (!checkEnabled(DEPENDENCY_INSPECTION) || view.state.readOnly) return [];
   const text = view.state.doc;
   return (view.state.field(versionsField, false) ?? []).flatMap(({ dependency, update }) => {
     if (!update || from > dependency.to || to < dependency.from) return [];
@@ -79,95 +71,30 @@ export function versionCompletions(item: DependencyVersions, ctx: CompletionCont
   };
 }
 
+const cargoCheck: ManifestCheck<DependencyVersions[]> = {
+  inspection: DEPENDENCY_INSPECTION,
+  producer: DEPENDENCY_PRODUCER,
+  fetch: (doc, id) => call(commands.dependencyVersions(doc.doc, null, id)),
+  apply(view, items, text) {
+    view.dispatch({ effects: [setVersions.of(items), intentionsChanged.of(null)] });
+    return items.flatMap(({ dependency, update }) => {
+      if (!update) return [];
+      const { latest } = update;
+      return [
+        {
+          range: offsetsToRange(text, dependency.from, dependency.to),
+          severity: "info" as const,
+          message: tx`A newer version is available: ${latest}`,
+          source: "Cargo",
+          code: null,
+        },
+      ];
+    });
+  },
+};
+
 function extension(doc: EditorDocContext): Extension {
-  const plugin = ViewPlugin.define((view) => {
-    if (!isTauri()) return {};
-    viewers.set(doc.path, (viewers.get(doc.path) ?? 0) + 1);
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let request: RequestId | null = null;
-    let sequence = 0;
-    let disposed = false;
-    const clear = () => setFileDiagnostics(doc.path, DEPENDENCY_PRODUCER, []);
-    const cancel = () => {
-      sequence++;
-      if (request !== null) void commands.cancelRequest(request);
-      request = null;
-    };
-    const run = async () => {
-      if (disposed || !enabled()) return;
-      const mine = sequence;
-      const text = view.state.doc;
-      const root = useProject.getState().project?.root;
-      const id = nextRequestId();
-      request = id;
-      try {
-        await whenSynced(view);
-        if (mine !== sequence || disposed) return;
-        const items = await call(commands.dependencyVersions(doc.doc, null, id));
-        if (mine !== sequence || disposed || view.state.doc !== text || useProject.getState().project?.root !== root)
-          return;
-        view.dispatch({ effects: [setVersions.of(items), intentionsChanged.of(null)] });
-        setFileDiagnostics(
-          doc.path,
-          DEPENDENCY_PRODUCER,
-          items.flatMap(({ dependency, update }) => {
-            if (!update) return [];
-            const { latest } = update;
-            return [
-              {
-                range: offsetsToRange(text, dependency.from, dependency.to),
-                severity: "info",
-                message: tx`A newer version is available: ${latest}`,
-                source: "Cargo",
-                code: null,
-              },
-            ];
-          }),
-        );
-      } catch {
-        // Offline registries and cancelled checks never interrupt editing.
-      } finally {
-        if (request === id) request = null;
-      }
-    };
-    const schedule = () => {
-      cancel();
-      clear();
-      clearTimeout(timer);
-      timer = setTimeout(() => void run(), 500);
-    };
-    schedule();
-    const offProfile = subscribeInspectionProfile(() => {
-      schedule();
-      view.dispatch({ effects: intentionsChanged.of(null) });
-    });
-    const offProject = useProject.subscribe((state, previous) => {
-      if (state.project?.root !== previous.project?.root) {
-        disposed = true;
-        cancel();
-        clearTimeout(timer);
-        clear();
-      }
-    });
-    return {
-      update: (u) => {
-        if (u.docChanged) schedule();
-      },
-      destroy: () => {
-        disposed = true;
-        cancel();
-        clearTimeout(timer);
-        offProfile();
-        offProject();
-        const remaining = (viewers.get(doc.path) ?? 1) - 1;
-        if (remaining) viewers.set(doc.path, remaining);
-        else {
-          viewers.delete(doc.path);
-          clear();
-        }
-      },
-    };
-  });
+  const plugin = manifestCheck(doc, cargoCheck);
   return [
     versionsField,
     plugin,
@@ -205,13 +132,19 @@ function versionCompletion(doc: EditorDocContext): Extension {
 }
 
 export function activate(): () => void {
-  return registerEditorContribution({
+  const offPython = registerPythonRequirements();
+  const offEditor = registerEditorContribution({
     id: "dependency-versions",
     extensions: (doc) => {
       if (doc.virtual || doc.readOnly) return [];
       if (/(?:^|\/)Cargo\.toml$/.test(doc.path)) return extension(doc);
       if (/(?:^|\/)(?:go\.mod|package\.json)$/.test(doc.path)) return versionCompletion(doc);
+      if (isPythonManifest(doc.path)) return pythonRequirements(doc);
       return [];
     },
   });
+  return () => {
+    offEditor();
+    offPython();
+  };
 }

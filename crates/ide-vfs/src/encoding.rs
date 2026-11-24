@@ -103,7 +103,7 @@ pub fn save_properties_text(path: &Path, text: &str) -> IdeResult<f64> {
 }
 
 /// Detects BOM-less UTF-16 from the distribution of NUL bytes in mostly-ASCII text.
-fn sniff_utf16(sample: &[u8]) -> Option<&'static Encoding> {
+pub(crate) fn sniff_utf16(sample: &[u8]) -> Option<&'static Encoding> {
     if sample.len() < 4 {
         return None;
     }

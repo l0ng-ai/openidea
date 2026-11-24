@@ -4,6 +4,7 @@
  */
 import { activeEditor } from "@/editor/api";
 import { registerActions } from "@/platform/actions";
+import { choosePath } from "@/platform/choosePath";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { isRemoteWindow } from "@/platform/remote";
 import { maybeEditorService, notifications, projectViewSelection } from "@/workbench/contributions";
@@ -11,9 +12,10 @@ import { promptText } from "./dialogs";
 import { focusedDiffNavigator } from "./diffNavigator";
 import { compareFilesData, displayPath } from "./compareData";
 import { showDirectoryComparison } from "./directoryCompareKind";
+import { commitLineTarget, EXCLUDE_COMMIT_LINES, INCLUDE_COMMIT_LINES, setCommitLineInclusion } from "./hunkInclusion";
 export { compareFilesData, displayPath } from "./compareData";
 import { openDiff, openVcsDiff, type DiffData } from "./diffInput";
-import { baseName } from "./model";
+import { baseName, dirName } from "./model";
 import { tx } from "@/platform/i18n";
 import { readClipboardPlainText } from "@/platform/clipboard";
 import { workflowSettings } from "@/platform/workflowSettings";
@@ -35,14 +37,18 @@ function argPaths(arg: unknown): string[] {
 
 /** Clipboard ↔ the file (editable) or ↔ the editor selection. */
 export function clipboardDiffData(path: string, clipboard: string, selection: string | null): DiffData {
+  const file = baseName(path);
+  const label = selection !== null ? tx`Selection from ${file}` : file;
+  const labelDetail = dirName(displayPath(path));
   return {
     path,
     swappable: true,
-    title: selection ? tx`Clipboard ↔ ${baseName(path)} (selection)` : tx`Clipboard ↔ ${baseName(path)}`,
-    left: { type: "text", text: clipboard, label: "Clipboard" },
-    right: selection
-      ? { type: "text", text: selection, label: "Selection" }
-      : { type: "worktree", label: displayPath(path) },
+    title: selection !== null ? tx`Clipboard ↔ ${file} (selection)` : tx`Clipboard ↔ ${file}`,
+    left: { type: "text", text: clipboard, label: tx("From Clipboard") },
+    right:
+      selection !== null
+        ? { type: "text", text: selection, label, labelDetail }
+        : { type: "worktree", label, labelDetail },
   };
 }
 
@@ -92,16 +98,13 @@ function info(title: string) {
 }
 
 async function pickFile(near: string): Promise<string | null> {
-  if (!isTauri()) return null;
-  const { open } = await import("@/platform/dialog");
   const dir = near.slice(0, near.lastIndexOf("/")) || undefined;
-  const picked = await open({ multiple: false, directory: false, title: "Compare With", defaultPath: dir });
-  return (Array.isArray(picked) ? picked[0] : picked) ?? null;
+  return choosePath({ directory: false, title: tx("Compare With"), defaultPath: dir });
 }
 
 /**
- * The file to compare `path` against: the OS file dialog on the desktop; a
- * browser file picker's contents elsewhere (remote development / `pnpm dev`),
+ * The file to compare `path` against: a project-host path in the app; a
+ * browser file picker's contents in the browser build,
  * compared as text since no absolute path is available to the backend.
  */
 async function pickComparison(
@@ -178,6 +181,22 @@ export function registerCompareActions(): () => void {
       when: "diffEditorFocus",
       run: () => focusedDiffNavigator()?.prev(),
     },
+    ...(
+      [
+        [INCLUDE_COMMIT_LINES, "Include Selected Lines in Commit", true],
+        [EXCLUDE_COMMIT_LINES, "Exclude Selected Lines from Commit", false],
+      ] as const
+    ).map(([id, title, include]) => ({
+      id,
+      title,
+      category: "Git",
+      hidden: true,
+      enabled: ({ arg }: { arg?: unknown }) => !!commitLineTarget(arg, include),
+      run: ({ arg }: { arg?: unknown }) => {
+        const target = commitLineTarget(arg, include);
+        if (target) setCommitLineInclusion(target.path, target.view, target.selection, include);
+      },
+    })),
     {
       id: "diff.showSettings",
       title: "Diff Settings",

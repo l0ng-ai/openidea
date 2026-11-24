@@ -1,4 +1,6 @@
 import { create } from "zustand";
+import clsx from "clsx";
+import { useTx } from "@/platform/i18n";
 import { IconButton } from "@/ui";
 import type { Usage } from "./usages";
 import styles from "./UsageAccessFilter.module.css";
@@ -45,11 +47,16 @@ export function filterUsageAccess(items: readonly Usage[], options: UsageAccessO
 
 export const supportsUsageAccess = (items: readonly Usage[]) => items.some((u) => u.access && u.access !== "unknown");
 
-export function UsageAccessFilter({ items }: { items: readonly Usage[] }) {
+export function UsageAccessFilter({ items, vertical }: { items: readonly Usage[]; vertical?: boolean }) {
+  const tx = useTx();
   const options = useUsageAccessOptions();
   if (!supportsUsageAccess(items)) return null;
   return (
-    <div className={styles.toolbar} role="toolbar" aria-label="Usage access filters">
+    <div
+      className={clsx(styles.toolbar, vertical && styles.vertical)}
+      role={vertical ? "group" : "toolbar"}
+      aria-label={tx("Usage access filters")}
+    >
       <IconButton
         icon="show-read-access"
         size="small"

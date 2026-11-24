@@ -1,13 +1,11 @@
-.inline {
+.themeSync {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  margin-left: 8px;
-  padding: 0 4px;
   border-radius: var(--radius-row);
 }
 .themeSelect {
-  flex: 1 1 120px;
+  flex: 1 1 140px;
   min-width: min(120px, 100%);
   max-width: 180px;
 }
@@ -30,10 +28,16 @@
   color: var(--fg-subtle);
   overflow-wrap: anywhere;
 }
-.popupBody {
-  display: flex;
-  flex-direction: column;
-  padding: 8px 14px;
+.preferredThemes {
+  width: min(440px, calc(100vw - var(--space-4)));
+  padding: var(--space-2) var(--space-3);
+}
+.preferredThemes label {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.preferredThemes button {
+  width: 100%;
 }
 
 /* Inline option groups, with custom font controls wrapping together. */
@@ -47,39 +51,60 @@
   margin: 0 -6px;
   border-radius: var(--radius-row);
 }
-/* Custom font block (IDEA Appearance): labels share one column, so the UI font,
-   fallback and Size controls all start at the same x. */
+.idleDuration {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+}
+.fileSynchronization {
+  display: grid;
+  gap: var(--space-1);
+  padding-top: var(--space-2);
+}
 .customFontRow {
   display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
+  grid-template-columns: fit-content(42%) minmax(0, 280px) max-content;
   align-items: start;
   column-gap: var(--space-2);
   row-gap: var(--space-1);
-  min-height: 28px;
+  min-height: var(--h-field);
   padding: 2px 6px;
   margin: 0 -6px;
   border-radius: var(--radius-row);
 }
-.customFontRow > .fontLabel {
-  padding-top: 3px;
-  white-space: nowrap;
-}
-.customFontRow > .fontCheck {
-  white-space: nowrap;
-}
-.fontControl {
+.fontLabel,
+.fontCheck,
+.fontSize {
   display: flex;
   align-items: center;
+  min-height: var(--h-field);
   min-width: 0;
 }
-.sizeInput {
-  width: 64px;
+.fontSize {
+  gap: var(--space-2);
+}
+@container settings-content (max-width: 580px) {
+  .customFontRow {
+    grid-template-columns: fit-content(42%) minmax(0, 280px);
+  }
+  .fontSize {
+    grid-column: 2;
+  }
 }
 .disabled {
   color: var(--fg-subtle);
 }
 .pathInput {
   width: 320px;
+}
+.directoryBrowse {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.directoryBrowse > button {
+  flex: none;
 }
 .backgroundPreview {
   height: var(--h-control);
@@ -91,8 +116,14 @@
 .patternInput {
   width: 160px;
 }
+.patternHint,
 .preview {
-  color: var(--fg-muted);
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.preview {
   font-variant-numeric: tabular-nums;
 }
 
@@ -118,43 +149,68 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-4);
+  gap: var(--space-1) var(--space-4);
 }
 .radio {
   display: inline-flex;
   flex: none;
-  white-space: nowrap;
+  max-inline-size: 100%;
   align-items: center;
   gap: var(--space-1-5);
 }
 .radio input {
+  flex: none;
   margin: 0;
   accent-color: var(--accent);
 }
 
-.table {
-  width: 100%;
-  border-collapse: collapse;
+.notificationGroups {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+  align-items: start;
+  gap: var(--space-4);
 }
-.table th {
-  white-space: nowrap;
-  text-align: left;
-  font-weight: normal;
-  color: var(--fg-muted);
-  height: var(--h-list-row);
-  padding: 0 8px;
-  border-bottom: 1px solid var(--border);
+.notificationList {
+  height: calc(10 * var(--h-list-row) + 2px);
+  min-width: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-small);
 }
-.table td {
-  white-space: nowrap;
-  height: 32px;
-  padding: 0 8px;
+.notificationGroupLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.table tbody tr:hover {
-  background: var(--bg-tree-hover);
+.notificationDetails {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+  gap: var(--space-2);
 }
-.center {
-  text-align: center;
+.notificationTitle {
+  margin: 0;
+  color: var(--fg-strong);
+  font-size: var(--fs-ui);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.notificationDetails .notificationPopupRow {
+  grid-template-columns: fit-content(42%) minmax(0, 1fr);
+  align-self: stretch;
+  padding-inline: 0;
+  margin-inline: 0;
+}
+.notificationPopupRow label {
+  white-space: normal;
+}
+@container settings-content (max-width: 440px) {
+  .notificationGroups {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .notificationList {
+    height: calc(5 * var(--h-list-row) + 2px);
+  }
 }
 
 .iconPacks {

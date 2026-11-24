@@ -129,8 +129,7 @@ impl Repos {
                 continue;
             }
             let repo = self.at_root(&root.0).expect("scope comes from registry");
-            let _scope =
-                crate::ExecutionScope::enter(repo.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+            let _scope = repo.execution_scope();
             let mut missing_revision = false;
             let mut compare = || -> IdeResult<(String, Vec<WorkingTreeChange>)> {
                 // Worktree comparisons must not run repository-defined clean/process filters
@@ -704,6 +703,45 @@ mod tests {
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         (marker, script.to_str().unwrap().replace('\\', "/"))
+    }
+
+    #[test]
+    fn log_details_reads_each_signed_commit_once_when_git_displays_signatures() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = normalized(temp.path());
+        init(&root, "main");
+        git(&root, &["commit", "--allow-empty", "-qm", "first signed"]);
+        sign_head(&root, "PGP SIGNATURE");
+        git(&root, &["commit", "--allow-empty", "-qm", "second signed"]);
+        sign_head(&root, "PGP SIGNATURE");
+        let (_, script) = verifier_script(&root);
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf 'attempt\\n' >> verification-attempts\n\
+             printf '%s\\n' 'gpg: Test diagnostic' >&2\n\
+             printf '%s\\n' '[GNUPG:] NEWSIG' '[GNUPG:] BADSIG 61CF236723A1C18B Synthetic Signer'\nexit 1\n",
+        )
+        .unwrap();
+        git(&root, &["config", "log.showSignature", "true"]);
+        git(&root, &["config", "gpg.program", &script]);
+
+        let repo = crate::Repo::discover(&root).unwrap().unwrap();
+        repo.set_execution_allowed(true);
+        let revisions = ["HEAD^", "HEAD~2", "HEAD", "HEAD^"].map(String::from);
+        let cancel = CancellationToken::new();
+        let details = repo.log_details_batch_cancellable(&revisions, &cancel).unwrap();
+        assert_eq!(
+            details.iter().map(|d| (d.message.as_str(), d.signature.as_str())).collect::<Vec<_>>(),
+            [("first signed", "B"), ("initial", "N"), ("second signed", "B"), ("first signed", "B")]
+        );
+        assert_eq!(details[0].signer, "Synthetic Signer");
+        assert_eq!(details[2].key, "61CF236723A1C18B");
+        assert_eq!(repo.log_details("HEAD").unwrap().signature, "B");
+
+        repo.set_execution_allowed(false);
+        assert_eq!(repo.log_details("HEAD").unwrap().signature, "E");
+        let attempts = std::fs::read_to_string(root.join("verification-attempts")).unwrap();
+        assert_eq!(attempts.lines().count(), 2);
     }
 
     /// Security audit lead 2: Restricted Mode `git log` must not run the repository's signature verifier.

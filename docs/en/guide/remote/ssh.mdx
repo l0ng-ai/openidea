@@ -49,9 +49,12 @@ never to a settings file. The **+**, **−** and copy buttons above the list add
 ### `~/.ssh/config` support
 
 OpenIDEA has its own SSH client and reads `~/.ssh/config` itself. It understands `Host`, `Match`, `Include`,
-`HostName`, `User`, `Port`, `IdentityFile`, `ProxyJump`, `ProxyCommand`, `StrictHostKeyChecking` and
+`HostName`, `User`, `Port`, `IdentityFile`, `IdentityAgent`, `ProxyJump`, `ProxyCommand`, `StrictHostKeyChecking` and
 `UserKnownHostsFile`. Jump hosts authenticate with the agent and identity files; the password or passphrase of the
 configuration is only used for the target host.
+
+The SSH agent is the one `IdentityAgent` names, otherwise `SSH_AUTH_SOCK` as your login shell sets it, so an agent
+socket exported in `~/.zshrc` (for example a password manager's agent) works even when OpenIDEA is started from the Dock.
 
 Host keys are checked against `known_hosts`. An unknown key has to be trusted once; a changed key is refused unless
 host key checking is turned off for that host.
@@ -130,6 +133,10 @@ needed. The status bar then shows **WSL: `<distribution>`**.
 
 Opening a folder under `\\wsl.localhost\<distribution>\` also opens it through the distribution.
 **Browse** is not available for WSL.
+
+The **Ports** tool window is available in a WSL window too. Because the distribution shares this machine's
+`localhost`, a forwarded port is reachable here on the same port; the window lists, opens and remembers ports as it
+does for SSH.
 
 ## Other uses of SSH configurations
 

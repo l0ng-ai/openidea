@@ -13,17 +13,29 @@ import {
   rootFor,
   useProjectStructure,
   validateProjectStructure,
+  type ProjectStructureValid,
   type RootFolder,
 } from "./languageSettings";
 import { basename, projectFolder, useProject } from "./project";
+
+/** A project attached to the open one: it keeps its own Project Structure. */
+export interface AttachedProject {
+  root: string;
+  structure: ProjectStructureValid;
+  detected: RootFolder[];
+}
 
 interface RootsState {
   /** Project the roots belong to. */
   root: string | null;
   detected: RootFolder[];
+  attached: AttachedProject[];
 }
 
-export const useProjectRoots = create<RootsState>(() => ({ root: null, detected: [] }));
+export const useProjectRoots = create<RootsState>(() => ({ root: null, detected: [], attached: [] }));
+
+const rootFolders = (folders: readonly { path: string; kind: RootFolder["kind"]; detectedFrom?: string | null }[]) =>
+  folders.map((r) => ({ path: r.path, kind: r.kind, detectedFrom: r.detectedFrom ?? null }));
 
 let generation = 0;
 
@@ -32,18 +44,26 @@ export async function loadProjectRoots(): Promise<void> {
   const root = useProject.getState().project?.root ?? null;
   const gen = ++generation;
   if (!root || !isTauri()) {
-    useProjectRoots.setState({ root, detected: [] });
+    useProjectRoots.setState({ root, detected: [], attached: [] });
     return;
   }
   try {
-    const roots = await call(commands.projectRoots());
+    const [roots, members] = await Promise.all([
+      call(commands.projectRoots()),
+      call(commands.projectWorkspaceMembers()).catch(() => []),
+    ]);
     if (gen !== generation) return;
     useProjectRoots.setState({
       root,
-      detected: roots.detected.map((r) => ({ path: r.path, kind: r.kind, detectedFrom: r.detectedFrom ?? null })),
+      detected: rootFolders(roots.detected),
+      attached: members.map((m) => ({
+        root: m.root,
+        structure: validateProjectStructure(m.structure),
+        detected: rootFolders(m.detected),
+      })),
     });
   } catch {
-    if (gen === generation) useProjectRoots.setState({ root, detected: [] });
+    if (gen === generation) useProjectRoots.setState({ root, detected: [], attached: [] });
   }
 }
 
@@ -82,6 +102,13 @@ function currentDetected(): RootFolder[] {
 /** Effective roots right now (non-reactive). */
 export function currentRoots(): RootFolder[] {
   return effectiveRoots(currentDetected(), validateProjectStructure(useProject.getState().settings?.projectStructure));
+}
+
+/** The attached project holding the absolute `path` (outside the open project's folder), if any. */
+export function attachedProjectOf(path: string): AttachedProject | null {
+  const s = useProjectRoots.getState();
+  if (s.root !== (useProject.getState().project?.root ?? null)) return null;
+  return s.attached.find((p) => path === p.root || path.startsWith(`${p.root}/`)) ?? null;
 }
 
 /** Detected roots of the open project right now (non-reactive). */
