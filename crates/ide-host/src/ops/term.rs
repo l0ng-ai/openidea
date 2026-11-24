@@ -53,6 +53,7 @@ pub async fn term_spawn(
         Box::new(move |chunk| {
             let _ = on_output.send(chunk);
         }),
+        None,
     )?;
     if let Some(line) = activation {
         let _ = host.terminals.write(info.id, &format!(" {line}\r"));

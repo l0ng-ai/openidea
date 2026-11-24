@@ -720,6 +720,14 @@ async fn api14_stage3_remote_terminal_pins_and_exit_events_stay_on_the_execution
     .await
     .unwrap();
     assert_eq!(run.await.unwrap(), operation);
+    let attached = invoke(
+        &peer,
+        "term_attach",
+        json!({"id": terminal["id"], "cols": 80, "rows": 24, "onOutput": {"$channel": 41}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(attached["session"]["id"], terminal["id"]);
     invoke(
         &peer,
         "plugin_run_command",
@@ -729,16 +737,23 @@ async fn api14_stage3_remote_terminal_pins_and_exit_events_stay_on_the_execution
     .unwrap();
     until("PTY exit", 5, || client.events.lock().iter().any(|m| matches!(m.event, IdeEvent::TerminalExited { .. })))
         .await;
-    plugins.host().flush_events_at(std::time::Instant::now() + Duration::from_secs(3));
-    plugins.host().wait_events(Duration::from_secs(5));
-    let received = invoke(
-        &peer,
-        "plugin_run_command",
-        json!({"pluginId": "execution", "commandId": "events", "arg": null, "editor": null}),
-    )
+    let received = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let received = invoke(
+                &peer,
+                "plugin_run_command",
+                json!({"pluginId": "execution", "commandId": "events", "arg": null, "editor": null}),
+            )
+            .await
+            .unwrap();
+            if let Some(events) = received.as_str() {
+                break serde_json::from_str::<Value>(events).unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
     .await
-    .unwrap();
-    let received: Value = serde_json::from_str(received.as_str().unwrap()).unwrap();
+    .expect("plugin terminal completion after reattach");
     assert_eq!(received.as_array().unwrap().len(), 1);
     assert_eq!(received[0]["kind"], "terminal-exited");
     let data: Value = serde_json::from_str(received[0]["data"].as_str().unwrap()).unwrap();

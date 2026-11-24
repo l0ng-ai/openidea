@@ -258,6 +258,9 @@ enum Msg {
     Exited(Option<i32>),
 }
 
+/// Runs when a PTY exits, before the exit event is forwarded to the current sink.
+pub type TerminalExitHook = Arc<dyn Fn(Option<i32>) + Send + Sync>;
+
 impl TerminalManager {
     pub fn new() -> Self {
         Self::default()
@@ -265,15 +268,16 @@ impl TerminalManager {
 
     /// Starts a shell; output goes to `on_output` from a reader thread, batched
     /// (~4ms) to limit IPC chatter and always split on UTF-8 boundaries.
-    /// Emits `IdeEvent::TerminalExited` to `sink` (the starter's) only.
+    /// Calls `on_exit` if supplied and emits `IdeEvent::TerminalExited` to the current sink.
     pub fn spawn(
         &self,
         options: TerminalOptions,
         key: String,
         sink: SharedSink,
         on_output: Box<dyn Fn(String) + Send>,
+        on_exit: Option<TerminalExitHook>,
     ) -> IdeResult<TerminalInfo> {
-        self.spawn_impl(options, key, sink, on_output, false)
+        self.spawn_impl(options, key, sink, on_output, on_exit, false)
     }
 
     /// Runs an approved absolute executable with exact arguments and cwd.
@@ -284,6 +288,7 @@ impl TerminalManager {
         key: String,
         sink: SharedSink,
         on_output: Box<dyn Fn(String) + Send>,
+        on_exit: Option<TerminalExitHook>,
     ) -> IdeResult<TerminalInfo> {
         if !options.shell.as_deref().is_some_and(|p| Path::new(p).is_absolute())
             || !options.cwd.is_absolute()
@@ -291,7 +296,7 @@ impl TerminalManager {
         {
             return Err(IdeError::invalid("a program PTY requires an absolute executable and an existing cwd"));
         }
-        self.spawn_impl(options, key, sink, on_output, true)
+        self.spawn_impl(options, key, sink, on_output, on_exit, true)
     }
 
     fn spawn_impl(
@@ -300,6 +305,7 @@ impl TerminalManager {
         key: String,
         sink: SharedSink,
         on_output: Box<dyn Fn(String) + Send>,
+        on_exit: Option<TerminalExitHook>,
         exact: bool,
     ) -> IdeResult<TerminalInfo> {
         let size = pty_size(options.cols, options.rows);
@@ -415,7 +421,7 @@ impl TerminalManager {
                 exited,
                 self.sessions.clone(),
                 sink,
-                Instant::now(),
+                on_exit,
             )
         });
         if let Err(e) = spawned {
@@ -463,7 +469,7 @@ impl TerminalManager {
         self.sessions.lock().insert(id, session);
         let receiver = feed.into_parts();
         let budget = receiver.budget.clone();
-        if let Err(e) = spawn_pump(id, receiver, output, exited, self.sessions.clone(), sink, Instant::now()) {
+        if let Err(e) = spawn_pump(id, receiver, output, exited, self.sessions.clone(), sink, None) {
             budget.close();
             if let Some(s) = self.sessions.lock().remove(&id) {
                 terminate(&s);
@@ -854,8 +860,9 @@ fn spawn_pump(
     exited: Arc<AtomicBool>,
     sessions: Sessions,
     sink: Arc<Mutex<SharedSink>>,
-    started: Instant,
+    on_exit: Option<TerminalExitHook>,
 ) -> std::io::Result<()> {
+    let started = Instant::now();
     std::thread::Builder::new().name(format!("openidea-term-pump-{}", id.0)).spawn(move || {
         let first_output = std::cell::Cell::new(true);
         let emit_output = |text: String| {
@@ -926,6 +933,9 @@ fn spawn_pump(
         let code = exit.flatten();
         tracing::debug!(%id, ?code, "terminal exited");
         let target_sink = sink.lock().clone();
+        if let Some(on_exit) = on_exit {
+            on_exit(code);
+        }
         target_sink.emit(IdeEvent::TerminalExited { terminal: id, code });
     })?;
     Ok(())
@@ -1265,6 +1275,7 @@ mod tests {
                 Box::new(move |s| {
                     let _ = tx.send(s);
                 }),
+                None,
             )
             .expect("spawn");
         (info, rx)
@@ -1331,14 +1342,14 @@ mod tests {
         let h = harness();
         let mut options = sh("exit 0");
         options.shell = None;
-        assert!(h.manager.spawn_program(options, "test".into(), h.sink.clone(), Box::new(|_| {})).is_err());
+        assert!(h.manager.spawn_program(options, "test".into(), h.sink.clone(), Box::new(|_| {}), None).is_err());
         let mut options = sh("exit 0");
         options.shell = Some("sh".into());
-        assert!(h.manager.spawn_program(options, "test".into(), h.sink.clone(), Box::new(|_| {})).is_err());
+        assert!(h.manager.spawn_program(options, "test".into(), h.sink.clone(), Box::new(|_| {}), None).is_err());
         let mut options = sh("exit 0");
         options.cwd = std::env::temp_dir().join(format!("openidea-missing-{}", std::process::id())).into();
         assert!(!options.cwd.exists());
-        assert!(h.manager.spawn_program(options, "test".into(), h.sink.clone(), Box::new(|_| {})).is_err());
+        assert!(h.manager.spawn_program(options, "test".into(), h.sink.clone(), Box::new(|_| {}), None).is_err());
         assert!(h.manager.list().is_empty());
     }
 
@@ -1468,7 +1479,7 @@ mod tests {
         let h = harness();
         let (other_sink, other_events) = channel_sink();
         let (mine, _rx) = spawn_collect(&h, sh("exit 1"));
-        let theirs = h.manager.spawn(sh("exit 2"), "other".into(), other_sink, Box::new(|_| {})).expect("spawn");
+        let theirs = h.manager.spawn(sh("exit 2"), "other".into(), other_sink, Box::new(|_| {}), None).expect("spawn");
         match h.events.recv_timeout(Duration::from_secs(10)).expect("exit event") {
             IdeEvent::TerminalExited { terminal, code } => assert_eq!((terminal, code), (mine.id, Some(1))),
             e => panic!("unexpected {e:?}"),
@@ -1479,6 +1490,34 @@ mod tests {
         }
         std::thread::sleep(Duration::from_millis(100));
         assert!(h.events.try_recv().is_err() && other_events.try_recv().is_err(), "no cross delivery");
+    }
+
+    #[test]
+    fn reattach_keeps_the_program_exit_hook_and_rebinds_the_event_sink() {
+        let h = harness();
+        let (completion, completed) = mpsc::channel();
+        let info = h
+            .manager
+            .spawn_program(
+                sh("read _; exit 7"),
+                "test".into(),
+                h.sink.clone(),
+                Box::new(|_| {}),
+                Some(Arc::new(move |code| {
+                    let _ = completion.send(code);
+                })),
+            )
+            .unwrap();
+        let (sink, events) = channel_sink();
+        h.manager.reattach(info.id, "test", 80, 24, sink, Box::new(|_| {})).unwrap();
+        h.manager.write(info.id, "\n").unwrap();
+
+        match events.recv_timeout(Duration::from_secs(10)).expect("exit event after reattach") {
+            IdeEvent::TerminalExited { terminal, code } => assert_eq!((terminal, code), (info.id, Some(7))),
+            e => panic!("unexpected {e:?}"),
+        }
+        assert_eq!(completed.try_recv(), Ok(Some(7)));
+        assert!(h.events.try_recv().is_err(), "exit delivered to the old sink");
     }
 
     #[test]
