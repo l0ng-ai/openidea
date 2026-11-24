@@ -1,14 +1,18 @@
 use ide_core::{ChangeSet, NullSink, TextChange};
-use ide_host::{Host, HostConfig, ops::vcs};
-use std::{path::Path, process::Command, sync::Arc, time::Duration};
+use ide_host::{Host, HostConfig, Project, ops::vcs};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+    sync::Arc,
+    time::Duration,
+};
 
 fn git(root: &Path, args: &[&str]) {
     let out = Command::new("git").current_dir(root).args(args).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn gbk_document_gutter_diff_stage_and_rollback_share_encoding() {
+fn repo() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let temp = tempfile::tempdir().unwrap();
     let base = dunce::canonicalize(temp.path()).unwrap();
     let root = base.join("project");
@@ -18,13 +22,10 @@ async fn gbk_document_gutter_diff_stage_and_rollback_share_encoding() {
     git(&root, &["config", "user.email", "test@example.com"]);
     git(&root, &["config", "commit.gpgsign", "false"]);
     git(&root, &["config", "core.autocrlf", "false"]);
-    let path = root.join("Example.java");
-    let old = "// 中文注释\nclass Example {\n    // 保持不变\n    int value = 1;\n}\n";
-    let original = ide_vfs::encode(old, "gbk", false).unwrap();
-    std::fs::write(&path, &original).unwrap();
-    std::fs::write(root.join("Utf8.java"), old).unwrap();
-    git(&root, &["add", "."]);
-    git(&root, &["commit", "-m", "GBK Java"]);
+    (temp, base, root)
+}
+
+async fn open(base: &Path, root: &Path) -> (Host, Arc<Project>) {
     let host = Host::new(HostConfig {
         config_dir: base.join("config"),
         data_dir: base.join("data"),
@@ -36,14 +37,28 @@ async fn gbk_document_gutter_diff_stage_and_rollback_share_encoding() {
         runtime: tokio::runtime::Handle::current(),
         project_environment: false,
     });
-    host.trust.decide(&root, true, false).unwrap();
-    let project = host.open_project("main", &root).unwrap();
+    host.trust.decide(root, true, false).unwrap();
+    let project = host.open_project("main", root).unwrap();
     for _ in 0..500 {
         if !project.repos().is_empty() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+    (host, project)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gbk_document_gutter_diff_stage_and_rollback_share_encoding() {
+    let (_temp, base, root) = repo();
+    let path = root.join("Example.java");
+    let old = "// 中文注释\nclass Example {\n    // 保持不变\n    int value = 1;\n}\n";
+    let original = ide_vfs::encode(old, "gbk", false).unwrap();
+    std::fs::write(&path, &original).unwrap();
+    std::fs::write(root.join("Utf8.java"), old).unwrap();
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-m", "GBK Java"]);
+    let (host, project) = open(&base, &root).await;
     let mut defaults = project.documents.file_defaults();
     defaults.project_fallback = "gbk".into();
     project.documents.set_file_defaults(defaults);
@@ -155,5 +170,20 @@ async fn a_directory_symlink_revision_is_its_target() {
         Some("target")
     );
     assert_eq!(vcs::vcs_file_mode(&host, "main", link, Some("HEAD".into())).await.unwrap().as_deref(), Some("120000"));
+    host.close_project("main");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ascii_properties_keep_utf8_for_vcs_by_default() {
+    let (_temp, base, root) = repo();
+    let path = root.join("messages.properties");
+    std::fs::write(&path, b"greeting=Hello\n").unwrap();
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-m", "properties"]);
+    let (host, project) = open(&base, &root).await;
+
+    assert_eq!(project.vcs_encoding(&path, None).unwrap().charset, encoding_rs::UTF_8, "working file");
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(project.vcs_encoding(&path, Some("HEAD")).unwrap().charset, encoding_rs::UTF_8, "revision");
     host.close_project("main");
 }

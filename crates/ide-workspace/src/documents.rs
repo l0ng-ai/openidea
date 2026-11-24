@@ -434,12 +434,15 @@ impl Documents {
             if let Some(le) = ec.end_of_line {
                 doc.set_line_ending(le);
             }
-            // An empty file has no detectable encoding: take the configured one. Plain ASCII
-            // reads the same in any ASCII-compatible charset, so it takes the declared one too.
+            // ASCII bytes read the same in any ASCII-compatible charset.
+            let ascii_bytes = || {
+                encoding_rs::Encoding::for_label(encoding.as_bytes()).is_some_and(|e| e.is_ascii_compatible())
+                    && loaded.text.is_ascii()
+            };
             if let Some((enc, bom)) = ec.encoding() {
                 if empty_file {
                     (encoding, has_bom) = (enc.to_owned(), bom);
-                } else if !has_bom && !enc.starts_with("utf-16") && loaded.text.is_ascii() {
+                } else if !has_bom && !enc.starts_with("utf-16") && ascii_bytes() {
                     encoding = enc.to_owned();
                 }
             }

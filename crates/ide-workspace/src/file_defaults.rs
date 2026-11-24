@@ -54,16 +54,17 @@ impl FileDefaults {
         }
     }
 
-    /// Encoding for `path` when it is not valid UTF-8 or is plain ASCII (`None`: detect).
-    pub fn fallback_for(&self, path: &Path) -> Option<&str> {
-        let label = if path.extension().is_some_and(|e| e == "properties") {
-            &self.properties_fallback
+    /// Encoding for `path` when it is not valid UTF-8 (`None`: detect). The project and
+    /// global encodings also label plain ASCII; the properties encoding only decodes.
+    pub fn fallback_for(&self, path: &Path) -> Option<ide_vfs::Fallback<'_>> {
+        let (label, ascii) = if path.extension().is_some_and(|e| e == "properties") {
+            (&self.properties_fallback, false)
         } else if self.root.as_ref().is_none_or(|r| path.starts_with(r)) {
-            &self.project_fallback
+            (&self.project_fallback, true)
         } else {
-            &self.global_fallback
+            (&self.global_fallback, true)
         };
-        (label != "utf-8").then_some(label.as_str())
+        (label != "utf-8").then_some(ide_vfs::Fallback { encoding: label, ascii })
     }
 
     pub fn native_to_ascii_for(&self, path: &Path) -> bool {
@@ -101,9 +102,10 @@ mod tests {
         let d = FileDefaults::from_settings(&s, Some(Path::new("/p")));
         assert!(d.utf8_bom);
         assert_eq!(d.line_ending, LineEnding::CrLf);
-        assert_eq!(d.fallback_for(Path::new("/p/a.txt")), Some("gbk"));
+        let fallback = |encoding, ascii| Some(ide_vfs::Fallback { encoding, ascii });
+        assert_eq!(d.fallback_for(Path::new("/p/a.txt")), fallback("gbk", true));
         assert_eq!(d.fallback_for(Path::new("/elsewhere/a.txt")), None);
-        assert_eq!(d.fallback_for(Path::new("/p/a.properties")), Some("iso-8859-1"));
+        assert_eq!(d.fallback_for(Path::new("/p/a.properties")), fallback("iso-8859-1", false));
         assert!(d.new_file_bytes().is_empty(), "BOM only for UTF-8 new files");
     }
 }

@@ -1376,15 +1376,41 @@ fn editorconfig_utf8_charset_wins_over_a_latin_project_for_ascii_files() {
 }
 
 #[test]
-fn ascii_properties_file_takes_the_properties_encoding_by_default() {
+fn ascii_properties_file_stays_utf8_by_default() {
     let f = fixture();
     let path = f.root.join("messages.properties");
     fs::write(&path, b"greeting=Hello\n").unwrap();
 
     let doc = f.docs.open(&path).unwrap();
-    assert_eq!(doc.encoding, "windows-1252", "the iso-8859-1 default is windows-1252 in WHATWG");
+    assert_eq!(doc.encoding, "utf-8", "the properties encoding only decodes bytes that are not UTF-8");
     f.docs.edit(doc.id, doc.version, change(9, 14, "Olá")).unwrap();
     f.docs.save(doc.id).unwrap();
 
-    assert_eq!(fs::read(&path).unwrap(), b"greeting=Ol\xe1\n");
+    assert_eq!(fs::read(&path).unwrap(), "greeting=Olá\n".as_bytes());
+}
+
+#[test]
+fn latin_properties_file_still_decodes_with_the_properties_encoding() {
+    let f = fixture();
+    let path = f.root.join("messages.properties");
+    fs::write(&path, b"greeting=Ol\xe1\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "windows-1252");
+    assert_eq!(f.docs.text_of(&path).as_deref(), Some("greeting=Olá\n"));
+}
+
+#[test]
+fn editorconfig_charset_leaves_a_bomless_utf16_file_alone() {
+    let f = fixture();
+    fs::write(f.root.join(".editorconfig"), "root = true\n[*.txt]\ncharset = latin1\n").unwrap();
+    let path = f.root.join("a.txt");
+    fs::write(&path, b"a\x00b\x00c\x00d\x00").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "utf-16le");
+    f.docs.edit(doc.id, doc.version, change(4, 4, "e")).unwrap();
+    f.docs.save(doc.id).unwrap();
+
+    assert_eq!(fs::read(&path).unwrap(), b"a\x00b\x00c\x00d\x00e\x00");
 }

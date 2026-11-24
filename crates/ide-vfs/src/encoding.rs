@@ -174,6 +174,14 @@ pub(crate) fn decode(bytes: &[u8]) -> (String, &'static Encoding, bool, bool) {
     (text.into_owned(), enc, false, false)
 }
 
+/// The configured encoding of a file. It decodes text that is neither valid UTF-8 nor
+/// marked by a BOM and, when `ascii` is set, also labels plain ASCII text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fallback<'a> {
+    pub encoding: &'a str,
+    pub ascii: bool,
+}
+
 pub(crate) enum Resolution {
     Keep,
     /// Plain ASCII reads the same in the configured encoding: only the label changes.
@@ -181,24 +189,24 @@ pub(crate) enum Resolution {
     Redecode(&'static Encoding),
 }
 
-/// How decoded text meets the configured encoding (`fallback`). BOM-marked, UTF-16 and
-/// non-ASCII UTF-8 text keep what was detected; plain ASCII takes the configured encoding
-/// so characters typed later are saved in it; other text is decoded as configured.
+/// How decoded text meets the configured encoding; see [`Fallback`].
 pub(crate) fn resolve(
     text: &str,
     detected: &'static Encoding,
     has_bom: bool,
     binary: bool,
-    fallback: Option<&str>,
+    fallback: Option<Fallback<'_>>,
 ) -> Resolution {
-    let Some(fallback) = fallback.and_then(|label| Encoding::for_label(label.trim().as_bytes())) else {
+    let Some((fallback, ascii)) =
+        fallback.and_then(|f| Some((Encoding::for_label(f.encoding.trim().as_bytes())?, f.ascii)))
+    else {
         return Resolution::Keep;
     };
     if binary || has_bom || fallback == detected || detected == UTF_16LE || detected == UTF_16BE {
         Resolution::Keep
     } else if detected != UTF_8 {
         Resolution::Redecode(fallback)
-    } else if fallback.is_ascii_compatible() && text.is_ascii() {
+    } else if ascii && fallback.is_ascii_compatible() && text.is_ascii() {
         Resolution::Relabel(fallback)
     } else {
         Resolution::Keep
@@ -259,7 +267,11 @@ pub(crate) fn load_text(path: &Path) -> IdeResult<LoadedText> {
 }
 
 /// Bounded disk snapshots for background consumers that share editor decoding.
-pub(crate) fn load_text_bounded(path: &Path, fallback: Option<&str>, max_bytes: usize) -> IdeResult<LoadedText> {
+pub(crate) fn load_text_bounded(
+    path: &Path,
+    fallback: Option<Fallback<'_>>,
+    max_bytes: usize,
+) -> IdeResult<LoadedText> {
     use std::io::Read;
     let regular = |meta: &fs::Metadata| meta.is_file() && meta.len() <= max_bytes as u64;
     if !regular(&fs::metadata(path)?) {
@@ -731,18 +743,21 @@ mod tests {
             };
             let text = format!("{text}{}", "padding ".repeat(16));
             crate::save_text(&path, &text, encoding, bom).unwrap();
-            let ordinary = crate::load_text_with_fallback(&path, Some(encoding)).unwrap();
-            let bounded = load_text_bounded(&path, Some(encoding), 1024).unwrap();
+            let ordinary = crate::load_text_with_fallback(&path, Some(Fallback { encoding, ascii: true })).unwrap();
+            let bounded = load_text_bounded(&path, Some(Fallback { encoding, ascii: true }), 1024).unwrap();
             assert!(!bounded.binary, "{encoding} BOM={bom}");
             assert_eq!(bounded.text, text, "{encoding} BOM={bom}");
             assert_eq!(
                 (&bounded.text, &bounded.encoding, bounded.has_bom),
                 (&ordinary.text, &ordinary.encoding, ordinary.has_bom)
             );
-            assert!(load_text_bounded(&path, Some(encoding), 2).is_err());
+            assert!(load_text_bounded(&path, Some(Fallback { encoding, ascii: true }), 2).is_err());
         }
         fs::write(&path, [0xe9; 4]).unwrap();
-        assert!(load_text_bounded(&path, Some("windows-1252"), 4).is_err(), "decoded UTF-8 expansion is bounded");
+        assert!(
+            load_text_bounded(&path, Some(Fallback { encoding: "windows-1252", ascii: true }), 4).is_err(),
+            "decoded UTF-8 expansion is bounded"
+        );
         fs::write(&path, b"\x7fELF\0\0").unwrap();
         assert!(load_text_bounded(&path, None, 1024).unwrap().binary);
     }

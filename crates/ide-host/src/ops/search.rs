@@ -103,7 +103,8 @@ pub(crate) fn search_project(
         Some(syntax.literals(&language, text)?.into_iter().map(literal_range).collect())
     };
     let defaults = project.documents.file_defaults();
-    let decode = |path: &Path, bytes: &[u8]| ide_vfs::decode_text(bytes, defaults.fallback_for(path));
+    let decode =
+        |path: &Path, bytes: &[u8]| ide_vfs::decode_text(bytes, defaults.fallback_for(path).map(|f| f.encoding));
     let mut total = SearchSummary::default();
     for dir in std::iter::once(root).filter(|_| include_root).chain(&content_roots) {
         let mut remaining = query.clone();
