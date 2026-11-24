@@ -22,6 +22,7 @@ export async function loadPythonPackages(path: string): Promise<void> {
   if (!isTauri()) return;
   for (let dir = parent(parent(path)); dir; dir = parent(dir)) {
     if (!known.has(dir)) {
+      // oxlint-disable-next-line no-await-in-loop -- walks parents upward, caching each and stopping at the first non-package
       const kind = await call(commands.fsEntryKind(`${dir}/__init__.py`)).catch(() => null);
       known.set(dir, kind === "file");
     }

@@ -146,6 +146,7 @@ async function ddlOf(n: DbNode): Promise<{ id: string; text: string } | null> {
     }
     const parts: string[] = [];
     for (const schema of schemas) {
+      // oxlint-disable-next-line no-await-in-loop -- schemas load in turn so cancellation is checked after each schema and DDL stays grouped by schema
       const tables = (await tablesIn(id, schema)).filter(
         (t) => n.kind !== "folder" || tableFolder(t.kind) === n.folder,
       );
@@ -153,6 +154,7 @@ async function ddlOf(n: DbNode): Promise<{ id: string; text: string } | null> {
       // Tables before views: views select from them.
       tables.sort((a, b) => Number(a.kind !== "table") - Number(b.kind !== "table"));
       for (const t of tables) {
+        // oxlint-disable-next-line no-await-in-loop -- DDL text is appended in table order (tables before views) and stops when the request is superseded
         parts.push(await one(schema, t.name));
         if (!current()) return null;
       }

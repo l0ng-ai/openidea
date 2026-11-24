@@ -307,6 +307,7 @@ async function reattachRemoteRuns(root: string, knownConfigs: readonly RunConfig
       enqueue(sessionId, chunk);
     };
     try {
+      // oxlint-disable-next-line no-await-in-loop -- attaches in turn with a project guard, then adds the session to shared run state
       const attached = await call(commands.runAttach(info.id, channel));
       if (useProject.getState().project?.root !== root) return;
       if (useRun.getState().sessions.some((s) => s.runId === info.id)) continue;
@@ -1700,8 +1701,13 @@ export async function runSelectedTests(
             ...next,
             id: `context:tests:${base.id}:${index}:${paths.map((p) => p.join("/")).join("|")}`,
           });
-    if (debug) await executeAction("run.debugConfig", config);
-    else await startRun(config, undefined, base);
+    if (debug) {
+      // oxlint-disable-next-line no-await-in-loop -- derived tests launch in order to keep tab order and shared run state consistent
+      await executeAction("run.debugConfig", config);
+    } else {
+      // oxlint-disable-next-line no-await-in-loop -- derived tests launch in order to keep tab order and shared run state consistent
+      await startRun(config, undefined, base);
+    }
   }
   return true;
 }
@@ -1920,6 +1926,7 @@ export async function startSampleOutput(lines: number, perFrame: number): Promis
     /* no workbench (tests) */
   }
   for (let i = 0; i < lines;) {
+    // oxlint-disable-next-line no-await-in-loop -- output is paced one animation frame at a time to simulate streaming logs
     await new Promise(requestAnimationFrame);
     for (const end = Math.min(lines, i + perFrame); i < end; i++) {
       const line = SAMPLE_LINES[i % 20 === 19 ? 1 : i % 7 === 6 ? 2 : 0]!(i);

@@ -786,6 +786,7 @@ describe("service selection", () => {
     leaf(runServiceProvider.menu!(item("dev")), "Remove from Services").run!();
     for (const id of ["run-all", "restart-all"]) {
       startRun.mockClear();
+      // oxlint-disable-next-line no-await-in-loop -- each action resets mocks and asserts its own calls before the next action runs
       await runServiceProvider.actions!(group)
         .find((a) => a.id === id)!
         .run();

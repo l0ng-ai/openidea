@@ -178,6 +178,7 @@ export async function syncTomcatOnBuildCompleted(event: BuildCompletedEvent): Pr
     updatingConfigs.add(session.config.id);
     useApplicationUpdates.setState((st) => ({ ids: new Set([...st.ids, session.id]) }));
     try {
+      // oxlint-disable-next-line no-await-in-loop -- deployments sync in turn; parallel notices would race the shared tomcat-sync key and writes could target the same exploded artifact
       const synced = await syncTomcatOutputs(session.config, false, "noBuild");
       if (!synced) continue;
       const debugging =
