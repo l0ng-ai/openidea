@@ -184,6 +184,7 @@ export function Tabs({
   const given = useGivenTx();
   const scrollRef = useRef<HTMLDivElement>(null);
   const tabRefs = useRef(new Map<string, HTMLButtonElement>());
+  const middlePressedTab = useRef<HTMLDivElement | null>(null);
   const [overflow, setOverflow] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const closeMenu = useCallback(() => setMenuOpen(false), [setMenuOpen]);
@@ -458,10 +459,20 @@ export function Tabs({
                   : undefined
               }
               onMouseDown={(e) => {
-                if (e.button === 1 && closable) {
-                  e.preventDefault();
-                  onClose!(item.id);
-                }
+                if (e.button !== 1 || !closable) return;
+                e.preventDefault();
+                middlePressedTab.current = e.currentTarget;
+              }}
+              onMouseLeave={(e) => {
+                if (middlePressedTab.current === e.currentTarget) middlePressedTab.current = null;
+              }}
+              onMouseUp={(e) => {
+                if (e.button !== 1 || middlePressedTab.current !== e.currentTarget) return;
+                middlePressedTab.current = null;
+                if (!closable) return;
+                // WebKitGTK pastes the primary selection on release. Cancel it before closing the tab moves focus.
+                e.preventDefault();
+                onClose!(item.id);
               }}
               onContextMenu={onContextMenu ? (e) => onContextMenu(item.id, e) : undefined}
             >
