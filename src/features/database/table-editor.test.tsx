@@ -45,6 +45,7 @@ const page: DbTablePage = {
     hasMore: false,
     elapsedMs: 1,
     executionMs: 1,
+    truncated: [],
   },
   details: {
     columns: [

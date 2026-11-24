@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   effective: vi.fn(),
   packages: vi.fn(),
   pypi: vi.fn(),
+  names: vi.fn(),
   pip: vi.fn(),
   container: vi.fn(),
   index: vi.fn(),
@@ -25,6 +26,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       sdkContainerPython: mocks.container,
       sdkPythonPackageIndex: mocks.index,
       pypiPackage: mocks.pypi,
+      pypiSearch: mocks.names,
       cancelRequest: mocks.cancel,
     },
   };
@@ -68,6 +70,7 @@ beforeEach(() => {
     Promise.resolve(ok(outdated ? [{ name: "requests", version: "2.31.0", latestVersion: "2.34.2" }] : INSTALLED)),
   );
   mocks.pypi.mockImplementation((name: string) => Promise.resolve(ok(name === "six" ? SIX : null)));
+  mocks.names.mockResolvedValue(ok([]));
   mocks.pip.mockResolvedValue(ok(null));
   mocks.container.mockResolvedValue(ok(null));
   mocks.index.mockResolvedValue(ok(null));
@@ -130,8 +133,11 @@ describe("Python Packages", () => {
     search("acme-utils");
     await new Promise((resolve) => setTimeout(resolve, 400));
     expect(mocks.pypi).not.toHaveBeenCalled();
+    // Not even the name search's results, though searching the cached list sends nothing.
+    expect(mocks.names).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Search PyPI for acme-utils" }));
     await waitFor(() => expect(mocks.pypi).toHaveBeenCalledWith("acme-utils", expect.anything()));
+    await waitFor(() => expect(mocks.names).toHaveBeenCalledWith("acme-utils", expect.anything()));
   });
 
   it("says when PyPI cannot be reached, and tries again", async () => {
@@ -161,6 +167,35 @@ describe("Python Packages", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Uninstall" }));
     expect(await screen.findByText("pip failed")).toBeInTheDocument();
     await waitFor(() => expect(mocks.packages.mock.calls.filter((c) => c[1] === false)).toHaveLength(2));
+  });
+
+  it("lists PyPI projects whose names contain the search text", async () => {
+    mocks.names.mockResolvedValue(ok(["six", "sixer", "django-six"]));
+    open();
+    await screen.findByText("urllib3");
+    search("six");
+    select(await screen.findByText("sixer"));
+    expect(mocks.names).toHaveBeenCalledWith("six", expect.anything());
+    expect(screen.getAllByText("six")).toHaveLength(1);
+    // The details of a search result come from the exact-name lookup.
+    await waitFor(() => expect(mocks.pypi).toHaveBeenCalledWith("sixer", expect.anything()));
+  });
+
+  it("lists 50 PyPI matches and says when there are more", async () => {
+    mocks.names.mockResolvedValue(ok(Array.from({ length: 51 }, (_, i) => `six-${i}`)));
+    open();
+    await screen.findByText("urllib3");
+    search("six-");
+    expect(await screen.findByText(/Only the first 50 PyPI matches are listed/)).toBeInTheDocument();
+  });
+
+  it("keeps the exact-name lookup when the name list cannot be loaded", async () => {
+    mocks.names.mockResolvedValue({ status: "error", error: { kind: "unavailable", message: "offline" } });
+    open();
+    await screen.findByText("urllib3");
+    search("six");
+    expect(await screen.findByText(/Could not load the list of PyPI package names/)).toBeInTheDocument();
+    expect(screen.getByText("six")).toBeInTheDocument();
   });
 
   it("does not ask PyPI about text that is not a package name", async () => {
@@ -222,6 +257,7 @@ describe("Python Packages", () => {
     search("six");
     await new Promise((resolve) => setTimeout(resolve, 400));
     expect(mocks.pypi).not.toHaveBeenCalled();
+    expect(mocks.names).not.toHaveBeenCalled();
     expect(mocks.packages).not.toHaveBeenCalled();
   });
 });

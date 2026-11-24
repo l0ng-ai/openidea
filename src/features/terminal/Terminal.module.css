@@ -100,56 +100,8 @@
   position: relative;
 }
 
-.exited :global(.xterm-cursor-layer),
-.exited :global(.xterm-cursor) {
-  visibility: hidden;
-}
-
-.pane :global(.xterm) {
-  height: 100%;
-}
-/* xterm's DOM renderer stretches the cursor cell over the whole row (line height
-   included); keep it to the font's own height, centred like the glyphs. */
-.pane :global(.xterm-rows .xterm-cursor) {
-  position: relative;
-  top: 50%;
-  height: auto;
-  max-height: 100%;
-  line-height: normal;
-  transform: translateY(-50%);
-}
-.pane :global(.xterm-viewport) {
-  background-color: var(--bg-island, var(--bg-app)) !important;
-}
-.pane :global(.xterm-screen) {
-  isolation: isolate;
-}
-.pane :global(.openidea-terminal-selection-matches) {
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-}
-.pane :global(.openidea-terminal-selection-match) {
-  position: absolute;
-  box-sizing: border-box;
-  border-radius: 2px;
-  background-color: var(--bg-identifier-under-caret, color-mix(in srgb, var(--fg) 9%, transparent));
-  outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
-  outline-offset: -1px;
-}
-.pane :global(.xterm-decoration-container) {
-  pointer-events: none;
-}
-.pane :global(.xterm .xterm-scrollable-element > .xterm-scrollbar > .xterm-slider) {
-  box-sizing: border-box;
-  border: 2px solid transparent;
-  border-radius: 6px;
-  background: var(--scrollbar-thumb) content-box;
-}
-.pane :global(.xterm .xterm-scrollable-element > .xterm-scrollbar > .xterm-slider:hover),
-.pane :global(.xterm .xterm-scrollable-element > .xterm-scrollbar > .xterm-slider.xterm-active) {
-  background: var(--scrollbar-thumb-hover) content-box;
+.exited {
+  --terminal-cursor-visibility: hidden;
 }
 
 .rename {

@@ -547,6 +547,7 @@ describe("keymap", () => {
         ctrlKey: true,
         altKey: true,
         bubbles: true,
+        composed: true,
         cancelable: true,
       });
       Object.defineProperty(e, "getModifierState", { value: (k: string) => k === "AltGraph" });
@@ -562,6 +563,8 @@ describe("keymap", () => {
       uninstall = installKeyboardDispatcher(window);
       const input = document.body.appendChild(document.createElement("textarea"));
       expect(altGr("}", "Digit0", input).defaultPrevented).toBe(false);
+      const root = document.body.appendChild(document.createElement("div")).attachShadow({ mode: "open" });
+      expect(altGr("}", "Digit0", root.appendChild(document.createElement("textarea"))).defaultPrevented).toBe(false);
       await Promise.resolve();
       expect(run).not.toHaveBeenCalled();
       // No AltGr character on that key (or not typing): it is the shortcut.

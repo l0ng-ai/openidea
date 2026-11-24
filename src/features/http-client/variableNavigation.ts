@@ -1,7 +1,7 @@
 /**
- * Navigate › Declaration (⌘-click, ⌘B) on `{{name}}` in a `.http` file: the `@name = …` line of
- * the same file, then the key `name` in each environment of the nearest
- * `http-client.private.env.json` and `http-client.env.json` — the variable lookup order.
+ * Navigate › Declaration (⌘-click, ⌘B) on `{{name}}` in a `.http` file: the key `name` in each
+ * environment of the nearest `http-client.private.env.json` and `http-client.env.json`, then the
+ * `@name = …` line of the same file — the variable lookup order with an environment selected.
  */
 import type { Text } from "@codemirror/state";
 import { registerNavigationProvider } from "@/editor/api";
@@ -49,6 +49,6 @@ export function registerVariableNavigation(): () => void {
     } catch {
       // No project or unreadable environment files: the file's own definitions still count.
     }
-    return { from: at.from, to: at.to, targets: [...inFile, ...inEnv] };
+    return { from: at.from, to: at.to, targets: [...inEnv, ...inFile] };
   });
 }

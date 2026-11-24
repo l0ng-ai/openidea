@@ -856,6 +856,43 @@ test("dragging the source scrollbar across the Markdown divider keeps the arrow 
   expect((await divider.boundingBox())!.x).toBeGreaterThan(boundary.x + 40);
 });
 
+test("visible Markdown reflows during a tool window drag and distant blocks catch up on release", async ({
+  workbench: page,
+}) => {
+  const editor = await openFromTree(page, "README.md");
+  const content = editor.locator(".cm-content");
+  await content.click();
+  await page.keyboard.press("Meta+a");
+  await page.keyboard.insertText(
+    Array.from({ length: 180 }, (_, i) => `Paragraph ${i} with enough text to wrap across the pane.`).join("\n\n"),
+  );
+  const preview = page.getByRole("document", { name: "Markdown preview" });
+  await expect(preview).toContainText("Paragraph 179");
+  await content.press("Control+Home");
+  const near = preview.locator("[data-line][data-in-viewport]").first();
+  const far = preview.locator("[data-line]:not([data-in-viewport])").last();
+  const width = (el: typeof near) => el.evaluate((n) => n.getBoundingClientRect().width);
+  await expect(near).toBeAttached();
+  await expect(far).toBeAttached();
+  const before = await width(far);
+  await expect.poll(() => width(near)).toBe(before);
+  const handle = page.getByRole("separator", { name: "Resize left tool window", exact: true });
+  const box = (await handle.boundingBox())!;
+  const x = box.x + box.width / 2,
+    y = box.y + box.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  try {
+    await page.mouse.move(x + 160, y, { steps: 4 });
+    await expect.poll(() => width(near)).toBeLessThan(before - 30);
+    expect(await preview.evaluate((el) => el.scrollWidth - el.clientWidth)).toBe(0);
+    expect(await width(far)).toBe(before);
+  } finally {
+    await page.mouse.up();
+  }
+  await expect.poll(() => width(far)).toBe(await width(near));
+});
+
 test("dragging the Markdown split divider resizes and reflows editor and preview content, keeps the ratio, and resets on double-click", async ({
   workbench: page,
 }) => {

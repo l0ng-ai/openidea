@@ -574,7 +574,13 @@ export const lspTheme = EditorView.theme({
     "python-fstring",
     "string",
   ),
-  ".cm-sem-python-escape": semanticStyle("escape", "escape"),
+  ".cm-sem-python-escape, .cm-sem-escape": semanticStyle("escape", "escape"),
+  // IDEA's Invalid escape sequence: the escape colour with an error wave.
+  ".cm-sem-invalid-escape": {
+    ...semanticStyle("escape", "escape"),
+    textDecoration: "underline wavy var(--wave-error)",
+    WebkitTextDecoration: "underline wavy var(--wave-error)",
+  },
   ".cm-sem-python-format": semanticStyle("python-format", "escape"),
   ".cm-sem-python-keyword-arg": semanticStyle("keyword-arg", "param"),
   // --- semantic tokens -----------------------------------------------------

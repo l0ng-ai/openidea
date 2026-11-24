@@ -28,7 +28,9 @@ use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 
 /// 3: binary arguments (`IpcBytes`) are base64 strings, not arrays of numbers.
-pub const PROTOCOL_VERSION: u32 = 3;
+/// 4: a running tool's output arrives as `AgentEvent::ToolOutput` appends; a client that
+/// doesn't know the event would show stale output.
+pub const PROTOCOL_VERSION: u32 = 4;
 pub const SESSION_REPLACED: &str = "session_replaced";
 pub const SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 

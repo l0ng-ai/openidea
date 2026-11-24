@@ -55,6 +55,8 @@ pub struct Project {
     pub(crate) java_launches: crate::ops::java::cache::Sessions,
     /// Reasons this window was already told why Kotlin is debugged with kotlin-debug-adapter.
     pub(crate) kotlin_debug_notices: Mutex<HashSet<&'static str>>,
+    /// The completion only some plugins asked to complete again ([`crate::ops::lsp::lsp_completion`]).
+    pub(crate) completion_session: Mutex<Option<crate::ops::lsp::CompletionSession>>,
     /// Database tool window: data sources and their connections.
     pub db: Arc<ide_db::DbManager>,
     /// HTTP Client responses (IDEA's `.idea/httpRequests`), in the app data dir.
@@ -662,6 +664,7 @@ impl Host {
             cache_dir: self.local_data_dir.join("cache").join(&project_key),
             java_launches: Default::default(),
             kotlin_debug_notices: Mutex::default(),
+            completion_session: Mutex::default(),
             db,
             http_history,
             agents,
@@ -910,6 +913,7 @@ impl Host {
             cache_dir: self.local_data_dir.join("cache").join(&project_key),
             java_launches: Default::default(),
             kotlin_debug_notices: Mutex::default(),
+            completion_session: Mutex::default(),
             db,
             http_history,
             agents,

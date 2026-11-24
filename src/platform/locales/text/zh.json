@@ -10034,6 +10034,13 @@
   "Next Rows": "下一组行",
   "Previous Columns": "上一组列",
   "Next Columns": "下一组列",
+  "truncated": "已截断",
+  "Only the first {shown} of {total} characters are shown.": "仅显示前 {shown} 个字符，共 {total} 个。",
+  "Only the first {shown} of {total} characters are shown. Double-click to load the whole value.": "仅显示前 {shown} 个字符，共 {total} 个。双击以加载完整值。",
+  "Load whole value": "加载完整值",
+  "Cannot read the whole value": "无法读取完整值",
+  "Cannot read the whole values": "无法读取完整值",
+  "The result changed since this page was read. Run the query again.": "自读取此页以来结果已更改，请重新运行查询。",
   "Install Ruff to optimize imports in Python files": "安装 Ruff 以优化 Python 文件的导入",
   "Optimize Imports (Ruff)": "优化导入（Ruff）",
   "Uses the language server or a tool such as Ruff to organize imports.": "使用语言服务器或 Ruff 等工具优化导入。",
@@ -10094,5 +10101,10 @@
   "Mark as Unread": "标记为未读",
   "Archive All Below": "归档下方全部",
   "Mark Agent Tasks as Unread": "将 Agent 任务标记为未读",
-  "Mark Agent Tasks as Read": "将 Agent 任务标记为已读"
+  "Mark Agent Tasks as Read": "将 Agent 任务标记为已读",
+  "Java module '{value}' could not be imported because its build has errors: {problems}. Fix them, then reload the Maven or Gradle project.": "Java 模块 '{value}' 的构建存在错误，无法导入：{problems}。请修复后重新加载 Maven 或 Gradle 项目。",
+  "No tests ran. The build may skip them (skipTests, maven.test.skip, a disabled test task) or lack their engine: JUnit 4 tests on the JUnit Platform need junit-vintage-engine.": "没有运行任何测试。构建可能跳过了测试（skipTests、maven.test.skip、被禁用的测试任务），或缺少对应的测试引擎：在 JUnit Platform 上运行 JUnit 4 测试需要 junit-vintage-engine。",
+  "Downloading the list of PyPI package names…": "正在下载 PyPI 软件包名称列表…",
+  "Could not load the list of PyPI package names. Type a package's exact name to look it up.": "无法加载 PyPI 软件包名称列表。请输入软件包的准确名称进行查询。",
+  "Only the first 50 PyPI matches are listed. Type more of the name to narrow them.": "只列出前 50 个 PyPI 匹配项。请输入更完整的名称以缩小范围。"
 }
