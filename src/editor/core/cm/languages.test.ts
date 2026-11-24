@@ -411,6 +411,29 @@ describe("language modes", () => {
     }
   });
 
+  it("leaves Java statement labels uncoloured, unlike JavaScript's", async () => {
+    const highlighter = tagHighlighter([
+      { tag: t.labelName, class: "label" },
+      { tag: t.variableName, class: "variable" },
+    ]);
+    const labels = async (mode: string, path: string, doc: string) => {
+      const support = await loadSupport(findLanguageDescription(mode, path)!);
+      const found: string[] = [];
+      highlightTree(support!.language.parser.parse(doc), highlighter, (from, to, style) =>
+        found.push(`${doc.slice(from, to)}:${style}`),
+      );
+      return found.filter((s) => s.startsWith("outer"));
+    };
+    expect(await labels("Java", "/p/A.java", "class A { void f() { outer: for (;;) { break outer; } } }")).toEqual([
+      "outer:variable",
+      "outer:variable",
+    ]);
+    expect(await labels("JavaScript", "/p/a.js", "outer: for (;;) { break outer; }")).toEqual([
+      "outer:label",
+      "outer:label",
+    ]);
+  });
+
   it("recognizes go.mod and go.work files by mode and filename", async () => {
     for (const [mode, path] of [
       ["GoMod", "/project/go.mod"],
