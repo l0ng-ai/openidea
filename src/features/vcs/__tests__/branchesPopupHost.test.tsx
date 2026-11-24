@@ -126,3 +126,34 @@ it("shows common branch totals and pending remote changes from another repositor
   expect(await within(list).findByLabelText("6 outgoing commits in 2 repositories")).toHaveTextContent("6");
   expect(within(list).getByTitle(/3 incoming commits\s+Remote changes available to fetch/)).toHaveTextContent("3");
 });
+
+it("opens Git Branches from the status bar's Git Branch widget, anchored to it", async () => {
+  const { BranchWidget, StatusBranchWidget } = await import("../BranchWidget");
+  useVcs.setState({
+    available: true,
+    root: "/work/app",
+    repo: "/work/app",
+    roots: ["/work/app"],
+    heads: { "/work/app": { head: "feature/login", headCommit: "abc" } },
+    branch: { head: "feature/login", headCommit: "abc", upstream: null, ahead: 0, behind: 0 } as never,
+  });
+  render(
+    <>
+      <BranchWidget />
+      <StatusBranchWidget />
+      <BranchesPopupHost />
+    </>,
+  );
+  const [toolbar, status] = screen.getAllByRole("button", { name: /feature\/login/ });
+  expect(toolbar).toHaveAttribute("data-branches-widget", "toolbar");
+  expect(status).toHaveAttribute("data-branches-widget", "status");
+  fireEvent.click(status!);
+  expect(screen.getByRole("dialog", { name: "Git Branches" })).toBeInTheDocument();
+  expect(status).toHaveAttribute("aria-expanded", "true");
+  expect(toolbar).toHaveAttribute("aria-expanded", "false");
+  // VCS › Branches… opens it from the toolbar widget again.
+  act(() => useBranchesPopup.setState({ open: false }));
+  act(showBranchesPopup);
+  expect(toolbar).toHaveAttribute("aria-expanded", "true");
+  expect(status).toHaveAttribute("aria-expanded", "false");
+});
