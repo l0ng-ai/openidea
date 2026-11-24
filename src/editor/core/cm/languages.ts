@@ -213,7 +213,7 @@ const OWN_MODES = [
   // CSS, GraphQL, SQL and HTML in tagged template literals (`styled.div`, `gql`, `sql`, `html`).
   ...(
     [
-      ["JavaScript", {}],
+      ["JavaScript", { jsx: true }],
       ["TypeScript", { typescript: true }],
       ["JSX", { jsx: true }],
       ["TSX", { jsx: true, typescript: true }],
