@@ -34,6 +34,8 @@ import { ZigPage } from "../languages/LanguagePages";
 import { DEFAULT_SETTINGS } from "../model/schema";
 import { openSettings } from "../model/staging";
 
+const ZIG_CONTEXT = { pageId: "languages.zig", scope: "global" } as const;
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
@@ -45,7 +47,7 @@ function page(setting: string) {
   useProject.setState({ settings, project: null });
   openSettings("languages.zig");
   render(
-    <PageContext.Provider value={{ pageId: "languages.zig", scope: "global" }}>
+    <PageContext.Provider value={ZIG_CONTEXT}>
       <ZigPage />
     </PageContext.Provider>,
   );

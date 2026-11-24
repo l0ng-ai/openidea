@@ -57,6 +57,7 @@ export function IssueText({ text }: { text: string }): ReactNode {
       seg
     ) : (
       <a
+        // oxlint-disable-next-line react/no-array-index-key -- issue links can repeat; position is the identity
         key={i}
         href={seg.url}
         className={styles.issueLink}

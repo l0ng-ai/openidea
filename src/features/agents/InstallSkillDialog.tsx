@@ -311,7 +311,8 @@ export function InstallSkillDialog({
                 </div>
                 <ul className={styles.scanWarnList}>
                   {preview.scanWarnings.map((w, idx) => (
-                    <li key={`${w.kind}:${w.file}:${idx}`}>
+                    // oxlint-disable-next-line react/no-array-index-key -- identical warnings can repeat; position is the identity
+                    <li key={idx}>
                       <strong>{tx(WARNING_KIND_LABELS[w.kind])}:</strong>{" "}
                       <span className={styles.scanWarnCode}>{w.file}</span> — {w.message}
                     </li>

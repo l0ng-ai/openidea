@@ -71,6 +71,7 @@ function Tray({ task, entries, children }: { task: AgentTask; entries: AgentEntr
         <div className={styles.trayPlan}>
           {plan.items.map((item, i) => (
             <div
+              // oxlint-disable-next-line react/no-array-index-key -- plan items can repeat; position is the identity
               key={i}
               className={clsx(
                 styles.planItem,

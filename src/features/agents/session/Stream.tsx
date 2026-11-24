@@ -533,21 +533,24 @@ export function Stream({
     ),
     [task, turns, replies, times, thinking, lastIndex, busy, drafts, onOpenSubagent, onDiagramDrawn],
   );
-  const renderConversationRow = (row: ConversationRow): ReactNode =>
-    row.kind === "turn" ? (
-      <TurnFold row={row} />
-    ) : row.kind === "process" ? (
-      <ProcessRun
-        row={row}
-        task={task}
-        lastIndex={lastIndex}
-        busy={busy}
-        thinking={thinking}
-        onDiagramDrawn={onDiagramDrawn}
-      />
-    ) : (
-      renderRow(row)
-    );
+  const renderConversationRow = useCallback(
+    (row: ConversationRow): ReactNode =>
+      row.kind === "turn" ? (
+        <TurnFold row={row} />
+      ) : row.kind === "process" ? (
+        <ProcessRun
+          row={row}
+          task={task}
+          lastIndex={lastIndex}
+          busy={busy}
+          thinking={thinking}
+          onDiagramDrawn={onDiagramDrawn}
+        />
+      ) : (
+        renderRow(row)
+      ),
+    [task, lastIndex, busy, thinking, onDiagramDrawn, renderRow],
+  );
   return (
     <OpenFolds.Provider value={openFolds}>
       <KeepFoldHeader.Provider value={keepFoldHeader}>
