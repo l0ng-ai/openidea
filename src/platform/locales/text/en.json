@@ -3809,5 +3809,11 @@
   "Upgrade to {latest}": "Upgrade to {latest}",
   "Show PyPI Details": "Show PyPI Details",
   "Search PyPI for {name}": "Search PyPI for {name}",
-  "Installing uses another package index, so names are not sent to PyPI on their own.": "Installing uses another package index, so names are not sent to PyPI on their own."
+  "Installing uses another package index, so names are not sent to PyPI on their own.": "Installing uses another package index, so names are not sent to PyPI on their own.",
+  "Stub / Implementation": "Stub / Implementation",
+  "Stub": "Stub",
+  "Implementation": "Implementation",
+  "No stub or implementation found": "No stub or implementation found",
+  "Implementation of {name} in {file}": "Implementation of {name} in {file}",
+  "Stub of {name} in {file}": "Stub of {name} in {file}"
 }
