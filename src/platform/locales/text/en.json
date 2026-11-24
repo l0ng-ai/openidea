@@ -3873,5 +3873,7 @@
   "Mark Agent Tasks as Unread": "Mark Agent Tasks as Unread",
   "Mark Agent Tasks as Read": "Mark Agent Tasks as Read",
   "Java module '{value}' could not be imported because its build has errors: {problems}. Fix them, then reload the Maven or Gradle project.": "Java module '{value}' could not be imported because its build has errors: {problems}. Fix them, then reload the Maven or Gradle project.",
-  "No tests ran. The build may skip them (skipTests, maven.test.skip, a disabled test task) or lack their engine: JUnit 4 tests on the JUnit Platform need junit-vintage-engine.": "No tests ran. The build may skip them (skipTests, maven.test.skip, a disabled test task) or lack their engine: JUnit 4 tests on the JUnit Platform need junit-vintage-engine."
+  "No tests ran. The build may skip them (skipTests, maven.test.skip, a disabled test task) or lack their engine: JUnit 4 tests on the JUnit Platform need junit-vintage-engine.": "No tests ran. The build may skip them (skipTests, maven.test.skip, a disabled test task) or lack their engine: JUnit 4 tests on the JUnit Platform need junit-vintage-engine.",
+  "Changes: {task}": "Changes: {task}",
+  "Resize changed files": "Resize changed files"
 }

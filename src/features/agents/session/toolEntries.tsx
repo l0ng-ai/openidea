@@ -13,7 +13,7 @@ import { subagentTitle, subagentWorking, type SubagentEntry } from "../model";
 import { useRevealedText } from "../reveal";
 import { toolDuration, toolRun } from "../timeline";
 import { cancelTask } from "../store";
-import { openChangeDiff } from "./ChangesPane";
+import { openChangeDiff } from "./ChangesTab";
 import { Fold } from "./Folds";
 import { liveTool } from "./conversationRows";
 import { shortTitle, useNow } from "./shared";

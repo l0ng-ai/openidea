@@ -2017,8 +2017,6 @@
   "Hide": "隐藏",
   "Hide Active Tool Window": "隐藏活动工具窗口",
   "Hide All Tool Windows": "隐藏所有工具窗口",
-  "Hide changes": "隐藏更改",
-  "Resize changes": "调整更改面板宽度",
   "Hide Coverage": "隐藏覆盖率",
   "Hide Library Frames": "隐藏库帧",
   "Hide Replace": "隐藏替换",
@@ -7021,7 +7019,6 @@
   "cannot copy through a destination symlink": "无法通过目标目录内的符号链接复制",
   "expected a relative comparison entry path": "需要比较条目的相对路径",
   "Agent sessions": "智能体会话",
-  "Back to conversation": "返回会话",
   "Chat in Tool Window": "在工具窗口中聊天",
   "Chat in Editor": "在编辑器中聊天",
   "Agent settings": "智能体设置",
@@ -10103,5 +10100,7 @@
   "Mark Agent Tasks as Unread": "将 Agent 任务标记为未读",
   "Mark Agent Tasks as Read": "将 Agent 任务标记为已读",
   "Java module '{value}' could not be imported because its build has errors: {problems}. Fix them, then reload the Maven or Gradle project.": "Java 模块 '{value}' 的构建存在错误，无法导入：{problems}。请修复后重新加载 Maven 或 Gradle 项目。",
-  "No tests ran. The build may skip them (skipTests, maven.test.skip, a disabled test task) or lack their engine: JUnit 4 tests on the JUnit Platform need junit-vintage-engine.": "没有运行任何测试。构建可能跳过了测试（skipTests、maven.test.skip、被禁用的测试任务），或缺少对应的测试引擎：在 JUnit Platform 上运行 JUnit 4 测试需要 junit-vintage-engine。"
+  "No tests ran. The build may skip them (skipTests, maven.test.skip, a disabled test task) or lack their engine: JUnit 4 tests on the JUnit Platform need junit-vintage-engine.": "没有运行任何测试。构建可能跳过了测试（skipTests、maven.test.skip、被禁用的测试任务），或缺少对应的测试引擎：在 JUnit Platform 上运行 JUnit 4 测试需要 junit-vintage-engine。",
+  "Changes: {task}": "改动：{task}",
+  "Resize changed files": "调整改动文件列表宽度"
 }
