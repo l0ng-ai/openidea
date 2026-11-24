@@ -103,6 +103,7 @@ mod tests {
             max_matches: 0,
             context: Default::default(),
             include_excluded: false,
+            skip_large_files: false,
         }
     }
 
