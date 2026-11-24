@@ -224,6 +224,11 @@ const OWN_MODES = [
       load: () => import("./templateLanguages").then((m) => m.javascriptWithTemplates(config, templateLanguage)),
     }),
   ),
+  // JPQL / SQL in `@Query`, SpEL and property placeholders in Spring annotation strings.
+  LanguageDescription.of({
+    name: "Java",
+    load: () => import("./javaInjections").then((m) => m.javaWithInjections()),
+  }),
   // Only for template literals: `.graphql` files keep the backend's tree-sitter highlighting.
   LanguageDescription.of({
     name: "GraphQL",
