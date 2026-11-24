@@ -1518,6 +1518,7 @@ export const commands = {
 	remoteTrustSet: (trusted: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("remote_trust_set", { trusted })),
 	/**  This machine's trust decision for the window's remote project (see [`Connection::authorize`]). */
 	remoteTrustStatus: () => typedError<TrustStatus, IdeError>(__TAURI_INVOKE("remote_trust_status")),
+	remoteUploadInto: (connection: FsConnection, paths: IpcPath[], target: string, replace: boolean, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("remote_upload_into", { connection, paths, target, replace, request })),
 	removeRecent: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remove_recent", { path })),
 	removeRecentProject: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remove_recent_project", { path })),
 	/**

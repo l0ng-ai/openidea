@@ -558,6 +558,7 @@ remote_stop_backend                          always             desktop      bin
 remote_stop_forwarding                       trusted            desktop      bindings async
 remote_trust_set                             always             desktop      bindings sync
 remote_trust_status                          always             desktop      bindings sync
+remote_upload_into                           trusted            project_host bindings async
 remove_recent                                always             project_host bindings sync
 remove_recent_project                        always             desktop      bindings sync
 replace_in_files                             trusted            project_host bindings async
