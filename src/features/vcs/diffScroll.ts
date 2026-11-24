@@ -10,6 +10,7 @@ import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate
 import { getChunks, type Chunk, type MergeView } from "@codemirror/merge";
 import { changedLineGutters, chunkKind, type DiffKind } from "./cm";
 import { arrowButton } from "./diffControls";
+import styles from "./DiffEditor.module.css";
 
 type Side = "a" | "b";
 
@@ -435,7 +436,17 @@ export class UnalignedPanes implements DiffPanes {
       this.resize = new ResizeObserver(() => this.schedule());
       this.resize.observe(this.divider);
     }
-    requestAnimationFrame(() => this.resync());
+    const editors = this.divider.parentElement!;
+    const measuring = styles.measuringPanes!;
+    editors.classList.add(measuring);
+    // Both editors have queued their initial measurements. Reveal the panes with the first divider
+    // drawing after those measurements, so estimated gutter positions never reach the screen.
+    this.frame = requestAnimationFrame(() => {
+      if (this.sync) this.follow("b");
+      this.draw();
+      editors.classList.remove(measuring);
+    });
+    this.cleanup.push(() => editors.classList.remove(measuring));
   }
 
   /** Brings the left pane in line with the right one. */
