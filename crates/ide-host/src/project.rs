@@ -706,7 +706,7 @@ impl Host {
         }
         // Before the window restores its editors: a module's sources open in the encoding of its POM.
         if project.is_trusted()
-            && let Err(e) = crate::ops::build::load_project(&project, &self.config_dir)
+            && let Err(e) = crate::ops::build::load_source_encodings(&project, &self.config_dir)
         {
             tracing::warn!("build model of {}: {e}", project.root.display());
         }

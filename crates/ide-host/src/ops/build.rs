@@ -206,10 +206,21 @@ pub async fn build_model(host: &Host, window: &str) -> IdeResult<BuildModel> {
 
 /// The project's build model. Each load hands the source encodings of its Maven modules
 /// to the document layer, so the editor follows the POMs as they are now.
-pub(crate) fn load_project(project: &Project, config: &Path) -> IdeResult<BuildModel> {
+fn load_project(project: &Project, config: &Path) -> IdeResult<BuildModel> {
     let model = workspace::load_project(project, config)?;
     apply_source_encodings(project, &model);
     Ok(model)
+}
+
+/// The source encodings for a project that is opening. A project without a Maven build
+/// has none, so its build model is not loaded for them.
+pub(crate) fn load_source_encodings(project: &Project, config: &Path) -> IdeResult<()> {
+    let scopes = workspace::scopes(project, config)?;
+    let maven = |s: &workspace::Scope| ide_build::maven::has_projects(&s.root, &s.settings.languages.java.maven);
+    if scopes.iter().any(maven) {
+        apply_source_encodings(project, &workspace::load_scopes(&project.root, &scopes));
+    }
+    Ok(())
 }
 
 fn apply_source_encodings(project: &Project, model: &BuildModel) {
