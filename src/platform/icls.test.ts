@@ -205,6 +205,25 @@ describe(".icls schemes", () => {
     expect(scheme.attributes["kotlin.enumEntry"]).toEqual({ foreground: "#c77dbb", bold: false, italic: true });
   });
 
+  it("reads colours written with a leading # or 0x, as IntelliJ does (#5619)", () => {
+    // One Dark writes most of its values as `#rrggbb`.
+    const { scheme } = parseIcls(`<scheme name="One" parent_scheme="Darcula"><colors>
+      <option name="CARET_COLOR" value="#528bff"/>
+      <option name="LINE_NUMBERS_COLOR" value="0x495162"/>
+      </colors><attributes>
+      <option name="DEFAULT_CLASS_NAME"><value><option name="FOREGROUND" value="#E5C07B"/></value></option>
+      <option name="DEFAULT_KEYWORD"><value><option name="FOREGROUND" value="c678dd"/></value></option>
+      <option name="DEFAULT_STRING"><value><option name="FOREGROUND" value="#98c37980"/></value></option>
+      </attributes></scheme>`);
+    const fg = (id: string) => scheme.attributes[id]?.foreground;
+    expect(fg("caret")).toBe("#528bff");
+    expect(fg("lineNumber")).toBe("#495162");
+    expect(fg("className")).toBe("#e5c07b");
+    expect(fg("keyword")).toBe("#c678dd");
+    // No alpha in schemes here: an RRGGBBAA value is left out, with or without `#`.
+    expect(fg("string")).toBeUndefined();
+  });
+
   it("maps WebStorm's JavaScript and TypeScript keys to their page, TypeScript first, then JavaScript", () => {
     const { scheme, applied, skipped } = parseIcls(fixture("webstorm-darcula"));
     const fg = (id: string) => scheme.attributes[id]?.foreground;

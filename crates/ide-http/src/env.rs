@@ -5,8 +5,10 @@
 //! { "$shared": { "version": "v1" }, "dev": { "host": "localhost:8080" } }
 //! ```
 //!
-//! Lookup order for `{{name}}`: file variables (`@name = …`), the private
-//! environment, the public environment, private `$shared`, public `$shared`.
+//! Lookup order for `{{name}}` with an environment selected: the private
+//! environment, the public environment, private `$shared`, public `$shared`, then
+//! file variables (`@name = …`), as in the JetBrains HTTP Client. Without one, file
+//! variables come before `$shared`.
 //! Dynamic variables: `$uuid` / `$random.uuid`, `$timestamp`, `$isoTimestamp`,
 //! `$randomInt` / `$random.integer`.
 
@@ -267,17 +269,19 @@ fn iso8601(secs: u64) -> String {
 pub struct Resolver<'a> {
     pub file_vars: &'a [(String, String)],
     pub env: HashMap<String, String>,
+    /// An environment is selected: its values override file variables.
+    pub env_first: bool,
 }
 
 impl Resolver<'_> {
     fn lookup(&self, name: &str, depth: u32, missing: &mut BTreeSet<String>) -> Option<String> {
-        if let Some((_, v)) = self.file_vars.iter().rev().find(|(k, _)| k == name) {
-            return Some(if depth < 8 { self.substitute_inner(v, depth + 1, missing) } else { v.clone() });
+        let file = || self.file_vars.iter().rev().find(|(k, _)| k == name).map(|(_, v)| v);
+        let env = || self.env.get(name);
+        let found = if self.env_first { env().or_else(file) } else { file().or_else(env) };
+        match found {
+            Some(v) => Some(if depth < 8 { self.substitute_inner(v, depth + 1, missing) } else { v.clone() }),
+            None => dynamic(name),
         }
-        if let Some(v) = self.env.get(name) {
-            return Some(if depth < 8 { self.substitute_inner(v, depth + 1, missing) } else { v.clone() });
-        }
-        dynamic(name)
     }
 
     fn substitute_inner(&self, text: &str, depth: u32, missing: &mut BTreeSet<String>) -> String {
@@ -346,7 +350,7 @@ mod tests {
             let envs = Environments::from_json(&json, "").unwrap();
             let vars = envs.variables(Some("dev"));
             assert_eq!(vars["value"], token);
-            let resolver = Resolver { file_vars: &[], env: vars };
+            let resolver = Resolver { file_vars: &[], env: vars, env_first: true };
             let mut missing = BTreeSet::new();
             assert_eq!(resolver.substitute("{\"value\":{{value}}}", &mut missing), format!(r#"{{"value":{token}}}"#));
             assert!(missing.is_empty());
@@ -449,11 +453,15 @@ mod tests {
 
     #[test]
     fn substitutes_file_env_and_dynamic_variables() {
-        let file_vars = vec![("base".to_owned(), "https://{{host}}".to_owned())];
+        let file_vars =
+            vec![("host".to_owned(), "localhost".to_owned()), ("base".to_owned(), "https://{{host}}".to_owned())];
         let env = HashMap::from([("host".to_owned(), "example.com".to_owned())]);
-        let r = Resolver { file_vars: &file_vars, env };
+        let r = Resolver { file_vars: &file_vars, env: env.clone(), env_first: true };
         let mut missing = BTreeSet::new();
+        // The environment's `host` overrides the file's, also inside a file variable.
         assert_eq!(r.substitute("{{ base }}/a?x={{nope}}", &mut missing), "https://example.com/a?x={{nope}}");
+        let file_first = Resolver { file_vars: &file_vars, env, env_first: false };
+        assert_eq!(file_first.substitute("{{base}}", &mut BTreeSet::new()), "https://localhost");
         assert_eq!(missing.into_iter().collect::<Vec<_>>(), vec!["nope"]);
         let mut missing = BTreeSet::new();
         let id = r.substitute("{{$uuid}}", &mut missing);
@@ -465,7 +473,7 @@ mod tests {
     #[test]
     fn self_reference_terminates() {
         let file_vars = vec![("a".to_owned(), "{{a}}".to_owned())];
-        let r = Resolver { file_vars: &file_vars, env: HashMap::new() };
+        let r = Resolver { file_vars: &file_vars, env: HashMap::new(), env_first: true };
         let mut missing = BTreeSet::new();
         assert_eq!(r.substitute("{{a}}", &mut missing), "{{a}}");
     }

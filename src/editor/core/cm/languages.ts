@@ -213,7 +213,7 @@ const OWN_MODES = [
   // CSS, GraphQL, SQL and HTML in tagged template literals (`styled.div`, `gql`, `sql`, `html`).
   ...(
     [
-      ["JavaScript", {}],
+      ["JavaScript", { jsx: true }],
       ["TypeScript", { typescript: true }],
       ["JSX", { jsx: true }],
       ["TSX", { jsx: true, typescript: true }],
@@ -495,11 +495,11 @@ const CSS_TAGS: Parameters<typeof styleTags>[0] = {
   "ClassName IdName PseudoClassName ColorLiteral CallTag": t.tagName,
 };
 
-// @lezer/java tags annotations as plain identifiers, and `this` as `self` (Python's `self` colour);
-// IntelliJ colours `this` as a keyword.
+// @lezer/java tags annotations as plain identifiers, `this` as `self` (Python's `self` colour) and
+// primitive types as built-in types; IntelliJ colours `this` and `int`, `boolean`… as keywords.
 export const JAVA_TAGS: Parameters<typeof styleTags>[0] = {
   "MarkerAnnotation/Identifier Annotation/Identifier MarkerAnnotation Annotation": t.annotation,
-  this: t.keyword,
+  "this PrimitiveType": t.keyword,
   // IntelliJ has no Java label colour: `outer:` stays plain text, like `break outer`.
   Label: t.variableName,
 };

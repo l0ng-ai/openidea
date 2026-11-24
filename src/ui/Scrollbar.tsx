@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, type RefObject } from "react";
-import clsx from "clsx";
 import { lockScrollbarCursor } from "./dragCursor";
 import styles from "./Scrollbar.module.css";
 
@@ -15,30 +14,18 @@ export const hideNativeScrollbar = styles.hideNative;
  * native one scrolls asynchronously in WebKit and shows blank rows until the
  * page catches up.
  *
- * Pass `content` to observe its size or `contentHeight` to re-measure on demand.
- * `fullHeight` uses the height of the scrollbar's positioned parent.
+ * `contentHeight` re-measures when the scroller's content grows.
  */
 export function Scrollbar({
   target,
-  content,
   contentHeight,
-  fullHeight = false,
-  minThumbSize = MIN_THUMB,
-  trackRef,
 }: {
   target: RefObject<HTMLElement | null>;
-  content?: RefObject<HTMLElement | null>;
   contentHeight?: number;
-  fullHeight?: boolean;
-  minThumbSize?: number;
-  trackRef?: RefObject<HTMLDivElement | null>;
 }) {
-  const ownTrack = useRef<HTMLDivElement>(null);
-  const track = trackRef ?? ownTrack;
+  const track = useRef<HTMLDivElement>(null);
   const thumb = useRef<HTMLDivElement>(null);
-  const drag = useRef<{ el: HTMLDivElement; pointerId: number; y: number; top: number; unlock: () => void } | null>(
-    null,
-  );
+  const drag = useRef<{ pointerId: number; y: number; top: number; unlock: () => void } | null>(null);
   const geometry = useRef<Geometry | null>(null);
   const endDrag = useCallback(() => {
     const current = drag.current;
@@ -46,23 +33,22 @@ export function Scrollbar({
     drag.current = null;
     current.unlock();
     delete thumb.current?.dataset.dragging;
-    if (current.el.hasPointerCapture(current.pointerId)) current.el.releasePointerCapture(current.pointerId);
+    const el = track.current;
+    if (el?.hasPointerCapture(current.pointerId)) el.releasePointerCapture(current.pointerId);
   }, []);
 
   useLayoutEffect(() => {
-    geometry.current = layout(target.current, track.current, thumb.current, fullHeight, minThumbSize);
-  }, [target, track, fullHeight, minThumbSize, contentHeight]);
+    geometry.current = layout(target.current, track.current, thumb.current);
+  }, [target, contentHeight]);
   useEffect(() => {
     const el = target.current;
     if (!el) return;
     const sync = () => {
-      geometry.current = layout(el, track.current, thumb.current, fullHeight, minThumbSize);
+      geometry.current = layout(el, track.current, thumb.current);
     };
     el.addEventListener("scroll", sync, { passive: true });
     const observer = new ResizeObserver(sync);
     observer.observe(el);
-    if (content?.current) observer.observe(content.current);
-    if (fullHeight && track.current?.parentElement) observer.observe(track.current.parentElement);
     window.addEventListener("blur", endDrag);
     return () => {
       endDrag();
@@ -70,12 +56,12 @@ export function Scrollbar({
       el.removeEventListener("scroll", sync);
       observer.disconnect();
     };
-  }, [target, track, content, fullHeight, minThumbSize, endDrag]);
+  }, [target, endDrag]);
 
   return (
     <div
       ref={track}
-      className={clsx(styles.track, fullHeight && styles.fullHeight)}
+      className={styles.track}
       aria-hidden
       onPointerDown={(e) => {
         const el = target.current;
@@ -89,13 +75,7 @@ export function Scrollbar({
           return;
         }
         e.currentTarget.setPointerCapture(e.pointerId);
-        drag.current = {
-          el: e.currentTarget,
-          pointerId: e.pointerId,
-          y: e.clientY,
-          top: el.scrollTop,
-          unlock: lockScrollbarCursor(),
-        };
+        drag.current = { pointerId: e.pointerId, y: e.clientY, top: el.scrollTop, unlock: lockScrollbarCursor() };
         thumb.current!.dataset.dragging = "";
       }}
       onPointerMove={(e) => {
@@ -116,30 +96,22 @@ export function Scrollbar({
 type Geometry = { range: number; max: number };
 
 /** Positions the track over `el` and the thumb at its scroll offset; null when nothing scrolls. */
-function layout(
-  el: HTMLElement | null,
-  t: HTMLElement | null,
-  th: HTMLElement | null,
-  fullHeight: boolean,
-  minThumbSize: number,
-): Geometry | null {
+function layout(el: HTMLElement | null, t: HTMLElement | null, th: HTMLElement | null): Geometry | null {
   if (!el || !t || !th) return null;
-  const viewport = el.clientHeight;
-  const height = fullHeight ? (t.parentElement?.clientHeight ?? 0) : viewport;
-  const content = el.scrollHeight;
-  const max = content - viewport;
+  const height = el.clientHeight;
+  const max = el.scrollHeight - height;
   // WebKit can report scrollHeight a pixel over clientHeight after the scroller is resized to a
   // fractional height (dragging a splitter), with nothing overflowing: that is no scroll range.
-  const scrolls = viewport > 0 && height > 1 && max > 1;
-  t.style.top = fullHeight ? "" : `${el.offsetTop}px`;
-  t.style.height = fullHeight ? "" : `${height}px`;
+  const scrolls = max > 1;
+  t.style.top = `${el.offsetTop}px`;
+  t.style.height = `${height}px`;
   t.style.display = scrolls ? "" : "none";
   if (!scrolls) return null;
-  const size = Math.min(height - 1, Math.max(minThumbSize, (height * viewport) / content));
+  const size = Math.max(MIN_THUMB, (height * height) / el.scrollHeight);
   const range = height - size;
   th.style.height = `${size}px`;
-  th.style.transform = `translateY(${(Math.max(0, Math.min(max, el.scrollTop)) / max) * range}px)`;
-  return { range, max };
+  th.style.transform = `translateY(${(Math.min(max, el.scrollTop) / max) * range}px)`;
+  return range > 0 ? { range, max } : null;
 }
 
 /**

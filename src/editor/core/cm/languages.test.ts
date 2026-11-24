@@ -310,6 +310,82 @@ describe("language modes", () => {
     expect(headings).toEqual([]);
   });
 
+  it.each(["js", "mjs", "cjs", "jsx", "tsx"])("highlights JSX inside .%s files", async (extension) => {
+    const support = await loadSupport(findLanguageDescription(null, `/p/preview.${extension}`)!);
+    const source = [
+      "const previews = [",
+      "  { render: (enabled, card) => {",
+      "    return <Indicator active={Boolean(card.ready) && enabled}",
+      "      onToggle={async (next) => { await updatePreview(card, next); }} />;",
+      "  } },",
+      "  { render: (enabled, card) => {",
+      "    return <section className={palette.toolbar}>",
+      "      <button onClick={() => updatePreview(card, !enabled)}>Preview</button>",
+      "    </section>;",
+      "  } },",
+      "];",
+    ].join("\n");
+    const tree = support!.language.parser.parse(source);
+    const errors: number[] = [];
+    tree.iterate({
+      enter(node) {
+        if (node.type.isError) errors.push(node.from);
+      },
+    });
+    expect(errors).toEqual([]);
+    const found: Array<[string, string]> = [];
+    highlightTree(
+      tree,
+      tagHighlighter([
+        { tag: t.tagName, class: "tag" },
+        { tag: t.attributeName, class: "attribute" },
+      ]),
+      (from, to, style) => found.push([source.slice(from, to), style]),
+    );
+    expect(found).toEqual([
+      ["Indicator", "tag"],
+      ["active", "attribute"],
+      ["onToggle", "attribute"],
+      ["section", "tag"],
+      ["className", "attribute"],
+      ["button", "tag"],
+      ["onClick", "attribute"],
+      ["button", "tag"],
+      ["section", "tag"],
+    ]);
+  });
+
+  it.each(["js", "mjs", "cjs"])("keeps ordinary .%s syntax distinct from JSX", async (extension) => {
+    const support = await loadSupport(findLanguageDescription("JavaScript", `/p/compare.${extension}`)!);
+    const source = [
+      "const less = (left, right) => left < right && right > 0;",
+      "const shifted = count << 2;",
+      "const value = item?.value ?? 0;",
+      "const label = `value: ${value}`;",
+      "const literal = '<Indicator active />';",
+      "// <section className='example'>",
+    ].join("\n");
+    const unexpected: string[] = [];
+    support!.language.parser.parse(source).iterate({
+      enter(node) {
+        if (node.type.isError || node.name.startsWith("JSX")) unexpected.push(node.name);
+      },
+    });
+    expect(unexpected).toEqual([]);
+  });
+
+  it("preserves TypeScript angle assertions and generic arrow functions", async () => {
+    const support = await loadSupport(findLanguageDescription("TypeScript", "/p/example.ts")!);
+    const source = "const item = <Item>value; const identity = <T>(value: T): T => value;";
+    const unexpected: string[] = [];
+    support!.language.parser.parse(source).iterate({
+      enter(node) {
+        if (node.type.isError || node.name.startsWith("JSX")) unexpected.push(node.name);
+      },
+    });
+    expect(unexpected).toEqual([]);
+  });
+
   it("styles `?.` like `.` in JavaScript and TypeScript", async () => {
     const highlighter = tagHighlighter([{ tag: t.derefOperator, class: "deref" }]);
     for (const [mode, path] of [
@@ -432,6 +508,22 @@ describe("language modes", () => {
       "outer:label",
       "outer:label",
     ]);
+  });
+
+  it("colours Java primitive types as keywords", async () => {
+    const highlighter = tagHighlighter([
+      { tag: t.keyword, class: "keyword" },
+      { tag: t.standard(t.typeName), class: "builtin-type" },
+    ]);
+    const primitives = ["int", "long", "double", "float", "boolean", "char", "byte", "short"];
+    const doc = `class A { ${primitives.map((p, i) => `${p} f${i};`).join(" ")} void m() { int[] a = new int[1]; } }`;
+    const support = await loadSupport(findLanguageDescription("Java", "/p/A.java")!);
+    const styles = new Map<string, Set<string>>();
+    highlightTree(support!.language.parser.parse(doc), highlighter, (from, to, style) => {
+      const text = doc.slice(from, to);
+      styles.set(text, (styles.get(text) ?? new Set()).add(style));
+    });
+    for (const word of [...primitives, "void"]) expect([...(styles.get(word) ?? [])], word).toEqual(["keyword"]);
   });
 
   it("recognizes go.mod and go.work files by mode and filename", async () => {

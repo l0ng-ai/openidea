@@ -260,6 +260,7 @@ docker_save_settings                         always             desktop      bin
 docker_set_registry_password                 always             desktop      bindings async
 docker_settings                              always             desktop      bindings async
 docker_snapshot                              trusted            desktop      bindings async
+docker_volume_sizes                          trusted            desktop      bindings async
 end_process                                  trusted            desktop      bindings async
 env_reload                                   always             project_host bindings async
 file_dialog_needs_gtk                        trusted            desktop      bindings async
