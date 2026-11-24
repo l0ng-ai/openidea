@@ -265,8 +265,10 @@
   color: var(--fg-muted);
   cursor: pointer;
 }
-.jumpToLatest:hover {
+/* Over the stream's text: keep it opaque against the icon button's translucent hover fill. */
+.streamArea .jumpToLatest:not(:disabled):hover {
   background: var(--bg-hover);
+  color: var(--fg-strong);
 }
 /* Your message with its actions, shown on hover. */
 .message {
