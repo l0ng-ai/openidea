@@ -1,4 +1,5 @@
 use super::PluginHost;
+use crate::ops::blocking;
 use ide_command::command;
 use ide_core::{IdeError, IdeResult};
 use ide_plugin::Invocation;
@@ -198,10 +199,6 @@ pub async fn plugin_navigation_markers(
         }))
     })
     .await
-}
-
-async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + 'static) -> IdeResult<T> {
-    tokio::task::spawn_blocking(f).await.map_err(|e| IdeError::internal(e.to_string()))?
 }
 
 ide_command::domain!(

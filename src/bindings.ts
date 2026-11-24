@@ -234,11 +234,10 @@ export const commands = {
 	/**  Applies a (previewed) workspace edit, e.g. after rename confirmation. */
 	applyWorkspaceEdit: (edit: WorkspaceEdit) => typedError<null, IdeError>(__TAURI_INVOKE("apply_workspace_edit", { edit })),
 	/**
-	 *  Build › Compile File: compiles one Java source of a linked Maven module with
-	 *  `javac`, streaming the console and messages on `on_event`; cancellable with
-	 *  `cancel_request(request)`. Diagnostics of `clear` (the files of the previous
-	 *  build) are cleared first; the new messages are published as `build`
-	 *  diagnostics.
+	 *  Build › Recompile: compiles one Java source file with `javac`, streaming the
+	 *  console and messages on `on_event`; cancellable with `cancel_request(request)`.
+	 *  Diagnostics of `clear` (the files of the previous build) are cleared first;
+	 *  the new messages are published as `build` diagnostics.
 	 */
 	buildCompileFile: (file: string, request: RequestId, clear: string[], onEvent: Channel<BuildEvent>) => typedError<BuildResult, IdeError>(__TAURI_INVOKE("build_compile_file", { file, request, clear, onEvent })),
 	/**  Maven and Gradle projects of the window's project, from the build files plus the last sync. */
@@ -456,6 +455,8 @@ export const commands = {
 	debugJvmMemoryInstances: (session: DebugSessionId, className: string, limit: number) => typedError<JvmInstancesResult, IdeError>(__TAURI_INVOKE("debug_jvm_memory_instances", { session, className, limit })),
 	/**  The objects that hold a reference to `object`; `limit` 0 selects the default. */
 	debugJvmMemoryReferrers: (session: DebugSessionId, object: JvmObjectRef, limit: number) => typedError<JvmReferrersResult, IdeError>(__TAURI_INVOKE("debug_jvm_memory_referrers", { session, object, limit })),
+	/**  A `Thread.print -l` of the debuggee JVM, or why it cannot be taken. */
+	debugJvmThreadDump: (session: DebugSessionId) => typedError<JvmThreadsResult, IdeError>(__TAURI_INVOKE("debug_jvm_thread_dump", { session })),
 	/**
 	 *  Remote JVM Debug in listen mode: waits (cancellable through `request`) for the remote
 	 *  JVM to connect to `host:port`; returns the loopback port java-debug attaches to.
@@ -1419,6 +1420,11 @@ export const commands = {
 	versions: string[],
 } | null, IdeError>(__TAURI_INVOKE("pypi_package", { name, request })),
 	/**
+	 *  PyPI project names containing `query`, best match first, 51 at most (50 are shown). Answers from a cached copy of
+	 *  PyPI's name list, which the first search downloads and a search a day later refreshes.
+	 */
+	pypiSearch: (query: string, request: RequestId) => typedError<string[], IdeError>(__TAURI_INVOKE("pypi_search", { query, request })),
+	/**
 	 *  The requirements of a `requirements*.txt` / `pyproject.toml` the project's interpreter
 	 *  doesn't satisfy; `None` for other files, or with no local interpreter to ask.
 	 */
@@ -1513,6 +1519,7 @@ export const commands = {
 	remoteTrustSet: (trusted: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("remote_trust_set", { trusted })),
 	/**  This machine's trust decision for the window's remote project (see [`Connection::authorize`]). */
 	remoteTrustStatus: () => typedError<TrustStatus, IdeError>(__TAURI_INVOKE("remote_trust_status")),
+	remoteUploadInto: (connection: FsConnection, paths: IpcPath[], target: string, replace: boolean, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("remote_upload_into", { connection, paths, target, replace, request })),
 	removeRecent: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remove_recent", { path })),
 	removeRecentProject: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remove_recent_project", { path })),
 	/**
@@ -1554,6 +1561,11 @@ export const commands = {
 	runImportConfigs: (source: RunImportSource, existing: RunConfig_Deserialize[]) => typedError<RunImport_Serialize, IdeError>(__TAURI_INVOKE("run_import_configs", { source, existing })),
 	/**  Project files run configurations can be imported from (`.vscode/launch.json`). */
 	runImportSources: () => typedError<RunImportSource[], IdeError>(__TAURI_INVOKE("run_import_sources")),
+	/**
+	 *  A `Thread.print -l` of the JVM a run started: the deepest HotSpot JVM of the run's process
+	 *  tree, else the one carrying `token` (the run's marker property).
+	 */
+	runJvmThreadDump: (id: RunId, token: string | null) => typedError<JvmThreadsResult, IdeError>(__TAURI_INVOKE("run_jvm_thread_dump", { id, token })),
 	runList: () => __TAURI_INVOKE<RunInfo[]>("run_list"),
 	/**  Terminal size of a run started with "Emulate terminal in output console". */
 	runResize: (id: RunId, cols: number, rows: number) => typedError<null, IdeError>(__TAURI_INVOKE("run_resize", { id, cols, rows })),
@@ -5666,6 +5678,8 @@ export type DebuggerSettings = {
 	debugServerPage?: boolean,
 	/**  Flutter: saving a Dart file of a running debug session hot reloads the app. */
 	flutterHotReloadOnSave?: boolean,
+	/**  Java: whether to reload changed classes into running debug sessions after compilation. */
+	hotSwapAfterCompile?: HotSwapPolicy,
 	python?: PythonDebuggerSettings,
 };
 
@@ -7917,6 +7931,9 @@ export type HistoryTip = {
 /**  What triggered a hot reload; `flutter debug_adapter` takes it as `reason`. */
 export type HotReloadReason = "manual" | "save";
 
+/**  Whether compiled classes are reloaded into running Java debug sessions after compilation. */
+export type HotSwapPolicy = "ask" | "always" | "never";
+
 /**  Result of [`DebugManager::redefine_classes`]. */
 export type HotSwapResult = {
 	/**  Fully qualified names of the classes reloaded (empty: nothing had changed). */
@@ -8786,6 +8803,26 @@ export type JvmReferrer = {
 };
 
 export type JvmReferrersResult = { status: "ready"; referrers: JvmReferrer[]; truncated: boolean } | { status: "unavailable"; reason: JvmInspectUnavailable };
+
+export type JvmThreadDump = {
+	text: string,
+	pid: number,
+	/**  Empty when unknown. */
+	javaVersion: string,
+	takenWhileSuspended: boolean,
+	/**  Wall time of the `Thread.print` request. */
+	elapsedMs: number,
+};
+
+export type JvmThreadsResult = { status: "ready"; dump: JvmThreadDump } | { status: "unavailable"; reason: JvmThreadsUnavailable };
+
+export type JvmThreadsUnavailable = 
+/**  The reason a class table could not be read applies to the dump too. */
+{ kind: "jvm"; reason: JvmMemoryUnavailable } | 
+/**  The JVM ignored the request to open its attach listener (`-XX:+DisableAttachMechanism`). */
+{ kind: "listenerDidNotStart" } | 
+/**  A run on a remote host, whose JVM this machine cannot attach to. */
+{ kind: "remoteRun" } | { kind: "failed"; message: string };
 
 export type JvmTypeKind = "class" | "abstractClass" | "interface" | "enum" | "record" | "annotation" | "exception" | "object";
 
@@ -11499,6 +11536,13 @@ export type PythonMethodFacts = {
 	/**  Decorated with `override` from `typing` / `typing_extensions`. */
 	overrideDecorated: boolean,
 	body: MethodBody,
+	/**
+	 *  For 'Method may be static': the receiver parameter up to the next parameter (what
+	 *  Make method static deletes), when the method is undecorated and not a dunder, and its
+	 *  body does more than `pass`, `...`, a docstring or one `raise` without ever naming the
+	 *  receiver, `super` or `__class__`.
+	 */
+	unusedReceiver: Range | null,
 };
 
 export type PythonPackage = {
@@ -12475,6 +12519,11 @@ export type SearchQuery = {
 	 *  adds none of the project's exclusions either).
 	 */
 	includeExcluded?: boolean,
+	/**
+	 *  Leave out files over [`MAX_CODE_INSIGHT_FILE_BYTES`], as IDEA's TODO and word indexes do:
+	 *  a background scan never reads a log or a database dump.
+	 */
+	skipLargeFiles?: boolean,
 };
 
 export type SearchScope = { kind: "project" } | { kind: "directory"; path: IpcPath } | { kind: "files"; paths: IpcPath[] } | 

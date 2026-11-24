@@ -1,11 +1,14 @@
 /**
- * Build menu (Build Project ⌘F9, Build Module ⇧⌘F9, Rebuild Project, Build
- * Artifacts) and the Build tool window. The backend picks the build system of
- * the project or module: Maven, Gradle, Cargo, Go, TypeScript or CMake.
+ * Build menu (Build Project ⌘F9, Recompile '<file>.java' ⇧⌘F9, Build Module,
+ * Rebuild Project, Build Artifacts) and the Build tool window. The backend picks
+ * the build system of the project or module: Maven, Gradle, Cargo, Go,
+ * TypeScript, CMake or javac.
  */
-import { getContext } from "@/platform/context";
+import { getContext, type ContextKeys } from "@/platform/context";
 import { registerActions } from "@/platform/actions";
-import { useProject } from "@/platform/project";
+import { tx } from "@/platform/i18n";
+import { basename, useProject } from "@/platform/project";
+import { isVirtualUri } from "@/platform/virtualDocs";
 import {
   maybeEditorService,
   registerMenuGroup,
@@ -23,6 +26,17 @@ function moduleTarget(arg: unknown): string | null {
   if (typeof arg === "string" && arg) return arg;
   if (typeof arg === "object" && arg !== null && "target" in arg && typeof arg.target === "string") return arg.target;
   return maybeEditorService()?.activePath() ?? null;
+}
+
+/** The local Java source file to compile: the invoker's path or the active editor's file. */
+function javaFileTarget(arg: unknown, ctx: ContextKeys = getContext()): string | null {
+  const path =
+    typeof arg === "string" && arg
+      ? arg
+      : typeof arg === "object" && arg !== null && "target" in arg && typeof arg.target === "string"
+        ? arg.target
+        : (maybeEditorService()?.activePath() ?? (typeof ctx.editorPath === "string" ? ctx.editorPath : null));
+  return path && !isVirtualUri(path) && /\.java$/i.test(path) ? path : null;
 }
 
 function useErrorBadge(): number | null {
@@ -88,15 +102,16 @@ export function activate(): () => void {
       },
       {
         id: "build.compileFile",
-        title: "Compile File",
+        title: "Recompile",
         description: "Compiles the current Java file with javac, without building its module",
         category: "Build",
         when: WHEN,
-        keywords: ["javac", "single file", "recompile"],
-        run: ({ arg }) => {
+        enabled: ({ ctx, arg }) => javaFileTarget(arg, ctx) !== null,
+        keywords: ["compile file", "javac", "single file"],
+        run: ({ ctx, arg }) => {
           const options = typeof arg === "object" && arg !== null ? arg : {};
           const activate = !("activate" in options && options.activate === false);
-          const file = moduleTarget(arg);
+          const file = javaFileTarget(arg, ctx);
           if (file) void startCompileFile(file, activate);
         },
       },
@@ -153,8 +168,8 @@ export function activate(): () => void {
       order: 40,
       items: (_menu, { paths, dirs }) => {
         const path = paths.length === 1 && !dirs?.[0] ? paths[0]! : null;
-        if (!path || !/\.java$/i.test(path) || !useProject.getState().project) return [];
-        return [{ kind: "action", action: "build.compileFile", arg: path }];
+        if (!path || isVirtualUri(path) || !/\.java$/i.test(path) || !useProject.getState().project) return [];
+        return [{ kind: "action", action: "build.compileFile", arg: path, label: tx`Recompile '${basename(path)}'` }];
       },
     }),
     useProject.subscribe((s, prev) => {

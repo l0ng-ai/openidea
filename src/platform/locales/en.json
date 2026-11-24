@@ -413,6 +413,7 @@
   "menu.build": "Build",
   "menu.build.buildProject": "Build Project",
   "menu.build.buildModule": "Build Module",
+  "menu.build.compileFile": "{compileFile, select, yes {Recompile '{compileFileName}'} other {Recompile}}",
   "menu.build.rebuildProject": "Rebuild Project",
   "menu.build.buildArtifacts": "Build Artifacts",
   "menu.toolwindow.build": "Build",

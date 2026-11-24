@@ -15,12 +15,12 @@ pub use fingerprint::{LaunchFingerprint, launch_fingerprint, menu_fingerprint};
 pub use launch_resources::process_launch_resources;
 pub use modules::record_module_build;
 pub use single::{
-    SingleFileTarget, compile_file_plan, find_javac, javac_step, module_classpath, module_classpaths,
-    single_file_classpath, single_file_target,
+    SingleFileTarget, compile_file_plan, compile_file_plan_cancellable, find_javac, gradle_compile_file_plan,
+    has_gradle_file_target, javac_step, module_classpath, module_classpaths, single_file_classpath, single_file_target,
 };
 pub use structure::{
-    StructureJdk, StructureRoots, artifact_file, artifact_output, language_release, structure_outputs, structure_plan,
-    structure_war_plan, structure_web_artifacts,
+    StructureJdk, StructureRoots, artifact_file, artifact_output, language_release, structure_compile_file_plan,
+    structure_outputs, structure_plan, structure_war_plan, structure_web_artifacts,
 };
 pub use up_to_date::{menu_up_to_date, record_menu_build};
 

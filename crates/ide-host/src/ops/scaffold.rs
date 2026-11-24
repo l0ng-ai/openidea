@@ -1,16 +1,13 @@
 //! File › New Project (`ide-scaffold`). Its commands run in Restricted Mode: New Project writes
 //! only where the user chose and runs no code of an open project.
+use super::{blocking, blocking_value};
 use crate::Host;
 use crate::ops::Channel;
 use ide_command::command;
 
-use ide_core::{IdeError, IdeResult, IpcPath, RequestId};
+use ide_core::{IdeResult, IpcPath, RequestId};
 use ide_scaffold::{CreateRequest, Field, GeneratorInfo, Requirement, ScaffoldEvent, Values};
 use std::path::PathBuf;
-
-fn join_err(e: impl std::fmt::Display) -> IdeError {
-    IdeError::internal(e.to_string())
-}
 
 /// The project generators File › New Project offers, in list order.
 #[command(trust = always)]
@@ -29,30 +26,28 @@ pub async fn scaffold_options(
 ) -> IdeResult<Vec<Field>> {
     // Spring Initializr's Boot versions and dependencies…; empty for other generators.
     let cancel = host.begin_request(request);
-    let result = tokio::task::spawn_blocking(move || ide_scaffold::options(&generator, &values, &cancel))
-        .await
-        .map_err(join_err);
+    let result = blocking(move || ide_scaffold::options(&generator, &values, &cancel)).await;
     host.end_request(request);
-    result?
+    result
 }
 
 /// The programs a generator needs for `values`, and whether they are installed.
 #[command(trust = always)]
 pub async fn scaffold_requirements(generator: String, values: Values) -> IdeResult<Vec<Requirement>> {
-    tokio::task::spawn_blocking(move || ide_scaffold::requirements(&generator, &values)).await.map_err(join_err)?
+    blocking(move || ide_scaffold::requirements(&generator, &values)).await
 }
 
 /// Whether a project named `name` cannot be created in `location`: something other than an
 /// empty folder is already there.
 #[command(trust = always)]
 pub async fn scaffold_target_taken(location: PathBuf, name: String) -> IdeResult<bool> {
-    tokio::task::spawn_blocking(move || ide_scaffold::target_taken(&location.join(name.trim()))).await.map_err(join_err)
+    blocking_value(move || ide_scaffold::target_taken(&location.join(name.trim()))).await
 }
 
 /// The first of `base`, `base1`, `base2`, … that names nothing in `location` yet.
 #[command(trust = always)]
 pub async fn scaffold_free_name(location: PathBuf, base: String) -> IdeResult<String> {
-    tokio::task::spawn_blocking(move || ide_scaffold::free_name(&location, &base)).await.map_err(join_err)
+    blocking_value(move || ide_scaffold::free_name(&location, &base)).await
 }
 
 /// Creates a project, streaming progress through `on_event`, and returns its directory,
@@ -66,15 +61,14 @@ pub async fn scaffold_create(
 ) -> IdeResult<IpcPath> {
     // Trusted because the user just created it; a failed or cancelled run leaves no files behind.
     let cancel = host.begin_request(request);
-    let result = tokio::task::spawn_blocking(move || {
+    let result = blocking(move || {
         ide_scaffold::create(&req, &cancel, &|e| {
             let _ = on_event.send(e);
         })
     })
-    .await
-    .map_err(join_err);
+    .await;
     host.end_request(request);
-    let dir = result??;
+    let dir = result?;
     host.set_project_trust(&dir, true, false).await?;
     Ok(dir.into())
 }

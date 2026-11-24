@@ -40,6 +40,7 @@ import { unresolvedReferences } from "./fileReferences";
 import { syntaxErrorsExtension } from "./syntaxErrors";
 import { spellingExtension } from "./spelling";
 import { DocumentationWindow, LspPopups, UsagesStatus } from "./Popups";
+import { MemberChooserDialog } from "./MemberChooserDialog";
 import { DOCUMENTATION_WINDOW } from "./docs";
 import { prefetchMarkdown } from "./markdown";
 import { outsideProjectBanner } from "./outsideProject";
@@ -129,6 +130,7 @@ export function activate(): () => void {
     registerOverlay({ id: "editor-lsp.hierarchyDialog", component: HierarchyDialog }),
     registerOverlay({ id: "editor-lsp.changeSignatureDialog", component: ChangeSignatureDialog }),
     registerOverlay({ id: "editor-lsp.extractInterfaceDialog", component: ExtractInterfaceDialog }),
+    registerOverlay({ id: "editor-lsp.memberChooser", component: MemberChooserDialog }),
     registerClientCommand(JAVA_REFACTORING_COMMAND, runJavaRefactoringCommand),
     registerEditorBanner(outsideProjectBanner),
     registerStatusItem({ id: "editor-lsp.usagesStatus", align: "left", priority: 10, component: UsagesStatus }),

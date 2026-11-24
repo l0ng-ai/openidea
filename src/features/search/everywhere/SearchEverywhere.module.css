@@ -185,7 +185,8 @@
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: pre;
+  white-space: nowrap;
+  white-space-collapse: preserve-spaces;
   color: var(--fg-strong);
 }
 .fileName {
@@ -195,6 +196,7 @@
 .code {
   font-family: var(--font-ui);
   color: var(--fg);
+  white-space: pre;
   tab-size: 2;
 }
 .repeat {

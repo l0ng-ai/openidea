@@ -413,6 +413,7 @@
   "menu.build": "构建",
   "menu.build.buildProject": "构建项目",
   "menu.build.buildModule": "构建模块",
+  "menu.build.compileFile": "{compileFile, select, yes {重新编译 '{compileFileName}'} other {重新编译}}",
   "menu.build.rebuildProject": "重新构建项目",
   "menu.build.buildArtifacts": "构建工件",
   "menu.toolwindow.build": "构建",

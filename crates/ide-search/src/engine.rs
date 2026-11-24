@@ -42,6 +42,8 @@ pub(crate) struct Request<'a> {
     pub max_matches: u32,
     /// Skip what `.gitignore` / `.ignore` / `info/exclude` leave out.
     pub ignore_rules: bool,
+    /// Files longer than this are not searched.
+    pub max_file_bytes: Option<u64>,
     pub text: TextSource<'a>,
     pub cancel: &'a CancellationToken,
     pub on_file: &'a (dyn Fn(FileMatches) + Sync),
@@ -113,6 +115,7 @@ struct Ctx<'a> {
     filter: Option<PathFilter<'a>>,
     context: SearchContext,
     literals: Option<Literals<'a>>,
+    max_file_bytes: Option<u64>,
     text: TextSource<'a>,
     on_file: &'a (dyn Fn(FileMatches) + Sync),
     ctl: Control<'a>,
@@ -128,6 +131,7 @@ pub(crate) fn run(req: Request<'_>) -> IdeResult<SearchSummary> {
         filter: req.filter,
         context: req.context,
         literals: if req.context == SearchContext::Any { None } else { req.literals },
+        max_file_bytes: req.max_file_bytes,
         text: req.text,
         on_file: req.on_file,
         ctl: Control {
@@ -146,6 +150,7 @@ pub(crate) fn run(req: Request<'_>) -> IdeResult<SearchSummary> {
         .line_terminator(line_terminator())
         .line_number(true)
         .multi_line(req.compiled.multi_line)
+        .heap_limit(Some(crate::MAX_SEARCH_BUFFER_BYTES))
         .binary_detection(BinaryDetection::quit(0));
     let matcher = &req.compiled.matcher;
 
@@ -307,6 +312,9 @@ impl Ctx<'_> {
             || self.pattern.is_some_and(|p| !p.matches(&rel))
             || self.filter.is_some_and(|keep| !keep(&rel))
         {
+            return;
+        }
+        if self.max_file_bytes.is_some_and(|max| std::fs::metadata(path).is_ok_and(|meta| meta.len() > max)) {
             return;
         }
         // The search context needs the whole text to find comments and string literals. A file

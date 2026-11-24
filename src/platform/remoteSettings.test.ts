@@ -249,6 +249,41 @@ describe("remote client settings", () => {
     expect(invoke.mock.calls.filter(([cmd]) => cmd === "remote_disconnect")).toHaveLength(0);
     expect(useRemote.getState().session?.root).toBe("/home/me/new");
   });
+  it("attaches the latest of two connects to the same location when the older one is superseded", async () => {
+    disableRemote();
+    useRemoteProgress.setState({ progress: null, location: null });
+    let supersedeFirst: () => void = () => {};
+    let releaseSecond: () => void = () => {};
+    const first = new Promise((_, reject) => {
+      supersedeFirst = () => reject({ kind: "cancelled", message: "superseded" });
+    });
+    const second = new Promise<void>((resolve) => {
+      releaseSecond = resolve;
+    });
+    let connects = 0;
+    const project = {
+      target: { kind: "ssh", config: "box" },
+      root: "/srv/app",
+      host: "box",
+      os: "linux",
+      commands: [...served],
+      project: { root: "/srv/app", name: "app", displayName: "app", settings: remote },
+    };
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd !== "remote_connect") return cmd === "remote_invoke" ? "null" : local;
+      connects += 1;
+      return connects === 1 ? first : second.then(() => project);
+    });
+    const older = connectRemote({ kind: "ssh", config: "box" }, "/srv/app");
+    const newer = connectRemote({ kind: "ssh", config: "box" }, "/srv/app");
+    supersedeFirst();
+    await expect(older).rejects.toMatchObject({ kind: "cancelled" });
+    expect(useRemoteProgress.getState().location).not.toBeNull();
+    releaseSecond();
+    await expect(newer).resolves.toMatchObject({ root: "/srv/app" });
+    expect(useRemote.getState().session?.root).toBe("/srv/app");
+    expect(useRemoteProgress.getState()).toEqual({ progress: null, location: null });
+  });
   it("overlays the project snapshot used by the settings window", async () => {
     invoke.mockImplementation(async (cmd: string) =>
       cmd === "remote_invoke" ? JSON.stringify({ root: "/remote", settings: remote }) : local,

@@ -222,6 +222,10 @@ impl Handler for FakeAgent {
             }
             "session/load" if self.load_error.is_some() => Err(self.load_error.clone().unwrap()),
             "session/load" => {
+                self.update(
+                    &session,
+                    json!({"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "earlier question"}}),
+                );
                 self.say(&session, "replayed history");
                 Ok(json!({}))
             }
@@ -2540,6 +2544,55 @@ async fn renamed_titles_survive_updates_forks_and_restart() {
     handle.on_update(None, &json!({"sessionUpdate": "session_info_update", "title": "Resumed title"}));
     assert_eq!(handle.state.lock().task.title, "My task");
     restored.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_without_history_takes_it_from_the_replay_before_the_first_message() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = {
+        let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+        let _down = ShutDown(&mgr);
+        let task = mgr
+            .create(NewAgentTask { provider: "claude".into(), prompt: text("again"), ..Default::default() })
+            .await
+            .unwrap();
+        wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+        task_file(tmp.path(), &task.id)
+    };
+    let id = path.file_stem().unwrap().to_string_lossy().into_owned();
+    // As an imported session is saved: its session id, none of its history.
+    let mut file: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    file["entries"] = json!([]);
+    std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+
+    {
+        let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+        let _down = ShutDown(&mgr);
+        mgr.prompt(&id, text("again"), false).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        wait_for(&mgr, &id, AgentStatus::Ready).await;
+        let entries = mgr.entries(&id, None).unwrap();
+        assert!(
+            matches!(&entries[0], AgentEntry::User { text, sent_ms: None, .. } if text == "earlier question"),
+            "{entries:?}"
+        );
+        assert_eq!(entries[1], AgentEntry::Agent { text: "replayed history".into() }, "{entries:?}");
+        assert!(
+            matches!(&entries[2], AgentEntry::User { text, sent_ms: Some(_), .. } if text == "again"),
+            "{entries:?}"
+        );
+        assert_eq!(entries.last(), Some(&AgentEntry::Agent { text: "second turn".into() }), "{entries:?}");
+    }
+    assert_eq!(saved_task(&path).unwrap().1, 4);
+
+    // From then on the task has its history: a later reload's replay is dropped again.
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let _down = ShutDown(&mgr);
+    mgr.prompt(&id, text("again"), false).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_for(&mgr, &id, AgentStatus::Ready).await;
+    let entries = mgr.entries(&id, None).unwrap();
+    assert_eq!(entries.len(), 6, "{entries:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

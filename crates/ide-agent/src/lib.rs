@@ -549,8 +549,11 @@ struct Task {
     /// Unanswered permission requests: where to send the chosen option id.
     permissions: Mutex<HashMap<u32, std::sync::mpsc::Sender<Option<String>>>>,
     next_permission: AtomicU32,
-    /// Set while `session/load` replays history we already have.
+    /// Set while `session/load` replays the session's history.
     replaying: AtomicBool,
+    /// The task has a session but none of its history (an imported session): the next load's
+    /// replay becomes the task's history instead of being dropped.
+    adopting_replay: AtomicBool,
     /// The saved session failed to load and the user was told: the next start opens a new one.
     start_fresh: AtomicBool,
     /// The current turn is being cancelled to send the first queued message right away.
@@ -929,7 +932,7 @@ impl AgentManager {
         out
     }
 
-    /// Imports an external session as a task: its first turn loads and replays it (#312).
+    /// Imports an external session as a task, loading it in the background to show its history (#312).
     pub fn import_session(&self, provider: &str, session_id: &str) -> IdeResult<AgentTask> {
         if !matches!(provider, "claude" | "codex") {
             return Err(IdeError::invalid(format!("cannot import {provider} sessions")));
@@ -994,6 +997,13 @@ impl AgentManager {
         self.tasks.write().insert(task.id.clone(), handle.clone());
         handle.emit_task();
         handle.persist();
+        // Loading the session replays its history into the task, so it shows before a first message.
+        self.shared.runtime.spawn(async move {
+            match handle.ensure_session().await {
+                Ok(_) => handle.release_when_idle(),
+                Err(e) => tracing::info!("agent task {}: loading the imported session failed: {e}", handle.id),
+            }
+        });
         Ok(task)
     }
 
@@ -2212,6 +2222,7 @@ impl Task {
     fn restore(file: TaskFile, shared: Arc<Shared>) -> Arc<Self> {
         let mut task = file.task;
         config::add_client_options(&task.provider, &mut task.config);
+        let adopt = file.entries.is_empty() && file.session_id.is_some();
         let conversation = Conversation::restore(file.entries, file.subagents);
         let mut wanted = file.wanted;
         let pending_model = file.pending_switch.or_else(|| {
@@ -2258,6 +2269,7 @@ impl Task {
             permissions: Mutex::new(HashMap::new()),
             next_permission: AtomicU32::new(1),
             replaying: AtomicBool::new(false),
+            adopting_replay: AtomicBool::new(adopt),
             start_fresh: AtomicBool::new(false),
             send_now: AtomicBool::new(false),
             cancel_pending: AtomicBool::new(false),
@@ -2567,6 +2579,19 @@ impl Task {
         }));
         self.state.lock().shell_context.push(ran.context(command));
         self.persist();
+    }
+
+    /// Removes the task's own entries and returns them.
+    fn take_entries(self: &Arc<Self>) -> Vec<AgentEntry> {
+        let entries = {
+            let mut s = self.state.lock();
+            let entries = s.conversation.main.entries.clone();
+            s.conversation.truncate(0);
+            entries
+        };
+        self.streamed.lock().clear();
+        self.shared.emit(AgentEvent::Truncated { task: self.id.clone(), length: 0 });
+        entries
     }
 
     fn push_entry(self: &Arc<Self>, entry: AgentEntry) -> usize {
@@ -3161,12 +3186,27 @@ impl Task {
             });
         }
         if let (Some(id), true, false) = (saved, can_load, start_fresh) {
+            // The replay goes before what this turn already showed (the user's message).
+            let shown = self.adopts_replay().then(|| self.take_entries());
             self.replaying.store(true, Ordering::Release);
             let mut params = session_params(&cwd_s, &mcp_servers, skills_delivery.as_ref(), &roots);
             params["sessionId"] = json!(&id);
             let loaded = self.request_with_auth(&peer, &init, &mut tried_auth, "session/load", params).await;
             tokio::time::sleep(REPLAY_GRACE).await;
             self.replaying.store(false, Ordering::Release);
+            if let Some(shown) = shown {
+                if loaded.is_ok() {
+                    self.adopting_replay.store(false, Ordering::Release);
+                    let changed = self.state.lock().conversation.end_turn(None);
+                    self.mark_dirty(changed);
+                } else {
+                    // A failed load may still have replayed part of it.
+                    self.take_entries();
+                }
+                for entry in shown {
+                    self.push_entry(entry);
+                }
+            }
             match loaded {
                 Ok(v) => session = Some((id, v)),
                 // Not silently: a new session would lose the conversation and replace the saved id.
@@ -3484,7 +3524,7 @@ impl Task {
         let kind = update.get("sessionUpdate").and_then(Value::as_str).unwrap_or_default();
         // A subagent's title, settings and usage are its own, not the task's.
         if self.state.lock().conversation.owner(session).is_some() {
-            if !SESSION_STATE.contains(&kind) && !self.replaying.load(Ordering::Acquire) {
+            if !SESSION_STATE.contains(&kind) && (!self.replaying.load(Ordering::Acquire) || self.adopts_replay()) {
                 self.apply(session, kind, update);
             }
             return;
@@ -3600,6 +3640,13 @@ impl Task {
             return;
         }
         if self.replaying.load(Ordering::Acquire) {
+            if self.adopts_replay() {
+                if kind == "user_message_chunk" {
+                    self.adopt_user_chunk(update);
+                } else {
+                    self.apply(session, kind, update);
+                }
+            }
             return;
         }
         // The first sign that the agent took the prompt: a stop sent before it is repeated.
@@ -3610,6 +3657,44 @@ impl Task {
             let _ = live.peer.notify("session/cancel", json!({ "sessionId": live.session }));
         }
         self.apply(session, kind, update);
+    }
+
+    fn adopts_replay(&self) -> bool {
+        self.adopting_replay.load(Ordering::Acquire)
+    }
+
+    /// A user message of the adopted history: live turns show the user's own, so only a replay's count.
+    fn adopt_user_chunk(self: &Arc<Self>, update: &Value) {
+        let content = update.get("content");
+        let image = content.filter(|c| c.get("type").and_then(Value::as_str) == Some("image")).map(|c| AgentImage {
+            mime_type: c.get("mimeType").and_then(Value::as_str).unwrap_or_default().to_owned(),
+            data: c.get("data").and_then(Value::as_str).unwrap_or_default().to_owned(),
+            name: None,
+        });
+        let text = timeline::content_text(content).unwrap_or_default();
+        if text.is_empty() && image.is_none() {
+            return;
+        }
+        let changed = {
+            let mut s = self.state.lock();
+            let entries = &mut s.conversation.main.entries;
+            // The chunks of one message arrive in a row.
+            if let Some(AgentEntry::User { text: shown, images, .. }) = entries.last_mut() {
+                shown.push_str(&text);
+                images.extend(image);
+                entries.len() - 1
+            } else {
+                s.conversation.main.push(AgentEntry::User {
+                    text,
+                    attachments: Vec::new(),
+                    images: image.into_iter().collect(),
+                    sent_ms: None,
+                    done_ms: None,
+                    steered: false,
+                })
+            }
+        };
+        self.mark_dirty([(None, changed)]);
     }
 
     fn apply(self: &Arc<Self>, session: Option<&str>, kind: &str, update: &Value) {

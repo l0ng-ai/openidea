@@ -2,7 +2,7 @@
 
 use ide_command::desktop_command;
 use ide_core::IdeResult;
-use ide_host::ops::coverage::blocking;
+use ide_host::ops::blocking;
 use ide_web::Browser;
 
 /// The browsers installed on this machine.
