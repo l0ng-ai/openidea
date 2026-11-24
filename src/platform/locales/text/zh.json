@@ -3359,6 +3359,7 @@
   "Show quick documentation on hover": "悬停时显示快速文档",
   "Show results in the test runner": "在测试运行器中显示结果",
   "Show right margin": "显示右边距",
+  "Show sticky lines for:": "为以下语言显示粘滞行：",
   "Show sticky lines while scrolling": "滚动时显示粘滞行",
   "Show suggestions as you type": "输入时显示建议",
   "Show table data": "显示表数据",
