@@ -1855,6 +1855,7 @@ icon = "branch"
 web = "clone/index.html"
 ```
 
+`label` is localized through `locales/<tag>.json` like other contribution titles.
 `web` is required: a source without a page would show an empty pane, so
 `openidea-plugin check` rejects it. The page lives in a directory of the
 package, like a view's `web`, and may load only the files in it (4096 files,

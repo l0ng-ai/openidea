@@ -87,6 +87,7 @@ const TEXT_KEYS: Record<string, readonly string[]> = {
   iconThemes: ["label"],
   themes: ["name"],
   secrets: ["label", "description"],
+  cloneSources: ["label"],
 };
 
 function localizeDecl(decl: unknown, keys: readonly string[], t: PluginTranslate): unknown {
