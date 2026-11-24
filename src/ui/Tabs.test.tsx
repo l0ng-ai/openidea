@@ -14,6 +14,9 @@ import {
 import { setDragRequiresAlt } from "./pointerDrag";
 import styles from "./Tabs.module.css";
 
+const handles: TabStripHandle[] = [];
+const register = (h: TabStripHandle) => (handles.push(h), () => void handles.splice(handles.indexOf(h), 1));
+
 describe("dropIndex", () => {
   it("finds the insertion index from tab midpoints", () => {
     const rects = [
@@ -166,8 +169,7 @@ describe("Tabs interactions", () => {
   });
 
   it("lets a container close the selected tab when it is closable", () => {
-    const handles: TabStripHandle[] = [];
-    const register = (h: TabStripHandle) => (handles.push(h), () => void handles.splice(handles.indexOf(h), 1));
+    handles.length = 0;
     const onClose = vi.fn();
     const ui = (activeId: string) => (
       <TabStripRegistry.Provider value={register}>
@@ -184,8 +186,7 @@ describe("Tabs interactions", () => {
   });
 
   it("lets a container pin the selected tab when the strip supports pinning", () => {
-    const handles: TabStripHandle[] = [];
-    const register = (h: TabStripHandle) => (handles.push(h), () => void handles.splice(handles.indexOf(h), 1));
+    handles.length = 0;
     const onTogglePin = vi.fn();
     const ui = (pin?: (id: string) => void) => (
       <TabStripRegistry.Provider value={register}>
@@ -197,6 +198,25 @@ describe("Tabs interactions", () => {
     expect(onTogglePin).toHaveBeenCalledWith("b");
     rerender(ui());
     expect(handles[0]!.togglePinSelected()).toBe(false);
+  });
+
+  it("shows the modified marker in a pinned editor tab's action slot", () => {
+    const onTogglePin = vi.fn();
+    render(
+      <Tabs
+        variant="editor"
+        items={[{ id: "b", label: "B", text: "B", pinned: true, modified: true }]}
+        activeId="b"
+        onSelect={() => {}}
+        onClose={() => {}}
+        onTogglePin={onTogglePin}
+      />,
+    );
+    const unpin = screen.getByRole("button", { name: "Unpin Tab" });
+    expect(within(unpin.parentElement!).getByLabelText("Modified")).toBeVisible();
+    expect(screen.getByRole("tab", { name: "B Pinned" })).toBeVisible();
+    fireEvent.click(unpin);
+    expect(onTogglePin).toHaveBeenCalledWith("b");
   });
 
   it("a vertical strip moves with ↑/↓, shows actions above the tabs and has no overflow dropdown", () => {

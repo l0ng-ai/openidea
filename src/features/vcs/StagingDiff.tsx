@@ -187,6 +187,9 @@ export function StagingDiff({
     return { ...loaded, index: base, model: compareThreeTexts([head, liveIndex, liveLocal]) };
   }, [loaded, local, localText, indexDoc, indexState.base, indexState.text, metadataLoading]);
   const snapshot = useRangeSnapshot(data.stagingRange, full);
+  const headSide = snapshot?.head ?? versions?.left ?? data.left;
+  const headTitlePath = (headSide.type === "rev" && headSide.path) || data.path;
+  const indexTitlePath = snapshot?.indexPath ?? indexPath ?? data.path;
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState(-1);
@@ -557,6 +560,11 @@ export function StagingDiff({
       <ThreePaneDiff
         path={data.path}
         labels={labels}
+        titlePaths={[
+          headTitlePath === indexTitlePath ? undefined : headTitlePath,
+          indexTitlePath,
+          data.path === indexTitlePath ? undefined : data.path,
+        ]}
         model={snapshot?.model ?? null}
         controls={controls}
         onEditors={onEditors}

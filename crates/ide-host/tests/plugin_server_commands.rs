@@ -1,6 +1,8 @@
 //! `[[contributes.serverCommands]]` (plugin API 1.9): a command a language server hands to the
 //! client runs the plugin command that claims it. The fixture's command sends its argument
 //! back to the server (`mock/ran`), through the real component runtime and `language-servers`.
+mod common;
+
 use ide_host::plugins::{Consent, HostWorkspace, PluginHost, set_editor_providers};
 use ide_host::{Host, HostConfig, ops};
 use ide_jsonrpc::{Handler, Peer};
@@ -88,17 +90,8 @@ async fn a_command_the_server_leaves_to_the_client_runs_the_plugin_that_claims_i
     let tmp = tempfile::tempdir().unwrap();
     let root = dunce::canonicalize(tmp.path()).unwrap().join("project");
     std::fs::create_dir(&root).unwrap();
-    let host = Arc::new(Host::new(HostConfig {
-        config_dir: tmp.path().join("config"),
-        data_dir: tmp.path().join("data"),
-        local_data_dir: tmp.path().join("local"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    }));
+    let host =
+        Arc::new(Host::new(HostConfig { local_data_dir: tmp.path().join("local"), ..common::host_config(tmp.path()) }));
     // Language servers start only in a trusted project.
     host.set_project_trust(&root, true, false).await.unwrap();
     host.open_project("main", &root).unwrap();

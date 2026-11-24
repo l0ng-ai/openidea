@@ -27,6 +27,7 @@ pub mod nav;
 pub mod notebook;
 pub mod project;
 mod python;
+pub mod python_stubs;
 pub mod refactor;
 pub mod routes;
 pub mod run;

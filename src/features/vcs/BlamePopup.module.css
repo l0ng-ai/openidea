@@ -1,13 +1,19 @@
 .popup {
-  width: min(540px, calc(100vw - 32px));
+  width: max-content;
   max-height: min(480px, 65vh);
   overflow: auto;
-  padding: 12px 14px;
   white-space: normal;
+  overflow-wrap: anywhere;
   -webkit-user-select: text;
   user-select: text;
+  font-family: var(--font-ui);
   font-size: var(--fs-ui);
   line-height: 1.5;
+}
+
+.content {
+  max-inline-size: min(540px, 80vw);
+  padding: 10px var(--space-3);
 }
 
 .header {
@@ -16,11 +22,10 @@
 }
 
 .hashLink {
+  max-inline-size: 100%;
   color: var(--link);
-  font-family: var(--font-mono);
-  font-size: inherit;
+  font: inherit;
   cursor: pointer;
-  word-break: break-all;
   text-align: left;
 }
 
@@ -30,16 +35,14 @@
 }
 
 .subject {
-  margin-top: 10px;
+  margin-block-start: var(--space-3);
   color: var(--fg-strong);
   font-weight: 600;
   white-space: pre-wrap;
-  word-break: break-word;
 }
 
 .body {
-  margin-top: 8px;
+  margin-block-start: var(--space-2);
   color: var(--fg);
   white-space: pre-wrap;
-  word-break: break-word;
 }

@@ -76,6 +76,8 @@ export interface DebugSession {
   programInput?: boolean;
   /** Process the session is attached to (a Run tab's build tool); stopped with the session. */
   process: RunId | null;
+  /** Stable Debug-tab slot; a restarted session inherits it even though its backend id changes. */
+  tabOrder?: number;
   /** Pinned tab (root sessions): once finished, a later session opens a new tab instead of taking its place. */
   pinned?: boolean;
   /** Started in place from the Services tool window (root sessions): its stops show it there, not in the Debug window. */
@@ -154,6 +156,35 @@ export const useDebug = create<DebugState>(() => ({
   stopSeq: 0,
   variablesEpoch: 0,
 }));
+
+let tabOrderSeq = 0;
+
+/** Allocates a Debug-tab slot that is independent of the backend's session ids. */
+function allocateTabOrder() {
+  return ++tabOrderSeq;
+}
+
+/** Visible order key; test fixtures without a slot retain their former id order. */
+export function tabOrderOf(s: Pick<DebugSession, "id" | "tabOrder">): number {
+  return s.tabOrder ?? s.id;
+}
+
+/** Sessions as their Debug tabs show: by their root's slot, so children stay next to their parent. */
+export function inTabOrder<T extends Pick<DebugSession, "id" | "parent" | "tabOrder">>(sessions: readonly T[]): T[] {
+  const byId = new Map(sessions.map((s) => [s.id, s]));
+  const root = (s: T) => {
+    let cur = s;
+    for (let p = byId.get(cur.parent!); cur.parent != null && p; p = byId.get(cur.parent!)) cur = p;
+    return cur;
+  };
+  return [...sessions].sort(
+    (a, b) => tabOrderOf(root(a)) - tabOrderOf(root(b)) || tabOrderOf(a) - tabOrderOf(b) || a.id - b.id,
+  );
+}
+
+function sessionsInTabOrder(sessions: Record<number, DebugSession>): DebugSession[] {
+  return inTabOrder(Object.values(sessions));
+}
 
 /** Execution point of the selected frame, plus the frame's locals for inline values. */
 interface ExecutionPoint {
@@ -248,7 +279,7 @@ function patch(id: DebugSessionId, p: Partial<DebugSession>) {
   publishContext();
 }
 
-function blank(id: DebugSessionId, p: Partial<DebugSession> = {}): DebugSession {
+function blank(id: DebugSessionId, { tabOrder = allocateTabOrder(), ...p }: Partial<DebugSession> = {}): DebugSession {
   return {
     id,
     name: "Debug",
@@ -257,6 +288,7 @@ function blank(id: DebugSessionId, p: Partial<DebugSession> = {}): DebugSession 
     parent: null,
     launch: null,
     process: null,
+    tabOrder,
     status: "starting",
     stoppedThread: null,
     stopReason: null,
@@ -316,7 +348,19 @@ function ownSession(id: DebugSessionId, event: DebugEvent): DebugSession | null 
   }
   if (pendingStarts === 0) return null;
   provisional.add(id);
-  return event.kind === "started" ? adoptSession(id, { name: event.name, adapter: event.adapter }) : adoptSession(id);
+  // The new root session takes the tab it replaces now, not once `debugStart` returns.
+  const replaced = pendingReplacements[0];
+  const slot = replaced ? { tabOrder: replaced.tabOrder, pinned: replaced.pinned } : {};
+  const s =
+    event.kind === "started"
+      ? adoptSession(id, { name: event.name, adapter: event.adapter, ...slot })
+      : adoptSession(id, slot);
+  if (replaced) {
+    takeReplacement(replaced);
+    useDebug.setState({ active: id });
+    publishContext();
+  }
+  return s;
 }
 
 /**
@@ -348,28 +392,61 @@ function settleStart(id: DebugSessionId | null, discard = false) {
 
 /** The session being rerun: its tab is the one the new session takes, pinned or not. */
 let rerunOf: DebugSessionId | null = null;
+/** Sessions whose Rerun is in progress: their tab stays selected when they terminate. */
+const rerunning = new Set<DebugSessionId>();
+
+interface ReplacedTab {
+  pinned?: boolean;
+  tabOrder?: number;
+  /** The finished tab, kept until the new session takes its place (`defer`). */
+  session?: DebugSessionId;
+}
+
+/** Finished tabs whose starting replacements have no session yet, oldest start first. */
+const pendingReplacements: ReplacedTab[] = [];
+
+/** The new session is shown: the finished tab it replaces gives way. */
+function takeReplacement(r: ReplacedTab | undefined) {
+  if (!r) return;
+  const i = pendingReplacements.indexOf(r);
+  if (i >= 0) pendingReplacements.splice(i, 1);
+  if (r.session != null && useDebug.getState().sessions[r.session]) removeSession(r.session);
+  r.session = undefined;
+}
 
 /**
  * As IDEA reuses run content: a new session takes the place of one finished tab (with its
- * children) that isn't pinned, preferring one named like it, then the selected one; other
- * finished tabs stay. Returns whether the new tab is pinned: as the tab it replaced on a
- * rerun, else per the settings.
+ * children) that isn't pinned, preferring the same configuration id, then its display name,
+ * then the selected one; other finished tabs stay. The returned slot lets the new backend
+ * session keep the tab where the replaced one was.
  */
-function replaceFinished(name: string): boolean | undefined {
+function replaceFinished(name: string, configId?: string, defer = false): ReplacedTab {
   const { sessions, active } = useDebug.getState();
   const own = rerunOf != null ? sessions[rerunOf] : undefined;
   rerunOf = null;
-  if (own && !isLive(own)) {
+  // Rerun's Stop waits for the adapter, even if this window has not handled its terminated event yet.
+  if (own) {
+    const tabOrder = tabOrderOf(own);
+    if (defer) return { pinned: own.pinned, tabOrder, session: own.id };
     removeSession(own.id);
-    return own.pinned;
+    return { pinned: own.pinned, tabOrder };
   }
-  const finished = Object.values(sessions).filter((s) => s.parent == null && !isLive(s) && !s.pinned);
+  const finished = sessionsInTabOrder(sessions).filter(
+    (s) => s.parent == null && !isLive(s) && !s.pinned && !pendingReplacements.some((r) => r.session === s.id),
+  );
   const selected = active != null ? sessions[active] : undefined;
   const ordered =
     selected && finished.includes(selected) ? [selected, ...finished.filter((s) => s !== selected)] : finished;
-  const reused = ordered.find((s) => s.name === name) ?? ordered[0];
-  if (reused) removeSession(reused.id);
-  return workflowSettings().run.pinTabs || undefined;
+  const reused =
+    (configId == null ? undefined : ordered.find((s) => s.runConfig?.id === configId)) ??
+    ordered.find((s) => s.name === name) ??
+    ordered[0];
+  const pinned = workflowSettings().run.pinTabs || undefined;
+  if (!reused) return { pinned };
+  const tabOrder = tabOrderOf(reused);
+  if (defer) return { pinned, tabOrder, session: reused.id };
+  removeSession(reused.id);
+  return { pinned, tabOrder };
 }
 
 /**
@@ -388,7 +465,7 @@ export function justDetached(process: RunId | null | undefined): boolean {
 
 export function publishContext() {
   const s = activeSession();
-  const retained = Object.values(useDebug.getState().sessions);
+  const retained = sessionsInTabOrder(useDebug.getState().sessions);
   useDebugRunSessions.setState({
     serviceSessions: retained.flatMap((session) => {
       if (session.parent != null || !session.runConfig) return [];
@@ -414,7 +491,7 @@ export function publishContext() {
         },
       ];
     }),
-    sessions: Object.values(useDebug.getState().sessions)
+    sessions: retained
       .filter((session) => session.parent == null && isLive(session))
       .map((session) => {
         const paused = Object.values(useDebug.getState().sessions).find(
@@ -747,7 +824,7 @@ export async function startPreparedSession(
   const controller = new AbortController();
   preparations.set(id, controller);
   // The new tab takes the place of a finished one while its build runs, not once the adapter starts.
-  const pinned = replaceFinished(config.name);
+  const reused = replaceFinished(config.name, config.id);
   useDebug.setState((s) => ({
     sessions: {
       ...s.sessions,
@@ -755,7 +832,8 @@ export async function startPreparedSession(
         name: config.name,
         adapter: config.debugAdapter ?? "",
         runConfig: config,
-        pinned,
+        pinned: reused.pinned,
+        ...(reused.tabOrder == null ? {} : { tabOrder: reused.tabOrder }),
         inPlace: options.show === false,
       }),
     },
@@ -810,7 +888,10 @@ export async function startSession(
   // Attaching to a JVM that may be gone: the finished session stays until the attach succeeds.
   const afterDetach = justDetached(options.process);
   const previousActive = useDebug.getState().active;
-  let pinned = !afterDetach && !options.preparation ? replaceFinished(launch.name) : undefined;
+  // The finished tab stays in place until the new session appears there.
+  let replaced =
+    !afterDetach && !options.preparation ? replaceFinished(launch.name, options.runConfig?.id, true) : undefined;
+  if (replaced?.session != null) pendingReplacements.push(replaced);
   try {
     if (options.show !== false && workflowSettings().run.showOnStart) toolWindowService().show("debug");
   } catch {
@@ -825,7 +906,7 @@ export async function startSession(
     const id = await call(commands.debugStart(launch));
     console.info("Debug adapter started", { name: launch.name, ms: performance.now() - adapterStarted });
     owned.add(id);
-    if (afterDetach && !options.preparation) pinned = replaceFinished(launch.name);
+    if (afterDetach && !options.preparation) replaced = replaceFinished(launch.name, options.runConfig?.id);
     if (options.preparation?.signal.aborted) {
       await call(commands.debugStop(id)).catch(() => undefined);
       settleStart(id);
@@ -833,6 +914,7 @@ export async function startSession(
       return null;
     }
     flushConsoleOutput();
+    takeReplacement(replaced);
     const preparation = options.preparation && useDebug.getState().sessions[options.preparation.id];
     useDebug.setState((s) => {
       const cur = s.sessions[id] ?? blank(id, { status: "running" });
@@ -857,7 +939,8 @@ export async function startSession(
             adapter: cur.adapter || launch.adapter,
             launch: options.rerunnable === false ? null : launch,
             process: options.process ?? null,
-            pinned: preparation ? preparation.pinned : pinned,
+            pinned: preparation ? preparation.pinned : replaced?.pinned,
+            tabOrder: preparation?.tabOrder ?? replaced?.tabOrder ?? cur.tabOrder ?? allocateTabOrder(),
             inPlace: options.show === false,
             status: cur.status === "starting" ? "running" : cur.status,
           },
@@ -875,6 +958,7 @@ export async function startSession(
     void syncSpecial();
     return id;
   } catch (e) {
+    takeReplacement(replaced);
     settleStart(null, afterDetach);
     if (afterDetach) {
       // The JVM that announced the port ended as its previous debugger detached.
@@ -989,16 +1073,16 @@ export function removeSession(id: DebugSessionId) {
   const gone = new Set<DebugSessionId>([id]);
   for (let added = true; added;) {
     added = false;
-    for (const s of Object.values(st.sessions))
+    for (const s of sessionsInTabOrder(st.sessions))
       if (s.parent != null && gone.has(s.parent) && !gone.has(s.id)) {
         gone.add(s.id);
         added = true;
       }
   }
 
-  const order = Object.values(st.sessions).map((s) => s.id);
+  const order = sessionsInTabOrder(st.sessions).map((s) => s.id);
   const sessions: Record<number, DebugSession> = {};
-  for (const s of Object.values(st.sessions)) if (!gone.has(s.id)) sessions[s.id] = s;
+  for (const s of sessionsInTabOrder(st.sessions)) if (!gone.has(s.id)) sessions[s.id] = s;
   const console = { ...st.console };
   for (const goneId of gone) delete console[goneId];
   const at = order.indexOf(id);
@@ -1030,16 +1114,18 @@ export async function rerunSession(id: DebugSessionId, options: { show?: boolean
   const root = rootOf(s);
   const launch = root.launch;
   if (!root.runConfig && !launch) return;
-  if (isLive(root)) await stopSession(root.id);
-  rerunOf = root.id;
-  // A session debugged in place from Services reruns there too.
-  const show = options.show ?? (root.inPlace ? false : undefined);
+  rerunning.add(root.id);
   try {
+    if (isLive(root)) await stopSession(root.id);
+    rerunOf = root.id;
+    // A session debugged in place from Services reruns there too.
+    const show = options.show ?? (root.inPlace ? false : undefined);
     if (root.runConfig)
       await executeAction("run.debugConfig", show === false ? { config: root.runConfig, show: false } : root.runConfig);
     else await startSession(launch!, { show });
   } finally {
     rerunOf = null;
+    rerunning.delete(root.id);
   }
 }
 
@@ -1088,9 +1174,9 @@ function markTerminated(id: DebugSessionId) {
   if (serverPages.delete(id) && page != null) void stopSession(page);
   patch(id, { status: "terminated", endedAt: Date.now(), frames: [], selectedFrame: null, stoppedThread: null });
   const st = useDebug.getState();
-  if (st.active === id) {
+  if (st.active === id && !rerunning.has(id)) {
     // Prefer another live session (e.g. the parent of a finished child).
-    const other = Object.values(st.sessions).find(isLive);
+    const other = sessionsInTabOrder(st.sessions).find(isLive);
     if (other) useDebug.setState({ active: other.id });
   }
   if (!Object.values(useDebug.getState().sessions).some(isLive)) {

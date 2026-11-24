@@ -176,6 +176,7 @@ function PageHost({
                 {parents.length > 0 && (
                   <span className={styles.parentCrumbs}>
                     {parents.map((c, i) => (
+                      // oxlint-disable-next-line react/no-array-index-key -- crumb labels can repeat; position is the identity
                       <span key={i} className={styles.crumb}>
                         <span className={styles.crumbLabel}>
                           <T>{c}</T>
@@ -360,6 +361,7 @@ export function SettingsLayout() {
             isExpandable={(n) => n.children.length > 0}
             defaultExpanded={current ? ancestorKeys(tree, current.key) : []}
             expanded={query ? expanded : undefined}
+            indent={16}
             selected={current ? new Set([current.key]) : new Set()}
             onSelectionChange={(_sel, node) => node && selectPage(node.key)}
             multiSelect={false}

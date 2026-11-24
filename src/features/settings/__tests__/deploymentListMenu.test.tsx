@@ -10,6 +10,7 @@ import { DEPLOYMENT_PAGES } from "../pages/deployment";
 import { preloadBuiltinPage } from "../pages/lazyPage";
 
 const server = (id: string, name: string) => ({ ...DEFAULT_DEPLOYMENT_SERVER, id, name });
+const DEPLOYMENT_CONTEXT = { pageId: "build.deployment", scope: "project" } as const;
 
 beforeAll(() => preloadBuiltinPage("build.deployment"));
 
@@ -30,7 +31,7 @@ function renderList() {
     .find((o) => o.kind === "custom" && o.label === "Deployment servers");
   const Editor = (option as unknown as { component: ComponentType }).component;
   render(
-    <PageContext.Provider value={{ pageId: page.id, scope: "project" }}>
+    <PageContext.Provider value={DEPLOYMENT_CONTEXT}>
       <Editor />
     </PageContext.Provider>,
   );

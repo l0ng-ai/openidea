@@ -29,6 +29,7 @@ const Editor = option.component;
 const savedDialog = useSettingsDialog.getState();
 const savedProject = useProject.getState();
 const PAGE = DEPLOYMENT_PAGES[0]!.id;
+const DEPLOYMENT_CONTEXT = { pageId: PAGE, scope: "global" } as const;
 
 beforeAll(() => preloadBuiltinPage(PAGE));
 beforeEach(() => {
@@ -55,7 +56,7 @@ function mount() {
   useProject.setState({ settings, project: null });
   openSettings(PAGE);
   return render(
-    <PageContext.Provider value={{ pageId: PAGE, scope: "global" }}>
+    <PageContext.Provider value={DEPLOYMENT_CONTEXT}>
       <Editor />
     </PageContext.Provider>,
   );

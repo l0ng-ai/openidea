@@ -33,15 +33,17 @@ export function CommitAuthorFields({
   focusAuthor?: boolean;
   onChange: (update: Partial<CommitAuthor>) => void;
 }) {
+  const authorId = useId();
   const authorDateId = useId();
   const date = authorDate ? new Date(authorDate) : null;
   return (
-    <>
-      <label className={styles.optField}>
-        <span>
+    <div className={styles.optIdentity}>
+      <div className={styles.optIdentityFields}>
+        <label htmlFor={authorId}>
           <T>Author:</T>
-        </span>
+        </label>
         <Input
+          id={authorId}
           value={author}
           title={tx(
             preserveOriginal
@@ -53,8 +55,6 @@ export function CommitAuthorFields({
           autoSelect={focusAuthor}
           onChange={(e) => onChange({ author: e.target.value })}
         />
-      </label>
-      <div className={styles.optDate}>
         <label htmlFor={authorDateId}>
           <T>Author date</T>
         </label>
@@ -81,6 +81,6 @@ export function CommitAuthorFields({
           )}
         </div>
       </div>
-    </>
+    </div>
   );
 }

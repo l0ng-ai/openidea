@@ -1,6 +1,17 @@
 import { useEffect, useState, type ComponentType } from "react";
 
-const loaders: Array<() => Promise<unknown>> = [];
+/** Loaders of the components that opted into `prefetch`, in registration order. */
+const prefetched: Array<() => Promise<unknown>> = [];
+
+type LazyOptions = {
+  /**
+   * Load this component's code in the background after start-up (see
+   * `prefetchLazyComponents`). Set it only for views most users open early, where
+   * a blank first frame would be noticeable; every prefetched chunk costs
+   * download, parse and heap in every window, opened or not.
+   */
+  prefetch?: boolean;
+};
 
 export type LazyComponent<P extends object = Record<string, never>> = ComponentType<P> & {
   preload(): Promise<ComponentType<P>>;
@@ -12,7 +23,10 @@ export type LazyComponent<P extends object = Record<string, never>> = ComponentT
  * not `React.lazy`: a suspended boundary is revealed ~300 ms late (React's
  * fallback throttling), even when the chunk is already there.
  */
-export function lazyComponent<P extends object>(load: () => Promise<ComponentType<P>>): LazyComponent<P> {
+export function lazyComponent<P extends object>(
+  load: () => Promise<ComponentType<P>>,
+  { prefetch = false }: LazyOptions = {},
+): LazyComponent<P> {
   let loaded: ComponentType<P> | null = null;
   let pending: Promise<ComponentType<P>> | null = null;
   const get = () =>
@@ -23,7 +37,7 @@ export function lazyComponent<P extends object>(load: () => Promise<ComponentTyp
         throw e;
       },
     ));
-  loaders.push(get);
+  if (prefetch) prefetched.push(get);
 
   function LazyComponent(props: P) {
     const [Component, setComponent] = useState<ComponentType<P> | null>(() => loaded);
@@ -52,8 +66,9 @@ export function lazyComponent<P extends object>(load: () => Promise<ComponentTyp
 export function lazyWhen<P extends object>(
   useShown: () => boolean,
   load: () => Promise<ComponentType<P>>,
+  options?: LazyOptions,
 ): ComponentType<P> {
-  const Lazy = lazyComponent(load);
+  const Lazy = lazyComponent(load, options);
   let shown = false;
   return function LazyWhen(props: P) {
     const now = useShown();
@@ -63,8 +78,9 @@ export function lazyWhen<P extends object>(
 }
 
 /**
- * Loads every lazy component's code one at a time while the app is idle, so a
- * view opened later shows at once. Call after start-up.
+ * Loads the code of the lazy components marked `prefetch` one at a time while the
+ * app is idle, so those views show at once when first opened. The others load
+ * when first rendered. Call after start-up.
  */
 export function prefetchLazyComponents(): () => void {
   let cancelled = false;
@@ -72,8 +88,8 @@ export function prefetchLazyComponents(): () => void {
   const idle = (f: () => void) =>
     typeof requestIdleCallback === "function" ? requestIdleCallback(f, { timeout: 10_000 }) : setTimeout(f, 200);
   const step = () => {
-    if (cancelled || next >= loaders.length) return;
-    void loaders[next++]!()
+    if (cancelled || next >= prefetched.length) return;
+    void prefetched[next++]!()
       .catch(() => {})
       .finally(() => idle(step));
   };

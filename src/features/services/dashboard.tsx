@@ -7,7 +7,7 @@
  * proven in `openidea-kubernetes` (`ResourceDetails.tsx`).
  */
 import { writeClipboardText } from "@/platform/clipboard";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import type {
   DockerContainer,
@@ -23,7 +23,7 @@ import { call, commands, isTauri } from "@/platform/ipc";
 import { useTx, useTxTemplate } from "@/platform/i18n";
 import { Button, EmptyState, Icon, IconButton, Spinner, T } from "@/ui";
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
-import { notifications } from "@/workbench/contributions";
+import { notifications, useToolWindowShown } from "@/workbench/contributions";
 import {
   containersInNetwork,
   containersUsingImage,
@@ -35,6 +35,7 @@ import {
   isRunning,
   shortId,
   treeKey,
+  volumesInComposeProject,
   type DockerTarget,
 } from "./model";
 import {
@@ -51,6 +52,7 @@ import {
   targetBusy,
 } from "./ops";
 import { openContainerLogInEditor } from "./logEditor";
+import { hasComposeSource, jumpToContainerComposeSource, openComposeFile } from "./composeSource";
 import { containerOp, endpointOf, errorMessage, useServices } from "./store";
 import { useServicesTree } from "./tree";
 import styles from "./Services.module.css";
@@ -536,6 +538,155 @@ export function parseNetworkInspect(raw: string | null): ParsedNetworkInspect | 
 
 const copyText = (text: string) => void writeClipboardText(text);
 
+const SAFE_SHELL_TOKEN = /^[A-Za-z0-9_./:@%+=,-]+$/;
+
+function formatShellToken(token: string): string {
+  const normalized = token.replace(/\r\n?/g, "\n");
+  if (!normalized) return "''";
+  if (normalized.includes("\n")) {
+    const trimmed = normalized.replace(/^\n+|\n+$/g, "");
+    return `'\n${trimmed.replace(/'/g, "'\\''")}\n'`;
+  }
+  if (SAFE_SHELL_TOKEN.test(normalized)) return normalized;
+  return `'${normalized.replace(/'/g, "'\\''")}'`;
+}
+
+function formatPreviewToken(token: string): string {
+  const normalized = token.replace(/\r\n?/g, "\n");
+  if (!normalized) return "''";
+  if (normalized.includes("\n")) {
+    const lines = normalized
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    return `'${lines.join(" ↵ ")}'`;
+  }
+  if (SAFE_SHELL_TOKEN.test(normalized)) return normalized;
+  return `'${normalized.replace(/'/g, "'\\''")}'`;
+}
+
+export interface FormattedDockerCommand {
+  preview: string;
+  entrypoint: string;
+  args: string;
+  fullText: string;
+  copyText: string;
+  lineCount: number;
+}
+
+export function formatDockerCommand(
+  entrypoint: readonly string[],
+  cmd: readonly string[],
+  fallback = "",
+): FormattedDockerCommand | null {
+  if (entrypoint.length || cmd.length) {
+    const entrypointText = entrypoint.map(formatShellToken).join(" ");
+    const argsText = cmd.map(formatShellToken).join(" ");
+    const copyText = entrypointText && argsText ? `${entrypointText} ${argsText}` : entrypointText || argsText;
+    const preview = [...entrypoint, ...cmd].map(formatPreviewToken).join(" ");
+    return {
+      preview,
+      entrypoint: entrypointText,
+      args: argsText,
+      fullText: copyText,
+      copyText,
+      lineCount: copyText.split("\n").length,
+    };
+  }
+  const trimmed = fallback.replace(/\r\n?/g, "\n").trim();
+  if (!trimmed) return null;
+  const lines = trimmed.split("\n");
+  const preview =
+    lines.length > 1
+      ? lines
+          .map((l) => l.trim())
+          .filter(Boolean)
+          .join(" ↵ ")
+      : trimmed;
+  return {
+    preview,
+    entrypoint: "",
+    args: "",
+    fullText: trimmed,
+    copyText: trimmed,
+    lineCount: lines.length,
+  };
+}
+
+function CommandField({ command, actions }: { command: FormattedDockerCommand; actions?: ReactNode }) {
+  const tx = useTx();
+  const [expanded, setExpanded] = useState(false);
+  const [overflowing, setOverflowing] = useState(false);
+  const previewRef = useRef<HTMLElement>(null);
+  const multiLine = command.lineCount > 1;
+
+  useEffect(() => {
+    const el = previewRef.current;
+    if (!el || expanded || multiLine) return;
+    const measure = () => setOverflowing(el.scrollWidth > el.clientWidth);
+    const frame = requestAnimationFrame(measure);
+    if (typeof ResizeObserver === "undefined") return () => cancelAnimationFrame(frame);
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [command.preview, expanded, multiLine]);
+
+  const canExpand = multiLine || overflowing;
+  const count = command.lineCount;
+  const hasSplitSections = !!command.entrypoint && !!command.args;
+
+  return (
+    <div className={styles.commandField}>
+      <div className={styles.commandHeader}>
+        {!expanded && (
+          <code ref={previewRef} className={styles.commandPreview} data-no-tooltip="">
+            {command.preview}
+          </code>
+        )}
+        {(canExpand || expanded) && (
+          <button
+            type="button"
+            className={styles.commandToggle}
+            aria-expanded={expanded}
+            onClick={() => setExpanded((v) => !v)}
+          >
+            <Icon name={expanded ? "chevron-down" : "chevron-right"} size={12} />
+            <span>{expanded ? <T>Collapse</T> : multiLine ? tx`${count} lines` : <T>Expand</T>}</span>
+          </button>
+        )}
+        {expanded && multiLine && <span className={styles.mutedMeta}>{tx`${count} lines`}</span>}
+        <IconButton icon="copy" size="small" title="Copy Command" onClick={() => copyText(command.copyText)} />
+        {actions}
+      </div>
+      {expanded && (
+        <div className={styles.commandBody}>
+          {hasSplitSections ? (
+            <>
+              <div className={styles.commandSection}>
+                <div className={styles.commandSectionLabel}>
+                  <T>Entrypoint</T>
+                </div>
+                <pre className={styles.commandPre}>{command.entrypoint}</pre>
+              </div>
+              <div className={styles.commandSection}>
+                <div className={styles.commandSectionLabel}>
+                  <T>Command arguments</T>
+                </div>
+                <pre className={styles.commandPre}>{command.args}</pre>
+              </div>
+            </>
+          ) : (
+            <pre className={styles.commandPre}>{command.fullText}</pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 async function openExternalUrl(url: string): Promise<void> {
   try {
     if (isTauri()) {
@@ -638,33 +789,147 @@ function KeyValueTable({ rows, emptyText }: { rows: ReadonlyArray<readonly [stri
   );
 }
 
-function ContainerLinkChip({ conn, container }: { conn: string; container: DockerContainer }) {
-  const running = isRunning(container);
+function selectContainerInTree(conn: string, container: DockerContainer): void {
   const key = treeKey(conn, { kind: "container", key: `container:${container.id}`, container });
   const parentKey = container.composeProject
     ? `docker:${conn}:compose:${container.composeProject}`
     : isDevContainer(container)
       ? `docker:${conn}:group:devContainers`
       : `docker:${conn}:group:containers`;
+  useServicesTree.setState((s) => {
+    const expanded = new Set(s.expanded);
+    expanded.add(`docker:${conn}`);
+    expanded.add(parentKey);
+    return { selectedKey: key, selectedKeys: new Set([key]), expanded };
+  });
+  showDetail("dashboard");
+}
+
+function ContainerLinkChip({ conn, container }: { conn: string; container: DockerContainer }) {
+  const running = isRunning(container);
   return (
-    <button
-      type="button"
-      className={styles.entityChip}
-      onClick={() => {
-        useServicesTree.setState((s) => {
-          const expanded = new Set(s.expanded);
-          expanded.add(`docker:${conn}`);
-          expanded.add(parentKey);
-          return { selectedKey: key, selectedKeys: new Set([key]), expanded };
-        });
-        showDetail("dashboard");
-      }}
-    >
+    <button type="button" className={styles.entityChip} onClick={() => selectContainerInTree(conn, container)}>
       <span className={clsx(styles.statusDot, running ? styles.dotOk : styles.dotMuted)} />
       <span className={styles.mono}>{container.name}</span>
       <span className={styles.chipMeta}>{container.status}</span>
     </button>
   );
+}
+
+function VolumeLinkChip({ conn, volume }: { conn: string; volume: DockerVolume }) {
+  const composeVol = volume.labels?.["com.docker.compose.volume"];
+  const meta = composeVol && composeVol !== volume.name ? `${composeVol} · ${volume.driver}` : volume.driver;
+  return (
+    <button
+      type="button"
+      className={clsx(styles.entityChip, styles.volumeChip)}
+      title={volume.mountpoint || volume.name}
+      onClick={() => {
+        selectServicesTreeKey(treeKey(conn, { kind: "volume", key: `volume:${volume.name}`, volume }));
+        showDetail("dashboard");
+      }}
+    >
+      <Icon name="docker-volumes" size={14} className={styles.volumeChipIcon} />
+      <span className={clsx(styles.mono, styles.volumeChipName)}>{volume.name}</span>
+      {meta && <span className={clsx(styles.chipMeta, styles.volumeChipMeta)}>{meta}</span>}
+    </button>
+  );
+}
+
+const STATS_CONCURRENCY = 6;
+
+/** Default `top` refresh delay (3s) between live `docker stats --no-stream` samples. */
+export const CONTAINER_STATS_POLL_MS = 3000;
+
+async function fetchContainerStatsMap(
+  conn: string,
+  ids: readonly string[],
+): Promise<Record<string, DockerContainerStats>> {
+  const out: Record<string, DockerContainerStats> = {};
+  const endpoint = endpointOf(conn);
+  let next = 0;
+  const worker = async () => {
+    while (next < ids.length) {
+      const id = ids[next++]!;
+      try {
+        out[id] = await call(commands.dockerContainerStats(endpoint, id));
+      } catch {
+        // Container may have stopped before stats were sampled.
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(STATS_CONCURRENCY, ids.length) }, () => worker()));
+  return out;
+}
+
+function useLiveContainerStats(
+  conn: string,
+  runningIdsKey: string,
+): {
+  byId: Record<string, DockerContainerStats>;
+  loading: boolean;
+} {
+  const shown = useToolWindowShown();
+  const statsScope = `${conn}\0${runningIdsKey}`;
+  const [statsState, setStatsState] = useState<{
+    conn: string;
+    byId: Record<string, DockerContainerStats>;
+    settledScope: string;
+  }>({ conn: "", byId: {}, settledScope: "" });
+
+  useEffect(() => {
+    const ids = runningIdsKey ? runningIdsKey.split("\0") : [];
+    if (!ids.length || !shown || !isTauri()) return;
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let inFlight = false;
+
+    const clearTimer = () => {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+    };
+
+    const isDocumentHidden = () => document.visibilityState === "hidden";
+
+    const sample = async () => {
+      clearTimer();
+      if (!alive || inFlight || isDocumentHidden()) return;
+      inFlight = true;
+      try {
+        const byId = await fetchContainerStatsMap(conn, ids);
+        if (alive) {
+          setStatsState({ conn, byId, settledScope: statsScope });
+        }
+      } finally {
+        inFlight = false;
+        if (alive && !isDocumentHidden()) {
+          timer = setTimeout(() => void sample(), CONTAINER_STATS_POLL_MS);
+        }
+      }
+    };
+
+    const onVisibility = () => {
+      if (isDocumentHidden()) clearTimer();
+      else void sample();
+    };
+
+    document.addEventListener("visibilitychange", onVisibility);
+    if (!isDocumentHidden()) void sample();
+
+    return () => {
+      alive = false;
+      clearTimer();
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [conn, runningIdsKey, shown, statsScope]);
+
+  const active = Boolean(runningIdsKey) && shown && isTauri();
+  return {
+    byId: statsState.conn === conn ? statsState.byId : {},
+    loading: active && statsState.settledScope !== statsScope,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -711,32 +976,16 @@ export function ContainerDashboard({
   const ports = useMemo(() => inspect?.ports ?? parsePortMappings(container.ports), [inspect, container.ports]);
   const matchedImage = useMemo(() => findImageForContainer(snapshot, container), [snapshot, container]);
 
-  const [stats, setStats] = useState<DockerContainerStats | null>(null);
-  const [statsLoading, setStatsLoading] = useState(false);
-
-  useEffect(() => {
-    if (!running || !isTauri()) return;
-    let alive = true;
-    call(commands.dockerContainerStats(endpointOf(conn), container.id))
-      .then((s) => alive && setStats(s))
-      .catch(() => alive && setStats(null));
-    return () => {
-      alive = false;
-    };
-  }, [conn, container.id, running]);
-
-  const reloadStats = useCallback(() => {
-    if (!running || !isTauri()) return;
-    setStatsLoading(true);
-    call(commands.dockerContainerStats(endpointOf(conn), container.id))
-      .then((s) => setStats(s))
-      .catch(() => setStats(null))
-      .finally(() => setStatsLoading(false));
-  }, [conn, container.id, running]);
+  const { byId: statsById, loading: statsLoading } = useLiveContainerStats(conn, running ? container.id : "");
+  const stats = running ? (statsById[container.id] ?? null) : null;
 
   const cpuPct = stats ? parsePercent(stats.cpuPerc) : 0;
   const memPair = stats ? parseUsagePair(stats.memUsage) : null;
   const labels = inspect?.labels.length ? inspect.labels : Object.entries(container.labels ?? {});
+  const command = useMemo(
+    () => formatDockerCommand(inspect?.entrypoint ?? [], inspect?.cmd ?? [], container.command),
+    [inspect, container.command],
+  );
 
   return (
     <div className={styles.dashboard} tabIndex={0} onKeyDown={copySelectionOnKeyDown}>
@@ -831,12 +1080,22 @@ export function ContainerDashboard({
         <PropRow label={<T>Started</T>} hidden={!inspect?.startedAt || inspect.startedAt.startsWith("0001-01-01")}>
           {formatCreatedDetailed(inspect?.startedAt)}
         </PropRow>
-        <PropRow label={<T>Command</T>} hidden={!container.command && !inspect?.cmd.length}>
-          <code className={styles.codeInline}>
-            {inspect && (inspect.entrypoint.length || inspect.cmd.length)
-              ? [...inspect.entrypoint, ...inspect.cmd].join(" ")
-              : container.command}
-          </code>
+        <PropRow label={<T>Command</T>} hidden={!command}>
+          {command && (
+            <CommandField
+              command={command}
+              actions={
+                hasComposeSource(container) && (
+                  <IconButton
+                    icon="autoscroll-to-source"
+                    size="small"
+                    title="Jump to Source"
+                    onClick={() => void jumpToContainerComposeSource(container, "command")}
+                  />
+                )
+              }
+            />
+          )}
         </PropRow>
         <PropRow label={<T>Working directory</T>} hidden={!inspect?.workingDir}>
           <span className={styles.mono}>{inspect?.workingDir}</span>
@@ -874,11 +1133,7 @@ export function ContainerDashboard({
 
       {running && (
         <>
-          <SectionBanner
-            action={
-              <IconButton icon="refresh" size="small" title="Refresh" disabled={statsLoading} onClick={reloadStats} />
-            }
-          >
+          <SectionBanner>
             <T>Resource Usage</T>
           </SectionBanner>
           {stats ? (
@@ -970,10 +1225,10 @@ export function ContainerDashboard({
               <T>Mode</T>
             </span>
           </div>
-          {inspect.mounts.map((m, idx) => {
+          {inspect.mounts.map((m) => {
             const volumeObj = m.name ? snapshot.volumes.find((v) => v.name === m.name) : undefined;
             return (
-              <div key={`${m.destination}:${idx}`} className={styles.dataRow}>
+              <div key={`${m.destination}:${m.type}:${m.source}`} className={styles.dataRow}>
                 <span className={styles.badgeMuted}>{m.type}</span>
                 <span className={styles.mono} title={m.source}>
                   {volumeObj ? (
@@ -1147,19 +1402,30 @@ export function ContainerProcessesView({ conn, id, running }: { conn: string; id
           <table className={styles.gridTable}>
             <thead>
               <tr>
-                {data.titles.map((title, i) => (
-                  <th key={`${title}:${i}`}>{title}</th>
+                {data.titles.map((title, idx) => (
+                  // oxlint-disable-next-line react/no-array-index-key -- column titles can repeat; position is the identity
+                  <th key={idx}>{title}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {data.processes.map((row, rIdx) => (
-                <tr key={rIdx}>
-                  {data.titles.map((_, cIdx) => (
-                    <td key={cIdx} className={styles.mono}>
-                      {row[cIdx] ?? ""}
-                    </td>
-                  ))}
+                <tr
+                  // oxlint-disable-next-line react/no-array-index-key -- process rows can repeat; position is the identity
+                  key={rIdx}
+                >
+                  {data.titles.map((_, cIdx) => {
+                    const value = row[cIdx] ?? "";
+                    return (
+                      <td
+                        // oxlint-disable-next-line react/no-array-index-key -- cell values repeat; position is the identity
+                        key={cIdx}
+                        className={styles.mono}
+                      >
+                        {value}
+                      </td>
+                    );
+                  })}
                 </tr>
               ))}
             </tbody>
@@ -1192,6 +1458,7 @@ export function ImageDashboard({
     return [...new Set([...fromSnap, ...fromInspect])];
   }, [snapshot, image, inspect]);
   const usingContainers = useMemo(() => containersUsingImage(snapshot, image), [snapshot, image]);
+  const command = useMemo(() => formatDockerCommand(inspect?.entrypoint ?? [], inspect?.cmd ?? []), [inspect]);
 
   return (
     <div className={styles.dashboard} tabIndex={0} onKeyDown={copySelectionOnKeyDown}>
@@ -1236,10 +1503,8 @@ export function ImageDashboard({
         <PropRow label={<T>Platform</T>} hidden={!inspect?.os && !inspect?.architecture}>
           <span className={styles.mono}>{[inspect?.os, inspect?.architecture].filter(Boolean).join("/")}</span>
         </PropRow>
-        <PropRow label={<T>Command</T>} hidden={!inspect?.entrypoint.length && !inspect?.cmd.length}>
-          <code className={styles.codeInline}>
-            {[...(inspect?.entrypoint ?? []), ...(inspect?.cmd ?? [])].join(" ")}
-          </code>
+        <PropRow label={<T>Command</T>} hidden={!command}>
+          {command && <CommandField command={command} />}
         </PropRow>
         <PropRow label={<T>Working directory</T>} hidden={!inspect?.workingDir}>
           <span className={styles.mono}>{inspect?.workingDir}</span>
@@ -1363,6 +1628,7 @@ export function ImageLayersView({ conn, id }: { conn: string; id: string }) {
               const bytes = unitsToBytes(layer.size);
               const pct = bytes > 0 ? (bytes / maxBytes) * 100 : 0;
               return (
+                // oxlint-disable-next-line react/no-array-index-key -- multiple image layers can report the same missing ID
                 <tr key={`${layer.id}:${idx}`}>
                   <td className={styles.mutedMeta}>{idx + 1}</td>
                   <td>
@@ -1437,7 +1703,26 @@ export function VolumeDashboard({
           </span>
         </PropRow>
         <PropRow label={<T>Compose</T>} hidden={!volume.composeProject}>
-          <span className={styles.mono}>{volume.composeProject}</span>
+          {volume.composeProject && snapshot.containers.some((c) => c.composeProject === volume.composeProject) ? (
+            <button
+              type="button"
+              className={styles.link}
+              onClick={() => {
+                selectServicesTreeKey(
+                  treeKey(conn, {
+                    kind: "compose",
+                    key: `compose:${volume.composeProject!}`,
+                    project: volume.composeProject!,
+                    containers: [],
+                  }),
+                );
+              }}
+            >
+              <span className={styles.mono}>{volume.composeProject}</span>
+            </button>
+          ) : (
+            <span className={styles.mono}>{volume.composeProject}</span>
+          )}
         </PropRow>
       </div>
 
@@ -1523,8 +1808,8 @@ export function NetworkDashboard({
         </PropRow>
         <PropRow label={<T>Subnet / Gateway</T>} hidden={!inspect?.ipamConfigs.length}>
           <div className={styles.chipGroupInline}>
-            {inspect?.ipamConfigs.map((cfg, idx) => (
-              <span key={idx} className={styles.entityChip}>
+            {inspect?.ipamConfigs.map((cfg) => (
+              <span key={`${cfg.subnet}:${cfg.gateway}`} className={styles.entityChip}>
                 <span className={styles.mono}>
                   {[cfg.subnet, cfg.gateway ? `gw ${cfg.gateway}` : ""].filter(Boolean).join(" · ")}
                 </span>
@@ -1574,10 +1859,12 @@ export function ComposeProjectDashboard({
   conn,
   project,
   containers,
+  snapshot,
 }: {
   conn: string;
   project: string;
   containers: DockerContainer[];
+  snapshot: DockerSnapshot;
 }) {
   const txTemplate = useTxTemplate();
   const target: DockerTarget = {
@@ -1587,6 +1874,18 @@ export function ComposeProjectDashboard({
   const busy = useServices((s) => targetBusy(target, s));
   const first = containers[0];
   const runningCount = containers.filter(isRunning).length;
+  const namedVolumes = useMemo(() => volumesInComposeProject(snapshot, project), [snapshot, project]);
+
+  const runningIdsKey = useMemo(
+    () =>
+      containers
+        .filter(isRunning)
+        .map((c) => c.id)
+        .sort()
+        .join("\0"),
+    [containers],
+  );
+  const { byId: activeStats, loading: statsLoading } = useLiveContainerStats(conn, runningIdsKey);
 
   return (
     <div className={styles.dashboard} tabIndex={0} onKeyDown={copySelectionOnKeyDown}>
@@ -1619,18 +1918,130 @@ export function ComposeProjectDashboard({
           <span className={styles.mono}>{first?.composeWorkingDir}</span>
         </PropRow>
         <PropRow label={<T>Compose files</T>} hidden={!first?.composeFiles.length}>
-          <span className={styles.mono}>{first?.composeFiles.join(", ")}</span>
+          <span className={styles.inlineRow}>
+            {first?.composeFiles.map((file) => (
+              <button
+                key={file}
+                type="button"
+                className={styles.link}
+                onClick={() => void openComposeFile(file, first.composeWorkingDir)}
+              >
+                <span className={styles.mono}>{file}</span>
+              </button>
+            ))}
+          </span>
         </PropRow>
       </div>
 
       <SectionBanner>
         <T>Services</T>
       </SectionBanner>
-      <div className={styles.chipGroup}>
-        {containers.map((c) => (
-          <ContainerLinkChip key={c.id} conn={conn} container={c} />
-        ))}
+      <div className={styles.composeTableWrap}>
+        <table className={clsx(styles.gridTable, styles.composeServicesTable)}>
+          <thead>
+            <tr>
+              <th>
+                <T>Service</T>
+              </th>
+              <th>
+                <T>Status</T>
+              </th>
+              <th>
+                <T>CPU</T>
+              </th>
+              <th>
+                <T>Memory</T>
+              </th>
+              <th>
+                <T>Network I/O</T>
+              </th>
+              <th>
+                <T>Block I/O</T>
+              </th>
+              <th>
+                <T>PIDs</T>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {containers.map((c) => {
+              const running = isRunning(c);
+              const stats = running ? activeStats[c.id] : undefined;
+              const cpuPct = stats ? parsePercent(stats.cpuPerc) : 0;
+              const memPair = stats ? parseUsagePair(stats.memUsage) : null;
+              const memPct = memPair ? memPair.percent : stats ? parsePercent(stats.memPerc) : 0;
+              return (
+                <tr key={c.id}>
+                  <td className={styles.composeServiceCell}>
+                    <button type="button" className={styles.link} onClick={() => selectContainerInTree(conn, c)}>
+                      <span className={clsx(styles.statusDot, running ? styles.dotOk : styles.dotMuted)} />
+                      <span className={styles.mono}>{c.name}</span>
+                    </button>
+                    {c.composeService && !c.name.includes(c.composeService) && (
+                      <span className={styles.mutedMeta}>{c.composeService}</span>
+                    )}
+                  </td>
+                  <td className={styles.nowrapCell}>
+                    <StatusBadge state={c.state} text={c.status || c.state} />
+                  </td>
+                  <td className={styles.composeMetricCell}>
+                    {stats ? (
+                      <div className={styles.composeMetric}>
+                        <span className={styles.mono}>{stats.cpuPerc}</span>
+                        <LineProgress percent={cpuPct} />
+                      </div>
+                    ) : running && statsLoading ? (
+                      <Spinner size={12} />
+                    ) : (
+                      <span className={styles.mutedMeta}>—</span>
+                    )}
+                  </td>
+                  <td className={styles.composeMemoryCell}>
+                    {stats ? (
+                      <div className={styles.composeMetric}>
+                        <span className={styles.mono}>
+                          {stats.memUsage} ({stats.memPerc})
+                        </span>
+                        <LineProgress percent={memPct} />
+                      </div>
+                    ) : running && statsLoading ? (
+                      <span className={styles.mutedMeta}>
+                        <T>Loading…</T>
+                      </span>
+                    ) : (
+                      <span className={styles.mutedMeta}>—</span>
+                    )}
+                  </td>
+                  <td className={clsx(styles.mono, styles.nowrapCell)}>
+                    {stats?.netIo || <span className={styles.mutedMeta}>—</span>}
+                  </td>
+                  <td className={clsx(styles.mono, styles.nowrapCell)}>
+                    {stats?.blockIo || <span className={styles.mutedMeta}>—</span>}
+                  </td>
+                  <td className={clsx(styles.mono, styles.nowrapCell)}>
+                    {stats?.pids || <span className={styles.mutedMeta}>—</span>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
+
+      <SectionBanner>
+        <T>Volumes</T>
+      </SectionBanner>
+      {namedVolumes.length > 0 ? (
+        <div className={styles.chipGroup}>
+          {namedVolumes.map((v) => (
+            <VolumeLinkChip key={v.name} conn={conn} volume={v} />
+          ))}
+        </div>
+      ) : (
+        <div className={styles.emptySection}>
+          <T>No named volumes</T>
+        </div>
+      )}
     </div>
   );
 }

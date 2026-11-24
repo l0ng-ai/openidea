@@ -3,6 +3,7 @@
  * the Commit dialog with the local changes in the Git tool window (modal one,
  * Settings › Version Control › Commit). Also the push that follows Commit and Push….
  */
+import type { ActionContext } from "@/platform/actions";
 import { workflowSettings, type GitSettingsValid } from "@/platform/workflowSettings";
 import { call, commands } from "@/platform/ipc";
 import { toolWindowService } from "@/workbench/contributions";
@@ -12,6 +13,7 @@ import { commitsStagedPart, groupOf, type CheckState } from "./changes";
 import { stashTabOf } from "./gitTabs";
 import { selectGitTab } from "./logStore";
 import { isProtectedBranch } from "./branches";
+import { stripSlash } from "./model";
 import { pushTargets, showPushDialog } from "./remoteUi";
 import { inspectPushTargets, selectedPushOperation } from "./pushInspection";
 import { runRemoteRound } from "./ops";
@@ -39,26 +41,37 @@ export function openCommit() {
 }
 
 /**
- * Commit… (⌘K) as an action: with the modal interface the dialog includes just the files
- * selected in Local Changes when invoked from there, otherwise the default inclusion.
+ * Commit… (⌘K) as an action. An explicit path from the Project view scopes the inclusion
+ * for either commit interface; otherwise the modal dialog keeps its Local Changes rule.
  */
-export function commitFromContext() {
-  if (isModalCommit()) {
-    const fromLocalChanges = !!(document.activeElement as HTMLElement | null)?.closest?.('[data-changes-tree="local"]');
-    const selection = fromLocalChanges ? useCommit.getState().selection : [];
+export function commitFromContext({ arg }: Pick<ActionContext, "arg"> = {}) {
+  const explicit = pathArgs(arg);
+  const fromLocalChanges = !!(document.activeElement as HTMLElement | null)?.closest?.('[data-changes-tree="local"]');
+  const selection = explicit.length ? explicit : fromLocalChanges ? useCommit.getState().selection : [];
+  if (explicit.length || isModalCommit())
     useCommit.setState({ checks: selection.length ? includeOnly(useVcs.getState().status, selection) : new Map() });
-  }
   openCommit();
 }
 
-/** Inclusion that commits only `paths` of `status` (files elsewhere left out, conflicts as they are). */
+/** Explicit Project view paths; keyboard and toolbar invocations have no scope of their own. */
+function pathArgs(arg: unknown): string[] {
+  return (Array.isArray(arg) ? arg : [arg]).filter(
+    (path): path is string => typeof path === "string" && path.length > 0,
+  );
+}
+
+/** Inclusion that commits only changes at or below `paths`; conflicts are left out. */
 export function includeOnly(status: readonly FileStatus[], paths: readonly string[]): Map<string, CheckState> {
-  const chosen = new Set(paths);
+  const chosen = [...new Set(paths.map(stripSlash))];
+  const atOrBelow = (path: string) => {
+    const p = stripSlash(path);
+    return chosen.some((root) => p === root || p.startsWith(`${root}/`));
+  };
   const checks = new Map<string, CheckState>();
   for (const fs of status) {
     const group = groupOf(fs);
     if (!group || group === "conflicts") continue;
-    checks.set(fs.path, !chosen.has(fs.path) ? "none" : commitsStagedPart(fs) ? "staged" : "all");
+    checks.set(fs.path, !atOrBelow(fs.path) ? "none" : commitsStagedPart(fs) ? "staged" : "all");
   }
   return checks;
 }

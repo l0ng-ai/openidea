@@ -1,19 +1,10 @@
 /** View as Table: a DataFrame / Series / ndarray of the paused frame, one page of rows and columns at a time. */
 import { useEffect, useRef, useState } from "react";
-import clsx from "clsx";
 import type { DebugSessionId } from "@/platform/ipc";
-import { Dialog, IconButton } from "@/ui";
+import { Dialog, IconButton, Input } from "@/ui";
 import { formatMessage, tx } from "@/platform/i18n";
 import { evaluate, useDebug } from "../state";
-import {
-  COLUMN_PAGE,
-  ROW_PAGE,
-  clampWindow,
-  isNumericDtype,
-  parseTableResult,
-  tableExpression,
-  type TableResult,
-} from "../tableView";
+import { COLUMN_PAGE, ROW_PAGE, clampWindow, parseTableResult, tableExpression, type TableResult } from "../tableView";
 import styles from "./TableViewDialog.module.css";
 
 export function TableViewDialog({
@@ -63,7 +54,7 @@ export function TableViewDialog({
     };
   }, [expression, win, session, stops, frame, paused]);
 
-  const page = result && "page" in result ? result.page : null;
+  const page = paused && result && "page" in result ? result.page : null;
   const error = !paused
     ? tx("Values are available while the program is paused")
     : result && "error" in result
@@ -114,61 +105,47 @@ export function TableViewDialog({
       open
       onClose={onClose}
       // An element, not a string: Dialog would translate a variable named like a catalog text ("tasks").
-      title={<span>{initial}</span>}
-      width="clamp(520px, 70vw, 1100px)"
+      title={<span>{expression}</span>}
+      width={700}
       minWidth={420}
       minHeight={260}
       resizable="both"
-      aria-label={formatMessage(tx("Table view of {label}"), { label: initial })}
+      aria-label={formatMessage(tx("Table view of {label}"), { label: expression })}
+      buttons={[{ label: "Close", role: "cancel" }]}
       className={styles.dialog}
     >
       <div className={styles.content}>
-        <div className={styles.bar}>
-          <input
-            className={styles.expression}
-            value={draft}
-            spellCheck={false}
-            autoComplete="off"
-            aria-label={tx("Expression")}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key !== "Enter" || !draft.trim()) return;
-              e.preventDefault();
-              setExpression(draft.trim());
-              setWin({ row: 0, column: 0 });
-            }}
-          />
-          {page && (
+        {page && (
+          <div className={styles.bar}>
             <span className={styles.summary}>
               {formatMessage(tx("Shape ({shape})"), { shape: page.shape.join(", ") })}
               {page.kind !== "frame" ? ` · ${page.dtypes[0]}` : ""}
             </span>
-          )}
-          {page &&
-            pager(win.row, ROW_PAGE, page.rows, (row) => setWin({ ...win, row }), {
-              range: tx("Rows {from}–{to} of {total}"),
-              previous: tx("Previous Rows"),
-              next: tx("Next Rows"),
-            })}
-          {page &&
-            pager(win.column, COLUMN_PAGE, page.columns, (column) => setWin({ ...win, column }), {
-              range: tx("Columns {from}–{to} of {total}"),
-              previous: tx("Previous Columns"),
-              next: tx("Next Columns"),
-            })}
-        </div>
-        {error ? (
-          <div className={styles.message} role="alert">
-            {error}
+            <div className={styles.pagers}>
+              {pager(win.row, ROW_PAGE, page.rows, (row) => setWin({ ...win, row }), {
+                range: tx("Rows {from}–{to} of {total}"),
+                previous: tx("Previous Rows"),
+                next: tx("Next Rows"),
+              })}
+              {pager(win.column, COLUMN_PAGE, page.columns, (column) => setWin({ ...win, column }), {
+                range: tx("Columns {from}–{to} of {total}"),
+                previous: tx("Previous Columns"),
+                next: tx("Next Columns"),
+              })}
+            </div>
           </div>
-        ) : page ? (
+        )}
+        {page ? (
           <div className={styles.scroll} tabIndex={0} role="region" aria-label={tx("Table")}>
             <table className={styles.table}>
               <thead>
                 <tr>
                   <th className={styles.index} />
                   {page.headers.map((h, i) => (
-                    <th key={i}>
+                    <th
+                      // oxlint-disable-next-line react/no-array-index-key -- headers can repeat; position is the identity
+                      key={i}
+                    >
                       {h}
                       {page.kind === "frame" && <span className={styles.dtype}>{page.dtypes[i]}</span>}
                     </th>
@@ -177,16 +154,17 @@ export function TableViewDialog({
               </thead>
               <tbody>
                 {page.cells.map((row, r) => (
-                  <tr key={r}>
+                  <tr
+                    // oxlint-disable-next-line react/no-array-index-key -- index labels and cells can repeat; position is the identity
+                    key={r}
+                  >
                     <th scope="row" className={styles.index}>
                       {page.index[r]}
                     </th>
                     {row.map((cell, c) => (
                       <td
+                        // oxlint-disable-next-line react/no-array-index-key -- cell values repeat; position is the identity
                         key={c}
-                        className={clsx(
-                          isNumericDtype(page.kind === "frame" ? page.dtypes[c] : page.dtypes[0]) && styles.numeric,
-                        )}
                       >
                         {cell}
                       </td>
@@ -197,7 +175,26 @@ export function TableViewDialog({
             </table>
           </div>
         ) : (
-          <div className={styles.message}>{tx("Loading…")}</div>
+          <div className={styles.message}>{!error && tx("Loading…")}</div>
+        )}
+        <Input
+          className={styles.expression}
+          mono
+          data-autofocus=""
+          value={draft}
+          aria-label="Expression"
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter" || !draft.trim()) return;
+            e.preventDefault();
+            setExpression(draft.trim());
+            setWin({ row: 0, column: 0 });
+          }}
+        />
+        {error && (
+          <div className={styles.error} role="alert">
+            {error}
+          </div>
         )}
       </div>
     </Dialog>

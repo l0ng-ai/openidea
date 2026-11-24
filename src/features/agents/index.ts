@@ -28,6 +28,7 @@ import { AgentsStatus } from "./AgentsStatus";
 import { activateSettingsPages } from "./settingsPages";
 import { HOME_KIND, MCP_PAGE, REGISTRY_PAGE, SESSION_KIND, TASK_DRAG, TOOL_WINDOW, providerIcon } from "./model";
 import { sendPaths, sendSelection, trackEditorCopies } from "./references";
+import { copyAgentReferenceActions, registerCopyAgentReference } from "./copyReference";
 import { diagnoseTestFailure, isTestFailure } from "./testFailure";
 import { focusedSession, inputSession } from "./sessionFocus";
 import { cycleFocusedEffort } from "./effortFocus";
@@ -79,6 +80,8 @@ export function activate(): () => void {
     trackPromptHistory(),
     activateSettingsPages(),
     trackEditorCopies(),
+    registerActions(copyAgentReferenceActions),
+    registerCopyAgentReference(),
     registerAgentContextSource({
       id: "changes",
       title: "Changes",
@@ -117,7 +120,7 @@ export function activate(): () => void {
       icon: "toolwindow-agents",
       anchor: "right",
       order: 0.5,
-      component: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsView)),
+      component: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsView), { prefetch: true }),
       headerMenu: useAgentsHeaderMenu,
       plainTitle: true,
       headerActions: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsHeaderActions)),
@@ -137,7 +140,7 @@ export function activate(): () => void {
     }),
     registerEditorKind({
       kind: SESSION_KIND,
-      component: lazyComponent(() => import("./SessionEditor").then((m) => m.SessionEditor)),
+      component: lazyComponent(() => import("./SessionEditor").then((m) => m.SessionEditor), { prefetch: true }),
       title: (input) => {
         const data = input.data as { task: string; title?: string };
         return useAgents.getState().tasks.get(data.task)?.title ?? data.title ?? "Agent Task";
@@ -166,7 +169,7 @@ export function activate(): () => void {
     }),
     registerEditorKind({
       kind: HOME_KIND,
-      component: lazyComponent(() => import("./HomeEditor").then((m) => m.HomeEditor)),
+      component: lazyComponent(() => import("./HomeEditor").then((m) => m.HomeEditor), { prefetch: true }),
       title: () => "New Agent Task",
       icon: (input) => {
         const task = useAgents.getState().tasks.get((input.data as { task: string }).task);
@@ -313,7 +316,7 @@ export function activate(): () => void {
       {
         id: "agents.addAgent",
         title: "More Agents…",
-        description: "Opens Settings › Tools › Agents: installs, updates or removes agents from the ACP Registry.",
+        description: "Install, update, or remove agents from the ACP Registry.",
         category: "Agents",
         icon: "plugin",
         keywords: ["agent", "acp", "registry", "install", "update"],
@@ -321,12 +324,11 @@ export function activate(): () => void {
       },
       {
         id: "agents.mcpServers",
-        title: "External MCP Servers…",
-        description:
-          "Opens Settings › Agents › External MCP Servers: configures the User and Workspace MCP servers coding agents use.",
+        title: "MCP Connections…",
+        description: "Configure the MCP servers that agents can use.",
         category: "Agents",
         icon: "settings",
-        keywords: ["mcp", "model context protocol", "servers", "tools", "agent"],
+        keywords: ["mcp", "model context protocol", "servers", "tools", "agent", "External MCP Servers"],
         run: () => void executeAction("file.settings", MCP_PAGE),
       },
       {

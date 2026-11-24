@@ -178,6 +178,7 @@ async function format(view: EditorView, opts: FormatDocumentOptions): Promise<Fo
             oxfmt: { failed: "oxfmt formatting failed", timedOut: "oxfmt formatting timed out" },
             biome: { failed: "Biome formatting failed", timedOut: "Biome formatting timed out" },
             ruff: { failed: "Ruff formatting failed", timedOut: "Ruff formatting timed out" },
+            black: { failed: "Black formatting failed", timedOut: "Black formatting timed out" },
           }[e.data.tool]
         : undefined;
     if (e instanceof IpcError && e.data?.type === "tool" && formatter) {

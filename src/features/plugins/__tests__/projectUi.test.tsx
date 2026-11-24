@@ -7,6 +7,7 @@ import { handleRuntimeEvent } from "../runtimeUi";
 
 const nativeOpen = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: nativeOpen }));
+vi.mock("@/platform/ipc", async (original) => ({ ...(await original<object>()), isTauri: () => true }));
 const answerPrompt = vi.fn().mockResolvedValue(undefined);
 let notes: Parameters<NotificationService["notify"]>[0][];
 let dispose: (() => void) | undefined;

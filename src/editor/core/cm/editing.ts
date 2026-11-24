@@ -417,6 +417,79 @@ function leadingCommentStart(state: EditorState, a: number): number {
 
 export type StatementMove = { spec: TransactionSpec } | "noop" | "line";
 
+/** A `case` / `default` label whose branch body follows as its siblings (Go, JavaScript, Java). */
+const CASE_LABEL = /^(Case|CaseLabel|DefaultLabel|SwitchLabel)$/;
+
+/**
+ * Move Statement on a `case` label of a switch whose branches are flat
+ * (label, then the body as siblings): the branch, from its first stacked
+ * label to its last non-blank line, swaps with the neighbouring branch, as
+ * IDEA's case block mover does. `noop` at the first / last branch.
+ */
+function planCaseMove(state: EditorState, label: Node, up: boolean): StatementMove {
+  const doc = state.doc;
+  const block = label.parent!;
+  const close = doc.lineAt(block.to).number;
+  const isLabel = (l: number) => {
+    const n = statementStartingAt(state, l);
+    return !!n && CASE_LABEL.test(n.type.name) && n.parent?.from === block.from && n.parent.to === block.to;
+  };
+  const start = (l: number) => {
+    while (l > 1 && isLabel(l - 1)) l--;
+    return l;
+  };
+  // The line where the branch starting at `l` ends: its last non-blank line before the next branch or the closing brace.
+  const end = (l: number) => {
+    let k = l + 1;
+    while (k < close && isLabel(k)) k++;
+    while (k < close && !isLabel(k)) k++;
+    k--;
+    while (k > l && firstToken(state, k) === null) k--;
+    return k;
+  };
+  const a = start(doc.lineAt(label.from).number);
+  const b = end(a);
+  let s: number;
+  let e: number;
+  if (up) {
+    let p = a - 1;
+    while (p > 0 && doc.line(p).from > block.from && !isLabel(p)) p--;
+    if (p < 1 || doc.line(p).from <= block.from || !isLabel(p)) return "noop";
+    s = start(p);
+    e = end(s);
+  } else {
+    let n = b + 1;
+    while (n < close && !isLabel(n)) n++;
+    if (n >= close) return "noop";
+    s = n;
+    e = end(n);
+  }
+  const [first, second] = up
+    ? [
+        { s, e },
+        { s: a, e: b },
+      ]
+    : [
+        { s: a, e: b },
+        { s, e },
+      ];
+  const from = doc.line(first.s).from;
+  const to = doc.line(second.e).to;
+  const textFirst = state.sliceDoc(from, doc.line(first.e).to);
+  const textSecond = state.sliceDoc(doc.line(second.s).from, to);
+  const between = state.sliceDoc(doc.line(first.e).to, doc.line(second.s).from);
+  const head = state.selection.main.head;
+  const movedFrom = up ? from : from + textSecond.length + between.length;
+  return {
+    spec: {
+      changes: { from, to, insert: textSecond + between + textFirst },
+      selection: EditorSelection.cursor(movedFrom + (head - doc.line(a).from)),
+      scrollIntoView: true,
+      userEvent: "move.line",
+    },
+  };
+}
+
 /**
  * Move Statement as in IDEA: the statement around the caret (whole lines)
  * moves past the next statement; into a block when the neighbour is a block
@@ -429,6 +502,7 @@ export function planStatementMove(state: EditorState, up: boolean): StatementMov
   const head = state.selection.main.head;
   const cur = statementAround(state, head);
   if (!cur) return "line";
+  if (CASE_LABEL.test(cur.type.name) && cur.parent) return planCaseMove(state, cur, up);
   const doc = state.doc;
   if (/^[{}]$/.test(cur.type.name)) {
     for (let g: Node | null = cur.parent; g; g = g.parent)

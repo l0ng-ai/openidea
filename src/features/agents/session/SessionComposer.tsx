@@ -1,6 +1,7 @@
-import type { AgentChange, AgentCommit, AgentConfigOption, AgentEntry, AgentTask } from "@/bindings";
+import type { AgentChange, AgentCommit, AgentConfigOption, AgentEntry, AgentQueued, AgentTask } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { tx, useTx } from "@/platform/i18n";
+import { isErrorKind } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { Icon, IconButton, T, type IconName } from "@/ui";
 import { notifications, useEditorShown } from "@/workbench/contributions";
@@ -70,6 +71,7 @@ function Tray({ task, entries, children }: { task: AgentTask; entries: AgentEntr
         <div className={styles.trayPlan}>
           {plan.items.map((item, i) => (
             <div
+              // oxlint-disable-next-line react/no-array-index-key -- plan items can repeat; position is the identity
               key={i}
               className={clsx(
                 styles.planItem,
@@ -429,25 +431,39 @@ function BackgroundTasks({ task }: { task: AgentTask }) {
 }
 
 function Queue({ task }: { task: AgentTask }) {
-  const fail = (e: unknown) =>
-    notifications().notify({
-      level: "error",
-      title: "Couldn't update the queue",
-      body: String(e),
-    });
   return (
     <div className={styles.queue} aria-label={tx("Queued messages")}>
       {task.queue.map((q) => (
-        <div key={q.id} className={styles.queued}>
-          <Icon name="pause" size={12} className={styles.muted} />
-          <span className={styles.queuedText} title={q.prompt.text}>
-            {q.prompt.text || <T>Image</T>}
-          </span>
-          <IconButton icon="arrow-up" title="Send now" onClick={() => void sendQueuedNow(task.id, q.id).catch(fail)} />
-          <IconButton icon="edit" title="Edit" onClick={() => void editQueued(task.id, q.id).catch(fail)} />
-          <IconButton icon="close" title="Remove" onClick={() => void removeQueued(task.id, q.id).catch(fail)} />
-        </div>
+        <QueueRow key={q.id} task={task.id} item={q} />
       ))}
+    </div>
+  );
+}
+
+function QueueRow({ task, item }: { task: string; item: AgentQueued }) {
+  const [pending, setPending] = useState(false);
+  async function run(action: (task: string, queued: string) => Promise<unknown>) {
+    if (pending) return;
+    setPending(true);
+    try {
+      await action(task, item.id);
+    } catch (e) {
+      // The backend already published the current queue when it found the item gone.
+      if (!isErrorKind(e, "outOfSync"))
+        notifications().notify({ level: "error", title: "Couldn't update the queue", body: String(e) });
+    } finally {
+      setPending(false);
+    }
+  }
+  return (
+    <div className={styles.queued}>
+      <Icon name="pause" size={12} className={styles.muted} />
+      <span className={styles.queuedText} title={item.prompt.text}>
+        {item.prompt.text || <T>Image</T>}
+      </span>
+      <IconButton icon="arrow-up" title="Send now" disabled={pending} onClick={() => void run(sendQueuedNow)} />
+      <IconButton icon="edit" title="Edit" disabled={pending} onClick={() => void run(editQueued)} />
+      <IconButton icon="close" title="Remove" disabled={pending} onClick={() => void run(removeQueued)} />
     </div>
   );
 }

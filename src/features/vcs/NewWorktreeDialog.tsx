@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Branch, RequestId, Worktree, WorktreeCreation, WorktreeInclude } from "@/bindings";
+import { toBase64 } from "@/platform/base64";
 import { choosePath } from "@/platform/choosePath";
 import { cleanUpBranchNameOnTyping } from "@/platform/gitRefName";
 import { tx } from "@/platform/i18n";
@@ -100,6 +101,7 @@ function WorktreeForm({
   onRepoChange: (repo: string) => void;
 }) {
   const [projectRoot] = useState(() => useProject.getState().project?.root);
+  const [hasRepositories] = useState(() => useVcs.getState().roots.length > 1);
   const [data, setData] = useState<RepositoryData>();
   const [sourceRef, setSourceRef] = useState(initialSource);
   const [createBranch, setCreateBranch] = useState<boolean>();
@@ -259,7 +261,9 @@ function WorktreeForm({
       }
       if (!file.exists) {
         try {
-          await call(commands.fsCreateFileBytes(file.path, [...new TextEncoder().encode(worktreeIncludeTemplate())]));
+          await call(
+            commands.fsCreateFileBytes(file.path, toBase64(new TextEncoder().encode(worktreeIncludeTemplate()))),
+          );
         } catch (e) {
           if (!isErrorKind(e, "alreadyExists")) throw e;
         }
@@ -367,128 +371,142 @@ function WorktreeForm({
       ]}
     >
       <div className={styles.form}>
-        {!initialSource && (
-          <RepoPicker
-            repo={repo}
-            onChange={(next) => {
-              if (!submitting.current) onRepoChange(next);
-            }}
-          />
-        )}
         {main?.submodule && (
           <div className={styles.worktreeTarget}>
             {tx("This worktree has its own checkout, separate from the submodule in the parent repository.")}
           </div>
         )}
-        <div className={styles.fieldLabel}>
-          <T>Check out:</T>
-        </div>
-        <Select
-          aria-label="Check out"
-          searchable
-          disabled={formBusy || !data}
-          value={source?.ref ?? null}
-          placeholder="Select branch or tag"
-          options={(data?.sources ?? []).map((ref) => ({
-            value: ref.ref,
-            label: ref.name,
-            icon: ref.kind === "tag" ? "tag" : "branch",
-            verbatim: true,
-          }))}
-          onChange={(ref) => {
-            setSourceRef(ref);
-            setCreateBranch(undefined);
-            setBranch(undefined);
-            setError(undefined);
-          }}
-        />
-        <Checkbox label="Create a new branch" disabled={formBusy} checked={createLocal} onChange={setCreateBranch} />
-        {createLocal && (
-          <Input
-            ref={branchInput}
-            aria-label="New branch name"
-            mono
-            disabled={formBusy}
-            value={branch ?? branchName}
-            onChange={(e) => setBranch(cleanBranch(e))}
-          />
-        )}
-        <label className={styles.fieldLabel} htmlFor="worktree-name">
-          <T>Name:</T>
-        </label>
-        <Input
-          id="worktree-name"
-          mono
-          disabled={formBusy}
-          value={name ?? folderName}
-          onChange={(e) => setName(e.target.value)}
-        />
-        <label className={styles.fieldLabel} htmlFor="worktree-location">
-          <T>Location:</T>
-        </label>
-        <div className={styles.worktreeLocation}>
-          <Input
-            id="worktree-location"
-            mono
-            disabled={formBusy}
-            value={location ?? parent}
-            onChange={(e) => setLocation(e.target.value)}
-          />
-          <IconButton icon="folder-open" title="Browse" disabled={formBusy} onClick={() => void browse()} />
-        </div>
-        {parent && folderName && <div className={styles.worktreeTarget}>{tx`Worktree location: ${target}`}</div>}
-        <div className={styles.worktreeLocation}>
-          <Checkbox
-            label="Copy local files listed in .worktreeinclude"
-            disabled={formBusy || !include?.exists}
-            checked={copyLocal}
-            onChange={setCopyConfig}
-          />
-          {include && (
-            <Button disabled={formBusy} onClick={() => void editInclude()}>
-              <T>{include.exists ? "Edit .worktreeinclude…" : "Create .worktreeinclude…"}</T>
-            </Button>
-          )}
-        </div>
-        {includeError && (
-          <div className={styles.error} role="alert">
-            {includeError}
-          </div>
-        )}
-        <Checkbox
-          label="Run setup script"
-          disabled={formBusy}
-          checked={runSetup}
-          onChange={(enabled) => {
-            setRunSetup(enabled);
-            setError(undefined);
-          }}
-        />
-        {runSetup && (
-          <>
-            <label className={styles.fieldLabel} htmlFor="worktree-setup-script">
-              <T>Setup script:</T>
-            </label>
-            <div className={styles.worktreeLocation}>
-              <Input
-                id="worktree-setup-script"
-                mono
-                disabled={formBusy}
-                value={setupPath}
-                onChange={(e) => {
-                  setSetupPath(e.target.value);
-                  setError(undefined);
+        <div className={styles.worktreeFields}>
+          {!initialSource && hasRepositories && (
+            <>
+              <label className={styles.worktreeLabel} htmlFor="worktree-repository">
+                <T>Repository:</T>
+              </label>
+              <RepoPicker
+                id="worktree-repository"
+                repo={repo}
+                onChange={(next) => {
+                  if (!submitting.current) onRepoChange(next);
                 }}
               />
-              <IconButton
-                icon="folder-open"
-                title="Choose Setup Script"
-                disabled={formBusy}
-                onClick={() => void browseSetupScript()}
+            </>
+          )}
+          <label className={styles.worktreeLabel} htmlFor="worktree-source">
+            <T>Check out:</T>
+          </label>
+          <Select
+            id="worktree-source"
+            aria-label="Check out"
+            searchable
+            disabled={formBusy || !data}
+            value={source?.ref ?? null}
+            placeholder="Select branch or tag"
+            options={(data?.sources ?? []).map((ref) => ({
+              value: ref.ref,
+              label: ref.name,
+              icon: ref.kind === "tag" ? "tag" : "branch",
+              verbatim: true,
+            }))}
+            onChange={(ref) => {
+              setSourceRef(ref);
+              setCreateBranch(undefined);
+              setBranch(undefined);
+              setError(undefined);
+            }}
+          />
+          <Checkbox
+            className={styles.worktreeLabel}
+            label="Create a new branch"
+            disabled={formBusy}
+            checked={createLocal}
+            onChange={setCreateBranch}
+          />
+          {createLocal && (
+            <Input
+              ref={branchInput}
+              aria-label="New branch name"
+              mono
+              disabled={formBusy}
+              value={branch ?? branchName}
+              onChange={(e) => setBranch(cleanBranch(e))}
+            />
+          )}
+          <label className={styles.worktreeLabel} htmlFor="worktree-name">
+            <T>Name:</T>
+          </label>
+          <Input
+            id="worktree-name"
+            disabled={formBusy}
+            value={name ?? folderName}
+            onChange={(e) => setName(e.target.value)}
+          />
+          <label className={styles.worktreeLabel} htmlFor="worktree-location">
+            <T>Location:</T>
+          </label>
+          <div className={styles.worktreeLocation}>
+            <Input
+              id="worktree-location"
+              disabled={formBusy}
+              value={location ?? parent}
+              onChange={(e) => setLocation(e.target.value)}
+            />
+            <IconButton icon="folder-open" title="Browse" disabled={formBusy} onClick={() => void browse()} />
+          </div>
+          {parent && folderName && <div className={styles.worktreeTarget}>{tx`Worktree location: ${target}`}</div>}
+          <div className={styles.worktreeOptions}>
+            <div className={styles.worktreeCopyOptions}>
+              <Checkbox
+                label="Copy local files listed in .worktreeinclude"
+                disabled={formBusy || !include?.exists}
+                checked={copyLocal}
+                onChange={setCopyConfig}
               />
+              {include && (
+                <Button disabled={formBusy} onClick={() => void editInclude()}>
+                  <T>{include.exists ? "Edit .worktreeinclude…" : "Create .worktreeinclude…"}</T>
+                </Button>
+              )}
             </div>
-          </>
-        )}
+            {includeError && (
+              <div className={styles.error} role="alert">
+                {includeError}
+              </div>
+            )}
+            <Checkbox
+              label="Run setup script"
+              disabled={formBusy}
+              checked={runSetup}
+              onChange={(enabled) => {
+                setRunSetup(enabled);
+                setError(undefined);
+              }}
+            />
+          </div>
+          {runSetup && (
+            <>
+              <label className={styles.worktreeLabel} htmlFor="worktree-setup-script">
+                <T>Setup script:</T>
+              </label>
+              <div className={styles.worktreeLocation}>
+                <Input
+                  id="worktree-setup-script"
+                  disabled={formBusy}
+                  value={setupPath}
+                  onChange={(e) => {
+                    setSetupPath(e.target.value);
+                    setError(undefined);
+                  }}
+                />
+                <IconButton
+                  icon="folder-open"
+                  title="Choose Setup Script"
+                  disabled={formBusy}
+                  onClick={() => void browseSetupScript()}
+                />
+              </div>
+            </>
+          )}
+        </div>
         {busy && (
           <div className={styles.worktreeTarget} role="status">
             {setupRequest && !skippingSetup ? tx("Creating worktree and running setup…") : tx("Creating worktree…")}

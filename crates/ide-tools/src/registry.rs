@@ -346,6 +346,17 @@ pub static TOOLS: &[ToolSpec] = &[
         needs: &[],
     },
     ToolSpec {
+        name: "black",
+        display: "Black",
+        kind: Formatter,
+        commands: &["black"],
+        method: Method::PipVenv { package: "black" },
+        fallback: None,
+        version: ver("black"),
+        homepage: "https://black.readthedocs.io",
+        needs: &[],
+    },
+    ToolSpec {
         name: "djlsp",
         display: "Django Template LSP",
         kind: LanguageServer,

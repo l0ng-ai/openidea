@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { emitLocalIdeEvent } from "@/platform/ipc";
 import { setLocale } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
+import { ContextMenuHost, hideContextMenu } from "@/ui/Menu";
 import { registerStatusItem, registerToolWindow, type StatusItemContribution } from "./contributions";
 import { orderStatusItems, StatusBar, TaskStatus } from "./StatusBar";
 import { orderTitleItems } from "./TitleBar";
+import { setTabColorOverride, tabColorVars } from "./tabColors";
 import { Balloons, NOTIFICATIONS_TOOL_WINDOW, notificationActions, NotificationsToolWindow } from "./Notifications";
 import {
   BALLOON_TIMEOUT,
@@ -18,6 +20,7 @@ import {
 } from "./notificationStore";
 import { installTaskEvents, useTasks } from "./tasks";
 import { ToolWindowLayout, ToolWindowStripe } from "./toolwindows/ToolWindows";
+import { installToolWindowActions } from "./toolwindows/actions";
 import {
   isToolWindowVisible,
   loadToolWindowLayout,
@@ -277,6 +280,54 @@ describe("notifications", () => {
 });
 
 describe("tool window stripe", () => {
+  it("moves More Tool Windows to an empty right stripe and back", () => {
+    const disposeActions = installToolWindowActions();
+    const disposeWindow = registerToolWindow({
+      id: "hidden-tool",
+      title: "Hidden Tool",
+      icon: "folder",
+      anchor: "left",
+      stripe: "onUse",
+      requiresProject: false,
+      component: () => null,
+    });
+    loadToolWindowLayout("/stripe-more");
+    const { unmount } = render(
+      <>
+        <ToolWindowLayout editor={null} />
+        <ContextMenuHost />
+      </>,
+    );
+    const button = () => screen.getByRole("button", { name: "More Tool Windows" });
+    const move = (label: string) => {
+      fireEvent.contextMenu(button());
+      fireEvent.click(screen.getByRole("menuitem", { name: label }));
+    };
+    try {
+      expect(button().closest("[data-stripe-side]")).toHaveAttribute("data-stripe-side", "left");
+      expect(screen.queryByRole("toolbar", { name: "Right tool windows" })).not.toBeInTheDocument();
+      move("Move to Right");
+      expect(button().closest("[data-stripe-side]")).toHaveAttribute("data-stripe-side", "right");
+      expect(screen.queryByRole("toolbar", { name: "Tool windows" })).not.toBeInTheDocument();
+      fireEvent.click(button());
+      const menu = screen.getByRole("menu", { name: "Tool windows" });
+      fireEvent.click(within(menu).getByRole("menuitem", { name: "Hidden Tool" }));
+      expect(isToolWindowVisible("hidden-tool")).toBe(true);
+      expect(screen.getByRole("button", { name: "Hidden Tool" }).closest("[data-stripe-side]")).toHaveAttribute(
+        "data-stripe-side",
+        "left",
+      );
+      move("Move to Left");
+      expect(button().closest("[data-stripe-side]")).toHaveAttribute("data-stripe-side", "left");
+      expect(screen.queryByRole("toolbar", { name: "Right tool windows" })).not.toBeInTheDocument();
+    } finally {
+      unmount();
+      hideContextMenu();
+      disposeWindow();
+      disposeActions();
+    }
+  });
+
   it("renders left + bottom windows on the left stripe and toggles on click", () => {
     const C = () => null;
     const disposers = [
@@ -431,22 +482,54 @@ describe("workbench shell", () => {
       openingPath: null,
     });
     loadToolWindowLayout("/old");
-    const { unmount } = render(<Workbench />);
+    setTabColorOverride("/old", "1");
+    setTabColorOverride("/work/new-project", "2");
+    const { container, unmount } = render(<Workbench />);
     const input = screen.getByRole("textbox", { name: "old project input" });
+    const color = () => (container.firstElementChild as HTMLElement).style.getPropertyValue("--project-color");
     try {
       act(() => useProject.setState({ opening: true, openingPath: "/work/new-project" }));
       expect(screen.getByRole("status", { name: "Opening new-project…" })).toBeVisible();
+      expect(screen.getByRole("button", { name: "new-project" })).toBeVisible();
       expect(screen.getByText("/work/new-project")).toBeVisible();
+      expect(color()).toBe(tabColorVars("new-project", "2")["--project-color"]);
       expect(input.closest("[inert]")).not.toBeNull();
       expect(input).toBeInTheDocument();
       act(() => useProject.setState({ opening: false, openingPath: null }));
       expect(screen.queryByText("Opening new-project…")).toBeNull();
+      expect(color()).toBe(tabColorVars("old", "1")["--project-color"]);
       expect(input.closest("[inert]")).toBeNull();
       expect(screen.getByRole("textbox", { name: "old project input" })).toBe(input);
     } finally {
       unmount();
       dispose();
+      setTabColorOverride("/old", null);
+      setTabColorOverride("/work/new-project", null);
       useProject.setState({ project: null, opening: false, openingPath: null });
+    }
+  });
+
+  it("keeps the title bar and project tabs visible while a project opens", async () => {
+    const { useProject } = await import("@/platform/project");
+    const { useWindowGroup } = await import("@/platform/windowGroups");
+    const { Workbench } = await import("./Workbench");
+    useProject.setState({ project: null, opening: true, openingPath: "/work/new-project" });
+    useWindowGroup.setState({
+      tabs: [
+        { label: "main", name: "old", root: "/old", current: false },
+        { label: "project-1", name: "new-project", root: "/work/new-project", current: true },
+      ],
+    });
+    const { unmount } = render(<Workbench />);
+    try {
+      expect(screen.getByRole("status", { name: "Opening new-project…" })).toBeVisible();
+      expect(screen.getByRole("button", { name: "new-project" })).toBeInTheDocument();
+      expect(screen.getByRole("tab", { name: "new-project" })).toHaveAttribute("aria-selected", "true");
+      expect(screen.getByRole("tab", { name: "old" })).toBeInTheDocument();
+    } finally {
+      unmount();
+      useProject.setState({ project: null, opening: false, openingPath: null });
+      useWindowGroup.setState({ tabs: [] });
     }
   });
 
