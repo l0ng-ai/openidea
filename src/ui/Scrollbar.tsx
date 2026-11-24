@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, type RefObject } from "react";
+import { lockScrollbarCursor } from "./dragCursor";
 import styles from "./Scrollbar.module.css";
 
 const MIN_THUMB = 32;
@@ -24,8 +25,17 @@ export function Scrollbar({
 }) {
   const track = useRef<HTMLDivElement>(null);
   const thumb = useRef<HTMLDivElement>(null);
-  const drag = useRef<{ y: number; top: number } | null>(null);
+  const drag = useRef<{ pointerId: number; y: number; top: number; unlock: () => void } | null>(null);
   const geometry = useRef<Geometry | null>(null);
+  const endDrag = useCallback(() => {
+    const current = drag.current;
+    if (!current) return;
+    drag.current = null;
+    current.unlock();
+    delete thumb.current?.dataset.dragging;
+    const el = track.current;
+    if (el?.hasPointerCapture(current.pointerId)) el.releasePointerCapture(current.pointerId);
+  }, []);
 
   useLayoutEffect(() => {
     geometry.current = layout(target.current, track.current, thumb.current);
@@ -39,11 +49,14 @@ export function Scrollbar({
     el.addEventListener("scroll", sync, { passive: true });
     const observer = new ResizeObserver(sync);
     observer.observe(el);
+    window.addEventListener("blur", endDrag);
     return () => {
+      endDrag();
+      window.removeEventListener("blur", endDrag);
       el.removeEventListener("scroll", sync);
       observer.disconnect();
     };
-  }, [target]);
+  }, [target, endDrag]);
 
   return (
     <div
@@ -52,7 +65,7 @@ export function Scrollbar({
       aria-hidden
       onPointerDown={(e) => {
         const el = target.current;
-        if (!el || e.button !== 0) return;
+        if (!el || e.button !== 0 || drag.current) return;
         e.preventDefault();
         // A click on the track pages towards it, as the native scrollbar does.
         if (e.target !== thumb.current) {
@@ -61,19 +74,18 @@ export function Scrollbar({
           else if (e.clientY > bottom) scrollNow(el, el.scrollTop + el.clientHeight);
           return;
         }
-        drag.current = { y: e.clientY, top: el.scrollTop };
-        thumb.current!.dataset.dragging = "";
         e.currentTarget.setPointerCapture(e.pointerId);
+        drag.current = { pointerId: e.pointerId, y: e.clientY, top: el.scrollTop, unlock: lockScrollbarCursor() };
+        thumb.current!.dataset.dragging = "";
       }}
       onPointerMove={(e) => {
         const el = target.current;
-        if (!el || !drag.current) return;
+        if (!el || drag.current?.pointerId !== e.pointerId) return;
         const g = geometry.current;
         if (g) scrollNow(el, drag.current.top + ((e.clientY - drag.current.y) / g.range) * g.max);
       }}
-      onLostPointerCapture={() => {
-        drag.current = null;
-        delete thumb.current?.dataset.dragging;
+      onLostPointerCapture={(e) => {
+        if (drag.current?.pointerId === e.pointerId) endDrag();
       }}
     >
       <div ref={thumb} className={styles.thumb} />

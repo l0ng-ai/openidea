@@ -171,6 +171,7 @@ export function EnvDialog({
             </div>
             {rows.map((r, i) => (
               <div
+                // oxlint-disable-next-line react/no-array-index-key -- row fields are edited in place; position is the identity
                 key={i}
                 role="row"
                 className={clsx(styles.envGridRow, selected === i && styles.editItemSelected)}

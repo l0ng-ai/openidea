@@ -746,7 +746,8 @@ export function prefsExtension(o: PrefsOptions): Extension {
       { mac: "Mod-ArrowLeft", run: cursorLineStart, shift: selectLineStart, preventDefault: true },
     );
   if (!o.readOnly && k.insertDocStub) keys.push({ key: "Enter", run: enterInDocComment(o.language) });
-  if (!o.readOnly && k.insertDocStub && o.language === "python") keys.push({ key: "Enter", run: enterInDocstring });
+  if (!o.readOnly && k.insertDocStub && o.language === "python")
+    keys.push({ key: "Enter", run: enterInDocstring(() => editorPrefs().docstringFormat) });
   if (!o.readOnly)
     keys.push(
       { key: "Enter", run: enterInBlockComment },

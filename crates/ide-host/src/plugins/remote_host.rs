@@ -20,17 +20,16 @@
 
 use super::{Consent, HostWorkspace, PluginEvent, PluginHost, PluginSource, SecretStore};
 use crate::catalogue::TrustClass;
-use crate::rpc::Dispatcher;
+use crate::rpc::{Dispatcher, PeerHandle};
 use base64::Engine as _;
 use ide_core::{IdeError, IdeResult};
 use ide_extension::{MANIFEST_FILE, ledger};
-use ide_jsonrpc::Peer;
 use ide_plugin::Limits;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, OnceLock, Weak};
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 /// The server command the desktop calls with its packages.
@@ -246,13 +245,13 @@ pub struct RemotePlugins {
 
 /// Secrets from the desktop's keychain, asked for when used.
 struct ClientSecrets {
-    peer: Arc<OnceLock<Peer>>,
+    peer: Arc<dyn PeerHandle>,
     runtime: tokio::runtime::Handle,
 }
 
 impl SecretStore for ClientSecrets {
     fn get(&self, plugin: &str, name: &str) -> Option<String> {
-        let peer = self.peer.get()?.clone();
+        let peer = self.peer.current()?;
         let request = SecretRequest { plugin: plugin.to_owned(), name: name.to_owned() };
         let ask = async move {
             tokio::time::timeout(SECRET_TIMEOUT, peer.request::<_, Option<String>>(SECRET_REQUEST, request, None)).await
@@ -275,7 +274,7 @@ impl SecretStore for ClientSecrets {
     }
 
     fn set(&self, plugin: &str, name: &str, value: Option<&str>) -> Result<(), String> {
-        let peer = self.peer.get().ok_or("desktop disconnected")?.clone();
+        let peer = self.peer.current().ok_or("desktop disconnected")?;
         let request = SecretWrite { plugin: plugin.into(), name: name.into(), value: value.map(str::to_owned) };
         let ask = async {
             tokio::time::timeout(SECRET_TIMEOUT, peer.request::<_, Result<(), String>>(SECRET_WRITE, request, None))
@@ -293,11 +292,12 @@ impl SecretStore for ClientSecrets {
 impl RemotePlugins {
     /// Creates the host over `<data_dir>/remote-plugins`, loads what earlier
     /// sessions installed and starts event delivery and supervision.
-    pub fn start(data_dir: &Path, projects: &Arc<crate::Host>, peer: Arc<OnceLock<Peer>>) -> IdeResult<Arc<Self>> {
+    pub fn start<P: PeerHandle>(data_dir: &Path, projects: &Arc<crate::Host>, peer: Arc<P>) -> IdeResult<Arc<Self>> {
+        let peer: Arc<dyn PeerHandle> = peer;
         let sink_peer = peer.clone();
         let sink = move |client: Option<&str>, event: PluginEvent| {
             if forwarded(&event)
-                && let Some(p) = sink_peer.get()
+                && let Some(p) = sink_peer.current()
             {
                 let _ = p.notify(EVENT_NOTIFICATION, PluginEventMessage { window: client.map(str::to_owned), event });
             }
@@ -486,7 +486,7 @@ fn safe_relative(path: &str) -> IdeResult<PathBuf> {
 }
 
 struct ClientLoopbacks {
-    peer: Arc<OnceLock<Peer>>,
+    peer: Arc<dyn PeerHandle>,
     runtime: tokio::runtime::Handle,
 }
 impl ClientLoopbacks {
@@ -496,7 +496,7 @@ impl ClientLoopbacks {
         operation: AuthOperation,
         cancel: Option<ide_core::CancellationToken>,
     ) -> Result<serde_json::Value, ide_plugin::HostError> {
-        let peer = self.peer.get().ok_or(ide_plugin::HostError::Cancelled)?.clone();
+        let peer = self.peer.current().ok_or(ide_plugin::HostError::Cancelled)?;
         let timeout = match &operation {
             AuthOperation::Wait { timeout_ms, .. } => Duration::from_millis(u64::from(*timeout_ms)) + SECRET_TIMEOUT,
             _ => SECRET_TIMEOUT,

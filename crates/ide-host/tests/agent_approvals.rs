@@ -1,6 +1,7 @@
 //! The mode new agent tasks start in.
 
-use ide_core::NullSink;
+mod common;
+
 use ide_host::{Host, HostConfig};
 use serde_json::json;
 use std::path::Path;
@@ -41,17 +42,8 @@ async fn new_tasks_start_asking_for_approval_when_the_user_chose_so() {
     std::fs::write(config.join("settings.toml"), "[agents]\nnewTaskApprovals = \"ask\"\n").unwrap();
     // A project's own settings don't choose this.
     std::fs::write(root.join(".openidea/settings.toml"), "[agents]\nnewTaskApprovals = \"bypass\"\n").unwrap();
-    let host = Arc::new(Host::new(HostConfig {
-        config_dir: config.clone(),
-        data_dir: data,
-        local_data_dir: tmp.path().join("local"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    }));
+    let host =
+        Arc::new(Host::new(HostConfig { local_data_dir: tmp.path().join("local"), ..common::host_config(tmp.path()) }));
     host.trust.decide(&root, true, false).unwrap();
     host.open_project("main", &root).unwrap();
     assert_eq!(codex_mode(&host).await.as_deref(), Some("ask"));

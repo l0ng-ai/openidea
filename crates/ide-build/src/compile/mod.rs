@@ -483,11 +483,6 @@ fn go_module_steps(dir: &Path, kind: BuildKind) -> Vec<BuildStep> {
     vec![s]
 }
 
-/// `pnpm` / `yarn` / `bun` / `npm`, from the lock file next to `package.json` or above it.
-fn package_manager(dir: &Path) -> &'static str {
-    ide_core::project_roots::package_manager(dir)
-}
-
 fn has_build_script(dir: &Path) -> bool {
     std::fs::read(dir.join("package.json"))
         .ok()
@@ -525,7 +520,12 @@ fn dotnet_steps(dir: &Path, kind: BuildKind) -> IdeResult<Vec<BuildStep>> {
 fn ts_steps(dir: &Path, kind: BuildKind) -> Vec<BuildStep> {
     let script = has_build_script(dir);
     if script && (kind == BuildKind::Artifacts || !dir.join("tsconfig.json").is_file()) {
-        return vec![BuildStep::new(package_manager(dir), &["run", "build"], dir, Format::Tsc)];
+        return vec![BuildStep::new(
+            ide_core::project_roots::package_manager(dir),
+            &["run", "build"],
+            dir,
+            Format::Tsc,
+        )];
     }
     let local = dir.ancestors().map(|d| d.join("node_modules/.bin/tsc")).find(|p| p.is_file());
     let program = local.map_or_else(|| "tsc".to_owned(), |p| p.to_string_lossy().into_owned());

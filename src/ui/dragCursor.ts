@@ -33,17 +33,32 @@ export function lockDragCursor(cursor: DragCursor): () => void {
   const wasLocked = html.hasAttribute("data-drag-cursor");
   html.style.setProperty("--drag-cursor", cursor);
   html.setAttribute("data-drag-cursor", "");
+  return untilDragEnds(() => {
+    if (wasLocked) html.style.setProperty("--drag-cursor", previous);
+    else {
+      html.removeAttribute("data-drag-cursor");
+      html.style.removeProperty("--drag-cursor");
+    }
+  });
+}
+
+export function lockScrollbarCursor(): () => void {
+  // Changing an inherited cursor on the document restyles every glyph in a large preview.
+  const surface = document.createElement("div");
+  surface.setAttribute("data-scrollbar-drag-surface", "");
+  surface.setAttribute("aria-hidden", "true");
+  document.body.appendChild(surface);
+  return () => surface.remove();
+}
+
+function untilDragEnds(cleanup: () => void): () => void {
   listenForEnd();
   let released = false;
   const release = () => {
     if (released) return;
     released = true;
     active.delete(release);
-    if (wasLocked) html.style.setProperty("--drag-cursor", previous);
-    else {
-      html.removeAttribute("data-drag-cursor");
-      html.style.removeProperty("--drag-cursor");
-    }
+    cleanup();
   };
   active.add(release);
   return release;

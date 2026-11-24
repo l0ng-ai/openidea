@@ -933,7 +933,7 @@ where
                 state.shell.seed_launch(&state.host, &label, requested);
                 window_label = Some(label.clone());
                 sub_id = Some(id);
-                if out_tx.send(ServerMessage::Ready { window: label, server: rpc::server_info() }).await.is_err() {
+                if out_tx.send(ServerMessage::Ready { window: label, server: rpc::server_info(None) }).await.is_err() {
                     break;
                 }
             }

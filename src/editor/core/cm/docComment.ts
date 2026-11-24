@@ -4,7 +4,8 @@
  * parameters (`@param`) and return type (`@return`), as PhpStorm does; in Java a method's,
  * constructor's or generic type's parameters, return value and exceptions, as IDEA does.
  */
-import { syntaxTree } from "@codemirror/language";
+import { ensureSyntaxTree, language, syntaxTree } from "@codemirror/language";
+import type { SyntaxNode } from "@lezer/common";
 import { EditorSelection, type EditorState } from "@codemirror/state";
 import type { Command } from "@codemirror/view";
 
@@ -242,56 +243,136 @@ export function jsDocTags(text: string): string[] {
   return tags;
 }
 
-/** `:param` / `:return:` lines for the Python function whose header is `header` (reStructuredText, PyCharm's default). */
-export function pythonDocTags(header: string): string[] {
-  const m = /^\s*(?:async\s+)?def\s+(\w+)\s*(?=\()/.exec(header);
-  if (!m) return [];
-  const list = paramList(header, m[0].length);
-  if (!list) return [];
-  const tags = splitParams(list.params).flatMap((p) => {
-    const name = /^\**(\w+)/.exec(p)?.[1];
-    return name && name !== "self" && name !== "cls" ? [`:param ${name}:`] : [];
+/** Python docstring formats (Settings › Python › Docstrings). */
+export type PythonDocFormat = "plain" | "rest" | "epytext" | "google" | "numpy";
+
+function pythonRaises(body: SyntaxNode, text: string): string[] {
+  const names = new Set<string>();
+  body.cursor().iterate((node) => {
+    if (node.name === "FunctionDefinition" || node.name === "ClassDefinition") return false;
+    if (node.name !== "RaiseStatement") return;
+    let target = node.node.firstChild?.nextSibling;
+    while (target?.name === "CallExpression" || target?.name === "ParenthesizedExpression") {
+      target = target.name === "CallExpression" ? target.firstChild : target.firstChild?.nextSibling;
+    }
+    if (target?.name === "VariableName" || target?.name === "MemberExpression") {
+      names.add(text.slice(target.from, target.to));
+    }
+    return false;
   });
-  const returns = /->\s*([^:]+):/.exec(list.after)?.[1]?.trim();
-  if (m[1] !== "__init__" && returns !== "None") tags.push(":return:");
-  return tags;
+  return [...names];
+}
+
+/** The lines below a Python function docstring's summary. */
+export function pythonDocStub(text: string, owner: SyntaxNode, format: PythonDocFormat): string[] {
+  if (format === "plain" || owner.name !== "FunctionDefinition") return [];
+  const params: string[] = [];
+  let start = true;
+  for (let param = owner.getChild("ParamList")?.firstChild; param; param = param.nextSibling) {
+    if (param.name === ",") start = true;
+    if (!start || param.name !== "VariableName") continue;
+    const name = text.slice(param.from, param.to);
+    if (name !== "self" && name !== "cls") params.push(name);
+    start = false;
+  }
+  const name = owner.getChild("VariableName");
+  const annotation = owner.getChild("TypeDef");
+  const returnType = annotation && text.slice(annotation.from + 2, annotation.to);
+  const returns =
+    !!name && text.slice(name.from, name.to) !== "__init__" && returnType?.replace(/[()\s]/g, "") !== "None";
+  const body = owner.getChild("Body");
+  const raises = body ? pythonRaises(body, text) : [];
+  switch (format) {
+    case "rest":
+    case "epytext": {
+      const [mark, raise] = format === "rest" ? [":", ":raises"] : ["@", "@raise"];
+      return [
+        ...params.map((p) => `${mark}param ${p}:`),
+        ...(returns ? [`${mark}return:`] : []),
+        ...raises.map((r) => `${raise} ${r}:`),
+      ];
+    }
+    case "google": {
+      const sections = [
+        params.length ? ["Args:", ...params.map((p) => `    ${p}:`)] : [],
+        returns ? ["Returns:", ""] : [],
+        raises.length ? ["Raises:", ...raises.map((r) => `    ${r}:`)] : [],
+      ].filter((s) => s.length);
+      return sectioned(sections);
+    }
+    case "numpy": {
+      const sections = [
+        params.length ? ["Parameters", "----------", ...params] : [],
+        returns ? ["Returns", "-------", ""] : [],
+        raises.length ? ["Raises", "------", ...raises] : [],
+      ].filter((s) => s.length);
+      return sectioned(sections);
+    }
+  }
+}
+
+/** Sections after a blank line below the summary, one blank line apart (a trailing blank line of a section kept once). */
+function sectioned(sections: string[][]): string[] {
+  const out: string[] = [];
+  for (const s of sections) {
+    if (out[out.length - 1] !== "") out.push("");
+    out.push(...s);
+  }
+  return out;
 }
 
 /**
- * Enter between the quotes of a `"""` docstring opened right under a `def` (or `"""` alone at its
- * end): the docstring's lines with the function's `:param` / `:return:` fields, as PyCharm does.
+ * Enter between the quotes of a `"""` docstring opened right under a `def` or `class` (or `"""`
+ * alone at its end): the docstring's lines with the function's parameters, return value and raised
+ * exceptions in `format`, as PyCharm does.
  */
-export const enterInDocstring: Command = (view) => {
-  const { state } = view;
-  if (state.readOnly || state.selection.ranges.length !== 1 || !state.selection.main.empty) return false;
-  const head = state.selection.main.head;
-  const line = state.doc.lineAt(head);
-  const before = line.text.slice(0, head - line.from);
-  const after = line.text.slice(head - line.from);
-  const quote = /^\s*("""|''')$/.exec(before)?.[1];
-  if (!quote || (after.trim() && after.trim() !== quote)) return false;
-  // The function header ends on the closest line above with code.
-  let n = line.number - 1;
-  while (n >= 1 && !state.doc.line(n).text.trim()) n--;
-  if (n < 1 || !/:\s*(#.*)?$/.test(state.doc.line(n).text)) return false;
-  let start = n;
-  while (start > 1 && !/^\s*(async\s+)?def\b/.test(state.doc.line(start).text) && n - start < 20) start--;
-  const header = state.sliceDoc(state.doc.line(start).from, state.doc.line(n).to);
-  if (!/^\s*(async\s+)?def\b/.test(header)) return false;
-  const indent = /^\s*/.exec(before)![0];
-  const br = state.lineBreak;
-  const tags = pythonDocTags(header);
-  const summary = `${br}${indent}`;
-  const insert =
-    summary + (tags.length ? `${br}${tags.map((t) => `${indent}${t}`).join(br)}` : "") + `${br}${indent}${quote}`;
-  view.dispatch({
-    changes: { from: head, to: line.to, insert },
-    selection: EditorSelection.cursor(head + summary.length),
-    scrollIntoView: true,
-    userEvent: "input",
-  });
-  return true;
-};
+export function enterInDocstring(format: () => PythonDocFormat): Command {
+  return (view) => {
+    const { state } = view;
+    if (state.readOnly || state.selection.ranges.length !== 1 || !state.selection.main.empty) return false;
+    const head = state.selection.main.head;
+    const line = state.doc.lineAt(head);
+    const before = line.text.slice(0, head - line.from);
+    const after = line.text.slice(head - line.from);
+    const quote = /^\s*("""|''')$/.exec(before)?.[1];
+    if (!quote || (after.trim() && after.trim() !== quote)) return false;
+    const indent = /^\s*/.exec(before)![0];
+    const literal = ensureSyntaxTree(state, line.to, 50)?.resolveInner(head - quote.length, 1);
+    const statement = literal?.parent;
+    const body = statement?.parent;
+    const owner = body?.parent;
+    if (
+      literal?.name !== "String" ||
+      literal.from !== head - quote.length ||
+      statement?.name !== "ExpressionStatement" ||
+      body?.name !== "Body" ||
+      (owner?.name !== "FunctionDefinition" && owner?.name !== "ClassDefinition")
+    )
+      return false;
+    for (let prev = statement.prevSibling; prev; prev = prev.prevSibling) {
+      if (prev.name !== ":" && prev.name !== "Comment") return false;
+    }
+    const br = state.lineBreak;
+    const style = format();
+    let tags: string[] = [];
+    if (style !== "plain" && owner.name === "FunctionDefinition") {
+      // Close the opener in a temporary parse so an unfinished literal doesn't swallow the body.
+      const end = state.doc.line(Math.min(state.doc.lines, line.number + 2000)).to;
+      const text = state.sliceDoc(owner.from, head) + quote + state.sliceDoc(line.to, end);
+      const parsed = state.facet(language)?.parser.parse(text).topNode.firstChild;
+      if (parsed) tags = pythonDocStub(text, parsed, style);
+    }
+    const summary = `${br}${indent}`;
+    const insert = summary + tags.map((t) => br + (t ? indent + t : "")).join("") + `${br}${indent}${quote}`;
+    view.dispatch({
+      changes: { from: head, to: line.to, insert },
+      selection: EditorSelection.cursor(head + summary.length),
+      scrollIntoView: true,
+      userEvent: "input",
+    });
+    return true;
+  };
+}
 
 /**
  * Whether the comments at `pos` include `/* *\/` ones. Embedded languages list several comment

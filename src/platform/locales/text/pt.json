@@ -1871,7 +1871,6 @@
   "Runs Optimize Imports when the file has no errors, unless it would change the caret line.": "Executa Otimizar importações quando o arquivo não tiver erros, a menos que isso altere a linha do cursor.",
   "Runs npm scripts and Node-based language servers (vtsls, eslint, pyright…).": "Executa scripts npm e servidores de linguagem baseados em Node (vtsls, eslint, pyright…).",
   "Runs sync, builds and Maven run configurations. A chosen home is used instead of the project's mvnw. Bypassed while the Maven daemon is enabled.": "Executa sincronização, compilações e configurações de execução do Maven. O diretório escolhido é usado em vez do mvnw do projeto. Ignorado quando o daemon do Maven está ativado.",
-  "Runs the language server's Organize Imports action.": "Executa a ação Organizar importações do servidor de linguagem.",
   "Runs the language server's formatter before an explicit save (Actions on Save).": "Executa o formatador do servidor de linguagem antes de um salvamento explícito (Ações ao salvar).",
   "Search history": "Histórico de pesquisa",
   "Searching for usages of '{symbol}'": "Pesquisando usos de '{symbol}'",
@@ -5924,5 +5923,7 @@
   "Default (the module's JDK)": "Padrão (JDK do módulo)",
   "Use classpath of module": "Usar classpath do módulo",
   "Find by main class": "Localizar por classe principal",
-  "Select files in the Project view, Commit tool window, or open a file in the editor": "Selecione arquivos na visualização do projeto, na janela Commit, ou abra um arquivo no editor"
+  "Select files in the Project view, Commit tool window, or open a file in the editor": "Selecione arquivos na visualização do projeto, na janela Commit, ou abra um arquivo no editor",
+  "Agent Reference": "Referência do agente",
+  "Copy Agent Reference": "Copiar referência do agente"
 }

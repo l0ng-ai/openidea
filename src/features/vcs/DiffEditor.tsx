@@ -1931,7 +1931,13 @@ function TwoPaneDiff({
               chunkInfo.moves > 0 &&
               (chunkInfo.moves === 1 ? tx(" · 1 moved block") : tx` · ${chunkInfo.moves} moved blocks`)}
           </span>
-          {contribs.map((c, i) => c.Toolbar && <c.Toolbar key={i} host={viewer} />)}
+          {contribs.map((c, i) => {
+            if (!c.Toolbar) return null;
+            return (
+              // oxlint-disable-next-line react/no-array-index-key -- contributions have no stable id; position is the identity
+              <c.Toolbar key={i} host={viewer} />
+            );
+          })}
           {toolbarActions}
           {canExternal && (
             <IconButton

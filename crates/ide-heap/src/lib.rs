@@ -20,7 +20,7 @@ mod strings;
 #[cfg(test)]
 mod test_index;
 /// Fixture builders shared by this crate's tests and by dependants' tests and benches; not API.
-#[doc(hidden)]
+#[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
 pub use analysis::{AnalyzeOptions, analyze};

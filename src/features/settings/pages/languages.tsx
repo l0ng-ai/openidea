@@ -29,6 +29,7 @@ const DocstringsPage = lazyPage("python.docstrings", () =>
   import("../languages/DocstringsPage").then((m) => m.DocstringsPage),
 );
 const RuffPage = lazyPage("python.ruff", () => import("../languages/FormatterPage").then((m) => m.RuffPage));
+const BlackPage = lazyPage("python.black", () => import("../languages/FormatterPage").then((m) => m.BlackPage));
 const PhpPage = lazyPage("languages.php", () => import("../languages/LanguagePages").then((m) => m.PhpPage));
 const RubyPage = lazyPage("languages.ruby", () => import("../languages/LanguagePages").then((m) => m.RubyPage));
 const RustPage = lazyPage("languages.rust", () => import("../languages/LanguagePages").then((m) => m.RustPage));
@@ -246,6 +247,16 @@ export const LANGUAGE_PAGES: PageSpec[] = [
       "format on save",
     ],
     component: RuffPage,
+  },
+  {
+    id: "python.black",
+    projectScope: true,
+    defaultScope: "project",
+    title: "Black formatter",
+    group: LANGUAGES_GROUP,
+    order: 403.4,
+    keywords: ["formatter", "black", "python", "pyproject.toml", "tool.black", "format on save"],
+    component: BlackPage,
   },
   {
     id: "languages.php",

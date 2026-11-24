@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { EditorState } from "@codemirror/state";
+import { EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { setDiagnostics } from "@codemirror/lint";
 import type { CodeAction, Diagnostic } from "@/bindings";
@@ -54,7 +54,7 @@ const {
   withInspectionControls,
 } = await import("./intentions");
 const { useLspPopup, closePopup } = await import("./popupStore");
-const { asyncIntentionProviders } = await import("@/editor/api");
+const { asyncIntentionProviders, inspectionControlProviders } = await import("@/editor/api");
 const { setFileDiagnostics, toLintDiagnostics } = await import("./diagnostics");
 const { lspDoc } = await import("./lsp");
 
@@ -249,12 +249,12 @@ describe("context actions a feature finds through the language server", () => {
 });
 
 describe("inspection controls in ⌥↵ (issue #42)", () => {
-  const editorAt = (path: string) => {
+  const editorAt = (path: string, extra: Extension = []) => {
     const view = new EditorView({
       state: EditorState.create({
         doc: "import os\n",
         selection: { anchor: 8 },
-        extensions: [lspDoc.of({ doc: 1, path, language: "python", uiMode: null, readOnly: false })],
+        extensions: [lspDoc.of({ doc: 1, path, language: "python", uiMode: null, readOnly: false }), extra],
       }),
     });
     views.push(view);
@@ -291,6 +291,24 @@ describe("inspection controls in ⌥↵ (issue #42)", () => {
     expect(items[0]!.submenu).toHaveLength(2);
     setFileDiagnostics("/p/two.py", "ruff", []);
     expect(withInspectionControls(view, [])).toEqual([]);
+  });
+
+  it("adds the rows features contribute for the inspection", () => {
+    setFileDiagnostics("/p/three.py", "ruff", [unused]);
+    const suppress = vi.fn();
+    const view = editorAt(
+      "/p/three.py",
+      inspectionControlProviders.of((_view, id) =>
+        id === "lsp:ruff:F401" ? [{ id: "suppress", label: "Suppress for statement", run: suppress }] : [],
+      ),
+    );
+    const [options] = withInspectionControls(view, []);
+    expect(options!.submenu?.map((s) => ("label" in s ? s.label : "-"))).toEqual([
+      "Edit inspection profile setting",
+      "Disable inspection",
+      "Suppress for statement",
+    ]);
+    setFileDiagnostics("/p/three.py", "ruff", []);
   });
 
   it.each(["info", "warning", "error"] as const)(

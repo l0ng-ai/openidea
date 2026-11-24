@@ -587,6 +587,7 @@ export function startViewUi(openInput: (input: ReturnType<typeof customEditorInp
       kind: PLUGIN_CONTENT_EDITOR_KIND,
       component: PluginContentEditor,
       keepAlive: true,
+      restorable: true,
       title: pluginContentEditorTitle,
       icon: pluginContentEditorIcon,
       document: pluginContentEditorDocument,
