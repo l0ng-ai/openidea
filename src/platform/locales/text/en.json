@@ -3936,5 +3936,11 @@
   "Reload classes after compilation": "Reload classes after compilation",
   "Reload changed classes into running Java debug sessions after Build Project, Build Module, or Recompile succeeds.": "Reload changed classes into running Java debug sessions after Build Project, Build Module, or Recompile succeeds.",
   "Reload '{fileName}' into the running debug session?": "Reload '{fileName}' into the running debug session?",
-  "Tomcat classes updated": "Tomcat classes updated"
+  "Tomcat classes updated": "Tomcat classes updated",
+  "Hover card": "Hover card",
+  "Resize hover card from the top": "Resize hover card from the top",
+  "Resize hover card from the right": "Resize hover card from the right",
+  "Resize hover card from the bottom": "Resize hover card from the bottom",
+  "Resize hover card from the left": "Resize hover card from the left",
+  "Resize hover card from the corner": "Resize hover card from the corner"
 }

@@ -10169,5 +10169,11 @@
   "Reload classes after compilation": "编译后重新加载类",
   "Reload changed classes into running Java debug sessions after Build Project, Build Module, or Recompile succeeds.": "在 Build Project、Build Module 或 Recompile 编译成功后，将修改的类重新加载到运行中的 Java 调试会话。",
   "Reload '{fileName}' into the running debug session?": "要将 '{fileName}' 重新加载到正在运行的调试会话中吗？",
-  "Tomcat classes updated": "Tomcat 类已更新"
+  "Tomcat classes updated": "Tomcat 类已更新",
+  "Hover card": "悬浮卡片",
+  "Resize hover card from the top": "从上边缘调整悬浮卡片大小",
+  "Resize hover card from the right": "从右边缘调整悬浮卡片大小",
+  "Resize hover card from the bottom": "从下边缘调整悬浮卡片大小",
+  "Resize hover card from the left": "从左边缘调整悬浮卡片大小",
+  "Resize hover card from the corner": "从角部调整悬浮卡片大小"
 }
