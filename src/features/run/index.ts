@@ -72,7 +72,6 @@ import { junitType } from "./junitType";
 import { listenForApplicationDeactivation, showApplicationUpdate, updatableSessions } from "./applicationUpdate";
 import { hotReload, hotReloadSession, hotRestart } from "./flutterHotReload";
 import { npmGutter } from "./npmGutter";
-import { startNpmScriptsWatch } from "./npmScripts";
 import { launchSettingsGutter } from "./launchSettingsGutter";
 import { runGutter } from "./runGutter";
 import { markdownCommandGutter } from "./markdownCommands";
@@ -438,7 +437,6 @@ export function activate(): () => void {
       headerContent: lazyComponent(() => import("./RunView").then((m) => m.RunTabs)),
       useBadge: useRunningCount,
     }),
-    startNpmScriptsWatch(),
     registerTitleItem({ id: "run.widget", title: "Run Widget", align: "right", priority: 0, component: RunWidget }),
     registerRunAnythingProvider(runConfigsRunAnything),
     registerBuiltinTypes(),
