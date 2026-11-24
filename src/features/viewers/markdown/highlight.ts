@@ -198,7 +198,8 @@ export function invalidatePreviewIndex(root: HTMLElement) {
 function previewIndex(root: HTMLElement): PreviewIndex {
   let index = previewIndexes.get(root);
   if (!index) {
-    const els = [...root.querySelectorAll<HTMLElement>(":scope > [data-line]")];
+    const content = root.querySelector(":scope > [data-preview-blocks]") ?? root;
+    const els = [...content.querySelectorAll<HTMLElement>(":scope > [data-line]")];
     const blocks = els.map((el) => ({ startLine: Number(el.dataset.line), runs: collectRuns(el) }));
     index = { blocks, runs: blocks.length ? blocks.flatMap((b) => b.runs) : collectRuns(root) };
     previewIndexes.set(root, index);

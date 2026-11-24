@@ -339,8 +339,8 @@ export const commands = {
 	dbDropDatabase: (id: string, database: string, statement: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_drop_database", { id, database, statement })),
 	/**  What made the dump at `path` and whether it creates its own database (from its first bytes). */
 	dbDumpInfo: (path: string) => typedError<DbDumpInfo, IdeError>(__TAURI_INVOKE("db_dump_info", { path })),
-	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], skip: number, maxRows: number, schema: string | null) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, skip, maxRows, schema })),
-	dbExecuteStream: (request: RequestId, id: string, statements: SqlStatement[], maxRows: number, schema: string | null, onProgress: Channel<ExecutionEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("db_execute_stream", { request, id, statements, maxRows, schema, onProgress })),
+	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], skip: number, maxRows: number, schema: string | null, cellLimit: number | null) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, skip, maxRows, schema, cellLimit })),
+	dbExecuteStream: (request: RequestId, id: string, statements: SqlStatement[], maxRows: number, schema: string | null, cellLimit: number | null, onProgress: Channel<ExecutionEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("db_execute_stream", { request, id, statements, maxRows, schema, cellLimit, onProgress })),
 	dbExplain: (request: RequestId, id: string, statement: string, schema: string | null) => typedError<DbPlanNode[], IdeError>(__TAURI_INVOKE("db_explain", { request, id, statement, schema })),
 	/**
 	 *  Writes exported result data (CSV, JSON, SQL…) to `path`. Stays in the
@@ -353,8 +353,15 @@ export const commands = {
 	dbJdbcDriverClasses: (jars: string[]) => typedError<string[], IdeError>(__TAURI_INVOKE("db_jdbc_driver_classes", { jars })),
 	dbJdbcDrivers: () => typedError<DbJdbcDriver_Serialize[], IdeError>(__TAURI_INVOKE("db_jdbc_drivers")),
 	dbObjectDdl: (id: string, schema: string, kind: DbObjectKind, name: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_object_ddl", { id, schema, kind, name })),
+	/**  Closes what the pages of a result keep open on the server (its result tab was closed). */
+	dbReleaseResult: (id: string, statement: string, schema: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_release_result", { id, statement, schema })),
 	dbRemoveHistory: (id: string, texts: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_remove_history", { id, texts })),
 	dbRemoveJdbcDriver: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_remove_jdbc_driver", { id })),
+	/**
+	 *  Row `row` (from 0) of the result of `statement`, whole: what a page of a run with a
+	 *  `cell_limit` shows cut short.
+	 */
+	dbResultRow: (request: RequestId, id: string, statement: SqlStatement, row: number, schema: string | null) => typedError<DbQueryResult, IdeError>(__TAURI_INVOKE("db_result_row", { request, id, statement, row, schema })),
 	dbRetainCatalog: (id: string, databases: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("db_retain_catalog", { id, databases })),
 	/**
 	 *  Runs `job` against target `id` and streams the tool's output; returns its exit code. Stays
@@ -2664,6 +2671,12 @@ export type AgentEvent_Deserialize =
  *  `from` UTF-16 units of its text when the previous event for it was sent.
  */
 ({ type: "append"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
+/**
+ *  Text was appended to the output of tool entry `index`: it read the first `from` UTF-16
+ *  units of its output when the previous event for it was sent. Any other change of the
+ *  tool (status, title, diffs…) arrives as an `Entry`.
+ */
+({ type: "toolOutput"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
 /**  An agent reported the usage limits of its account (shared by every task of `provider`). */
 ({ type: "limits"; provider: string; limits: AgentLimit[] }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
 /**  A model lookup started or completed, including unsuccessful lookups. */
@@ -2686,6 +2699,12 @@ export type AgentEvent_Serialize =
  *  `from` UTF-16 units of its text when the previous event for it was sent.
  */
 ({ type: "append"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
+/**
+ *  Text was appended to the output of tool entry `index`: it read the first `from` UTF-16
+ *  units of its output when the previous event for it was sent. Any other change of the
+ *  tool (status, title, diffs…) arrives as an `Entry`.
+ */
+({ type: "toolOutput"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
 /**  An agent reported the usage limits of its account (shared by every task of `provider`). */
 ({ type: "limits"; provider: string; limits: AgentLimit[] }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
 /**  A model lookup started or completed, including unsuccessful lookups. */
@@ -5331,6 +5350,8 @@ export type DbQueryResult = {
 	elapsedMs: number | null,
 	/**  Until the server's first answer; the rest of `elapsed_ms` is fetching. */
 	executionMs: number | null,
+	/**  Cells of `rows` cut short by [`QueryResult::cap_cells`], in row order. */
+	truncated: DbTruncatedCell[],
 };
 
 export type DbResultColumn = {
@@ -5508,6 +5529,19 @@ export type DbTriggerInfo = {
 	timing: string,
 	/**  `insert`, `update or delete`… */
 	events: string,
+};
+
+/**  A cell of a [`QueryResult`] whose text was cut to a prefix. */
+export type DbTruncatedCell = {
+	row: number,
+	column: number,
+	/**  Length of the whole value in UTF-16 code units (what a JavaScript string counts). */
+	length: number,
+	/**
+	 *  FNV-1a (32 bits) of the whole value's UTF-16 code units, each taken as one 16-bit step,
+	 *  so a client that reads the value again can tell whether it is the one that was cut.
+	 */
+	hash: number,
 };
 
 /**  Transaction control of the data source's consoles. */
