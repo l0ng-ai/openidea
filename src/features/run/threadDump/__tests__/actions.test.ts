@@ -13,10 +13,15 @@ import jdk25Sync from "../__fixtures__/jdk25-sync.txt?raw";
 import jdk25None from "../__fixtures__/jdk25-none.txt?raw";
 
 const notify = vi.hoisted(() => vi.fn());
-vi.mock("@/workbench/contributions", async (orig) => ({
-  ...(await orig<typeof import("@/workbench/contributions")>()),
-  notifications: () => ({ notify }),
-}));
+const showToolWindow = vi.hoisted(() => vi.fn());
+vi.mock("@/workbench/contributions", async (orig) => {
+  const actual = await orig<typeof import("@/workbench/contributions")>();
+  return {
+    ...actual,
+    notifications: () => ({ notify }),
+    toolWindowService: () => ({ show: showToolWindow }),
+  };
+});
 
 function config(kind: string, patch: Partial<RunConfig> = {}): RunConfig {
   return {
@@ -71,6 +76,7 @@ beforeEach(() => {
   dispose = activateThreadDumps();
   useStackTraces.setState({ tabs: [], dialog: null });
   notify.mockClear();
+  showToolWindow.mockClear();
 });
 afterEach(() => {
   dispose();
@@ -108,6 +114,7 @@ describe("run.dumpThreads", () => {
     expect(tab.title).toBe("Threads: App");
     expect(tab.source).toEqual({ run: 7, token: runJvmToken(app, ROOT) });
     expect(tab.dump.deadlocks).toHaveLength(1);
+    expect(showToolWindow).toHaveBeenCalledWith("run", true);
     expect(notify).not.toHaveBeenCalled();
   });
 
@@ -124,6 +131,7 @@ describe("run.dumpThreads", () => {
     vi.spyOn(commands, "runJvmThreadDump").mockResolvedValue(answer(unavailable({ kind: "remoteRun" })));
     await executeAction("run.dumpThreads");
     expect(useStackTraces.getState().tabs).toEqual([]);
+    expect(showToolWindow).not.toHaveBeenCalled();
     expect(notify).toHaveBeenCalledWith(
       expect.objectContaining({ body: "Thread dumps are not available for remote runs yet." }),
     );

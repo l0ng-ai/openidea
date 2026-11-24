@@ -5,7 +5,7 @@ import { tx } from "@/platform/i18n";
 import { call, commands, type JvmThreadsResult, type RunConfig } from "@/platform/ipc";
 import { isJvmApplication } from "@/platform/javaLaunch";
 import { useProject } from "@/platform/project";
-import { notifications } from "@/workbench/contributions";
+import { notifications, toolWindowService } from "@/workbench/contributions";
 import { runJvmToken } from "../gradleRun";
 import { addThreadDump, normalizeTrace, updateThreadDump } from "../stackTrace";
 import { useRun, type RunSession } from "../store";
@@ -63,6 +63,8 @@ async function openThreadDump({ title, source, take }: ThreadDumpRequest) {
     return;
   }
   const id = addThreadDump(text, { title, source });
+  // A debug session's dump opens here too, so the Run tool window may be hidden.
+  toolWindowService().show("run", true);
   // The tab reports a failed refresh itself, so this one only throws.
   const refresh = async () => {
     const next = normalizeTrace(await dumpText(take));
