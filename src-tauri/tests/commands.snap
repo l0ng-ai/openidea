@@ -180,6 +180,7 @@ debug_jvm_memory_classes                     trusted            project_host bin
 debug_jvm_memory_fields                      trusted            project_host bindings async
 debug_jvm_memory_instances                   trusted            project_host bindings async
 debug_jvm_memory_referrers                   trusted            project_host bindings async
+debug_jvm_thread_dump                        trusted            project_host bindings async
 debug_listen_for_jvm                         trusted            project_host bindings async
 debug_pause                                  trusted            project_host bindings async
 debug_redefine_classes                       trusted            project_host bindings async
@@ -558,6 +559,7 @@ remote_stop_backend                          always             desktop      bin
 remote_stop_forwarding                       trusted            desktop      bindings async
 remote_trust_set                             always             desktop      bindings sync
 remote_trust_status                          always             desktop      bindings sync
+remote_upload_into                           trusted            project_host bindings async
 remove_recent                                always             project_host bindings sync
 remove_recent_project                        always             desktop      bindings sync
 replace_in_files                             trusted            project_host bindings async
@@ -574,6 +576,7 @@ run_gradle_init_script                       trusted            project_host bin
 run_gradle_jvm_args_script                   always             project_host bindings async
 run_import_configs                           trusted            project_host bindings async
 run_import_sources                           trusted            project_host bindings async
+run_jvm_thread_dump                          trusted            project_host bindings async
 run_list                                     always             project_host bindings sync
 run_resize                                   trusted            project_host bindings sync
 run_save_configs                             trusted            project_host bindings async

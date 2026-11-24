@@ -156,6 +156,8 @@ The actions work on the selection in the Project view, or on the file in the act
 - **Open in Browser (Deployed)**: opens the file's URL on the web server.
 - **Browse Remote Host**: opens the **Remote Host** tool window, a tree of the server's files with **Open** (edit a copy; saving uploads it back), **Download to Project**, **New Folder…**, **Rename…**, **Delete…**, **Refresh** and **Copy Path**.
 
+Drag files or folders from **Project** or your desktop file manager into **Remote Host** to upload them without configuring mappings. Drop onto a folder to upload inside it, onto a file to use its parent folder, or onto the root path or empty tree space to use the displayed root. **Upload Files…** in the context menu opens a file picker (multiple files), and **Upload Folder…** opens a folder picker. The selected folder is uploaded under its own name, including its contents. Existing names ask for confirmation before replacing files and merging folders; cancelling leaves them unchanged. The transfer appears in background tasks and can be cancelled. These direct uploads do not apply deployment exclusions; source symbolic links are skipped. Desktop file-manager drops are not available in Remote Development windows; dragging paths from that window's **Project** tree is supported.
+
 Unknown host keys are confirmed before connecting, and OpenIDEA asks for a password or passphrase when the SSH configuration doesn't save one.
 
 ## Not supported

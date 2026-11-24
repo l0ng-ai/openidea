@@ -37,6 +37,7 @@ fn query(pattern: &str, is_regex: bool) -> SearchQuery {
         max_matches: 0,
         context: Default::default(),
         include_excluded: false,
+        skip_large_files: false,
     }
 }
 
