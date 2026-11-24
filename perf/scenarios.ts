@@ -256,7 +256,9 @@ const consoleLongLines: Scenario = {
     if (longBox) {
       await h.page.mouse.move(longBox.x + longBox.width / 2, longBox.y + longBox.height / 2);
       for (let i = 0; i < 6; i++) {
+        // oxlint-disable-next-line no-await-in-loop -- wheel steps scroll the log one after another while it streams
         await h.page.mouse.wheel(0, -180);
+        // oxlint-disable-next-line no-await-in-loop -- spaces the wheel steps out
         await h.page.waitForTimeout(40);
       }
     }
@@ -301,6 +303,7 @@ const consoleLongLines: Scenario = {
       const steps = 12;
       for (let i = 1; i <= steps; i++) {
         el.scrollLeft = Math.round((maxLeft * i) / steps);
+        // oxlint-disable-next-line no-await-in-loop -- one horizontal scroll position per frame
         await new Promise(requestAnimationFrame);
       }
       el.scrollLeft = 0;
