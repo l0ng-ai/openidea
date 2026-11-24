@@ -34,7 +34,7 @@ export interface LogOptions {
   showBranches: boolean;
   /** Changed files grouped by directory (else a flat list). */
   groupByDirectory: boolean;
-  /** Selecting a changed file shows its diff in the editor's preview tab. */
+  /** Selecting a changed file updates the embedded preview or an open editor preview. */
   diffPreview: boolean;
   /** Changed files show how many lines the commit added and deleted. */
   showLineStats: boolean;

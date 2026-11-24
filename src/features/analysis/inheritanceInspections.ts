@@ -95,7 +95,30 @@ class ProjectView {
   private outlines = new Map<string, Promise<readonly OutlineItem[]>>();
   private ancestry = new Map<string, Promise<AncestryResolution>>();
 
-  constructor(private readonly deps: InheritanceInspectionDeps) {}
+  /**
+   * The graph's declarations of this document paired with its live classes. An unsaved
+   * edit moves classes off the lines the graph indexed: while the classes still read the
+   * same names in the same order, they pair up in order; otherwise only by position.
+   */
+  private readonly declOf = new Map<PythonClassFacts, ClassInheritance>();
+  private readonly liveOf = new Map<string, PythonClassFacts>();
+
+  constructor(private readonly deps: InheritanceInspectionDeps) {
+    const indexed = [...deps.index.byName.values()]
+      .flat()
+      .filter((c) => c.path === deps.path)
+      .sort(byPosition);
+    const live = [...deps.facts.classes].sort((a, b) => byPosition(a.selection.start, b.selection.start));
+    const inOrder = indexed.length === live.length && indexed.every((c, i) => c.name === live[i]!.name);
+    for (const [i, facts] of live.entries()) {
+      const decl = inOrder
+        ? indexed[i]!
+        : indexed.find((c) => c.line === facts.selection.start.line && c.col === facts.selection.start.col);
+      if (!decl) continue;
+      this.declOf.set(facts, decl);
+      this.liveOf.set(declarationKey(decl), facts);
+    }
+  }
 
   /** The document's classes, in declaration order, skipping ones the graph does not match. */
   async classes(): Promise<ClassView[]> {
@@ -126,11 +149,16 @@ class ProjectView {
   }
 
   async methodsOf(decl: ClassInheritance): Promise<PythonMethodFacts[]> {
+    if (decl.path === this.deps.path) return this.liveOf.get(declarationKey(decl))?.methods ?? [];
     const facts = await this.factsOf(decl.path);
     return facts?.classes.find((c) => sameDeclaration(c, decl))?.methods ?? [];
   }
 
   async membersOf(decl: ClassInheritance): Promise<ReadonlySet<string>> {
+    if (decl.path === this.deps.path) {
+      const live = this.liveOf.get(declarationKey(decl));
+      return memberNames(live ? classItem(this.deps.outline, live) : null);
+    }
     const outline = await this.outlineOf(decl.path);
     const item = outline.find(
       (i) =>
@@ -140,13 +168,7 @@ class ProjectView {
   }
 
   private declarationOf(facts: PythonClassFacts): ClassInheritance | null {
-    const found = this.deps.index.byName.get(facts.name) ?? [];
-    return (
-      found.find(
-        (c) =>
-          c.path === this.deps.path && c.line === facts.selection.start.line && c.col === facts.selection.start.col,
-      ) ?? null
-    );
+    return this.declOf.get(facts) ?? null;
   }
 
   private factsOf(path: string): Promise<PythonFacts | null> {
@@ -161,6 +183,9 @@ class ProjectView {
     return memo(this.ancestry, declarationKey(decl), () => ancestryResolution(this.deps.index, decl));
   }
 }
+
+const byPosition = (a: { line: number; col: number }, b: { line: number; col: number }) =>
+  a.line - b.line || a.col - b.col;
 
 function memo<T>(cache: Map<string, Promise<T>>, key: string, read: () => Promise<T>): Promise<T> {
   let pending = cache.get(key);

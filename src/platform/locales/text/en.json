@@ -1678,6 +1678,7 @@
   "No image layers": "No image layers",
   "Instruction": "Instruction",
   "Volume Overview": "Volume Overview",
+  "Disk usage": "Disk usage",
   "Mountpoint": "Mountpoint",
   "Containers Using Volume": "Containers Using Volume",
   "No containers are using this volume": "No containers are using this volume",
@@ -3858,5 +3859,10 @@
   "No stub or implementation found": "No stub or implementation found",
   "Implementation of {name} in {file}": "Implementation of {name} in {file}",
   "Stub of {name} in {file}": "Stub of {name} in {file}",
-  "This color can't be changed with the picker": "This color can't be changed with the picker"
+  "This color can't be changed with the picker": "This color can't be changed with the picker",
+  "Mark as Read": "Mark as Read",
+  "Mark as Unread": "Mark as Unread",
+  "Archive All Below": "Archive All Below",
+  "Mark Agent Tasks as Unread": "Mark Agent Tasks as Unread",
+  "Mark Agent Tasks as Read": "Mark Agent Tasks as Read"
 }

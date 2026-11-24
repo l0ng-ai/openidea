@@ -76,6 +76,8 @@ pub struct Project {
     /// watchers for (a virtualenv elsewhere, a path dependency).
     lsp_watchers: Mutex<Vec<(PathBuf, Watcher)>>,
     pub(crate) _scratch_watcher: Option<Watcher>,
+    /// Git metadata of repositories whose git directory lies outside the project folder.
+    pub(crate) git_metadata: Option<Arc<ide_vcs::MetadataWatch>>,
     /// Picks up data sources edited on disk outside the Database tool window.
     _db_sources_watch: Option<ide_db::SourcesWatch>,
     /// A LightEdit window's loose files ([`Host::open_light`]): global settings only,
@@ -385,6 +387,10 @@ impl Host {
         for repo in repos.read().all() {
             repo.set_execution_allowed(trusted.load(Ordering::Acquire));
         }
+        let git_metadata = git_metadata_watch(&root, &sink);
+        if let Some(watch) = &git_metadata {
+            watch.set_repos(repos.read().all(), &root);
+        }
         // Shared handle: `unwatched_reason` is a live query on the watcher,
         // filled after `start` returns so the on-change callback can reach it.
         let watcher_weak = Arc::new(std::sync::OnceLock::<std::sync::Weak<Watcher>>::new());
@@ -398,6 +404,7 @@ impl Host {
             let kotlin_bridge = kotlin_bridge.clone();
             let phpstan = phpstan.clone();
             let repos = repos.clone();
+            let git_metadata = git_metadata.clone();
             let settings = settings.clone();
             let index = index.clone();
             let documents = documents.clone();
@@ -521,6 +528,7 @@ impl Host {
                         scan_repositories(
                             &root,
                             &repos,
+                            git_metadata.as_deref(),
                             &settings,
                             &sink,
                             &build_cache,
@@ -611,11 +619,11 @@ impl Host {
         mark("watcher");
         {
             let (root, repos, settings, sink) = (root.clone(), repos.clone(), settings.clone(), sink.clone());
-            let build_cache = build_cache.clone();
+            let (build_cache, git_metadata) = (build_cache.clone(), git_metadata.clone());
             let trusted = trusted.load(Ordering::Acquire);
-            std::thread::Builder::new()
-                .name("openidea-vcs-roots".into())
-                .spawn(move || scan_repositories(&root, &repos, &settings, &sink, &build_cache, trusted))?;
+            std::thread::Builder::new().name("openidea-vcs-roots".into()).spawn(move || {
+                scan_repositories(&root, &repos, git_metadata.as_deref(), &settings, &sink, &build_cache, trusted)
+            })?;
         }
         mark("git");
         tracing::info!("opened {} in window {window} in {} ms {laps:?}", root.display(), started.elapsed().as_millis());
@@ -664,6 +672,7 @@ impl Host {
             content_watchers: Mutex::new(content_watchers),
             lsp_watchers: Mutex::new(Vec::new()),
             _scratch_watcher: scratch_watcher,
+            git_metadata,
             _db_sources_watch: db_sources_watch,
             files_events_active,
             light: false,
@@ -911,6 +920,7 @@ impl Host {
             content_watchers: Mutex::new(Vec::new()),
             lsp_watchers: Mutex::new(Vec::new()),
             _scratch_watcher: None,
+            git_metadata: None,
             _db_sources_watch: None,
             files_events_active: Arc::new(AtomicBool::new(false)),
             light: true,
@@ -1014,6 +1024,7 @@ fn light_watcher(
 fn scan_repositories(
     root: &Path,
     repos: &RwLock<Repos>,
+    git_metadata: Option<&ide_vcs::MetadataWatch>,
     settings: &SettingsStore,
     sink: &SharedSink,
     build_cache: &Path,
@@ -1022,6 +1033,9 @@ fn scan_repositories(
     match discover_repositories(root, settings, build_cache, trusted) {
         Ok(found) => {
             if found.roots() != repos.read().roots() {
+                if let Some(watch) = git_metadata {
+                    watch.set_repos(found.all(), root);
+                }
                 *repos.write() = found;
                 sink.emit(IdeEvent::VcsChanged { root: root.to_path_buf().into() });
             }
@@ -1075,6 +1089,7 @@ impl Project {
         scan_repositories(
             &self.root,
             &self.repos,
+            self.git_metadata.as_deref(),
             &self.settings,
             &self.sink,
             &self.build_cache_dir(),
@@ -2329,6 +2344,20 @@ mod maven_linkage_tests {
     }
 }
 
+/// Commits, checkouts and resets made outside the IDE in a git directory the project
+/// watcher doesn't see (the project is a subfolder of its repository, or a linked worktree).
+fn git_metadata_watch(root: &Path, sink: &SharedSink) -> Option<Arc<ide_vcs::MetadataWatch>> {
+    let (root, sink) = (root.to_path_buf(), sink.clone());
+    ide_vcs::MetadataWatch::new(move |paths| {
+        if paths.iter().any(|p| vcs_path_changed(p)) {
+            sink.emit(IdeEvent::VcsChanged { root: root.clone().into() });
+        }
+    })
+    .map(Arc::new)
+    .map_err(|e| tracing::warn!("{}", e.message))
+    .ok()
+}
+
 fn vcs_path_changed(path: &Path) -> bool {
     !path.ends_with(".git/index") || !ide_vcs::is_own_index_write(path)
 }
@@ -2611,5 +2640,79 @@ mod content_roots_tests {
         let members = member_excludes(&store(&ws), &ws);
         assert_eq!(members[&other], ["/dist", "/gen"]);
         assert_eq!(members[&root], ["/dist", "/target"]);
+    }
+}
+
+#[cfg(test)]
+mod external_git_metadata_tests {
+    use crate::{Host, HostConfig};
+    use ide_core::{IdeEvent, SharedSink};
+    use parking_lot::Mutex;
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    fn git(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(["-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// A commit made in a terminal refreshes the project's VCS state when the project folder
+    /// is the repository root, a subfolder of it, or a linked worktree, and for a submodule.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn external_commits_refresh_vcs_wherever_the_git_dir_lives() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let main = base.join("main");
+        std::fs::create_dir_all(main.join("sub")).unwrap();
+        git(&main, &["init", "-q", "-b", "main"]);
+        git(&main, &["commit", "-q", "--allow-empty", "-m", "init"]);
+        git(&main, &["worktree", "add", "-q", "-b", "topic", base.join("wt").to_str().unwrap()]);
+        let lib = base.join("lib");
+        std::fs::create_dir(&lib).unwrap();
+        git(&lib, &["init", "-q", "-b", "main"]);
+        git(&lib, &["commit", "-q", "--allow-empty", "-m", "init"]);
+        let sup = base.join("super");
+        std::fs::create_dir(&sup).unwrap();
+        git(&sup, &["init", "-q", "-b", "main"]);
+        git(&sup, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.to_str().unwrap(), "lib"]);
+        git(&sup, &["commit", "-q", "-m", "submodule"]);
+        let seen = Arc::new(Mutex::new(0usize));
+        let counted = seen.clone();
+        let sink: SharedSink = Arc::new(move |e: IdeEvent| {
+            if matches!(e, IdeEvent::VcsChanged { .. }) {
+                *counted.lock() += 1;
+            }
+        });
+        let host = Host::new(HostConfig {
+            sink_for: Box::new(move |_| sink.clone()),
+            local_data_dir: base.join("local"),
+            ..HostConfig::for_test(&base)
+        });
+        let cases = [
+            (main.clone(), main.clone()),
+            (main.join("sub"), main.join("sub")),
+            (base.join("wt"), base.join("wt")),
+            (sup.clone(), sup.join("lib")),
+        ];
+        for (project, repo) in cases {
+            host.open_project("main", &project).unwrap();
+            std::thread::sleep(Duration::from_millis(1500));
+            *seen.lock() = 0;
+            std::fs::write(repo.join("a.txt"), repo.to_string_lossy().as_bytes()).unwrap();
+            git(&repo, &["add", "a.txt"]);
+            git(&repo, &["commit", "-q", "-m", "change"]);
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while *seen.lock() == 0 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            assert!(*seen.lock() > 0, "no VcsChanged for a commit in {}", repo.display());
+            host.close_project("main");
+        }
     }
 }
