@@ -481,6 +481,19 @@ describe("Agents pinned and grouped tasks", () => {
     expect(treeRows().some((text) => text.includes("Pinned"))).toBe(false);
   });
 
+  it("pins from the row's hover button without selecting or opening the task", async () => {
+    setup();
+    select("one");
+    vi.mocked(openTask).mockClear();
+    const pin = within(row("two") as HTMLElement).getByRole("button", { name: "Pin" });
+    fireEvent.mouseDown(pin, { button: 0 });
+    fireEvent.click(pin);
+    fireEvent.doubleClick(pin);
+    await waitFor(() => expect(useAgents.getState().organize.pinned).toEqual(["two"]));
+    expect(selectedTasks()).toEqual(["one"]);
+    expect(openTask).not.toHaveBeenCalled();
+  });
+
   it("filters every section by the search, archived ones included, and highlights the match", () => {
     const tasks = useAgents.getState().tasks;
     const rename = (id: string, title: string, status: AgentTask["status"] = "ready") =>

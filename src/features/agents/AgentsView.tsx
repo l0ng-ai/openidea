@@ -285,7 +285,10 @@ export function AgentsView() {
       className={styles.rowAction}
       aria-label={tx(label)}
       title={tx(label)}
+      // The row selects on mouse down and opens on double click; these buttons do neither.
       onPointerDown={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
       onClick={(e) => {
         e.stopPropagation();
         run();
