@@ -3921,7 +3921,7 @@ fn web_pages_embed_only_declared_and_granted_frames() {
         r#"id = "frame-demo"
 name = "Frame Demo"
 version = "1.0.0"
-engines.openidea = "^1.15"
+engines.openidea = "^1.16"
 
 [capabilities]
 optional = ["net:example.com", "net:*.games.test"]

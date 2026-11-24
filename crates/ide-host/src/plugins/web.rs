@@ -122,7 +122,7 @@ pub struct WebFile {
     pub bytes: Vec<u8>,
     pub mime: &'static str,
     /// The origins a page may embed: `None` when no web page whose directory holds
-    /// the file declares `frames` (API 1.15), else the declared origins the user has
+    /// the file declares `frames` (API 1.16), else the declared origins the user has
     /// granted (`net:` / `net.http:`), possibly none.
     pub frames: Option<Vec<String>>,
 }
@@ -328,7 +328,6 @@ impl PluginHost {
         })
     }
 
-    /// The web roots `plugin` declares (entry directories, package-relative, `/`-terminated).
     /// `frames` of the web pages whose directory holds `rel`, kept to those `granted`.
     fn web_frames(&self, plugin: &str, rel: &str, granted: &[ide_extension::Capability]) -> Option<Vec<String>> {
         let declared: Vec<String> = super::ui_points::WEB_POINTS
@@ -355,6 +354,7 @@ impl PluginHost {
         Some(allowed)
     }
 
+    /// The web roots `plugin` declares (entry directories, package-relative, `/`-terminated).
     fn web_dirs(&self, plugin: &str) -> Vec<String> {
         super::ui_points::WEB_POINTS
             .iter()

@@ -6,7 +6,7 @@
 //! and is immutable: the revision in the URL changes with the installed
 //! package. HTML gets a CSP of its own, in case a page navigates its frame to
 //! one: still sandboxed, still no network. A page whose declaration lists
-//! `frames` (API 1.15) may also embed those origins the user granted; its HTML
+//! `frames` (API 1.16) may also embed those origins the user granted; its HTML
 //! is revalidated, since the grants can change while the revision stays.
 //!
 //! [`FRAME_HOST_PATH`] is the page that the `html` bodies plugin code renders are

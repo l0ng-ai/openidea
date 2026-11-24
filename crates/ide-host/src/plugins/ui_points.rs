@@ -36,7 +36,7 @@
 //! priority = "default"             # or "option": only through Open With
 //! layout = "tab"                   # or "split" / "preview": beside the text editor
 //! web = "web/index.html"           # a web page from the package instead of rendered content
-//! frames = ["https://example.com"] # API 1.15: origins the page may embed; each needs `net:<host>`
+//! frames = ["https://example.com"] # API 1.16: origins the page may embed; each needs `net:<host>`
 //!
 //! [[contributes.editorPanels]]
 //! id = "minimap"
@@ -642,7 +642,7 @@ struct ViewDecl {
     /// A web page of the package (`web/index.html`) instead of content the code renders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     web: Option<String>,
-    /// Origins the web page may embed in `<iframe>`s (API 1.15).
+    /// Origins the web page may embed in `<iframe>`s (API 1.16).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     frames: Vec<String>,
 }
@@ -658,7 +658,7 @@ fn frame_origins(pkg: &Package, frames: &[String], web: bool, what: &str) -> Res
     if frames.is_empty() {
         return Ok(Vec::new());
     }
-    pkg.manifest.needs_api(&format!("{what}: `frames`"), 15)?;
+    pkg.manifest.needs_api(&format!("{what}: `frames`"), 16)?;
     if !web {
         return Err(format!("{what}: `frames` is for a web page (`web`)"));
     }
@@ -795,7 +795,7 @@ struct CustomEditorDecl {
     layout: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     web: Option<String>,
-    /// Origins the web page may embed (API 1.15).
+    /// Origins the web page may embed (API 1.16).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     frames: Vec<String>,
 }
@@ -848,7 +848,7 @@ struct EditorPanelDecl {
     width: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     when: Option<String>,
-    /// Origins the page may embed (API 1.15).
+    /// Origins the page may embed (API 1.16).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     frames: Vec<String>,
 }
@@ -1407,7 +1407,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("web")).unwrap();
         std::fs::write(dir.path().join("web/index.html"), "<iframe></iframe>").unwrap();
-        let header = "id = \"p\"\nname = \"P\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.15\"\nwasm = \"p.wasm\"\n\
+        let header = "id = \"p\"\nname = \"P\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.16\"\nwasm = \"p.wasm\"\n\
             [capabilities]\nrequired = [\"editor.read\", \"net:example.com\", \"net:*.games.test\", \"net:localhost\"]\n";
         let check = |point: &str, body: &str, header: &str| {
             let manifest = ide_extension::Manifest::parse(&format!("{header}[[contributes.{point}]]\n{body}"))?;
@@ -1467,8 +1467,8 @@ mod tests {
         }
         let many = format!("[{}]", vec!["\"https://example.com\""; 17].join(", "));
         assert!(check(VIEWS, &view_with(&many), header).unwrap_err().contains("at most 16"));
-        let older = header.replace("^1.15", "^1.14");
-        assert!(check(VIEWS, &view_with(r#"["https://example.com"]"#), &older).unwrap_err().contains("1.15"));
+        let older = header.replace("^1.16", "^1.15");
+        assert!(check(VIEWS, &view_with(r#"["https://example.com"]"#), &older).unwrap_err().contains("1.16"));
         let code_view = "id = \"v\"\ntitle = \"V\"\nframes = [\"https://example.com\"]\n";
         assert!(check(VIEWS, code_view, header).unwrap_err().contains("for a web page"));
         // `net:ask` is not a listed host: the install page would not show the origin.
