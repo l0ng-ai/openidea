@@ -11,6 +11,8 @@ import { mathjax } from "@mathjax/src/js/mathjax.js";
 import { SVG } from "@mathjax/src/js/output/svg.js";
 import { SafeHandler } from "@mathjax/src/js/ui/safe/SafeHandler.js";
 
+import { declaresMathMacros } from "@/editor/lsp/markdownMath";
+
 function createSvgRenderer() {
   const handler = RegisterHTMLHandler(browserAdaptor());
   SafeHandler<HTMLElement, Text, Document>(handler);
@@ -23,7 +25,7 @@ function createSvgRenderer() {
   });
   const math = mathjax.document("", {
     InputJax: tex,
-    OutputJax: new SVG({ fontData: MathJaxTexFont, fontCache: "local" }),
+    OutputJax: new SVG({ fontData: MathJaxTexFont, fontCache: "none" }),
     safeOptions: { allow: { URLs: "none", classes: "none", cssIDs: "none", styles: "none" } },
   });
   return (source: string, display: boolean) => {
@@ -35,11 +37,21 @@ function createSvgRenderer() {
 let convert: ReturnType<typeof createSvgRenderer> | undefined;
 
 export function renderMathSvg(root: HTMLElement) {
-  for (const element of root.querySelectorAll<HTMLElement>("[data-math]")) {
+  const inputs = [...root.querySelectorAll<HTMLElement>("[data-math]")];
+  const copies = inputs.some((el) => declaresMathMacros(el.textContent ?? "")) ? null : new Map<string, HTMLElement>();
+  for (const element of inputs) {
     const mode = element.getAttribute("data-math");
     const source = element.textContent?.trim();
     if (!source || (mode !== "inline" && mode !== "display")) continue;
     try {
+      const key = mode + ":" + source;
+      const cached = copies?.get(key);
+      if (cached) {
+        element.replaceChildren(...Array.from(cached.childNodes, (node) => node.cloneNode(true)));
+        element.setAttribute("data-math-svg", mode);
+        element.removeAttribute("data-math");
+        continue;
+      }
       convert ??= createSvgRenderer();
       const output = convert(source, mode === "display");
       const svg = output.querySelector("svg");
@@ -48,6 +60,7 @@ export function renderMathSvg(root: HTMLElement) {
       element.setAttribute("data-math-svg", mode);
       element.removeAttribute("data-math");
       element.replaceChildren(...output.childNodes);
+      if (copies && !element.querySelector("[id]")) copies.set(key, element);
     } catch {
       // Keep unsupported TeX for the existing KaTeX renderer.
     }

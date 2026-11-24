@@ -42,7 +42,7 @@ import { MessagesHost } from "@/workbench/messages";
 import { projectInitials } from "@/workbench/projectColor";
 import { handleListKey } from "./ProjectsPage";
 import { customizeView } from "./CustomizePage";
-import { recentMenu } from "./RecentList";
+import { RecentList, recentMenu } from "./RecentList";
 import { filterRecent, useRecent } from "./recent";
 import { WelcomeView } from "./WelcomeView";
 
@@ -156,6 +156,54 @@ describe("Welcome › Projects", () => {
     const menu = await screen.findByRole("menu");
     expect(within(menu).getByText("Open in New Window")).toBeTruthy();
     expect(within(menu).getByText("Remove from Recent Projects…")).toBeTruthy();
+    dispose();
+  });
+
+  it("opens in a new window with Shift or Ctrl, in this one with Alt, over 'Open project in'", async () => {
+    const chosen: unknown[] = [];
+    const dispose = registerActions([
+      { id: "file.openRecentProject", title: "Open Recent Project", run: (c) => void chosen.push(c.arg) },
+    ]);
+    await renderWelcome();
+    const acme = { path: "/Users/me/repo/acme-api" };
+    const row = () => screen.getAllByRole("option")[0]!;
+    const search = screen.getByLabelText("Search projects");
+    for (const mod of [{ shiftKey: true }, { ctrlKey: true }]) {
+      fireEvent.click(row(), mod);
+      await act(async () => {});
+      expect(chosen.at(-1)).toEqual({ ...acme, window: "new" });
+      fireEvent.keyDown(search, { key: "Enter", ...mod });
+      await act(async () => {});
+      expect(chosen.at(-1)).toEqual({ ...acme, window: "new" });
+    }
+    fireEvent.click(row(), { altKey: true });
+    await act(async () => {});
+    expect(chosen.at(-1)).toEqual({ ...acme, window: "same" });
+    fireEvent.keyDown(search, { key: "Enter", altKey: true });
+    await act(async () => {});
+    expect(chosen.at(-1)).toEqual({ ...acme, window: "same" });
+    expect(openProject).not.toHaveBeenCalled();
+    dispose();
+  });
+
+  it("gives File › Open Recent the same modifier keys", async () => {
+    const chosen: unknown[] = [];
+    const dispose = registerActions([
+      { id: "file.openRecentProject", title: "Open Recent Project", run: (c) => void chosen.push(c.arg) },
+    ]);
+    useRecent.setState({ projects: recent, loaded: true });
+    const view = render(<RecentList compact autoFocus />);
+    const delta = { path: "/Users/me/repo/delta" };
+    const row = screen.getAllByRole("option")[1]!;
+    // As with a real click, the press selects the row and the release opens it.
+    fireEvent.mouseDown(row);
+    fireEvent.click(row, { ctrlKey: true });
+    await act(async () => {});
+    expect(chosen.at(-1)).toEqual({ ...delta, window: "new" });
+    fireEvent.keyDown(screen.getByLabelText("Search recent projects"), { key: "Enter", altKey: true });
+    await act(async () => {});
+    expect(chosen.at(-1)).toEqual({ ...delta, window: "same" });
+    view.unmount();
     dispose();
   });
 

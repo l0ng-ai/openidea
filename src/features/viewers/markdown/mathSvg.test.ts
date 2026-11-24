@@ -14,12 +14,9 @@ it("renders inline and display equations as independent SVGs with accessible Mat
   expect(display).toHaveLength(1);
   expect(root.querySelector("strong > [data-math-svg] > svg")?.getAttribute("aria-label")).toBe("v_0");
   expect(root.querySelectorAll("mjx-assistive-mml math")).toHaveLength(3);
-  expect(
-    [...root.querySelectorAll("svg use")].every((use) => {
-      const href = use.getAttribute("xlink:href");
-      return href?.startsWith("#") && use.closest("svg")?.querySelector(`[id="${href.slice(1)}"]`);
-    }),
-  ).toBe(true);
+  expect([...inline, ...display].every((svg) => svg.querySelector("path[d]"))).toBe(true);
+  expect(inline[0]!.innerHTML).toBe(inline[1]!.innerHTML);
+  expect(inline[0]!.firstChild).not.toBe(inline[1]!.firstChild);
 });
 
 it("leaves unsupported formulas for KaTeX without enabling TeX links", () => {

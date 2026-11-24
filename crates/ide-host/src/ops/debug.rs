@@ -671,6 +671,13 @@ pub async fn debug_jvm_memory_classes(
     host.debugger.jvm_memory_classes(session).await
 }
 
+/// A `Thread.print -l` of the debuggee JVM, or why it cannot be taken.
+#[command(trust = trusted)]
+pub async fn debug_jvm_thread_dump(host: &Host, window: &str, session: DebugSessionId) -> IdeResult<JvmThreadsResult> {
+    host.require_trust(window)?;
+    host.debugger.jvm_thread_dump(session).await
+}
+
 /// Up to `limit` live instances of the class in the stopped JVM.
 #[command(trust = trusted)]
 pub async fn debug_jvm_memory_instances(
@@ -867,6 +874,7 @@ ide_command::domain!(
     debug_jvm_memory_fields,
     debug_jvm_memory_instances,
     debug_jvm_memory_referrers,
+    debug_jvm_thread_dump,
     debug_listen_for_jvm,
     debug_pause,
     debug_redefine_classes,

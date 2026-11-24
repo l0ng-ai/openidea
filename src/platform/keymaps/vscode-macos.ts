@@ -150,6 +150,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "code.extendSelection": ["Ctrl+Shift+Meta+Right"],
   "code.shrinkSelection": ["Ctrl+Shift+Meta+Left"],
   "code.duplicateLine": ["Alt+Shift+Down"],
+  "code.duplicateEntireLines": [],
   "code.deleteLine": ["Meta+Shift+K"],
   "code.moveLineUp": ["Alt+Up"],
   "code.moveLineDown": ["Alt+Down"],
@@ -275,6 +276,7 @@ export const vscodeMacos: Record<string, string[]> = {
   // Build (Terminal › Run Build Task)
   "build.buildProject": ["Meta+Shift+B"],
   "build.buildModule": [],
+  "build.compileFile": [],
   "build.rebuildProject": [],
   "build.buildArtifacts": [],
 

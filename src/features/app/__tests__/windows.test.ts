@@ -225,6 +225,49 @@ describe("replacing a project in this window", () => {
   });
 });
 
+describe("a recent project opened with a modifier key", () => {
+  it.each([
+    ["same", "new"],
+    ["new", "same"],
+    ["ask", "new"],
+    ["ask", "same"],
+  ] as const)("opens in the chosen window over 'Open project in: %s' without asking", async (policy, override) => {
+    const newWindow = override === "new";
+    useProject.setState({ ...projectState("/p/a"), settings: { general: { openProjectIn: policy } } } as never);
+    windowOpenProject.mockResolvedValue(ok(newWindow ? { kind: "opened", label: "project-2" } : { kind: "current" }));
+    await openProjectWithPolicy("/p/b", [], override);
+    expect(windowOpenProject).toHaveBeenCalledWith("/p/b", newWindow, []);
+    expect(ask).not.toHaveBeenCalled();
+    // Only the current window takes the project here; a new one leaves this project alone.
+    expect(openProject.mock.calls).toEqual(newWindow ? [] : [["/p/b"]]);
+  });
+
+  it("opens a new window from a window that has no project", async () => {
+    windowOpenProject.mockResolvedValue(ok({ kind: "opened", label: "project-2" }));
+    await openProjectWithPolicy("/p/b", [], "new");
+    expect(windowOpenProject).toHaveBeenCalledWith("/p/b", true, []);
+    expect(openProject).not.toHaveBeenCalled();
+  });
+
+  it("keeps asking for a plain open", async () => {
+    useProject.setState({ ...projectState("/p/a"), settings: { general: { openProjectIn: "ask" } } } as never);
+    vi.mocked(ask).mockResolvedValue({ button: "cancel", checked: false });
+    await openProjectWithPolicy("/p/b");
+    expect(ask).toHaveBeenCalledOnce();
+    expect(windowOpenProject).not.toHaveBeenCalled();
+  });
+
+  it("takes the window from the Open Recent action's argument", async () => {
+    useProject.setState({ ...projectState("/p/a"), settings: { general: { openProjectIn: "same" } } } as never);
+    windowOpenProject.mockResolvedValue(ok({ kind: "opened", label: "project-2" }));
+    const action = windowActions().find((a) => a.id === "file.openRecentProject")!;
+    await action.run({ arg: { path: "/p/b", window: "new" } } as never);
+    expect(windowOpenProject).toHaveBeenLastCalledWith("/p/b", true, []);
+    await action.run({ arg: "/p/b" } as never);
+    expect(windowOpenProject).toHaveBeenLastCalledWith("/p/b", false, []);
+  });
+});
+
 describe("loose files (LightEdit)", () => {
   it("turns a window without a project into LightEdit when no LightEdit window exists", async () => {
     windowOpenFiles.mockResolvedValue(ok(["/x/a.txt", "/y/b.md"]));

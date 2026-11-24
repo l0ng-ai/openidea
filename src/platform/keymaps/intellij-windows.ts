@@ -99,6 +99,7 @@ export const intellijWindows: Record<string, string[]> = {
   "code.extendSelection": ["Ctrl+W"],
   "code.shrinkSelection": ["Ctrl+Shift+W"],
   "code.duplicateLine": ["Ctrl+D"],
+  "code.duplicateEntireLines": [],
   "code.deleteLine": ["Ctrl+Y"],
   "code.moveLineUp": ["Alt+Shift+Up"],
   "code.moveLineDown": ["Alt+Shift+Down"],
@@ -253,7 +254,8 @@ export const intellijWindows: Record<string, string[]> = {
 
   // Build
   "build.buildProject": ["Ctrl+F9"],
-  "build.buildModule": ["Ctrl+Shift+F9"],
+  "build.buildModule": [],
+  "build.compileFile": ["Ctrl+Shift+F9"],
   "build.rebuildProject": [],
   "build.buildArtifacts": [],
 

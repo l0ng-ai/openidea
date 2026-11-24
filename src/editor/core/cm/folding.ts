@@ -481,6 +481,28 @@ export function foldChipWidth(el: HTMLElement): number {
   return Math.round(chip.getBoundingClientRect().width);
 }
 
+// Long image payloads would occupy thousands of soft-wrapped rows before the first editor measure.
+export function markdownImageFolds(state: EditorState) {
+  const effects = [];
+  const destination =
+    /(?:\]\(\s*<?|<img\b[^>]*?\ssrc\s*=\s*["'])data:image\/[\w.+-]+;base64,([A-Za-z0-9+/]{256,}={0,2})(?=[>\s)"'])/gi;
+  let offset = 0;
+  let fence = "";
+  for (const line of state.doc.iterLines()) {
+    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+    if (marker && !fence) fence = marker;
+    else if (marker && marker.startsWith(fence) && !line.trim().slice(marker.length).trim()) fence = "";
+    else if (!fence && line.length >= 256) {
+      for (const match of line.matchAll(destination)) {
+        const to = offset + match.index + match[0].length;
+        effects.push(foldEffect.of({ from: to - match[1]!.length, to }));
+      }
+    }
+    offset += line.length + 1;
+  }
+  return effects;
+}
+
 export function foldingExtension(showOutline = true, visibility: FoldingOutlineVisibility = "hover"): Extension {
   return [
     // The chevron column sits right of contributed icon gutters (IDEA new UI).

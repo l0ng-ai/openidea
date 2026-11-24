@@ -6,6 +6,7 @@ import { languages } from "@codemirror/language-data";
 import {
   deleteLine,
   deleteWordBackward,
+  duplicateEntireLines,
   duplicateLineOrSelection,
   moveStatementDown,
   moveStatementUp,
@@ -187,6 +188,19 @@ describe("folded lines", () => {
     duplicateLineOrSelection(v);
     expect(v.state.doc.toString()).toBe("x\nf() {\n  a;\n}\nf() {\n  a;\n}\ny");
     expect(v.state.selection.main.head).toBe(16);
+  });
+
+  it("Duplicate Entire Lines on a folded region's line copies the whole folded block", () => {
+    const v = folded();
+    v.dispatch({ selection: { anchor: 2, head: 4 } });
+    duplicateEntireLines(v);
+    expect(v.state.doc.toString()).toBe("x\nf() {\n  a;\n}\nf() {\n  a;\n}\ny");
+    expect(v.state.selection.main).toMatchObject({ anchor: 15, head: 17 });
+
+    const back = folded();
+    back.dispatch({ selection: { anchor: 4, head: 2 } });
+    duplicateEntireLines(back);
+    expect(back.state.selection.main).toMatchObject({ anchor: 17, head: 15 });
   });
 
   it("⌘⌫ on a folded region's line deletes the whole folded block", () => {

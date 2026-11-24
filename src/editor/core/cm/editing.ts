@@ -136,22 +136,8 @@ export const duplicateLineOrSelection: Command = (view) => {
   if (state.readOnly) return false;
   if (state.selection.ranges.every((r) => r.empty)) {
     const spans = foldedLineSpans(state);
-    if (!spans) return copyLineDown(view);
     // On a folded region's line the whole folded block is duplicated.
-    const changes = state.changes(
-      spans.map((s) => ({ from: s.to, insert: state.lineBreak + state.sliceDoc(s.from, s.to) })),
-    );
-    const ranges = state.selection.ranges.map((r) => {
-      const s = spans.find((sp) => sp.from <= r.head && r.head <= sp.to)!;
-      return EditorSelection.cursor(changes.mapPos(r.head, -1) + s.to - s.from + state.lineBreak.length);
-    });
-    view.dispatch({
-      changes,
-      selection: EditorSelection.create(ranges, state.selection.mainIndex),
-      scrollIntoView: true,
-      userEvent: "input.duplicate",
-    });
-    return true;
+    return spans ? duplicateSpans(view, spans) : copyLineDown(view);
   }
   const tr = state.changeByRange((r) => {
     if (r.empty) {
@@ -170,6 +156,33 @@ export const duplicateLineOrSelection: Command = (view) => {
   view.dispatch(state.update(tr, { scrollIntoView: true, userEvent: "input.duplicate" }));
   return true;
 };
+
+/** IDEA's Duplicate Entire Lines: every line a caret or selection touches is copied below, and the copy keeps the selection. */
+export const duplicateEntireLines: Command = (view) => {
+  if (view.state.readOnly) return false;
+  const spans = foldedLineSpans(view.state);
+  return spans ? duplicateSpans(view, spans) : copyLineDown(view);
+};
+
+/** Copies each span below itself and moves every selection range onto its copy. */
+function duplicateSpans(view: EditorView, spans: Array<{ from: number; to: number }>): boolean {
+  const { state } = view;
+  const changes = state.changes(
+    spans.map((s) => ({ from: s.to, insert: state.lineBreak + state.sliceDoc(s.from, s.to) })),
+  );
+  const ranges = state.selection.ranges.map((r) => {
+    const s = spans.find((sp) => sp.from <= r.from && r.from <= sp.to)!;
+    const onCopy = (pos: number) => changes.mapPos(s.to, -1) + pos - s.from + 1;
+    return EditorSelection.range(onCopy(r.anchor), onCopy(r.head));
+  });
+  view.dispatch({
+    changes,
+    selection: EditorSelection.create(ranges, state.selection.mainIndex),
+    scrollIntoView: true,
+    userEvent: "input.duplicate",
+  });
+  return true;
+}
 
 /** ⌘⌫: Delete Line — on a folded region's line, every line of the folded block. */
 export const deleteLine: Command = (view) => {

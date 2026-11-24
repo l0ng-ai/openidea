@@ -70,7 +70,12 @@ import { debugInContainer } from "./containerDebug";
 import { isDebugOnly, registerBuiltinTypes } from "./types";
 import { isZigBuildStep, zigDebugTarget } from "./zigDebug";
 import { junitType } from "./junitType";
-import { listenForApplicationDeactivation, showApplicationUpdate, updatableSessions } from "./applicationUpdate";
+import {
+  installBuildTomcatSync,
+  listenForApplicationDeactivation,
+  showApplicationUpdate,
+  updatableSessions,
+} from "./applicationUpdate";
 import { hotReload, hotReloadSession, hotRestart } from "./flutterHotReload";
 import { npmGutter } from "./npmGutter";
 import { launchSettingsGutter } from "./launchSettingsGutter";
@@ -78,6 +83,7 @@ import { runGutter } from "./runGutter";
 import { markdownCommandGutter } from "./markdownCommands";
 import { gradleDelegation } from "./gradleRun";
 import { activateStackTrace, useStackTraces } from "./stackTrace";
+import { activateThreadDumps } from "./threadDump/actions";
 import { clearRuntimeCache } from "./runtimes";
 import {
   adoptTemporary,
@@ -480,7 +486,9 @@ export function activate(): () => void {
     onWorkflowSettingsChange((w) => w.console, applyConsoleSettings),
     registerExternalTools(),
     activateStackTrace(),
+    activateThreadDumps(),
     listenForApplicationDeactivation(),
+    installBuildTomcatSync(),
     trackRecentConfigurations(),
     trackFailedTestSelection(),
     useDebugRunSessions.subscribe(() => setContext("run.updatableRunning", updatableSessions().length > 0)),

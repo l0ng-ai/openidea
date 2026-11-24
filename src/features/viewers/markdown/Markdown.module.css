@@ -42,7 +42,15 @@
   height: var(--h-floating-toolbar-button);
 }
 
+.previewPane {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
 .preview {
+  contain: strict;
   flex: 1;
   min-height: 0;
   min-width: 0;

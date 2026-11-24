@@ -5,7 +5,7 @@ test("keyboard navigation reveals items in a short Git submenu", async ({ workbe
   const editor = await openFromTree(page, "README.md");
   await editor.locator(".cm-content").click({ button: "right" });
   await page.getByRole("menuitem", { name: "Git", exact: true }).hover();
-  const last = page.getByRole("menuitem", { name: "Clone…", exact: true });
+  const last = page.getByRole("menuitem", { name: "Get from Version Control…", exact: true });
   const popup = last.locator("xpath=ancestor::*[@data-popup][1]");
   const first = popup.locator('[role="menuitem"]:not([aria-disabled="true"])').first();
   await expect(popup).toHaveAttribute("data-positioned", "true");
