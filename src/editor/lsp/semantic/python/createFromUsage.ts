@@ -32,11 +32,11 @@ const indentOf = (doc: Text, pos: number) => /^\s*/.exec(doc.lineAt(pos).text)![
 
 /**
  * Parameter names for the arguments of `args` (an ArgList), in an order a `def` accepts.
- * Keyword names are kept, since callers pass them by name; `reserved` (the receiver) and
- * the keywords are never reused by a positional or starred parameter.
+ * Keyword names are kept, since callers pass them by name. The receiver, positional
+ * and starred parameters are made unique using Python's identifier normalization.
  */
-export function paramsFor(args: SyntaxNode | null, doc: Text, reserved: readonly string[] = []): string[] {
-  if (!args) return [];
+function paramsFor(args: SyntaxNode | null, doc: Text, receiver?: string): string[] {
+  if (!args) return receiver ? [receiver] : [];
   const groups: SyntaxNode[][] = [[]];
   for (let c = args.firstChild; c; c = c.nextSibling) {
     if (c.name === "(" || c.name === ")" || c.name === "Comment") continue;
@@ -44,7 +44,7 @@ export function paramsFor(args: SyntaxNode | null, doc: Text, reserved: readonly
     else groups[groups.length - 1]!.push(c);
   }
   const positional: string[] = [];
-  const keyword: string[] = [];
+  const keyword = new Map<string, string>();
   let star = false;
   let starStar = false;
   for (const g of groups) {
@@ -52,23 +52,32 @@ export function paramsFor(args: SyntaxNode | null, doc: Text, reserved: readonly
     if (!first) continue;
     if (first.name === "*") star = true;
     else if (first.name === "**") starStar = true;
-    else if (second?.name === "AssignOp") keyword.push(doc.sliceString(first.from, first.to));
-    else if (g.length === 1 && first.name === "VariableName") positional.push(doc.sliceString(first.from, first.to));
+    else if (second?.name === "AssignOp") {
+      const name = doc.sliceString(first.from, first.to);
+      keyword.set(name.normalize("NFKC"), name);
+    } else if (g.length === 1 && first.name === "VariableName") positional.push(doc.sliceString(first.from, first.to));
     else positional.push("");
   }
-  const used = new Set([...reserved, ...keyword]);
-  let next = 0;
-  const unique = (n: string) => {
-    const base = n === "" ? `param${++next}` : n;
+  const used = new Set(keyword.keys());
+  const unique = (base: string) => {
     let name = base;
-    for (let i = 1; used.has(name); i++) name = `${base}${i}`;
-    used.add(name);
+    for (let i = 1; used.has(name.normalize("NFKC")); i++) name = `${base}${i}`;
+    used.add(name.normalize("NFKC"));
     return name;
   };
-  const named = positional.map(unique);
+  const leading = receiver ? [unique(receiver)] : [];
+  const named = positional.map((name) => name && unique(name));
+  let next = 0;
+  const parameters = named.map((name) => {
+    if (name) return name;
+    let placeholder: string;
+    do placeholder = `param${++next}`;
+    while (used.has(placeholder));
+    return unique(placeholder);
+  });
   const args_ = star ? [`*${unique("args")}`] : [];
   const kwargs = starStar ? [`**${unique("kwargs")}`] : [];
-  return [...named, ...args_, ...keyword, ...kwargs];
+  return [...leading, ...parameters, ...args_, ...keyword.values(), ...kwargs];
 }
 
 function topLevel(node: SyntaxNode): SyntaxNode | null {
@@ -76,16 +85,28 @@ function topLevel(node: SyntaxNode): SyntaxNode | null {
   return null;
 }
 
+function outsideParentheses(node: SyntaxNode): SyntaxNode {
+  while (node.parent?.name === "ParenthesizedExpression") node = node.parent;
+  return node;
+}
+
 /** The call `node` (a name or attribute) is the callee of, if any. */
 function callOf(node: SyntaxNode): SyntaxNode | null {
-  const call = node.parent;
-  return call?.name === "CallExpression" && call.firstChild?.from === node.from && call.firstChild.to === node.to
+  const callee = outsideParentheses(node);
+  const call = callee.parent;
+  return call?.name === "CallExpression" && call.firstChild?.from === callee.from && call.firstChild.to === callee.to
     ? call
     : null;
 }
 
-function functionText(name: string, params: string[], indent: string, unit: string, decorator = "") {
-  const head = `${decorator}${indent}def ${name}(${params.join(", ")}):\n${indent}${unit}`;
+function functionText(
+  name: string,
+  params: string[],
+  indent: string,
+  unit: string,
+  { awaited = false, decorator = "" }: { awaited?: boolean; decorator?: string } = {},
+) {
+  const head = `${decorator}${indent}${awaited ? "async " : ""}def ${name}(${params.join(", ")}):\n${indent}${unit}`;
   return { text: head + PASS, body: head.length };
 }
 
@@ -97,16 +118,18 @@ export function createForName(tree: Tree, doc: Text, from: number, unit: string)
   if (!statement) return [];
   const name = doc.sliceString(node.from, node.to);
   const call = callOf(node);
-  const params = paramsFor(call?.getChild("ArgList") ?? null, doc);
+  const args = call?.getChild("ArgList") ?? null;
   const at = statement.from;
   const gap = "\n\n\n";
   const fixes: CreateFix[] = [];
   if (call) {
-    const f = functionText(name, params, "", unit);
+    const f = functionText(name, paramsFor(args, doc), "", unit, {
+      awaited: outsideParentheses(call).parent?.name === "AwaitExpression",
+    });
     fixes.push({ kind: "function", name, insert: { from: at, text: f.text + gap }, body: f.body });
   }
-  const initParams = paramsFor(call?.getChild("ArgList") ?? null, doc, ["self"]);
-  const init = call && initParams.length ? functionText("__init__", ["self", ...initParams], unit, unit) : null;
+  const initParams = paramsFor(args, doc, "self");
+  const init = initParams.length > 1 ? functionText("__init__", initParams, unit, unit) : null;
   const head = `class ${name}:\n`;
   const cls = init
     ? { text: head + init.text, body: head.length + init.body }
@@ -130,17 +153,20 @@ export function createForAttribute(tree: Tree, doc: Text, from: number, unit: st
   if (!fn || cls?.name !== "ClassDefinition") return [];
   const first = fn.getChild("ParamList")?.getChild("VariableName");
   const self = doc.sliceString(receiver.from, receiver.to);
-  if (!first || doc.sliceString(first.from, first.to) !== self) return [];
+  if (!first || doc.sliceString(first.from, first.to).normalize("NFKC") !== self.normalize("NFKC")) return [];
   // The new method is of the kind of the one calling it; a static method has no receiver.
   const decorators = (holder === fn ? [] : holder!.getChildren("Decorator")).map(
     (d) => /^@\s*([\w.]+)/.exec(doc.sliceString(d.from, d.to))?.[1],
   );
-  if (decorators.includes("staticmethod")) return [];
+  if (decorators.includes("staticmethod") || decorators.includes("builtins.staticmethod")) return [];
   const name = doc.sliceString(property.from, property.to);
   const owner = doc.sliceString(cls.getChild("VariableName")!.from, cls.getChild("VariableName")!.to);
   const indent = indentOf(doc, holder!.from);
-  const decorator = decorators.includes("classmethod") ? `${indent}@classmethod\n` : "";
-  const f = functionText(name, [self, ...paramsFor(call.getChild("ArgList"), doc, [self])], indent, unit, decorator);
+  const classMethod = decorators.includes("classmethod") || decorators.includes("builtins.classmethod");
+  const f = functionText(name, paramsFor(call.getChild("ArgList"), doc, self), indent, unit, {
+    awaited: outsideParentheses(call).parent?.name === "AwaitExpression",
+    decorator: classMethod ? `${indent}@classmethod\n` : "",
+  });
   const body = cls.getChild("Body")!;
   const end = doc.lineAt(body.from + doc.sliceString(body.from, body.to).trimEnd().length).to;
   return [{ kind: "method", name, owner, insert: { from: end, text: `\n\n${f.text}` }, body: 2 + f.body }];

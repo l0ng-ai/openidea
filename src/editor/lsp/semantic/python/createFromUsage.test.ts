@@ -97,4 +97,27 @@ describe("Python create from usage", () => {
     expect(text("build")).toEqual(["\n\n    @classmethod\n    def build(klass):\n        pass"]);
     expect(text("g()")).toEqual([]);
   });
+  it("keeps receiver keywords and makes normalized parameter names unique", async () => {
+    const source = "def run(K):\n    work(K, K, 1, param1)\n    return Widget(self=1)\n";
+    const { doc, tree } = await parse(source);
+    expect(createForName(tree, doc, at(source, "work"), "    ")[0]!.insert.text).toMatch(
+      /^def work\(K, K1, param2, param1\):/,
+    );
+    expect(createForName(tree, doc, at(source, "Widget"), "    ")[1]!.insert.text).toMatch(
+      /^class Widget:\n {4}def __init__\(self1, self\):/,
+    );
+  });
+
+  it("creates async functions and methods for awaited calls, including grouped calls", async () => {
+    const source =
+      "async def run():\n    await (work(1))\n\nclass A:\n    @builtins.classmethod\n" +
+      "    async def run(cls):\n        await (cls.load)(cls=1)\n\n" +
+      "    @builtins.staticmethod\n    def other(x):\n        x.missing()\n";
+    const { doc, tree } = await parse(source);
+    expect(createForName(tree, doc, at(source, "work"), "    ")[0]!.insert.text).toMatch(/^async def work\(param1\):/);
+    expect(createForAttribute(tree, doc, at(source, "load"), "    ")[0]!.insert.text).toContain(
+      "    @classmethod\n    async def load(cls1, cls):",
+    );
+    expect(createForAttribute(tree, doc, at(source, "missing"), "    ")).toEqual([]);
+  });
 });
