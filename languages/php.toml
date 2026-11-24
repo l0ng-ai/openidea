@@ -37,6 +37,19 @@ root-markers = ["composer.json", "artisan", "index.php"]
 replaces = ["laravel-lsp"]
 install-hint = "Install phoxite-lsp from https://github.com/samehelhawary/phoxite/releases and put it on PATH"
 
+# Alternative whose engine ships as native builds for Windows, macOS and Linux;
+# only the npm launcher needs Node. Some features (refactorings, call and type
+# hierarchy) need a DEVSENSE licence. https://docs.devsense.com/other/lsp/docs/
+[[language-servers]]
+name = "devsense-php-ls"
+fallback = true
+command = "devsense-php-ls"
+args = []
+root-markers = ["composer.json", "index.php"]
+# It answers the Laravel strings itself.
+replaces = ["laravel-lsp"]
+install-hint = "npm i -g devsense-php-ls"
+
 # Laravel projects only: hover, definition and completion inside
 # config('…'), route('…') and view('…'). Last: Intelephense keeps PHP hover,
 # rename and symbols. https://github.com/laravel/lsp
