@@ -44,7 +44,9 @@ use ide_vcs::Repo;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::hash::Hasher;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
@@ -570,8 +572,8 @@ struct Task {
     /// Settings already sent this session (`(option, value)`), so a refusal is not retried.
     config_sent: Mutex<HashSet<(String, String)>>,
     dirty: Mutex<BTreeSet<(Session, usize)>>,
-    /// How much of each session's streaming message was last sent, so the next flush sends the rest.
-    streamed: Mutex<HashMap<Session, Sent>>,
+    /// What was last sent of the entries that stream, so the next flush sends the rest.
+    streamed: Mutex<Streamed>,
     flush_scheduled: AtomicBool,
     stderr: Mutex<VecDeque<String>>,
     /// Saves asked for (see `persist`); the file holds those up to `file.saved`.
@@ -2266,7 +2268,7 @@ impl Task {
             skills_reload_pending: AtomicBool::new(false),
             config_sent: Mutex::new(HashSet::new()),
             dirty: Mutex::new(BTreeSet::new()),
-            streamed: Mutex::new(HashMap::new()),
+            streamed: Mutex::new(Streamed::default()),
             flush_scheduled: AtomicBool::new(false),
             stderr: Mutex::new(VecDeque::new()),
             saves_asked: AtomicU64::new(0),
@@ -2531,7 +2533,7 @@ impl Task {
                 .into_iter()
                 .filter_map(|(subagent, i)| {
                     let entry = s.conversation.timeline(&subagent)?.entries.get(i)?;
-                    Some(entry_event(&self.id, &mut streamed, subagent, i, entry))
+                    entry_event(&self.id, &mut streamed, subagent, i, entry)
                 })
                 .collect()
         };
@@ -4402,78 +4404,158 @@ fn stdio_mcp_servers(executable: Option<&std::path::Path>, supported: bool, root
     vec![json!({ "name": BUILTIN_SERVER, "command": command[0], "args": command[1..], "env": env })]
 }
 
-/// What was sent of a streaming message: its first `bytes` (`utf16` UTF-16 units), which
-/// ended with `tail`. A message only grows while it streams, so its tail tells a message
-/// that went on from one that was replaced without comparing (or keeping) all of it.
+/// What was sent of a streaming text: its first `bytes` (`utf16` UTF-16 units), hashed. The
+/// text only grows while it streams; the hash tells one that went on from one that was replaced
+/// (at its end or anywhere before) without keeping a copy of it.
 struct Sent {
     index: usize,
     bytes: usize,
     utf16: usize,
-    tail: String,
+    hash: u64,
 }
-
-const SENT_TAIL: usize = 64;
 
 impl Sent {
     fn new(index: usize, text: &str) -> Self {
-        Self::after(index, text, 0, 0)
+        Self { index, bytes: text.len(), utf16: text.encode_utf16().count(), hash: Self::digest(text) }
     }
 
-    /// `text` as sent, of which the first `bytes` (`utf16` units) were sent before.
-    fn after(index: usize, text: &str, bytes: usize, utf16: usize) -> Self {
-        let mut start = text.len().saturating_sub(SENT_TAIL);
-        while !text.is_char_boundary(start) {
-            start -= 1;
+    fn digest(text: &str) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        hasher.write(text.as_bytes());
+        hasher.finish()
+    }
+
+    /// `text` at `index` as sent after this, when it is this text with more at the end.
+    fn extended(&self, index: usize, text: &str) -> Option<Self> {
+        if self.index != index || text.len() <= self.bytes || !text.is_char_boundary(self.bytes) {
+            return None;
         }
-        let utf16 = utf16 + text[bytes..].encode_utf16().count();
-        Self { index, bytes: text.len(), utf16, tail: text[start..].to_owned() }
+        let mut hasher = DefaultHasher::new();
+        hasher.write(&text.as_bytes()[..self.bytes]);
+        if hasher.finish() != self.hash {
+            return None;
+        }
+        let more = &text[self.bytes..];
+        hasher.write(more.as_bytes());
+        Some(Self { index, bytes: text.len(), utf16: self.utf16 + more.encode_utf16().count(), hash: hasher.finish() })
     }
 
-    /// Whether `text` at `index` is this message, gone on.
-    fn extended_by(&self, index: usize, text: &str) -> bool {
-        self.index == index
-            && text.len() > self.bytes
-            && text.is_char_boundary(self.bytes)
-            && text[..self.bytes].ends_with(&self.tail)
+    /// Whether `text` is exactly what was sent.
+    fn is(&self, text: &str) -> bool {
+        text.len() == self.bytes && Self::digest(text) == self.hash
+    }
+}
+
+/// A running tool call as last sent: the entry without its output, and what was sent of that.
+struct SentTool {
+    call: AgentEntry,
+    output: Sent,
+}
+
+/// What each window was last sent of the entries that stream, so the next flush sends the rest.
+#[derive(Default)]
+struct Streamed {
+    /// The message each session streams now.
+    messages: HashMap<Session, Sent>,
+    /// The tool calls still running, by session and entry index.
+    tools: HashMap<(Session, usize), SentTool>,
+}
+
+impl Streamed {
+    fn clear(&mut self) {
+        self.messages.clear();
+        self.tools.clear();
     }
 }
 
 /// The event that brings the UI's copy of entry `i` up to date: only the new text when
-/// it extends the message last sent for the session, else the whole entry.
+/// it extends the message (or the tool output) last sent, else the whole entry; `None`
+/// when the UI's copy of a tool already is the entry.
 fn entry_event(
     task: &str,
-    streamed: &mut HashMap<Session, Sent>,
+    streamed: &mut Streamed,
     subagent: Session,
     i: usize,
     entry: &AgentEntry,
-) -> AgentEvent {
+) -> Option<AgentEvent> {
+    let whole = |subagent| AgentEvent::Entry { task: task.to_owned(), subagent, index: i as u32, entry: entry.clone() };
     let text = match entry {
         AgentEntry::Agent { text } | AgentEntry::Thought { text, .. } => Some(text),
+        AgentEntry::Tool { .. } => return tool_event(task, streamed, subagent, i, entry),
         _ => None,
     };
     let Some(text) = text else {
-        if streamed.get(&subagent).is_some_and(|sent| sent.index == i) {
-            streamed.remove(&subagent);
+        if streamed.messages.get(&subagent).is_some_and(|sent| sent.index == i) {
+            streamed.messages.remove(&subagent);
         }
-        return AgentEvent::Entry { task: task.to_owned(), subagent, index: i as u32, entry: entry.clone() };
+        return Some(whole(subagent));
     };
-    match streamed.get(&subagent).filter(|sent| sent.extended_by(i, text)) {
-        Some(sent) => {
-            let (bytes, from) = (sent.bytes, sent.utf16);
-            streamed.insert(subagent.clone(), Sent::after(i, text, bytes, from));
-            AgentEvent::Append {
+    match streamed.messages.get(&subagent).and_then(|sent| Some((sent.bytes, sent.utf16, sent.extended(i, text)?))) {
+        Some((bytes, from, sent)) => {
+            streamed.messages.insert(subagent.clone(), sent);
+            Some(AgentEvent::Append {
                 task: task.to_owned(),
                 subagent,
                 index: i as u32,
                 from: from as u32,
                 text: text[bytes..].to_owned(),
-            }
+            })
         }
         None => {
-            streamed.insert(subagent.clone(), Sent::new(i, text));
-            AgentEvent::Entry { task: task.to_owned(), subagent, index: i as u32, entry: entry.clone() }
+            streamed.messages.insert(subagent.clone(), Sent::new(i, text));
+            Some(whole(subagent))
         }
     }
+}
+
+/// [`entry_event`] for a tool call: the output it grew by while the rest of it is unchanged.
+fn tool_event(
+    task: &str,
+    streamed: &mut Streamed,
+    subagent: Session,
+    i: usize,
+    entry: &AgentEntry,
+) -> Option<AgentEvent> {
+    let AgentEntry::Tool { id, title, kind, status, locations, images, output, diffs, started_ms, ended_ms } = entry
+    else {
+        return None;
+    };
+    let call = AgentEntry::Tool {
+        id: id.clone(),
+        title: title.clone(),
+        kind: kind.clone(),
+        status: *status,
+        locations: locations.clone(),
+        images: images.clone(),
+        output: None,
+        diffs: diffs.clone(),
+        started_ms: *started_ms,
+        ended_ms: *ended_ms,
+    };
+    let text = output.as_deref().unwrap_or_default();
+    let key = (subagent, i);
+    if let Some(sent) = streamed.tools.get_mut(&key).filter(|sent| sent.call == call) {
+        if let Some(output) = sent.output.extended(i, text) {
+            let (bytes, from) = (sent.output.bytes, sent.output.utf16);
+            sent.output = output;
+            return Some(AgentEvent::ToolOutput {
+                task: task.to_owned(),
+                subagent: key.0,
+                index: i as u32,
+                from: from as u32,
+                text: text[bytes..].to_owned(),
+            });
+        }
+        if sent.output.is(text) {
+            return None;
+        }
+    }
+    if matches!(status, AgentToolStatus::Pending | AgentToolStatus::Running) {
+        streamed.tools.insert(key.clone(), SentTool { call, output: Sent::new(i, text) });
+    } else {
+        streamed.tools.remove(&key);
+    }
+    Some(AgentEvent::Entry { task: task.to_owned(), subagent: key.0, index: i as u32, entry: entry.clone() })
 }
 
 struct SessionOpenError {
