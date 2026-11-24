@@ -15,6 +15,7 @@ import {
   commentBlock,
   commentLine,
   completeStatement,
+  cycleCase,
   deleteLine,
   duplicateLineOrSelection,
   joinLines,
@@ -971,6 +972,9 @@ export function registerEditorActions(): () => void {
     }),
     edit("code.joinLines", "Join Lines", (v) => joinLines(v)),
     edit("code.toggleCase", "Toggle Case", (v) => toggleCase(v), { keywords: ["upper", "lower"] }),
+    edit("code.cycleCase", "Cycle Identifier Case", (v) => cycleCase(v), {
+      keywords: ["camel", "snake", "kebab", "pascal", "screaming"],
+    }),
     caret("code.addCaretsToLineEnds", "Add Carets to Ends of Selected Lines", (v) => addCaretsToLineEnds(v), {
       category: "Edit",
     }),

@@ -155,6 +155,7 @@ export const intellijWindows: Record<string, string[]> = {
   "editor.toggleInsertState": ["Insert"],
   "code.joinLines": ["Ctrl+Shift+J"],
   "code.toggleCase": ["Ctrl+Shift+U"],
+  "code.cycleCase": ["Alt+Shift+U"],
   "code.pasteFromHistory": ["Ctrl+Shift+V"],
   "code.sortLines": [],
   "code.reverseLines": [],

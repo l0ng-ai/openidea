@@ -112,6 +112,7 @@
   "Clone Caret Below": "Clonar cursor abajo",
   "Join Lines": "Unir líneas",
   "Toggle Case": "Alternar mayúsculas y minúsculas",
+  "Cycle Identifier Case": "Alternar el caso del identificador",
   "Add Carets to Ends of Selected Lines": "Agregar cursores al final de las líneas seleccionadas",
   "Unselect Occurrence": "Deseleccionar coincidencia",
   "Paste from History…": "Pegar desde el historial…",
