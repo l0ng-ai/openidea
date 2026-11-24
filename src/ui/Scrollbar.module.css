@@ -6,6 +6,10 @@
   width: 10px;
   z-index: 1;
 }
+.fullHeight {
+  bottom: 0;
+  touch-action: none;
+}
 .thumb {
   position: absolute;
   left: 0;

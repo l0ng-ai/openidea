@@ -15,11 +15,13 @@
 }
 
 .conversation {
+  position: relative;
   container-type: inline-size;
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  padding-right: var(--space-3);
   border-right: 1px solid var(--border);
 }
 
@@ -38,7 +40,7 @@
 .withChanges {
   grid-template-columns: minmax(min(240px, 50%), 1fr) minmax(0, var(--agent-changes-width, 280px));
 }
-.fitWidth .stream > * {
+.fitWidth .streamContent > * {
   width: 100%;
 }
 .fitWidth .userMessage > .user {
@@ -204,12 +206,14 @@
   padding: var(--space-3);
   /* Room below the end that keeps the header of a section folded there in place (`Stream`). */
   padding-bottom: calc(var(--space-3) + var(--stream-slack, 0px));
-  display: flex;
-  flex-direction: column;
   font-size: var(--agent-fs-ui, var(--fs-ui));
 }
-/* Actual row heights keep WebKit's scrollbar and cross-message selections anchored. */
-.stream > * {
+.streamContent {
+  display: flex;
+  flex-direction: column;
+}
+/* Actual row heights keep the scrollbar and cross-message selections anchored. */
+.streamContent > * {
   flex: none;
   min-width: 0;
   width: min(100%, var(--session-content-width));
@@ -237,10 +241,10 @@
 /* Keep turns distinct and the work within a turn close to its author. Not `* + *`: a
    universal adjacent-sibling rule makes Chromium restyle whole sibling subtrees on every
    DOM insertion anywhere in the window, which costs every editor scroll frame. */
-.stream > :where(:not(:first-child)) {
+.streamContent > :where(:not(:first-child)) {
   margin-top: var(--space-4);
 }
-.stream > [data-process] + [data-process] {
+.streamContent > [data-process] + [data-process] {
   margin-top: var(--space-2);
 }
 .stream:focus {

@@ -504,6 +504,7 @@ test("fits conversation stream, composer, question card and off-screen rows live
         Number.parseFloat(getComputedStyle(root).paddingLeft) + Number.parseFloat(getComputedStyle(root).paddingRight);
       return {
         conversationWidth: conversation.clientWidth,
+        streamWidth: root.clientWidth,
         streamInnerWidth: root.clientWidth - padding,
         columnWidth: column.width,
         bubbleWidth: bubble.width,
@@ -538,7 +539,7 @@ test("fits conversation stream, composer, question card and off-screen rows live
   expect(Math.abs(fitted.columnWidth - fitted.streamInnerWidth)).toBeLessThan(1);
   expect(fitted.bubbleWidth).toBeGreaterThan(720);
   expect(Math.abs(fitted.bubbleWidth - fitted.streamInnerWidth * 0.8)).toBeLessThan(1);
-  expect(Math.abs(fitted.composerWidth - fitted.conversationWidth)).toBeLessThan(1);
+  expect(Math.abs(fitted.composerWidth - fitted.streamWidth)).toBeLessThan(1);
   expect(Math.abs(fitted.questionWidth - fitted.streamInnerWidth)).toBeLessThan(1);
   expect(fitted.offscreenRowHeight).toBeLessThan(capped.offscreenRowHeight);
   expect(fitted.scrollHeight).toBeLessThan(capped.scrollHeight);

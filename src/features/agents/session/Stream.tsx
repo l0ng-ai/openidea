@@ -5,8 +5,10 @@ import {
   Button,
   copyMenuFor,
   EmptyState,
+  hideNativeScrollbar,
   Icon,
   IconButton,
+  Scrollbar,
   selectableText,
   showContextMenu,
   Spinner,
@@ -138,7 +140,7 @@ function useOffscreenRows(
         mark();
       }, 200);
     });
-    resize.observe(el);
+    if (el.parentElement) resize.observe(el.parentElement);
     return () => {
       cancelAnimationFrame(frame);
       window.clearTimeout(timer);
@@ -176,6 +178,7 @@ interface StreamProps {
 
 /** Entries rendered at a time when a conversation opens at its end. */
 const ENTRY_BATCH = 40;
+const MIN_THUMB_SIZE = 64;
 /** How long a conversation stays behind other tabs before it drops the entries painted above its tail. */
 const HIDDEN_TRIM_MS = 30_000;
 
@@ -217,6 +220,8 @@ export function Stream({
   drafts,
 }: StreamProps) {
   const ref = useRef<HTMLDivElement>(null);
+  const content = useRef<HTMLDivElement>(null);
+  const track = useRef<HTMLDivElement>(null);
   // Hidden behind another tab, it has no layout to scroll; shown again, it follows the end again.
   const visible = useEditorShown();
   useSelectionBoundary(ref);
@@ -273,7 +278,7 @@ export function Stream({
   const loadEarlier = useCallback(() => {
     const el = ref.current;
     if (!visible || !el || start <= 0 || dragging.current || anchor.current) return;
-    const first = el.firstElementChild;
+    const first = content.current?.firstElementChild;
     if (!position.current.stick && first) anchor.current = { el: first, top: first.getBoundingClientRect().top };
     startTransition(() => setShown((n) => n + ENTRY_BATCH));
   }, [start, visible]);
@@ -288,8 +293,11 @@ export function Stream({
   }, [loadEarlier]);
   useEffect(() => {
     const down = (event: PointerEvent) => {
-      if (!ref.current?.contains(event.target as Node)) return;
+      const target = event.target as Node;
+      if (!ref.current?.contains(target) && !(event.button === 0 && track.current?.contains(target))) return;
       dragging.current = true;
+      markUserScroll();
+      scrollingUp.current = false;
       if (loadTimer.current !== null) window.clearTimeout(loadTimer.current);
     };
     const up = () => {
@@ -308,7 +316,7 @@ export function Stream({
       window.removeEventListener("blur", up);
       if (loadTimer.current !== null) window.clearTimeout(loadTimer.current);
     };
-  }, [loadWhenStill]);
+  }, [loadWhenStill, markUserScroll]);
   useEffect(() => {
     // Following the end, paint the rest in the background. A user who scrolled away
     // gets them only after stopping near the top (`loadWhenStill`), so the scrollbar
@@ -336,7 +344,7 @@ export function Stream({
     return () => window.clearTimeout(timer);
   }, [visible]);
   const { foldTurns, toolCalls, fitWindowWidth } = useAgentSettings();
-  useOffscreenRows(ref, visible, !finding, fitWindowWidth, fontZoom);
+  useOffscreenRows(content, visible, !finding, fitWindowWidth, fontZoom);
   /**
    * Blank space after the conversation that lets a section folded near the end keep its header
    * in place. It is only ever what the view shows below the content: scrolling up or new rows
@@ -426,14 +434,16 @@ export function Stream({
    */
   useEffect(() => {
     const el = ref.current;
-    if (!el) return;
+    const scrollbar = track.current;
+    if (!el || !scrollbar) return;
     let gesture: { owner: HTMLElement; at: number } | null = null;
     const onWheel = (e: WheelEvent) => {
       if (e.defaultPrevented || e.ctrlKey || e.metaKey) return;
       if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+      const overTrack = e.currentTarget === scrollbar;
       const now = performance.now();
       const latched = gesture && now - gesture.at < WHEEL_GESTURE_MS && gesture.owner.isConnected;
-      const owner = latched ? gesture!.owner : scrollOwner(e.target, el);
+      const owner = overTrack ? el : latched ? gesture!.owner : scrollOwner(e.target, el);
       gesture = { owner, at: now };
       if (owner !== el) {
         const room = e.deltaY < 0 ? owner.scrollTop : owner.scrollHeight - owner.clientHeight - owner.scrollTop;
@@ -441,11 +451,25 @@ export function Stream({
         return;
       }
       markUserScroll();
-      if (e.deltaY < 0) stopFollowing(e.target);
+      if (e.deltaY < 0) stopFollowing(overTrack ? el : e.target);
       else if (e.deltaY > 0) scrollingUp.current = false;
+      if (overTrack) {
+        e.preventDefault();
+        const unit =
+          e.deltaMode === WheelEvent.DOM_DELTA_PAGE
+            ? el.clientHeight
+            : e.deltaMode === WheelEvent.DOM_DELTA_LINE
+              ? 16
+              : 1;
+        el.scrollTop += e.deltaY * unit;
+      }
     };
     el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
+    scrollbar.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      scrollbar.removeEventListener("wheel", onWheel);
+    };
   }, [markUserScroll, stopFollowing]);
   /**
    * The reader opened or closed a section: put its header back where it was, in the run or
@@ -594,7 +618,7 @@ export function Stream({
           <div
             ref={ref}
             // The conversation is read and copied like a document; focusable so ⌘F reaches it.
-            className={clsx(styles.stream, selectableText)}
+            className={clsx(styles.stream, selectableText, hideNativeScrollbar)}
             tabIndex={-1}
             onTouchStart={(e) => {
               touchY.current = e.touches.length === 1 ? e.touches[0]!.clientY : null;
@@ -618,10 +642,6 @@ export function Stream({
                 (e.key === " " && !e.shiftKey)
               )
                 scrollingUp.current = false;
-            }}
-            onPointerDown={() => {
-              markUserScroll();
-              scrollingUp.current = false;
             }}
             onScroll={(e) => {
               const el = e.currentTarget;
@@ -665,36 +685,39 @@ export function Stream({
               showContextMenu(e, items);
             }}
           >
-            {loadError && (
-              <div role="alert">
-                <EmptyState
-                  title={tx`Couldn't load the conversation: ${loadError}`}
-                  actions={
-                    <Button
-                      onClick={() =>
-                        void executeAction("agents.retryConversation", {
-                          task: task.id,
-                          subagent: subagent?.id ?? null,
-                        })
-                      }
-                    >
-                      Retry
-                    </Button>
-                  }
-                />
-              </div>
-            )}
-            {entries === null ? (
-              !loadError && <Spinner />
-            ) : entries.length === 0 && !busy && !loadError ? (
-              <EmptyState title="No conversation history" />
-            ) : (
-              <RowRenderer.Provider value={renderConversationRow}>{renderedRows}</RowRenderer.Provider>
-            )}
-            <WorkingRow task={task} entries={entries} subagent={subagent} />
+            <div ref={content} className={styles.streamContent}>
+              {loadError && (
+                <div role="alert">
+                  <EmptyState
+                    title={tx`Couldn't load the conversation: ${loadError}`}
+                    actions={
+                      <Button
+                        onClick={() =>
+                          void executeAction("agents.retryConversation", {
+                            task: task.id,
+                            subagent: subagent?.id ?? null,
+                          })
+                        }
+                      >
+                        Retry
+                      </Button>
+                    }
+                  />
+                </div>
+              )}
+              {entries === null ? (
+                !loadError && <Spinner />
+              ) : entries.length === 0 && !busy && !loadError ? (
+                <EmptyState title="No conversation history" />
+              ) : (
+                <RowRenderer.Provider value={renderConversationRow}>{renderedRows}</RowRenderer.Provider>
+              )}
+              <WorkingRow task={task} entries={entries} subagent={subagent} />
+            </div>
           </div>
           {away && !!entries?.length && <JumpToLatest onJump={jumpToLatest} />}
         </div>
+        <Scrollbar target={ref} content={content} trackRef={track} fullHeight minThumbSize={MIN_THUMB_SIZE} />
       </KeepFoldHeader.Provider>
     </OpenFolds.Provider>
   );
