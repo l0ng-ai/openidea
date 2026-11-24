@@ -32,6 +32,10 @@ struct FakeAgent {
     servers: Mutex<Vec<Peer>>,
     calls: Mutex<Vec<String>>,
     permission_replies: Mutex<Vec<Value>>,
+    /// The tasks' store directory: when set, a "decide" prompt notes what the task file holds
+    /// for the answered request at the moment its reply arrives.
+    store_dir: Mutex<Option<PathBuf>>,
+    file_at_reply: Mutex<Vec<Value>>,
     /// Without `loadSession` (a session lives only as long as its process).
     no_load: bool,
     auth_on_new: bool,
@@ -316,6 +320,29 @@ impl Handler for FakeAgent {
                         .unwrap();
                     let chosen = answer.pointer("/outcome/optionId").and_then(Value::as_str).unwrap_or("none");
                     self.say(&session, &format!("late chose {chosen}"));
+                    return Ok(json!({"stopReason": "end_turn"}));
+                }
+                if text == "decide" {
+                    let peer = self.latest();
+                    let _: Value = tokio::runtime::Handle::current()
+                        .block_on(peer.request(
+                            "session/request_permission",
+                            json!({"sessionId": session, "toolCall": {"toolCallId": "d1", "title": "Run cargo test"},
+                                "options": [{"optionId": "yes", "name": "Allow", "kind": "allow_once"},
+                                            {"optionId": "no", "name": "Reject", "kind": "reject_once"}]}),
+                            None,
+                        ))
+                        .unwrap();
+                    if let Some(dir) = self.store_dir.lock().clone() {
+                        let held = std::fs::read_dir(dir)
+                            .unwrap()
+                            .filter_map(|f| serde_json::from_slice::<Value>(&std::fs::read(f.ok()?.path()).ok()?).ok())
+                            .flat_map(|file| file["entries"].as_array().cloned().unwrap_or_default())
+                            .find_map(|entry| entry.get("chosen").cloned())
+                            .unwrap_or(Value::Null);
+                        self.file_at_reply.lock().push(held);
+                    }
+                    self.say(&session, "decided");
                     return Ok(json!({"stopReason": "end_turn"}));
                 }
                 if text == "escalate" {
@@ -1266,6 +1293,408 @@ async fn a_task_runs_asks_for_permission_and_survives_a_restart() {
     // The chosen settings are re-applied to the reloaded session.
     let calls = agent2.calls.lock().clone();
     assert!(calls.contains(&"session/set_mode \"code\"".to_owned()), "{calls:?}");
+}
+
+fn task_file(dir: &Path, id: &str) -> PathBuf {
+    dir.join("store").join(format!("{id}.json"))
+}
+
+fn saves(path: &Path) -> u32 {
+    FILE_WRITES.lock().get(path).copied().unwrap_or(0)
+}
+
+/// What a task's file holds: its status and how many entries it has.
+fn saved_task(path: &Path) -> Option<(Value, usize)> {
+    let file: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    Some((file["task"]["status"].clone(), file["entries"].as_array()?.len()))
+}
+
+/// Shuts the manager down when the test ends, a failed assertion included: a failing test
+/// would otherwise never return while its turn is still running.
+struct ShutDown<'a>(&'a AgentManager);
+
+impl Drop for ShutDown<'_> {
+    fn drop(&mut self) {
+        self.0.shutdown();
+    }
+}
+
+/// A turn does not rewrite the whole task file for every step it goes through, and where the
+/// task stops for the user (a question, the end) the file already holds everything, as the
+/// window that was told finds it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_saves_the_task_file_once_per_stop() {
+    struct Stop {
+        status: AgentStatus,
+        saves: u32,
+        file: Option<(Value, usize)>,
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let _shut_down = ShutDown(&mgr);
+    let stops = Arc::new(Mutex::new(Vec::<Stop>::new()));
+    let (sink, dir) = (stops.clone(), tmp.path().to_path_buf());
+    mgr.subscribe_as(
+        "",
+        Arc::new(move |event| {
+            if let AgentEvent::Task { task } = event
+                && matches!(task.status, AgentStatus::NeedsInput | AgentStatus::Ready)
+            {
+                let path = task_file(&dir, &task.id);
+                sink.lock().push(Stop { status: task.status, saves: saves(&path), file: saved_task(&path) });
+            }
+        }),
+    );
+    let task = mgr
+        .create(NewAgentTask {
+            prompt: text("Fix the lexer"),
+            provider: "claude".into(),
+            isolation: Isolation::Local,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    // The first time the task stopped as `status` after the `from`th stop: what its file held then.
+    let stopped = |status: AgentStatus, from: usize| {
+        let stops = stops.clone();
+        async move {
+            for _ in 0..500 {
+                if let Some(stop) = stops.lock().iter().skip(from).find(|s| s.status == status) {
+                    return (stop.saves, stop.file.clone());
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            panic!("the task never stopped as {status:?}");
+        }
+    };
+    let status = |s: AgentStatus| serde_json::to_value(s).unwrap();
+
+    let (first_turn, asked) = stopped(AgentStatus::NeedsInput, 0).await;
+    // The user's message, "Hi", the edit and the pending permission are all in the file.
+    assert_eq!(asked, Some((status(AgentStatus::NeedsInput), 4)));
+
+    let permission = mgr
+        .entries(&task.id, None)
+        .unwrap()
+        .iter()
+        .find_map(|e| match e {
+            AgentEntry::Permission { id, .. } => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    let seen = stops.lock().len();
+    mgr.respond(&task.id, permission, Some("yes".into())).unwrap();
+    let (ready_at, ready) = stopped(AgentStatus::Ready, seen).await;
+    assert_eq!(ready, Some((status(AgentStatus::Ready), 5)));
+    let answered = ready_at - first_turn;
+
+    let seen = stops.lock().len();
+    mgr.prompt(&task.id, text("again"), false).await.unwrap();
+    let (again_at, again) = stopped(AgentStatus::Ready, seen).await;
+    assert_eq!(again, Some((status(AgentStatus::Ready), 7)));
+    let second_turn = again_at - ready_at;
+    eprintln!(
+        "task file saves: {first_turn} to the first question, {answered} to answer it and finish, {second_turn} for a second turn"
+    );
+    assert!(
+        first_turn <= 4 && answered <= 2 && second_turn <= 3,
+        "task file saves: {first_turn} to the first question (4 or fewer), {answered} to answer it and finish (2 or fewer), {second_turn} for a second turn (3 or fewer)"
+    );
+}
+
+/// A reader of the task's state waits only for a copy of it, not for the whole transcript to
+/// be turned into JSON and written.
+#[tokio::test(flavor = "multi_thread")]
+async fn saving_a_large_task_does_not_hold_up_readers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let task = mgr
+        .create(NewAgentTask {
+            prompt: text("again"),
+            provider: "claude".into(),
+            isolation: Isolation::Local,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let handle = mgr.task(&task.id).unwrap();
+    let path = task_file(tmp.path(), &task.id);
+    for i in 0..24 {
+        let text = format!("output {i}: \"quoted\"\n").repeat(40_000);
+        handle.state.lock().conversation.main.push(AgentEntry::Agent { text });
+    }
+    let entries = handle.state.lock().conversation.main.entries.clone();
+    let started = std::time::Instant::now();
+    let json = serde_json::to_vec(&entries).unwrap();
+    let serialising = started.elapsed();
+    eprintln!("large task: {} MB of JSON, {serialising:?} to serialise", json.len() >> 20);
+
+    // The longest wait for the state lock while a save runs: the best of a few saves, so a
+    // reader that was descheduled once does not fail the test.
+    let mut waits = Vec::new();
+    for _ in 0..3 {
+        let writes = saves(&path);
+        let stop = Arc::new(AtomicBool::new(false));
+        let reader = {
+            let (handle, stop) = (handle.clone(), stop.clone());
+            std::thread::spawn(move || {
+                let mut longest = Duration::ZERO;
+                while !stop.load(Ordering::Acquire) {
+                    let asked = std::time::Instant::now();
+                    drop(handle.state.lock());
+                    longest = longest.max(asked.elapsed());
+                    std::thread::sleep(Duration::from_micros(200));
+                }
+                longest
+            })
+        };
+        handle.persist();
+        while saves(&path) == writes {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        stop.store(true, Ordering::Release);
+        waits.push(reader.join().unwrap());
+    }
+    let shortest = waits.iter().min().copied().unwrap();
+    eprintln!("longest wait for the state lock while saving: {waits:?}");
+    assert!(shortest * 3 < serialising, "readers waited {shortest:?} while the task was saved ({serialising:?})");
+    mgr.shutdown();
+}
+
+async fn idle_task(mgr: &AgentManager, title: &str) -> AgentTask {
+    let request = NewAgentTask {
+        prompt: text(title),
+        provider: "claude".into(),
+        isolation: Isolation::Local,
+        idle: true,
+        ..Default::default()
+    };
+    mgr.create(request).await.unwrap()
+}
+
+fn saved_title(path: &Path) -> Option<String> {
+    let file: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    file["task"]["title"].as_str().map(str::to_owned)
+}
+
+/// Changes asked for in a burst are written once, as the latest state, and no older state is
+/// written after it.
+#[tokio::test(flavor = "multi_thread")]
+async fn saves_asked_for_in_a_burst_write_the_latest_state_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let task = idle_task(&mgr, "first").await;
+    let handle = mgr.task(&task.id).unwrap();
+    let path = task_file(tmp.path(), &task.id);
+    let before = saves(&path);
+    for i in 0..50 {
+        handle.state.lock().task.title = format!("title {i}");
+        handle.persist_soon();
+    }
+    for _ in 0..500 {
+        if saved_title(&path).as_deref() == Some("title 49") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(saved_title(&path).as_deref(), Some("title 49"));
+    tokio::time::sleep(SAVE_DELAY * 2).await;
+    assert_eq!(saved_title(&path).as_deref(), Some("title 49"), "an older state was written back");
+    let written = saves(&path) - before;
+    mgr.shutdown();
+    assert!(written <= 2, "50 changes in a burst were saved {written} times");
+}
+
+/// Saves of one task from several threads, whether they wait or not, never put an older
+/// state back over a newer one, and saves of other tasks never mix in.
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_saves_keep_the_newest_state_of_each_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let mut tasks = Vec::new();
+    for name in ["alpha", "beta"] {
+        let task = idle_task(&mgr, name).await;
+        let handle = mgr.task(&task.id).unwrap();
+        // Long enough that a save takes a while between the copy and the write.
+        handle.state.lock().conversation.main.push(AgentEntry::Agent { text: "text ".repeat(60_000) });
+        tasks.push((name, handle, task_file(tmp.path(), &task.id)));
+    }
+    // "<name> <n>", n growing with every change made under the state lock.
+    let change = |name: &str, handle: &Task, n: &AtomicU64| {
+        let mut s = handle.state.lock();
+        s.task.title = format!("{name} {}", n.fetch_add(1, Ordering::AcqRel) + 1);
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut watchers = Vec::new();
+    let mut writers = Vec::new();
+    for (name, handle, path) in &tasks {
+        let counter = Arc::new(AtomicU64::new(0));
+        for pace in 0..2 {
+            let (name, handle, counter) = (*name, handle.clone(), counter.clone());
+            writers.push(std::thread::spawn(move || {
+                for i in 0..40 {
+                    change(name, &handle, &counter);
+                    if (i + pace) % 2 == 0 {
+                        handle.persist();
+                    } else {
+                        handle.persist_soon();
+                    }
+                }
+            }));
+        }
+        let (name, path, stop) = (*name, path.clone(), stop.clone());
+        watchers.push(std::thread::spawn(move || {
+            let mut newest = 0;
+            while !stop.load(Ordering::Acquire) {
+                if let Some(title) = saved_title(&path) {
+                    // Nothing was saved yet but the task's name, before the first change.
+                    let n: u64 = match title.strip_prefix(&format!("{name} ")) {
+                        Some(n) => n.parse().unwrap(),
+                        None => {
+                            assert_eq!(title, name, "another task's state");
+                            0
+                        }
+                    };
+                    assert!(n >= newest, "{name}: state {n} was written after state {newest}");
+                    newest = n;
+                }
+                std::thread::sleep(Duration::from_micros(100));
+            }
+        }));
+    }
+    for writer in writers {
+        writer.join().unwrap();
+    }
+    for (_, handle, _) in &tasks {
+        handle.persist();
+    }
+    stop.store(true, Ordering::Release);
+    for watcher in watchers {
+        watcher.join().unwrap();
+    }
+    tokio::time::sleep(SAVE_DELAY * 2).await;
+    for (name, handle, path) in &tasks {
+        let title = handle.state.lock().task.title.clone();
+        assert_eq!(title, format!("{name} 80"));
+        assert_eq!(saved_title(path), Some(title));
+    }
+    mgr.shutdown();
+}
+
+/// What was asked to be saved soon is written when the manager shuts down, and a task that
+/// is deleted meanwhile stays deleted.
+#[tokio::test]
+async fn shutdown_writes_the_saves_still_waiting_and_a_delete_drops_them() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let kept = idle_task(&mgr, "kept").await;
+    let gone = idle_task(&mgr, "gone").await;
+    let (kept_path, gone_path) = (task_file(tmp.path(), &kept.id), task_file(tmp.path(), &gone.id));
+    for id in [&kept.id, &gone.id] {
+        let handle = mgr.task(id).unwrap();
+        handle.state.lock().task.title = "renamed".into();
+        handle.persist_soon();
+    }
+    // This runtime runs one thing at a time and nothing has yielded to it: the saves wait.
+    assert_eq!(saved_title(&kept_path).as_deref(), Some("kept"));
+    mgr.delete(&gone.id, false).await.unwrap();
+    mgr.shutdown();
+    assert_eq!(saved_title(&kept_path).as_deref(), Some("renamed"), "shutdown left the task unsaved");
+
+    let restored = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    assert_eq!(restored.task(&kept.id).unwrap().state.lock().task.title, "renamed");
+    assert!(restored.task(&gone.id).is_err());
+    tokio::time::sleep(SAVE_DELAY * 2).await;
+    assert!(!gone_path.exists(), "the save that was waiting brought the deleted task back");
+    assert_eq!(saved_title(&kept_path).as_deref(), Some("renamed"));
+}
+
+/// Archiving saves the task as it is, including changes nobody asked to be saved.
+#[tokio::test]
+async fn archiving_saves_the_task_before_it_returns() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let task = idle_task(&mgr, "task").await;
+    let path = task_file(tmp.path(), &task.id);
+    mgr.task(&task.id).unwrap().state.lock().task.title = "changed meanwhile".into();
+    mgr.archive(&task.id).unwrap();
+    assert_eq!(saved_task(&path).map(|(status, _)| status), Some(serde_json::to_value(AgentStatus::Archived).unwrap()));
+    assert_eq!(saved_title(&path).as_deref(), Some("changed meanwhile"));
+    mgr.shutdown();
+}
+
+/// The answer to a request is in the task file before the agent hears it: a restart right
+/// after still shows the request as answered, not cancelled.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_answer_is_saved_before_the_agent_is_told() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    *agent.store_dir.lock() = Some(tmp.path().join("store"));
+    let mgr = manager(tmp.path(), agent.clone());
+    let _shut_down = ShutDown(&mgr);
+    let task = mgr
+        .create(NewAgentTask {
+            prompt: text("decide"),
+            provider: "claude".into(),
+            isolation: Isolation::Local,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    let permission = mgr
+        .entries(&task.id, None)
+        .unwrap()
+        .iter()
+        .find_map(|e| match e {
+            AgentEntry::Permission { id, .. } => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    mgr.respond(&task.id, permission, Some("yes".into())).unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    assert_eq!(*agent.file_at_reply.lock(), [json!("Allow")]);
+}
+
+/// A turn that fails or hits the usage limit is in the task file by the time the window is
+/// told, like the end of a turn.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_turn_is_saved_before_the_window_hears_of_it() {
+    for (message, status) in [("auth", AgentStatus::Failed), ("limit", AgentStatus::Limited)] {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+        let _shut_down = ShutDown(&mgr);
+        let told = Arc::new(Mutex::new(None));
+        let (sink, dir) = (told.clone(), tmp.path().to_path_buf());
+        mgr.subscribe_as(
+            "",
+            Arc::new(move |event| {
+                if let AgentEvent::Task { task } = event
+                    && task.status == status
+                {
+                    *sink.lock() = Some(saved_task(&task_file(&dir, &task.id)).map(|(status, _)| status));
+                }
+            }),
+        );
+        let task = mgr
+            .create(NewAgentTask {
+                prompt: text(message),
+                provider: "claude".into(),
+                isolation: Isolation::Local,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        wait_for(&mgr, &task.id, status).await;
+        for _ in 0..500 {
+            if told.lock().is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(*told.lock(), Some(Some(serde_json::to_value(status).unwrap())), "{status:?}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
