@@ -31,6 +31,7 @@ import {
 } from "@codemirror/commands";
 import { SearchCursor } from "@codemirror/search";
 import { humpLeft, humpRight, wordStartLeft } from "../model/camelHumps";
+import { cycleIdentifierCase, wordSpan } from "../model/identifierCase";
 
 type Node = ReturnType<ReturnType<typeof syntaxTree>["resolveInner"]>;
 
@@ -1053,6 +1054,49 @@ export const toggleCase: Command = (view) => {
       : EditorSelection.range(r.anchor, r.head);
     return { changes: { from: t.from, to: t.to, insert }, range };
   });
+  view.dispatch(state.update(tr, { userEvent: "input.case" }));
+  return true;
+};
+
+const NAME_CHAR = /[\p{L}\p{N}_$-]/u;
+
+/**
+ * ⇧⌥U: Cycle the Case of the identifier at each caret (which stays selected)
+ * or of each selection, from the style it is written in: snake_case →
+ * SCREAMING_SNAKE_CASE → kebab-case → camelCase → PascalCase.
+ */
+export const cycleCase: Command = (view) => {
+  const { state } = view;
+  if (state.readOnly) return false;
+  /** The `-`-joined name at or right before `pos`. */
+  const nameAt = (pos: number): { from: number; to: number } | null => {
+    const char = (at: number) => at >= 0 && at < state.doc.length && NAME_CHAR.test(state.sliceDoc(at, at + 1));
+    if (!char(pos) && !char(pos - 1)) return null;
+    let from = pos;
+    let to = pos;
+    while (char(from - 1)) from--;
+    while (char(to)) to++;
+    return { from, to };
+  };
+  let changed = false;
+  const tr = state.changeByRange((r) => {
+    const name = r.empty ? nameAt(r.head) : r;
+    if (!name) return { range: r };
+    const span = wordSpan(state.sliceDoc(name.from, name.to));
+    if (!span) return { range: r };
+    const from = name.from + span.from;
+    const insert = cycleIdentifierCase(state.sliceDoc(from, name.from + span.to));
+    if (insert === null) return { range: r };
+    changed = true;
+    const set = state.changes({ from, to: name.from + span.to, insert });
+    return {
+      changes: set,
+      range: r.empty
+        ? EditorSelection.range(from, from + insert.length)
+        : EditorSelection.range(set.mapPos(r.anchor), set.mapPos(r.head)),
+    };
+  });
+  if (!changed) return false;
   view.dispatch(state.update(tr, { userEvent: "input.case" }));
   return true;
 };

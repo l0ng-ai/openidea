@@ -1000,6 +1000,7 @@
   "Clone Caret Below": "在下方添加光标",
   "Join Lines": "合并行",
   "Toggle Case": "切换大小写",
+  "Cycle Identifier Case": "循环切换标识符大小写",
   "Add or Remove Caret": "添加或移除插入点",
   "Create Rectangular Selection on Mouse Drag": "拖动鼠标创建矩形选区",
   "Middle Click": "鼠标中键",

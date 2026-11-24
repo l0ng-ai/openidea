@@ -7,6 +7,7 @@ import {
   addCaretsToLineEnds,
   commentLine,
   completeStatement,
+  cycleCase,
   deleteLine,
   duplicateEntireLines,
   joinLines,
@@ -198,6 +199,58 @@ describe("toggle case", () => {
     const v = make("[abc] [Def]");
     toggleCase(v);
     expect(v.state.doc.toString()).toBe("abc def");
+  });
+});
+
+describe("cycle case", () => {
+  it("cycles the identifier at the caret and keeps it selected", () => {
+    const v = make("int myVar|Name = 1;");
+    cycleCase(v);
+    expect(show(v)).toBe("int [MyVarName] = 1;");
+    cycleCase(v);
+    expect(show(v)).toBe("int [my_var_name] = 1;");
+  });
+
+  it("cycles the identifier the caret just left", () => {
+    const v = make("let my_var| = 1;");
+    cycleCase(v);
+    expect(show(v)).toBe("let [MY_VAR] = 1;");
+  });
+
+  it("converts the selection", () => {
+    const v = make("const [SOME_VALUE] = 1;");
+    cycleCase(v);
+    expect(show(v)).toBe("const [some-value] = 1;");
+  });
+
+  it("takes a kebab-case name at the caret whole", () => {
+    const v = make("<div data-some-|attribute>");
+    cycleCase(v);
+    expect(show(v)).toBe("<div [dataSomeAttribute]>");
+  });
+
+  it("leaves a subtraction alone", () => {
+    const v = make("let n = a - b|;");
+    cycleCase(v);
+    expect(show(v)).toBe("let n = a - [B];");
+  });
+
+  it("moves each caret to the next style", () => {
+    const v = make("[fooBar] [foo_bar]");
+    cycleCase(v);
+    expect(show(v)).toBe("[FooBar] [FOO_BAR]");
+  });
+
+  it("keeps what surrounds a converted selection", () => {
+    const v = make("x = [ user name ] + 1;");
+    cycleCase(v);
+    expect(show(v)).toBe("x = [ userName ] + 1;");
+  });
+
+  it("does nothing where there is no identifier to convert", () => {
+    const v = make("let a = 2|0;");
+    expect(cycleCase(v)).toBe(false);
+    expect(show(v)).toBe("let a = 2|0;");
   });
 });
 

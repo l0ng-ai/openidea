@@ -154,6 +154,7 @@ export const intellijMacos: Record<string, string[]> = {
   "editor.toggleInsertState": ["Insert"],
   "code.joinLines": ["Ctrl+Shift+J"],
   "code.toggleCase": ["Meta+Shift+U"],
+  "code.cycleCase": ["Alt+Shift+U"],
   "code.pasteFromHistory": ["Meta+Shift+V"],
   "code.sortLines": [],
   "code.reverseLines": [],
