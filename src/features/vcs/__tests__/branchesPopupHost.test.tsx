@@ -1,5 +1,5 @@
 import type { Branch } from "@/bindings";
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { BranchesPopupHost, showBranchesPopup, useBranchesPopup } from "../BranchWidget";
 import { useVcs } from "../store";
@@ -156,4 +156,35 @@ it("opens Git Branches from the status bar's Git Branch widget, anchored to it",
   act(showBranchesPopup);
   expect(toolbar).toHaveAttribute("aria-expanded", "true");
   expect(status).toHaveAttribute("aria-expanded", "false");
+});
+
+it("shows repository names as written in Chinese", async () => {
+  const { _resetI18nForTests, setLocale, tx } = await import("@/platform/i18n");
+  await setLocale("zh");
+  try {
+    // Precondition: the zh catalog translates these words, so a translated label would differ.
+    expect(tx("dev")).not.toBe("dev");
+    expect(tx("test")).not.toBe("test");
+    const branch = (name: string): Branch =>
+      ({ name, remote: false, current: false, upstream: null, ahead: 0, behind: 0, lastCommitMs: null }) as Branch;
+    repoBranches.set("/work/dev", [branch("only-dev")]);
+    repoBranches.set("/work/test", [branch("only-test")]);
+    useVcs.setState({
+      available: true,
+      root: "/work",
+      repo: "/work/dev",
+      roots: ["/work/dev", "/work/test"],
+      heads: { "/work/dev": { head: "main", headCommit: "a" }, "/work/test": { head: "main", headCommit: "b" } },
+    });
+    render(<BranchesPopupHost />);
+    act(showBranchesPopup);
+    // Typing a query lists matching branches under a header per repository.
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "only" } });
+    const list = screen.getByRole("listbox");
+    const headers = () => [...list.querySelectorAll('span[class*="section"]')].map((e) => e.textContent);
+    await waitFor(() => expect(headers()).toHaveLength(2));
+    expect(headers()).toEqual(["dev", "test"]);
+  } finally {
+    _resetI18nForTests();
+  }
 });
