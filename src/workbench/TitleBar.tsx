@@ -25,7 +25,7 @@ import {
 import { WindowControls } from "./WindowControls";
 import { captionButtons } from "./windowButtons";
 import { usePlatform } from "@/platform/platformInfo";
-import { projectInitials } from "./projectColor";
+import { ProjectAvatar } from "./ProjectBadge";
 import { keymapItems, themeItems, themePreview, type ThemePreview, VIEW_MODE_ITEMS } from "./quickSwitch";
 import { useContributedThemes } from "@/platform/themes";
 import { currentThemeChoice, useThemeOverride } from "./theme";
@@ -87,7 +87,7 @@ function ProjectButton() {
         onClick={() => setOpen((v) => !v)}
       >
         <span className={styles.avatar} aria-hidden="true">
-          {projectInitials(label)}
+          <ProjectAvatar name={label} root={root} />
         </span>
         <span className={styles.widgetText} data-toolbar-label="">
           {label}

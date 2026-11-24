@@ -131,6 +131,30 @@ describe("author hint", () => {
   });
 });
 
+describe("Vue component usages", () => {
+  const vue = { doc: 8, path: "/p/Hello.vue", language: "vue", uiMode: "Vue", readOnly: false };
+
+  it("offers Show component usages above a .vue file, and nothing extra elsewhere", async () => {
+    ipc.docOutline.mockResolvedValue(ok([]));
+    const view = editor(1, undefined, vue);
+    await settle();
+    const lens = view.state.facet(codeLenses).find((l) => l.title === "Show component usages");
+    expect(lens).toMatchObject({ pos: 0, kind: "usages" });
+    const rust = editor();
+    await settle();
+    expect(titles(rust)).not.toContain("Show component usages");
+  });
+
+  it("is hidden with the usages hints", async () => {
+    useProject.setState({
+      settings: { editor: { inlay: { codeVisionUsages: false, codeVisionAuthor: false } } } as never,
+    });
+    const view = editor(1, undefined, vue);
+    await settle();
+    expect(titles(view)).toEqual([]);
+  });
+});
+
 describe("Code Vision switch", () => {
   it("hides usages and author while off and brings back the kinds still chosen", async () => {
     ipc.vcsBlame.mockResolvedValue(ok([{ commit: "c1", author: "Ann", timeMs: 1, summary: "init" }]));

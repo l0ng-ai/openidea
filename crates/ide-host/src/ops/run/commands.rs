@@ -317,7 +317,9 @@ pub async fn run_tomcat_build(host: &Host, window: &str, config: RunConfig) -> I
             .filter(|s| !s.is_empty())
             .or_else(|| artifacts.first().map(|a| &a.id))
             .ok_or_else(|| IdeError::invalid("Choose a WAR artifact"))?;
+        // One deployment of the config (`ide_run::tomcat::deployment_configs`); its build records go to its own directory.
         let base = ide_run::tomcat::effective_base_dir(&project.root, &project.cache_dir, &config)?;
+        let base = ide_run::tomcat::state_dir(&base, &config);
         if let Some(name) = id.strip_prefix(PROJECT_ARTIFACT) {
             let settings = project.settings.effective();
             let detected = project.detected_roots.read().clone();
@@ -340,7 +342,10 @@ pub async fn run_tomcat_build(host: &Host, window: &str, config: RunConfig) -> I
         let mut plan = ide_build::web::build(&project.root, &model, id, &base)?;
         plan.env.extend(config.env.clone());
         let mut build = RunConfig {
-            id: format!("tomcat-build:{}", config.id),
+            id: match config.extras.params.get("deploymentIndex") {
+                Some(i) => format!("tomcat-build:{}:{i}", config.id),
+                None => format!("tomcat-build:{}", config.id),
+            },
             name: format!("Build {}", config.name),
             kind: if id.starts_with("maven:") { "maven" } else { "gradle" }.into(),
             command: plan.command.clone(),
@@ -405,7 +410,12 @@ pub async fn run_tomcat_sync(
         let class_paths: Vec<_> =
             class_paths.iter().filter_map(|p| dunce::canonicalize(project.root.join(p)).ok()).collect();
         let base = ide_run::tomcat::effective_base_dir(&project.root, &project.cache_dir, &config)?;
-        ide_run::tomcat::sync_outputs(&base, &module, &class_paths, resources_only)
+        ide_run::tomcat::sync_outputs(
+            &ide_run::tomcat::state_dir(&base, &config),
+            &module,
+            &class_paths,
+            resources_only,
+        )
     })
     .await
     .map_err(|e| IdeError::internal(e.to_string()))?

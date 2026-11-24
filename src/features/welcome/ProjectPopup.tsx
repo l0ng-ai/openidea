@@ -4,7 +4,7 @@ import { executeAction, useActions } from "@/platform/actions";
 import { call, commands, isTauri, type OpenProject, type RecentProject } from "@/platform/ipc";
 import { HighlightedText, Icon, Popup, showContextMenu, type IconName, T } from "@/ui";
 import type { ProjectPopupProps } from "@/workbench/contributions";
-import { askRemoveRecent, ProjectBadge, recentMenu, unavailableTitle } from "./RecentList";
+import { askRemoveRecent, ProjectBadge, projectAppearanceMenu, recentMenu, unavailableTitle } from "./RecentList";
 import { filterRecent, loadRecent, openRecent, recentRows, useRecent, type RecentMatch } from "./recent";
 import styles from "./ProjectPopup.module.css";
 import { tx } from "@/platform/i18n";
@@ -169,10 +169,15 @@ export function ProjectPopup({ anchor, onClose }: ProjectPopupProps) {
               onMouseMove={() => i !== current && setActive(i)}
               onClick={(ev) => activate(e, projectWindowOverride(ev))}
               onContextMenu={(ev) => {
-                if (e.kind !== "project" || e.open) return;
+                if (e.kind !== "project") return;
+                // Not the title bar's own menu: the popup sits inside it.
                 ev.preventDefault();
                 setActive(i);
-                showContextMenu(ev, recentMenu(e.m.project, onClose, onClose));
+                // An open project is switched to, not opened or removed: only its colour and icon.
+                showContextMenu(
+                  ev,
+                  e.open ? projectAppearanceMenu(e.m.project) : recentMenu(e.m.project, onClose, onClose),
+                );
               }}
             >
               {e.kind === "action" ? (

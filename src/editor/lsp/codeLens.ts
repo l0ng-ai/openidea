@@ -26,6 +26,7 @@ import { authorLabel, authorSummary, authorTooltip, blameFor, onBlameInvalidated
 import { tx } from "@/platform/i18n";
 import { languageInfo, languagesForPath } from "@/editor/core/cm/languages";
 import { overrideKey, userFileType, validateFileTypeOverrides, validateFileTypes } from "@/platform/fileTypes";
+import { showFileUsages } from "@/editor/refactor";
 
 const LENS_KINDS = new Set<SymbolKind>([
   "class",
@@ -329,6 +330,18 @@ class UsagesLensPlugin {
       }
       const allowNoUsages = editorPrefs().inlay.codeVisionNoUsages;
       const lenses: CodeLens[] = [];
+      // WebStorm's Code Vision on a Vue single-file component: its usages from other files, on request.
+      if (usagesWanted && doc.language === "vue" && !doc.virtual) {
+        const path = doc.path;
+        lenses.push({
+          pos: 0,
+          title: tx("Show component usages"),
+          tooltip: tx("Find where this component is imported and used"),
+          order: 5,
+          kind: "usages",
+          run: () => void showFileUsages(path),
+        });
+      }
       for (const t of visible) {
         const offset = posToOffset(text, { line: t.line, col: t.col });
         const who = lines && authorSummary(lines, t.startLine, t.endLine);
