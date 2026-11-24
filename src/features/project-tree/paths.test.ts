@@ -54,6 +54,10 @@ describe("path helpers", () => {
     expect(uniqueName("Bar.kt", (n) => taken.has(n))).toBe("Bar.kt");
     expect(uniqueName("Foo.kt", (n) => taken.has(n))).toBe("Foo copy 2.kt");
     expect(uniqueName("src", (n) => taken.has(n), true)).toBe("src copy");
+    // A Java source keeps a name its public type can take (#5647).
+    const java = new Set(["Foo.java", "FooCopy.java"]);
+    expect(uniqueName("Foo.java", (n) => java.has(n))).toBe("FooCopy2.java");
+    expect(uniqueName("Foo.java", (n) => n === "Foo.java")).toBe("FooCopy.java");
   });
 });
 
