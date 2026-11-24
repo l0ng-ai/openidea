@@ -28,6 +28,8 @@ allprojects { p ->
             }
             t.args(list('openidea.run.args'))
             t.jvmArgs(list('openidea.run.jvmArgs'))
+            def token = System.getProperty('openidea.run.token')
+            if (token) t.jvmArgs('-Dopenidea.run.token=' + token)
             // The IDE attaches to this JVM, not to the Gradle daemon; port 0 prints the one picked.
             if (Boolean.getBoolean('openidea.run.debug')) {
                 // Opens the attach socket for the memory view, unless the VM options decide about it.

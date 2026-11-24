@@ -460,6 +460,16 @@ impl Default for ConsoleSettings {
     }
 }
 
+/// Whether compiled classes are reloaded into running Java debug sessions after compilation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum HotSwapPolicy {
+    #[default]
+    Ask,
+    Always,
+    Never,
+}
+
 /// Build, Execution, Deployment › Debugger (+ Data Views, Stepping, Python Debugger).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
@@ -487,6 +497,8 @@ pub struct DebuggerSettings {
     pub debug_server_page: bool,
     /// Flutter: saving a Dart file of a running debug session hot reloads the app.
     pub flutter_hot_reload_on_save: bool,
+    /// Java: whether to reload changed classes into running debug sessions after compilation.
+    pub hot_swap_after_compile: HotSwapPolicy,
     pub python: PythonDebuggerSettings,
 }
 
@@ -508,6 +520,7 @@ impl Default for DebuggerSettings {
             skip_library_code: true,
             debug_server_page: false,
             flutter_hot_reload_on_save: true,
+            hot_swap_after_compile: HotSwapPolicy::Ask,
             python: PythonDebuggerSettings::default(),
         }
     }
@@ -717,5 +730,20 @@ mod tests {
         assert!(missing.sync_branch_operations);
         let off: GitSettings = serde_json::from_str(r#"{"syncBranchOperations":false}"#).unwrap();
         assert!(!off.sync_branch_operations);
+    }
+
+    #[test]
+    fn debugger_hotswap_after_compile_defaults_to_ask_and_roundtrips() {
+        let missing: DebuggerSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(missing.hot_swap_after_compile, HotSwapPolicy::Ask);
+        for (raw, expected) in
+            [("ask", HotSwapPolicy::Ask), ("always", HotSwapPolicy::Always), ("never", HotSwapPolicy::Never)]
+        {
+            let parsed: DebuggerSettings =
+                serde_json::from_str(&format!(r#"{{"hotSwapAfterCompile":"{raw}"}}"#)).unwrap();
+            assert_eq!(parsed.hot_swap_after_compile, expected);
+            let serialized = serde_json::to_value(&parsed).unwrap();
+            assert_eq!(serialized["hotSwapAfterCompile"], raw);
+        }
     }
 }

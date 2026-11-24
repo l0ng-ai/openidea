@@ -3,8 +3,8 @@
 //! This crate is glue only. `commands/<domain>.rs` holds the commands only the desktop runs; the
 //! Tauri adapters of project-host commands are derived from their `ide-host` declarations. No
 //! domain logic lives here.
-// `commands::catalogue!` recurses a few times per command domain.
-#![recursion_limit = "256"]
+// `commands::catalogue!` recurses once per command, so the limit grows with the command count.
+#![recursion_limit = "512"]
 
 mod application_focus;
 mod cli;
