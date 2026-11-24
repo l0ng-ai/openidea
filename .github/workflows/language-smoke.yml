@@ -65,8 +65,6 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  # Line tables keep test backtraces readable and the binaries the build job hands on small.
-  CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
   # The languages a pull request can affect: a change to one language's fixture, definition or
@@ -143,6 +141,10 @@ jobs:
     # which is the same on every GitHub-hosted runner.
     runs-on: ubuntu-22.04
     timeout-minutes: 30
+    # Line tables keep test backtraces readable and the binaries handed on small. Only here: the
+    # debug smoke builds the Rust fixture, which needs full debug info to show its variables.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
