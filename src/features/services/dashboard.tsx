@@ -113,6 +113,20 @@ export function bytesToUnits(bytes: number, precision = 1): string {
   return `${val.toFixed(precision)} ${units[idx]!}`;
 }
 
+export function bytesToDecimalUnits(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0B";
+  const units = ["B", "kB", "MB", "GB", "TB", "PB"];
+  let idx = 0;
+  let val = bytes;
+  while (val >= 1000 && idx < units.length - 1) {
+    val /= 1000;
+    idx++;
+  }
+  if (idx === 0) return `${Math.round(val)}B`;
+  const text = val.toFixed(3).replace(/\.?0+$/, "");
+  return `${text}${units[idx]!}`;
+}
+
 export function parsePercent(raw: string | undefined | null): number {
   if (!raw) return 0;
   const n = Number.parseFloat(raw.replace(/%/g, "").trim());
@@ -816,9 +830,11 @@ function ContainerLinkChip({ conn, container }: { conn: string; container: Docke
   );
 }
 
-function VolumeLinkChip({ conn, volume }: { conn: string; volume: DockerVolume }) {
+function VolumeLinkChip({ conn, volume, size }: { conn: string; volume: DockerVolume; size?: string }) {
   const composeVol = volume.labels?.["com.docker.compose.volume"];
-  const meta = composeVol && composeVol !== volume.name ? `${composeVol} · ${volume.driver}` : volume.driver;
+  const meta = [composeVol && composeVol !== volume.name ? composeVol : null, volume.driver, size]
+    .filter(Boolean)
+    .join(" · ");
   return (
     <button
       type="button"
@@ -932,6 +948,88 @@ function useLiveContainerStats(
   };
 }
 
+function useLiveVolumeSizes(
+  conn: string,
+  scopeKey: string,
+  enabled = true,
+): {
+  byName: Record<string, string>;
+  loading: boolean;
+} {
+  const shown = useToolWindowShown();
+  const fullScope = `${conn}\0${scopeKey}`;
+  const [sizeState, setSizeState] = useState<{
+    conn: string;
+    byName: Record<string, string>;
+    settledScope: string;
+  }>({ conn: "", byName: {}, settledScope: "" });
+
+  useEffect(() => {
+    if (!enabled || !scopeKey || !shown || !isTauri()) return;
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let inFlight = false;
+
+    const clearTimer = () => {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+    };
+
+    const isDocumentHidden = () => document.visibilityState === "hidden";
+
+    const sample = async () => {
+      clearTimer();
+      if (!alive || inFlight || isDocumentHidden()) return;
+      inFlight = true;
+      try {
+        const raw = await call(commands.dockerVolumeSizes(endpointOf(conn)));
+        if (alive) {
+          const byName: Record<string, string> = {};
+          for (const [k, v] of Object.entries(raw)) {
+            if (v) byName[k] = v;
+          }
+          setSizeState({ conn, byName, settledScope: fullScope });
+        }
+      } catch {
+        if (alive) {
+          setSizeState((prev) => ({
+            conn,
+            byName: prev.conn === conn ? prev.byName : {},
+            settledScope: fullScope,
+          }));
+        }
+      } finally {
+        inFlight = false;
+        if (alive && !isDocumentHidden()) {
+          timer = setTimeout(() => void sample(), CONTAINER_STATS_POLL_MS);
+        }
+      }
+    };
+
+    const onVisibility = () => {
+      if (isDocumentHidden()) clearTimer();
+      else void sample();
+    };
+
+    document.addEventListener("visibilitychange", onVisibility);
+    if (!isDocumentHidden()) void sample();
+
+    return () => {
+      alive = false;
+      clearTimer();
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [conn, scopeKey, enabled, shown, fullScope]);
+
+  const active = Boolean(enabled && scopeKey) && shown && isTauri();
+  return {
+    byName: sizeState.conn === conn ? sizeState.byName : {},
+    loading: active && sizeState.settledScope !== fullScope,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Container Dashboard & Processes View
 
@@ -978,6 +1076,18 @@ export function ContainerDashboard({
 
   const { byId: statsById, loading: statsLoading } = useLiveContainerStats(conn, running ? container.id : "");
   const stats = running ? (statsById[container.id] ?? null) : null;
+
+  const mountedVolumesKey = useMemo(() => {
+    const names = inspect?.mounts.length
+      ? inspect.mounts.filter((m) => m.type === "volume" && m.name).map((m) => m.name!)
+      : (container.mounts ?? []).filter((m) => snapshot.volumes.some((v) => v.name === m));
+    return [...new Set(names)].sort().join("\0");
+  }, [inspect, container.mounts, snapshot.volumes]);
+  const { byName: volumeSizes, loading: volumeSizesLoading } = useLiveVolumeSizes(
+    conn,
+    mountedVolumesKey,
+    Boolean(mountedVolumesKey),
+  );
 
   const cpuPct = stats ? parsePercent(stats.cpuPerc) : 0;
   const memPair = stats ? parseUsagePair(stats.memUsage) : null;
@@ -1222,11 +1332,16 @@ export function ContainerDashboard({
               <T>Destination</T>
             </span>
             <span>
+              <T>Size</T>
+            </span>
+            <span>
               <T>Mode</T>
             </span>
           </div>
           {inspect.mounts.map((m) => {
-            const volumeObj = m.name ? snapshot.volumes.find((v) => v.name === m.name) : undefined;
+            const volumeName = m.type === "volume" ? m.name : undefined;
+            const volumeObj = volumeName ? snapshot.volumes.find((v) => v.name === volumeName) : undefined;
+            const mountSize = volumeName ? volumeSizes[volumeName] : undefined;
             return (
               <div key={`${m.destination}:${m.type}:${m.source}`} className={styles.dataRow}>
                 <span className={styles.badgeMuted}>{m.type}</span>
@@ -1251,6 +1366,14 @@ export function ContainerDashboard({
                 <span className={styles.mono} title={m.destination}>
                   {m.destination}
                 </span>
+                <span className={clsx(styles.mono, styles.nowrapCell)}>
+                  {mountSize ??
+                    (volumeName && volumeSizesLoading ? (
+                      <Spinner size={12} />
+                    ) : (
+                      <span className={styles.mutedMeta}>—</span>
+                    ))}
+                </span>
                 <span className={styles.mono}>{m.rw ? m.mode || "rw" : "ro"}</span>
               </div>
             );
@@ -1260,24 +1383,13 @@ export function ContainerDashboard({
         <div className={styles.chipGroup}>
           {container.mounts.map((m) => {
             const volumeObj = snapshot.volumes.find((v) => v.name === m);
+            const mountSize = volumeSizes[m];
             return volumeObj ? (
-              <button
-                key={m}
-                type="button"
-                className={styles.entityChip}
-                onClick={() => {
-                  selectServicesTreeKey(
-                    treeKey(conn, { kind: "volume", key: `volume:${volumeObj.name}`, volume: volumeObj }),
-                  );
-                  showDetail("dashboard");
-                }}
-              >
-                <Icon name="docker-volumes" size={14} />
-                <span className={styles.mono}>{m}</span>
-              </button>
+              <VolumeLinkChip key={m} conn={conn} volume={volumeObj} size={mountSize} />
             ) : (
               <span key={m} className={styles.entityChip}>
                 <span className={styles.mono}>{m}</span>
+                {mountSize && <span className={styles.chipMeta}>{mountSize}</span>}
               </span>
             );
           })}
@@ -1669,6 +1781,8 @@ export function VolumeDashboard({
   const target: DockerTarget = { conn, node: { kind: "volume", key: `volume:${volume.name}`, volume } };
   const usingContainers = useMemo(() => containersUsingVolume(snapshot, volume), [snapshot, volume]);
   const labels = Object.entries(volume.labels ?? {}).sort((a, b) => a[0].localeCompare(b[0]));
+  const { byName: volumeSizes, loading: volumeSizesLoading } = useLiveVolumeSizes(conn, volume.name);
+  const diskUsage = volumeSizes[volume.name];
 
   return (
     <div className={styles.dashboard} tabIndex={0} onKeyDown={copySelectionOnKeyDown}>
@@ -1687,6 +1801,17 @@ export function VolumeDashboard({
       <div className={styles.propList}>
         <PropRow label={<T>Name</T>}>
           <span className={styles.mono}>{volume.name}</span>
+        </PropRow>
+        <PropRow label={<T>Disk usage</T>}>
+          {diskUsage ? (
+            <span className={styles.mono}>{diskUsage}</span>
+          ) : volumeSizesLoading ? (
+            <span className={styles.mutedMeta}>
+              <T>Loading…</T>
+            </span>
+          ) : (
+            <span className={styles.mutedMeta}>—</span>
+          )}
         </PropRow>
         <PropRow label={<T>Driver</T>}>
           <span className={styles.mono}>{volume.driver}</span>
@@ -1875,6 +2000,21 @@ export function ComposeProjectDashboard({
   const first = containers[0];
   const runningCount = containers.filter(isRunning).length;
   const namedVolumes = useMemo(() => volumesInComposeProject(snapshot, project), [snapshot, project]);
+  const namedVolumesKey = useMemo(
+    () =>
+      namedVolumes
+        .map((v) => v.name)
+        .sort()
+        .join("\0"),
+    [namedVolumes],
+  );
+  const { byName: volumeSizes } = useLiveVolumeSizes(conn, namedVolumesKey, namedVolumes.length > 0);
+  const totalVolumeSize = useMemo(() => {
+    const sizes = namedVolumes.map((v) => volumeSizes[v.name]).filter((s): s is string => Boolean(s));
+    if (sizes.length === 0) return null;
+    if (sizes.length === 1) return sizes[0]!;
+    return bytesToDecimalUnits(sizes.reduce((sum, s) => sum + unitsToBytes(s), 0));
+  }, [namedVolumes, volumeSizes]);
 
   const runningIdsKey = useMemo(
     () =>
@@ -2029,13 +2169,23 @@ export function ComposeProjectDashboard({
           </table>
         </div>
 
-        <SectionBanner>
+        <SectionBanner
+          action={
+            totalVolumeSize ? (
+              <span className={styles.bannerMeta}>
+                <T>Disk usage</T>
+                {": "}
+                <span className={styles.mono}>{totalVolumeSize}</span>
+              </span>
+            ) : undefined
+          }
+        >
           <T>Volumes</T>
         </SectionBanner>
         {namedVolumes.length > 0 ? (
           <div className={styles.chipGroup}>
             {namedVolumes.map((v) => (
-              <VolumeLinkChip key={v.name} conn={conn} volume={v} />
+              <VolumeLinkChip key={v.name} conn={conn} volume={v} size={volumeSizes[v.name]} />
             ))}
           </div>
         ) : (

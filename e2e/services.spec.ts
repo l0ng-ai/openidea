@@ -787,3 +787,136 @@ test("Docker Compose dashboard keeps its action row pinned when scrolling", asyn
   expect(afterDown.y).toBe(beforeDown.y);
   expect(afterBanner.y).toBeLessThan(beforeBanner.y - 100);
 });
+
+test("Docker volume, Compose, and container dashboards live-refresh volume disk usage every 3s", async ({
+  workbench: page,
+}) => {
+  await stubDesktop(page);
+  await page.evaluate(async () => {
+    (window as unknown as { __volSize: string }).__volSize = "145.4kB";
+    const inspectJson = JSON.stringify([
+      {
+        Created: "2026-11-23T02:37:25Z",
+        State: { Status: "running", Pid: 2048, StartedAt: "2026-11-23T02:37:26Z" },
+        HostConfig: { RestartPolicy: { Name: "unless-stopped", MaximumRetryCount: 0 } },
+        Config: { Entrypoint: [], Cmd: ["./bin/Runner.Listener", "run"], Env: [], Labels: {} },
+        Mounts: [
+          {
+            Type: "volume",
+            Name: "selfhost_runner-persist",
+            Source: "/var/lib/docker/volumes/selfhost_runner-persist/_data",
+            Destination: "/persist",
+            Mode: "rw",
+            RW: true,
+          },
+        ],
+        NetworkSettings: { Ports: {}, Networks: {} },
+      },
+    ]);
+    const snapshot = {
+      availability: { kind: "ready", clientVersion: "28.0.1", serverVersion: "28.0.1", context: "desktop-linux" },
+      executable: "/usr/bin/docker",
+      containers: [
+        {
+          id: "runner-1",
+          name: "selfhost-github-runner-1",
+          image: "myoung34/github-runner:latest",
+          command: "./bin/Runner.Listener run",
+          state: "running",
+          status: "Up 24 hours",
+          ports: "",
+          createdAt: "2026-11-23T02:37:25Z",
+          composeProject: "selfhost",
+          composeService: "github-runner-1",
+          composeWorkingDir: "/work/selfhost",
+          composeFiles: ["/work/selfhost/docker-compose.yml"],
+          mounts: ["selfhost_runner-persist"],
+          networks: ["selfhost_default"],
+        },
+      ],
+      images: [],
+      volumes: [
+        {
+          name: "selfhost_runner-persist",
+          driver: "local",
+          mountpoint: "/var/lib/docker/volumes/selfhost_runner-persist/_data",
+          composeProject: "selfhost",
+          scope: "local",
+          labels: {
+            "com.docker.compose.project": "selfhost",
+            "com.docker.compose.volume": "runner-persist",
+          },
+        },
+      ],
+      networks: [
+        { id: "net-1", name: "selfhost_default", driver: "bridge", scope: "local", composeProject: "selfhost" },
+      ],
+      errors: [],
+    };
+
+    window.__ipc.handlers.docker_settings = () => ({
+      connections: [{ id: "default", name: "Docker", endpoint: { kind: "default" } }],
+      registries: [],
+    });
+    window.__ipc.handlers.docker_snapshot = () => snapshot;
+    window.__ipc.handlers.docker_events = () => new Promise(() => {});
+    window.__ipc.handlers.docker_inspect = () => inspectJson;
+    window.__ipc.handlers.docker_container_stats = () => ({
+      cpuPerc: "0.02%",
+      memUsage: "96MiB / 114GiB",
+      memPerc: "0.08%",
+      netIo: "1.1MB / 3.8MB",
+      blockIo: "512kB / 201kB",
+      pids: "16",
+    });
+    window.__ipc.handlers.docker_volume_sizes = () => ({
+      "selfhost_runner-persist": (window as unknown as { __volSize: string }).__volSize,
+    });
+
+    const storeMod = "/src/features/services/store.ts";
+    const treeMod = "/src/features/services/tree.ts";
+    const { useServices } = await import(/* @vite-ignore */ storeMod);
+    const { useServicesTree } = await import(/* @vite-ignore */ treeMod);
+    useServices.setState({
+      settings: { connections: [{ id: "default", name: "Docker", endpoint: { kind: "default" } }], registries: [] },
+      conns: { default: { snapshot, loading: false, error: null } },
+      detailTab: "dashboard",
+    });
+    useServicesTree.setState({
+      expanded: new Set(["docker:default"]),
+      selectedKey: "docker:default:compose:selfhost",
+      selectedKeys: new Set(["docker:default:compose:selfhost"]),
+    });
+  });
+
+  await page.keyboard.press("Meta+8");
+  const services = page.getByRole("region", { name: "Services", exact: true });
+  const detail = services.locator("[data-panel][id=services-detail]");
+
+  // 1. Compose dashboard shows volume disk usage on the chip + banner and refreshes every 3s.
+  const volumeChip = detail.getByRole("button", { name: /selfhost_runner-persist/ });
+  await expect(volumeChip).toContainText("runner-persist · local · 145.4kB");
+  await expect(detail).toContainText("Disk usage: 145.4kB");
+  await page.evaluate(() => {
+    (window as unknown as { __volSize: string }).__volSize = "210.8kB";
+  });
+  await expect(volumeChip).toContainText("runner-persist · local · 210.8kB", { timeout: 5000 });
+
+  // 2. Clicking the volume chip opens VolumeDashboard with live-refreshing Disk usage.
+  await volumeChip.click();
+  await expect(detail.getByText("Volume Overview")).toBeVisible();
+  await expect(detail).toContainText("210.8kB");
+  await page.evaluate(() => {
+    (window as unknown as { __volSize: string }).__volSize = "380.2kB";
+  });
+  await expect(detail).toContainText("380.2kB", { timeout: 5000 });
+
+  // 3. Clicking the container chip opens ContainerDashboard with live-refreshing mount Size.
+  await detail.getByRole("button", { name: /selfhost-github-runner-1/ }).click();
+  await expect(detail.getByText("Volume & Bind Mounts")).toBeVisible();
+  await expect(detail).toContainText("380.2kB");
+  await page.evaluate(() => {
+    (window as unknown as { __volSize: string }).__volSize = "512.6kB";
+  });
+  await expect(detail).toContainText("512.6kB", { timeout: 5000 });
+});

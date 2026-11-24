@@ -1678,6 +1678,7 @@
   "No image layers": "No image layers",
   "Instruction": "Instruction",
   "Volume Overview": "Volume Overview",
+  "Disk usage": "Disk usage",
   "Mountpoint": "Mountpoint",
   "Containers Using Volume": "Containers Using Volume",
   "No containers are using this volume": "No containers are using this volume",
