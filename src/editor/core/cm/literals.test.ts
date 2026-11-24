@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
-import { StreamLanguage } from "@codemirror/language";
+import { ensureSyntaxTree, StreamLanguage } from "@codemirror/language";
 import { javascript } from "@codemirror/lang-javascript";
 import { kotlin } from "@codemirror/legacy-modes/mode/clike";
 import { highlightTree } from "@lezer/highlight";
@@ -60,6 +60,8 @@ describe("lineLiteralAt", () => {
       const state = EditorState.create({ doc: code(lines), extensions: typescript() });
       const pos = state.doc.toString().indexOf('"value 150"') + 3;
       const line = state.doc.lineAt(pos);
+      // This measures highlighting work after the parser has reached the caret.
+      expect(ensureSyntaxTree(state, line.to + 1, Infinity)).not.toBeNull();
       highlighted.mockClear();
       expect(lineLiteralAt(state, pos)?.kind).toBe("string");
       const covered = windows().map(([from, to]) => to! - from!);

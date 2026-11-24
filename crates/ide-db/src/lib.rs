@@ -21,7 +21,7 @@ mod watch;
 pub use watch::SourcesWatch;
 
 pub use catalog::{CatalogDatabase, CatalogSchema, SourceCatalog};
-pub use conn::{Held, Pool, QueryResult, ResultColumn};
+pub use conn::{Held, Pool, QueryResult, ResultColumn, TruncatedCell};
 pub use history::HistoryEntry;
 pub use plan::{PlanNode, PlanProperty};
 pub use source::{
@@ -273,6 +273,8 @@ pub struct DbManager {
     /// Manual-commit data sources, each with the connection of its open
     /// transaction (taken by the first statement after a commit / rollback).
     sessions: Mutex<HashMap<String, Session>>,
+    /// Result pages read on from where the previous page stopped, not by running the statement again.
+    cursors: conn::Cursors,
     /// The data sources as last read from disk, for [`DbManager::reconcile_sources`]
     /// (`None` until [`DbManager::watch_sources`]).
     on_disk: Mutex<Option<Vec<DataSource>>>,
@@ -432,6 +434,7 @@ impl DbManager {
             session_passwords: Mutex::default(),
             on_disk: Mutex::default(),
             sessions: Mutex::default(),
+            cursors: conn::Cursors::default(),
         }
     }
 
@@ -975,6 +978,7 @@ impl DbManager {
         if let Some(s) = session {
             end_session(&s).await;
         }
+        self.cursors.release_target(id);
         let pool = self.pools.lock().remove(id);
         if let Some(p) = pool {
             p.close().await;
@@ -1572,6 +1576,25 @@ impl DbManager {
         r
     }
 
+    /// Row number `row` (from 0) of the result of `statement`, whole: what a page shows cut
+    /// short. It leaves the cursor of the result's pages where it stands, and is not recorded
+    /// in the history (the statement already was).
+    pub async fn read_row(
+        &self,
+        id: &str,
+        statement: &str,
+        row: usize,
+        cancel: &CancellationToken,
+        schema: Option<&str>,
+    ) -> IdeResult<QueryResult> {
+        self.run_paged(id, statement, row, 1, cancel, schema, false).await
+    }
+
+    /// Closes the cursor that reads the pages of `statement` on `id` (its result tab was closed).
+    pub fn release_result(&self, id: &str, statement: &str, schema: Option<&str>) {
+        self.cursors.release(&conn::CursorKey::new(id, statement, schema));
+    }
+
     fn remember_statement(&self, id: &str, statement: &str) {
         let time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1644,11 +1667,43 @@ impl DbManager {
         cancel: &CancellationToken,
         schema: Option<&str>,
     ) -> IdeResult<QueryResult> {
+        self.run_paged(id, statement, skip, max_rows, cancel, schema, true).await
+    }
+
+    /// `paging`: whether the page may continue a cursor of `statement` (see `conn::cursor`).
+    #[allow(clippy::too_many_arguments)]
+    async fn run_paged(
+        &self,
+        id: &str,
+        statement: &str,
+        skip: usize,
+        max_rows: usize,
+        cancel: &CancellationToken,
+        schema: Option<&str>,
+        paging: bool,
+    ) -> IdeResult<QueryResult> {
         let pool = self.pool(id).await?;
         if let Pool::Jdbc(p) = &*pool {
             return p.query_in_schema(statement, skip, max_rows, cancel, schema).await;
         }
         let session = self.sessions.lock().get(id).cloned();
+        if !conn::cursor_statement(statement) {
+            // A cursor's open statement could keep this one waiting (a lock), and would show data from before it.
+            self.cursors.release_target(id);
+        }
+        if paging && session.is_none() && skip > 0 && pool.keeps_cursors() && conn::cursor_statement(statement) {
+            let key = conn::CursorKey::new(id, statement, schema);
+            let started = std::time::Instant::now();
+            let page = match self.cursors.resume(&key, skip, max_rows, cancel).await {
+                Some(page) => page,
+                None => {
+                    let mut held = Held::acquire(&pool).await?;
+                    held.apply_context(schema).await?;
+                    self.cursors.start(held, pool.clone(), key, skip, max_rows, cancel).await
+                }
+            };
+            return page.map(|fetched| conn::query_result(statement, fetched, started));
+        }
         let Some(session) = session else {
             if schema.is_none() {
                 return pool.execute_from(statement, skip, max_rows, cancel).await;

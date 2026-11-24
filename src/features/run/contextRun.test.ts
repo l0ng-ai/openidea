@@ -154,7 +154,13 @@ describe("run context menu group", () => {
     ).toMatchObject({
       kind: "maven",
       cwd: member,
-      args: ["test", "-Dtest=demo.AppTest#starts", "-Dsurefire.failIfNoSpecifiedTests=false"],
+      args: [
+        "test",
+        "-Dtest=demo.AppTest#starts",
+        "-Dsurefire.failIfNoSpecifiedTests=false",
+        "-DskipTests=false",
+        "-Dmaven.test.skip=false",
+      ],
     });
     expect(produceContext({ ...main, path: `${ROOT}/src/main/java/demo/App.java` }, OPTIMISTIC)?.config).toMatchObject({
       kind: "spring-boot",

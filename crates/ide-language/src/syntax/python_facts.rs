@@ -60,6 +60,11 @@ pub struct PythonMethodFacts {
     /// Decorated with `override` from `typing` / `typing_extensions`.
     pub override_decorated: bool,
     pub body: MethodBody,
+    /// For 'Method may be static': the receiver parameter up to the next parameter (what
+    /// Make method static deletes), when the method is undecorated and not a dunder, and its
+    /// body does more than `pass`, `...`, a docstring or one `raise` without ever naming the
+    /// receiver, `super` or `__class__`.
+    pub unused_receiver: Option<crate::Range>,
 }
 
 /// What a method body does, for the shapes a check can decide without guessing.
@@ -209,16 +214,63 @@ fn methods_of(class: Node, text: &str, idx: &LineIndex, imports: &ImportBindings
         }
         let decorators = decorators_of(method, text);
         out.push(PythonMethodFacts {
-            name,
             selection: idx.range(name_node.start_byte(), name_node.end_byte()),
             definition_line: member.start_position().row as u32,
             params: parameters_of(method, text),
             abstract_method: decorators.iter().any(|d| last_segment(d) == "abstractmethod"),
             override_decorated: decorators.iter().any(|d| imports.is_typing_override(d)),
             body: body_of(method, text),
+            unused_receiver: if decorators.is_empty() && !is_dunder(&name) {
+                unused_receiver(method, text).map(|(start, end)| idx.range(start, end))
+            } else {
+                None
+            },
+            name,
         });
     }
     out
+}
+
+fn is_dunder(name: &str) -> bool {
+    name.len() > 4 && name.starts_with("__") && name.ends_with("__")
+}
+
+/// The bytes Make method static deletes: the receiver up to the next parameter (or up to the
+/// closing parenthesis), when the body does real work without naming the receiver.
+fn unused_receiver(function: Node, text: &str) -> Option<(usize, usize)> {
+    let body = function.child_by_field_name("body")?;
+    let statements: Vec<Node> = statements_of(body).into_iter().filter(|s| !is_string(*s)).collect();
+    // Stubs and placeholders (`pass`, `...`, `raise NotImplementedError`) are meant to be overridden.
+    if statements.iter().all(|s| is_noop(*s))
+        || matches!(statements.as_slice(), [only] if only.kind() == "raise_statement")
+    {
+        return None;
+    }
+    let params = function.child_by_field_name("parameters")?;
+    let mut cursor = params.walk();
+    let mut named = params.named_children(&mut cursor);
+    let receiver = named.next()?;
+    let name = match receiver.kind() {
+        "identifier" => receiver,
+        "typed_parameter" => receiver.named_child(0).filter(|n| n.kind() == "identifier")?,
+        _ => return None,
+    };
+    let name = &text[name.byte_range()];
+    let next = named.next();
+    if next.is_some_and(|n| matches!(n.kind(), "positional_separator" | "keyword_separator")) {
+        return None;
+    }
+    let mut used = false;
+    let mut cursor = body.walk();
+    visit(&mut cursor, &mut |node| {
+        used |= node.kind() == "identifier"
+            && matches!(&text[node.byte_range()], n if n == name || n == "super" || n == "__class__");
+    });
+    if used {
+        return None;
+    }
+    let end = next.map_or(params.end_byte() - 1, |n| n.start_byte());
+    Some((receiver.start_byte(), end))
 }
 
 /// The parameter names of a `function_definition`, or `None` when the signature contains a
@@ -577,5 +629,23 @@ mod tests {
     fn decorated_classes_start_at_their_decorator() {
         let f = facts("@dataclass\nclass C:\n    x: int\n");
         assert_eq!(f.classes[0].definition_line, 0);
+    }
+
+    #[test]
+    fn unused_receiver_is_the_parameter_make_static_deletes() {
+        let src = "class C:\n    def helper(self, x):\n        return x * 2\n\n    def only(self):\n        print(1)\n\n    def typed(self: 'C',) -> int:\n        return 1\n\n    def uses(self):\n        return self.x\n\n    def nested(self):\n        return lambda: self\n\n    def sup(self):\n        return super().sup()\n\n    def stub(self):\n        raise NotImplementedError\n\n    def empty(self):\n        \"\"\"Doc.\"\"\"\n\n    @property\n    def prop(self):\n        return 1\n\n    def __repr__(self):\n        return 'C'\n\n    def positional(self, /, x):\n        return x\n";
+        let f = facts(src);
+        let deleted = |name: &str| {
+            method(&f, "C", name).unused_receiver.map(|r| {
+                let line = src.lines().nth(r.start.line as usize).unwrap();
+                line[r.start.col as usize..r.end.col as usize].to_string()
+            })
+        };
+        assert_eq!(deleted("helper").as_deref(), Some("self, "));
+        assert_eq!(deleted("only").as_deref(), Some("self"));
+        assert_eq!(deleted("typed").as_deref(), Some("self: 'C',"));
+        for name in ["uses", "nested", "sup", "stub", "empty", "prop", "__repr__", "positional"] {
+            assert_eq!(deleted(name), None, "{name}");
+        }
     }
 }
