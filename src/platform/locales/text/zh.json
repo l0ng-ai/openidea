@@ -10055,7 +10055,7 @@
   "Implementation of {name} in {file}": "{file} 中 {name} 的实现",
   "Stub of {name} in {file}": "{file} 中 {name} 的存根",
   "This color can't be changed with the picker": "无法用颜色选择器修改此颜色",
-  "HotSwap": "HotSwap",
+  "HotSwap": "热替换 (HotSwap)",
   "Reload classes after compilation": "编译后重新加载类",
   "Reload changed classes into running Java debug sessions after Build Project, Build Module, or Recompile succeeds.": "在 Build Project、Build Module 或 Recompile 编译成功后，将修改的类重新加载到运行中的 Java 调试会话。",
   "Reload '{fileName}' into the running debug session?": "要将 '{fileName}' 重新加载到正在运行的调试会话中吗？",
