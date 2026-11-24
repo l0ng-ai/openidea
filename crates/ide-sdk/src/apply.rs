@@ -2797,6 +2797,16 @@ mod maven_linkage_tests {
     }
 
     #[test]
+    fn gradle_classpath_script_applies_plugins_to_the_project() {
+        // Inside the script's closures a bare `apply` is the init script's own: on Gradle 7 the
+        // Eclipse plugin then fails to start and the whole import fails.
+        let script = include_str!("gradle-classpath.init.gradle");
+        let bare: Vec<&str> = script.lines().filter(|line| line.trim_start().starts_with("apply ")).collect();
+        assert!(bare.is_empty(), "{bare:?}");
+        assert!(script.contains("project.apply plugin: 'eclipse'"));
+    }
+
+    #[test]
     fn gradle_import_of_a_gradle_build_runs_on_the_project_jdk_like_the_ides_builds() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
