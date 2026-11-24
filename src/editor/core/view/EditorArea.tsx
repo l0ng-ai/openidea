@@ -62,6 +62,7 @@ import {
 } from "@/ui";
 import {
   editorController,
+  KEPT_KIND_EDITORS,
   isTextInput,
   tabIcon,
   tabTitle,
@@ -213,7 +214,7 @@ function PaneView({ paneId }: { paneId: string }) {
     // A kind's title may change without the tab state (a renamed agent task).
     void titleRevision;
     const names = tabs.map((t) => tabTitle(t.input, kinds));
-    return tabs.map((t, i) => {
+    const allItems: TabItem[] = tabs.map((t, i) => {
       const full = names[i]!;
       const dot = full.lastIndexOf(".");
       const name = tabLabels[i] ?? (t.input.kind === "file" && !showExtension && dot > 0 ? full.slice(0, dot) : full);
@@ -264,6 +265,7 @@ function PaneView({ paneId }: { paneId: string }) {
         trailing: kindMark,
       };
     });
+    return allItems.filter((_item, i) => !kinds.get(tabs[i]!.input.kind)?.tabless);
   }, [
     files,
     tabs,
@@ -285,11 +287,12 @@ function PaneView({ paneId }: { paneId: string }) {
     showFullPathOnHover,
   ]);
 
-  const pinnedCount = tabs.filter((t) => t.pinned).length;
+  const visibleTabs = tabs.filter((t) => !kinds.get(t.input.kind)?.tabless);
+  const pinnedCount = visibleTabs.filter((t) => t.pinned).length;
   // Settings › Editor Tabs › Tab placement Left / Right: a vertical, scrolling column.
   const vertical = tabPrefs.placement === "left" || tabPrefs.placement === "right";
   const sideTabsStyle = useSideTabsStyle();
-  const pinnedRow = tabPrefs.pinnedSeparateRow && pinnedCount > 0 && pinnedCount < tabs.length;
+  const pinnedRow = tabPrefs.pinnedSeparateRow && pinnedCount > 0 && pinnedCount < visibleTabs.length;
   const dnd = useMemo(() => {
     // A tab released outside the window detaches into a forced new window.
     const dropOutside = (raw: string) => {
@@ -301,12 +304,17 @@ function PaneView({ paneId }: { paneId: string }) {
       payload: (tabId) => JSON.stringify({ paneId, tabId }),
       onDrop: (raw, index) => {
         const p = parseTabPayload(raw);
-        if (p) ctrl.moveTab(p.paneId, p.tabId, paneId, index + offset, pin);
+        if (p) {
+          const all = useTabs.getState().panes[paneId]?.tabs ?? [];
+          const shown = all.filter((t) => !kinds.get(t.input.kind)?.tabless);
+          const before = shown[index + offset];
+          ctrl.moveTab(p.paneId, p.tabId, paneId, before ? all.indexOf(before) : all.length, pin);
+        }
       },
       onDropOutside: dropOutside,
     });
     return { all: strip(0), pinned: strip(0, true), rest: strip(pinnedCount, false) };
-  }, [ctrl, paneId, pinnedCount]);
+  }, [ctrl, paneId, pinnedCount, kinds]);
 
   // Dropping a tab or project files on the editor: an edge splits, the middle opens / moves here.
   const contentRef = useRef<HTMLDivElement>(null);
@@ -394,7 +402,8 @@ function PaneView({ paneId }: { paneId: string }) {
       trailing={trailing}
     />
   );
-  const actions = active && !hidden ? <EditorTabActions paneId={paneId} tab={active} /> : undefined;
+  const tabless = !!active && !!kinds.get(active.input.kind)?.tabless;
+  const actions = active && !hidden && !tabless ? <EditorTabActions paneId={paneId} tab={active} /> : undefined;
 
   return (
     <section
@@ -412,22 +421,26 @@ function PaneView({ paneId }: { paneId: string }) {
       onFocus={onFocus}
       onBlur={onBlur}
     >
-      {pinnedRow ? (
-        // Settings › Editor Tabs › Show pinned tabs in a separate row.
-        <div className={clsx(styles.tabRows, hidden && styles.tabsHidden)}>
-          {strip(items.slice(0, pinnedCount), dnd.pinned, vertical ? actions : undefined)}
-          {strip(items.slice(pinnedCount), dnd.rest, vertical ? undefined : actions)}
-        </div>
-      ) : (
-        strip(items, dnd.all, actions)
+      {items.length > 0 &&
+        (pinnedRow ? (
+          // Settings › Editor Tabs › Show pinned tabs in a separate row.
+          <div className={clsx(styles.tabRows, hidden && styles.tabsHidden)}>
+            {strip(items.slice(0, pinnedCount), dnd.pinned, vertical ? actions : undefined)}
+            {strip(items.slice(pinnedCount), dnd.rest, vertical ? undefined : actions)}
+          </div>
+        ) : (
+          strip(items, dnd.all, actions)
+        ))}
+      {items.length > 0 && vertical && !hidden && (
+        <SideTabsResizer side={tabPrefs.placement === "left" ? "left" : "right"} />
       )}
-      {vertical && !hidden && <SideTabsResizer side={tabPrefs.placement === "left" ? "left" : "right"} />}
       <div className={styles.body}>
         <div
           className={styles.content}
           role="tabpanel"
           id={active ? `editor-${paneId}-panel-${active.id}` : undefined}
-          aria-labelledby={active ? `editor-${paneId}-tab-${active.id}` : undefined}
+          aria-labelledby={active && !tabless ? `editor-${paneId}-tab-${active.id}` : undefined}
+          aria-label={active && tabless ? tabTitle(active.input, kinds) : undefined}
           ref={contentRef}
         >
           {kept.map((tab) => (
@@ -542,14 +555,11 @@ function PaneContent({ paneId, tab, tabsVisible }: { paneId: string; tab: Tab; t
   return <KindEditor key={tab.id} tab={tab} shown />;
 }
 
-/** Tabs of a pane kept mounted while hidden: the most recently used ones of `keepAlive` kinds. */
-const KEPT_TABS = 5;
-
 function keptTabs(tabs: Tab[], mru: string[], kinds: Map<string, EditorKindContribution>): Tab[] {
   const recent = mru
     .map((id) => tabs.find((t) => t.id === id))
     .filter((t): t is Tab => !!t && !!kinds.get(t.input.kind)?.keepAlive)
-    .slice(0, KEPT_TABS);
+    .slice(0, KEPT_KIND_EDITORS);
   // In tab order, so switching tabs doesn't move their DOM (which would lose scroll offsets).
   return tabs.filter((t) => recent.includes(t));
 }

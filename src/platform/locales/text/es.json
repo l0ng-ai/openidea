@@ -4897,8 +4897,6 @@
   "Add to .git/info/exclude": "Agregar a .git/info/exclude",
   "Delete Agent Tasks": "Eliminar tareas del agente",
   "Open Agent Task": "Abrir tarea del agente",
-  "Open Agent Task in Editor": "Abrir tarea del agente en el editor",
-  "Open Agent Task in Tool Window": "Abrir tarea del agente en la ventana de herramientas",
   "Archive Agent Tasks": "Archivar tareas del agente",
   "Delete {count} agent tasks? Their branches and files outside worktrees are kept.": "¿Eliminar {count} tareas del agente? Sus ramas y archivos fuera de los árboles de trabajo se conservarán.",
   "Also remove their worktree folders": "También eliminar sus carpetas de árbol de trabajo",
@@ -5509,10 +5507,7 @@
   "cannot copy overlapping paths": "no se pueden copiar rutas superpuestas",
   "cannot copy through a destination symlink": "no se puede copiar a través de un enlace simbólico de destino",
   "expected a relative comparison entry path": "se esperaba una ruta relativa de entrada de comparación",
-  "Agent sessions": "Sesiones del agente",
   "Back to conversation": "Volver a la conversación",
-  "Chat in Tool Window": "Chat en ventana de herramientas",
-  "Chat in Editor": "Chat en el editor",
   "Agent settings": "Configuración del agente",
   "Describe a task…": "Describa una tarea…",
   "Formatting profile": "Perfil de formato",
@@ -6101,6 +6096,7 @@
   "Updated {updated} plugins": "Se actualizaron {updated} plugins",
   "This version is signed with a different key than the installed one, and the publisher's earlier key doesn't vouch for it. Only continue if you know the publisher changed keys.": "Esta versión está firmada con una clave diferente a la instalada y la clave anterior del editor no la avala. Continúe solo si sabe que el editor cambió de clave.",
   "Select files in the Project view, Commit tool window, or open a file in the editor": "Seleccione archivos en la vista Proyecto, la ventana de Confirmación, o abra un archivo en el editor",
+  "Agent sessions": "Sesiones del agente",
   "Agent Reference": "Referencia del agente",
   "Copy Agent Reference": "Copiar referencia del agente"
 }

@@ -1,4 +1,4 @@
-/** Docking agent conversations between the editor and the Agents tool window by drag & drop. */
+/** Docking agent conversations between the main editor and a separate conversation pane by drag & drop. */
 import { expect, test, type Page } from "@playwright/test";
 
 const TASK = {
@@ -35,9 +35,9 @@ async function seedAndDock(page: Page) {
       unread: new Set(),
       docked: null,
     });
-    store.dockTask(task.id);
+    store.setSessionLocation("pane", task.id);
   }, TASK);
-  await page.locator("span[title='Repro task']").first().waitFor();
+  await page.getByRole("region", { name: "Agent Chat", exact: true }).waitFor();
 }
 
 test("drags the docked conversation back onto the editor", async ({ page }) => {
@@ -48,7 +48,7 @@ test("drags the docked conversation back onto the editor", async ({ page }) => {
   await page.getByRole("tab", { name: "README.md" }).waitFor();
   await seedAndDock(page);
 
-  const title = page.locator("span[title='Repro task']").first();
+  const title = page.getByRole("region", { name: "Agent Chat", exact: true }).locator("span[title='Repro task']");
   const to = await page.getByRole("tabpanel").first().boundingBox();
   const from = await title.boundingBox();
   await page.mouse.move(from!.x + from!.width / 2, from!.y + from!.height / 2);
@@ -56,8 +56,9 @@ test("drags the docked conversation back onto the editor", async ({ page }) => {
   await page.mouse.move(to!.x + to!.width / 2, to!.y + to!.height / 2, { steps: 10 });
   await page.mouse.up();
 
-  await expect(page.getByRole("tab", { name: "Repro task" })).toBeVisible();
-  await expect(page.getByRole("tree", { name: "Agent tasks" })).toBeVisible();
+  await expect(page.getByRole("tabpanel", { name: "Repro task", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Repro task" })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Agent Chat", exact: true })).toBeHidden();
 });
 
 test("drags the docked conversation back onto the empty editor", async ({ page }) => {
@@ -68,7 +69,7 @@ test("drags the docked conversation back onto the empty editor", async ({ page }
   await seedAndDock(page);
   await expect(page.locator("[data-editor-area] [role='tabpanel']")).toHaveCount(0);
 
-  const title = page.locator("span[title='Repro task']").first();
+  const title = page.getByRole("region", { name: "Agent Chat", exact: true }).locator("span[title='Repro task']");
   const to = await page.getByText("Drop files here to open them").boundingBox();
   const from = await title.boundingBox();
   await page.mouse.move(from!.x + from!.width / 2, from!.y + from!.height / 2);
@@ -76,44 +77,63 @@ test("drags the docked conversation back onto the empty editor", async ({ page }
   await page.mouse.move(to!.x + to!.width / 2, to!.y + to!.height / 2, { steps: 10 });
   await page.mouse.up();
 
-  await expect(page.getByRole("tab", { name: "Repro task" })).toBeVisible();
-});
-
-test("docks a session tab dropped on the tool window", async ({ page }) => {
-  await page.goto("/");
-  await page.getByRole("tree", { name: "Project" }).waitFor();
-  await page.getByRole("treeitem", { name: "README.md", exact: true }).dblclick();
-  await page.getByRole("tab", { name: "README.md" }).waitFor();
-  await page.evaluate(async (task) => {
-    const storePath = "/src/features/agents/store.ts";
-    const modelPath = "/src/features/agents/model.ts";
-    const contributionsPath = "/src/workbench/contributions.ts";
-    const store = await import(storePath);
-    const { TOOL_WINDOW } = await import(modelPath);
-    const { toolWindowService } = await import(contributionsPath);
-    store.useAgents.setState({
-      loaded: true,
-      error: null,
-      providers: [],
-      tasks: new Map([[task.id, task]]),
-      unread: new Set(),
-      docked: null,
-    });
-    toolWindowService().show(TOOL_WINDOW, true);
-    store.openTask(task.id);
-  }, TASK);
-  await page.getByRole("tab", { name: "Repro task" }).waitFor();
-
-  const tab = page.getByRole("tab", { name: "Repro task" });
-  const to = await page.getByRole("tree", { name: "Agent tasks" }).boundingBox();
-  const from = await tab.boundingBox();
-  await page.mouse.move(from!.x + from!.width / 2, from!.y + from!.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(to!.x + to!.width / 2, to!.y + to!.height / 2, { steps: 10 });
-  await page.mouse.up();
-
-  // Docked: the tab closes and the tool window gives itself to the conversation.
+  await expect(page.getByRole("tabpanel", { name: "Repro task", exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Repro task" })).toHaveCount(0);
-  await expect(page.getByRole("tree", { name: "Agent tasks" })).toHaveCount(0);
-  await expect(page.locator("span[title='Repro task']").first()).toBeVisible();
 });
+
+for (const [side, label] of [
+  ["left", "Left"],
+  ["right", "Right"],
+  ["top", "Top"],
+  ["bottom", "Bottom"],
+] as const) {
+  test(`opens chat on the ${side} and returns it to the main area without losing a draft`, async ({ page }) => {
+    await page.goto("/");
+    await page.getByRole("tree", { name: "Project" }).waitFor();
+    await page.locator("#splash").waitFor({ state: "detached" });
+    await page.getByRole("treeitem", { name: "README.md", exact: true }).dblclick();
+    await page.getByRole("button", { name: "Agents", exact: true }).click();
+    await seedAndDock(page);
+    const agents = () => page.locator('[data-toolwindow="agents"]');
+    const chat = page.getByRole("region", { name: "Agent Chat", exact: true });
+    const before = await agents().boundingBox();
+    const layout = await page.evaluate(async () => {
+      const path = "/src/workbench/toolwindows/store.ts";
+      const { placements, sizes, visible, viewModes, splits, windowSizes } = (
+        await import(path)
+      ).useToolWindowLayout.getState();
+      return JSON.stringify({ placements, sizes, visible, viewModes, splits, windowSizes });
+    });
+    await chat.getByRole("textbox", { name: "Message", exact: true }).fill("Keep this conversation draft");
+    const choose = async (name: string) => {
+      await agents().getByRole("button", { name: "Options", exact: true }).click();
+      await page.getByRole("menuitem", { name: "Open Chat In", exact: true }).hover();
+      await page.getByRole("menuitemcheckbox", { name, exact: true }).click();
+    };
+    await choose(label);
+    await expect(page.locator(`[data-editor-area] [data-chat-side="${side}"]`)).toBeVisible();
+    expect(await agents().boundingBox()).toEqual(before);
+    expect(
+      await page.evaluate(async () => {
+        const path = "/src/workbench/toolwindows/store.ts";
+        const { placements, sizes, visible, viewModes, splits, windowSizes } = (
+          await import(path)
+        ).useToolWindowLayout.getState();
+        return JSON.stringify({ placements, sizes, visible, viewModes, splits, windowSizes });
+      }),
+    ).toBe(layout);
+    await expect(page.getByRole("tree", { name: "Agent tasks" })).toBeVisible();
+    await expect(chat.getByRole("textbox", { name: "Message", exact: true })).toHaveText(
+      "Keep this conversation draft",
+    );
+    await choose("Main Area");
+    const conversation = page.getByRole("tabpanel", { name: TASK.title, exact: true });
+    await expect(conversation).toBeVisible();
+    await expect(conversation.getByRole("textbox", { name: "Message", exact: true })).toHaveText(
+      "Keep this conversation draft",
+    );
+    await expect(page.getByRole("tab", { name: TASK.title, exact: true })).toHaveCount(0);
+    await expect(page.getByRole("tab", { name: "README.md", exact: true })).toBeVisible();
+    await expect(page.getByRole("tree", { name: "Agent tasks" })).toBeVisible();
+  });
+}

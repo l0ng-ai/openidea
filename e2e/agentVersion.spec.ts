@@ -69,7 +69,8 @@ test("refreshes an upgraded agent's version on window focus without losing the d
 });
 
 test("refreshes an upgraded agent's version when New Task is reopened", async ({ workbench: page }) => {
-  await page.getByRole("button", { name: "Close Tab", exact: true }).click();
+  await page.keyboard.press("Meta+w");
+  await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeHidden();
   await page.evaluate(() => window.dispatchEvent(new Event("test:agent-upgraded")));
   await page.getByRole("button", { name: "New Agent Task", exact: true }).click();
   await expectVersion(page, "18.20.2");

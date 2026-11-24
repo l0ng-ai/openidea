@@ -8,6 +8,7 @@ import { EditorShownProvider } from "@/workbench/contributions";
 import { hideContextMenu, useContextMenuStore } from "@/ui";
 import type { AgentChange, AgentCommit, AgentEntry, AgentTask } from "@/bindings";
 import { AgentsView } from "./AgentsView";
+import { ChatLayout } from "./ChatLayout";
 import { SessionEditor } from "./SessionEditor";
 import { conversationRows } from "./session/conversationRows";
 import { entriesKey, SESSION_KIND, sessionKey, type SubagentEntry } from "./model";
@@ -2012,13 +2013,17 @@ describe("session state across tasks and hosts", () => {
   it("returns to the task conversation when the docked task changes after opening a subagent", async () => {
     const dispose = registerActions(taskActions);
     try {
-      useAgents.setState({ docked: "A", sessionLocation: "toolWindow" });
-      render(<AgentsView />);
+      useAgents.setState({ docked: "A", sessionLocation: "pane" });
+      render(
+        <ChatLayout>
+          <div />
+        </ChatLayout>,
+      );
       fireEvent.click(screen.getByRole("button", { name: /Explore task A/ }));
       expect(await screen.findByText("Child answer")).toBeInTheDocument();
       expect(screen.queryByRole("textbox", { name: "Message" })).not.toBeInTheDocument();
-      fireEvent.click(screen.getByRole("button", { name: "Agent sessions" }));
-      fireEvent.click(within(screen.getByRole("tree", { name: "Agent tasks" })).getByText("B"));
+      render(<AgentsView />);
+      fireEvent.mouseDown(within(screen.getByRole("tree", { name: "Agent tasks" })).getByText("B"), { button: 0 });
       expect(await screen.findByText("Answer B")).toBeInTheDocument();
       expect(screen.getByRole("textbox", { name: "Message" })).toBeInTheDocument();
       expect(screen.queryByText("Child answer")).not.toBeInTheDocument();
@@ -2044,8 +2049,12 @@ describe("session state across tasks and hosts", () => {
       },
     ];
     localStorage.setItem("openidea.agents.changesOpen.v1", JSON.stringify({ A: true }));
-    useAgents.setState({ docked: "A", sessionLocation: "toolWindow" });
-    render(<AgentsView />);
+    useAgents.setState({ docked: "A", sessionLocation: "pane" });
+    render(
+      <ChatLayout>
+        <div />
+      </ChatLayout>,
+    );
     await screen.findByText("Answer A");
     await screen.findByRole("button", { name: /1 changed file/ });
     expect(screen.queryByRole("complementary", { name: "Changes" })).toBeNull();
@@ -2099,8 +2108,12 @@ describe("session state across tasks and hosts", () => {
     });
     view.unmount();
     viewport = 150;
-    useAgents.setState({ docked: "A", sessionLocation: "toolWindow" });
-    const dock = render(<AgentsView />);
+    useAgents.setState({ docked: "A", sessionLocation: "pane" });
+    const dock = render(
+      <ChatLayout>
+        <div />
+      </ChatLayout>,
+    );
     await screen.findByText("Answer A");
     expect(stream().scrollTop).toBe(stick ? height - viewport : 230);
     height = 2400;
@@ -2364,7 +2377,7 @@ describe("meters in the task header", () => {
 
 describe("sessions from other apps", () => {
   const openHistory = async () => {
-    act(() => useAgents.setState({ docked: "A" }));
+    act(() => useAgents.setState({ docked: "A", sessionLocation: "toolWindow" }));
     render(<AgentsView />);
     fireEvent.click(screen.getByRole("button", { name: "Agent sessions" }));
     await waitFor(() => expect(screen.getByText("Sessions from other apps")).toBeInTheDocument());
@@ -2441,7 +2454,7 @@ describe("sessions from other apps", () => {
 
   it("leaves the import link out of the docked popup's empty list", async () => {
     backend.external = [loginFix];
-    act(() => useAgents.setState({ tasks: new Map(), docked: "A" }));
+    act(() => useAgents.setState({ tasks: new Map(), docked: "A", sessionLocation: "toolWindow" }));
     render(<AgentsView />);
     fireEvent.click(screen.getByRole("button", { name: "Agent sessions" }));
     await waitFor(() => expect(screen.getByText("Login fix")).toBeInTheDocument());
@@ -2902,8 +2915,8 @@ describe("import sessions dialog", () => {
     expect(screen.getByRole("button", { name: "Import" })).toBeDisabled();
   });
 
-  it("opens from the empty task list", () => {
-    act(() => useAgents.setState({ tasks: new Map() }));
+  it.each([null, "A"])("opens from the empty task list even with a separate conversation (%s)", (docked) => {
+    act(() => useAgents.setState({ tasks: new Map(), docked }));
     render(<AgentsView />);
     fireEvent.click(screen.getByRole("button", { name: "Import Sessions…" }));
     expect(useAgents.getState().importOpen).toBe(true);

@@ -136,6 +136,8 @@ export interface EditorKindContribution {
   component: ComponentType<{ input: EditorInput }>;
   title: (input: EditorInput) => string;
   icon?: (input: EditorInput) => string;
+  /** Managed in its feature's list instead of the editor tab strip and Switcher. */
+  tabless?: boolean;
   /** Small marker rendered in the tab's trailing slot (a status dot for live state). */
   trailing?: (input: EditorInput) => ReactNode;
   /**
@@ -340,12 +342,19 @@ export interface WorkbenchBannerContribution {
   component: ComponentType;
 }
 
+/** Wraps the file/editor area while keeping its children mounted across layout changes. */
+export interface EditorAreaWrapperContribution {
+  id: string;
+  component: ComponentType<{ children: ReactNode }>;
+}
+
 interface Contributions {
   workbenchBanners: Map<string, WorkbenchBannerContribution>;
   toolWindows: Map<string, ToolWindowContribution>;
   statusItems: Map<string, StatusItemContribution>;
   overlays: Map<string, OverlayContribution>;
   editorKinds: Map<string, EditorKindContribution>;
+  editorAreaWrappers: Map<string, EditorAreaWrapperContribution>;
   titleItems: Map<string, TitleItemContribution>;
   serviceViews: Map<string, ServiceViewContribution>;
 }
@@ -356,6 +365,7 @@ export const useContributions = create<Contributions>(() => ({
   statusItems: new Map(),
   overlays: new Map(),
   editorKinds: new Map(),
+  editorAreaWrappers: new Map(),
   titleItems: new Map(),
   serviceViews: new Map(),
 }));
@@ -383,6 +393,7 @@ export const registerWorkbenchBanner = (c: WorkbenchBannerContribution) => regis
 export const registerToolWindow = (c: ToolWindowContribution) => register("toolWindows", c.id, c);
 export const registerStatusItem = (c: StatusItemContribution) => register("statusItems", c.id, c);
 export const registerOverlay = (c: OverlayContribution) => register("overlays", c.id, c);
+export const registerEditorAreaWrapper = (c: EditorAreaWrapperContribution) => register("editorAreaWrappers", c.id, c);
 
 type GitLogChecksCell = ComponentType<{ root: string; revision: string }>;
 export const useGitLogChecks = create<{ cell: GitLogChecksCell | null }>(() => ({ cell: null }));

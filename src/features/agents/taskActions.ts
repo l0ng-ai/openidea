@@ -1,6 +1,6 @@
 import type { AgentTask } from "@/bindings";
 import type { Action } from "@/platform/actions";
-import { t, tx } from "@/platform/i18n";
+import { tx } from "@/platform/i18n";
 import { auxiliaryWindow } from "@/platform/auxWindow";
 import { useProject } from "@/platform/project";
 import type { MenuItem } from "@/ui";
@@ -8,6 +8,7 @@ import { confirm, showError, confirmChecked } from "@/workbench/messages";
 import { promptInput } from "@/workbench/inputDialogs";
 import { hasTaskTerminal, isBusy } from "./model";
 import { groupNameError, type OrganizeGroup } from "./organize";
+import { returnTaskToProject } from "./taskWindows";
 import {
   archiveTask,
   deleteTaskGroup,
@@ -25,6 +26,10 @@ import {
   openTaskInEditorLocation,
   renameTask,
   setSessionLocation,
+  setChatSide,
+  closeChatPane,
+  openHome,
+  type ChatSide,
   showImportSessions,
   undockTask,
   useAgents,
@@ -33,14 +38,61 @@ import {
 /** The Agents tool window's options menu: where conversations open, a new list group, importing sessions. */
 export function useAgentsHeaderMenu(): MenuItem[] {
   const location = useAgents((s) => s.sessionLocation);
+  const anchor = useAgents((s) => s.chatSide);
   return [
-    // A radio pair: check marks only, no action icons beside them.
-    { kind: "action", action: "agents.useToolWindow", icon: "", checked: location === "toolWindow" },
-    { kind: "action", action: "agents.useEditor", icon: "", checked: location === "editor" },
+    chatPlacementMenu(undefined, location, anchor),
     { kind: "separator" },
     { kind: "action", action: "agents.newTaskGroup", label: "New Group…", icon: "plus" },
     { kind: "action", action: "agents.importSessions", icon: "download" },
   ];
+}
+
+/** Shared by the Agents options menu and a conversation's menu. */
+export function chatPlacementMenu(
+  task?: string,
+  location = useAgents.getState().sessionLocation,
+  anchor: ChatSide = useAgents.getState().chatSide,
+): MenuItem {
+  return {
+    kind: "item",
+    label: "Open Chat In",
+    submenu: [
+      {
+        kind: "action",
+        action: "agents.useToolWindow",
+        label: "Agents",
+        icon: "",
+        checked: location === "toolWindow",
+        arg: task,
+      },
+      {
+        kind: "action",
+        action: "agents.useEditor",
+        label: "Main Area",
+        icon: "",
+        checked: location === "editor",
+        arg: task,
+      },
+      ...(["left", "right", "top", "bottom"] as const).map((side) => ({
+        kind: "action" as const,
+        action: `agents.chat.${side}`,
+        label: side === "left" ? "Left" : side === "right" ? "Right" : side === "top" ? "Top" : "Bottom",
+        icon: "",
+        checked: location === "pane" && anchor === side,
+        arg: task,
+      })),
+      { kind: "separator" },
+      { kind: "action", action: "agents.moveToNewWindow", label: "New Window", arg: task },
+    ],
+  };
+}
+
+async function placeChat(side: ChatSide, task: unknown) {
+  setChatSide(side);
+  setSessionLocation("pane", typeof task === "string" ? task : undefined);
+  const state = useAgents.getState();
+  if (!state.docked && !state.homeOpen) openHome();
+  if (typeof task === "string") await returnTaskToProject(task);
 }
 
 const canArchive = (task: AgentTask) => !isBusy(task.status) && task.status !== "archived";
@@ -212,6 +264,13 @@ export function groupMenu(group: OrganizeGroup): MenuItem[] {
 
 export const taskActions: Action[] = [
   {
+    id: "agents.closeChatPane",
+    title: "Hide Conversation",
+    category: "Agents",
+    hidden: true,
+    run: closeChatPane,
+  },
+  {
     id: "agents.importSessions",
     title: "Import Sessions…",
     category: "Agents",
@@ -233,21 +292,45 @@ export const taskActions: Action[] = [
   },
   {
     id: "agents.useToolWindow",
-    title: "Chat in Tool Window",
+    title: "Chat in Agents",
     category: "Agents",
     icon: "open-in-tool-window",
-    run: () => setSessionLocation("toolWindow"),
+    hidden: true,
+    run: async ({ arg }) => {
+      setSessionLocation("toolWindow", typeof arg === "string" ? arg : undefined);
+      const state = useAgents.getState();
+      if (!state.docked && !state.homeOpen) openHome();
+      if (typeof arg === "string") await returnTaskToProject(arg);
+    },
   },
   {
     id: "agents.useEditor",
-    title: "Chat in Editor",
+    title: "Chat in Main Area",
     category: "Agents",
     icon: "editor-only",
-    run: () => setSessionLocation("editor"),
+    enabled: () => !auxiliaryWindow(),
+    run: async ({ arg }) => {
+      setSessionLocation("editor", typeof arg === "string" ? arg : undefined);
+      if (typeof arg === "string") await returnTaskToProject(arg);
+    },
   },
+  ...(
+    [
+      ["left", "Chat on Left"],
+      ["right", "Chat on Right"],
+      ["top", "Chat at Top"],
+      ["bottom", "Chat at Bottom"],
+    ] as const
+  ).map(([side, title]): Action => ({
+    id: `agents.chat.${side}`,
+    title,
+    category: "Agents",
+    enabled: () => !auxiliaryWindow(),
+    run: ({ arg }) => placeChat(side, arg),
+  })),
   {
     id: "agents.openTaskInEditor",
-    title: "Open Agent Task in Editor",
+    title: "Open Agent Task in Main Area",
     category: "Agents",
     hidden: true,
     run: ({ arg }) => {
@@ -265,7 +348,7 @@ export const taskActions: Action[] = [
   },
   {
     id: "agents.dockTask",
-    title: "Open Agent Task in Tool Window",
+    title: "Open Agent Task in Conversation Pane",
     category: "Agents",
     hidden: true,
     run: ({ arg }) => {
@@ -274,7 +357,7 @@ export const taskActions: Action[] = [
   },
   {
     id: "agents.undockTask",
-    title: "Open Agent Task in Editor",
+    title: "Open Agent Task in Main Area",
     category: "Agents",
     hidden: true,
     run: () => undockTask(),
@@ -397,16 +480,7 @@ export function taskMenu(tasks: AgentTask[]): MenuItem[] {
     ...(!multiple
       ? ([
           { kind: "action", action: "agents.renameTask", label: "Rename…", icon: "edit", arg: task.id },
-          ...(!auxiliaryWindow()
-            ? ([
-                {
-                  kind: "action",
-                  action: "agents.moveToNewWindow",
-                  label: t("app.window.askNew"),
-                  arg: task.id,
-                },
-              ] satisfies MenuItem[])
-            : []),
+          ...(!auxiliaryWindow() ? [chatPlacementMenu(task.id)] : []),
           ...(hasTaskTerminal(task, projectRoot)
             ? ([
                 { kind: "action", action: "terminal.openAt", label: "Terminal", icon: "terminal", arg: task.cwd },

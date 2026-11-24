@@ -67,13 +67,13 @@ Codex keeps its own project trust decision. If it disables the current project's
 
   </Step>
   <Step title="Send">
-    The task opens as an editor tab and starts.
+    The task opens in the main area and starts.
   </Step>
 </Steps>
 
 ## Work with a task
 
-The task tab shows the conversation: your messages, the agent's replies, its reasoning, plans, the tools it runs and the subagents it starts. While the agent works:
+The conversation shows: your messages, the agent's replies, its reasoning, plans, the tools it runs and the subagents it starts. While the agent works:
 
 - Messages you send are queued and delivered when the turn ends (**Queued messages**). **Send now** stops the current turn and sends that message next; queued messages can also be edited or removed.
 - **Stop** ends the current turn.
@@ -85,11 +85,11 @@ In an existing chat, open **Model › Refresh models** to discover newly availab
 
 The model picker of an existing chat offers the agent's current model list, the same one New Task uses, plus the model the chat runs. It doesn't depend on what that chat's session reported when it started, so a model found by a refresh in any chat or in New Task can be chosen in every chat of that agent.
 
-**Focus Agent Input** defaults to `⌘L` on macOS and `Ctrl+L` on Windows / Linux in every built-in keymap. When focus is inside your writable task conversation, in either an editor tab or the tool window, it returns focus to the message input without changing your draft, caret position or selection—even when pressed repeatedly. It does not send a message or jump through message history.
+**Focus Agent Input** defaults to `⌘L` on macOS and `Ctrl+L` on Windows / Linux in every built-in keymap. When focus is inside your writable task conversation, in either the main area or a conversation pane, it returns focus to the message input without changing your draft, caret position or selection—even when pressed repeatedly. It does not send a message or jump through message history.
 
-With focus anywhere else, the same shortcut jumps to the message input of the task shown in an editor tab or the tool window (the one you used last, if several are shown), unless a panel claims the shortcut there: in a code editor `⌘L` / `Ctrl+L` keeps its editor meaning (for example Go to Line), and in a terminal on Windows / Linux `Ctrl+L` still reaches the shell. It does not apply to archived tasks, subagent conversations or the New Task page, and does not take focus from open popups or dialogs. To change or remove the binding, open **Settings › Keymap › Agents › Focus Agent Input**.
+With focus anywhere else, the same shortcut jumps to the message input of the task shown in the main area or a conversation pane (the one you used last, if several are shown), unless a panel claims the shortcut there: in a code editor `⌘L` / `Ctrl+L` keeps its editor meaning (for example Go to Line), and in a terminal on Windows / Linux `Ctrl+L` still reaches the shell. It does not apply to archived tasks, subagent conversations or the New Task page, and does not take focus from open popups or dialogs. To change or remove the binding, open **Settings › Keymap › Agents › Focus Agent Input**.
 
-**Cycle Agent Effort** defaults to `Option+T` on macOS and `Alt+T` on Windows / Linux in every built-in keymap. With focus inside New Task or your own writable task conversation, in an editor tab or the tool window, it cycles the current model's provider-advertised effort levels in order, wrapping from the last to the first. It preserves your message, selection, caret and focus, and sends nothing. Like the effort control, it changes the provider configuration; it does not promise to change a turn already running.
+**Cycle Agent Effort** defaults to `Option+T` on macOS and `Alt+T` on Windows / Linux in every built-in keymap. With focus inside New Task or your own writable task conversation, in the main area or a conversation pane, it cycles the current model's provider-advertised effort levels in order, wrapping from the last to the first. It preserves your message, selection, caret and focus, and sends nothing. Like the effort control, it changes the provider configuration; it does not promise to change a turn already running.
 
 The shortcut is unavailable when effort is unsupported or has only one level, for archived tasks or subagent conversations, and while a popup or dialog is open. It does not take focus from the code editor or terminal. Change or remove it under **Settings › Keymap › Agents › Cycle Agent Effort**.
 
@@ -117,7 +117,7 @@ Drag the pane's left edge to resize it. The width applies to every task and is r
 
 The **Agents** tool window lists the project's tasks by what they need from you: **Needs Input**, **Failed**, usage limit reached, **Running**, **Ready to Review** and **Archived**. Its badge counts tasks that need input or have unread replies.
 
-Tasks open in editor tabs by default. **Chat in Tool Window** and **Chat in Editor** switch where conversations open; you can also drag a task into the editor area. A task's context menu has **Open**, **Rename…**, **Open in Terminal**, **Copy to a New Task**, **Pin** / **Unpin**, **Move to Group**, **Archive** / **Unarchive** and **Delete…**. Deleting a worktree task also removes its worktree.
+Tasks open in the main area by default, without adding conversation tabs beside your files. Select conversations in the **Agents** list. **Open Chat In** in the Agents options menu or a task's context menu offers **Agents**, **Main Area**, **Left**, **Right**, **Top**, **Bottom** and **New Window**. **Agents** keeps the conversation inside the Agents tool window, with its session-history popup. Left, Right, Top and Bottom place only the conversation body in a resizable pane beside the editor; the Agents list stays in its existing tool window. The first six choices also set where other conversations open; **New Window** moves only the selected conversation. Closing that window returns its conversation and draft to the project. You can also drag a task into the main area. A task's context menu has **Open**, **Rename…**, **Open in Terminal**, **Copy to a New Task**, **Pin** / **Unpin**, **Move to Group**, **Archive** / **Unarchive** and **Delete…**. Deleting a worktree task also removes its worktree.
 
 Pinned tasks sit above every group. **Move to Group** puts a task in a group of your own, and so does dropping it on a group header; **New Group…** in the tool window's options menu (⋯) creates an empty one, and a group's own menu renames or removes it. Groups and pins are kept per project.
 

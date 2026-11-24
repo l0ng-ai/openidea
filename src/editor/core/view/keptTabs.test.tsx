@@ -1,5 +1,5 @@
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { registerEditorKind, type EditorInput } from "@/workbench/contributions";
 import { useTabs } from "../controller";
@@ -34,6 +34,13 @@ const disposers = [
     keepAlive: true,
   }),
   registerEditorKind({ kind: "plain", component: Kept, title: (i) => i.key }),
+  registerEditorKind({
+    kind: "managed",
+    component: ({ input }) => <textarea aria-label={input.key} defaultValue="Unsent draft" />,
+    title: (i) => i.key,
+    tabless: true,
+    keepAlive: true,
+  }),
 ];
 
 /** Shown, or kept mounted behind the shown tab (its rendering skipped). */
@@ -69,6 +76,30 @@ afterEach(() => {
 afterAll(() => disposers.forEach((d) => d()));
 
 describe("keep-alive editor kinds", () => {
+  it("shows a managed conversation without creating an editor tab or a dangling ARIA reference", () => {
+    show([tab("Conversation", "managed")], "Conversation");
+    render(<EditorAreaView />);
+    expect(screen.getByRole("tabpanel", { name: "Conversation" })).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "Conversation" })).toBeVisible();
+    expect(screen.queryByRole("tablist")).toBeNull();
+    expect(screen.getByRole("tabpanel").getAttribute("aria-labelledby")).toBeNull();
+  });
+
+  it("keeps file tabs and a conversation's unsent draft while switching content", () => {
+    const tabs = [tab("notes.txt", "plain"), tab("Conversation", "managed"), tab("code.ts", "plain")];
+    show(tabs, "Conversation");
+    render(<EditorAreaView />);
+    const draft = screen.getByRole("textbox", { name: "Conversation" });
+    fireEvent.change(draft, { target: { value: "Keep my edited draft" } });
+    expect(screen.getAllByRole("tab").map((item) => item.textContent)).toEqual(["notes.txt", "code.ts"]);
+    show(tabs, "notes.txt");
+    expect(screen.getByRole("tab", { name: "notes.txt" }).getAttribute("aria-selected")).toBe("true");
+    show(tabs, "Conversation");
+    expect(screen.getByRole("textbox", { name: "Conversation" })).toBe(draft);
+    expect(draft).toHaveValue("Keep my edited draft");
+    expect(screen.queryByRole("tab", { name: "Conversation" })).toBeNull();
+  });
+
   it("keep their recent tabs mounted and hidden while another tab is active", () => {
     const tabs = [tab("a", "kept"), tab("b", "kept"), tab("c", "plain")];
     show(tabs, "a");

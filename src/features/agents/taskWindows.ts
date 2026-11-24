@@ -36,6 +36,7 @@ export type TaskWindowMessage =
   | { type: "draft"; task: string; label: string; draft: Partial<ComposerDraft> }
   /** Window `label` closed its tab of `task`. */
   | { type: "closed"; task: string; label: string }
+  | { type: "return"; task: string }
   /** A lightweight window asks the project window to show `task`, or New Task. */
   | { type: "open"; task: string | null; prompt?: string }
   /** A project window that lost track of its windows (it reloaded) asks them to report again. */
@@ -49,6 +50,7 @@ type Detached = { label: string; draft: ComposerDraft; focused: boolean; stop?: 
 /** Project window: the conversations shown in its lightweight windows. */
 const detached = new Map<string, Detached>();
 const opening = new Map<string, ComposerDraft>();
+const returning = new Set<string>();
 /** Lightweight window: its tab of this task closed. */
 let tabClosed: ((task: string) => void) | undefined;
 export const taskTabClosed = (task: string) => tabClosed?.(task);
@@ -261,6 +263,7 @@ function activateProjectWindow(): () => void {
     void listening.then((stop) => stop()).catch(() => {});
     for (const entry of detached.values()) void entry.stop?.();
     detached.clear();
+    returning.clear();
   };
 }
 
@@ -341,7 +344,10 @@ function activateLightweightWindow(parent: string): () => void {
   ];
   const listening = self.listen<TaskWindowMessage>(TASK_WINDOW, ({ payload: message }) => {
     if (message.type === "sync") for (const task of shown.keys()) report(task, true);
-    else if (message.type === "draftSnapshot" && shown.has(message.task)) {
+    else if (message.type === "return" && shown.has(message.task)) {
+      report(message.task, true);
+      void editorService().closeInput?.(sessionKey(message.task));
+    } else if (message.type === "draftSnapshot" && shown.has(message.task)) {
       // This snapshot came from the project (for example, Send to Agent): do not echo it back.
       shown.set(message.task, message.draft);
       updateComposer(message.task, message.draft);
@@ -361,10 +367,35 @@ export function activateTaskWindows(): () => void {
   return aux ? activateLightweightWindow(aux.parent) : activateProjectWindow();
 }
 
+/** The child reports its latest draft and returns through the normal tab-close handoff. */
+export async function returnTaskToProject(task: string): Promise<boolean> {
+  const entry = detached.get(task);
+  if (!entry) {
+    if (!opening.has(task)) return false;
+    returning.add(task);
+    return true;
+  }
+  try {
+    await emitTo(entry.label, TASK_WINDOW, { type: "return", task } satisfies TaskWindowMessage);
+    return true;
+  } catch (error) {
+    notifications().notify({
+      level: "error",
+      title: "Could not return conversation to the project",
+      body: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+}
+
 /** Moves the conversation of `task` to a window of its own; false when it stayed here. */
 export async function moveTaskToWindow(task: string): Promise<boolean> {
   const open = editorService().openInWindow;
-  if (!open || auxiliaryWindow() || opening.has(task) || !useAgents.getState().tasks.has(task)) return false;
+  if (!open || auxiliaryWindow() || !useAgents.getState().tasks.has(task)) return false;
+  if (opening.has(task)) {
+    returning.delete(task);
+    return false;
+  }
   const existing = detached.get(task);
   if (existing) {
     await focusWindow(existing.label);
@@ -376,6 +407,7 @@ export async function moveTaskToWindow(task: string): Promise<boolean> {
     const title = useAgents.getState().tasks.get(task)?.title;
     const label = await open(taskInput({ task, title }));
     adopt(task, label, opening.get(task) ?? draft);
+    if (returning.delete(task)) await returnTaskToProject(task);
     return true;
   } catch (error) {
     notifications().notify({
@@ -386,5 +418,6 @@ export async function moveTaskToWindow(task: string): Promise<boolean> {
     return false;
   } finally {
     opening.delete(task);
+    returning.delete(task);
   }
 }

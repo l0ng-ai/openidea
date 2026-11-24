@@ -4863,8 +4863,6 @@
   "Add to .git/info/exclude": "Adicionar ao .git/info/exclude",
   "Delete Agent Tasks": "Excluir tarefas do agente",
   "Open Agent Task": "Abrir tarefa do agente",
-  "Open Agent Task in Editor": "Abrir tarefa do agente no editor",
-  "Open Agent Task in Tool Window": "Abrir tarefa do agente na janela de ferramentas",
   "Archive Agent Tasks": "Arquivar tarefas do agente",
   "Delete {count} agent tasks? Their branches and files outside worktrees are kept.": "Excluir {count} tarefas do agente? Seus branches e arquivos fora dos worktrees serão mantidos.",
   "Also remove their worktree folders": "Também remover suas pastas de worktree",
@@ -5475,10 +5473,7 @@
   "cannot copy overlapping paths": "não é possível copiar caminhos sobrepostos",
   "cannot copy through a destination symlink": "não é possível copiar por meio de um link simbólico de destino",
   "expected a relative comparison entry path": "esperava-se um caminho relativo de entrada de comparação",
-  "Agent sessions": "Sessões do agente",
   "Back to conversation": "Voltar para a conversa",
-  "Chat in Tool Window": "Chat na janela de ferramentas",
-  "Chat in Editor": "Chat no editor",
   "Agent settings": "Configurações do agente",
   "Describe a task…": "Descreva uma tarefa…",
   "Formatting profile": "Perfil de formatação",
@@ -5924,6 +5919,7 @@
   "Use classpath of module": "Usar classpath do módulo",
   "Find by main class": "Localizar por classe principal",
   "Select files in the Project view, Commit tool window, or open a file in the editor": "Selecione arquivos na visualização do projeto, na janela Commit, ou abra um arquivo no editor",
+  "Agent sessions": "Sessões do agente",
   "Agent Reference": "Referência do agente",
   "Copy Agent Reference": "Copiar referência do agente"
 }
