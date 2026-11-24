@@ -26,6 +26,7 @@ import {
   ComposeProjectDashboard,
   CONTAINER_STATS_POLL_MS,
   ContainerDashboard,
+  VOLUME_SIZES_POLL_MS,
   VolumeDashboard,
 } from "./dashboard";
 
@@ -234,7 +235,7 @@ describe("live volume disk usage polling", () => {
     expect(bytesToDecimalUnits(1_500_000_000)).toBe("1.5GB");
   });
 
-  it("auto-refreshes VolumeDashboard disk usage every 3s while visible and pauses when hidden", async () => {
+  it("auto-refreshes VolumeDashboard disk usage every 30s while visible and pauses when hidden", async () => {
     let sample = 0;
     backend.volumeSizes.mockImplementation(async () => {
       sample += 1;
@@ -255,7 +256,7 @@ describe("live volume disk usage polling", () => {
     expect(screen.getByText("100kB")).toBeInTheDocument();
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(CONTAINER_STATS_POLL_MS);
+      await vi.advanceTimersByTimeAsync(VOLUME_SIZES_POLL_MS);
     });
     expect(backend.volumeSizes).toHaveBeenCalledTimes(2);
     expect(screen.getByText("200kB")).toBeInTheDocument();
@@ -266,7 +267,7 @@ describe("live volume disk usage polling", () => {
       document.dispatchEvent(new Event("visibilitychange"));
     });
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(CONTAINER_STATS_POLL_MS * 3);
+      await vi.advanceTimersByTimeAsync(VOLUME_SIZES_POLL_MS * 3);
     });
     expect(backend.volumeSizes).toHaveBeenCalledTimes(2);
 
@@ -285,12 +286,12 @@ describe("live volume disk usage polling", () => {
       </ToolWindowShownProvider>,
     );
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(CONTAINER_STATS_POLL_MS * 3);
+      await vi.advanceTimersByTimeAsync(VOLUME_SIZES_POLL_MS * 3);
     });
     expect(backend.volumeSizes).toHaveBeenCalledTimes(3);
   });
 
-  it("refreshes ComposeProjectDashboard per-volume chips and summed banner disk usage every 3s", async () => {
+  it("refreshes ComposeProjectDashboard per-volume chips and summed banner disk usage every 30s", async () => {
     backend.stats.mockResolvedValue(ok(makeStats("1.00%")));
     backend.volumeSizes
       .mockResolvedValueOnce(ok({ shop_pgdata: "1.2GB", shop_redis: "300MB" }))
@@ -316,7 +317,7 @@ describe("live volume disk usage polling", () => {
     expect(screen.getByText("1.5GB")).toBeInTheDocument();
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(CONTAINER_STATS_POLL_MS);
+      await vi.advanceTimersByTimeAsync(VOLUME_SIZES_POLL_MS);
     });
     expect(backend.volumeSizes).toHaveBeenCalledTimes(2);
     expect(screen.getByText("pgdata · local · 1.5GB")).toBeInTheDocument();
@@ -324,7 +325,7 @@ describe("live volume disk usage polling", () => {
     expect(screen.getByText("2GB")).toBeInTheDocument();
   });
 
-  it("refreshes ContainerDashboard mounted volume sizes every 3s without overlapping slow calls", async () => {
+  it("refreshes ContainerDashboard mounted volume sizes every 30s without overlapping slow calls", async () => {
     backend.stats.mockResolvedValue(ok(makeStats("1.00%")));
     let resolveSlow: ((v: ReturnType<typeof ok<Record<string, string>>>) => void) | undefined;
     backend.volumeSizes
@@ -376,7 +377,7 @@ describe("live volume disk usage polling", () => {
 
     expect(backend.volumeSizes).toHaveBeenCalledTimes(1);
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(4500);
+      await vi.advanceTimersByTimeAsync(VOLUME_SIZES_POLL_MS * 1.5);
     });
     expect(backend.volumeSizes).toHaveBeenCalledTimes(1);
 
@@ -387,7 +388,7 @@ describe("live volume disk usage polling", () => {
     expect(screen.getByText("145.4kB")).toBeInTheDocument();
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(CONTAINER_STATS_POLL_MS);
+      await vi.advanceTimersByTimeAsync(VOLUME_SIZES_POLL_MS);
     });
     expect(backend.volumeSizes).toHaveBeenCalledTimes(2);
     expect(screen.getByText("256.8kB")).toBeInTheDocument();

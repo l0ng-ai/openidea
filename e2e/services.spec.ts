@@ -788,9 +788,7 @@ test("Docker Compose dashboard keeps its action row pinned when scrolling", asyn
   expect(afterBanner.y).toBeLessThan(beforeBanner.y - 100);
 });
 
-test("Docker volume, Compose, and container dashboards live-refresh volume disk usage every 3s", async ({
-  workbench: page,
-}) => {
+test("Docker volume, Compose, and container dashboards show volume disk usage", async ({ workbench: page }) => {
   await stubDesktop(page);
   await page.evaluate(async () => {
     (window as unknown as { __volSize: string }).__volSize = "145.4kB";
@@ -893,30 +891,24 @@ test("Docker volume, Compose, and container dashboards live-refresh volume disk 
   const services = page.getByRole("region", { name: "Services", exact: true });
   const detail = services.locator("[data-panel][id=services-detail]");
 
-  // 1. Compose dashboard shows volume disk usage on the chip + banner and refreshes every 3s.
+  // 1. Compose dashboard shows volume disk usage on the chip and the banner.
   const volumeChip = detail.getByRole("button", { name: /selfhost_runner-persist/ });
   await expect(volumeChip).toContainText("runner-persist · local · 145.4kB");
   await expect(detail).toContainText("Disk usage: 145.4kB");
+
+  // 2. Opening the volume samples again; the dashboard shows the current size.
   await page.evaluate(() => {
     (window as unknown as { __volSize: string }).__volSize = "210.8kB";
   });
-  await expect(volumeChip).toContainText("runner-persist · local · 210.8kB", { timeout: 5000 });
-
-  // 2. Clicking the volume chip opens VolumeDashboard with live-refreshing Disk usage.
   await volumeChip.click();
   await expect(detail.getByText("Volume Overview")).toBeVisible();
   await expect(detail).toContainText("210.8kB");
+
+  // 3. The container dashboard shows the size beside the volume mount.
   await page.evaluate(() => {
     (window as unknown as { __volSize: string }).__volSize = "380.2kB";
   });
-  await expect(detail).toContainText("380.2kB", { timeout: 5000 });
-
-  // 3. Clicking the container chip opens ContainerDashboard with live-refreshing mount Size.
   await detail.getByRole("button", { name: /selfhost-github-runner-1/ }).click();
   await expect(detail.getByText("Volume & Bind Mounts")).toBeVisible();
   await expect(detail).toContainText("380.2kB");
-  await page.evaluate(() => {
-    (window as unknown as { __volSize: string }).__volSize = "512.6kB";
-  });
-  await expect(detail).toContainText("512.6kB", { timeout: 5000 });
 });

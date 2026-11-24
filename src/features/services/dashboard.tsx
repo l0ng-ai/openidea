@@ -857,6 +857,9 @@ const STATS_CONCURRENCY = 6;
 /** Default `top` refresh delay (3s) between live `docker stats --no-stream` samples. */
 export const CONTAINER_STATS_POLL_MS = 3000;
 
+/** Between `docker system df -v` samples, which make the daemon measure every volume. */
+export const VOLUME_SIZES_POLL_MS = 30_000;
+
 async function fetchContainerStatsMap(
   conn: string,
   ids: readonly string[],
@@ -1003,7 +1006,7 @@ function useLiveVolumeSizes(
       } finally {
         inFlight = false;
         if (alive && !isDocumentHidden()) {
-          timer = setTimeout(() => void sample(), CONTAINER_STATS_POLL_MS);
+          timer = setTimeout(() => void sample(), VOLUME_SIZES_POLL_MS);
         }
       }
     };
