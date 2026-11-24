@@ -27,7 +27,7 @@ use adapter::{AdapterLauncher, AdapterSpec, ProcessLauncher};
 use connection::{Connection, DapError};
 pub use exception_classes::{ExceptionClassBreakpoint, ExceptionClassSupport};
 use futures::future::join_all;
-use ide_core::{DebugSessionId, IdeError, IdeResult, SharedSink};
+use ide_core::{DebugSessionId, IdeError, IdeResult, RunId, SharedSink};
 use ide_language::LanguageRegistry;
 pub use js_cdp::JsResponseRule;
 pub use js_debug::JsResponseBody;
@@ -458,6 +458,15 @@ fn child_name(configuration: &Value, parent: &str) -> String {
         Some(name) if !name.trim().is_empty() && name != "about:blank" => name.to_owned(),
         _ => parent.to_owned(),
     }
+}
+
+/// `extra_json` key naming the run whose JVM an attach debugs; IDE-side, never sent to the
+/// adapter.
+pub const RUN_LINK: &str = "__openideaRun";
+
+fn take_run_link(arguments: &mut Value) -> Option<RunId> {
+    let run = arguments.as_object_mut()?.remove(RUN_LINK)?;
+    serde_json::from_value(run).ok()
 }
 
 /// Builds the `launch`/`attach` arguments: our fields first, then `extra_json` merged on top.
@@ -1047,7 +1056,7 @@ impl DebugManager {
         adapter_name: String,
         parent: Option<DebugSessionId>,
         request: String,
-        arguments: Value,
+        mut arguments: Value,
         spec: AdapterSpec,
         reuse_port: Option<u16>,
         exception_classes: Option<Arc<dyn ide_jvm_inspect::ExceptionClassBreakpoints>>,
@@ -1067,6 +1076,7 @@ impl DebugManager {
             .flatten();
         let mut session = Session::new(id, owner, name, adapter_name, parent, request, conn, spec, io.port, io.child);
         session.exception_classes = exception_classes;
+        session.run = take_run_link(&mut arguments);
         let session = Arc::new(session);
         if let Some(launch_type) = arguments.get("type").and_then(Value::as_str) {
             let _ = session.launch_type.set(launch_type.to_owned());
@@ -1965,6 +1975,34 @@ impl DebugManager {
     ) -> IdeResult<JvmHeapOutcome> {
         let session = self.session(s)?;
         jvm_memory::session_heap_dump(session, dir, cancel).await
+    }
+
+    /// `Thread.print -l` of the session's JVM, taking the session's class-table turn. A JVM the
+    /// debugger holds suspended is asked only when it is 17 or later and its listener already
+    /// runs: otherwise the request would hang until the program resumes.
+    pub async fn jvm_thread_dump(&self, s: DebugSessionId) -> IdeResult<JvmThreadsResult> {
+        let session = self.session(s)?;
+        jvm_memory::session_thread_dump(session).await
+    }
+
+    /// `Thread.print -l` of `pid`, the JVM of `run`, when a live session debugs it (a build
+    /// tool's run started for Debug, Attach to Process): taken as [`Self::jvm_thread_dump`] takes
+    /// it, under that session's turn and suspension. `None` when no session debugs `pid`.
+    pub async fn debugged_jvm_thread_dump(&self, run: RunId, pid: u32) -> Option<IdeResult<JvmThreadsResult>> {
+        let session = self.jvm_session_of(run, pid)?;
+        Some(jvm_memory::debugged_run_thread_dump(session, pid).await)
+    }
+
+    /// A session attached to `run` first: one whose JVM is not located yet (its attach-time scan
+    /// found no listener) still holds `pid`.
+    fn jvm_session_of(&self, run: RunId, pid: u32) -> Option<Arc<Session>> {
+        let sessions = self.live_sessions();
+        let linked = || sessions.iter().filter(|s| jvm_memory::attached_to_run(s, run, pid));
+        linked()
+            .find(|s| jvm_memory::debugs_jvm(s, pid))
+            .or_else(|| linked().next())
+            .or_else(|| sessions.iter().find(|s| jvm_memory::debugs_jvm(s, pid)))
+            .cloned()
     }
 
     /// Gives the session the backend for [`Self::jvm_memory_instances`] and the debugger's class

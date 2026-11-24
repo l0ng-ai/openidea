@@ -49,6 +49,14 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.overrides).toEqual({});
   });
 
+  it("maps Duplicate Entire Lines, which has no shortcut in the presets", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="M" parent="Mac OS X 10.5+"><action id="EditorDuplicateLines"><keyboard-shortcut first-keystroke="shift meta D"/></action></keymap>`,
+    );
+    expect(k.overrides["code.duplicateEntireLines"]).toEqual([normalizeBinding("Shift+Meta+D")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("rejects other XML", () => {
     expect(() => parseIdeaKeymap("<scheme name='x'/>")).toThrow(/keymap/);
   });
