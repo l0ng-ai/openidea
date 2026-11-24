@@ -364,7 +364,11 @@ function ConsoleView() {
               ? l.spans.map((s, i) => (
                   // A background without a colour of its own keeps the default text colour, as in
                   // a terminal, not the red of an error line.
-                  <span key={i} style={s.bg && !s.fg ? { ...spanStyle(s), color: "var(--fg)" } : spanStyle(s)}>
+                  <span
+                    // oxlint-disable-next-line react/no-array-index-key -- ANSI spans repeat; position in an immutable line is stable
+                    key={i}
+                    style={s.bg && !s.fg ? { ...spanStyle(s), color: "var(--fg)" } : spanStyle(s)}
+                  >
                     {s.text}
                   </span>
                 ))

@@ -1541,6 +1541,7 @@ export function SourceDialog({
           <span />
         </div>
         {properties.map((p, i) => (
+          // oxlint-disable-next-line react/no-array-index-key -- property fields are edited in place; position is the identity
           <div role="row" key={i} className={styles.propertyRow}>
             <Input
               aria-label="Property name"

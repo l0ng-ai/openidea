@@ -1294,7 +1294,12 @@ export function Composer(props: ComposerProps) {
             </span>
           ))}
           {images.map((img, i) => (
-            <span key={i} className={styles.image} title={img.name ?? undefined}>
+            <span
+              // oxlint-disable-next-line react/no-array-index-key -- identical images can repeat; position is the identity
+              key={i}
+              className={styles.image}
+              title={img.name ?? undefined}
+            >
               <button type="button" className={styles.previewImage} onClick={() => setPreview(img)}>
                 <img src={imageSrc(img)} alt={img.name ?? tx("Image")} />
               </button>

@@ -43,6 +43,7 @@ const { DEFAULT_SETTINGS } = await import("../model/schema");
 const { openSettings, useSettingsDialog } = await import("../model/staging");
 
 const ok = <T,>(data: T) => Promise.resolve({ status: "ok" as const, data });
+const PYTHON_INTERPRETERS_CONTEXT = { pageId: "python.interpreters", scope: "global" } as const;
 
 const sdk = (path: string, name: string, home: string | null): Sdk => ({
   path,
@@ -77,7 +78,7 @@ function page(python: Record<string, unknown> = {}) {
   useProject.setState({ settings: base, project: { root: "/project", name: "backend" } as ProjectInfo });
   openSettings("python.interpreters");
   return render(
-    <PageContext.Provider value={{ pageId: "python.interpreters", scope: "global" }}>
+    <PageContext.Provider value={PYTHON_INTERPRETERS_CONTEXT}>
       <PythonInterpretersPage />
     </PageContext.Provider>,
   );
