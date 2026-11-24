@@ -330,9 +330,6 @@ pub async fn pypi_package(
     result
 }
 
-/// How long downloading PyPI's name list (about 10 MB) may take.
-const NAMES_DOWNLOAD_LIMIT: std::time::Duration = std::time::Duration::from_secs(180);
-
 /// PyPI project names containing `query`, best match first, 51 at most (50 are shown). Answers from a cached copy of
 /// PyPI's name list, which the first search downloads and a search a day later refreshes.
 #[command(trust = outside_restricted)]
@@ -341,36 +338,13 @@ pub async fn pypi_search(host: &Host, window: &str, query: String, request: Requ
     let cancel = host.begin_project_read_request(window, request);
     let result = host
         .blocking(move || {
-            let fetch: pypi::Fetch = std::sync::Arc::new(|| {
+            let fetch: pypi::Fetch = std::sync::Arc::new(|cancel: &CancellationToken| {
                 let search_path = std::env::var_os("PATH").unwrap_or_default();
-                // Not a search's token: the next search needs the list too, so a download outlives
-                // the search that started it. A stalled download gives up after a while instead.
-                let token = CancellationToken::new();
-                let (done, finished) = std::sync::mpsc::channel::<()>();
-                let timer = std::thread::spawn({
-                    let token = token.clone();
-                    move || {
-                        if finished.recv_timeout(NAMES_DOWNLOAD_LIMIT)
-                            == Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-                        {
-                            token.cancel();
-                        }
-                    }
-                });
-                let text = ide_tools::Http::new(&search_path)?
+                ide_tools::Http::new(&search_path)?
                     .https_only()
                     .accept(pypi::SIMPLE_INDEX_ACCEPT)
                     .compressed()
-                    .get_text_limited(pypi::SIMPLE_INDEX_URL, Some(256 * 1024 * 1024), &token);
-                drop(done);
-                let _ = timer.join();
-                match text {
-                    Err(_) if token.is_cancelled() => Err(IdeError::new(
-                        ide_core::error::ErrorKind::TimedOut,
-                        "downloading the PyPI package names took too long",
-                    )),
-                    other => other,
-                }
+                    .get_text_limited(pypi::SIMPLE_INDEX_URL, Some(256 * 1024 * 1024), cancel)
             });
             let index = names.index(&cancel, fetch)?;
             // One more than shown, so the UI can tell the list was cut.
