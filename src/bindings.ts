@@ -6032,6 +6032,8 @@ export type DockerConnection = {
 	id: string,
 	name: string,
 	endpoint: DockerEndpoint,
+	/**  Whether the user explicitly disconnected this connection in Services. */
+	disconnected?: boolean,
 };
 
 export type DockerContainer = {
