@@ -2523,6 +2523,8 @@ impl Task {
     /// the user stops one. The caller set `busy`.
     async fn run(self: Arc<Self>, mut prompt: AgentPrompt) {
         loop {
+            // The message shows before the checkout is recorded, which can take a while in a large repository.
+            self.show_prompt(&prompt);
             self.checkout_before_turn().await;
             let result = self.turn(&prompt).await;
             self.cancel_pending.store(false, Ordering::Release);
@@ -2836,11 +2838,8 @@ impl Task {
         Ok(())
     }
 
-    /// Sends one prompt, starting the agent first if needed; returns the stop reason.
-    async fn turn(self: &Arc<Self>, prompt: &AgentPrompt) -> Result<String, Failure> {
-        self.turns.fetch_add(1, Ordering::AcqRel);
-        self.turn_started.store(false, Ordering::Release);
-        self.state.lock().task.resets_ms = None;
+    /// Adds the user's message to the conversation and shows the task starting.
+    fn show_prompt(self: &Arc<Self>, prompt: &AgentPrompt) {
         let attachments = prompt
             .files
             .iter()
@@ -2858,6 +2857,13 @@ impl Task {
         // Launching the agent can take a while (`npx` fetches its adapter on first use).
         let starting = self.live.lock().as_ref().is_none_or(|l| l.peer.is_closed());
         self.set_status(if starting { AgentStatus::Starting } else { AgentStatus::Running }, None);
+    }
+
+    /// Sends one prompt, starting the agent first if needed; returns the stop reason.
+    async fn turn(self: &Arc<Self>, prompt: &AgentPrompt) -> Result<String, Failure> {
+        self.turns.fetch_add(1, Ordering::AcqRel);
+        self.turn_started.store(false, Ordering::Release);
+        self.state.lock().task.resets_ms = None;
         let mut live = self.ensure_session().await.map_err(Failure::from)?;
         // Stopped while the agent started: the prompt is never sent.
         if self.cancel_pending.load(Ordering::Acquire) {
