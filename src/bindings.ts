@@ -11504,6 +11504,13 @@ export type PythonMethodFacts = {
 	/**  Decorated with `override` from `typing` / `typing_extensions`. */
 	overrideDecorated: boolean,
 	body: MethodBody,
+	/**
+	 *  For 'Method may be static': the receiver parameter up to the next parameter (what
+	 *  Make method static deletes), when the method is undecorated and not a dunder, and its
+	 *  body does more than `pass`, `...`, a docstring or one `raise` without ever naming the
+	 *  receiver, `super` or `__class__`.
+	 */
+	unusedReceiver: Range | null,
 };
 
 export type PythonPackage = {
