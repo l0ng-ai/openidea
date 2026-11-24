@@ -28,7 +28,9 @@ jobs:
   # shared runners to others. Pushes, the merge queue and manual runs always run everything.
   changes:
     name: Changes
-    runs-on: ubuntu-latest
+    # Self-hosted runners (scripts/selfhost-runner) only for trusted events, and only while the
+    # SELFHOSTED_RUNNERS repository variable is 'true': runs-on cannot fall back when none is online.
+    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
       pull-requests: read
@@ -108,10 +110,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-22.04, windows-latest]
+        os: [macos-latest, ubuntu-latest, windows-latest]
     # Self-hosted runners (scripts/selfhost-runner) only for trusted events, and only while the
     # SELFHOSTED_RUNNERS repository variable is 'true': runs-on cannot fall back when none is online.
-    runs-on: ${{ matrix.os == 'ubuntu-22.04' && vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || matrix.os }}
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || matrix.os }}
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v5
@@ -144,8 +146,8 @@ jobs:
       - name: Linux deps
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf
+          pkgs=(libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf)
+          dpkg -s "${pkgs[@]}" >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y "${pkgs[@]}"; }
       # tauri-build checks that frontendDist exists.
       - run: pnpm install --frozen-lockfile && mkdir -p dist
         shell: bash
@@ -156,7 +158,8 @@ jobs:
       - run: git config --global core.autocrlf false
       - run: cargo nextest run --workspace --no-fail-fast
       - name: Remote backend with Docker Compose
-        if: runner.os == 'Linux'
+        # Self-hosted runner containers do not mount /var/run/docker.sock (scripts/selfhost-runner/README.md).
+        if: runner.os == 'Linux' && runner.environment != 'self-hosted'
         run: |
           docker pull busybox:latest
           cargo nextest run -p ide-host --test remote_daemon --run-ignored only \
@@ -175,7 +178,7 @@ jobs:
     name: Rust checks
     needs: [changes, rust]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - env:
@@ -192,16 +195,27 @@ jobs:
     needs: changes
     if: needs.changes.outputs.server == 'true'
     timeout-minutes: 40
-    runs-on: ubuntu-22.04
+    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: x86_64-unknown-linux-musl }
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment != 'self-hosted'
         with: { key: server-musl }
-      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Persistent Cargo target dir
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          echo "CARGO_INCREMENTAL=1" >> "$GITHUB_ENV"
+          size=$(du -sm "$CARGO_TARGET_DIR" 2>/dev/null | cut -f1 || true)
+          if [ "${size:-0}" -gt 40000 ]; then
+            echo "$CARGO_TARGET_DIR is ${size} MB; clearing it"
+            rm -rf "$CARGO_TARGET_DIR"
+          fi
+      - run: dpkg -s musl-tools >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y musl-tools; }
       - run: cargo build --locked -p ide-host --bin openidea-server --target x86_64-unknown-linux-musl
-      - run: target/x86_64-unknown-linux-musl/debug/openidea-server --version
+      - run: '"${CARGO_TARGET_DIR:-target}/x86_64-unknown-linux-musl/debug/openidea-server" --version'
 
   # The plugin SDK, the official plugins and the test fixtures build in their
   # own workspaces (the root excludes them), so the jobs above don't see them.
@@ -210,18 +224,31 @@ jobs:
     needs: changes
     if: needs.changes.outputs.plugins == 'true'
     timeout-minutes: 30
-    runs-on: ubuntu-22.04
-    env:
-      CARGO_TARGET_DIR: ${{ github.workspace }}/target-plugins
+    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: wasm32-wasip2, components: "clippy, rustfmt" }
+      - if: runner.environment != 'self-hosted'
+        shell: bash
+        run: echo "CARGO_TARGET_DIR=$GITHUB_WORKSPACE/target-plugins" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment != 'self-hosted'
         with:
           key: plugins
           cache-directories: target-plugins
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Persistent Cargo target dir
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          echo "CARGO_INCREMENTAL=1" >> "$GITHUB_ENV"
+          size=$(du -sm "$CARGO_TARGET_DIR" 2>/dev/null | cut -f1 || true)
+          if [ "${size:-0}" -gt 40000 ]; then
+            echo "$CARGO_TARGET_DIR is ${size} MB; clearing it"
+            rm -rf "$CARGO_TARGET_DIR"
+          fi
+          echo "CARGO_TARGET_DIR=$CARGO_TARGET_DIR/plugins" >> "$GITHUB_ENV"
       - name: Format, lint (host and wasm) and test each crate
         shell: bash
         run: |
@@ -238,7 +265,7 @@ jobs:
       - uses: pnpm/action-setup@v5
         with: { version: 11 }
       - uses: actions/setup-node@v5
-        with: { node-version: 22 }
+        with: { node-version: 22, package-manager-cache: false }
       # Plugin web pages (`web-src/`, their own pnpm projects): typecheck and test.
       - name: Web pages typecheck and test
         shell: bash
@@ -262,7 +289,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.deny == 'true'
     timeout-minutes: 15
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -274,13 +301,19 @@ jobs:
     needs: changes
     if: needs.changes.outputs.frontend == 'true'
     timeout-minutes: 30
-    runs-on: ubuntu-22.04
+    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v5
+      # scripts/smoke-paths.test.ts runs `cargo metadata`, which is not preinstalled in the runner container.
+      - uses: dtolnay/rust-toolchain@stable
+        if: runner.environment == 'self-hosted'
       - uses: pnpm/action-setup@v5
         with: { version: 11 }
       - uses: actions/setup-node@v5
-        with: { node-version: 22, cache: pnpm }
+        with:
+          node-version: 22
+          cache: ${{ runner.environment != 'self-hosted' && 'pnpm' || '' }}
+          package-manager-cache: ${{ runner.environment != 'self-hosted' }}
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm lint
@@ -295,13 +328,16 @@ jobs:
     needs: changes
     if: needs.changes.outputs.catalog == 'true'
     timeout-minutes: 15
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v5
         with: { version: 11 }
       - uses: actions/setup-node@v5
-        with: { node-version: 22, cache: pnpm }
+        with:
+          node-version: 22
+          cache: ${{ runner.environment != 'self-hosted' && 'pnpm' || '' }}
+          package-manager-cache: ${{ runner.environment != 'self-hosted' }}
       - run: pnpm install --frozen-lockfile
       - run: pnpm vitest run src/platform/locales/textCatalog.test.ts
 
@@ -309,24 +345,24 @@ jobs:
     name: E2E (${{ matrix.shard }}/4)
     needs: changes
     if: needs.changes.outputs.e2e == 'true'
-    timeout-minutes: 30
-    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
-    # Browsers and their system libraries are preinstalled; keep the tag in step with @playwright/test.
-    container: mcr.microsoft.com/playwright:v1.64.1-noble
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v5
         with: { version: 11 }
       - uses: actions/setup-node@v5
-        with: { node-version: 22, cache: pnpm }
+        with:
+          node-version: 22
+          cache: ${{ runner.environment != 'self-hosted' && 'pnpm' || '' }}
+          package-manager-cache: ${{ runner.environment != 'self-hosted' }}
       - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm e2e --shard=${{ matrix.shard }}/4
-        env:
-          HOME: /root
       - uses: actions/upload-artifact@v6
         if: failure()
         with:

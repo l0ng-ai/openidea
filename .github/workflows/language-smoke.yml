@@ -57,6 +57,9 @@ on:
     paths: *paths
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: language-smoke-${{ github.ref }}
   # A new push supersedes a PR's run; on main every merge runs to the end (and saves the cache).
@@ -65,8 +68,6 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  # Line tables keep test backtraces readable and the binaries the build job hands on small.
-  CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
   # The languages a pull request can affect: a change to one language's fixture, definition or
@@ -74,7 +75,9 @@ jobs:
   # run none; anything else runs them all. Pushes and manual runs always run them all.
   changes:
     name: Changes
-    runs-on: ubuntu-latest
+    # Self-hosted runners (scripts/selfhost-runner) only for trusted events, and only while the
+    # SELFHOSTED_RUNNERS repository variable is 'true': runs-on cannot fall back when none is online.
+    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
       pull-requests: read
@@ -139,17 +142,32 @@ jobs:
     name: Build
     needs: changes
     if: needs.changes.outputs.languages != '[]'
-    # The tests find the fixtures through the checkout path compiled into them (CARGO_MANIFEST_DIR),
-    # which is the same on every GitHub-hosted runner.
-    runs-on: ubuntu-22.04
+    # Self-hosted runners (scripts/selfhost-runner) only for trusted events, and only while the
+    # SELFHOSTED_RUNNERS repository variable is 'true': runs-on cannot fall back when none is online.
+    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || 'ubuntu-latest' }}
     timeout-minutes: 30
+    env:
+      # Line tables keep test backtraces readable and the binaries handed on small without
+      # stripping local-variable debuginfo from fixtures debugged in the smoke job (CodeLLDB).
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment != 'self-hosted'
         with:
           shared-key: language-smoke
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Persistent Cargo target dir
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          echo "CARGO_INCREMENTAL=1" >> "$GITHUB_ENV"
+          size=$(du -sm "$CARGO_TARGET_DIR" 2>/dev/null | cut -f1 || true)
+          if [ "${size:-0}" -gt 40000 ]; then
+            echo "$CARGO_TARGET_DIR is ${size} MB; clearing it"
+            rm -rf "$CARGO_TARGET_DIR"
+          fi
       - run: |
           set -euo pipefail
           mkdir -p smoke-bin
@@ -157,7 +175,7 @@ jobs:
             | jq -r 'select(.reason == "compiler-artifact" and .executable != null and .target.kind == ["test"]) | "\(.target.name) \(.executable)"' \
             | while read -r name exe; do cp "$exe" "smoke-bin/$name"; done
           cargo build --locked -p ide-host --bin openidea-server
-          cp target/debug/openidea-server smoke-bin/
+          cp "${CARGO_TARGET_DIR:-target}/debug/openidea-server" smoke-bin/
           ls -l smoke-bin
           test -x smoke-bin/language_smoke && test -x smoke-bin/project_smoke
           # A tar keeps the executable bits, which artifacts drop.
@@ -172,11 +190,16 @@ jobs:
       fail-fast: false
       matrix:
         language: ${{ fromJSON(needs.changes.outputs.languages) }}
-    # C/C++ debug with GDB, whose DAP interpreter needs 14+: 22.04 ships 12.1, 24.04 ships 15.
-    runs-on: ${{ (matrix.language == 'c' || matrix.language == 'cpp') && 'ubuntu-24.04' || 'ubuntu-22.04' }}
+    # Self-hosted runners (scripts/selfhost-runner) only for trusted events, and only while the
+    # SELFHOSTED_RUNNERS repository variable is 'true': runs-on cannot fall back when none is online.
+    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || 'ubuntu-latest' }}
     timeout-minutes: 40
+    # Self-hosted runner slots have distinct checkout paths (/persist/slot-<N>/work/...); override
+    # the compiled-in CARGO_MANIFEST_DIR so binaries from the Build job find this slot's fixtures.
+    env:
+      CARGO_MANIFEST_DIR: ${{ github.workspace }}/crates/ide-host
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # Tool versions, shared with the evals (pnpm eval).
       - run: grep -E '^[A-Z0-9_]+=' .github/tool-versions.env >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
@@ -187,18 +210,37 @@ jobs:
           tar -xf smoke-bin.tar && rm smoke-bin.tar
           mkdir -p target/debug && mv smoke-bin/openidea-server target/debug/
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v5
         with: { version: 11 }
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: pnpm }
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: ${{ runner.environment != 'self-hosted' && 'pnpm' || '' }}
+          package-manager-cache: ${{ runner.environment != 'self-hosted' }}
       - if: matrix.language == 'typescript'
         run: npm install --global "@vtsls/language-server@$VTSLS" "typescript@$TYPESCRIPT"
 
-      # The smoke builds the c-app fixture and debugs it with GDB's own DAP interpreter.
+      # The smoke checks C/C++ with clangd and debugs c-app with GDB's own DAP interpreter (GDB 14+).
       - if: matrix.language == 'c' || matrix.language == 'cpp'
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y gdb
+          pkgs=()
+          command -v clangd >/dev/null || pkgs+=(clangd)
+          command -v gdb >/dev/null || pkgs+=(gdb)
+          if [ "${#pkgs[@]}" -gt 0 ]; then
+            sudo apt-get update
+            sudo apt-get install -y "${pkgs[@]}"
+          fi
+          major=$(gdb --version | head -n1 | grep -Eo '[0-9]+\.[0-9]+' | head -n1 | cut -d. -f1)
+          if [ "${major:-0}" -lt 14 ]; then
+            gdb_dir="$HOME/.cache/gdb-14"
+            if [ ! -x "$gdb_dir/bin/gdb" ]; then
+              case "$(uname -m)" in x86_64) plat=linux-64 ;; aarch64) plat=linux-aarch64 ;; esac
+              curl -fsSL "https://micro.mamba.pm/api/micromamba/$plat/latest" | tar -xj -C "$RUNNER_TEMP" bin/micromamba
+              "$RUNNER_TEMP/bin/micromamba" create -q -y -p "$gdb_dir" -c conda-forge "gdb>=14"
+            fi
+            echo "$gdb_dir/bin" >> "$GITHUB_PATH"
+          fi
 
       - if: matrix.language == 'python'
         uses: actions/setup-python@v5
@@ -217,6 +259,7 @@ jobs:
         with: { distribution: temurin, java-version: "${{ env.JAVA }}" }
       - if: matrix.language == 'java'
         run: |
+          command -v mvn >/dev/null || { sudo apt-get update && sudo apt-get install -y maven; }
           mkdir -p "$RUNNER_TEMP/jdtls"
           curl -fsSL "https://download.eclipse.org/jdtls/milestones/${JDTLS%-*}/jdt-language-server-$JDTLS.tar.gz" \
             | tar xz -C "$RUNNER_TEMP/jdtls"
