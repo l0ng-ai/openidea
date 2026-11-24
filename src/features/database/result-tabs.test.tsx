@@ -334,9 +334,11 @@ describe("database result tab context menu", () => {
     await show();
     for (const action of ["Select Next Tab", "Select Previous Tab"]) {
       openMenu("Output");
+      // oxlint-disable-next-line no-await-in-loop -- menu choice selects a tab; the assertion must see it before the menu is reopened
       await choose(action);
       expectOutput();
       openMenu("Output");
+      // oxlint-disable-next-line no-await-in-loop -- the second choice must follow the Output assertion to test cycling back
       await choose(action);
       expectSelected("Orders");
     }
@@ -347,6 +349,7 @@ describe("database result tab context menu", () => {
     await show();
     for (const action of ["Select Next Tab", "Select Previous Tab"]) {
       openMenu("Output");
+      // oxlint-disable-next-line no-await-in-loop -- selection must settle before asserting Output is the only tab
       await choose(action);
       expectOutput();
       expect(screen.getAllByRole("tab")).toHaveLength(1);
@@ -425,21 +428,29 @@ describe("database result tab context menu", () => {
         for (const [index, next] of keymap["editor.nextTab"]!.entries()) {
           const previous = keymap["editor.prevTab"]![index]!;
           act(() => screen.getByRole("button", { name: "Outside results" }).focus());
+          // oxlint-disable-next-line no-await-in-loop -- next press must settle before the reverse press and the selection assertion
           await press(next);
+          // oxlint-disable-next-line no-await-in-loop -- reverse press must settle before asserting the selection is restored
           await press(previous);
           expectSelected("Customer count");
           act(() => tab("Orders").focus());
+          // oxlint-disable-next-line no-await-in-loop -- keypress from Orders changes the active tab before the Output assertion
           await press(next);
           expectOutput();
+          // oxlint-disable-next-line no-await-in-loop -- second next press follows the Output assertion and moves to Customers
           await press(next);
           expectSelected("Customers");
           expect(screen.getByRole("gridcell", { name: "customer-row" })).toBeInTheDocument();
+          // oxlint-disable-next-line no-await-in-loop -- reverse press follows the Customers assertion and returns to Output
           await press(previous);
           expectOutput();
+          // oxlint-disable-next-line no-await-in-loop -- second reverse press follows the Output assertion and returns to the first tab
           await press(previous);
           expectSelected("Customer count");
           openMenu("Customers");
+          // oxlint-disable-next-line no-await-in-loop -- menu shortcut press must settle before the reverse press
           await press(next);
+          // oxlint-disable-next-line no-await-in-loop -- reverse press must settle before asserting the selection
           await press(previous);
           expectSelected("Customer count");
           fireEvent.keyDown(document.activeElement!, { key: "Escape", code: "Escape" });
@@ -493,6 +504,7 @@ describe("database result tab context menu", () => {
     try {
       const outside = screen.getByRole("button", { name: "Outside results" });
       act(() => outside.focus());
+      // oxlint-disable-next-line no-await-in-loop -- each shortcut runs in order so focus and tab state settle before the next key
       for (const key of ["F7", "F8", "F9"]) await press(key);
       expectSelected("Customer count");
       expect(useDatabase.getState().results).toBe(seeded);

@@ -1158,6 +1158,7 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
   it("drops the oldest unpinned results beyond 12 but never pinned or new ones", async () => {
     const paths = Array.from({ length: 12 }, (_, i) => `c${i}.sql`);
     useDatabase.setState((s) => ({ consoles: { ...s.consoles, ...Object.fromEntries(paths.map((p) => [p, "pg"])) } }));
+    // oxlint-disable-next-line no-await-in-loop -- runs establish result recency order; parallel runs would race which tabs count as oldest and get dropped
     for (const path of paths) await runIn(path, "SELECT 0");
     pinResult(ids()[0]!, true);
     await runIn("a.sql", "SELECT 1; SELECT 2");

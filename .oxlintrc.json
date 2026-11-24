@@ -154,7 +154,11 @@
         "perf/**/*.ts",
         "smoke/**/*.ts",
         "src/features/vcs/**/*.ts",
-        "src/features/vcs/**/*.tsx"
+        "src/features/vcs/**/*.tsx",
+        "src/features/run/**/*.ts",
+        "src/features/run/**/*.tsx",
+        "src/features/database/**/*.ts",
+        "src/features/database/**/*.tsx"
       ],
       "rules": {
         "no-await-in-loop": "error"
