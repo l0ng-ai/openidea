@@ -1482,6 +1482,30 @@ async fn run_dump_of_a_suspended_debugged_jvm_takes_the_suspended_path() {
 }
 
 #[tokio::test]
+async fn run_dump_of_a_debugged_jvm_asks_for_no_json_while_the_session_holds_it() {
+    let bare = stopped_attach(4242);
+    let fake = Arc::new(dumping_threads(4242, vec![Ok(THREADS.into())]));
+    let probe: Arc<dyn AttachProbe> = fake.clone();
+    let dump = ready_dump(known_pid_dump(&bare.session, |_| probe, 4242, Some(json_dir().into())).await.unwrap());
+    assert!(dump.taken_while_suspended);
+    assert_eq!((dump.virtual_json, dump.virtual_note), (None, Some(VirtualThreadsNote::WhileSuspended)));
+    assert_eq!(*fake.commands.lock(), ["thread_print"]);
+
+    // Running at first, the program hits a breakpoint while the text dump is taken.
+    let bare = bare_session("attach");
+    bare.session.jvm_pid.store(4242, Ordering::Release);
+    let mut fake = dumping_threads(4242, vec![Ok(THREADS.into())]);
+    let session = bare.session.clone();
+    fake.stops_on = Some(("thread_print", Box::new(move || session.suspended.stopped(None, true))));
+    let fake = Arc::new(fake);
+    let probe: Arc<dyn AttachProbe> = fake.clone();
+    let dump = ready_dump(known_pid_dump(&bare.session, |_| probe, 4242, Some(json_dir().into())).await.unwrap());
+    assert!(!dump.taken_while_suspended);
+    assert_eq!((dump.virtual_json, dump.virtual_note), (None, Some(VirtualThreadsNote::WhileSuspended)));
+    assert_eq!(*fake.commands.lock(), ["ensure_listener", "thread_print"]);
+}
+
+#[tokio::test]
 async fn run_dump_of_a_debugged_jvm_waits_for_the_session_turn() {
     let bare = bare_session("attach");
     bare.session.jvm_pid.store(4242, Ordering::Release);
