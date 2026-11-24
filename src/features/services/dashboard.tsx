@@ -1888,7 +1888,7 @@ export function ComposeProjectDashboard({
   const { byId: activeStats, loading: statsLoading } = useLiveContainerStats(conn, runningIdsKey);
 
   return (
-    <div className={styles.dashboard} tabIndex={0} onKeyDown={copySelectionOnKeyDown}>
+    <div className={styles.detailBody}>
       <div className={styles.dashboardActions}>
         <OpButton busy={busy === "start"} disabled={!canStart(target)} onClick={() => void start(target)}>
           Start
@@ -1904,144 +1904,146 @@ export function ComposeProjectDashboard({
         </Button>
       </div>
 
-      <SectionBanner>{txTemplate(`Compose project '${project}'`)}</SectionBanner>
-      <div className={styles.propList}>
-        <PropRow label={<T>Project</T>}>
-          <span className={styles.mono}>{project}</span>
-        </PropRow>
-        <PropRow label={<T>Status</T>}>
-          <span>
-            {runningCount}/{containers.length} running
-          </span>
-        </PropRow>
-        <PropRow label={<T>Working directory</T>} hidden={!first?.composeWorkingDir}>
-          <span className={styles.mono}>{first?.composeWorkingDir}</span>
-        </PropRow>
-        <PropRow label={<T>Compose files</T>} hidden={!first?.composeFiles.length}>
-          <span className={styles.inlineRow}>
-            {first?.composeFiles.map((file) => (
-              <button
-                key={file}
-                type="button"
-                className={styles.link}
-                onClick={() => void openComposeFile(file, first.composeWorkingDir)}
-              >
-                <span className={styles.mono}>{file}</span>
-              </button>
-            ))}
-          </span>
-        </PropRow>
-      </div>
+      <div className={styles.dashboard} tabIndex={0} onKeyDown={copySelectionOnKeyDown}>
+        <SectionBanner>{txTemplate(`Compose project '${project}'`)}</SectionBanner>
+        <div className={styles.propList}>
+          <PropRow label={<T>Project</T>}>
+            <span className={styles.mono}>{project}</span>
+          </PropRow>
+          <PropRow label={<T>Status</T>}>
+            <span>
+              {runningCount}/{containers.length} running
+            </span>
+          </PropRow>
+          <PropRow label={<T>Working directory</T>} hidden={!first?.composeWorkingDir}>
+            <span className={styles.mono}>{first?.composeWorkingDir}</span>
+          </PropRow>
+          <PropRow label={<T>Compose files</T>} hidden={!first?.composeFiles.length}>
+            <span className={styles.inlineRow}>
+              {first?.composeFiles.map((file) => (
+                <button
+                  key={file}
+                  type="button"
+                  className={styles.link}
+                  onClick={() => void openComposeFile(file, first.composeWorkingDir)}
+                >
+                  <span className={styles.mono}>{file}</span>
+                </button>
+              ))}
+            </span>
+          </PropRow>
+        </div>
 
-      <SectionBanner>
-        <T>Services</T>
-      </SectionBanner>
-      <div className={styles.composeTableWrap}>
-        <table className={clsx(styles.gridTable, styles.composeServicesTable)}>
-          <thead>
-            <tr>
-              <th>
-                <T>Service</T>
-              </th>
-              <th>
-                <T>Status</T>
-              </th>
-              <th>
-                <T>CPU</T>
-              </th>
-              <th>
-                <T>Memory</T>
-              </th>
-              <th>
-                <T>Network I/O</T>
-              </th>
-              <th>
-                <T>Block I/O</T>
-              </th>
-              <th>
-                <T>PIDs</T>
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {containers.map((c) => {
-              const running = isRunning(c);
-              const stats = running ? activeStats[c.id] : undefined;
-              const cpuPct = stats ? parsePercent(stats.cpuPerc) : 0;
-              const memPair = stats ? parseUsagePair(stats.memUsage) : null;
-              const memPct = memPair ? memPair.percent : stats ? parsePercent(stats.memPerc) : 0;
-              return (
-                <tr key={c.id}>
-                  <td className={styles.composeServiceCell}>
-                    <button type="button" className={styles.link} onClick={() => selectContainerInTree(conn, c)}>
-                      <span className={clsx(styles.statusDot, running ? styles.dotOk : styles.dotMuted)} />
-                      <span className={styles.mono}>{c.name}</span>
-                    </button>
-                    {c.composeService && !c.name.includes(c.composeService) && (
-                      <span className={styles.mutedMeta}>{c.composeService}</span>
-                    )}
-                  </td>
-                  <td className={styles.nowrapCell}>
-                    <StatusBadge state={c.state} text={c.status || c.state} />
-                  </td>
-                  <td className={styles.composeMetricCell}>
-                    {stats ? (
-                      <div className={styles.composeMetric}>
-                        <span className={styles.mono}>{stats.cpuPerc}</span>
-                        <LineProgress percent={cpuPct} />
-                      </div>
-                    ) : running && statsLoading ? (
-                      <Spinner size={12} />
-                    ) : (
-                      <span className={styles.mutedMeta}>—</span>
-                    )}
-                  </td>
-                  <td className={styles.composeMemoryCell}>
-                    {stats ? (
-                      <div className={styles.composeMetric}>
-                        <span className={styles.mono}>
-                          {stats.memUsage} ({stats.memPerc})
+        <SectionBanner>
+          <T>Services</T>
+        </SectionBanner>
+        <div className={styles.composeTableWrap}>
+          <table className={clsx(styles.gridTable, styles.composeServicesTable)}>
+            <thead>
+              <tr>
+                <th>
+                  <T>Service</T>
+                </th>
+                <th>
+                  <T>Status</T>
+                </th>
+                <th>
+                  <T>CPU</T>
+                </th>
+                <th>
+                  <T>Memory</T>
+                </th>
+                <th>
+                  <T>Network I/O</T>
+                </th>
+                <th>
+                  <T>Block I/O</T>
+                </th>
+                <th>
+                  <T>PIDs</T>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {containers.map((c) => {
+                const running = isRunning(c);
+                const stats = running ? activeStats[c.id] : undefined;
+                const cpuPct = stats ? parsePercent(stats.cpuPerc) : 0;
+                const memPair = stats ? parseUsagePair(stats.memUsage) : null;
+                const memPct = memPair ? memPair.percent : stats ? parsePercent(stats.memPerc) : 0;
+                return (
+                  <tr key={c.id}>
+                    <td className={styles.composeServiceCell}>
+                      <button type="button" className={styles.link} onClick={() => selectContainerInTree(conn, c)}>
+                        <span className={clsx(styles.statusDot, running ? styles.dotOk : styles.dotMuted)} />
+                        <span className={styles.mono}>{c.name}</span>
+                      </button>
+                      {c.composeService && !c.name.includes(c.composeService) && (
+                        <span className={styles.mutedMeta}>{c.composeService}</span>
+                      )}
+                    </td>
+                    <td className={styles.nowrapCell}>
+                      <StatusBadge state={c.state} text={c.status || c.state} />
+                    </td>
+                    <td className={styles.composeMetricCell}>
+                      {stats ? (
+                        <div className={styles.composeMetric}>
+                          <span className={styles.mono}>{stats.cpuPerc}</span>
+                          <LineProgress percent={cpuPct} />
+                        </div>
+                      ) : running && statsLoading ? (
+                        <Spinner size={12} />
+                      ) : (
+                        <span className={styles.mutedMeta}>—</span>
+                      )}
+                    </td>
+                    <td className={styles.composeMemoryCell}>
+                      {stats ? (
+                        <div className={styles.composeMetric}>
+                          <span className={styles.mono}>
+                            {stats.memUsage} ({stats.memPerc})
+                          </span>
+                          <LineProgress percent={memPct} />
+                        </div>
+                      ) : running && statsLoading ? (
+                        <span className={styles.mutedMeta}>
+                          <T>Loading…</T>
                         </span>
-                        <LineProgress percent={memPct} />
-                      </div>
-                    ) : running && statsLoading ? (
-                      <span className={styles.mutedMeta}>
-                        <T>Loading…</T>
-                      </span>
-                    ) : (
-                      <span className={styles.mutedMeta}>—</span>
-                    )}
-                  </td>
-                  <td className={clsx(styles.mono, styles.nowrapCell)}>
-                    {stats?.netIo || <span className={styles.mutedMeta}>—</span>}
-                  </td>
-                  <td className={clsx(styles.mono, styles.nowrapCell)}>
-                    {stats?.blockIo || <span className={styles.mutedMeta}>—</span>}
-                  </td>
-                  <td className={clsx(styles.mono, styles.nowrapCell)}>
-                    {stats?.pids || <span className={styles.mutedMeta}>—</span>}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+                      ) : (
+                        <span className={styles.mutedMeta}>—</span>
+                      )}
+                    </td>
+                    <td className={clsx(styles.mono, styles.nowrapCell)}>
+                      {stats?.netIo || <span className={styles.mutedMeta}>—</span>}
+                    </td>
+                    <td className={clsx(styles.mono, styles.nowrapCell)}>
+                      {stats?.blockIo || <span className={styles.mutedMeta}>—</span>}
+                    </td>
+                    <td className={clsx(styles.mono, styles.nowrapCell)}>
+                      {stats?.pids || <span className={styles.mutedMeta}>—</span>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
 
-      <SectionBanner>
-        <T>Volumes</T>
-      </SectionBanner>
-      {namedVolumes.length > 0 ? (
-        <div className={styles.chipGroup}>
-          {namedVolumes.map((v) => (
-            <VolumeLinkChip key={v.name} conn={conn} volume={v} />
-          ))}
-        </div>
-      ) : (
-        <div className={styles.emptySection}>
-          <T>No named volumes</T>
-        </div>
-      )}
+        <SectionBanner>
+          <T>Volumes</T>
+        </SectionBanner>
+        {namedVolumes.length > 0 ? (
+          <div className={styles.chipGroup}>
+            {namedVolumes.map((v) => (
+              <VolumeLinkChip key={v.name} conn={conn} volume={v} />
+            ))}
+          </div>
+        ) : (
+          <div className={styles.emptySection}>
+            <T>No named volumes</T>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
