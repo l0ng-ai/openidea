@@ -3812,5 +3812,11 @@
   "Installing uses another package index, so names are not sent to PyPI on their own.": "Installing uses another package index, so names are not sent to PyPI on their own.",
   "Smart Type": "Smart Type",
   "No expected type at the caret": "No expected type at the caret",
-  "No suggestions of type {expected}": "No suggestions of type {expected}"
+  "No suggestions of type {expected}": "No suggestions of type {expected}",
+  "Stub / Implementation": "Stub / Implementation",
+  "Stub": "Stub",
+  "Implementation": "Implementation",
+  "No stub or implementation found": "No stub or implementation found",
+  "Implementation of {name} in {file}": "Implementation of {name} in {file}",
+  "Stub of {name} in {file}": "Stub of {name} in {file}"
 }

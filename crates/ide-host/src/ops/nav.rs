@@ -1,4 +1,7 @@
 use super::doc::blocking;
+use super::python_stubs::{
+    PythonStubLinks, counterpart_candidates, match_declarations, module_name, site_packages, stub_path,
+};
 use crate::Host;
 use crate::Project;
 use ide_command::command;
@@ -383,6 +386,51 @@ pub async fn web_unresolved_references(host: &Host, window: &str, doc: DocId) ->
     .await
 }
 
+/// The stub (`.pyi`) of a Python document, or the implementation of a stub, and the
+/// functions and classes declared in both: PyCharm's stub gutter markers.
+#[command(trust = always)]
+pub async fn nav_python_stubs(host: &Host, window: &str, doc: DocId) -> IdeResult<PythonStubLinks> {
+    let project = host.project(window)?;
+    let syntax = host.syntax();
+    blocking(move || {
+        let snap = project.documents.snapshot(doc)?;
+        if snap.large {
+            return Ok(PythonStubLinks::default());
+        }
+        let path = PathBuf::from(snap.path.clone());
+        // Modules are found in the project's Python roots and its virtualenv's site-packages.
+        let mut search = super::python::paths(&project);
+        let settings = project.settings.effective();
+        if let Some(venv) =
+            ide_sdk::apply::python_interpreter(&project.root, &settings).and_then(|p| ide_sdk::venv_of(&p))
+        {
+            search.extend(site_packages(&venv));
+        }
+        let module = module_name(&path, &search);
+        let candidates = counterpart_candidates(&path, &stub_path(&project.root), module.as_deref(), &search);
+        let watched = candidates.iter().cloned().map(IpcPath::from).collect();
+        let Some(counterpart) = candidates.into_iter().find(|p| project.documents.text_of(p).is_some() || p.is_file())
+        else {
+            return Ok(PythonStubLinks { candidates: watched, ..Default::default() });
+        };
+        // A counterpart too large to parse still opens; it just gets no markers.
+        let other = match project.documents.text_of(&counterpart) {
+            Some(text) => Some(text).filter(|t| t.len() as u64 <= ide_vfs::LARGE_FILE_THRESHOLD),
+            None => std::fs::metadata(&counterpart)
+                .is_ok_and(|m| m.len() <= ide_vfs::LARGE_FILE_THRESHOLD)
+                .then(|| project.text_of(&counterpart))
+                .transpose()?,
+        };
+        let links = other
+            .map(|other| {
+                match_declarations(&syntax.outline(&snap.language, &snap.text), &syntax.outline(&snap.language, &other))
+            })
+            .unwrap_or_default();
+        Ok(PythonStubLinks { counterpart: Some(IpcPath::from(counterpart)), links, candidates: watched })
+    })
+    .await
+}
+
 ide_command::domain!(
     nav:
     find_dirs,
@@ -396,6 +444,7 @@ ide_command::domain!(
     mark_recent,
     nav_index_definitions,
     nav_inheritance,
+    nav_python_stubs,
     nav_resolve_module,
     path_completions,
     recent_files,

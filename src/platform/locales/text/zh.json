@@ -10044,5 +10044,10 @@
   "Installing uses another package index, so names are not sent to PyPI on their own.": "安装使用的是另一个软件包索引，因此不会自动把名称发送到 PyPI。",
   "Smart Type": "智能类型",
   "No expected type at the caret": "光标处没有预期类型",
-  "No suggestions of type {expected}": "没有 {expected} 类型的建议"
+  "No suggestions of type {expected}": "没有 {expected} 类型的建议",
+  "Stub / Implementation": "存根 / 实现",
+  "Implementation": "实现",
+  "No stub or implementation found": "未找到存根或实现",
+  "Implementation of {name} in {file}": "{file} 中 {name} 的实现",
+  "Stub of {name} in {file}": "{file} 中 {name} 的存根"
 }
