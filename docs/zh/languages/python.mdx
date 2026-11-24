@@ -43,13 +43,19 @@ Ruff 只为位于 Ruff 配置之下的文件启动：`ruff.toml`、`.ruff.toml`�
 
 1. **设置 › 语言和框架 › Python 解释器** 中选定的解释器。
 2. 项目里的虚拟环境：`.venv`、`venv`、`env` 或 `.env`（含 `pyvenv.cfg` 的目录），或 `.pixi/envs/` 下的 pixi 环境。
-3. 项目通过 mise 或 asdf 固定的 Python 版本（`mise.toml`、`.tool-versions` 等 mise 配置文件）。
+3. 最近的 `Pipfile` 对应的 Pipenv 环境，包括通过 `.venv` 文件或 `PIPENV_CUSTOM_VENV_NAME` 指定的环境。
+4. 配置了 Hatch 的项目中已创建的 `default` 环境。
+5. 项目通过 mise 或 asdf 固定的 Python 版本（`mise.toml`、`.tool-versions` 等 mise 配置文件）。
 
-该页面的解释器列表还会列出 IDE 在本机找到的解释器：当前激活的 `VIRTUAL_ENV`，virtualenvwrapper、pipenv 和 Poetry 创建的虚拟环境，pyenv 的各个版本，uv 安装的 Python，mise 和 asdf 的安装，conda 环境（Miniconda、Anaconda、Miniforge、Mambaforge、micromamba，以及 `conda env list` 能看到的所有环境），还有 `PATH` 上的 `python` 可执行文件。
+该页面的解释器列表还会列出 IDE 在本机找到的解释器：当前激活的 `VIRTUAL_ENV`，virtualenvwrapper、pipenv 和 Poetry 创建的虚拟环境，Hatch 环境，pyenv 的各个版本，uv 安装的 Python，mise 和 asdf 的安装，conda 环境（Miniconda、Anaconda、Miniforge、Mambaforge、micromamba，以及 `conda env list` 能看到的所有环境），还有 `PATH` 上的 `python` 可执行文件。
 
 选定的解释器会传给 basedpyright 和 Pyright（`python.pythonPath`），其虚拟环境会作为 `VIRTUAL_ENV` 提供给语言服务器和运行配置。
 
 状态栏上的 **Python 解释器** 显示当前解释器，点击可以切换，也可以打开 **添加新的解释器…** 和 **解释器设置…**。
+
+### 解释器路径
+
+**设置 › 语言和框架 › Python › 所有解释器 › 显示所选解释器的路径** 列出该解释器的 `sys.path`，并可以把项目之外的文件夹（例如共享库的检出目录）添加进去。添加的文件夹按解释器保存在 IDE 设置中，因此对使用该解释器的每个项目生效。basedpyright 和 Pyright 通过 `extraPaths` 获得这些文件夹，运行、调试、测试和 Python 控制台通过 `PYTHONPATH` 获得，它们也会显示在 **External Libraries** 下。运行时它们会先于解释器自带的条目被搜索。已不存在的文件夹会标记为缺失并被跳过；`PYTHONPATH` 无法容纳的文件夹（不是绝对路径，或名称中含有分隔符）同样会被跳过。位于项目内的文件夹不会列在 External Libraries 下，其中的文件仍可编辑。解释器自带的条目不能删除，Docker 或 Compose 运行目标没有可编辑的路径。
 
 ### 以 Docker 或 Compose 运行目标作为解释器
 
@@ -69,22 +75,32 @@ Ruff 只为位于 Ruff 配置之下的文件启动：`ruff.toml`、`.ruff.toml`�
 - **Virtualenv 环境**：用你选的基础解释器执行 `python -m venv`。
 - **uv 环境**：执行 `uv venv <location> --python <base>`（`PATH` 上需要有 uv）。
 - **Poetry 环境**：在项目中执行 `poetry env use <base>`。
+- **Pipenv 环境**：在项目中执行 `pipenv --python <base>`（`PATH` 上需要有 pipenv）。项目没有 `Pipfile` 时，Pipenv 会写入一个，有 `requirements.txt` 时从中导入。勾选 **安装 Pipfile 中的软件包** 时，随后执行 `pipenv install --dev`。项目已有的环境会被复用；如果它的 Python 版本与基础解释器不同，不做任何改动并在对话框中提示（可用 `pipenv --rm` 删除后重建）。
+- 项目包含 `hatch.toml` 或在 `pyproject.toml` 中定义了 `[tool.hatch]` 表时，可以选择 **Hatch 环境**。选定环境后，IDE 会在项目中执行 `hatch env create <环境>`。Hatch 需要在 `PATH` 上，基础解释器通过 `HATCH_PYTHON` 传入。Hatch 会复用已有环境。如果环境与基础解释器的 Python 版本不同，对话框会提示。要重新创建环境，请先用 `hatch env remove <环境>` 删除它。解释器列表将 `default` 环境显示为 `Hatch: <项目>`，其他环境显示为 `Hatch: <项目>:<环境>`，包括 `hatch env find` 返回的自定义路径中的环境。
 - **Conda 环境**：执行 `conda create -n <名称>`，环境建在 conda 的 envs 目录中，Python 版本为所选版本。
 
 也可以直接选择已有的解释器或环境目录。新解释器会成为项目解释器。
 
 ### 软件包
 
-同一页面会列出所选解释器已安装的软件包，可以搜索、按名称 **安装**、**升级** 和 **卸载**。IDE 使用解释器自带的 pip；没有 pip 的环境（uv 创建的环境默认如此）改用 `uv pip`。
+同一页面会列出所选解释器已安装的软件包，可以搜索、按名称 **安装**、**升级** 和 **卸载**。IDE 使用解释器自带的 pip；没有 pip 的环境（uv 创建的环境默认如此）改用 `uv pip`。**最新版本** 列会标出有新版本的软件包：列表加载后，IDE 用同一工具查询（`pip list --outdated` 或 `uv pip list --outdated`），因此结果来自该工具配置的索引（pip 用 pip 的配置，uv 用 uv 的配置），并且是该解释器可以安装的最新版本。如果有软件包无法访问索引，或者检查超过两分钟，页面会提示检查失败，而不是显示一份可能漏掉升级的列表。
+
+**Python 软件包** 工具窗口（**视图 | 工具窗口**，或通过查找操作打开）可以在代码旁边管理同一批软件包。它会列出已安装的软件包并标出可升级的。在搜索框中输入名称可筛选列表；当输入的文本正好是 PyPI 上某个未安装项目的名称时，该项目会显示在 **PyPI** 分组下。选中软件包可查看摘要和版本，然后 **安装**（适合该解释器的最新版本，或您选择的版本）、**升级** 或 **卸载**。该窗口管理的是运行当前文件时使用的解释器（在工作区中为其所属成员的虚拟环境），并显示其路径。查询按精确名称访问 pypi.org：不支持按子串搜索名称，也不会查询为 pip 配置的私有索引，但安装时仍使用 pip 的配置。在搜索框中输入的文本会发送到 pypi.org；已安装软件包的名称只有在点击 **显示 PyPI 详情** 时才会发送。如果 pip 或 uv 配置了从其他索引安装，在点击 **在 PyPI 中搜索 …** 之前不会向 PyPI 发送任何内容，因为私有软件包可能在 PyPI 上有同名的公开项目。
 
 页面上的其他选项：
 
 - **激活 virtualenv**（**终端** 分组）：新的终端会话会运行虚拟环境的激活脚本。
-- **文档字符串格式**（**文档字符串** 分组）：纯文本、reStructuredText、Epytext、NumPy 或 Google。文档字符串里的标签和关键字按该格式高亮。
+- **文档字符串格式**（**文档字符串** 分组）：纯文本、reStructuredText、Epytext、NumPy 或 Google。在 `def` 或 `class` 下输入 `"""` 并按 Enter，会按该格式插入文档字符串存根（参数、返回值、抛出的异常），文档字符串里的标签和关键字也按该格式高亮。
 
 ### 格式化
 
-**重新格式化代码**（`⌘⌥L` / `Ctrl+Alt+L`）使用 Ruff。在 **设置 › 语言和框架 › Ruff** 中可以设置 Ruff 路径、配置目录、**格式化工具**（**自动（优先语言服务器）** 或 Ruff）以及 **保存时运行**。不指定配置目录时，Ruff 读取最近的 `pyproject.toml`（`[tool.ruff]`）、`ruff.toml` 或 `.ruff.toml`。
+**重新格式化代码**（`⌘⌥L` / `Ctrl+Alt+L`）使用 Ruff。在 **设置 › 语言和框架 › Ruff** 中可以设置 Ruff 路径、配置目录、**格式化工具**（**自动（优先语言服务器）** 或 Ruff）以及 **保存时运行**。不指定配置目录时，Ruff 读取最近的 `pyproject.toml`（`[tool.ruff]`）、`ruff.toml` 或 `.ruff.toml`。项目和用户配置里都没有时，Ruff 按编辑器使用的缩进和行宽格式化：先看文件的 `.editorconfig`（`indent_size`、`indent_style`、`max_line_length`），再看 **设置 › 编辑器 › 代码样式 › Python** 中设置的缩进、制表符和硬换行。两处都没设置的值不会传给 Ruff，Ruff 仍用自己的默认值（4 个空格、88 列）。
+
+在含 `[tool.black]` 表的 `pyproject.toml` 所在目录及其子目录中，或在 **设置 › 语言和框架 › Black 格式化工具** 中把 **格式化工具** 设为 Black 后，由 Black 代替 Ruff 格式化。Black 自己读取 `[tool.black]` 中的选项。IDE 优先使用项目解释器环境中的 `black`，其次是工具文件夹或 `PATH` 中的；都没有安装时，重新格式化代码会提示安装。在查找操作中运行 **使用 Black 重新格式化**，无论项目用什么格式化工具，都会用 Black 格式化。Black 自己的 **保存时运行** 或编辑器的 **保存时格式化** 打开时，保存文件会运行 Black。没有 `[tool.black]`（按 Black 的方式查找：跳过不含它的 `pyproject.toml`，一直到仓库根目录）或用户配置时，Black 也使用这个行宽。Black 配置排除的文件（`force-exclude`）保持不变；23.11 之前的 Black 不能格式化选区，会格式化整个文件。
+
+**优化导入**（`⌃⌥O` / `Ctrl+Alt+O`）对导入排序。在 Ruff 配置所在目录及其子目录中由 Ruff 服务器完成，未使用的导入保持不变（由 Ruff 的一键修复删除）。其他位置由 IDE 对文件运行 `ruff check --extend-select I --fixable I,F401 --fix`，除非 Ruff 规则不包含 F401，否则同时删除未使用的导入；需要安装 Ruff。保存时、提交前和代码清理中的优化导入也是如此。
+
+**重新排列代码**（在查找操作或代码菜单中）对文件中每个类的方法排序：`__new__`、`__init__` 和 `__post_init__`，其他双下划线方法，公开方法，`_受保护` 方法，最后是 `__私有` 方法；同组内保持原有顺序。第一个方法之前的文档字符串和类属性不动；方法连同装饰器和紧贴其上方的注释行一起移动，同名定义（property 及其 setter、`@overload` 声明）一起移动。移动可能改变类的行为时，类保持不变：方法之间夹有其他语句、独立注释或 `# region` / `# fmt: off` 标记，或者装饰器、默认值、类型注解引用了本类的其他方法。有语法错误的文件不会重新排列。
 
 ## 运行与测试
 

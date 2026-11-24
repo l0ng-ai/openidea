@@ -164,15 +164,19 @@ export function ReferencedText({ text, cwd }: { text: string; cwd: string }) {
   return (
     <span ref={setRoot} className={styles.text}>
       {blocks.map((block, n) => {
-        if (block.kind === "code") return <CodeCard key={n} info={block.info} body={block.text} />;
+        if (block.kind === "code")
+          // oxlint-disable-next-line react/no-array-index-key -- blocks can repeat; position is the identity
+          return <CodeCard key={n} info={block.info} body={block.text} />;
         if (block.kind === "quote")
           return (
+            // oxlint-disable-next-line react/no-array-index-key -- quotes can repeat; position is the identity
             <div key={n} className={styles.quote}>
               {block.text}
             </div>
           );
         // A block ends its own line: the paragraph after it starts without an empty one.
         const body = n > 0 ? block.text.replace(/^\n/, "") : block.text;
+        // oxlint-disable-next-line react/no-array-index-key -- blocks can repeat; position is the identity
         return <Fragment key={n}>{inline(body, cwd)}</Fragment>;
       })}
     </span>
@@ -181,15 +185,21 @@ export function ReferencedText({ text, cwd }: { text: string; cwd: string }) {
 
 function inline(text: string, cwd: string): ReactNode[] {
   return messageTokens(text).map((token, i) => {
-    if (token.kind === "text") return <Fragment key={i}>{token.value}</Fragment>;
+    if (token.kind === "text")
+      // oxlint-disable-next-line react/no-array-index-key -- tokens can repeat; position is the identity
+      return <Fragment key={i}>{token.value}</Fragment>;
     if (token.kind === "command")
       return (
+        // oxlint-disable-next-line react/no-array-index-key -- tokens can repeat; position is the identity
         <span key={i} className={styles.command}>
           {token.value}
         </span>
       );
     const mention = parseMention(token.value);
-    if (!mention) return <Fragment key={i}>{token.value}</Fragment>;
+    if (!mention)
+      // oxlint-disable-next-line react/no-array-index-key -- tokens can repeat; position is the identity
+      return <Fragment key={i}>{token.value}</Fragment>;
+    // oxlint-disable-next-line react/no-array-index-key -- tokens can repeat; position is the identity
     return <ReferenceChip key={i} path={resolveTyped(cwd, mention.rel)} mention={mention} />;
   });
 }

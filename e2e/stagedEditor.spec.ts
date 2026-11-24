@@ -102,6 +102,9 @@ test("edits the staged version and keeps an unsaved draft when the index changes
   await expect(headPane).toContainText("val committed = 0");
   await expect(indexPane).toContainText("val external = 3");
   await expect(localPane).not.toBeEmpty();
+  const indexHeading = page.getByTitle(`Staged (index) ${path}`, { exact: true });
+  await expect(indexHeading.getByText("build.gradle.kts", { exact: true })).toBeVisible();
+  await expect(indexHeading.getByText("Staged (index)", { exact: true })).toBeVisible();
   const working = await localPane.textContent();
 
   await page.getByRole("button", { name: "Unstage Change", exact: true }).click();
@@ -382,6 +385,8 @@ test("edits and stages from the index in unified diffs of read-only files", asyn
   const index = modal.locator('.cm-content[aria-label="Staged (index)"]');
   await expect(index).toBeEditable();
   await expect(index).toHaveText(/val alpha = "index"\s+val alpha = "local"/, { useInnerText: true });
+  await expect(modal.locator(".cm-diffNumbers-modified .cm-diffWidgetNumber")).toHaveText(["1", "3"]);
+  await expect(modal.locator(".cm-diffNumbers-original .cm-diffWidgetNumber")).toHaveCount(0);
   const setReadOnly = (readOnly: boolean) =>
     page.evaluate((readOnly) => window.__ipc.handlers.test_set_readonly?.({ readOnly }), readOnly);
   await setReadOnly(false);

@@ -51,14 +51,41 @@ beforeEach(() => {
 });
 
 describe("Docker connections", () => {
+  it("skips a saved disconnected connection on startup and during polling", async () => {
+    vi.resetModules();
+    const { connectionState, watch } = await import("./store");
+    const paused = { id: "paused", name: "Paused", endpoint: { kind: "ssh", config: "build" }, disconnected: true };
+    const active = { id: "active", name: "Active", endpoint: { kind: "tcp", host: "build:2376" } };
+    backend.settings.mockResolvedValueOnce(ok({ connections: [paused, active], registries: [] }));
+    backend.snapshot.mockResolvedValue(ok({ availability: { kind: "daemonDown", message: "Offline" }, errors: [] }));
+
+    vi.useFakeTimers();
+    const stop = watch();
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(backend.snapshot.mock.calls).toEqual([[active.endpoint]]);
+      expect(connectionState(paused.id)).toMatchObject({ disconnected: true, snapshot: null });
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(backend.snapshot.mock.calls).toEqual([[active.endpoint], [active.endpoint]]);
+    } finally {
+      stop();
+      vi.useRealTimers();
+    }
+  });
+
   it("stop talking to the daemon while disconnected, and connect again on Connect", async () => {
     const stop = watch();
     await vi.waitFor(() => expect(connectionState("box").snapshot).not.toBeNull());
     expect(backend.events).toHaveBeenCalledOnce();
 
-    disconnectConnection("box");
+    await disconnectConnection("box");
     expect(backend.cancel).toHaveBeenCalledOnce();
     expect(connectionState("box")).toMatchObject({ snapshot: null, disconnected: true });
+    expect(backend.saveSettings).toHaveBeenLastCalledWith({
+      connections: [expect.objectContaining({ id: "box", disconnected: true })],
+      registries: [],
+    });
     backend.snapshot.mockClear();
     await refresh("box");
     expect(backend.snapshot).not.toHaveBeenCalled();
@@ -66,7 +93,20 @@ describe("Docker connections", () => {
     await connectConnection("box");
     expect(backend.snapshot).toHaveBeenCalledOnce();
     expect(connectionState("box")).toMatchObject({ disconnected: false, snapshot: ready });
+    expect(backend.saveSettings).toHaveBeenLastCalledWith({
+      connections: [expect.objectContaining({ id: "box", disconnected: false })],
+      registries: [],
+    });
     stop();
+  });
+
+  it("preserves the saved disconnect when editing the connection concurrently", async () => {
+    const edited = { id: "box", name: "Edited box", endpoint: { kind: "default" } } as const;
+    await Promise.all([disconnectConnection("box"), saveConnection(edited)]);
+    expect(backend.saveSettings).toHaveBeenLastCalledWith({
+      connections: [{ ...edited, disconnected: true }],
+      registries: [],
+    });
   });
 
   describe("over SSH", () => {
@@ -81,7 +121,7 @@ describe("Docker connections", () => {
       let finish!: () => void;
       backend.snapshot.mockReturnValueOnce(new Promise((resolve) => (finish = () => resolve(ok(ready)))));
       const reading = refresh("box");
-      disconnectConnection("box");
+      await disconnectConnection("box");
       await Promise.resolve();
       expect(backend.disconnect).not.toHaveBeenCalled();
       finish();
@@ -95,20 +135,20 @@ describe("Docker connections", () => {
       let finish!: () => void;
       backend.snapshot.mockReturnValueOnce(new Promise((resolve) => (finish = () => resolve(ok(ready)))));
       const reading = refresh("box");
-      disconnectConnection("box");
+      const disconnecting = disconnectConnection("box");
       const connecting = connectConnection("box");
       finish();
-      await Promise.all([reading, connecting]);
+      await Promise.all([reading, disconnecting, connecting]);
       await vi.waitFor(() => expect(connectionState("box").snapshot).toEqual(ready));
       expect(backend.disconnect).not.toHaveBeenCalled();
     });
 
     it("keeps a tunnel another connected connection uses, until that one disconnects too", async () => {
       connect(box, twin);
-      disconnectConnection("box");
+      await disconnectConnection("box");
       await new Promise((r) => setTimeout(r, 0));
       expect(backend.disconnect).not.toHaveBeenCalled();
-      disconnectConnection("twin");
+      await disconnectConnection("twin");
       await vi.waitFor(() => expect(backend.disconnect).toHaveBeenCalledExactlyOnceWith(box.endpoint));
     });
 
@@ -121,7 +161,7 @@ describe("Docker connections", () => {
 
     it("leaves other endpoints alone: they keep nothing open", async () => {
       connect(local);
-      disconnectConnection("local");
+      await disconnectConnection("local");
       await removeConnection("local");
       await new Promise((r) => setTimeout(r, 0));
       expect(backend.disconnect).not.toHaveBeenCalled();
@@ -129,7 +169,7 @@ describe("Docker connections", () => {
 
     it("matches the configuration as the backend does, ignoring surrounding spaces", async () => {
       connect(box, { ...twin, endpoint: { kind: "ssh", config: " build " } });
-      disconnectConnection("box");
+      await disconnectConnection("box");
       await new Promise((r) => setTimeout(r, 0));
       expect(backend.disconnect).not.toHaveBeenCalled();
     });
@@ -144,7 +184,7 @@ describe("Docker connections", () => {
       connect(box);
       let closed!: () => void;
       backend.disconnect.mockReturnValueOnce(new Promise((resolve) => (closed = () => resolve(ok(null)))));
-      disconnectConnection("box");
+      await disconnectConnection("box");
       await vi.waitFor(() => expect(backend.disconnect).toHaveBeenCalledOnce());
       backend.snapshot.mockClear();
       const connecting = connectConnection("box");

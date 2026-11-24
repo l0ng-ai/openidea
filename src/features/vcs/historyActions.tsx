@@ -33,6 +33,7 @@ import {
   goToChild,
   goToParent,
   goToRef,
+  goToRefRepositories,
   openLogTab,
   selectedCommits,
   toggleCommitBookmark,
@@ -388,7 +389,7 @@ export function registerHistoryActions(): () => void {
         const rev = await chooseRevision("Go to Hash/Branch/Tag", {
           tags: true,
           placeholder: "Enter hash or branch/tag name",
-          repositories: tab?.repo ? [tab.repo] : log.filters.repositories,
+          repositories: goToRefRepositories(log),
         });
         if (rev && !(await goToRef(rev)))
           notifications().notify({ group: "vcs", level: "warning", title: `'${rev}' was not found in the log` });

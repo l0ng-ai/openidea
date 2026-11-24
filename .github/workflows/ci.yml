@@ -102,24 +102,44 @@ jobs:
     name: Rust (${{ matrix.os }})
     needs: changes
     if: needs.changes.outputs.rust == 'true'
+    permissions:
+      contents: read
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         os: [macos-latest, ubuntu-22.04, windows-latest]
-    runs-on: ${{ matrix.os }}
+    # Self-hosted runners (scripts/selfhost-runner) only for trusted events, and only while the
+    # SELFHOSTED_RUNNERS repository variable is 'true': runs-on cannot fall back when none is online.
+    runs-on: ${{ matrix.os == 'ubuntu-22.04' && vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || matrix.os }}
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v5
         with: { version: 11 }
       - uses: actions/setup-node@v5
-        with: { node-version: 22, cache: pnpm }
+        with:
+          node-version: 22
+          cache: ${{ runner.environment != 'self-hosted' && 'pnpm' || '' }}
+          package-manager-cache: ${{ runner.environment != 'self-hosted' }}
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "clippy, rustfmt" }
-      # Only main saves the cache (saving takes minutes on Windows); PRs restore main's.
+      # Self-hosted runners keep persistent local Cargo caches; GitHub-hosted runners use Actions cache
+      # (only main saves it because saving takes minutes on Windows; PRs restore main's).
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment != 'self-hosted'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The persistent target dir makes incremental builds pay off; cap its size so it can't fill the disk.
+      - name: Persistent Cargo target dir
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          echo "CARGO_INCREMENTAL=1" >> "$GITHUB_ENV"
+          size=$(du -sm "$CARGO_TARGET_DIR" 2>/dev/null | cut -f1 || true)
+          if [ "${size:-0}" -gt 40000 ]; then
+            echo "$CARGO_TARGET_DIR is ${size} MB; clearing it"
+            rm -rf "$CARGO_TARGET_DIR"
+          fi
       - uses: taiki-e/install-action@nextest
       - name: Linux deps
         if: runner.os == 'Linux'
@@ -135,6 +155,12 @@ jobs:
       # Test fixtures write LF files; keep Git from converting them on checkout.
       - run: git config --global core.autocrlf false
       - run: cargo nextest run --workspace --no-fail-fast
+      - name: Remote backend with Docker Compose
+        if: runner.os == 'Linux'
+        run: |
+          docker pull busybox:latest
+          cargo nextest run -p ide-host --test remote_daemon --run-ignored only \
+            -E 'test(=compose_service_survives_disconnect_and_is_removed_on_stop)'
       # nextest skips doctests; ide-command's are its compile-fail tests.
       - if: runner.os == 'Linux'
         run: cargo test --doc -p ide-command
@@ -280,7 +306,7 @@ jobs:
       - run: pnpm vitest run src/platform/locales/textCatalog.test.ts
 
   e2e:
-    name: E2E (${{ matrix.shard }}/2)
+    name: E2E (${{ matrix.shard }}/4)
     needs: changes
     if: needs.changes.outputs.e2e == 'true'
     timeout-minutes: 30
@@ -288,7 +314,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3, 4]
     # Browsers and their system libraries are preinstalled; keep the tag in step with @playwright/test.
     container: mcr.microsoft.com/playwright:v1.64.1-noble
     steps:
@@ -298,7 +324,7 @@ jobs:
       - uses: actions/setup-node@v5
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
-      - run: pnpm e2e --shard=${{ matrix.shard }}/2
+      - run: pnpm e2e --shard=${{ matrix.shard }}/4
         env:
           HOME: /root
       - uses: actions/upload-artifact@v6

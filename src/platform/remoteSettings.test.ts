@@ -162,6 +162,17 @@ describe("remote client settings", () => {
     expect(remoteRouting("settings_set", { scope: "project", key }, served)).toBe("remote");
     expect(remoteRouting("settings_set", { scope: "global", key }, served)).toBe("both");
   });
+  it("writes the backend idle timeout only on the remote host, regardless of MCP support", async () => {
+    const args = { scope: "global", key: "remoteDevelopment.idleTimeoutMinutes", value: "45" };
+    await call(commands.settingsSet("global", args.key, args.value));
+    const writes = invoke.mock.calls.filter(
+      ([cmd, params]) =>
+        cmd === "settings_set" || (cmd === "remote_invoke" && (params as { cmd: string }).cmd === "settings_set"),
+    );
+    expect(writes.map(([cmd, params]) => [cmd, params])).toEqual([
+      ["remote_invoke", expect.objectContaining({ cmd: "settings_set", args: JSON.stringify(args) })],
+    ]);
+  });
   it("routes mcpServer settings and MCP commands to the remote host without mutating local MCP settings", async () => {
     const withMcp = new Set([...served, "settings_get_global", "mcp_server_status", "mcp_ui_ready", "mcp_respond"]);
     enableRemote({

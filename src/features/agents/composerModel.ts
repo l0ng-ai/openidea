@@ -373,6 +373,10 @@ export function mentionOf(rel: string, lines?: { from: number; to: number }): st
   return lines.from === lines.to ? `@${rel}:${lines.from}` : `@${rel}:${lines.from}-${lines.to}`;
 }
 
+/** Whether `text` holds exactly `mention` (as made by {@link mentionOf}): same file, same lines. */
+export const hasMention = (text: string, mention: string) =>
+  new RegExp(`(?:^|\\s)${escapeRe(mention)}(?=\\s|$)`).test(text);
+
 /** Whether `text` still holds the `@rel` mention, with or without a line range. */
 export const isMentioned = (text: string, rel: string) =>
   new RegExp(`@${escapeRe(rel)}(?![\\w./-])|@${escapeRe(rel)}:`).test(text);

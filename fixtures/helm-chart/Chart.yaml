@@ -1,0 +1,4 @@
+apiVersion: v2
+name: hello
+description: A sample chart for template editing
+version: 0.1.0

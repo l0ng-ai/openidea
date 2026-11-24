@@ -49,4 +49,16 @@ describe("openRecent", () => {
     expect(openProject).toHaveBeenCalledWith("/p/local");
     expect(openRemoteProject).not.toHaveBeenCalled();
   });
+
+  it("joins a remote open that is still connecting instead of connecting twice", async () => {
+    let finish!: (ok: boolean) => void;
+    openRemoteProject.mockReturnValue(new Promise<boolean>((resolve) => (finish = resolve)));
+    const first = openRecent({ path: UNC, name: "app" });
+    const second = openRecent({ path: UNC, name: "app" });
+    finish(true);
+    expect(await Promise.all([first, second])).toEqual([true, true]);
+    expect(openRemoteProject).toHaveBeenCalledTimes(1);
+    await openRecent({ path: UNC, name: "app" });
+    expect(openRemoteProject).toHaveBeenCalledTimes(2);
+  });
 });

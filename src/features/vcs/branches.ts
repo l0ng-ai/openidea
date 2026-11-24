@@ -581,6 +581,24 @@ export function buildMergedBranchTree(
   return withRepos(buildBranchTree(branches, favorites, [...tagRoots.keys()]));
 }
 
+/**
+ * Tooltip of a merged-tree ref in several repositories: one line per repository, sorted by
+ * name; a local branch also shows the branch it tracks there.
+ */
+export function mergedRefTooltip(n: BranchTreeNode, nameOf: (root: string) => string): string | undefined {
+  if (!n.repos || n.repos.length < 2) return undefined;
+  const local = n.branch && !n.branch.remote;
+  return n.repos
+    .map((root) => {
+      const name = nameOf(root);
+      if (!local) return name;
+      const upstream = n.branchesByRoot?.get(root)?.upstream;
+      return `${name}: ${n.ref} ${upstream ? `→ ${upstream}` : tx("(no tracking branch)")}`;
+    })
+    .sort((a, b) => a.localeCompare(b))
+    .join("\n");
+}
+
 /** Keys of the nodes on the way to branch `name` (to reveal it). */
 export function branchFolderKeys(nodes: readonly BranchTreeNode[], name: string): string[] {
   const walk = (list: readonly BranchTreeNode[]): string[] | null => {

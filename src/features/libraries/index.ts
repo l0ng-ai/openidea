@@ -17,13 +17,39 @@ import {
   isLibraryPath,
   registerEditorContribution,
   setLibraryRoots,
+  useEditorRegistry,
 } from "@/editor/api";
 import { call, isCancelled, isTauri, nextRequestId, onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
+import { libraryArchiveRoot } from "@/platform/virtualDocs";
 import { registerProjectViewRoot, type ProjectViewRootContribution } from "@/workbench/contributions";
 import { goModNavigationExtension } from "./goModNavigation";
 
 export const EXTERNAL_LIBRARIES_LABEL = "External Libraries";
+
+/** A jdtls URI's `maven.*` attributes, as the group label used by build dependencies. */
+function archiveGroupName(uri: string, fallback: string): string {
+  let query = uri.split("?")[1] ?? "";
+  try {
+    query = decodeURIComponent(query);
+  } catch {
+    return fallback;
+  }
+  const field = (name: string) => new RegExp(`maven\\.${name}=/([^=]+)=`).exec(query)?.[1];
+  const [group, artifact, version] = [field("groupId"), field("artifactId"), field("version")];
+  if (!group || !artifact || !version) return fallback;
+  const classifier = field("classifier");
+  return `Maven: ${group}:${artifact}:${version}${classifier ? `:${classifier}` : ""}`;
+}
+
+/** A class opened from a jar the build model has not listed yet; show its exact archive. */
+export function openedLibraryGroup(uri: string, groups: readonly LibraryGroup[]): LibraryGroup | null {
+  const archive = libraryArchiveRoot(uri);
+  if (!archive || groups.some((group) => group.roots.some((root) => root.path === archive))) return null;
+  const separator = Math.max(archive.lastIndexOf("/"), archive.lastIndexOf("\\"));
+  const name = archive.slice(separator + 1, -1) || archive;
+  return { name: archiveGroupName(uri, name), kind: "classpath", roots: [{ name, path: archive }] };
+}
 
 const GROUP_ICONS: Record<string, string> = {
   python: "file-python",
@@ -149,6 +175,7 @@ const sdkKey = (s: ReturnType<typeof useProject.getState>) => {
     s.project?.root ?? null,
     s.project?.trusted,
     l?.python?.interpreter,
+    l?.python?.interpreterPaths,
     l?.ruby?.interpreter,
     l?.java?.jdk,
     l?.node?.interpreter,
@@ -174,6 +201,10 @@ export function activate(): () => void {
   let shown = "";
   /** The last complete result: what a refresh shows for ecosystems that haven't reported yet. */
   let settled: LibraryGroup[] = [];
+  /** The last build/SDK result, before archives opened from the editor are added. */
+  let backendGroups: LibraryGroup[] = [];
+  /** One group per opened archive, so the build model can replace each archive independently. */
+  let openedGroups: LibraryGroup[] = [];
   let request: RequestId | undefined;
   /** The project whose libraries are shown (and `settled`). */
   let shownFor: string | null = null;
@@ -184,7 +215,35 @@ export function activate(): () => void {
     shown = "";
     shownGroups = [];
     settled = [];
+    backendGroups = [];
+    openedGroups = [];
     shownFor = null;
+  };
+  const render = (groups: LibraryGroup[]) => {
+    backendGroups = groups;
+    const covered = new Set(groups.flatMap((g) => g.roots.map((r) => r.path)));
+    openedGroups = openedGroups.filter((g) => !g.roots.some((r) => covered.has(r.path)));
+    const all = mergeLibraryGroups([...groups, ...openedGroups]);
+    const key = JSON.stringify(all);
+    if (key === shown) return;
+    // The new node replaces the old one in place: removing it first would drop it from the tree
+    // until the new one renders, and collapse it.
+    const [oldRoot, oldReadOnly] = [disposeRoot, disposeReadOnly];
+    disposeRoot = disposeReadOnly = () => {};
+    shown = key;
+    // ⌘-hover may have probed a go.mod entry before its module was listed.
+    if (goModules(all) !== goModules(shownGroups)) invalidateNavigationProviders();
+    shownGroups = all;
+    const root = librariesRoot(all);
+    if (root) {
+      disposeReadOnly = setLibraryRoots(
+        "externalLibraries",
+        all.flatMap((g) => g.roots.map((r) => r.path)),
+      );
+      disposeRoot = registerProjectViewRoot(root);
+    }
+    oldRoot();
+    oldReadOnly();
   };
   const refresh = () => {
     const id = ++seq;
@@ -200,26 +259,7 @@ export function activate(): () => void {
     let collected: LibraryGroup[] = [];
     const show = (groups: LibraryGroup[]) => {
       if (id !== seq) return;
-      const key = JSON.stringify(groups);
-      if (key === shown) return;
-      // The new node replaces the old one in place: removing it first would drop it from the tree
-      // until the new one renders, and collapse it.
-      const [oldRoot, oldReadOnly] = [disposeRoot, disposeReadOnly];
-      disposeRoot = disposeReadOnly = () => {};
-      shown = key;
-      // ⌘-hover may have probed a go.mod entry before its module was listed.
-      if (goModules(groups) !== goModules(shownGroups)) invalidateNavigationProviders();
-      shownGroups = groups;
-      const root = librariesRoot(groups);
-      if (root) {
-        disposeReadOnly = setLibraryRoots(
-          "externalLibraries",
-          groups.flatMap((g) => g.roots.map((r) => r.path)),
-        );
-        disposeRoot = registerProjectViewRoot(root);
-      }
-      oldRoot();
-      oldReadOnly();
+      render(groups);
     };
     const channel = new Channel<LibraryGroup[]>();
     channel.onmessage = (groups) => {
@@ -242,6 +282,13 @@ export function activate(): () => void {
       });
   };
   refresh();
+  const showOpenedLibrary = (path: string | null) => {
+    if (!path || !shownFor) return;
+    const group = openedLibraryGroup(path, shownGroups);
+    if (!group) return;
+    openedGroups.push(group);
+    render(backendGroups);
+  };
   const disposeGoMod = registerEditorContribution({
     id: "libraries.goModNavigation",
     extensions: goModNavigationExtension((path, version) => goModuleRoot(shownGroups, path, version), isLibraryPath),
@@ -252,6 +299,11 @@ export function activate(): () => void {
   const unsub = useProject.subscribe((s, prev) => {
     if (sdkKey(s) !== sdkKey(prev)) refresh();
   });
+  const unsubEditor = useEditorRegistry.subscribe((s, prev) => {
+    const path = s.active?.ctx.path ?? null;
+    if (path !== (prev.active?.ctx.path ?? null)) showOpenedLibrary(path);
+  });
+  showOpenedLibrary(useEditorRegistry.getState().active?.ctx.path ?? null);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const unsubFs = onIdeEvent("fsChanged", (e) => {
     if (!touchesManifest([...e.created, ...e.modified, ...e.removed])) return;
@@ -268,6 +320,7 @@ export function activate(): () => void {
     if (request !== undefined) void commands.cancelRequest(request).catch(() => {});
     clearTimeout(timer);
     unsub();
+    unsubEditor();
     unsubFs();
     unsubRoots();
     disposeActions();

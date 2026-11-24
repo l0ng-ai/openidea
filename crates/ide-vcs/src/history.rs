@@ -478,12 +478,11 @@ pub(crate) fn log(r: &Repo, q: &LogQuery, cancel: &CancellationToken) -> IdeResu
         all.request = None;
         all.stop_at = None;
         let repo = r.gix()?;
-        let decorations = decorations(&repo)?;
+        let (decorations, generation) = r.ref_decorations(&repo)?;
         let shallow_vec =
             repo.shallow_commits().map_err(gx)?.map(|ids| ids.iter().copied().collect::<Vec<_>>()).unwrap_or_default();
         let shallow: HashSet<ObjectId> = shallow_vec.iter().copied().collect();
-        let refs = r.log_refs()?;
-        let key = format!("{}:{refs:?}:{shallow_vec:?}", serde_json::to_string(&all).map_err(gx)?);
+        let key = format!("{}:{generation}:{shallow_vec:?}", serde_json::to_string(&all).map_err(gx)?);
         let cached = index.views.get(&key).cloned();
         let view = if let Some(cached) = cached {
             cached
@@ -646,7 +645,7 @@ fn log_indexed(
     let repo = r.gix()?;
     let shallow: HashSet<ObjectId> =
         repo.shallow_commits().map_err(gx)?.map(|ids| ids.iter().copied().collect()).unwrap_or_default();
-    let decorations = decorations(&repo)?;
+    let (decorations, _) = r.ref_decorations(&repo)?;
     let range = q.range.as_deref().map(str::trim).filter(|s| !s.is_empty());
     let revs: Vec<&str> = q.branch.iter().chain(&q.branches).map(|b| b.trim()).filter(|b| !b.is_empty()).collect();
     let ranges: Vec<_> = q.ranges.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
@@ -741,7 +740,7 @@ fn log_indexed_rows(
     if tips.is_empty() && range.is_none() && ranges.is_empty() {
         return Ok(Vec::new());
     }
-    let decorations = decorations(&repo)?;
+    let (decorations, _) = r.ref_decorations(&repo)?;
     let paths: Vec<String> = q
         .path
         .iter()
@@ -1406,8 +1405,19 @@ fn tips(repo: &gix::Repository, revs: &[&str]) -> IdeResult<Vec<ObjectId>> {
     Ok(tips)
 }
 
+#[cfg(test)]
+thread_local!(static DECORATION_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) });
+
+/// How many times this thread listed all refs.
+#[cfg(test)]
+pub(crate) fn decorations_scans() -> usize {
+    DECORATION_SCANS.get()
+}
+
 /// Commit id → decoration labels.
 pub(crate) fn decorations(repo: &gix::Repository) -> IdeResult<HashMap<ObjectId, Vec<String>>> {
+    #[cfg(test)]
+    DECORATION_SCANS.set(DECORATION_SCANS.get() + 1);
     let mut map: HashMap<ObjectId, Vec<String>> = HashMap::new();
     if let Ok(id) = repo.head_id() {
         map.entry(id.detach()).or_default().push("HEAD".to_string());

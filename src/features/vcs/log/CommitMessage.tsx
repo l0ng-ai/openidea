@@ -7,7 +7,7 @@ import { CommitMessageContent } from "../CommitMessageContent";
 import styles from "../GitLog.module.css";
 import { IssueText } from "../issueLinks";
 import { useCommitDetails } from "../logDetails";
-import { refLabels } from "../logOptions";
+import { refLabels, type RefLabel } from "../logOptions";
 import { goToRef } from "../logStore";
 import { commitRepo } from "../multiRoot";
 import { currentRepo } from "../store";
@@ -34,15 +34,34 @@ export function RefLabels({
   remoteNames?: ReadonlySet<string>;
   left?: boolean;
 }) {
-  const labels = refLabels(refs, { compact, tagNames }, remoteNames);
   return (
-    <span className={clsx(styles.refs, compact && styles.refsCompact, left && styles.refsLeft)}>
+    <RefGroup
+      labels={refLabels(refs, { compact, tagNames }, remoteNames)}
+      className={clsx(styles.refs, compact && styles.refsCompact, left && styles.refsLeft)}
+    />
+  );
+}
+
+function RefGroup({ labels, className }: { labels: RefLabel[]; className: string | undefined }) {
+  if (!labels.length) return null;
+  return (
+    <span className={className}>
       {labels.map((l) => (
         <span key={`${l.kind}:${l.title}`} className={clsx(styles.ref, REF_KIND_CLASS[l.kind])} title={l.title}>
           {l.text && <span className={styles.refText}>{l.text}</span>}
         </span>
       ))}
     </span>
+  );
+}
+
+function CommitReferences({ refs }: { refs: string[] }) {
+  const labels = refLabels(refs, { compact: false, tagNames: true }, NO_REMOTES);
+  return (
+    <div className={styles.meta}>
+      <RefGroup labels={labels.filter((label) => label.kind !== "tag")} className={styles.detailRefGroup} />
+      <RefGroup labels={labels.filter((label) => label.kind === "tag")} className={styles.detailRefGroup} />
+    </div>
   );
 }
 
@@ -91,11 +110,7 @@ export function CommitMessage({ commit, compact = false }: { commit: Commit; com
           ))}
         </div>
       )}
-      {commit.refs.length > 0 && (
-        <div className={styles.meta}>
-          <RefLabels refs={commit.refs} />
-        </div>
-      )}
+      {commit.refs.length > 0 && <CommitReferences refs={commit.refs} />}
       {details && (
         <>
           <div className={styles.meta}>
@@ -168,10 +183,12 @@ export function CommitSignature({ commit }: { commit: Commit }) {
 function CommitMessageText({ text, repo }: { text: string; repo: string | null | undefined }) {
   return text.split(/\b([a-fA-F0-9]{7,64})\b/g).map((part, i) =>
     i % 2 ? (
+      // oxlint-disable-next-line react/no-array-index-key -- hashes can repeat; position is the identity
       <button type="button" className={styles.linkButton} key={i} onClick={() => void goToRef(part, repo)}>
         {part}
       </button>
     ) : (
+      // oxlint-disable-next-line react/no-array-index-key -- text parts can repeat; position is the identity
       <IssueText key={i} text={part} />
     ),
   );

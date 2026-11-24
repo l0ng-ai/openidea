@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_DOGFOOD_APP_NAME,
+  deferRestartArgs,
   dogfoodBuildEnv,
   dogfoodCliArgs,
   dogfoodPaths,
@@ -13,18 +14,85 @@ import {
   generateDogfoodIcons,
   installDogfood,
   parseDogfoodArgs,
+  runParallelTasks,
 } from "./dogfood.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 
-describe("dogfood build and install", () => {
-  it("parses build and install arguments, including pnpm separator flags", () => {
-    expect(parseDogfoodArgs(["build"])).toEqual({ action: "build", skipBuild: false });
-    expect(parseDogfoodArgs(["install"])).toEqual({ action: "install", skipBuild: false });
-    expect(parseDogfoodArgs(["install", "--no-build"])).toEqual({ action: "install", skipBuild: true });
-    expect(parseDogfoodArgs(["install", "--", "--no-build"])).toEqual({ action: "install", skipBuild: true });
-    expect(() => parseDogfoodArgs([])).toThrow(/Expected 'build' or 'install'/);
-    expect(() => parseDogfoodArgs(["build", "--no-build"])).toThrow(/Unexpected option/);
+describe("dogfood local and all", () => {
+  it("parses local and all arguments, including pnpm separator flags", () => {
+    expect(parseDogfoodArgs(["local"])).toEqual({ action: "local", buildOnly: false });
+    expect(parseDogfoodArgs(["local", "--build-only"])).toEqual({ action: "local", buildOnly: true });
+    expect(parseDogfoodArgs(["local", "--", "--build-only"])).toEqual({ action: "local", buildOnly: true });
+    expect(parseDogfoodArgs(["all", "--", "my-remote", "--build-only", "--restart", "--ssh-opt", "Port=2222"])).toEqual(
+      {
+        action: "all",
+        buildOnly: true,
+        remoteArgs: ["my-remote", "--restart", "--ssh-opt", "Port=2222"],
+        remote: {
+          remoteName: "my-remote",
+          clean: false,
+          installRust: false,
+          restart: "always",
+          sshOpts: ["Port=2222"],
+        },
+      },
+    );
+    expect(deferRestartArgs(["my-remote", "--restart", "--ssh-opt", "Port=2222"])).toEqual([
+      "my-remote",
+      "--ssh-opt",
+      "Port=2222",
+      "--no-restart",
+    ]);
+    expect(() => parseDogfoodArgs([])).toThrow(/Expected 'local' or 'all'/);
+    expect(() => parseDogfoodArgs(["build"])).toThrow(/Expected 'local' or 'all'/);
+    expect(() => parseDogfoodArgs(["local", "my-remote"])).toThrow(/Unexpected option/);
+    expect(() => parseDogfoodArgs(["all"])).toThrow(/Usage: dogfood:all <remote_name>/);
+    expect(() => parseDogfoodArgs(["all", "my-remote", "--clean"])).toThrow(/dogfood:remote <remote_name> --clean/);
+  });
+
+  it("runs parallel tasks concurrently, prefixes lines, and terminates siblings on failure", async () => {
+    const out: string[] = [];
+    const err: string[] = [];
+    await runParallelTasks(
+      [
+        {
+          label: "local",
+          command: process.execPath,
+          args: ["-e", 'process.stdout.write("step 1\\nstep "); setTimeout(() => process.stdout.write("2"), 40);'],
+        },
+        {
+          label: "remote",
+          command: process.execPath,
+          args: ["-e", 'process.stderr.write("warn line\\n"); process.stdout.write("done\\n");'],
+        },
+      ],
+      { stdout: (line) => out.push(line), stderr: (line) => err.push(line) },
+    );
+    expect(out).toContain("[local] step 1\n");
+    expect(out).toContain("[local] step 2\n");
+    expect(out).toContain("[remote] done\n");
+    expect(err).toEqual(["[remote] warn line\n"]);
+
+    const started = Date.now();
+    await expect(
+      runParallelTasks(
+        [
+          {
+            label: "local",
+            command: process.execPath,
+            args: ["-e", "setTimeout(() => {}, 10_000)"],
+          },
+          {
+            label: "remote",
+            command: process.execPath,
+            args: ["-e", "setTimeout(() => process.exit(2), 50)"],
+          },
+        ],
+        { stdout: () => {}, stderr: () => {} },
+      ),
+    ).rejects.toThrow(/\[remote\] exited with status 2/);
+    expect(Date.now() - started).toBeLessThan(3_000);
   });
 
   it("keeps the vanilla app identifier so settings, MCP, Skills and agent sessions are shared, without updates", () => {

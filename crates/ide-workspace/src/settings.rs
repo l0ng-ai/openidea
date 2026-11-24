@@ -66,8 +66,9 @@ pub enum SettingsScope {
 /// Settings a project's own file can't hold: the IDE's MCP server, imported color schemes, and
 /// what agents may do without asking (commands run without asking, the modes new tasks start in,
 /// whether new tasks ask for approvals).
-const USER_ONLY: [&[&str]; 6] = [
+const USER_ONLY: &[&[&str]] = &[
     &["mcpServer"],
+    &["remoteDevelopment"],
     &["editor", "customSchemes"],
     &["agentSecurity", "allowedCommands"],
     &["agents", "defaults"],
@@ -91,7 +92,7 @@ fn user_only_setting(key: &str, value: &Json) -> Option<String> {
 /// Applies a project layer's limits before it merges onto `below`: [`USER_ONLY`] settings are
 /// dropped, and its blocked agent commands add to the ones below instead of replacing them.
 fn restrict_project_layer(below: &Json, layer: &mut Json) {
-    for path in USER_ONLY {
+    for &path in USER_ONLY {
         let (last, parents) = path.split_last().expect("non-empty path");
         if let Some(table) = parents.iter().try_fold(&mut *layer, |v, seg| v.get_mut(seg)).and_then(Json::as_object_mut)
         {
@@ -113,7 +114,13 @@ fn restrict_project_layer(below: &Json, layer: &mut Json) {
     // The IDE-wide interpreter list, its view options and the project interpreters of
     // other projects belong to the user's settings, not to one project.
     if let Some(python) = layer.get_mut("languages").and_then(|l| l.get_mut("python")).and_then(Json::as_object_mut) {
-        for key in ["interpreters", "hiddenInterpreters", "hideOtherProjectInterpreters", "showInterpreterPaths"] {
+        for key in [
+            "interpreters",
+            "hiddenInterpreters",
+            "hideOtherProjectInterpreters",
+            "showInterpreterPaths",
+            "interpreterPaths",
+        ] {
             python.remove(key);
         }
     }
@@ -730,6 +737,8 @@ mod tests {
         let store = SettingsStore::load(&cfg, Some(&proj));
         store.set(SettingsScope::Global, "languages.python.interpreters", json!(["/envs/a/bin/python"])).unwrap();
         store.set(SettingsScope::Global, "languages.python.showInterpreterPaths", json!(false)).unwrap();
+        let paths = json!({ "/envs/a/bin/python": ["/shared/lib"] });
+        store.set(SettingsScope::Global, "languages.python.interpreterPaths", paths).unwrap();
         let loaded = SettingsStore::load(&cfg, Some(&proj)).effective();
         assert_eq!(loaded.languages.python.interpreters, ["/envs/a/bin/python"]);
         assert!(!loaded.languages.python.show_interpreter_paths);
@@ -739,10 +748,12 @@ mod tests {
             proj.join(".openidea/settings.toml"),
             "[languages.python]\ninterpreters = [\"/proj/bin/python\"]\n\
              hiddenInterpreters = [\"/envs/a/bin/python\"]\nhideOtherProjectInterpreters = true\n\
-             showInterpreterPaths = true\n",
+             showInterpreterPaths = true\n\
+             [languages.python.interpreterPaths]\n\"/envs/a/bin/python\" = [\"/proj/evil\"]\n",
         )
         .unwrap();
         let loaded = SettingsStore::load(&cfg, Some(&proj)).effective();
+        assert_eq!(loaded.languages.python.interpreter_paths["/envs/a/bin/python"], ["/shared/lib"]);
         assert_eq!(loaded.languages.python.interpreters, ["/envs/a/bin/python"]);
         assert!(loaded.languages.python.hidden_interpreters.is_empty());
         assert!(!loaded.languages.python.hide_other_project_interpreters);

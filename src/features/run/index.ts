@@ -7,6 +7,7 @@ import { executeAction, executeActionOrThrow, getAction, registerActions } from 
 import { getContext, setContext, useContextKeys } from "@/platform/context";
 import { call, commands, onIdeEvent, type RunConfig } from "@/platform/ipc";
 import { projectFolder, useProject } from "@/platform/project";
+import { parseRemoteLocation, projectLocation } from "@/platform/remote";
 import { isSameOrInside } from "@/platform/paths";
 import { agentRunSettings, onWorkflowSettingsChange } from "@/platform/workflowSettings";
 import { showContextMenu, lazyComponent, lazyWhen, type MenuItem } from "@/ui";
@@ -72,7 +73,6 @@ import { junitType } from "./junitType";
 import { listenForApplicationDeactivation, showApplicationUpdate, updatableSessions } from "./applicationUpdate";
 import { hotReload, hotReloadSession, hotRestart } from "./flutterHotReload";
 import { npmGutter } from "./npmGutter";
-import { startNpmScriptsWatch } from "./npmScripts";
 import { launchSettingsGutter } from "./launchSettingsGutter";
 import { runGutter } from "./runGutter";
 import { markdownCommandGutter } from "./markdownCommands";
@@ -438,7 +438,6 @@ export function activate(): () => void {
       headerContent: lazyComponent(() => import("./RunView").then((m) => m.RunTabs)),
       useBadge: useRunningCount,
     }),
-    startNpmScriptsWatch(),
     registerTitleItem({ id: "run.widget", title: "Run Widget", align: "right", priority: 0, component: RunWidget }),
     registerRunAnythingProvider(runConfigsRunAnything),
     registerBuiltinTypes(),
@@ -914,12 +913,18 @@ export function activate(): () => void {
       if (s.sessions !== prev.sessions) trimAgentArchive();
     }),
     onWorkflowSettingsChange(() => agentRunSettings(), trimAgentArchive),
-    useProject.subscribe((s, prev) => {
-      if (s.project?.root === prev.project?.root && s.project?.trusted === prev.project?.trusted) return;
-      resetRuns();
-      useStackTraces.setState({ tabs: [], dialog: null });
-      if (s.project) void loadConfigs();
-    }),
+    (() => {
+      let prevLocation = projectLocation(useProject.getState().project?.root);
+      return useProject.subscribe((s, prev) => {
+        const nextLocation = projectLocation(s.project?.root);
+        if (nextLocation === prevLocation && s.project?.trusted === prev.project?.trusted) return;
+        const wasRemote = !!prevLocation && parseRemoteLocation(prevLocation) !== null;
+        prevLocation = nextLocation;
+        resetRuns(!wasRemote);
+        useStackTraces.setState({ tabs: [], dialog: null });
+        if (s.project) void loadConfigs();
+      });
+    })(),
   ];
 
   setBeforeLaunchRunner(runBeforeLaunch);

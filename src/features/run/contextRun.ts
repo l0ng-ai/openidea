@@ -50,15 +50,16 @@ async function ensureConfigs() {
 }
 
 /** The focused editor's file, text and caret line. */
-/** Project folders outside its root: Project Structure content roots and Gradle modules (as of the last sync). */
+/** Attached projects, Project Structure content roots and external Gradle modules. */
 export function projectContentRoots(): string[] {
-  const own = effectiveContentRoots(validateProjectStructure(useProject.getState().settings?.projectStructure));
+  const { project, settings } = useProject.getState();
+  const own = effectiveContentRoots(validateProjectStructure(settings?.projectStructure));
   // The build model keeps the folders of modules outside the project absolute.
   const gradle = (useBuildModel.getState().model?.gradle ?? [])
     .flatMap((g) => g.projects)
     .map((p) => p.dir)
     .filter((d) => isAbsolute(d));
-  return [...new Set([...own, ...gradle])];
+  return [...new Set([...(project?.workspace?.projects ?? []), ...own, ...gradle])];
 }
 
 const isAbsolute = (p: string) => p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p);
@@ -262,6 +263,7 @@ export function choiceItems(choices: readonly Produced[], debug: boolean): MenuI
     { kind: "header", label: debug ? "Choose configuration to debug" : "Choose configuration to run" },
     ...choices.map((p): MenuItem => ({
       label: debug ? tx`Debug '${p.name}'` : tx`Run '${p.name}'`,
+      preserveLabelEnd: true,
       verbatim: true,
       icon: debug ? "debug" : "run",
       shortcut: p.detail,

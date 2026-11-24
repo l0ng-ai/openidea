@@ -35,6 +35,7 @@ const FENCE = `\`\`\`mermaid\n${DIAGRAM}\n\`\`\`\n`;
 beforeEach(() => {
   vi.clearAllMocks();
   readImage.mockReset().mockResolvedValue(PIXEL);
+  copyText.mockReset().mockResolvedValue(undefined);
   resetMermaidForTests();
   mermaid.render.mockReset().mockImplementation(async (id: string, text: string) => {
     // Like mermaid: a measuring node under <body> while rendering.
@@ -67,6 +68,23 @@ it("keeps one copy control outside each code block when effects restart", () => 
   for (const pre of blocks) {
     expect(pre.querySelector("button")).toBeNull();
     expect(pre.parentElement!.querySelectorAll(":scope > button[data-copy]")).toHaveLength(1);
+  }
+});
+
+it("confirms a code block copy, then goes back to Copy Code", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    render(<Markdown text={"```ts\nconst a = 1;\n```"} cwd="/repo" />);
+    fireEvent.click(screen.getByRole("button", { name: "Copy Code" }));
+    const copied = await screen.findByRole("button", { name: "Copied" });
+    expect(copyText).toHaveBeenCalledWith("const a = 1;");
+    expect(copied).toHaveAttribute("data-copied");
+    await vi.advanceTimersByTimeAsync(2000);
+    const again = screen.getByRole("button", { name: "Copy Code" });
+    expect(again).toBe(copied);
+    expect(again).not.toHaveAttribute("data-copied");
+  } finally {
+    vi.useRealTimers();
   }
 });
 

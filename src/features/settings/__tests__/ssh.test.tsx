@@ -31,6 +31,7 @@ if (option.kind !== "custom") throw new Error("SSH editor missing");
 const Editor = option.component;
 const savedDialog = useSettingsDialog.getState();
 const savedProject = useProject.getState();
+const SSH_CONTEXT = { pageId: "tools.sshConfigurations", scope: "global" } as const;
 let typed: string;
 
 beforeAll(() => preloadBuiltinPage("tools.sshConfigurations"));
@@ -54,7 +55,7 @@ function mount(auth: SshAuthValid = "password", saveSecret = false) {
   useProject.setState({ settings, project: null });
   openSettings("tools.sshConfigurations");
   return render(
-    <PageContext.Provider value={{ pageId: "tools.sshConfigurations", scope: "global" }}>
+    <PageContext.Provider value={SSH_CONTEXT}>
       <Editor />
     </PageContext.Provider>,
   );

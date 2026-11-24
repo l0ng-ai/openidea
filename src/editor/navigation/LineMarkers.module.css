@@ -8,3 +8,22 @@
   border-radius: var(--radius-small);
   cursor: pointer;
 }
+
+/* Python stub / implementation icon (a button, so it also works from the keyboard). */
+.stubMarker {
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: transparent;
+  cursor: pointer;
+}
+
+.stubMarker:hover,
+.stubMarker:focus-visible {
+  background: var(--bg-hover);
+}

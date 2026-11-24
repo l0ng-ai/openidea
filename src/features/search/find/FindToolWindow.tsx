@@ -3,7 +3,6 @@ import { useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "
 import clsx from "clsx";
 import { create } from "zustand";
 import { executeAction } from "@/platform/actions";
-import type { FileMatches } from "@/platform/ipc";
 import { formatBinding, hostBinding, shortcutLabel } from "@/platform/keymap";
 import {
   Button,
@@ -23,14 +22,12 @@ import {
   T,
 } from "@/ui";
 import { notifications, useOccurrenceNavigator } from "@/workbench/contributions";
-import { confirm } from "@/workbench/messages";
-import { basename, openLocation, relDir } from "../common/open";
-import { countFileMatches } from "./session";
+import { openLocation } from "../common/open";
+import { FindTreeBuilder, allExpandableKeys, nodeGroups, type Node } from "./findTree";
 import { CodePreview, MatchText, type PreviewHighlight } from "./parts";
+import { confirmReplacement } from "./ReplaceAllConfirmation";
 import {
   NO_MARKS,
-  confirmAllText,
-  confirmText,
   countUsages,
   groupState,
   loadReplacePreview,
@@ -43,7 +40,6 @@ import {
   type ReplaceMarks,
   type ReplaceProgress,
   type ReplaceRun,
-  type UsageGroup,
   type Usage,
 } from "./replaceFlow";
 import {
@@ -58,90 +54,12 @@ import {
 import styles from "./FindToolWindow.module.css";
 import { t, tx } from "@/platform/i18n";
 
-type Node =
-  | { kind: "dir"; key: string; label: string; count: number; children: Node[] }
-  | { kind: "file"; key: string; path: string; name: string; dir: string; count: number; children: Node[] }
-  | {
-      kind: "match";
-      key: string;
-      path: string;
-      line: number;
-      col: number;
-      endCol: number;
-      text: string;
-      /** Column of `text` in the real line. */
-      textCol: number;
-      ranges: Array<[number, number]>;
-      starts: Array<{ line: number; col: number }>;
-    };
-
-/**
- * Streamed file matches as file → line nodes, flat and sorted by path (IDEA's
- * default), or under their directory with `groupByDirectory`.
- */
-export function buildFindTree(files: readonly FileMatches[], groupByDirectory = false): Node[] {
-  const dirs = new Map<string, Node & { kind: "dir" }>();
-  const flat: Node[] = [];
-  for (const f of files) {
-    const dir = relDir(f.relPath);
-    let d = dirs.get(dir);
-    if (!d && groupByDirectory) {
-      d = { kind: "dir", key: `d:${dir}`, label: dir || "/", count: 0, children: [] };
-      dirs.set(dir, d);
-    }
-    const children: Node[] = f.matches.map((m) => {
-      const lead = m.text.length - m.text.trimStart().length;
-      const text = m.text.slice(lead).trimEnd();
-      const first = m.ranges[0] ?? [0, 0];
-      return {
-        kind: "match",
-        key: `m:${f.path}:${m.line}:${first[0] + m.textOffset}`,
-        path: f.path,
-        line: m.line,
-        col: first[0] + m.textOffset,
-        endCol: first[1] + m.textOffset,
-        text,
-        textCol: lead + m.textOffset,
-        ranges: m.ranges
-          .map(([s, e]) => [Math.max(0, s - lead), Math.min(text.length, e - lead)] as [number, number])
-          .filter(([s, e]) => e > s),
-        starts: m.ranges.map(([s]) => ({ line: m.line, col: s + m.textOffset })),
-      };
-    });
-    const count = countFileMatches(f);
-    const file: Node = {
-      kind: "file",
-      key: `f:${f.path}`,
-      path: f.path,
-      name: basename(f.relPath),
-      dir,
-      count,
-      children,
-    };
-    if (d) {
-      d.children.push(file);
-      d.count += count;
-    } else flat.push(file);
-  }
-  if (!groupByDirectory) {
-    const rel = (n: Node) => (n.kind === "file" ? (n.dir ? `${n.dir}/${n.name}` : n.name) : "");
-    return flat.sort((a, b) => rel(a).localeCompare(rel(b)));
-  }
-  return [...dirs.values()].sort((a, b) => a.label.localeCompare(b.label));
-}
-
 /** Preview target of a node: a match, or a file's first match. */
 function previewOf(node: Node | null): { path: string; line: number } | null {
   if (!node || node.kind === "dir") return null;
   if (node.kind === "match") return { path: node.path, line: node.line };
   const first = node.children[0];
   return first?.kind === "match" ? { path: node.path, line: first.line } : null;
-}
-
-/** The usages under a node (itself for a match). */
-export function nodeGroups(node: Node): UsageGroup[] {
-  if (node.kind === "match") return [{ key: node.key, path: node.path, starts: node.starts }];
-  return node.children.flatMap(nodeGroups);
 }
 
 /** Excluded (⌫) / replaced usages per Find tab. */
@@ -152,15 +70,6 @@ const setMarks = (tab: number, marks: ReplaceMarks) =>
 const useCollapsed = create<{ byTab: Record<number, ReadonlySet<string>> }>(() => ({ byTab: {} }));
 const setCollapsed = (tab: number, keys: ReadonlySet<string>) =>
   useCollapsed.setState((s) => ({ byTab: { ...s.byTab, [tab]: keys } }));
-
-function allExpandableKeys(nodes: readonly Node[], out = new Set<string>()): Set<string> {
-  for (const n of nodes) {
-    if (n.kind === "match") continue;
-    out.add(n.key);
-    allExpandableKeys(n.children, out);
-  }
-  return out;
-}
 
 /** Search tabs in the tool window header. */
 export function FindTabs() {
@@ -238,32 +147,23 @@ function FindTabView({ tab }: { tab: FindTab }) {
   }, [showPreview]);
   const previewLayout = stacked ? "openidea.find.previewSplit.vertical" : "openidea.find.previewSplit";
   const minPanelSize = stacked ? "30%" : 160;
-  const roots = useMemo(() => buildFindTree(tab.state.files, groupByDirectory), [tab.state.files, groupByDirectory]);
+  const findTree = useMemo(() => new FindTreeBuilder(groupByDirectory), [groupByDirectory]);
+  const roots = useMemo(() => findTree.sync(tab.state.files), [findTree, tab.state.files]);
   const tree = useRef<TreeHandle>(null);
   const [leadNode, setLeadNode] = useState<Node | null>(null);
   const collapsed = useCollapsed((s) => s.byTab[tab.id]);
   const expanded = useMemo(() => {
-    const all = allExpandableKeys(roots);
+    const all = new Set(findTree.expandable);
     if (collapsed) for (const k of collapsed) all.delete(k);
     return all;
-  }, [roots, collapsed]);
+  }, [findTree, roots, collapsed]); // eslint-disable-line react-hooks/exhaustive-deps -- roots: the builder changed under it
   const st = tab.state;
   const marks = useMarks((m) => m.byTab[tab.id]) ?? NO_MARKS;
   const [selection, setSelection] = useState<Set<string>>(new Set());
   const [running, setRunning] = useState<ReplaceRun | null>(null);
   const [progress, setProgress] = useState<ReplaceProgress | null>(null);
   const busy = !!running;
-  const allGroups = useMemo(() => roots.flatMap(nodeGroups), [roots]);
-  const byKey = useMemo(() => {
-    const map = new Map<string, Node>();
-    const walk = (list: readonly Node[]) =>
-      list.forEach((n) => {
-        map.set(n.key, n);
-        if (n.kind !== "match") walk(n.children);
-      });
-    walk(roots);
-    return map;
-  }, [roots]);
+  const byKey = findTree.byKey;
   const selectedGroups = () => [...selection].flatMap((k) => (byKey.get(k) ? nodeGroups(byKey.get(k)!) : []));
 
   const exclude = () => {
@@ -286,7 +186,7 @@ function FindTabView({ tab }: { tab: FindTab }) {
 
   const preview = previewOf(leadNode);
   const highlights = useMemo<PreviewHighlight[]>(() => {
-    const f = preview && st.files.find((x) => x.path === preview.path);
+    const f = preview && findTree.filesByPath.get(preview.path);
     return (f?.matches ?? []).map((m) => ({
       line: m.line,
       ranges: m.ranges.map(([a, b]) => [a + m.textOffset, b + m.textOffset] as [number, number]),
@@ -300,7 +200,7 @@ function FindTabView({ tab }: { tab: FindTab }) {
         query: tab.query,
         replacement: tab.replacement,
         preserveCase: !!tab.preserveCase,
-        targets: allInScope ? skipTargets(allGroups, marks) : replaceTargets(usages),
+        targets: allInScope ? skipTargets(roots.flatMap(nodeGroups), marks) : replaceTargets(usages),
         allInScope,
       },
       setProgress,
@@ -365,26 +265,19 @@ function FindTabView({ tab }: { tab: FindTab }) {
   };
 
   const replaceMode = tab.replacement !== null;
-  const allPending = pendingUsages(allGroups, marks);
+  // Replace All stays disabled while results stream in, so the pass over every usage waits for the end.
+  const allPending = useMemo(
+    () => (replaceMode && st.status !== "searching" ? pendingUsages(roots.flatMap(nodeGroups), marks) : []),
+    [replaceMode, st.status, roots, marks],
+  );
   // Past the search's limit, every match in the scope is replaced, listed or not (as in IDEA).
   const allInScope = !!st.summary?.limitHit;
   const confirmReplaceAll = async () => {
-    const ok = await confirm({
-      title: "Replace All",
-      ok: "Replace",
-      message: (
-        <>
-          {allInScope
-            ? confirmAllText(tab.query.pattern, tab.replacement ?? "")
-            : confirmText(countUsages(allPending), tab.query.pattern, tab.replacement ?? "")}
-          {marks.excluded.size > 0 && (
-            <>
-              {" "}
-              <T>Excluded usages are skipped.</T>
-            </>
-          )}
-        </>
-      ),
+    const ok = await confirmReplacement({
+      counts: allInScope ? null : countUsages(allPending),
+      pattern: tab.query.pattern,
+      replacement: tab.replacement ?? "",
+      hasExclusions: marks.excluded.size > 0,
     });
     if (ok) void replace(allPending, allInScope);
   };

@@ -61,7 +61,7 @@ async function openHistory(page: Page) {
     { task, entries },
   );
   const stream = page.locator("[class*='_stream_']:visible");
-  await expect(stream.locator(":scope > *")).toHaveCount(80 * 3);
+  await expect(stream.locator("[class*='_streamContent_'] > *")).toHaveCount(80 * 3);
   await page.evaluate(() => document.fonts.ready);
   return stream;
 }
@@ -85,7 +85,7 @@ for (const placement of ["editor", "toolWindow"] as const) {
     );
     // The working indicator ends the conversation, after its rows; the turn ends with a reply.
     await expect(stream.getByRole("status").getByText("Writing…", { exact: true })).toBeVisible();
-    await expect(stream.locator(":scope > *")).toHaveCount(80 * 3 + 1);
+    await expect(stream.locator("[class*='_streamContent_'] > *")).toHaveCount(80 * 3 + 1);
     await expect.poll(() => stream.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThan(2);
     const timer = await page.evaluate(async (id) => {
       const path = "/src/features/agents/store.ts";
@@ -138,6 +138,34 @@ for (const placement of ["editor", "toolWindow"] as const) {
     }
   });
 }
+
+test("drags the conversation thumb through the full chat column", async ({ page }) => {
+  const stream = await openHistory(page);
+  const conversation = page.locator("[class*='_conversation_']:visible");
+  const track = conversation.locator(":scope > [class*='_track_']");
+  const thumb = track.locator(":scope > [class*='_thumb_']");
+  const column = (await conversation.boundingBox())!;
+  const viewport = (await stream.boundingBox())!;
+  const rail = (await track.boundingBox())!;
+  const handle = (await thumb.boundingBox())!;
+  expect(handle.height).toBeGreaterThanOrEqual(64);
+  expect(rail.y).toBeCloseTo(column.y, 0);
+  expect(rail.y + rail.height).toBeCloseTo(column.y + column.height, 0);
+  expect(rail.y + rail.height).toBeGreaterThan(viewport.y + viewport.height);
+  expect(handle.y + handle.height).toBeCloseTo(rail.y + rail.height, 0);
+
+  const x = handle.x + handle.width / 2;
+  await page.mouse.move(x, handle.y + handle.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(x, rail.y + 1, { steps: 5 });
+  await expect.poll(() => stream.evaluate((el) => el.scrollTop)).toBeLessThan(2);
+  await page.mouse.move(x, rail.y + rail.height - 1, { steps: 5 });
+  await page.mouse.up();
+  await expect.poll(() => stream.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThan(2);
+
+  await page.mouse.wheel(0, -100);
+  await expect(page.getByRole("button", { name: "Jump to Latest" })).toBeVisible();
+});
 
 for (const selected of [false, true]) {
   test(`keeps long-chat scroll geometry stable while jumping through history (selected: ${selected})`, async ({

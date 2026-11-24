@@ -3,7 +3,7 @@
  * header on screen: titles stay on one line and every header control lies inside the popup.
  */
 import type { Page } from "@playwright/test";
-import { expect, openFromTree, stubDesktop, test } from "./fixtures";
+import { expect, ipcCalls, openFromTree, stubDesktop, test } from "./fixtures";
 
 const LONG_RESULT_PATH = "config/RegionalOrderReconciliationEndpointsForSandboxEnvironments.txt";
 
@@ -15,7 +15,7 @@ async function run(page: Page, id: string) {
   }, id);
 }
 
-async function stubFindMatches(page: Page) {
+async function stubFindMatches(page: Page, firstPath = LONG_RESULT_PATH) {
   await stubDesktop(page);
   await page.evaluate((longPath) => {
     window.__ipc.handlers.search_validate = () => null;
@@ -39,7 +39,7 @@ async function stubFindMatches(page: Page) {
       }, 20);
       return null;
     };
-  }, LONG_RESULT_PATH);
+  }, firstPath);
 }
 
 async function expectControlsFit(page: Page) {
@@ -116,6 +116,35 @@ test.describe("search popups at the minimum window width", () => {
     expect(width).toBeGreaterThan(200);
     await expectControlsFit(page);
     await dialog.getByRole("button", { name: /Browse/ }).click({ trial: true });
+  });
+
+  test("multi-line search and replacement leave room for matches and scroll inside their fields", async ({
+    workbench: page,
+  }) => {
+    await stubFindMatches(page);
+    await run(page, "find.replaceInPath");
+    const dialog = page.getByRole("dialog", { name: "Replace in Files" });
+    const search = dialog.getByRole("textbox", { name: "Text to find" });
+    const replacement = dialog.getByRole("textbox", { name: "Replace with" });
+    const query = "base=http://localhost:8080\nregion=eu-west\nmode=batch\nverify=true\nretry=2\ntimeout=30";
+    const changed = query.replace("localhost:8080", "localhost:9443").replace("retry=2", "retry=4");
+    await search.fill(query);
+    await replacement.fill(changed);
+    for (const field of [search, replacement]) {
+      const visibleLines = await field.evaluate((el) => el.clientHeight / parseFloat(getComputedStyle(el).lineHeight));
+      expect(visibleLines).toBeCloseTo(3);
+      await field.press("Control+End");
+      await expect.poll(() => field.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+    }
+    await expect(search).toHaveValue(query);
+    await expect(replacement).toHaveValue(changed);
+    await expect(dialog.getByRole("listbox", { name: "Matches" }).getByRole("option").first()).toBeInViewport();
+    const calls = await ipcCalls(page, "search_start");
+    expect(calls.some(({ query: sent }) => (sent as { pattern: string }).pattern === query)).toBe(true);
+    await expect(dialog.getByRole("button", { name: "Replace All", exact: true })).toBeInViewport({ ratio: 1 });
+
+    await replacement.fill("updated");
+    await expect(replacement).toHaveAttribute("rows", "1");
   });
 
   test("Replace in Files keeps its footer actions together as the window narrows", async ({ workbench: page }) => {
@@ -204,4 +233,30 @@ test("Find in Files prioritizes the preview and remembers an adjusted split", as
   await run(page, "find.inPath");
   await expect(handle).toBeAttached();
   await expect.poll(resultsShare).toBeCloseTo(adjusted, 2);
+});
+
+test("Find in Files keeps the file and its parent folder visible in the preview caption", async ({
+  workbench: page,
+}) => {
+  await page.setViewportSize({ width: 400, height: 570 });
+  const prefix = "config/generated/regional-integrations/sandbox/development/notifications";
+  const name = "RegionalLedgerSettings.txt";
+  const path = `${prefix}/runtime/${name}`;
+  await stubFindMatches(page, path);
+  await run(page, "find.inPath");
+  const dialog = page.getByRole("dialog", { name: "Find in Files" });
+  const search = dialog.getByPlaceholder("Search");
+  await search.fill("http://localhost:8080");
+  const preview = dialog.locator("[data-panel][id=preview]");
+  const caption = preview.getByTitle(path, { exact: true });
+  const folder = caption.getByText("/runtime", { exact: true });
+  const beginning = caption.getByText(prefix, { exact: true });
+  await expect(caption.getByText(name, { exact: true })).toBeInViewport({ ratio: 1 });
+  await expect(folder).toBeInViewport({ ratio: 1 });
+  await expect(folder).toHaveCSS("font-size", "13px");
+  expect(await beginning.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+  expect(await folder.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await search.press("ArrowDown");
+  await search.press("ArrowDown");
+  await expect(preview.getByTitle("config/endpoint-1.txt", { exact: true })).toContainText("endpoint-1.txt");
 });

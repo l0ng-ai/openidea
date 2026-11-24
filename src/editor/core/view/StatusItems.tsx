@@ -248,7 +248,7 @@ function CrumbNav({
         const current = i === segments.length - 1;
         const icon = s.nav?.kind === "dir" && !s.nav.root && !current ? undefined : s.icon;
         return (
-          <Fragment key={i}>
+          <Fragment key={s.title}>
             {i > 0 && <Icon name="chevron-right" size={12} className={styles.statusSep} />}
             <BarButton
               className={styles.crumbButton}
@@ -381,7 +381,7 @@ export function CodeBreadcrumbs({
     >
       {chain.map((item, i) => (
         <BarButton
-          key={i}
+          key={`${item.name}:${item.detail ?? ""}:${item.selection_range.start.line}:${item.selection_range.start.col}`}
           className={styles.crumbButton}
           tooltip={item.detail ?? item.name}
           aria-current={i === chain.length - 1 ? "location" : undefined}
@@ -417,6 +417,11 @@ export function CaretStatus() {
 }
 
 const EOL_LABEL: Record<LineEnding, string> = { lf: "LF", crLf: "CRLF", cr: "CR" };
+const EOL_CHOICES: { id: LineEnding; label: string }[] = [
+  { id: "crLf", label: "Windows (\\r\\n)" },
+  { id: "lf", label: "Unix and macOS (\\n)" },
+  { id: "cr", label: "Classic Mac OS (\\r)" },
+];
 
 export function LineEndingStatus() {
   const meta = useActiveMeta();
@@ -454,12 +459,12 @@ export function LineEndingStatus() {
         onClose={() => setOpen(false)}
         anchor={ref}
         placement="top-end"
-        aria-label="Line separator"
-        items={(["lf", "crLf", "cr"] as LineEnding[]).map((le) => ({
-          id: le,
-          label: `${EOL_LABEL[le]} – ${le === "lf" ? "Unix and macOS (\\n)" : le === "crLf" ? "Windows (\\r\\n)" : "Classic Mac OS (\\r)"}`,
-          checked: meta.lineEnding === le ? true : undefined,
-          run: () => choose(le),
+        title="Line Separator"
+        items={EOL_CHOICES.map(({ id, label }) => ({
+          id,
+          label,
+          checked: meta.lineEnding === id ? true : undefined,
+          run: () => choose(id),
         }))}
       />
     </>

@@ -58,7 +58,7 @@ pub use message_requests::answer as answer_message_request;
 pub use notebook::{NotebookCell, NotebookCellDoc, cell_uri};
 pub use plugin_requests::plugin_method_allowed;
 pub use scope::{CandidateFiles, CandidateFn, CandidateQuery, MAX_CANDIDATES};
-pub use uri::{is_virtual_uri, path_to_uri_string, uri_target, uri_to_path};
+pub use uri::{path_to_uri_string, uri_target, uri_to_path};
 
 use caps::{ServerCaps, SyncKind};
 use convert::{Conv, lsp_range};
@@ -280,7 +280,7 @@ pub struct LspManager {
     virtual_docs: Mutex<HashMap<String, VirtualDocument>>,
     /// Modification time of the archive behind a cached library class, so a jar
     /// replaced in place (a SNAPSHOT installed again) is read again.
-    virtual_stamps: Mutex<HashMap<String, std::time::SystemTime>>,
+    virtual_stamps: Mutex<HashMap<String, virtual_doc::ArchiveStamp>>,
     injections: injections::State,
     /// Open notebooks by path. Locked before `docs` when both are.
     notebooks: Mutex<HashMap<PathBuf, notebook::NotebookState>>,
@@ -1232,7 +1232,7 @@ impl LspManager {
         {
             return Some(text);
         }
-        let key = path.to_str().filter(|s| is_virtual_uri(s))?;
+        let key = path.to_str().filter(|s| ide_core::is_virtual_uri(s))?;
         self.virtual_docs.lock().get(key).map(|d| Arc::new(DocText::new(&d.text)))
     }
 
@@ -2073,21 +2073,10 @@ impl LspManager {
     /// References of the symbol at `pos`. With `project_wide`, files outside
     /// the servers' analysis scope that mention the name are opened for the
     /// search (see [`scope`]); without, only what the servers analyse counts
-    /// (cheap, for bulk scans over many symbols).
-    pub async fn references(
-        &self,
-        doc: DocId,
-        pos: Pos,
-        include_declaration: bool,
-        project_wide: bool,
-        cancel: CancellationToken,
-    ) -> IdeResult<References> {
-        self.references_streaming(doc, pos, include_declaration, project_wide, true, cancel, None).await
-    }
-
-    /// [`Self::references`]. Java: without `libraries`, only the workspace's sources
-    /// are searched (`libraries_skipped`); with it and `project_wide`, those found
-    /// there arrive on `partial` before the dependencies and the JDK are searched.
+    /// (cheap, for bulk scans over many symbols). Java: without `libraries`,
+    /// only the workspace's sources are searched (`libraries_skipped`); with
+    /// it and `project_wide`, those found there arrive on `partial` before
+    /// the dependencies and the JDK are searched.
     #[allow(clippy::too_many_arguments)]
     pub async fn references_streaming(
         &self,
@@ -2796,7 +2785,7 @@ impl LspManager {
         })
     }
 
-    /// Renames across the project: like [`Self::references`], files outside the
+    /// Renames across the project: like [`Self::references_streaming`], files outside the
     /// server's analysis scope that mention the name are opened for the request.
     /// Every server that can rename there does: the Angular server adds the
     /// templates to vtsls's edit, whose own edits win where both change the same text.
@@ -3412,6 +3401,71 @@ impl LspManager {
         out.finish(Vec::new())
     }
 
+    /// The colors the servers find in the document (`textDocument/documentColor`), each tagged with
+    /// its server for [`Self::color_presentations`]. An answer for an older version is dropped.
+    pub async fn document_colors(&self, doc: DocId) -> IdeResult<Vec<DocumentColor>> {
+        let (snap, targets) = self.doc_targets(doc, "document colors", |c| c.has("colorProvider")).await?;
+        let requests = targets.iter().map(|t| {
+            let params = json!({ "textDocument": snap.ident() });
+            async move {
+                let colors = self
+                    .call_retrying::<_, Option<Vec<lsp::ColorInformation>>>(
+                        t,
+                        "textDocument/documentColor",
+                        params,
+                        DEFAULT_TIMEOUT,
+                    )
+                    .await;
+                (t, colors)
+            }
+        });
+        let mut out = Outcome::new();
+        for (t, r) in join_all(requests).await {
+            match r {
+                Ok(colors) => {
+                    let conv = self.conv(t.enc());
+                    let acc = out.value.get_or_insert_with(Vec::new);
+                    acc.extend(
+                        colors
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|c| convert::document_color(&conv, &snap.path, t.server.id, c)),
+                    );
+                }
+                Err(e) => out.fail(e),
+            }
+        }
+        if self.docs.lock().get(&doc).is_none_or(|d| d.version != snap.version) {
+            return Err(IdeError::cancelled());
+        }
+        out.finish(Vec::new())
+    }
+
+    /// How `color.server` would write `color` at its range (`textDocument/colorPresentation`).
+    pub async fn color_presentations(&self, doc: DocId, color: DocumentColor) -> IdeResult<Vec<ColorPresentation>> {
+        let snap = self.snapshot(doc)?;
+        let Some(server) = snap.servers.iter().find(|s| s.id == color.server) else { return Ok(Vec::new()) };
+        let Some(t) = self.ready_targets(std::slice::from_ref(server), |c| c.has("colorProvider")).await.pop() else {
+            return Ok(Vec::new());
+        };
+        let params = json!({
+            "textDocument": snap.ident(),
+            "color": { "red": color.red, "green": color.green, "blue": color.blue, "alpha": color.alpha },
+            "range": snap.range(&t, color.range),
+        });
+        let list: Option<Vec<lsp::ColorPresentation>> =
+            self.call(&t, "textDocument/colorPresentation", params, None, DEFAULT_TIMEOUT).await?;
+        if self.docs.lock().get(&doc).is_none_or(|d| d.version != snap.version) {
+            return Err(IdeError::cancelled());
+        }
+        let conv = self.conv(t.enc());
+        Ok(list
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| convert::color_presentation(&conv, &snap.path, color.range, p))
+            .collect())
+    }
+
     pub async fn call_hierarchy(
         &self,
         doc: DocId,
@@ -3629,6 +3683,16 @@ impl LspManager {
         archives.sort();
         archives.dedup();
         archives
+    }
+
+    /// Drop cached text after JDT LS reopens the archives. A request could have
+    /// read the old attachment while the binary already had its new timestamp.
+    pub fn invalidate_library_archives(&self, archives: &std::collections::HashSet<PathBuf>) {
+        if !archives.is_empty() {
+            self.virtual_docs
+                .lock()
+                .retain(|uri, _| !virtual_doc::archive(uri).is_some_and(|archive| archives.contains(&archive)));
+        }
     }
 
     /// Contents of a virtual document, from the server that owns `uri`:

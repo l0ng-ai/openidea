@@ -3,7 +3,7 @@ use crate::RunConfig;
 use ide_core::{IdeError, IdeResult};
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -97,16 +97,6 @@ pub fn plan(root: &Path, config: &RunConfig) -> IdeResult<Option<Plan>> {
 
 /// Uses Go's own build-file selection, including platform suffixes, cgo and build tags.
 /// `-find` avoids dependency traversal and package downloads for this local directory.
-pub fn package_sources(command: Command, dir: &Path, flags: &[String]) -> IdeResult<Vec<PathBuf>> {
-    let package = package_info(command, dir, flags)?;
-    Ok(["GoFiles", "CgoFiles"]
-        .iter()
-        .flat_map(|key| package[key].as_array().into_iter().flatten())
-        .filter_map(|p| p.as_str())
-        .map(|p| dir.join(p))
-        .collect())
-}
-
 fn package_info(mut command: Command, dir: &Path, flags: &[String]) -> IdeResult<serde_json::Value> {
     command.args(["list", "-find", "-e", "-json"]);
     let mut it = flags.iter();
@@ -284,8 +274,6 @@ pub fn prepare_test_file(root: &Path, config: &mut RunConfig) -> IdeResult<()> {
     exclude_tests(&mut config.args, &exclusions, false);
     Ok(())
 }
-
-pub use ide_core::go::work_modules;
 
 #[cfg(test)]
 mod test_scope_tests {

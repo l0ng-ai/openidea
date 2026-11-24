@@ -66,9 +66,9 @@ beforeEach(() => {
   exists = false;
   content = "";
   mocks.info.mockImplementation(async () => ok({ path, exists }));
-  mocks.create.mockImplementation(async (_path, bytes) => {
+  mocks.create.mockImplementation(async (_path, base64: string) => {
     exists = true;
-    content = new TextDecoder().decode(Uint8Array.from(bytes));
+    content = new TextDecoder().decode(Uint8Array.from(atob(base64), (c) => c.charCodeAt(0)));
     return ok(null);
   });
   mocks.read.mockImplementation(async () => ok(content));

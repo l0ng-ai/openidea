@@ -464,15 +464,12 @@ impl LocalHistory {
     /// The watcher saw `paths` disappear: files with history that are gone get a
     /// "Deleted" entry pointing at their last content (unless one was recorded already).
     pub fn note_removed(&self, paths: &[PathBuf]) -> IdeResult<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
         let mut state = self.state.lock();
         let gone: Vec<(PathBuf, String, u64)> = {
-            let mut latest: HashMap<&Path, &HistoryEntry> = HashMap::new();
-            for e in state.entries.iter().filter(|e| e.kind == HistoryKind::Snapshot) {
-                if paths.iter().any(|p| e.path.starts_with(p)) {
-                    latest.insert(&e.path, e);
-                }
-            }
-            latest
+            latest_snapshots_under(&state.entries, paths)
                 .into_values()
                 .filter(|e| e.label != DELETED && !e.path.exists())
                 .map(|e| (e.path.to_path_buf(), e.id.clone(), e.size))
@@ -700,9 +697,32 @@ fn collect_files(dir: &Path, limit: usize, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// The newest snapshot entry of every file at or below one of `roots`.
+/// Each entry is checked by looking up its own path and its ancestors in a set of the roots,
+/// so the cost does not grow with the number of roots (a batch can name tens of thousands).
+fn latest_snapshots_under<'a>(entries: &'a [HistoryEntry], roots: &[PathBuf]) -> HashMap<&'a Path, &'a HistoryEntry> {
+    let roots: HashSet<&Path> = roots.iter().map(PathBuf::as_path).collect();
+    let mut latest = HashMap::new();
+    for e in entries.iter().filter(|e| e.kind == HistoryKind::Snapshot) {
+        if e.path.ancestors().any(|dir| {
+            #[cfg(test)]
+            tests::ROOT_LOOKUPS.with(|n| n.set(n.get() + 1));
+            roots.contains(dir)
+        }) {
+            latest.insert(&*e.path, e);
+        }
+    }
+    latest
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+
+    thread_local! {
+        pub(super) static ROOT_LOOKUPS: Cell<usize> = const { Cell::new(0) };
+    }
 
     #[test]
     fn record_list_dedupe_prune() {
@@ -844,6 +864,79 @@ mod tests {
         h.clear().unwrap();
         assert!(h.list(&a).unwrap().is_empty());
         assert_eq!(h.stored_bytes(), 0);
+    }
+
+    #[test]
+    fn note_removed_work_does_not_grow_with_the_number_of_removed_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        let h = LocalHistory::open(&tmp.path().join("history"), &root).unwrap();
+        let kept: Vec<PathBuf> =
+            (0..300).map(|i| root.join("keep").join(format!("g{}", i / 50)).join(format!("f{i}.rs"))).collect();
+        {
+            let mut state = h.state.lock();
+            for p in &kept {
+                state.entries.push(HistoryEntry::snapshot(p, "x", "External change", now_ms()));
+            }
+        }
+        let removed: Vec<PathBuf> =
+            (0..5_000).map(|i| root.join("gone").join(format!("g{}", i / 50)).join(format!("f{i}.rs"))).collect();
+
+        ROOT_LOOKUPS.with(|n| n.set(0));
+        h.note_removed(&removed).unwrap();
+
+        // At most one lookup per path component of each entry, however many paths were removed.
+        let bound: usize = kept.iter().map(|p| p.components().count()).sum();
+        let lookups = ROOT_LOOKUPS.with(Cell::get);
+        assert!(lookups > 0 && lookups <= bound, "{lookups} root lookups for {} entries (bound {bound})", kept.len());
+        assert_eq!(h.state.lock().entries.len(), kept.len(), "nothing was deleted, so nothing is appended");
+    }
+
+    #[test]
+    fn note_removed_marks_only_files_gone_under_a_removed_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("project");
+        fs::create_dir_all(root.join("dir")).unwrap();
+        fs::create_dir_all(root.join("dir2")).unwrap();
+        let h = LocalHistory::open(&tmp.path().join("history"), &root).unwrap();
+        let (a, b) = (root.join("dir/a.txt"), root.join("dir/b.txt"));
+        let sibling = root.join("dir2/c.txt");
+        let (solo, multi, present, already) =
+            (root.join("solo.txt"), root.join("multi.txt"), root.join("present.txt"), root.join("already.txt"));
+        for (path, text) in [(&a, "a"), (&b, "b"), (&sibling, "c"), (&solo, "s"), (&present, "p"), (&already, "d")] {
+            h.record(path, text, "Saved").unwrap();
+        }
+        h.record(&multi, "v1", "Saved").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        h.record(&multi, "v2", "Saved").unwrap();
+        h.put_label(&root, "Before Git checkout").unwrap();
+        let snapshots = |path: &Path| -> Vec<HistoryEntry> {
+            h.list(path).unwrap().into_iter().filter(|e| e.kind == HistoryKind::Snapshot).collect()
+        };
+        fs::write(&present, "p").unwrap();
+        h.note_removed(std::slice::from_ref(&already)).unwrap();
+        let entries_before_removal = h.state.lock().entries.len();
+        assert_eq!(snapshots(&already)[0].label, DELETED, "recorded as deleted before the batch");
+        let already_entries = snapshots(&already).len();
+
+        // `dir2` shares the name prefix of `dir` but is not below it.
+        h.note_removed(&[]).unwrap();
+        assert_eq!(h.state.lock().entries.len(), entries_before_removal, "an empty batch changes nothing");
+        h.note_removed(&[root.join("dir"), solo.clone(), multi.clone(), present.clone(), already.clone()]).unwrap();
+
+        for (path, text) in [(&a, "a"), (&b, "b"), (&solo, "s"), (&multi, "v2")] {
+            let newest = &snapshots(path)[0];
+            assert_eq!((newest.label.as_str(), h.content(&newest.id).unwrap().as_str()), (DELETED, text));
+        }
+        assert_eq!(snapshots(&multi).len(), 3, "Saved v1, Saved v2, Deleted");
+        assert!(snapshots(&sibling).iter().all(|e| e.label != DELETED), "sibling with a shared name prefix");
+        assert!(snapshots(&present).iter().all(|e| e.label != DELETED), "still on disk");
+        assert_eq!(snapshots(&already).len(), already_entries, "already recorded as deleted");
+        assert_eq!(
+            h.state.lock().entries.len(),
+            entries_before_removal + 4,
+            "one Deleted entry each for a, b, solo and multi"
+        );
     }
 
     #[test]

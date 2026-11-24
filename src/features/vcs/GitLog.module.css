@@ -1,8 +1,25 @@
 .root {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+/* Absolute in both states, so hiding and showing the log doesn't lay it out again. */
+.logHost {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+.logHidden {
+  content-visibility: hidden;
+  z-index: -1;
+}
+/* WebKit leaves a stale selection highlight on a subtree whose rendering was skipped when the selection cleared. */
+.logHidden[data-selection] {
+  content-visibility: visible;
+  opacity: 0;
 }
 .headerTabs {
   min-width: 0;
@@ -703,15 +720,16 @@
   padding-top: 10px;
   border-top: 1px solid var(--border);
 }
-.meta .refs {
-  margin-left: 0;
-  max-width: none;
+.detailRefGroup {
+  display: flex;
   flex-wrap: wrap;
+  gap: var(--space-0-5) var(--space-2);
 }
-.meta .ref {
+.detailRefGroup .ref {
+  align-items: baseline;
+  font-size: inherit;
   max-width: 100%;
   white-space: normal;
-  overflow-wrap: anywhere;
 }
 .hash {
   font-family: var(--font-mono);

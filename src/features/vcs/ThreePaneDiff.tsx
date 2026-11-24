@@ -4,6 +4,7 @@ import { Decoration, EditorView, gutter } from "@codemirror/view";
 import { Chunk } from "@codemirror/merge";
 import { diffSideExtensions, embeddedEditorExtensions, remoteChange, type DocumentAttachment } from "@/editor/api";
 import { tx } from "@/platform/i18n";
+import { Icon, fileIconName } from "@/ui";
 import { documentTooltips, firstLineOf, languageFor, viewerBase } from "./cm";
 import { diffDocument, exposeHunkButtons, HunkButtons, type HunkButton } from "./diffControls";
 import { ideaDiffConfig } from "./diffOptions";
@@ -11,6 +12,7 @@ import { syncMergeScroll } from "./mergeScroll";
 import { diffRangeView, setDiffRange } from "./diffRangeView";
 import type { DiffRange } from "./stagingRange";
 import type { StagedDocument } from "./stagedDocument";
+import { baseName } from "./model";
 import diffStyles from "./DiffEditor.module.css";
 import styles from "./ThreePaneDiff.module.css";
 
@@ -129,6 +131,7 @@ function present(
 export function ThreePaneDiff({
   path,
   labels,
+  titlePaths,
   model,
   controls,
   onEditors,
@@ -138,6 +141,7 @@ export function ThreePaneDiff({
 }: {
   path: string;
   labels: ThreePanes<string>;
+  titlePaths?: ThreePanes<string | undefined>;
   model: ReturnType<typeof compareThreeTexts> | null;
   controls?: (change: ThreePaneChange) => HunkControl[];
   onEditors?: (views: ThreePanes<EditorView> | null) => void;
@@ -222,13 +226,22 @@ export function ThreePaneDiff({
   }, [labels, local, index, path, ready]);
   return (
     <div className={styles.root}>
-      <div className={styles.labels}>
-        {labels.map((label, i) => (
-          <span key={i} title={label}>
-            {label}
-            {model?.texts[i] === null && <span className={styles.absent}> {tx("(does not exist)")}</span>}
-          </span>
-        ))}
+      <div className={titlePaths ? `${styles.labels} ${styles.versionLabels}` : styles.labels}>
+        {labels.map((label, i) => {
+          const file = titlePaths?.[i];
+          return (
+            <span key={label} title={file ? `${label} ${file}` : label}>
+              {file && (
+                <span className={styles.labelFile}>
+                  <Icon name={fileIconName(file)} size={16} />
+                  <span className={styles.labelFilename}>{baseName(file)}</span>
+                </span>
+              )}
+              <span className={styles.versionName}>{label}</span>
+              {model?.texts[i] === null && <span className={styles.absent}> {tx("(does not exist)")}</span>}
+            </span>
+          );
+        })}
       </div>
       {model?.binary ? (
         <div className={styles.status}>{tx("Binary content")}</div>

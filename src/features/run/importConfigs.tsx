@@ -101,7 +101,14 @@ export function importSummary(result: RunImport): {
   return {
     level: n ? "info" : "warning",
     title,
-    ...(lines.length ? { body: lines.map((line, i) => <div key={i}>{line}</div>) } : {}),
+    ...(lines.length
+      ? {
+          body: lines.map((line, i) => (
+            // oxlint-disable-next-line react/no-array-index-key -- messages can repeat; position is the identity
+            <div key={i}>{line}</div>
+          )),
+        }
+      : {}),
     // The reasons stay readable until dismissed.
     sticky: notes.length > 0,
   };

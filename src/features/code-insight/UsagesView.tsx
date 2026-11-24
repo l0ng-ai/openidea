@@ -284,11 +284,11 @@ export function UsagesView() {
         <IconButton icon="arrow-up" action="navigate.prevOccurrence" size="small" iconSize={16} />
         <IconButton icon="arrow-down" action="navigate.nextOccurrence" size="small" iconSize={16} />
         <span className={styles.toolbarSep} />
+        <UsageAccessFilter items={allUsages} vertical />
         <IconButton icon="expand-all" title="Expand All" size="small" iconSize={16} onClick={() => setAll(false)} />
         <IconButton icon="collapse-all" title="Collapse All" size="small" iconSize={16} onClick={() => setAll(true)} />
       </div>
       <div className={styles.body} onKeyDown={onKeyDown}>
-        <UsageAccessFilter items={allUsages} />
         {!search.loading && !search.error && search.scope === "project" && (
           <div className={styles.summary}>
             <T>Usages in Project Files</T>
@@ -406,6 +406,8 @@ export function useUsagesHeaderMenu(): MenuItem[] {
   ];
 }
 
+const DEFAULT_PREVIEW_LAYOUT = { usages: 50, preview: 50 };
+
 function UsagesSplit({ preview, children }: { preview: ReactNode; children: ReactNode }) {
   const show = useUsagesOptions((s) => s.preview);
   const frame = useRef<HTMLDivElement>(null);
@@ -427,12 +429,13 @@ function UsagesSplit({ preview, children }: { preview: ReactNode; children: Reac
         orientation={stacked ? "vertical" : "horizontal"}
         id="usages-preview-split"
         storageKey={stacked ? "openidea.usages.previewSplit.vertical" : "openidea.usages.previewSplit"}
+        defaultLayout={DEFAULT_PREVIEW_LAYOUT}
       >
         <SplitPanel id="usages" minSize={stacked ? "30%" : 160} className={styles.panel}>
           {children}
         </SplitPanel>
         <SplitHandle />
-        <SplitPanel id="preview" minSize={stacked ? "30%" : 160} defaultSize="45%" className={styles.panel}>
+        <SplitPanel id="preview" minSize={stacked ? "30%" : 160} className={styles.panel}>
           {preview}
         </SplitPanel>
       </SplitGroup>
@@ -455,13 +458,21 @@ function UsagesPreview({ node }: { node: Node | null }) {
     return (group?.usages ?? []).map((u) => ({ line: u.line, ranges: [[u.col, u.endCol] as const] }));
   }, [usage, search?.groups]);
   return (
-    <div className={styles.sourcePreview} style={{ fontFamily, fontSize: settings?.fontSize ?? undefined }}>
+    <div
+      className={styles.sourcePreview}
+      style={{
+        fontFamily,
+        fontSize: settings?.fontSize ?? undefined,
+        lineHeight: settings?.lineHeight != null ? `${settings.lineHeight}px` : undefined,
+      }}
+    >
       <SourcePreview
         path={usage?.path ?? null}
         line={usage?.line ?? 0}
         highlights={highlights}
         load={previewText}
         colorize={previewColors}
+        editorLayout
         className={styles.sourceText}
       />
     </div>

@@ -25,23 +25,25 @@ flowchart LR
   S1 --> H["ide-host: Host<br/>项目、LSP、索引、git、<br/>终端、运行、调试器、插件"]
 ```
 
-| 部分                      | 位置                                                                      |
-| ------------------------- | ------------------------------------------------------------------------- |
-| 服务端二进制              | `crates/ide-host/src/bin/server.rs`（`openidea-server`）                  |
-| 协议与 dispatcher         | `crates/ide-host/src/rpc.rs`                                              |
-| 客户端：连接、安装、转发  | `src-tauri/src/remote_dev.rs`                                             |
-| WSL 与 dev container 传输 | `src-tauri/src/remote_wsl.rs`、`src-tauri/src/remote_container.rs`        |
-| 容器内的端口中继          | `crates/ide-host/src/relay.rs`（`openidea-server --connect`）             |
-| 前端路由                  | `src/platform/remote.ts`，由 `src/platform/tauriCore.ts` 挂到 `invoke` 上 |
-| UI（文件 › 远程开发…）    | `src/features/remote-dev/`                                                |
+| 部分                      | 位置                                                                       |
+| ------------------------- | -------------------------------------------------------------------------- |
+| 服务端二进制              | `crates/ide-host/src/bin/server.rs`（`openidea-server`）                   |
+| 持久化守护进程与连接桥接  | `crates/ide-host/src/daemon.rs`（`openidea-server --attach` / `--daemon`） |
+| 协议与 dispatcher         | `crates/ide-host/src/rpc.rs`                                               |
+| 客户端：连接、安装、转发  | `src-tauri/src/remote_dev.rs`                                              |
+| WSL 与 dev container 传输 | `src-tauri/src/remote_wsl.rs`、`src-tauri/src/remote_container.rs`         |
+| 容器内的端口中继          | `crates/ide-host/src/relay.rs`（`openidea-server --connect`）              |
+| 前端路由                  | `src/platform/remote.ts`，由 `src/platform/tauriCore.ts` 挂到 `invoke` 上  |
+| UI（文件 › 远程开发…）    | `src/features/remote-dev/`                                                 |
 
 ## 服务端
 
 ```text
-openidea-server --stdio | --mcp-stdio [--project <path>] | --connect <host> <port> | --version
+openidea-server --stdio | --attach <project-path> | --mcp-stdio [--project <path>] | --connect <host> <port> | --version
 ```
 
-- `--stdio` 通过 stdin/stdout 为一个桌面客户端提供服务。stdout 承载协议，所以日志写到 stderr（用 `OPENIDEA_LOG` 过滤）。
+- `--attach <project-path>` 将 stdin/stdout 桥接到独立守护进程，套接字权限为 `0600`，目录权限为 `0700`。套接字键不随构建变化；连接前会核对构建，只有在没有连接的窗口、活动任务或未保存的文档时才替换旧后端。空闲退出或主动关闭时会保留套接字，直到清理完成。
+- `--stdio` 直接通过 stdin/stdout 为单个桌面客户端提供服务并在断开时退出。stdout 承载协议，所以日志写到 stderr（用 `OPENIDEA_LOG` 过滤）。
 - 状态保存在 `OPENIDEA_SERVER_HOME`（默认 `~/.openidea`）下的 `config/` 和 `data/` 中。可以在 `config/languages/` 里追加语言定义。
 - SSH exec channel 只给最小的环境变量，所以服务端每次启动都会读取登录 shell 的环境，并把 IDE 托管的工具目录加入 `PATH`。
 - `--version` 打印应用版本和协议版本。
@@ -64,7 +66,7 @@ openidea-server --stdio | --mcp-stdio [--project <path>] | --connect <host> <por
 | 通知 `plugin`        | 服务端 → 客户端 | `{ window, event }`：远程项目中代码插件发出的事件                                                                 |
 | 请求 `plugin_secret` | 服务端 → 客户端 | `{ plugin, name }` → `string` 或 `null`：从桌面端钥匙串取密钥                                                     |
 
-协议版本是 `rpc.rs` 中的 `PROTOCOL_VERSION`。错误是以 JSON 形式放在 JSON-RPC 错误消息里的 `IdeError`，所以前端看到的 `kind` / `message` 与本地命令完全一样。
+协议版本是 `rpc.rs` 中的 `PROTOCOL_VERSION`；桌面端会拒绝使用其他版本协议的服务端。已有命令的参数或结果形态改变时要修改它。二进制参数使用 `IpcBytes`（JSON 中是 base64 字符串，绑定中是 `string`），不要用 `Vec<u8>`——它会变成体积约 3.6 倍的数字数组。错误是以 JSON 形式放在 JSON-RPC 错误消息里的 `IdeError`，所以前端看到的 `kind` / `message` 与本地命令完全一样。
 
 ## 命令路由
 

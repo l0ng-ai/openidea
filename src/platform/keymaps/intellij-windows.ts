@@ -78,6 +78,7 @@ export const intellijWindows: Record<string, string[]> = {
 
   // Code
   "code.completion": ["Ctrl+Space"],
+  "code.smartTypeCompletion": ["Ctrl+Shift+Space"],
   "editor.inlineCompletion.trigger": ["Alt+\\"],
   "editor.inlineCompletion.accept": ["Tab"],
   "editor.inlineCompletion.acceptWord": ["Ctrl+Right"],
@@ -90,6 +91,7 @@ export const intellijWindows: Record<string, string[]> = {
   "code.showIntentions": ["Alt+Enter"],
   "code.applyQuickFix": ["Alt+Shift+Enter"],
   "code.reformat": ["Ctrl+Alt+L"],
+  "code.rearrange": [],
   "code.reformatDialog": ["Ctrl+Alt+Shift+L"],
   "code.optimizeImports": ["Ctrl+Alt+O"],
   "code.commentLine": ["Ctrl+/"],

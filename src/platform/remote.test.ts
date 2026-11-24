@@ -4,6 +4,7 @@ import { call, commands, type ChannelFrame, type ExecutionEvent, type ProjectInf
 import { useProject } from "./project";
 import { disableRemote, enableRemote, useRemote } from "./remote";
 import { encodeArgs, remoteRouting } from "./remote";
+import { scratchesDir } from "./scratchesDir";
 
 describe("remote invoke", () => {
   beforeAll(() => {
@@ -49,6 +50,33 @@ describe("remote invoke", () => {
       expect(unregisterCallback).toHaveBeenCalledExactlyOnceWith(channel.id);
       expect(progress).toHaveBeenCalledExactlyOnceWith(done);
     } finally {
+      disableRemote();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("routes a scratch folder lookup made as soon as the remote session is published", async () => {
+    const invoke = vi.fn(async (command: string, args: { cmd: string }) => {
+      expect(command).toBe("remote_invoke");
+      expect(args.cmd).toBe("fs_scratches_dir");
+      return JSON.stringify("/home/me/.openidea/data/scratches");
+    });
+    vi.stubGlobal("__TAURI_INTERNALS__", { invoke, transformCallback: () => 1 });
+    const unsubscribe = useRemote.subscribe(({ session }) => {
+      if (session) void scratchesDir();
+    });
+    try {
+      enableRemote({
+        target: { kind: "ssh", config: "test" },
+        root: "/home/me/project",
+        host: "test",
+        os: "linux",
+        commands: ["fs_scratches_dir"],
+      });
+      await expect(scratchesDir()).resolves.toBe("/home/me/.openidea/data/scratches");
+      expect(invoke).toHaveBeenCalledOnce();
+    } finally {
+      unsubscribe();
       disableRemote();
       vi.unstubAllGlobals();
     }

@@ -47,6 +47,10 @@ pub fn github_latest_url(repo: &str) -> String {
     format!("https://api.github.com/repos/{repo}/releases/latest")
 }
 
+pub fn github_tag_url(repo: &str, tag: &str) -> String {
+    format!("https://api.github.com/repos/{repo}/releases/tags/{tag}")
+}
+
 /// The latest release's web page; it redirects to `…/releases/tag/<tag>`. Web pages don't
 /// count against the API's rate limit for unauthenticated clients (60 requests an hour).
 pub fn github_latest_page(repo: &str) -> String {

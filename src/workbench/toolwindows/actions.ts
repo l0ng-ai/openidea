@@ -18,6 +18,7 @@ import {
   useToolWindowLayouts,
 } from "./layouts";
 import { closeSelectedContent } from "./content";
+import { toggleMoreToolWindowsSide } from "./stripes";
 import {
   activateToolWindow,
   hideActiveToolWindow,
@@ -217,6 +218,12 @@ export function installToolWindowActions(): () => void {
   };
 
   const disposeStatic = registerActions([
+    {
+      id: "toolwindow.moveMore",
+      title: "Move More Tool Windows Button",
+      category: "Window",
+      run: toggleMoreToolWindowsSide,
+    },
     {
       id: "toolwindow.hideAll",
       title: "Hide All Tool Windows",

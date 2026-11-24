@@ -34,9 +34,9 @@
     "perf:rust": "node perf/rust.ts",
     "eval": "node evals/run.ts",
     "release:prepare": "node scripts/release-prepare.ts",
-    "dogfood:build": "node scripts/dogfood.ts build",
-    "dogfood:install": "node scripts/dogfood.ts install",
-    "dogfood:remote": "node scripts/dogfood-remote.ts"
+    "dogfood:local": "node scripts/dogfood.ts local",
+    "dogfood:remote": "node scripts/dogfood-remote.ts",
+    "dogfood:all": "node scripts/dogfood.ts all"
   },
   "simple-git-hooks": {
     "pre-commit": "pnpm lint-staged"
@@ -67,7 +67,7 @@
     "@floating-ui/react-dom": "^2.1.9",
     "@fontsource-variable/inter": "^5.3.0",
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
-    "@lezer/common": "^1.5.3",
+    "@lezer/common": "^1.5.6",
     "@lezer/highlight": "^1.2.5",
     "@lezer/lr": "^1.4.11",
     "@mathjax/mathjax-tex-font": "4.1.3",

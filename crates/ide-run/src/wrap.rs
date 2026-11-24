@@ -58,7 +58,7 @@ pub fn search_path_in(config: &RunConfig, dir: &Path) -> OsString {
 
 /// `node_modules/.bin/<name>` in `dir` or an ancestor up to (and including) `root`.
 pub fn node_bin(name: &str, dir: &Path, root: &Path) -> Option<PathBuf> {
-    let names = crate::which::executable_names(name, cfg!(windows), std::env::var("PATHEXT").ok().as_deref());
+    let names = ide_core::process::executable_names(name, cfg!(windows), std::env::var("PATHEXT").ok().as_deref());
     for d in dir.ancestors() {
         let bin = d.join("node_modules").join(".bin");
         if let Some(found) = names.iter().map(|n| bin.join(n)).find(|p| p.is_file()) {
@@ -98,7 +98,7 @@ fn node_package_json(package: &str, dir: &Path, root: &Path) -> Option<PathBuf> 
 
 /// A tool from the project (`node_modules/.bin`) or the search path.
 pub fn find_tool(name: &str, config: &RunConfig, dir: &Path, root: &Path) -> Option<PathBuf> {
-    node_bin(name, dir, root).or_else(|| crate::which::find_executable(name, &search_path_in(config, dir)))
+    node_bin(name, dir, root).or_else(|| ide_core::process::find_executable(name, &search_path_in(config, dir)))
 }
 
 /// Whether `argv` runs and exits successfully (version probes); output is discarded.
@@ -119,7 +119,7 @@ pub fn probe(argv: &[String], dir: &Path, config: &RunConfig) -> bool {
 fn resolve(program: &str, config: &RunConfig, dir: &Path) -> PathBuf {
     let p = Path::new(program);
     if p.components().count() == 1
-        && let Some(found) = crate::which::find_executable(program, &search_path_in(config, dir))
+        && let Some(found) = ide_core::process::find_executable(program, &search_path_in(config, dir))
     {
         return found;
     }

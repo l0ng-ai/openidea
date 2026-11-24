@@ -2,21 +2,27 @@
 //! for "Emulate terminal in output console"), stream output, stdin, stop.
 
 use crate::utf8::OutputDecoder;
-use crate::{OutputChunk, RunConfig, RunInfo};
+use crate::{OutputChunk, RunAttach, RunConfig, RunInfo};
 use ide_core::{IdeError, IdeEvent, IdeResult, RunId, SharedSink};
 use parking_lot::Mutex;
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::time::{Duration, Instant};
 
 const BATCH_INTERVAL: Duration = Duration::from_millis(8);
 const BATCH_BYTES: usize = 64 * 1024;
+/// Size of one pipe read, so the most one queued [`Msg::Data`] holds.
+const READ_BUF: usize = 16 * 1024;
+/// Chunks the readers may queue ahead of the pump (at most `OUTPUT_QUEUE_CHUNKS * READ_BUF`,
+/// 2 MiB). A process printing faster than the console takes its output waits on its full
+/// pipe, as it would on a terminal, instead of piling the flood up in memory here.
+const OUTPUT_QUEUE_CHUNKS: usize = 128;
 /// After the main process exits, how long to wait for pipes still held by
 /// orphaned descendants before reporting the exit.
 const EXIT_DRAIN: Duration = Duration::from_millis(500);
@@ -26,10 +32,42 @@ const STOP_GRACE: Duration = Duration::from_secs(3);
 const STOP_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 /// Finished runs kept for [`ProcessManager::list`].
 const MAX_FINISHED: usize = 20;
+/// Bounded console scrollback retained per run for reattaching across window reconnects.
+const MAX_BUFFERED_OUTPUT: usize = 256 * 1024;
 /// PTY size until the console reports its own.
 const DEFAULT_PTY: (u16, u16) = (120, 30);
 
 type OutputFn = Arc<dyn Fn(OutputChunk) + Send + Sync>;
+
+struct RunOutputState {
+    buffered: VecDeque<OutputChunk>,
+    buffered_bytes: usize,
+    on_output: OutputFn,
+}
+
+impl RunOutputState {
+    fn new(on_output: OutputFn) -> Self {
+        Self { buffered: VecDeque::new(), buffered_bytes: 0, on_output }
+    }
+
+    fn emit(&mut self, chunk: OutputChunk) {
+        let len = chunk_len(&chunk);
+        self.buffered_bytes += len;
+        self.buffered.push_back(chunk.clone());
+        while self.buffered_bytes > MAX_BUFFERED_OUTPUT && self.buffered.len() > 1 {
+            if let Some(removed) = self.buffered.pop_front() {
+                self.buffered_bytes = self.buffered_bytes.saturating_sub(chunk_len(&removed));
+            }
+        }
+        (self.on_output)(chunk);
+    }
+}
+
+fn chunk_len(chunk: &OutputChunk) -> usize {
+    match chunk {
+        OutputChunk::Stdout { text } | OutputChunk::Stderr { text } | OutputChunk::System { text } => text.len(),
+    }
+}
 
 /// Environment of a launched process: the inherited one (unless cleared) plus `vars`.
 #[derive(Clone, Debug, Default)]
@@ -48,6 +86,7 @@ struct StopCommand {
 struct Entry {
     project_root: PathBuf,
     id: RunId,
+    config: RunConfig,
     config_id: String,
     name: String,
     pid: Mutex<Option<u32>>,
@@ -61,13 +100,18 @@ struct Entry {
     #[cfg(windows)]
     job: Option<ide_core::process::Job>,
     stop: Option<StopCommand>,
-    output: OutputFn,
+    output: Mutex<RunOutputState>,
+    sink: Mutex<SharedSink>,
     exited: AtomicBool,
     code: Mutex<Option<i32>>,
     stopping: AtomicBool,
 }
 
 impl Entry {
+    fn emit_output(&self, chunk: OutputChunk) {
+        self.output.lock().emit(chunk);
+    }
+
     fn info(&self) -> RunInfo {
         RunInfo {
             id: self.id,
@@ -110,6 +154,12 @@ enum Exit {
 enum Msg {
     Data(Stream, Vec<u8>),
     Exited(Exit),
+}
+
+/// The queue from the readers (and the waiter) to the pump: bounded, so the readers wait
+/// while the pump is behind.
+fn output_queue() -> (SyncSender<Msg>, mpsc::Receiver<Msg>) {
+    mpsc::sync_channel(OUTPUT_QUEUE_CHUNKS)
 }
 
 /// The program and arguments actually executed, plus the echoed command line.
@@ -165,7 +215,7 @@ fn shorten_java(inv: &mut Invocation, config: &RunConfig, cwd: &Path) -> IdeResu
         return Ok(TempFile(None));
     }
     let java = if inv.program.components().count() == 1 {
-        crate::which::find_executable(&inv.program.to_string_lossy(), &crate::wrap::search_path_in(config, cwd))
+        ide_core::process::find_executable(&inv.program.to_string_lossy(), &crate::wrap::search_path_in(config, cwd))
             .unwrap_or_else(|| inv.program.clone())
     } else {
         inv.program.clone()
@@ -290,7 +340,7 @@ fn resolve_program(command: &str, cwd: &Path, config: &RunConfig, windows: bool)
                 return local;
             }
             if path.extension().is_none()
-                && let Some(found) = crate::which::executable_names(command, true, pathext.as_deref())
+                && let Some(found) = ide_core::process::executable_names(command, true, pathext.as_deref())
                     .iter()
                     .map(|name| cwd.join(name))
                     .find(|p| p.is_file())
@@ -298,7 +348,7 @@ fn resolve_program(command: &str, cwd: &Path, config: &RunConfig, windows: bool)
                 return found;
             }
         }
-        if let Some(found) = crate::which::find_executable_in(command, &search, windows, pathext.as_deref()) {
+        if let Some(found) = ide_core::process::find_executable_in(command, &search, windows, pathext.as_deref()) {
             return found;
         }
     }
@@ -467,6 +517,7 @@ impl ProcessManager {
         let entry = Arc::new(Entry {
             project_root: root.to_path_buf(),
             id,
+            config: config.clone(),
             config_id: config.id.clone(),
             name: config.name.clone(),
             pid: Mutex::new(Some(child.id())),
@@ -475,16 +526,17 @@ impl ProcessManager {
             #[cfg(windows)]
             job,
             stop,
-            output: on_output.clone(),
+            output: Mutex::new(RunOutputState::new(on_output)),
+            sink: Mutex::new(sink),
             exited: AtomicBool::new(false),
             code: Mutex::new(None),
             stopping: AtomicBool::new(false),
         });
         self.register(entry.clone());
 
-        on_output(OutputChunk::System { text: format!("{}\n", inv.display) });
+        entry.emit_output(OutputChunk::System { text: format!("{}\n", inv.display) });
 
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = output_queue();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let result = (|| -> std::io::Result<()> {
@@ -509,7 +561,7 @@ impl ProcessManager {
                 )?;
             }
             let decoder = || OutputDecoder::for_pipes(options.encoding.as_deref());
-            spawn_pump(rx, on_output.clone(), entry.clone(), sink, [decoder(), decoder()], notice)?;
+            spawn_pump(rx, entry.clone(), [decoder(), decoder()], notice)?;
             Ok(())
         })();
         if let Err(e) = result {
@@ -614,6 +666,7 @@ impl ProcessManager {
         let entry = Arc::new(Entry {
             project_root: root.to_path_buf(),
             id,
+            config: config.clone(),
             config_id: config.id.clone(),
             name: config.name.clone(),
             pid: Mutex::new(child.process_id()),
@@ -623,15 +676,16 @@ impl ProcessManager {
             #[cfg(windows)]
             job: child.process_id().and_then(ide_core::process::Job::for_pid),
             stop,
-            output: on_output.clone(),
+            output: Mutex::new(RunOutputState::new(on_output)),
+            sink: Mutex::new(sink),
             exited: AtomicBool::new(false),
             code: Mutex::new(None),
             stopping: AtomicBool::new(false),
         });
         self.register(entry.clone());
-        on_output(OutputChunk::System { text: format!("{}\n", inv.display) });
+        entry.emit_output(OutputChunk::System { text: format!("{}\n", inv.display) });
 
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = output_queue();
         let result = spawn_reader(
             id,
             Stream::Stdout,
@@ -642,7 +696,7 @@ impl ProcessManager {
         )
         .and_then(|_| {
             let decoder = || OutputDecoder::for_label(options.encoding.as_deref());
-            spawn_pump(rx, on_output, entry.clone(), sink, [decoder(), decoder()], None)
+            spawn_pump(rx, entry.clone(), [decoder(), decoder()], None)
         });
         if let Err(e) = result {
             let _ = child.kill();
@@ -751,7 +805,7 @@ impl ProcessManager {
                     !group_alive(pid, &entry)
                 };
                 if let Some(stop) = &entry.stop {
-                    run_stop_command(stop, &entry.output);
+                    run_stop_command(stop, &entry);
                     if exits_within(grace) {
                         return;
                     }
@@ -788,6 +842,40 @@ impl ProcessManager {
         live.map(|e| e.info()).collect()
     }
 
+    pub fn has_live_runs(&self) -> bool {
+        self.runs.lock().values().any(|entry| {
+            !entry.exited.load(Ordering::Acquire) || entry.pid.lock().is_some_and(|pid| group_alive(pid, entry))
+        })
+    }
+
+    /// Rebinds `id`'s output stream to `on_output`, returning its buffered console chunks
+    /// and configuration without dropping or duplicating output.
+    pub fn reattach(
+        &self,
+        id: RunId,
+        sink: SharedSink,
+        on_output: Box<dyn Fn(OutputChunk) + Send + Sync>,
+    ) -> IdeResult<RunAttach> {
+        let entry = self.entry(id)?;
+        *entry.sink.lock() = sink;
+        let buffered = {
+            let mut out = entry.output.lock();
+            let chunks: Vec<OutputChunk> = out.buffered.iter().cloned().collect();
+            out.on_output = Arc::from(on_output);
+            chunks
+        };
+        Ok(RunAttach { info: entry.info(), config: entry.config.clone(), buffered })
+    }
+
+    /// Drops live client output callbacks when a remote window disconnects, keeping
+    /// running processes and their console ring buffers alive.
+    pub fn detach_output(&self) {
+        let entries: Vec<Arc<Entry>> = self.runs.lock().values().cloned().collect();
+        for entry in entries {
+            entry.output.lock().on_output = Arc::new(|_| {});
+        }
+    }
+
     /// Kills every running process tree at once (shutting down).
     pub fn kill_project(&self, root: &Path) {
         for entry in self.runs.lock().values().filter(|e| e.project_root == root) {
@@ -809,6 +897,34 @@ impl ProcessManager {
             }
         }
     }
+
+    /// Honor external service stop actions (for example `docker compose down`) before
+    /// forcing run processes to exit.
+    pub async fn shutdown(&self) {
+        let entries: Vec<_> = self.runs.lock().values().cloned().collect();
+        let mut stops = tokio::task::JoinSet::new();
+        for entry in entries {
+            let Some(pid) = *entry.pid.lock() else { continue };
+            if entry.exited.load(Ordering::Acquire) && !group_alive(pid, &entry) {
+                continue;
+            }
+            stops.spawn_blocking(move || {
+                if !entry.stopping.swap(true, Ordering::AcqRel)
+                    && let Some(stop) = &entry.stop
+                {
+                    run_stop_command(stop, &entry);
+                }
+                if group_alive(pid, &entry) {
+                    kill_tree(&entry, pid, true);
+                }
+            });
+        }
+        while let Some(result) = stops.join_next().await {
+            if let Err(e) = result {
+                tracing::warn!("could not stop a run during shutdown: {e}");
+            }
+        }
+    }
 }
 
 impl Drop for ProcessManager {
@@ -824,7 +940,7 @@ fn run_followup(
     config: &RunConfig,
     cwd: &Path,
     entry: &Entry,
-    tx: &Sender<Msg>,
+    tx: &SyncSender<Msg>,
 ) -> std::io::Result<ExitStatus> {
     let mut pid = entry.pid.lock();
     if entry.stopping.load(Ordering::Acquire) {
@@ -853,7 +969,7 @@ fn run_followup(
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0000_0200 | ide_core::process::CREATE_NO_WINDOW);
     }
-    (entry.output)(OutputChunk::System { text: format!("{}\n", inv.display) });
+    entry.emit_output(OutputChunk::System { text: format!("{}\n", inv.display) });
     let mut child = cmd.spawn()?;
     // The follow-up run continues the same launch: it joins the run's job, so a Stop
     // reaches its tree too.
@@ -985,11 +1101,12 @@ fn apply_env(cmd: &mut Command, env: &LaunchEnv) {
 
 /// Runs `stop.line` through the platform shell and waits for it (bounded), echoing it
 /// and any error output to the console.
-fn run_stop_command(stop: &StopCommand, output: &OutputFn) {
-    output(OutputChunk::System { text: format!("{}\n", stop.line) });
+fn run_stop_command(stop: &StopCommand, entry: &Entry) {
+    entry.emit_output(OutputChunk::System { text: format!("{}\n", stop.line) });
     let inv = shell_invocation(&stop.line, cfg!(windows), std::env::var("COMSPEC").ok());
     let mut cmd = Command::new(&inv.program);
     ide_core::process::prepare(&mut cmd);
+    ide_core::process::own_group(&mut cmd);
     if inv.raw_args {
         add_raw_args(&mut cmd, &inv.args);
     } else {
@@ -1000,16 +1117,18 @@ fn run_stop_command(stop: &StopCommand, output: &OutputFn) {
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            output(OutputChunk::Stderr { text: format!("Cannot run the stop command: {e}\n") });
+            entry.emit_output(OutputChunk::Stderr { text: format!("Cannot run the stop command: {e}\n") });
             return;
         }
     };
     let stderr = child.stderr.take().map(|mut pipe| {
+        let (send, receive) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut buf = Vec::new();
             let _ = pipe.read_to_end(&mut buf);
-            String::from_utf8_lossy(&buf).into_owned()
-        })
+            let _ = send.send(String::from_utf8_lossy(&buf).into_owned());
+        });
+        receive
     });
     let deadline = Instant::now() + STOP_COMMAND_TIMEOUT;
     let status = loop {
@@ -1017,15 +1136,17 @@ fn run_stop_command(stop: &StopCommand, output: &OutputFn) {
             Ok(Some(status)) => break Some(status),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
             _ => {
-                let _ = child.kill();
+                ide_core::process::kill_tree(&mut child);
                 let _ = child.wait();
                 break None;
             }
         }
     };
-    let err = stderr.and_then(|h| h.join().ok()).unwrap_or_default();
-    if !status.is_some_and(|s| s.success()) && !err.trim().is_empty() {
-        output(OutputChunk::Stderr { text: format!("{}\n", err.trim_end()) });
+    if !status.is_some_and(|s| s.success()) {
+        let err = stderr.and_then(|r| r.recv_timeout(Duration::from_millis(100)).ok()).unwrap_or_default();
+        let detail = status.map_or_else(|| "timed out".to_string(), |s| s.to_string());
+        tracing::warn!("run stop command failed: {detail}");
+        entry.emit_output(OutputChunk::Stderr { text: format!("Stop command failed ({detail})\n{err}") });
     }
 }
 
@@ -1106,16 +1227,19 @@ fn kill_tree(entry: &Entry, pid: u32, _force: bool) {
         .status();
 }
 
+/// Reads `pipe` into `tx` until EOF. It waits in `send` while the pump is a full queue behind
+/// (the process then waits on its pipe). The pump dropping its receiver fails the `send`
+/// and ends the reader, so no reader stays blocked once the pump is gone.
 fn spawn_reader(
     id: RunId,
     stream: Stream,
     mut pipe: impl Read + Send + 'static,
-    tx: Sender<Msg>,
+    tx: SyncSender<Msg>,
     #[cfg(unix)] mut wait_readable: Option<Box<dyn FnMut() -> std::io::Result<()> + Send>>,
 ) -> std::io::Result<()> {
     let label = if stream == Stream::Stdout { "out" } else { "err" };
     std::thread::Builder::new().name(format!("openidea-run-{label}-{}", id.0)).spawn(move || {
-        let mut buf = vec![0u8; 16 * 1024];
+        let mut buf = vec![0u8; READ_BUF];
         loop {
             match pipe.read(&mut buf) {
                 Ok(0) => break,
@@ -1178,9 +1302,7 @@ fn emit(
 /// `decoders` decode stdout and stderr.
 fn spawn_pump(
     rx: mpsc::Receiver<Msg>,
-    on_output: OutputFn,
     entry: Arc<Entry>,
-    sink: SharedSink,
     decoders: [OutputDecoder; 2],
     notice: Option<String>,
 ) -> std::io::Result<()> {
@@ -1201,7 +1323,7 @@ fn spawn_pump(
 
         let flush = |pending: &mut String, stream: Stream, started: &mut Option<Instant>| {
             if !pending.is_empty() {
-                on_output(chunk(stream, std::mem::take(pending)));
+                entry.emit_output(chunk(stream, std::mem::take(pending)));
             }
             *started = None;
         };
@@ -1281,12 +1403,12 @@ fn spawn_pump(
                 rest.push_str(&filter.finish());
             }
             if !rest.is_empty() {
-                on_output(chunk(stream, rest));
+                entry.emit_output(chunk(stream, rest));
             }
         }
 
         let (code, message) = describe_exit(status);
-        on_output(OutputChunk::System { text: format!("\n{message}\n") });
+        entry.emit_output(OutputChunk::System { text: format!("\n{message}\n") });
         entry.stdin.lock().take();
         if let Some(pty) = &entry.pty {
             pty.lock().take();
@@ -1318,7 +1440,8 @@ fn spawn_pump(
         *entry.code.lock() = code;
         entry.exited.store(true, Ordering::Release);
         tracing::debug!(id = %entry.id, ?code, "run exited");
-        sink.emit(IdeEvent::RunExited { run: entry.id, code });
+        let target_sink = entry.sink.lock().clone();
+        target_sink.emit(IdeEvent::RunExited { run: entry.id, code });
     })?;
     Ok(())
 }
@@ -1424,6 +1547,7 @@ fn input_writer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
 
     #[cfg(unix)]
     #[test]
@@ -1568,5 +1692,112 @@ mod tests {
         // Relative paths resolve against the run directory on every platform.
         assert_eq!(resolve_program("./gradlew", cwd, &config, true), cwd.join("./gradlew"));
         assert_eq!(resolve_program(".venv/bin/python", cwd, &config, false), cwd.join(".venv/bin/python"));
+    }
+
+    /// A pipe stand-in that counts the bytes taken from it.
+    #[cfg(unix)]
+    struct Counted<R> {
+        inner: R,
+        taken: Arc<AtomicUsize>,
+    }
+
+    #[cfg(unix)]
+    impl<R: Read> Read for Counted<R> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.inner.read(buf)?;
+            self.taken.fetch_add(n, Ordering::SeqCst);
+            Ok(n)
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_slow_pump_holds_a_flooding_process_back_instead_of_queueing_its_output() {
+        const LINES: usize = 2_000_000;
+        // (Not `seq`: macOS prints large numbers in exponent form.)
+        let mut child = Command::new("awk")
+            .arg(format!("BEGIN{{for(i=1;i<={LINES};i++)print i}}"))
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("awk");
+        let taken = Arc::new(AtomicUsize::new(0));
+        let pipe = Counted { inner: child.stdout.take().unwrap(), taken: taken.clone() };
+        let (tx, rx) = output_queue();
+        spawn_reader(RunId::next(), Stream::Stdout, pipe, tx, None).unwrap();
+        let (mut received, mut peak, mut all) = (0usize, 0usize, Vec::new());
+        loop {
+            match rx.recv_timeout(Duration::from_secs(60)) {
+                Ok(Msg::Data(stream, bytes)) => {
+                    assert!(stream == Stream::Stdout);
+                    // Read from the pipe but not yet handled: the queue, plus the chunk the
+                    // reader holds while it waits for room, plus the one just received.
+                    peak = peak.max(taken.load(Ordering::SeqCst) - received);
+                    received += bytes.len();
+                    all.extend_from_slice(&bytes);
+                    // A console that cannot keep up with the process.
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Ok(Msg::Exited(_)) => unreachable!("only the waiter sends the exit"),
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => panic!("the reader stalled"),
+            }
+        }
+        assert!(child.wait().unwrap().success());
+        let bound = (OUTPUT_QUEUE_CHUNKS + 2) * READ_BUF;
+        assert!(peak <= bound, "{peak} bytes queued ahead of the pump, more than {bound}");
+        let expected: String = (1..=LINES).map(|n| format!("{n}\n")).collect();
+        assert!(all == expected.as_bytes(), "the output arrived incomplete or out of order");
+    }
+
+    /// Endless output (cut at a size an unbounded queue could still hold in a test) that
+    /// reports when it is dropped, which is when the reader thread owning it ends.
+    struct Endless {
+        served: Arc<AtomicUsize>,
+        gone: mpsc::Sender<()>,
+    }
+
+    impl Read for Endless {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.served.load(Ordering::SeqCst) >= 8 * OUTPUT_QUEUE_CHUNKS {
+                return Ok(0);
+            }
+            self.served.fetch_add(1, Ordering::SeqCst);
+            buf.fill(b'x');
+            Ok(buf.len())
+        }
+    }
+
+    impl Drop for Endless {
+        fn drop(&mut self) {
+            let _ = self.gone.send(());
+        }
+    }
+
+    #[test]
+    fn a_reader_blocked_on_a_full_queue_ends_when_the_pump_is_gone() {
+        let served = Arc::new(AtomicUsize::new(0));
+        let (gone_tx, gone) = mpsc::channel();
+        let (tx, rx) = output_queue();
+        spawn_reader(
+            RunId::next(),
+            Stream::Stdout,
+            Endless { served: served.clone(), gone: gone_tx },
+            tx,
+            #[cfg(unix)]
+            None,
+        )
+        .unwrap();
+        // A pump that takes nothing: the queue fills and the reader holds one more chunk.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while served.load(Ordering::SeqCst) < OUTPUT_QUEUE_CHUNKS + 1 {
+            assert!(Instant::now() < deadline, "the reader never filled the queue");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // Time for a reader that does not wait to run ahead.
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(served.load(Ordering::SeqCst), OUTPUT_QUEUE_CHUNKS + 1, "the reader ran past the full queue");
+        assert!(gone.try_recv().is_err(), "the reader ended while its pump was still there");
+        drop(rx);
+        gone.recv_timeout(Duration::from_secs(30)).expect("the reader stayed blocked after the pump was gone");
     }
 }

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LibraryGroup } from "@/bindings";
 
 const results: LibraryGroup[][] = [];
@@ -31,6 +31,7 @@ vi.mock("@/platform/ipc", () => ({
 }));
 
 const { activate } = await import("./index");
+const { useEditorRegistry } = await import("@/editor/api");
 const { useProject } = await import("@/platform/project");
 const { useProjectViewRoots } = await import("@/workbench/contributions");
 const { executeAction } = await import("@/platform/actions");
@@ -42,6 +43,13 @@ const rust = (version: string): LibraryGroup => ({
 });
 
 describe("External Libraries refresh", () => {
+  afterEach(() => {
+    results.length = 0;
+    streamed.length = 0;
+    hang = false;
+    useEditorRegistry.setState({ active: null });
+  });
+
   it("replaces the node in place when the libraries change", async () => {
     useProject.setState({
       project: { root: "/p", trusted: true } as ReturnType<typeof useProject.getState>["project"],
@@ -85,5 +93,55 @@ describe("External Libraries refresh", () => {
       hang = false;
       dispose();
     }
+  });
+
+  it("keeps other opened archives with the same name when the build lists one of them", async () => {
+    const first = "/first/library.jar!";
+    const second = "/second/library.jar!";
+    useProject.setState({
+      project: { root: "/p", trusted: true } as ReturnType<typeof useProject.getState>["project"],
+    });
+    const dispose = activate();
+    const paths = () =>
+      useProjectViewRoots
+        .getState()
+        .roots.get("externalLibraries")
+        ?.children?.flatMap((group) => group.children?.map((root) => root.path) ?? [])
+        .sort();
+    try {
+      for (const archive of [first, second]) {
+        useEditorRegistry.setState({ active: { ctx: { path: `jar:file://${archive}/p/Example.class` } } as never });
+      }
+      await vi.waitFor(() => expect(paths()).toEqual([first, second]));
+
+      results.push([{ name: "Build dependency", kind: "gradle", roots: [{ name: "library.jar", path: first }] }]);
+      await executeAction("libraries.reload");
+      await vi.waitFor(() =>
+        expect(useProjectViewRoots.getState().roots.get("externalLibraries")?.children?.[0]?.label).toBe(
+          "Build dependency",
+        ),
+      );
+      expect(paths()).toEqual([first, second]);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("shows the exact classifier jar of the library class opened in the editor", async () => {
+    const uri =
+      "jdt://contents/demo-lib-1.0-jdk21.jar/com.example.lib/Helper.class?=demo/%5C/m2%5C/com%5C/example%5C/demo-lib%5C/1.0%5C/demo-lib-1.0-jdk21.jar=/maven.classifier=/jdk21=/=%3Ccom.example.lib(Helper.class";
+    useProject.setState({
+      project: { root: "/p", trusted: true } as ReturnType<typeof useProject.getState>["project"],
+    });
+    useEditorRegistry.setState({ active: { ctx: { path: uri } } as never });
+    results.push([]);
+    const dispose = activate();
+    const labels = () =>
+      useProjectViewRoots
+        .getState()
+        .roots.get("externalLibraries")
+        ?.children?.[0]?.children?.map((g) => g.label);
+    await vi.waitFor(() => expect(labels()).toContain("demo-lib-1.0-jdk21.jar"));
+    dispose();
   });
 });

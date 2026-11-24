@@ -111,6 +111,7 @@ test("completion lists the server's items and inserts the chosen one", async ({ 
   });
   await expect(editor.locator(".cm-content")).toHaveCSS("font-size", zoomedSize);
   await expect(method.locator(".cm-completionLabel")).toHaveCSS("font-size", zoomedSize);
+
   await page.keyboard.type("toD");
   await expect(popup.getByText("total", { exact: true })).toBeHidden();
   // Refreshing the results rebuilds the list; the hint bar must stay below it, not jump to the top.
@@ -124,6 +125,37 @@ test("completion lists the server's items and inserts the chosen one", async ({ 
   await expect(popup).toBeHidden();
   await expect(editor.locator(".cm-activeLine")).toHaveText(/^\s*order\.toDto\(\)$/);
   expect((await ipcCalls(page, "lsp_completion")).length).toBeGreaterThan(0);
+
+  await page.evaluate(async () => {
+    const path = "/src/platform/actions.ts";
+    await (await import(/* @vite-ignore */ path)).executeAction("editor.splitRight");
+  });
+  const panes = page.locator("[data-pane-id]");
+  await expect(panes).toHaveCount(2);
+  await page.setViewportSize({ width: 480, height: 760 });
+  await panes.last().locator(".cm-content").focus();
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("order.");
+  await page.keyboard.press("Control+Space");
+  const footer = popup.locator(".cm-lsp-completion-footer");
+  await expect
+    .poll(() =>
+      footer.evaluate((el) => {
+        const tip = el.querySelector("span")!;
+        const sort = el.querySelector("button")!;
+        const a = tip.getBoundingClientRect();
+        const b = sort.getBoundingClientRect();
+        return {
+          oneRow: Math.abs(a.y + a.height / 2 - b.y - b.height / 2) <= 1,
+          hintClipped: tip.scrollWidth > tip.clientWidth,
+          sortFits: sort.scrollWidth <= sort.clientWidth + 1 && b.right <= el.getBoundingClientRect().right,
+        };
+      }),
+    )
+    .toEqual({ oneRow: true, hintClipped: true, sortFits: true });
+  await expect(footer.getByTitle("Press ↵ to insert, ⇥ to replace")).toHaveCSS("font-size", "12px");
+  await expect(footer.getByRole("button", { name: "Sort by name" })).toBeInViewport({ ratio: 1 });
 });
 
 test("long completion signatures fit the editor when the workbench is narrowed", async ({ workbench: page }) => {
@@ -242,6 +274,7 @@ test("completion clips long parameters before the suggestion name and return typ
   });
   await expect(row.locator(".cm-lsp-type")).toHaveText(returnType);
   await page.setViewportSize({ width: 820, height: 760 });
+  await page.evaluate(() => document.fonts.ready);
   await expect
     .poll(() =>
       row.evaluate((el) => {

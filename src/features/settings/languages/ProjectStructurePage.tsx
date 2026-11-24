@@ -1333,7 +1333,8 @@ function LibrariesSection() {
             )}
             {libs.map((lib, idx) => (
               <button
-                key={`${lib.name}-${idx}`}
+                // oxlint-disable-next-line react/no-array-index-key -- library names can repeat; position is the identity
+                key={idx}
                 type="button"
                 className={clsx(styles.sideItem, idx === activeIdx && styles.sideItemActive)}
                 onClick={() => setSelectedIdx(idx)}
@@ -1485,7 +1486,8 @@ function FacetsSection() {
             )}
             {facets.map((f, idx) => (
               <button
-                key={`${f.kind}-${f.module}-${idx}`}
+                // oxlint-disable-next-line react/no-array-index-key -- facets can repeat; position is the identity
+                key={idx}
                 type="button"
                 className={clsx(styles.sideItem, idx === activeIdx && styles.sideItemActive)}
                 onClick={() => setSelectedIdx(idx)}
@@ -1600,7 +1602,8 @@ function FacetsSection() {
             <Section title="Auto-detected from Build">
               <div className={styles.entryList}>
                 {detectedSummary.map((d, i) => (
-                  <div key={`${d.kind}-${d.module}-${i}`} className={styles.entryRow}>
+                  // oxlint-disable-next-line react/no-array-index-key -- detected entries can repeat; position is the identity
+                  <div key={i} className={styles.entryRow}>
                     <Icon name="check" size={14} />
                     <span className={styles.rootPath}>
                       {d.kind} ({d.module})
@@ -1714,7 +1717,8 @@ function ArtifactsSection() {
               )}
               {artifacts.map((a, idx) => (
                 <button
-                  key={`${a.name}-${idx}`}
+                  // oxlint-disable-next-line react/no-array-index-key -- artifact names can repeat; position is the identity
+                  key={idx}
                   type="button"
                   className={clsx(styles.sideItem, idx === activeIdx && styles.sideItemActive)}
                   onClick={() => setSelectedIdx(idx)}

@@ -1,7 +1,8 @@
 //! Shelves retain their repository even when the project root is above or below it.
-use ide_core::NullSink;
-use ide_host::{Host, HostConfig, ops::vcs};
-use std::{path::Path, process::Command, sync::Arc, time::Duration};
+mod common;
+
+use ide_host::{Host, ops::vcs};
+use std::{path::Path, process::Command, time::Duration};
 
 fn git(root: &Path, args: &[&str]) {
     let output = Command::new("git").current_dir(root).args(args).output().unwrap();
@@ -9,17 +10,7 @@ fn git(root: &Path, args: &[&str]) {
 }
 
 async fn open_project(base: &Path, root: &Path, repo_count: usize) -> Host {
-    let host = Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    });
+    let host = Host::new(common::host_config(base));
     host.trust.decide(root, true, false).unwrap();
     let project = host.open_project("main", root).unwrap();
     for _ in 0..500 {
