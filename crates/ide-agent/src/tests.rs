@@ -3528,14 +3528,17 @@ async fn a_growing_tool_output_is_not_sent_whole_on_every_flush() {
     // What a window receives of the tool's entry: events, and the bytes they take.
     let sent = Arc::new(Mutex::new((0usize, Vec::<AgentEvent>::new())));
     let sink = sent.clone();
-    mgr.subscribe(Arc::new(move |e| {
-        let json = serde_json::to_value(&e).unwrap();
-        if json["entry"]["type"] == "tool" || json["type"] == "toolOutput" {
-            let mut sent = sink.lock();
-            sent.0 += json.to_string().len();
-            sent.1.push(e);
-        }
-    }));
+    mgr.subscribe_as(
+        "",
+        Arc::new(move |e| {
+            let json = serde_json::to_value(&e).unwrap();
+            if json["entry"]["type"] == "tool" || json["type"] == "toolOutput" {
+                let mut sent = sink.lock();
+                sent.0 += json.to_string().len();
+                sent.1.push(e);
+            }
+        }),
+    );
     let task = mgr
         .create(NewAgentTask {
             project_root: None,
@@ -3617,11 +3620,20 @@ fn streamed_text_is_sent_as_appends() {
 
     let long = "é".repeat(5000);
     entry_event("t", &mut streamed, None, 5, &agent(&long)).unwrap();
-    assert!(streamed.messages[&None].tail.len() <= 64, "only the end of what was sent is kept");
     let on = entry_event("t", &mut streamed, None, 5, &agent(&format!("{long}!"))).unwrap();
     assert!(matches!(&on, AgentEvent::Append { from: 5000, text, .. } if text == "!"), "{on:?}");
     let rewritten = entry_event("t", &mut streamed, None, 5, &agent(&format!("{}x!??", "é".repeat(4999)))).unwrap();
     assert!(matches!(rewritten, AgentEvent::Entry { .. }), "a rewritten end is sent whole");
+    // A text that goes on with its end as sent but an edited start is not an append.
+    let kept_end =
+        entry_event("t", &mut streamed, None, 5, &agent(&format!("{}{}", "e".repeat(5000), "é".repeat(5000))));
+    assert!(matches!(kept_end, Some(AgentEvent::Entry { .. })), "{kept_end:?}");
+    let edited_start =
+        entry_event("t", &mut streamed, None, 5, &agent(&format!("{}{}!", "x".repeat(5000), "é".repeat(5000))));
+    assert!(
+        matches!(edited_start, Some(AgentEvent::Entry { .. })),
+        "a rewritten start is sent whole even when the end is as sent: {edited_start:?}"
+    );
 }
 
 #[test]
@@ -3706,6 +3718,30 @@ fn a_running_tools_output_is_sent_as_appends() {
     assert!(matches!(replaced, AgentEvent::Entry { .. }), "a rewritten output is sent whole");
     let on = event(&mut streamed, None, 2, &make("$ make\nother, but longer")).unwrap();
     assert!(matches!(on, AgentEvent::ToolOutput { from: 12, .. }), "and the next growth is appended to it: {on:?}");
+
+    // A replacement that keeps the old end, or the old length, is not mistaken for growth.
+    let mut kept = make("$ make\nother, but longer");
+    let swap = |entry: &mut AgentEntry, output: String| {
+        if let AgentEntry::Tool { output: o, .. } = entry {
+            *o = Some(output);
+        }
+    };
+    let (long_tail, same_length) =
+        (format!("{}{}", "X".repeat(100), "z".repeat(100)), "Y".repeat(100) + &"z".repeat(100));
+    swap(&mut kept, long_tail.clone());
+    event(&mut streamed, None, 2, &kept).unwrap();
+    swap(&mut kept, same_length);
+    let same = event(&mut streamed, None, 2, &kept).unwrap();
+    assert!(
+        matches!(&same, AgentEvent::Entry { entry: AgentEntry::Tool { output: Some(o), .. }, .. } if o.starts_with('Y')),
+        "same length, same end, different start is sent whole: {same:?}"
+    );
+    swap(&mut kept, format!("{}{}!", "W".repeat(100), "z".repeat(100)));
+    let grown = event(&mut streamed, None, 2, &kept).unwrap();
+    assert!(
+        matches!(grown, AgentEvent::Entry { .. }),
+        "a replacement that also grows, with the old end, is sent whole: {grown:?}"
+    );
 
     // Calls run side by side, each in its own session.
     let whole = |e: &AgentEvent| matches!(e, AgentEvent::Entry { .. });

@@ -44,7 +44,9 @@ use ide_vcs::Repo;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::hash::Hasher;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
@@ -4320,39 +4322,45 @@ fn stdio_mcp_servers(executable: Option<&std::path::Path>, supported: bool, root
     vec![json!({ "name": BUILTIN_SERVER, "command": command[0], "args": command[1..], "env": env })]
 }
 
-/// What was sent of a streaming message: its first `bytes` (`utf16` UTF-16 units), which
-/// ended with `tail`. A message only grows while it streams, so its tail tells a message
-/// that went on from one that was replaced without comparing (or keeping) all of it.
+/// What was sent of a streaming text: its first `bytes` (`utf16` UTF-16 units), hashed. The
+/// text only grows while it streams; the hash tells one that went on from one that was replaced
+/// (at its end or anywhere before) without keeping a copy of it.
 struct Sent {
     index: usize,
     bytes: usize,
     utf16: usize,
-    tail: String,
+    hash: u64,
 }
-
-const SENT_TAIL: usize = 64;
 
 impl Sent {
     fn new(index: usize, text: &str) -> Self {
-        Self::after(index, text, 0, 0)
+        Self { index, bytes: text.len(), utf16: text.encode_utf16().count(), hash: Self::digest(text) }
     }
 
-    /// `text` as sent, of which the first `bytes` (`utf16` units) were sent before.
-    fn after(index: usize, text: &str, bytes: usize, utf16: usize) -> Self {
-        let mut start = text.len().saturating_sub(SENT_TAIL);
-        while !text.is_char_boundary(start) {
-            start -= 1;
+    fn digest(text: &str) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        hasher.write(text.as_bytes());
+        hasher.finish()
+    }
+
+    /// `text` at `index` as sent after this, when it is this text with more at the end.
+    fn extended(&self, index: usize, text: &str) -> Option<Self> {
+        if self.index != index || text.len() <= self.bytes || !text.is_char_boundary(self.bytes) {
+            return None;
         }
-        let utf16 = utf16 + text[bytes..].encode_utf16().count();
-        Self { index, bytes: text.len(), utf16, tail: text[start..].to_owned() }
+        let mut hasher = DefaultHasher::new();
+        hasher.write(&text.as_bytes()[..self.bytes]);
+        if hasher.finish() != self.hash {
+            return None;
+        }
+        let more = &text[self.bytes..];
+        hasher.write(more.as_bytes());
+        Some(Self { index, bytes: text.len(), utf16: self.utf16 + more.encode_utf16().count(), hash: hasher.finish() })
     }
 
-    /// Whether `text` at `index` is this message, gone on.
-    fn extended_by(&self, index: usize, text: &str) -> bool {
-        self.index == index
-            && text.len() > self.bytes
-            && text.is_char_boundary(self.bytes)
-            && text[..self.bytes].ends_with(&self.tail)
+    /// Whether `text` is exactly what was sent.
+    fn is(&self, text: &str) -> bool {
+        text.len() == self.bytes && Self::digest(text) == self.hash
     }
 }
 
@@ -4400,10 +4408,9 @@ fn entry_event(
         }
         return Some(whole(subagent));
     };
-    match streamed.messages.get(&subagent).filter(|sent| sent.extended_by(i, text)) {
-        Some(sent) => {
-            let (bytes, from) = (sent.bytes, sent.utf16);
-            streamed.messages.insert(subagent.clone(), Sent::after(i, text, bytes, from));
+    match streamed.messages.get(&subagent).and_then(|sent| Some((sent.bytes, sent.utf16, sent.extended(i, text)?))) {
+        Some((bytes, from, sent)) => {
+            streamed.messages.insert(subagent.clone(), sent);
             Some(AgentEvent::Append {
                 task: task.to_owned(),
                 subagent,
@@ -4446,9 +4453,9 @@ fn tool_event(
     let text = output.as_deref().unwrap_or_default();
     let key = (subagent, i);
     if let Some(sent) = streamed.tools.get_mut(&key).filter(|sent| sent.call == call) {
-        if sent.output.extended_by(i, text) {
+        if let Some(output) = sent.output.extended(i, text) {
             let (bytes, from) = (sent.output.bytes, sent.output.utf16);
-            sent.output = Sent::after(i, text, bytes, from);
+            sent.output = output;
             return Some(AgentEvent::ToolOutput {
                 task: task.to_owned(),
                 subagent: key.0,
@@ -4457,7 +4464,7 @@ fn tool_event(
                 text: text[bytes..].to_owned(),
             });
         }
-        if text.len() == sent.output.bytes && text.ends_with(&sent.output.tail) {
+        if sent.output.is(text) {
             return None;
         }
     }
