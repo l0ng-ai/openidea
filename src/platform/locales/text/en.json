@@ -10,6 +10,8 @@
   "Select a configured custom dictionary": "Select a configured custom dictionary",
   "'{word}' is not a word a dictionary can list": "'{word}' is not a word a dictionary can list",
   "{path} is not a writable dictionary file": "{path} is not a writable dictionary file",
+  "Select Methods to Override": "Select Methods to Override",
+  "No methods to override": "No methods to override",
   "Task Actions": "Task Actions",
   "Search commits": "Search commits",
   "Amend commit failed": "Amend commit failed",
