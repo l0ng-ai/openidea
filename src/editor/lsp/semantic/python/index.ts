@@ -12,12 +12,8 @@ import {
   pythonSyntaxRanges,
   type PythonSymbolKind,
 } from "./highlight";
-import {
-  implementPythonAbstractMethods,
-  overridePythonMethods,
-  pythonGenerateEntries,
-  pythonMemberIntentions,
-} from "./members";
+import { implementPythonAbstractMethods, overridePythonMethods, pythonMemberIntentions } from "./members";
+import { pythonGenerateEntries } from "./generate";
 import { pythonCreateFixes } from "./createFromUsage";
 import { pythonTypeHintIntentions } from "./typeHints";
 import { pythonStringIntentions } from "./stringFormat";

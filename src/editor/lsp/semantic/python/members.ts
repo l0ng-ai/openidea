@@ -5,10 +5,10 @@
  * `pass` stubs, overrides call `super()`, at the end of the class body.
  */
 import { indentUnit } from "@codemirror/language";
+import type { ChangeSpec } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { commands } from "@/platform/ipc";
 import type { ContributedIntention } from "@/editor/api";
-import type { GenerateEntry } from "../languages";
 import { docOf, lspRequest, reportLspError } from "../../lsp";
 import { readFileLines, withDocument } from "../../files";
 import { showHint } from "../../hint";
@@ -16,7 +16,7 @@ import { chooseMembers } from "../../memberChooser";
 import { importLine, importedFrom, neededImports, placeImports, topLevelBindings } from "./imports";
 
 /** A Python identifier (letters of any script). */
-const ID = "[\\p{L}_][\\p{L}\\p{N}_]*";
+export const ID = "[\\p{L}_][\\p{L}\\p{N}_]*";
 const CLASS_HEADER = new RegExp(`^(\\s*)class\\s+${ID}\\s*\\(([\\s\\S]*)\\)\\s*:$`, "u");
 const CLASS = /^\s*class\s/;
 const CLASS_NAME = new RegExp(`class\\s+(${ID})`, "u");
@@ -24,8 +24,8 @@ const DEF = new RegExp(`^\\s*(?:async\\s+)?def\\s+(${ID})`, "u");
 const BASE = new RegExp(`(?:^|,)\\s*(${ID}(?:\\.${ID})*)\\s*(?=,|$|\\[)`, "gu");
 const PARAM = new RegExp(`^(\\*{0,2})(${ID})`, "u");
 
-const indentOf = (line: string) => line.length - line.trimStart().length;
-const isPython = (view: EditorView) => docOf(view)?.uiMode === "Python";
+export const indentOf = (line: string) => line.length - line.trimStart().length;
+export const isPython = (view: EditorView) => docOf(view)?.uiMode === "Python";
 
 /**
  * 1-based number of the class header line enclosing `line` (or on it); null unless it has bases
@@ -62,8 +62,24 @@ export function classHeader(lines: readonly string[], header: number): { text: s
   return { text: lines[header - 1]!, end: header, colon: -1 };
 }
 
+/** Body lines of the class headed at `header` (1-based) outside triple-quoted strings, with their numbers. */
+export function codeLines(lines: readonly string[], header: number): Array<{ n: number; text: string }> {
+  const out: Array<{ n: number; text: string }> = [];
+  let quote: string | null = null;
+  for (let n = classHeader(lines, header).end + 1; n <= bodyEnd(lines, header); n++) {
+    const text = lines[n - 1]!;
+    const inString = quote !== null;
+    for (const q of text.match(/"""|'''/g) ?? []) {
+      if (quote === null) quote = q;
+      else if (q === quote) quote = null;
+    }
+    if (!inString && text.trim()) out.push({ n, text });
+  }
+  return out;
+}
+
 /** Last 1-based line of the body of the class headed at `header`. */
-function bodyEnd(lines: readonly string[], header: number): number {
+export function bodyEnd(lines: readonly string[], header: number): number {
   const indent = indentOf(lines[header - 1]!);
   const start = classHeader(lines, header).end;
   let last = start;
@@ -218,13 +234,18 @@ export async function implementPythonAbstractMethods(view: EditorView): Promise<
   return true;
 }
 
-/** Inserts `text(indent, unit)` at the end of the body of the class headed at `header` (1-based). */
+/**
+ * Inserts `text(indent, unit)` at the end of the body of the class headed at `header` (1-based),
+ * or with `beforeMethods`, before its first method (after its fields), along with `extra` changes.
+ */
 export function insertMembers(
   view: EditorView,
   lines: readonly string[],
   header: number,
   text: (indent: string, unit: string) => string,
   imports: readonly string[] = [],
+  beforeMethods = false,
+  extra: readonly ChangeSpec[] = [],
 ) {
   const state = view.state;
   const end = bodyEnd(lines, header);
@@ -243,17 +264,24 @@ export function insertMembers(
   const inlineBody = inline && !inline.startsWith("#") && !/^(pass|\.\.\.)\s*(#.*)?$/.test(inline) ? inline : "";
   // A body that is only `pass` / `...` is replaced.
   const placeholder = bodyLines.length === 1 && /^\s*(pass|\.\.\.)\s*$/.test(first!);
-  const changes = !bodyLines.length
-    ? inline && !inline.startsWith("#")
-      ? {
-          from: headerEnd.from + head.colon + 1,
-          to: headerEnd.to,
-          insert: `\n${inlineBody ? `${indent}${inlineBody}\n\n` : ""}${stubs}`,
-        }
-      : { from: headerEnd.to, insert: `\n${stubs}` }
-    : placeholder
-      ? { from: state.doc.line(bodyLines[0]!).from, to: state.doc.line(end).to, insert: stubs }
-      : { from: state.doc.line(end).to, insert: `\n\n${stubs}` };
+  // The first method outside the docstring (whose Epytext `@ivar` lines look like decorators).
+  const code = beforeMethods ? codeLines(lines, header) : [];
+  const method = code.find(
+    ({ text }) => indentOf(text) === indentOf(code[0]!.text) && /^\s*(@|(async\s+)?def\s)/.test(text),
+  )?.n;
+  const changes = method
+    ? { from: state.doc.line(method).from, insert: `${stubs}\n\n` }
+    : !bodyLines.length
+      ? inline && !inline.startsWith("#")
+        ? {
+            from: headerEnd.from + head.colon + 1,
+            to: headerEnd.to,
+            insert: `\n${inlineBody ? `${indent}${inlineBody}\n\n` : ""}${stubs}`,
+          }
+        : { from: headerEnd.to, insert: `\n${stubs}` }
+      : placeholder
+        ? { from: state.doc.line(bodyLines[0]!).from, to: state.doc.line(end).to, insert: stubs }
+        : { from: state.doc.line(end).to, insert: `\n\n${stubs}` };
   const { appended, added } = placeImports(lines, imports);
   const importChanges = [...appended].map(([n, text]) => ({ from: state.doc.line(n + 1).to, insert: text }));
   if (added.length) {
@@ -264,7 +292,7 @@ export function insertMembers(
         : { from: state.doc.length, insert: `\n${added.join("\n")}` },
     );
   }
-  view.dispatch({ changes: [...importChanges, changes], userEvent: "input.complete", scrollIntoView: true });
+  view.dispatch({ changes: [...importChanges, ...extra, changes], userEvent: "input.complete", scrollIntoView: true });
 }
 
 /** A base class of the class at the caret and the methods it declares. */
@@ -367,7 +395,7 @@ async function ancestors(view: EditorView, header: number): Promise<PythonBase[]
 }
 
 /** Index of the quote closing the string literal that opens at `i` of `text`, or `text.length`. */
-function skipString(text: string, i: number): number {
+export function skipString(text: string, i: number): number {
   const quote = text[i]!;
   for (let j = i + 1; j < text.length; j++) {
     if (text[j] === "\\") j++;
@@ -561,31 +589,6 @@ export async function overridePythonMethods(view: EditorView): Promise<boolean> 
     [...imports],
   );
   return true;
-}
-
-/** Generate (⌘N) in a Python class: Override / Implement Methods. */
-export function pythonGenerateEntries(view: EditorView): GenerateEntry[] {
-  if (!isPython(view)) return [];
-  const lines = view.state.doc.toJSON();
-  const line = view.state.doc.lineAt(view.state.selection.main.head).number;
-  if (!enclosingClass(lines, line, true)) return [];
-  const entries: GenerateEntry[] = [
-    {
-      id: "python.overrideMethods",
-      label: "Override Methods…",
-      icon: "gutter-overridden",
-      run: () => overridePythonMethods(view),
-    },
-  ];
-  // Abstract methods come from bases: a class without any has nothing to implement.
-  if (enclosingClass(lines, line))
-    entries.push({
-      id: "python.implementMethods",
-      label: "Implement Methods…",
-      icon: "gutter-implemented",
-      run: () => implementPythonAbstractMethods(view),
-    });
-  return entries;
 }
 
 /** The bulb on a Python class header with bases. */
