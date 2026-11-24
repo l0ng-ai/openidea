@@ -10094,5 +10094,6 @@
   "Mark as Unread": "标记为未读",
   "Archive All Below": "归档下方全部",
   "Mark Agent Tasks as Unread": "将 Agent 任务标记为未读",
-  "Mark Agent Tasks as Read": "将 Agent 任务标记为已读"
+  "Mark Agent Tasks as Read": "将 Agent 任务标记为已读",
+  "No tests ran. The build may skip them (skipTests, maven.test.skip, a disabled test task) or lack their engine: JUnit 4 tests on the JUnit Platform need junit-vintage-engine.": "没有运行任何测试。构建可能跳过了测试（skipTests、maven.test.skip、被禁用的测试任务），或缺少对应的测试引擎：在 JUnit Platform 上运行 JUnit 4 测试需要 junit-vintage-engine。"
 }
