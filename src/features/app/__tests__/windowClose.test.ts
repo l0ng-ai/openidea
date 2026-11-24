@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as ipc from "@/platform/ipc";
 import { useProject } from "@/platform/project";
+import { disableRemote, enableRemote } from "@/platform/remote";
 import * as services from "@/workbench/contributions";
 import type { MessageRequest as PromptRequest } from "@/workbench/messages";
 import { installCloseGuard, quitApp, type CloseDeps } from "../closeGuard";
@@ -29,6 +30,7 @@ let uninstall: (() => void) | undefined;
 let deps: CloseDeps;
 const forget = vi.fn();
 const keep = vi.fn();
+const flushSession = vi.fn();
 
 beforeEach(() => {
   vi.spyOn(ipc, "isTauri").mockReturnValue(true);
@@ -37,9 +39,11 @@ beforeEach(() => {
   vi.spyOn(ipc.commands, "windowGroupCancelClose").mockResolvedValue(undefined);
   vi.spyOn(ipc.commands, "appCancelQuit").mockResolvedValue(undefined);
   vi.spyOn(ipc.commands, "closeProject").mockResolvedValue(undefined);
+  vi.spyOn(ipc.commands, "remoteStopBackend").mockResolvedValue({ status: "ok", data: null });
   vi.spyOn(services, "maybeEditorService").mockReturnValue({
     forgetSavedTabs: forget,
     keepSavedTabs: keep,
+    flushSession,
     dirtyDocumentIds: () => [],
     cancelClose: vi.fn(),
   } as never);
@@ -57,6 +61,7 @@ afterEach(() => {
   uninstall?.();
   uninstall = undefined;
   native.close = undefined;
+  disableRemote();
   useProject.setState(initialProject, true);
   vi.restoreAllMocks();
   vi.clearAllMocks();
@@ -144,6 +149,28 @@ describe("native window close", () => {
     expect(forget).toHaveBeenCalledOnce();
     expect(keep).toHaveBeenCalledOnce();
     expect(deps.onSaveFailed).toHaveBeenCalledOnce();
+  });
+
+  it("flushes saved editor tabs and leaves remote processes running when closing a remote window", async () => {
+    enableRemote({
+      target: { kind: "ssh", config: "devbox" },
+      root: "/project",
+      host: "coder@devbox:22",
+      os: "linux",
+      commands: [],
+    });
+    vi.mocked(ipc.commands.windowCloseContext).mockResolvedValue({ quitting: false, windows: 2 });
+    vi.mocked(deps.ask).mockResolvedValueOnce({ button: "keep", checked: false });
+    const terminate = vi.fn(async () => {});
+    deps.runningProcesses = vi.fn(async () => ["docker compose up"]);
+    deps.terminate = terminate;
+
+    const prevented = await close({});
+    expect(prevented).not.toHaveBeenCalled();
+    expect(deps.runningProcesses).not.toHaveBeenCalled();
+    expect(terminate).not.toHaveBeenCalled();
+    expect(ipc.commands.remoteStopBackend).not.toHaveBeenCalled();
+    expect(flushSession).toHaveBeenCalledOnce();
   });
 });
 

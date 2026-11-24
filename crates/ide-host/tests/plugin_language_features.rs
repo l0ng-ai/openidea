@@ -1,4 +1,6 @@
 //! The API 1.4 fixture exercises every kind through the real component runtime and editor ops.
+mod common;
+
 use ide_core::{CancellationToken, Pos, Range, RequestId};
 use ide_host::plugins::{Consent, HostWorkspace, PluginHost, set_editor_providers};
 use ide_host::{Host, HostConfig, ops};
@@ -78,17 +80,8 @@ async fn editor_ops_merge_the_fixture_format_selection_and_execute_owned_command
     let tmp = tempfile::tempdir().unwrap();
     let root = dunce::canonicalize(tmp.path()).unwrap().join("project");
     std::fs::create_dir(&root).unwrap();
-    let host = Arc::new(Host::new(HostConfig {
-        config_dir: tmp.path().join("config"),
-        data_dir: tmp.path().join("data"),
-        local_data_dir: tmp.path().join("local"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    }));
+    let host =
+        Arc::new(Host::new(HostConfig { local_data_dir: tmp.path().join("local"), ..common::host_config(tmp.path()) }));
     host.open_project("main", &root).unwrap();
     let p = plugins(tmp.path());
     p.set_workspace(Some(Arc::new(HostWorkspace(Arc::downgrade(&host)))));

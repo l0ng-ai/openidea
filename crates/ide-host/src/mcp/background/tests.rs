@@ -42,15 +42,9 @@ impl Fixture {
         }
         let syntax: Arc<std::sync::OnceLock<Arc<ide_language::Syntax>>> = Arc::default();
         let host = Arc::new(Host::new(HostConfig {
-            config_dir: base.join("config"),
-            data_dir: base.join("data"),
             local_data_dir: base.join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
             syntax: syntax.clone(),
-            sink_for: Box::new(|_| Arc::new(|_| {})),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
+            ..HostConfig::for_test(&base)
         }));
         let fixture = Self { host, base, syntax, _tmp: tmp };
         fixture.set("enabled", json!(true));

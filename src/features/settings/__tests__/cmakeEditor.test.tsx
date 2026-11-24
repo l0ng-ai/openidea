@@ -9,6 +9,7 @@ import { useSettingsDialog } from "../model/staging";
 import { CMakeProfiles } from "../pages/cmake";
 
 const savedDialog = useSettingsDialog.getState();
+const CMAKE_CONTEXT = { pageId: "build.cmake", scope: "project" } as const;
 afterEach(() => {
   cleanup();
   useSettingsDialog.setState(savedDialog, true);
@@ -25,7 +26,7 @@ it.each([
   });
   const mount = () =>
     render(
-      <PageContext.Provider value={{ pageId: "build.cmake", scope: "project" }}>
+      <PageContext.Provider value={CMAKE_CONTEXT}>
         <CMakeProfiles />
       </PageContext.Provider>,
     );
@@ -60,7 +61,7 @@ it("displays each profile's arguments when switching profiles", () => {
     staged: {},
   });
   render(
-    <PageContext.Provider value={{ pageId: "build.cmake", scope: "project" }}>
+    <PageContext.Provider value={CMAKE_CONTEXT}>
       <CMakeProfiles />
     </PageContext.Provider>,
   );

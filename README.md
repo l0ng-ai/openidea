@@ -68,7 +68,7 @@ the [official plugins](plugins/official). The plugin API is still a preview.
 - [Discord](https://discord.gg/2Zy4yn7gP) — questions, feedback and release news.
 - WeChat group — scan to join:
 
-  <img src=".github/assets/wechat-group-3.png" alt="WeChat group QR code" width="200">
+  <img src=".github/assets/wechat-group-4.png" alt="WeChat group QR code" width="200">
 
 - Contributing: see [CONTRIBUTING.md](CONTRIBUTING.md) and the [contributor docs](https://openidea.sh/en/contribute/setup).
 

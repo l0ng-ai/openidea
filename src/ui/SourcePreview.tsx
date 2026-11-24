@@ -23,6 +23,8 @@ export interface SourceHighlight {
   ranges: ReadonlyArray<readonly [number, number]>;
 }
 
+const EMPTY_HIGHLIGHTS: readonly SourceHighlight[] = [];
+
 /** Lines rendered on each side of the current one. */
 const WINDOW = 300;
 
@@ -54,7 +56,7 @@ export interface SourcePreviewProps {
 export function SourcePreview({
   path,
   line,
-  highlights = [],
+  highlights = EMPTY_HIGHLIGHTS,
   load,
   version = 0,
   colorize,
@@ -263,7 +265,7 @@ function highlight(
       if (s < pos || e <= s) return;
       if (s > pos) parts.push(...tokenSpans(text, pos, s, tokens, `g${i}:`));
       parts.push(
-        <mark key={i} className={styles.match}>
+        <mark key={`${s}-${e}`} className={styles.match}>
           {tokenSpans(text, s, e, tokens, `m${i}:`)}
         </mark>,
       );

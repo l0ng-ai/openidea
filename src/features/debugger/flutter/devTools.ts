@@ -114,6 +114,8 @@ export function registerDevToolsWindows(): () => void {
         icon: w.icon,
         anchor: "right",
         order: 40 + i,
+        // Only the Inspector is on the stripe until the others are first opened.
+        ...(w.id === "flutter-inspector" ? {} : { stripe: "onUse" as const }),
         component: view("FlutterDevToolsView"),
         headerActions: view("FlutterDevToolsRefresh"),
         ...(w.app === "each" ? { headerContent: view("FlutterDevToolsTabs") } : {}),

@@ -392,12 +392,19 @@ describe("language pages", () => {
     const tree = buildPageTree(LANGUAGE_PAGES.map((p) => ({ ...p, component: p.component! })));
     const langs = tree.find((n) => n.title === "Languages & Frameworks")!;
     const python = langs.children.find((n) => n.title === "Python")!;
-    expect(python.children.map((n) => n.title)).toEqual(["All Interpreters", "Dependencies", "Docstrings", "Ruff"]);
+    expect(python.children.map((n) => n.title)).toEqual([
+      "All Interpreters",
+      "Dependencies",
+      "Docstrings",
+      "Ruff",
+      "Black formatter",
+    ]);
     expect(python.children.map((n) => n.key)).toEqual([
       "python.interpreters",
       "python.interpreter",
       "python.docstrings",
       "python.ruff",
+      "python.black",
     ]);
     // The folder itself has no page body: it links to the pages below it.
     expect(python.page?.component).toBeUndefined();

@@ -128,6 +128,7 @@ export const vscodeMacos: Record<string, string[]> = {
 
   // Code
   "code.completion": ["Ctrl+Space"],
+  "code.smartTypeCompletion": [],
   "editor.inlineCompletion.trigger": ["Alt+\\"],
   "editor.inlineCompletion.accept": ["Tab"],
   "editor.inlineCompletion.acceptWord": ["Meta+Right"],
@@ -141,6 +142,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "code.applyQuickFix": [],
   "code.generate": [],
   "code.reformat": ["Alt+Shift+F"],
+  "code.rearrange": [],
   "code.reformatDialog": [],
   "code.optimizeImports": ["Alt+Shift+O"],
   "code.commentLine": ["Meta+/"],

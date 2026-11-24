@@ -74,6 +74,7 @@ export function CMakeProfiles() {
             {profiles.map((p, i) => (
               <button
                 type="button"
+                // oxlint-disable-next-line react/no-array-index-key -- profile names can repeat; position is the identity
                 key={i}
                 role="option"
                 aria-selected={index === i}

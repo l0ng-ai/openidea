@@ -392,6 +392,7 @@ function DecorationSuffix({ segments, color }: DecorationSuffixProps) {
             : undefined;
         return (
           <span
+            // oxlint-disable-next-line react/no-array-index-key -- decoration segments can repeat; position is the identity
             key={i}
             className={styles.suffixSegment}
             role={s.label ? "img" : undefined}

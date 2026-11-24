@@ -38,6 +38,7 @@ import { MessagesHost } from "@/workbench/messages";
 
 let current: Settings;
 let dispose: () => void = () => {};
+const HTTP_PROXY_CONTEXT = { pageId: "general.httpProxy", scope: "global" } as const;
 
 beforeEach(() => {
   current = structuredClone(DEFAULT_SETTINGS) as Settings;
@@ -609,7 +610,7 @@ describe("Settings dialog", () => {
     }
     openSettings("general.httpProxy");
     const view = render(
-      <PageContext.Provider value={{ pageId: "general.httpProxy", scope: "global" }}>
+      <PageContext.Provider value={HTTP_PROXY_CONTEXT}>
         <Probe />
       </PageContext.Provider>,
     );

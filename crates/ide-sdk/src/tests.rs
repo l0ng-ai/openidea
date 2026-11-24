@@ -597,7 +597,7 @@ fn saved_python_configs_keep_their_explicit_interpreter() {
             config.cwd = Some(Path::new("member").into());
             apply_to_run_configs(std::slice::from_mut(&mut config), root, &settings);
             assert_eq!(config.command, command);
-            assert_eq!(config.env["VIRTUAL_ENV"], root.join("member/.override").to_string_lossy());
+            assert_eq!(config.env["VIRTUAL_ENV"], root.join("member").join(".override").to_string_lossy());
             let saved = without_derived(&config, root, &settings);
             assert_eq!(saved.command, command);
         }
@@ -3504,4 +3504,68 @@ fn unsatisfied_requirements_are_judged_by_the_interpreter() {
     let missing = || Some(crate::python::Unsatisfied { installed: None });
     let old = packaging.then(|| crate::python::Unsatisfied { installed: Some("1.0".into()) });
     assert_eq!(found, [None, None, old, missing(), None]);
+}
+
+#[test]
+fn a_custom_package_index_is_found_in_pip_and_uv_configuration() {
+    use crate::python::{pip_config_index, uv_config_index};
+    assert_eq!(
+        pip_config_index(
+            "$ python -m pip config list\nglobal.timeout='60'\nglobal.index-url='https://pypi.acme.dev/simple'\n"
+        )
+        .as_deref(),
+        Some("https://pypi.acme.dev/simple")
+    );
+    assert_eq!(
+        pip_config_index(":env:.extra-index-url='https://a.example/simple https://b.example/simple'\n").as_deref(),
+        Some("https://a.example/simple")
+    );
+    assert_eq!(
+        pip_config_index(
+            "global.index-url='https://pypi.org/simple'\ninstall.extra-index-url='https://pypi.python.org/simple https://a.example/simple'\n"
+        )
+        .as_deref(),
+        Some("https://a.example/simple")
+    );
+    assert_eq!(
+        pip_config_index("global.index-url='https://a.example/https://pypi.org/simple'\n").as_deref(),
+        Some("https://a.example/https://pypi.org/simple")
+    );
+    assert_eq!(pip_config_index("global.timeout='60'\n"), None);
+    assert_eq!(
+        uv_config_index("uv.toml", "index-url = \"https://pypi.acme.dev/simple\"\n").as_deref(),
+        Some("https://pypi.acme.dev/simple")
+    );
+    assert_eq!(
+        uv_config_index(
+            "pyproject.toml",
+            "[project]\nname = \"x\"\n[[tool.uv.index]]\nname = \"acme\"\nurl = \"https://pypi.acme.dev/simple\"\n"
+        )
+        .as_deref(),
+        Some("https://pypi.acme.dev/simple")
+    );
+    assert_eq!(uv_config_index("pyproject.toml", "[project]\nname = \"x\"\n"), None);
+    assert_eq!(uv_config_index("uv.toml", "index-url = \"https://pypi.org/simple\"\n"), None);
+    assert_eq!(
+        uv_config_index(
+            "uv.toml",
+            "index-url = \"https://pypi.org/simple\"\n[[index]]\nurl = \"https://pypi.org/simple\"\n[[index]]\nurl = \"https://a.example/simple\"\n"
+        )
+        .as_deref(),
+        Some("https://a.example/simple")
+    );
+}
+
+#[test]
+fn one_pip_run_at_a_time_per_environment() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("venv/bin")).unwrap();
+    std::fs::write(dir.path().join("venv/pyvenv.cfg"), "home = /usr/bin\n").unwrap();
+    let python = dir.path().join("venv/bin/python");
+    let busy = crate::python::Busy::take(&python).unwrap();
+    // `python3` of the same virtualenv is the same environment.
+    assert!(crate::python::Busy::take(&dir.path().join("venv/bin/python3")).is_err());
+    assert!(crate::python::Busy::take(&dir.path().join("other/python")).is_ok());
+    drop(busy);
+    assert!(crate::python::Busy::take(&python).is_ok());
 }

@@ -925,6 +925,7 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
                 <div className={styles.appServersList}>
                   {envRows.map((row, idx) => (
                     <div
+                      // oxlint-disable-next-line react/no-array-index-key -- row fields are edited in place; position is the identity
                       key={idx}
                       className={clsx(styles.tomcatEnvRow, idx === selectedEnvIdx && styles.tomcatEnvRowSelected)}
                       onClick={() => setSelectedEnvIdx(idx)}

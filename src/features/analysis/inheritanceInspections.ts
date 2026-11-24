@@ -10,7 +10,7 @@
  */
 import type { Extension } from "@codemirror/state";
 import { ViewPlugin, type EditorView } from "@codemirror/view";
-import type { EditorDocContext } from "@/editor/api";
+import { inspectionControlProviders, type EditorDocContext } from "@/editor/api";
 import { onServerSettled } from "@/editor/lsp/availability";
 import { setFileDiagnostics } from "@/editor/lsp/diagnostics";
 import { withDocument } from "@/editor/lsp/files";
@@ -52,6 +52,7 @@ import {
   type PythonMethodFacts,
   type Range,
 } from "@/platform/ipc";
+import { isSuppressed, suppressControls, type FactsOf } from "./pythonSuppression";
 
 /** The inspection producers, one per rule. */
 const PRODUCERS = [
@@ -414,6 +415,8 @@ function applyProfileTo(diagnostics: readonly Diagnostic[]): Diagnostic[] {
 }
 
 const viewers = new Map<string, number>();
+/** Each editor view's facts of the last run, for the ⌥↵ Suppress rows. */
+const latestFacts = new WeakMap<EditorView, FactsOf>();
 const hasClass = (items: readonly OutlineItem[]): boolean =>
   items.some((item) => item.kind === "class" || hasClass(item.children));
 
@@ -421,7 +424,8 @@ const hasClass = (items: readonly OutlineItem[]): boolean =>
 export function pythonInheritanceExtension(ctx: EditorDocContext): Extension {
   if (ctx.language !== "python" || ctx.virtual || ctx.doc < 0) return [];
   watchChanges();
-  return ViewPlugin.define((view: EditorView) => {
+  const suppress = inspectionControlProviders.of((view, id) => suppressControls(view, id, latestFacts.get(view)));
+  const plugin = ViewPlugin.define((view: EditorView) => {
     if (!isTauri()) return {};
     viewers.set(ctx.path, (viewers.get(ctx.path) ?? 0) + 1);
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -440,6 +444,7 @@ export function pythonInheritanceExtension(ctx: EditorDocContext): Extension {
         const outline = await lspRequest(() => commands.docOutline(ctx.doc));
         // Every rule is about a class: no class, nothing to fetch the graph for.
         if (!hasClass(outline)) {
+          latestFacts.delete(view);
           setFileDiagnostics(ctx.path, SOURCE, []);
           return;
         }
@@ -458,8 +463,10 @@ export function pythonInheritanceExtension(ctx: EditorDocContext): Extension {
           outlineOf: (path) => withDocument(path, (doc) => lspRequest(() => commands.docOutline(doc))).catch(() => []),
         });
         if (disposed || mine !== sequence || view.state.doc !== text) return;
-        // The profile decides what is shown and how strongly.
-        setFileDiagnostics(ctx.path, SOURCE, applyProfileTo(found));
+        latestFacts.set(view, { facts, doc: text });
+        // `# noinspection` comments, then the profile, decide what is shown and how strongly.
+        const shown = found.filter((d) => !isSuppressed(d, facts.suppressions));
+        setFileDiagnostics(ctx.path, SOURCE, applyProfileTo(shown));
       } catch (e) {
         if (!isCancelled(e)) console.debug("[inheritanceInspections]", e);
       }
@@ -491,4 +498,5 @@ export function pythonInheritanceExtension(ctx: EditorDocContext): Extension {
       },
     };
   });
+  return [plugin, suppress];
 }

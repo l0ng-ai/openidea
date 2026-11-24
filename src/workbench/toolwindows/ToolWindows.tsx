@@ -624,12 +624,11 @@ export function ToolWindowHeader({
   children,
 }: ToolWindowHeaderProps) {
   const tw = useContext(ToolWindowFrame)?.tw;
+  const registry = useMemo(() => (tw && closeTarget ? contentTabRegistry(tw.id) : null), [tw, closeTarget]);
   if (!tw) return null;
   return (
     <HeaderRow tw={tw} title={title} actions={actions}>
-      <TabStripRegistry.Provider value={closeTarget ? contentTabRegistry(tw.id) : null}>
-        {children}
-      </TabStripRegistry.Provider>
+      <TabStripRegistry.Provider value={registry}>{children}</TabStripRegistry.Provider>
     </HeaderRow>
   );
 }
@@ -637,9 +636,8 @@ export function ToolWindowHeader({
 /** Makes the tab strips in `children`, rendered in a tool window's content, the ones Close Tab (⌘W) acts on. */
 export function ToolWindowContentTabs({ children }: { children: ReactNode }) {
   const tw = useContext(ToolWindowFrame)?.tw;
-  return (
-    <TabStripRegistry.Provider value={tw ? contentTabRegistry(tw.id) : null}>{children}</TabStripRegistry.Provider>
-  );
+  const registry = useMemo(() => (tw ? contentTabRegistry(tw.id) : null), [tw]);
+  return <TabStripRegistry.Provider value={registry}>{children}</TabStripRegistry.Provider>;
 }
 
 /**
@@ -796,6 +794,7 @@ function ToolWindowView({ tw, hidden }: { tw: ToolWindowContribution; hidden: bo
   const focusRequest = useToolWindowLayout((s) => s.focusRequest);
   const [ownHeader, setOwnHeader] = useState(false);
   const frame = useMemo(() => ({ tw, setOwnHeader }), [tw]);
+  const tabRegistry = useMemo(() => contentTabRegistry(tw.id), [tw.id]);
   const Content = tw.component;
   const Tabs = tw.headerContent;
 
@@ -863,7 +862,7 @@ function ToolWindowView({ tw, hidden }: { tw: ToolWindowContribution; hidden: bo
       {!ownHeader && (
         <HeaderRow tw={tw} title actions>
           {Tabs && (
-            <TabStripRegistry.Provider value={contentTabRegistry(tw.id)}>
+            <TabStripRegistry.Provider value={tabRegistry}>
               <Tabs id={tw.id} />
             </TabStripRegistry.Provider>
           )}

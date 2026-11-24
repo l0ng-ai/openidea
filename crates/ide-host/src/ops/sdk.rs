@@ -435,6 +435,26 @@ pub async fn sdk_python_packages(
     result?
 }
 
+/// A package index other than PyPI that installing from `python` uses; `None` for PyPI.
+#[command(trust = outside_restricted)]
+pub async fn sdk_python_package_index(
+    host: &Host,
+    window: &str,
+    python: PathBuf,
+    request: RequestId,
+) -> IdeResult<Option<String>> {
+    host.require_trust_if_project(window)?;
+    let project_root = host.project(window).ok().map(|p| p.root.clone());
+    let cancel = host.begin_project_request(window, request);
+    let result = tokio::task::spawn_blocking(move || {
+        ide_sdk::python::configured_index(&python, project_root.as_deref(), &cancel)
+    })
+    .await
+    .map_err(join_err);
+    host.end_request(request);
+    result?
+}
+
 /// Installs (`uninstall = false`) or removes a package; output streams through `on_output`.
 #[allow(clippy::too_many_arguments)]
 #[command(trust = outside_restricted)]
@@ -483,7 +503,6 @@ mod tests {
     use super::*;
     use crate::HostConfig;
     use std::path::Path;
-    use std::sync::Arc;
 
     fn fake_venv(root: &Path, name: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
@@ -509,17 +528,7 @@ mod tests {
         let (main_python, own_python) = (fake_venv(&root, ".venv"), fake_venv(&own, ".venv"));
         ide_workspace::workspace::Workspace::attach(&root, "ws", vec![root.clone(), bare.clone(), own.clone()])
             .unwrap();
-        let host = Host::new(HostConfig {
-            config_dir: base.join("config"),
-            data_dir: base.join("data"),
-            local_data_dir: base.join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(|_| {})),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(HostConfig { local_data_dir: base.join("local"), ..HostConfig::for_test(&base) });
         host.trust.decide(&root, true, false).unwrap();
         host.open_project("main", &root).unwrap();
         let project = host.project("main").unwrap();
@@ -573,17 +582,7 @@ mod tests {
         let base = dunce::canonicalize(temp.path()).unwrap();
         let root = base.join("project");
         std::fs::create_dir(&root).unwrap();
-        let host = Host::new(HostConfig {
-            config_dir: base.join("config"),
-            data_dir: base.join("data"),
-            local_data_dir: base.join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(|_| {})),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(HostConfig { local_data_dir: base.join("local"), ..HostConfig::for_test(&base) });
         host.trust.decide(&root, true, false).unwrap();
         host.open_project("main", &root).unwrap();
 
@@ -637,17 +636,7 @@ mod tests {
         ]);
         std::fs::write(config.join("recent.json"), serde_json::to_vec(&recent).unwrap()).unwrap();
 
-        let host = Host::new(HostConfig {
-            config_dir: config,
-            data_dir: base.join("data"),
-            local_data_dir: base.join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(|_| {})),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(HostConfig { local_data_dir: base.join("local"), ..HostConfig::for_test(&base) });
         host.trust.decide(&root, true, false).unwrap();
         host.open_project("main", &root).unwrap();
 
@@ -679,6 +668,7 @@ ide_command::domain!(
     sdk_python_hatch_envs,
     sdk_python_interpreter,
     sdk_python_packages,
+    sdk_python_package_index,
     sdk_python_pip,
     sdk_python_project_interpreters,
     sdk_python_sys_path,

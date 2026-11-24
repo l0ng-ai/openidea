@@ -2,10 +2,11 @@
 //! credential store; `settings.toml` keeps only their names. A project's own servers keep
 //! their values in the project's file, where the project shares them.
 
+mod common;
+
 use ide_agent::{McpKeyValue, McpScope, McpServer, McpServerInput};
-use ide_core::NullSink;
 use ide_core::settings::McpTransport;
-use ide_host::{Host, HostConfig};
+use ide_host::Host;
 use ide_ssh::secrets::testing::{files_containing, use_memory_store};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13,17 +14,7 @@ use std::sync::Arc;
 const VALUE: &str = "mcp-value-0f3c9a";
 
 fn host(dir: &Path) -> Arc<Host> {
-    Arc::new(Host::new(HostConfig {
-        config_dir: dir.join("config"),
-        data_dir: dir.join("data"),
-        local_data_dir: dir.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    }))
+    Arc::new(Host::new(common::host_config(dir)))
 }
 
 fn project(tmp: &tempfile::TempDir) -> PathBuf {

@@ -46,6 +46,7 @@ export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
   QuickImplementations: "code.quickDefinition",
   ParameterInfo: "code.parameterInfo",
   CodeCompletion: "code.completion",
+  SmartTypeCompletion: "code.smartTypeCompletion",
   Generate: "code.generate",
   SurroundWith: "code.surroundWith",
   EditorSelectWord: "code.extendSelection",
