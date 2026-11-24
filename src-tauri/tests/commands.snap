@@ -526,6 +526,7 @@ project_workspace_member_set                 always             project_host bin
 project_workspace_members                    always             project_host bindings spawn
 proxy_check_connection                       always             desktop      bindings async
 pypi_package                                 outside_restricted project_host bindings async
+pypi_search                                  outside_restricted project_host bindings async
 python_requirements                          trusted            project_host bindings async
 recent_files                                 always             project_host bindings sync
 recent_project_groups                        always             desktop      bindings sync

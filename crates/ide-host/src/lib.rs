@@ -106,6 +106,7 @@ pub struct Host {
     syntax: Arc<OnceLock<Arc<Syntax>>>,
     pub global_settings: SettingsStore,
     pub dependency_versions: Arc<ide_workspace::dependencies::VersionCache>,
+    pub pypi_names: Arc<ide_workspace::dependencies::pypi::NameCache>,
     pub terminals: TerminalManager,
     pub processes: ProcessManager,
     /// Debug sessions (adapters run on this machine, next to the project).
@@ -207,6 +208,7 @@ impl Host {
             dependency_versions: Arc::new(ide_workspace::dependencies::VersionCache::new(
                 data_dir.join("cache/dependency-versions"),
             )),
+            pypi_names: Arc::new(ide_workspace::dependencies::pypi::NameCache::new(data_dir.join("cache"))),
             // Sessions, runs and terminals report to the window that started them (`window_sink`).
             terminals: TerminalManager::new(),
             processes: ProcessManager::new(),

@@ -235,6 +235,8 @@ async function attachRemote(r: RemoteProject, path: string): Promise<void> {
   });
 }
 
+let connectAttempt = 0;
+
 /**
  * Opens `path` of `target` (an SSH host or a WSL distribution) in this window. A dev container's
  * project folder is the one in the container: `path` is then only a label.
@@ -242,11 +244,12 @@ async function attachRemote(r: RemoteProject, path: string): Promise<void> {
 export async function connectRemote(target: RemoteTarget, path: string) {
   useProject.setState({ opening: true });
   const location = remoteLocation(target, path);
+  // Two connects to one location (a double click) share `location`; only the latest attaches.
+  const attempt = ++connectAttempt;
+  const current = () => attempt === connectAttempt && useRemoteProgress.getState().location === location;
   const onProgress = new Channel<RemoteProgress>();
   onProgress.onmessage = (progress) => {
-    if (useRemoteProgress.getState().location === location) {
-      useRemoteProgress.setState({ progress });
-    }
+    if (current()) useRemoteProgress.setState({ progress });
   };
   useRemoteProgress.setState({
     progress: { stage: "connecting", fraction: null },
@@ -256,13 +259,13 @@ export async function connectRemote(target: RemoteTarget, path: string) {
     const r = await call(commands.remoteConnect(target, path, onProgress));
     // Another connect replaced this one, or the user cancelled. Disconnecting here
     // would drop the connection that replacement published. Cancel already disconnects.
-    if (useRemoteProgress.getState().location !== location) {
+    if (!current()) {
       throw new IpcError({ kind: "cancelled", message: "Remote connection cancelled" });
     }
     await attachRemote(r, path);
     return r;
   } finally {
-    if (useRemoteProgress.getState().location === location) {
+    if (current()) {
       useProject.setState({ opening: false });
       useRemoteProgress.setState({ progress: null, location: null });
     }

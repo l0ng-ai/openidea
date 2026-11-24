@@ -1,0 +1,29 @@
+package openidea:plugin@1.16.0;
+
+/// Optional export (API 1.16, world `plugin-completion-list`): completion that
+/// can say its list is incomplete. A plugin exporting it is called instead of
+/// `providers.completion` for its `completion` provider kind.
+interface completion-list-provider {
+    use types.{position};
+    use providers.{document, completion-item};
+
+    record completion-list {
+        items: list<completion-item>,
+        /// Typing on in the same word asks this plugin again (with the new text)
+        /// instead of filtering these items. Other providers' items are kept.
+        incomplete: bool,
+    }
+
+    completion: func(doc: document, at: position, trigger: option<string>) -> completion-list;
+}
+
+/// The optional export-only world the SDK merges with `plugin`.
+world completion-list-exports {
+    export completion-list-provider;
+}
+
+/// The host-side world used to instantiate a component that exports it.
+world plugin-completion-list {
+    include plugin;
+    export completion-list-provider;
+}
