@@ -234,11 +234,10 @@ export const commands = {
 	/**  Applies a (previewed) workspace edit, e.g. after rename confirmation. */
 	applyWorkspaceEdit: (edit: WorkspaceEdit) => typedError<null, IdeError>(__TAURI_INVOKE("apply_workspace_edit", { edit })),
 	/**
-	 *  Build › Compile File: compiles one Java source of a linked Maven module with
-	 *  `javac`, streaming the console and messages on `on_event`; cancellable with
-	 *  `cancel_request(request)`. Diagnostics of `clear` (the files of the previous
-	 *  build) are cleared first; the new messages are published as `build`
-	 *  diagnostics.
+	 *  Build › Recompile: compiles one Java source file with `javac`, streaming the
+	 *  console and messages on `on_event`; cancellable with `cancel_request(request)`.
+	 *  Diagnostics of `clear` (the files of the previous build) are cleared first;
+	 *  the new messages are published as `build` diagnostics.
 	 */
 	buildCompileFile: (file: string, request: RequestId, clear: string[], onEvent: Channel<BuildEvent>) => typedError<BuildResult, IdeError>(__TAURI_INVOKE("build_compile_file", { file, request, clear, onEvent })),
 	/**  Maven and Gradle projects of the window's project, from the build files plus the last sync. */

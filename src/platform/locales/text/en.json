@@ -3902,5 +3902,7 @@
   "No tests ran. The build may skip them (skipTests, maven.test.skip, a disabled test task) or lack their engine: JUnit 4 tests on the JUnit Platform need junit-vintage-engine.": "No tests ran. The build may skip them (skipTests, maven.test.skip, a disabled test task) or lack their engine: JUnit 4 tests on the JUnit Platform need junit-vintage-engine.",
   "Downloading the list of PyPI package names…": "Downloading the list of PyPI package names…",
   "Could not load the list of PyPI package names. Type a package's exact name to look it up.": "Could not load the list of PyPI package names. Type a package's exact name to look it up.",
-  "Only the first 50 PyPI matches are listed. Type more of the name to narrow them.": "Only the first 50 PyPI matches are listed. Type more of the name to narrow them."
+  "Only the first 50 PyPI matches are listed. Type more of the name to narrow them.": "Only the first 50 PyPI matches are listed. Type more of the name to narrow them.",
+  "Recompile": "Recompile",
+  "Recompile '{name}'": "Recompile '{name}'"
 }
