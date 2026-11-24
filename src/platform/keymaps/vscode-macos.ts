@@ -214,6 +214,10 @@ export const vscodeMacos: Record<string, string[]> = {
   "editor.prevTab": ["Meta+Alt+Left", "Meta+Shift+["],
   "editor.splitRight": ["Meta+\\"],
   "editor.toggleZen": ["Meta+K Z"],
+  "editor.toggleLineNumbers": [],
+  "editor.toggleIndentGuides": [],
+  "editor.toggleStickyLines": [],
+  "editor.toggleWhitespaces": [],
   "window.toggleFullScreen": ["Meta+Ctrl+F"],
   // Project window groups are an IntelliJ concept; VS Code has no counterpart.
   "window.nextTab": [],
