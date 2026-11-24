@@ -1030,7 +1030,10 @@ export class EditorController implements SlotHost {
             openInMenu(slot.model.path, selectedLineContext(view.state)),
             { kind: "separator" },
             localHistoryMenu(slot.model.path),
-            { label: "Git", submenu: gitMenuItems({ paths: [slot.model.path], file: true, ignore: true }) },
+            {
+              label: "Git",
+              submenu: gitMenuItems({ paths: [slot.model.path], file: true, ignore: true, editorSelection: true }),
+            },
             { kind: "separator" },
             {
               kind: "action",

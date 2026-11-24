@@ -19,6 +19,7 @@ import { osClipboard } from "./clipboard";
 import { lastFileRefactoring, nextFileOperation, runFileRefactoring, undoFileRefactoring } from "./fileRefactor";
 import { openFileRefactorDialog, rememberedOptions } from "./FileRefactorDialogs";
 import { beginLocalImport, projectFs } from "./fs";
+import { renameCopiedJavaType } from "./javaCopy";
 import { IpcError, isCancelled } from "@/platform/ipc";
 import { MEMBER_PREFIX, type ProjectNode } from "./model";
 import {
@@ -776,7 +777,10 @@ export async function transfer(
         if (source === "local") {
           const skipped = await fs.importLocal(src, to, upload);
           errors.push(...skipped);
-        } else await fs.copy(src, to);
+        } else {
+          await fs.copy(src, to);
+          if (!srcIsDir) await renameCopiedJavaType(src, to).catch(() => undefined);
+        }
         taken.add(caseInsensitive ? finalName.toLowerCase() : finalName);
         first ??= to;
       } catch (e) {

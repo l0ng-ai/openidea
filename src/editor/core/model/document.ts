@@ -556,7 +556,7 @@ export class DocModel {
     const effects = [
       compartments.indent.reconfigure(indentExtension(indent, this.formatIndent())),
       compartments.wrap.reconfigure(wrapExtension(editor, this.path, this.softWrapOverride)),
-      compartments.sticky.reconfigure(stickyExtension(editor)),
+      compartments.sticky.reconfigure(stickyExtension(editor, this.meta.language)),
       compartments.font.reconfigure(fontExtension(editor)),
       compartments.comments.reconfigure(commentTokens(this.info, this.meta.language)),
       compartments.lineNumbers.reconfigure(lineNumbersExtension(editor)),

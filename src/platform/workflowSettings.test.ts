@@ -103,6 +103,15 @@ describe("validateWorkflow", () => {
     );
   });
 
+  it("defaults debugger hotSwapAfterCompile to ask and validates enum options", () => {
+    expect(DEFAULT_WORKFLOW.debugger.hotSwapAfterCompile).toBe("ask");
+    expect(validateWorkflow({ debugger: { hotSwapAfterCompile: "always" } }).debugger.hotSwapAfterCompile).toBe(
+      "always",
+    );
+    expect(validateWorkflow({ debugger: { hotSwapAfterCompile: "never" } }).debugger.hotSwapAfterCompile).toBe("never");
+    expect(validateWorkflow({ debugger: { hotSwapAfterCompile: "invalid" } }).debugger.hotSwapAfterCompile).toBe("ask");
+  });
+
   it("falls back to defaults for missing or malformed values", () => {
     expect(validateWorkflow(undefined)).toEqual(DEFAULT_WORKFLOW);
     const v = validateWorkflow({

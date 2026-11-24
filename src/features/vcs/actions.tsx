@@ -799,6 +799,7 @@ export function registerVcsActions(): () => void {
         }
         for (const target of targets.slice(0, 5)) {
           const data = typeof target === "string" ? groupDiffData(tree, target) : changeNodeDiffData(tree, target);
+          // oxlint-disable-next-line no-await-in-loop -- diff tabs open in selection order
           await openVcsDiff({ ...data, line }, { preview: targets.length === 1 });
         }
       },

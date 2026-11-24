@@ -18,6 +18,7 @@ import {
   type RefObject,
 } from "react";
 import type {
+  BuildKind,
   CommitSelection,
   ConsoleRule,
   FileMatches,
@@ -643,6 +644,7 @@ export async function openFileExternally(path: string): Promise<boolean> {
  * view stays alive.
  */
 export interface TextEditorWrapperContribution {
+  keepAlive?: boolean;
   id: string;
   matches(path: string): boolean;
   component: ComponentType<{ path: string; tabId: string; children: ReactNode; actionsInTabs?: boolean }>;
@@ -1540,6 +1542,7 @@ export interface GitMenuContext {
   file?: boolean;
   /** Show Add to .gitignore: the selection excludes the project root (which cannot be ignored). */
   ignore?: boolean;
+  editorSelection?: boolean;
 }
 
 /**
@@ -1547,7 +1550,7 @@ export interface GitMenuContext {
  * per-menu groups in sync). Items are plain action rows, so unregistered actions
  * disappear and `vcsAvailable` gates enablement on its own.
  */
-export function gitMenuItems({ paths, dirs, file, ignore }: GitMenuContext): MenuItem[] {
+export function gitMenuItems({ paths, dirs, file, ignore, editorSelection }: GitMenuContext): MenuItem[] {
   const arg = paths.length === 1 ? paths[0]! : paths;
   const some = paths.length > 0;
   const single = paths.length === 1 ? paths[0]! : null;
@@ -1577,6 +1580,7 @@ export function gitMenuItems({ paths, dirs, file, ignore }: GitMenuContext): Men
     ...(file ? ([act("vcs.compareWithRevision", "Compare with Revision…")] as (MenuItem | null)[]) : []),
     ...(some ? ([act("vcs.showHistory", "Show History")] as (MenuItem | null)[]) : []),
     ...(file ? ([act("vcs.showCurrentRevision", "Show Current Revision")] as (MenuItem | null)[]) : []),
+    ...(editorSelection ? [action("vcs.showHistoryForSelection", "Show History for Selection")] : []),
     act("vcs.rollback", "Rollback…"),
     { kind: "separator" },
     action("vcs.push", "Push…"),
@@ -2383,4 +2387,26 @@ export function registerSearchCategory(category: SearchCategory): () => void {
     searchCategoryProviders.delete(category.id);
     searchCategoriesChanged();
   };
+}
+
+export interface BuildCompletedEvent {
+  kind: "compileFile" | BuildKind;
+  file: string | null;
+  system: string;
+  userInitiated: boolean;
+}
+
+const buildCompletedListeners = new Set<(event: BuildCompletedEvent) => void>();
+
+/** Subscribes to successful Build / Rebuild / Recompile completions across workbench features. */
+export function onBuildCompleted(listener: (event: BuildCompletedEvent) => void): () => void {
+  buildCompletedListeners.add(listener);
+  return () => {
+    buildCompletedListeners.delete(listener);
+  };
+}
+
+/** Publishes a successful build completion to listeners (debugger HotSwap, server deployment sync…). */
+export function notifyBuildCompleted(event: BuildCompletedEvent): void {
+  notifyEach(buildCompletedListeners, (listener) => listener(event), "build completed");
 }

@@ -17,6 +17,7 @@ import {
 } from "@/ui";
 import { promptInput } from "@/workbench/inputDialogs";
 import { confirm } from "@/workbench/messages";
+import { projectWindowOverride, type ModifierKeys } from "@/workbench/projectWindow";
 import { projectInitials } from "@/workbench/projectColor";
 import { subscribeTabColors, tabColorOverride, tabColorVars, tabColorsVersion } from "@/workbench/tabColors";
 import {
@@ -276,14 +277,15 @@ export function RecentList({ exclude, compact, autoFocus, onOpened, className, t
   );
   const current = Math.min(active, items.length - 1);
 
-  const open = (m: RecentMatch | undefined) => {
-    if (m) void openRecent(m.project).then((ok) => ok && onOpened?.());
+  /** `e`'s modifier keys pick the window ({@link projectWindowOverride}); a plain click or Enter follows "Open project in". */
+  const open = (m: RecentMatch | undefined, e: ModifierKeys) => {
+    if (m) void openRecent(m.project, projectWindowOverride(e)).then((ok) => ok && onOpened?.());
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      open(items[current]);
+      open(items[current], e);
       return;
     }
     // Delete removes the selected project only when it has no text to delete: the caret is at the end
@@ -335,7 +337,7 @@ export function RecentList({ exclude, compact, autoFocus, onOpened, className, t
         focusable={false}
         rowHeight={compact ? 40 : 48}
         className={styles.list}
-        onActivate={(m) => open(m)}
+        onActivate={(m, _i, e) => open(m, e)}
         onContextMenu={(m, i, e: MouseEvent) => {
           e.preventDefault();
           setActive(i);

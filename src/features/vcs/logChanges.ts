@@ -312,12 +312,16 @@ export async function getFromRevision(changes: readonly LogChange[]) {
       for (const c of changes) {
         const path = absolutePath(c.path, c.repo);
         if (!c.after) {
+          // oxlint-disable-next-line no-await-in-loop -- a deleted file is removed only after checking it still exists; working-tree operations stay ordered
           if ((await readWorkingText(path)) !== null) await call(commands.fsDelete(path));
           continue;
         }
+        // oxlint-disable-next-line no-await-in-loop -- the file's revision text must be read before it can be written to the working tree
         const text = await call(commands.vcsFileAt(path, c.after));
         if (text === null) continue;
+        // oxlint-disable-next-line no-await-in-loop -- a missing working file is created before its content is written, one file at a time
         if ((await readWorkingText(path)) === null) await call(commands.fsCreateFile(path));
+        // oxlint-disable-next-line no-await-in-loop -- files are written in selection order so the working tree is updated deterministically
         await writeFileText(path, text, { save: true });
       }
       return changes.length;

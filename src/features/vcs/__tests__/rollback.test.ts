@@ -65,8 +65,11 @@ describe("rollback candidates with a submodule", () => {
     const missing = { mode: GITLINK_MODE, gitlink: null };
     const worktree = [{ path: file.path, missing: true }];
     vi.mocked(loadDiffEntries).mockResolvedValue([entry, entry, missing]);
-    for (const scope of ["all", "unstaged"] as const) {
-      expect((await inspectSubmoduleRollback([file], ["/r"], scope)).get(file.path)).toEqual({
+    const plans = await Promise.all(
+      (["all", "unstaged"] as const).map((scope) => inspectSubmoduleRollback([file], ["/r"], scope)),
+    );
+    for (const plan of plans) {
+      expect(plan.get(file.path)).toEqual({
         indexPaths: [],
         worktree,
       });
