@@ -2456,6 +2456,8 @@
   "Stack of {name}": "Stack of {name}",
   "Thread stack": "Thread stack",
   "Virtual threads ({count})": "Virtual threads ({count})",
+  "Unnamed container": "Unnamed container",
+  "State unknown": "State unknown",
   "Lock owners of virtual threads need Java 25 or later.": "Lock owners of virtual threads need Java 25 or later.",
   "Virtual threads are not listed while the debugger stops the program.": "Virtual threads are not listed while the debugger stops the program.",
   "Virtual threads are not listed: there are too many to read.": "Virtual threads are not listed: there are too many to read.",

@@ -1,6 +1,6 @@
 // Reader for `Thread.dump_to_file -format=json`, used for virtual threads, which the text dump omits.
 
-import type { DeadlockLink, DumpThread, ThreadState } from "./parse";
+import { threadLabel, type DeadlockLink, type DumpThread, type ThreadState } from "./parse";
 
 interface JsonThread {
   tid?: unknown;
@@ -103,7 +103,7 @@ export function monitorCycles(threads: DumpThread[]): DeadlockLink[][] {
 
   const label = (i: number) => {
     const t = threads[i];
-    return t?.name || `#${t?.number ?? i}`;
+    return (t && threadLabel(t)) || `#${i}`;
   };
 
   const done = new Set<number>();

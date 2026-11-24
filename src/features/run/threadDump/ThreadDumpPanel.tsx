@@ -13,7 +13,7 @@ import { notifications } from "@/workbench/contributions";
 import { ConsoleModel } from "../console";
 import { ConsoleView } from "../ConsoleView";
 import { updateThreadDump } from "../stackTrace";
-import type { DeadlockLink, ThreadDump } from "./parse";
+import { threadLabel, type DeadlockLink, type DumpThread, type ThreadDump } from "./parse";
 import {
   stateCounts,
   threadRows,
@@ -64,9 +64,14 @@ function virtualNoteText(note: VirtualNote): string {
 }
 
 function sectionText(row: ThreadSection): string {
-  if (row.section === "container") return row.name;
+  if (row.section === "container") return row.name || tx("Unnamed container");
   const { count } = row;
   return tx`Virtual threads (${count})`;
+}
+
+function stackLabel(thread: DumpThread): string {
+  const name = threadLabel(thread);
+  return tx`Stack of ${name}`;
 }
 
 const isSection = (row: ThreadRow): row is ThreadSection => typeof row !== "number";
@@ -118,7 +123,7 @@ export function ThreadDumpPanel({ tab }: { tab: ThreadDumpTab }) {
   const set = (patch: Partial<Pick<ThreadDumpTab, "selected" | "filter" | "hideJvm">>) =>
     updateThreadDump(tab.id, (t) => ({ ...t, ...patch }));
   const selectNamed = (name: string) => {
-    const i = dump.threads.findIndex((t) => t.name === name);
+    const i = dump.threads.findIndex((t) => threadLabel(t) === name);
     if (i >= 0) set({ selected: i });
   };
   const runRefresh = async () => {
@@ -210,11 +215,12 @@ export function ThreadDumpPanel({ tab }: { tab: ThreadDumpTab }) {
               renderItem={(row) => {
                 if (isSection(row)) return null;
                 const t = dump.threads[row]!;
+                const state = t.state === "UNKNOWN" ? tx("State unknown") : t.state;
                 return (
                   <>
-                    <Icon name={t.state === "RUNNABLE" ? "thread-running" : "thread-suspended"} label={t.state} />
-                    <span className={styles.name} title={t.stateDetail ? `${t.state} (${t.stateDetail})` : t.state}>
-                      {t.name}
+                    <Icon name={t.state === "RUNNABLE" ? "thread-running" : "thread-suspended"} label={state} />
+                    <span className={styles.name} title={t.stateDetail ? `${state} (${t.stateDetail})` : state}>
+                      {threadLabel(t)}
                     </span>
                     {t.deadlocked && <span className={styles.deadlockMark} role="img" aria-label={tx("Deadlocked")} />}
                   </>
@@ -232,7 +238,7 @@ export function ThreadDumpPanel({ tab }: { tab: ThreadDumpTab }) {
               follow={false}
               onFollowChange={() => {}}
               cwd={root}
-              aria-label={thread ? tx`Stack of ${thread.name}` : tx("Thread stack")}
+              aria-label={thread ? stackLabel(thread) : tx("Thread stack")}
             />
           </SplitPanel>
         </SplitGroup>

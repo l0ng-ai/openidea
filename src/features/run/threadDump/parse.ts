@@ -21,6 +21,11 @@ export interface DumpThread {
   container?: string;
 }
 
+/** A thread's name in the UI: virtual threads are unnamed by default, so they go by `#<tid>`. */
+export function threadLabel(t: Pick<DumpThread, "name" | "number">): string {
+  return t.name || (t.number === null ? "" : `#${t.number}`);
+}
+
 export interface DeadlockLink {
   thread: string;
   waitsFor: string;

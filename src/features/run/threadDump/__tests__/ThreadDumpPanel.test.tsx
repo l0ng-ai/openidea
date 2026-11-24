@@ -72,6 +72,38 @@ function virtualDump(containers: [container: string, names: string[]][]): string
   });
 }
 
+const vthread = (tid: string, state: string, extra: object = {}) => ({
+  tid,
+  name: "",
+  virtual: true,
+  state,
+  stack: ["Work.run(Work.java:5)", "java.base/java.lang.VirtualThread.run(VirtualThread.java:460)"],
+  ...extra,
+});
+
+/** Unnamed virtual threads, as `Thread.ofVirtual()` makes them: #101 and #102 deadlock, #103 sits in an unnamed container. */
+const unnamedDump = JSON.stringify({
+  threadDump: {
+    runtimeVersion: "25.0.3",
+    threadContainers: [
+      {
+        container: "java.util.concurrent.ThreadPerTaskExecutor@2a",
+        threads: [
+          vthread("101", "BLOCKED", {
+            blockedOn: "java.lang.Object@b",
+            monitorsOwned: [{ depth: 1, locks: ["java.lang.Object@a"] }],
+          }),
+          vthread("102", "BLOCKED", {
+            blockedOn: "java.lang.Object@a",
+            monitorsOwned: [{ depth: 1, locks: ["java.lang.Object@b"] }],
+          }),
+        ],
+      },
+      { container: "", threads: [vthread("103", "WAITING")] },
+    ],
+  },
+});
+
 /** Thread names and section headings, top to bottom. */
 const listLines = () =>
   [...screen.getByRole("listbox", { name: "Threads" }).querySelectorAll('[role="option"], [role="presentation"]')].map(
@@ -229,6 +261,13 @@ describe("virtual threads", () => {
     expect(screen.getByRole("note").textContent).toBe("Lock owners of virtual threads need Java 25 or later.");
   });
 
+  it("counts no state for JDK 21 virtual threads, which have none", () => {
+    openTaken(jdk21Mixed, { javaVersion: "21.0.4", virtualJson: jdk21Vjuc, virtualNote: null });
+    expect(screen.getByTestId("thread-state-counts").textContent).not.toContain("UNKNOWN");
+    const row = rows().find((r) => r.textContent === "v-juc-1")!;
+    expect(within(row).getByLabelText("State unknown")).toBeTruthy();
+  });
+
   it("adds no note to a Java 25 dump", () => {
     openTaken(jdk25None, json25(jdk25Vjuc));
     expect(listLines()).toContain("Virtual threads (2)");
@@ -250,6 +289,50 @@ describe("virtual threads", () => {
     openTaken(jdk25None, { javaVersion: "", virtualJson: null, virtualNote: null });
     expect(screen.queryByRole("note")).toBeNull();
     expect(screen.queryByText(/^Virtual threads/)).toBeNull();
+  });
+});
+
+describe("unnamed virtual threads", () => {
+  it("go by their thread id in the list, under a named heading", () => {
+    openTaken(jdk25None, json25(unnamedDump));
+    const lines = listLines();
+    expect(lines.slice(lines.indexOf("Virtual threads (3)"))).toEqual([
+      "Virtual threads (3)",
+      "java.util.concurrent.ThreadPerTaskExecutor@2a",
+      "#101",
+      "#102",
+      "Unnamed container",
+      "#103",
+    ]);
+  });
+
+  it("are found by the filter", () => {
+    openTaken(jdk25None, json25(unnamedDump));
+    fireEvent.change(screen.getByRole("textbox", { name: "Filter threads" }), { target: { value: "#102" } });
+    expect(listLines()).toEqual(["Virtual threads (1)", "java.util.concurrent.ThreadPerTaskExecutor@2a", "#102"]);
+  });
+
+  it("are selected from the deadlock banner, and their stack is headed by the id", () => {
+    openTaken(jdk25None, json25(unnamedDump));
+    const banner = screen.getByRole("alert");
+    expect(banner.textContent).toContain("#101 → #102 → #101");
+    expect(
+      rows()
+        .filter((r) => within(r).queryByLabelText("Deadlocked"))
+        .map((r) => r.textContent),
+    ).toEqual(["#101", "#102"]);
+    fireEvent.click(within(banner).getAllByRole("button", { name: "#102" })[0]!);
+    expect(selectedName()).toBe("#102");
+    const stack = screen.getByRole("log", { name: "Stack of #102" }).textContent;
+    expect(stack).toContain("#102 daemon");
+    expect(stack).not.toContain('""');
+  });
+
+  it("keep the selected one across Refresh", () => {
+    const id = openTaken(jdk25None, json25(unnamedDump));
+    fireEvent.click(within(screen.getByRole("alert")).getAllByRole("button", { name: "#102" })[0]!);
+    act(() => updateThreadDump(id, (t) => withDumpText(t, jdk25None, json25(unnamedDump))));
+    expect(selectedName()).toBe("#102");
   });
 });
 

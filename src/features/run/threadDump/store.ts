@@ -1,7 +1,7 @@
 // A thread dump tab's state: the dump and how the user is looking at it. The tab lives in the
 // Run tool window's tab list (`useStackTraces`), so these are plain functions over a tab.
 import type { DebugSessionId, JvmThreadDump, RunId, VirtualThreadsNote } from "@/platform/ipc";
-import { parseThreadDump, type DumpThread, type ThreadDump, type ThreadState } from "./parse";
+import { parseThreadDump, threadLabel, type DumpThread, type ThreadDump, type ThreadState } from "./parse";
 import { monitorCycles, virtualThreads } from "./parseJson";
 
 /** Where the dump was taken; `null` for a pasted one, which cannot be taken again. */
@@ -49,9 +49,8 @@ function withVirtual(dump: ThreadDump, virtual: VirtualSource | null): { dump: T
   if (virtual.virtualJson === null) return { dump, note: virtual.virtualNote };
   const found = virtualThreads(virtual.virtualJson);
   const cycles = monitorCycles(found);
-  // Named the way monitorCycles names them, like the text parser flags its deadlocked threads.
   const inCycle = new Set(cycles.flatMap((links) => links.map((l) => l.thread)));
-  const threads = found.map((t, i) => ({ ...t, deadlocked: inCycle.has(t.name || `#${t.number ?? i}`) }));
+  const threads = found.map((t) => ({ ...t, deadlocked: inCycle.has(threadLabel(t)) }));
   // Only JDK 25+ JSON says who holds a lock, so earlier ones can show no virtual deadlock.
   const major = javaMajor(virtual.javaVersion);
   const note = threads.length && major !== null && major < 25 ? "noLockOwners" : null;
@@ -67,7 +66,7 @@ export function visibleThreads(dump: ThreadDump, filter: string, hideJvm: boolea
   const shown: number[] = [];
   dump.threads.forEach((t, i) => {
     if (hideJvm && t.internal) return;
-    if (needle && !t.name.toLowerCase().includes(needle)) return;
+    if (needle && !threadLabel(t).toLowerCase().includes(needle)) return;
     shown.push(i);
   });
   return shown;
@@ -110,8 +109,9 @@ export function threadDumpTab(
 /** A new dump in the same tab: the filter, the toggle and the selected thread (by name) stay. */
 export function withDumpText(tab: ThreadDumpTab, text: string, virtual: VirtualSource | null): ThreadDumpTab {
   const { dump, note } = withVirtual(parseThreadDump(text) ?? EMPTY_DUMP, virtual);
-  const name = tab.selected === null ? undefined : tab.dump.threads[tab.selected]?.name;
-  const kept = name === undefined ? -1 : dump.threads.findIndex((t) => t.name === name);
+  const old = tab.selected === null ? undefined : tab.dump.threads[tab.selected];
+  const label = old && threadLabel(old);
+  const kept = label === undefined ? -1 : dump.threads.findIndex((t) => threadLabel(t) === label);
   return {
     ...tab,
     text,
@@ -152,6 +152,8 @@ export function stateCounts(threads: readonly DumpThread[], shown: readonly numb
   const counts = new Map<ThreadState, number>();
   for (const i of shown) {
     const state = threads[i]!.state;
+    // The dump gave no state (JVM-native threads, JDK 21 virtual threads): nothing to count.
+    if (state === "UNKNOWN") continue;
     counts.set(state, (counts.get(state) ?? 0) + 1);
   }
   return [...counts];
@@ -159,7 +161,7 @@ export function stateCounts(threads: readonly DumpThread[], shown: readonly numb
 
 /** The selected thread's console text, laid out as in the dump so the frames read the same. */
 export function threadStackText(t: DumpThread): string {
-  const head = [`"${t.name}"`, t.number === null ? null : `#${t.number}`, t.daemon ? "daemon" : null]
+  const head = [t.name ? `"${t.name}"` : null, t.number === null ? null : `#${t.number}`, t.daemon ? "daemon" : null]
     .filter(Boolean)
     .join(" ");
   const state =
