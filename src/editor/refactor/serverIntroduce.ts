@@ -263,6 +263,7 @@ async function expressionInfo(view: EditorView): Promise<{ kind: string; text: s
 
 async function docChange(view: EditorView, before: EditorView["state"]["doc"], ms = 1500): Promise<boolean> {
   for (let waited = 0; waited < ms && view.state.doc === before; waited += 20)
+    // oxlint-disable-next-line no-await-in-loop -- polling with early exit once the document changes
     await new Promise((r) => setTimeout(r, 20));
   return view.state.doc !== before;
 }

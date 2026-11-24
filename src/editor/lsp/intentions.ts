@@ -155,6 +155,7 @@ async function fetchIntentions(view: EditorView): Promise<CodeAction[]> {
 
   const lineFixes = async (): Promise<CodeAction[]> => {
     for (const p of errors) {
+      // oxlint-disable-next-line no-await-in-loop -- returns the first line's fixes; a stale document stops the search entirely
       const more = await lspRequest(() =>
         commands.lspCodeActions(doc!.doc, offsetsToRange(state.doc, p.from, p.to), ["quickfix"]),
       ).catch(() => null);
@@ -216,6 +217,7 @@ export async function applyQuickFix(view: EditorView) {
   problems.sort((a, b) => a.rank - b.rank);
   try {
     for (const p of problems) {
+      // oxlint-disable-next-line no-await-in-loop -- applies the first available fix, then stops; later fixes are not requested
       const fix = (await quickFixesAt(view, p.from, p.to, p.problem))[0];
       if (view.state.doc !== state.doc) return;
       if (fix) return applyCodeAction(view, fix);
@@ -276,7 +278,10 @@ export async function applyCodeAction(view: EditorView, action: EditorQuickFix) 
  * to the file's style.
  */
 async function reformatGenerated(view: EditorView, before: Text) {
-  for (let i = 0; i < 100 && view.state.doc === before; i++) await new Promise((r) => setTimeout(r, 20));
+  for (let i = 0; i < 100 && view.state.doc === before; i++) {
+    // oxlint-disable-next-line no-await-in-loop -- polls for the generated edit to land before formatting it
+    await new Promise((r) => setTimeout(r, 20));
+  }
   // Bottom up, so the line numbers of the hunks above stay valid.
   for (const lines of changedLines(before, view.state.doc).reverse()) {
     if (lines.to - lines.from < 1) continue;
@@ -285,8 +290,11 @@ async function reformatGenerated(view: EditorView, before: Text) {
     // A server that generated code without its context formats ranges the same
     // way (back to column 0): its range formatting is skipped then.
     if (shift.length) view.dispatch({ changes: shift, userEvent: "format", scrollIntoView: false });
-    else if (!(await formatLines(view, doc.line(lines.from).from, doc.line(lines.to).to)) && view.state.doc !== doc)
-      return;
+    else {
+      // oxlint-disable-next-line no-await-in-loop -- hunks are formatted bottom up so earlier line numbers stay valid
+      const formatted = await formatLines(view, doc.line(lines.from).from, doc.line(lines.to).to);
+      if (!formatted && view.state.doc !== doc) return;
+    }
   }
 }
 
@@ -384,6 +392,7 @@ export async function applyKindSilently(view: EditorView, kind: string): Promise
     if (i > 0) {
       // The previous server's edit changed the document: this one's answer must be fresh.
       try {
+        // oxlint-disable-next-line no-await-in-loop -- the previous server's edit changed the document; this answer must be fresh
         action = pick(matching(await fetchActions(view, [kind], true), server));
       } catch (e) {
         console.warn(`[lsp] ${kind} on ${doc.path} failed`, e);
@@ -394,13 +403,17 @@ export async function applyKindSilently(view: EditorView, kind: string): Promise
     const before = view.state.doc;
     const chosen = action;
     try {
+      // oxlint-disable-next-line no-await-in-loop -- each server's edit is applied before the next server is queried
       await lspRequest(() => commands.lspApplyCodeAction(doc.doc, chosen));
     } catch (e) {
       console.warn(`[lsp] applying ${chosen.kind} on ${doc.path} failed`, e);
       continue;
     }
     applied = true;
-    for (let i = 0; i < 25 && view.state.doc === before; i++) await new Promise((r) => setTimeout(r, 20));
+    for (let i = 0; i < 25 && view.state.doc === before; i++) {
+      // oxlint-disable-next-line no-await-in-loop -- polls for this server's edit before moving to the next server
+      await new Promise((r) => setTimeout(r, 20));
+    }
   }
   return applied;
 }

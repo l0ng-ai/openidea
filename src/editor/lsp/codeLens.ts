@@ -278,6 +278,7 @@ class UsagesLensPlugin {
       let unavailable = false;
       let retry = false;
       for (let i = 0; i < todo.length && !unavailable; i += CONCURRENCY) {
+        // oxlint-disable-next-line no-await-in-loop -- batched in groups of CONCURRENCY; a batch's flags decide whether the next batch runs
         await Promise.all(
           todo.slice(i, i + CONCURRENCY).map(async (t) => {
             const request = nextRequestId();
