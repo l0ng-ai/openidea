@@ -27,6 +27,7 @@ import {
   type RefObject,
 } from "react";
 import { useAgentSettings } from "../agentSettings";
+import { clampSelectionToRow } from "./clampSelection";
 import { ImageStrip } from "../ImageStrip";
 import {
   entriesKey,
@@ -203,6 +204,12 @@ function scrollsUpInside(target: EventTarget | null, root: HTMLElement): boolean
 
 /** A wheel gesture's events arrive closer together than this; a pause starts a new one. */
 const WHEEL_GESTURE_MS = 150;
+
+/** Keeps a double- or triple-click selection within the message it was made in. */
+function clampMultiClick(target: EventTarget) {
+  const row = target instanceof Element ? target.closest(`.${styles.conversationRow}`) : null;
+  if (row) clampSelectionToRow(document.getSelection(), row);
+}
 
 export function Stream({
   loadError,
@@ -622,6 +629,13 @@ export function Stream({
             onPointerDown={() => {
               markUserScroll();
               scrollingUp.current = false;
+            }}
+            onMouseDown={(e) => {
+              // WebKit makes a double- or triple-click selection after this handler.
+              if (e.detail >= 2) setTimeout(() => clampMultiClick(e.target));
+            }}
+            onMouseUp={(e) => {
+              if (e.detail >= 2) clampMultiClick(e.target);
             }}
             onScroll={(e) => {
               const el = e.currentTarget;
