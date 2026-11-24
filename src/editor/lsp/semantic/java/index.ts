@@ -1,6 +1,7 @@
 import type { Tree } from "@lezer/common";
 import type { Text } from "@codemirror/state";
 import { registerLanguageSemantics, type LanguageSemantics, type SemanticRange } from "../languages";
+import { javaDeclarationRanges } from "./declarations";
 
 /** Contextual keywords `@lezer/java` parses as their own nodes but leaves uncoloured (`var` is coloured, but jdtls sends it as a type). */
 const KEYWORD_NODES = new Set(["sealed", "permits", "record", "var"]);
@@ -53,6 +54,7 @@ export function javaKeywordRanges(tree: Tree, doc: Text): SemanticRange[] {
 
 const javaSemantics: LanguageSemantics = {
   syntaxRanges: (tree, doc) => javaKeywordRanges(tree, doc),
+  fallbackRanges: (tree) => javaDeclarationRanges(tree),
   tokenClasses({ type, classes }) {
     // Relies on jdtls sending only contextual keywords (`sealed`, `permits`, `record`, `non-sealed`) as `modifier` tokens.
     if (type === "modifier" || type === "keyword") classes.push("cm-sem-keyword");
