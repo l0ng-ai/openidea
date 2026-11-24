@@ -430,6 +430,53 @@ test("Git Log puts affected changes on the changed-files toolbar and groups prev
   await expect(notes).toBeVisible();
 });
 
+test("Git Log file selection stays in place and opens a diff on activation", async ({ workbench: page }) => {
+  await page.clock.install();
+  await page.evaluate(() => {
+    window.__ipc.handlers.vcs_commit_files = () =>
+      Array.from({ length: 30 }, (_, index) => ({
+        path: `src/change-${String(index).padStart(2, "0")}.ts`,
+        kind: "modified",
+        oldPath: null,
+      }));
+  });
+  await page.getByRole("listbox", { name: "Commits" }).getByRole("option").first().click();
+  const tree = page.getByRole("tree", { name: "Changed files" });
+  const first = tree.getByRole("treeitem", { name: "change-10.ts" });
+  const second = tree.getByRole("treeitem", { name: "change-11.ts" });
+  const firstDiff = page.getByRole("tab", { name: /^change-10\.ts/ });
+  const secondDiff = page.getByRole("tab", { name: /^change-11\.ts/ });
+
+  await tree.evaluate((el) => (el.scrollTop = 24 * 11));
+  await expect(first).toBeInViewport({ ratio: 1 });
+  await expect(second).toBeInViewport({ ratio: 1 });
+  const scrollTop = () => tree.evaluate((el) => el.scrollTop);
+  const initialScroll = await scrollTop();
+  await first.click();
+  await page.clock.runFor(150);
+  await expect(first).toHaveAttribute("aria-selected", "true");
+  await expect(firstDiff).toHaveCount(0);
+  expect(await scrollTop()).toBe(initialScroll);
+
+  await first.dblclick();
+  await expect(firstDiff).toHaveAttribute("aria-selected", "true");
+  expect(await scrollTop()).toBe(initialScroll);
+
+  await second.click();
+  await expect(secondDiff).toHaveAttribute("aria-selected", "true");
+  await expect(firstDiff).toHaveCount(0);
+  await expect(second).toHaveAttribute("aria-selected", "true");
+  expect(await scrollTop()).toBe(initialScroll);
+
+  await secondDiff.dblclick(); // Keep the preview tab open.
+  await first.click();
+  await page.clock.runFor(150);
+  await expect(firstDiff).toHaveCount(0);
+  await expect(secondDiff).toHaveAttribute("aria-selected", "true");
+  await tree.press("Enter");
+  await expect(firstDiff).toHaveAttribute("aria-selected", "true");
+});
+
 test("Not Cherry-Picked Commits dims other rows while keeping unpicked commits readable", async ({
   workbench: page,
 }) => {

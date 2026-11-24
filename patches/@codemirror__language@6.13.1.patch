@@ -1,0 +1,26 @@
+diff --git a/dist/index.cjs b/dist/index.cjs
+index db9d5491d5d5ffba46c85d822f0bc75d15ecebc4..8d3637e4dd4d12053e08e6b27ee70b52f6d48093 100644
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -1891,7 +1891,7 @@ const bracketMatcher = view.ViewPlugin.fromClass(class {
+         this.decorations = bracketDeco(view.state);
+     }
+     update(update) {
+-        if (update.docChanged || update.selectionSet || this.paused) {
++        if (update.docChanged || update.selectionSet || this.paused || syntaxTree(update.state) != syntaxTree(update.startState)) {
+             if (update.view.composing) {
+                 this.decorations = this.decorations.map(update.changes);
+                 this.paused = true;
+diff --git a/dist/index.js b/dist/index.js
+index 32c1054f848d845ab8b9a71ff406bb59cca2ceb3..8cf64f5cd7298ba67fe01d9c19d262651d73cd0a 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -1890,7 +1890,7 @@ const bracketMatcher = /*@__PURE__*/ViewPlugin.fromClass(class {
+         this.decorations = bracketDeco(view.state);
+     }
+     update(update) {
+-        if (update.docChanged || update.selectionSet || this.paused) {
++        if (update.docChanged || update.selectionSet || this.paused || syntaxTree(update.state) != syntaxTree(update.startState)) {
+             if (update.view.composing) {
+                 this.decorations = this.decorations.map(update.changes);
+                 this.paused = true;

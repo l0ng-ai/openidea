@@ -1736,6 +1736,9 @@ fn prompts_become_acp_content_blocks() {
     assert_eq!(title_of(&AgentPrompt { files: p.files.clone(), ..AgentPrompt::default() }), "my file.rs");
     let pasted = AgentPrompt { text: "```text\n\n  ## Fix the tab title\n```".into(), ..AgentPrompt::default() };
     assert_eq!(title_of(&pasted), "## Fix the tab title");
+    let fenced_first =
+        AgentPrompt { text: "```txt\nlog line\n```\nWhy does this fail?".into(), ..AgentPrompt::default() };
+    assert_eq!(title_of(&fenced_first), "Why does this fail?");
     assert!(clean(text(" ")).is_none());
 }
 
