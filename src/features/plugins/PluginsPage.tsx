@@ -106,6 +106,7 @@ const POINT_TITLES: Record<string, string> = {
   javaAgents: "Java Agents",
   skills: "Agent Skills",
   locales: "Translations",
+  cloneSources: "Clone Sources",
 };
 
 const pointTitle = (point: string) => uiPoint(point)?.title ?? POINT_TITLES[point] ?? point;
@@ -341,7 +342,9 @@ function CatalogRow({ entry, selected, onSelect }: { entry: CatalogPlugin; selec
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className={styles.section} aria-label={title}>
-      <h3 className={styles.sectionTitle}>{title}</h3>
+      <h3 className={styles.sectionTitle}>
+        <T>{title}</T>
+      </h3>
       {children}
     </section>
   );

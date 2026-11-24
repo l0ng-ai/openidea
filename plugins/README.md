@@ -157,6 +157,7 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `views`             | `id`, `title`, `icon?` (an icon name or a package SVG), `location` (`left`, `right`, `bottom`, `services`), `web?` (_Web views_), `group?`, `when?` (API 1.3)                                                                          | without `web` |
 | `customEditors`     | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`                                                                                                                                            | without `web` |
 | `editorPanels`      | `id`, `web`, `width` (pixels, 40–400), `when?` — needs `editor.read` (API 1.9; _Editor panels_)                                                                                                                                        | no            |
+| `cloneSources`      | `id`, `label`, `icon?` (an icon name or a package SVG), `web` — an entry of the Clone Repository dialog's source list whose page posts the chosen URL (API 1.15; _Clone sources_)                                                      | no            |
 | `fileIcons`         | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                                                                                                                               | no            |
 | `fileTemplates`     | `id`, `name`, `extension`, `path`; API 1.3: `fileName`, `variables = [{ name, prompt }]` — New menu                                                                                                                                    | no            |
 | `commitChecks`      | `id`, `title` — a before-commit check in Commit Options (see _Commits_)                                                                                                                                                                | yes           |
@@ -445,6 +446,14 @@ matching SDK. Plugins for 1.14 and earlier keep working. New in 1.15:
   sessions while the plugin is enabled; workspace and user skills take
   precedence on a name clash, and invalid entries report a plugin load warning
   rather than failing the plugin.
+
+- **Clone sources (`[[contributes.cloneSources]]`).** An entry in the Clone
+  Repository dialog's source list: `id`, `label`, `icon?` (an icon name or a
+  package SVG) and a required `web` page, served and messaged like a web view
+  under the key `cloneSources/<id>`. The page lists the service's repositories
+  and posts `{ "op": "clone-url", "url": … }` when one is picked; the dialog
+  fills its URL field and switches to its normal form, so git runs only when the
+  user confirms. See _Clone sources_.
 
 ### API 1.14
 
@@ -1836,6 +1845,47 @@ approved again and pinned by path and content hash. Project choices override
 the global choice for runs, process handles, terminals and log panes. Resetting
 a choice verifies its fallback, or revokes the grant if that is unavailable.
 The plugin continues to call its declared program name.
+
+### Clone sources (API 1.15)
+
+`[[contributes.cloneSources]]` adds an entry to the source list of **Get from
+VCS** — the Clone Repository dialog of the welcome screen and of
+`File › New` — so a hosting service the plugin knows can list its repositories
+next to the built-in GitHub one.
+
+```toml
+engines.openidea = "^1.15"
+
+[[contributes.cloneSources]]
+id = "gitee"
+label = "Gitee"
+icon = "branch"
+web = "clone/index.html"
+```
+
+`label` is localized through `locales/<tag>.json` like other contribution titles,
+and `icon` takes an IDE icon name or a package SVG (`icon = "icons/gitee.svg"`),
+as on a view.
+`web` is required: a source without a page would show an empty pane, so
+`openidea-plugin check` rejects it. The page lives in a directory of the
+package, like a view's `web`, and may load only the files in it (4096 files,
+256 MiB, no links leaving the package).
+
+The page runs in the same sandboxed frame as a web view — an opaque origin with
+no network and no IDE API — and talks to the plugin's code with
+`openidea.postMessage` / `openidea.onMessage`. The plugin receives that text as
+a `message` view event for the key `cloneSources/<id>` (so
+`register_plugin!(MyPlugin, views)` handles it like any view event) and answers
+with `views.post_message("cloneSources/<id>", …)`. To hand a repository to the
+dialog:
+
+```js
+openidea.postMessage(JSON.stringify({ op: "clone-url", url: "https://gitee.com/acme/widgets.git" }));
+```
+
+The dialog fills its URL field with it and switches to its normal form (target
+directory, shallow clone), so git only runs what the user confirms. Any other
+text reaches the plugin unchanged.
 
 ### Views and custom editors
 

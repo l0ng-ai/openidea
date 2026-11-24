@@ -7417,3 +7417,77 @@ fn contributes_skills_needs_api_1_15_and_warns_without_failing_plugin_on_bad_ent
     assert_eq!(dirs.len(), 1);
     assert!(dirs[0].ends_with("skills/good-skill"), "{dirs:?}");
 }
+
+/// A clone source is a page the Clone Repository dialog lists: its key carries
+/// the point's name, its page is served like a view's, and it needs a `web`
+/// entry plus API 1.15.
+#[test]
+fn clone_sources_are_web_pages_under_a_namespaced_key() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("gitee-demo");
+    std::fs::create_dir_all(pkg.join("clone")).unwrap();
+    std::fs::write(pkg.join("clone/index.html"), "<!doctype html><html><body>repos</body></html>").unwrap();
+    std::fs::write(
+        pkg.join("plugin.toml"),
+        r#"id = "gitee-demo"
+name = "Gitee Demo"
+version = "1.0.0"
+engines.openidea = "^1.15"
+
+[[contributes.cloneSources]]
+id = "gitee"
+label = "Gitee"
+icon = "branch"
+web = "clone/index.html"
+"#,
+    )
+    .unwrap();
+    let info = f.install(&pkg);
+    assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
+
+    let item = f.host.ui_items("cloneSources").into_iter().find(|i| i.plugin_id == "gitee-demo").expect("the source");
+    assert_eq!(item.key, "cloneSources/gitee");
+    assert_eq!((item.decl["label"].as_str(), item.decl["icon"].as_str()), (Some("Gitee"), Some("branch")));
+    // A source is not a tool window.
+    assert!(f.host.ui_items("views").iter().all(|i| i.plugin_id != "gitee-demo"));
+
+    let page = f.host.web_page("gitee-demo", "cloneSources/gitee").unwrap();
+    let (rev, entry) = page.path.strip_prefix("gitee-demo/").unwrap().split_once('/').unwrap();
+    assert_eq!(entry, "clone/index.html");
+    assert!(f.host.web_file("gitee-demo", &format!("{rev}/clone/index.html")).is_ok());
+    assert!(f.host.web_page("gitee-demo", "cloneSources/nope").is_err());
+
+    // Refused: no page, a bad id, and an engine older than the point.
+    for (name, body, message) in [
+        ("no-page", "id = \"gitee\"\nlabel = \"Gitee\"\nweb = \"clone/missing.html\"", "no such file"),
+        ("bad-id", "id = \"Gitee\"\nlabel = \"Gitee\"\nweb = \"clone/index.html\"", "invalid clone source id"),
+        ("no-web", "id = \"gitee\"\nlabel = \"Gitee\"", "missing field `web`"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let pkg = dir.path().join(name);
+        std::fs::create_dir_all(pkg.join("clone")).unwrap();
+        std::fs::write(pkg.join("clone/index.html"), "<p>repos</p>").unwrap();
+        std::fs::write(
+            pkg.join("plugin.toml"),
+            format!(
+                "id = \"gitee-{name}\"\nname = \"Gitee\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.15\"\n\n[[contributes.cloneSources]]\n{body}\n"
+            ),
+        )
+        .unwrap();
+        let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+        assert!(err.message.contains(message), "{name}: {}", err.message);
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let old = dir.path().join("old");
+    std::fs::create_dir_all(old.join("clone")).unwrap();
+    std::fs::write(old.join("clone/index.html"), "<p>repos</p>").unwrap();
+    std::fs::write(
+        old.join("plugin.toml"),
+        "id = \"gitee-old\"\nname = \"Gitee\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.14\"\n\n[[contributes.cloneSources]]\nid = \"gitee\"\nlabel = \"Gitee\"\nweb = \"clone/index.html\"\n",
+    )
+    .unwrap();
+    let err = f.host.install_from_dir(&old, &Consent::all()).unwrap_err();
+    assert!(err.message.contains("new in plugin API 1.15"), "{}", err.message);
+}

@@ -11,6 +11,7 @@
  * - `customEditors`: files opening in a plugin editor sharing the text document, in its own tab or
  *   beside the text editor;
  * - `editorPanels`: a web page at the right edge of every editor group, following its text editor;
+ * - `cloneSources`: an entry of the Clone Repository dialog's source list, whose page picks a repository;
  * - `fileIcons`: icons for the files a plugin knows, whatever icon theme is in use;
  * - `fileTemplates`: entries of the New menu;
  * - `commitChecks`: before-commit checks listed in Commit Options, run by the plugin's code.
@@ -71,6 +72,7 @@ import { pluginServiceProvider } from "./views/serviceProvider";
 import { WebView } from "./views/WebView";
 import { registerLogActions } from "./views/logActions";
 import { projectSettings, type SettingsDecl } from "./settings";
+import { projectCloneSource, type CloneSourceDecl } from "./cloneSource";
 
 // --- menus ------------------------------------------------------------------------
 
@@ -471,6 +473,10 @@ export function defineViewUiPoints(): () => void {
       orderSensitive: true,
       title: "Tool Windows",
       project: ({ pluginId, decl }, { index }) => projectView(pluginId, decl, index),
+    }),
+    defineUiPoint<CloneSourceDecl>("cloneSources", {
+      title: "Clone Sources",
+      project: ({ pluginId, decl }) => projectCloneSource(pluginId, decl),
     }),
     defineUiPoint<CustomEditorDecl>("customEditors", {
       title: "Editors",

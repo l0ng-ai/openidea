@@ -1,0 +1,10 @@
+.pane {
+  height: 100%;
+  min-width: 0;
+}
+
+/* Cloning: the page stays visible but takes no input, like the built-in sources. */
+.pane[aria-disabled="true"] {
+  opacity: 0.6;
+  pointer-events: none;
+}
