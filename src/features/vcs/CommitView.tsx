@@ -1145,6 +1145,7 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
             if (n.type === "group") {
               const files = n.files.filter((f) => onDisk(f) && !f.path.endsWith("/"));
               for (const [i, file] of files.entries()) {
+                // oxlint-disable-next-line no-await-in-loop -- tabs open in group order and only the last file may take focus
                 await editorService().openFile(file.path, { focus: i === files.length - 1 });
               }
               return;
