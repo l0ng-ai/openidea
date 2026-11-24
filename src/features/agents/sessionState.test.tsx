@@ -218,7 +218,6 @@ const input = (id: string) => ({
   data: { task: id },
 });
 const stream = () => document.querySelector<HTMLDivElement>(`.${styles.stream}`)!;
-const streamContent = () => stream().querySelector<HTMLDivElement>(`.${styles.streamContent}`)!;
 const tool = (id: string, overrides: Partial<Extract<AgentEntry, { type: "tool" }>> = {}): AgentEntry => ({
   type: "tool",
   id,
@@ -364,7 +363,7 @@ describe("conversation rows", () => {
     render(<SessionEditor input={input("A")} />);
     await screen.findByText("Done");
     expect(stream().querySelectorAll(`.${styles.agentAuthor}`)).toHaveLength(1);
-    expect(streamContent().firstElementChild?.firstElementChild).toHaveClass(styles.agentAuthor!);
+    expect(stream().firstElementChild?.firstElementChild).toHaveClass(styles.agentAuthor!);
   });
 
   it.each<AgentEntry>([subagent, { type: "message", incoming: true, text: "Parent request" }])(
@@ -382,7 +381,7 @@ describe("conversation rows", () => {
       await screen.findByText("After the work");
       const authors = stream().querySelectorAll(`.${styles.agentAuthor}`);
       expect(authors).toHaveLength(2);
-      expect(streamContent().children[1]?.querySelector(`.${styles.agentAuthor}`)).toBeNull();
+      expect(stream().children[1]?.querySelector(`.${styles.agentAuthor}`)).toBeNull();
       expect(authors[1]?.nextElementSibling).toHaveClass(styles.processRun!);
       expect(authors[1]?.parentElement?.nextElementSibling?.firstElementChild).toHaveClass(styles.agentMessage!);
     },
@@ -549,7 +548,7 @@ describe("turn folding", () => {
     // What the agent is doing ends the conversation, below its latest output.
     const working = stream().querySelector(`.${styles.working}`);
     expect(working).toHaveRole("status");
-    expect(streamContent().lastElementChild).toBe(working);
+    expect(stream().lastElementChild).toBe(working);
   });
 });
 
@@ -1145,19 +1144,18 @@ describe("scrolling", () => {
     );
     el.scrollTop = 20;
     fireEvent.scroll(el);
-    const content = streamContent();
-    const count = content.children.length;
-    const first = content.firstElementChild!;
+    const count = el.children.length;
+    const first = el.firstElementChild!;
     const top = vi.spyOn(first, "getBoundingClientRect");
     top.mockReturnValue({ top: 100 } as DOMRect);
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 180));
     });
-    expect(content.children.length).toBe(count);
+    expect(el.children.length).toBe(count);
     // Its old top is measured at release, then shifts down when rows are inserted.
     top.mockReturnValueOnce({ top: 100 } as DOMRect).mockReturnValue({ top: 500 } as DOMRect);
     fireEvent.pointerUp(window);
-    await waitFor(() => expect(content.children.length).toBeGreaterThan(count));
+    await waitFor(() => expect(el.children.length).toBeGreaterThan(count));
     expect(el.scrollTop).toBe(420);
     view.unmount();
   });
@@ -2008,7 +2006,7 @@ describe("session state across tasks and hosts", () => {
     render(<SessionEditor input={input("A")} />);
     expect(screen.getByText("Reply 149")).toBeInTheDocument();
     expect(await screen.findByText("Reply 0")).toBeInTheDocument();
-    expect(streamContent().children).toHaveLength(150);
+    expect(stream().children).toHaveLength(150);
   });
 
   it("returns to the task conversation when the docked task changes after opening a subagent", async () => {
