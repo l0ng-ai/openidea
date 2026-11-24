@@ -35,6 +35,7 @@ import {
   toolWindowServiceImpl,
 } from "./toolwindows/store";
 import { WebConnectionBanner } from "./WebConnectionBanner";
+import { installWebSessionGuard } from "./webSessionGuard";
 
 export function activateWorkbench(): () => void {
   provideToolWindowService(toolWindowServiceImpl);
@@ -78,6 +79,7 @@ export function activateWorkbench(): () => void {
     installTaskEvents(),
     installNotifyEvents(),
     installBrowserGuards(),
+    installWebSessionGuard(),
     installFileDrop(),
     registerWorkbenchBanner({ id: "workbench.webConnection", component: WebConnectionBanner }),
     registerOverlay({ id: "workbench.customizeToolbar", component: MainToolbarDialogHost }),

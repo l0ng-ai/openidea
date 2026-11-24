@@ -5,6 +5,7 @@ import {
   isWebMode,
   resolveWebSocketUrl,
   shouldActivateWebRuntime,
+  takeOverWebSession,
   useWebConnection,
 } from "./webBridge";
 
@@ -71,6 +72,7 @@ describe("webBridge", () => {
 
   afterEach(() => {
     globalThis.WebSocket = originalWs;
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -183,5 +185,66 @@ describe("webBridge", () => {
     // Dropping the socket enters reconnecting state.
     ws.close();
     expect(useWebConnection.getState().status).toBe("reconnecting");
+  });
+
+  it("handles superseded without auto-reconnecting and reconnects on takeOverWebSession", async () => {
+    vi.useFakeTimers();
+
+    const meta = document.createElement("meta");
+    meta.name = "openidea-web";
+    meta.content = "1";
+    document.head.appendChild(meta);
+
+    globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+
+    const boot = initWebRuntime();
+    await Promise.resolve();
+    const firstWs = FakeWebSocket.instances[0]!;
+    firstWs.receive({
+      type: "ready",
+      window: "main",
+      server: { version: "0.1.38", protocol: 2, os: "linux", arch: "x86_64", home: "/home/dev" },
+    });
+    await expect(boot).resolves.toBe(true);
+    expect(useWebConnection.getState().status).toBe("connected");
+
+    const internals = (
+      window as unknown as {
+        __TAURI_INTERNALS__: {
+          invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
+        };
+      }
+    ).__TAURI_INTERNALS__;
+
+    const pendingCall = internals.invoke("app_info", {});
+    firstWs.receive({ type: "superseded" });
+
+    await expect(pendingCall).rejects.toEqual({
+      kind: "io",
+      message: "Session opened in another browser tab",
+    });
+    expect(useWebConnection.getState().status).toBe("superseded");
+    expect(firstWs.readyState).toBe(FakeWebSocket.CLOSED);
+
+    // Must not schedule auto-reconnect after being superseded.
+    vi.advanceTimersByTime(10_000);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(useWebConnection.getState().status).toBe("superseded");
+
+    // Taking over opens a fresh WebSocket and returns to connected once ready arrives.
+    takeOverWebSession();
+    expect(useWebConnection.getState().status).toBe("connecting");
+    expect(FakeWebSocket.instances).toHaveLength(2);
+
+    await Promise.resolve();
+    const secondWs = FakeWebSocket.instances[1]!;
+    expect(secondWs.sent[0]).toEqual({ type: "hello", window: "main" });
+
+    secondWs.receive({
+      type: "ready",
+      window: "main",
+      server: { version: "0.1.38", protocol: 2, os: "linux", arch: "x86_64", home: "/home/dev" },
+    });
+    expect(useWebConnection.getState().status).toBe("connected");
   });
 });

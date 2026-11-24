@@ -129,6 +129,8 @@ enum ServerMessage {
         window: Option<String>,
         event: IdeEvent,
     },
+    /// Sent to an older browser tab when another tab attaches to the same server window label.
+    Superseded,
     Pong,
 }
 
@@ -138,14 +140,27 @@ type Subscriber = (u64, mpsc::Sender<ServerMessage>);
 #[derive(Default)]
 struct WebEventHub {
     next_id: AtomicU64,
-    /// `window_label` -> active connection senders.
+    /// `window_label` -> active connection sender (single active tab per window to avoid conflicting edits).
     subscribers: RwLock<HashMap<String, Vec<Subscriber>>>,
 }
 
 impl WebEventHub {
     fn subscribe(&self, window: &str, tx: mpsc::Sender<ServerMessage>) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.subscribers.write().entry(window.to_owned()).or_default().push((id, tx));
+        let displaced = {
+            let mut map = self.subscribers.write();
+            let list = map.entry(window.to_owned()).or_default();
+            let prev = std::mem::take(list);
+            list.push((id, tx));
+            prev
+        };
+        for (_, old_tx) in displaced {
+            if let Err(mpsc::error::TrySendError::Full(msg)) = old_tx.try_send(ServerMessage::Superseded) {
+                tokio::spawn(async move {
+                    let _ = old_tx.send(msg).await;
+                });
+            }
+        }
         id
     }
 
@@ -514,13 +529,90 @@ fn check_auth(req: &Request<Incoming>, expected: Option<&str>) -> AuthStatus {
     AuthStatus::Unauthorized
 }
 
-fn auth_cookie_header(token: &str) -> HeaderValue {
-    HeaderValue::from_str(&format!("{AUTH_COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Lax"))
+fn is_https_request(req: &Request<Incoming>) -> bool {
+    if let Some(proto) = req.headers().get("x-forwarded-proto").and_then(|v| v.to_str().ok())
+        && proto.split(',').next().is_some_and(|p| p.trim().eq_ignore_ascii_case("https"))
+    {
+        return true;
+    }
+    if let Some(fwd) = req.headers().get(header::FORWARDED).and_then(|v| v.to_str().ok())
+        && fwd.to_ascii_lowercase().contains("proto=https")
+    {
+        return true;
+    }
+    false
+}
+
+fn cookie_scope_path(raw_path: &str) -> String {
+    let mut base = raw_path;
+    if let Some(stripped) = base.strip_suffix("/api/auth").or_else(|| base.strip_suffix("/api/auth/")) {
+        base = stripped;
+    } else if let Some(stripped) = base.strip_suffix("/index.html") {
+        base = stripped;
+    }
+    if base.is_empty() || base.contains([';', '\r', '\n']) {
+        return "/".into();
+    }
+    let mut out = if base.starts_with('/') { base.to_owned() } else { format!("/{base}") };
+    if !out.ends_with('/') {
+        out.push('/');
+    }
+    out
+}
+
+fn auth_cookie_header(req: &Request<Incoming>, raw_path: &str, token: &str) -> HeaderValue {
+    let path = cookie_scope_path(raw_path);
+    let secure = if is_https_request(req) { "; Secure" } else { "" };
+    HeaderValue::from_str(&format!("{AUTH_COOKIE_NAME}={token}; Path={path}; HttpOnly; SameSite=Lax{secure}"))
         .unwrap_or_else(|_| HeaderValue::from_static(""))
 }
 
+fn normalize_authority(raw: &str, default_port: Option<&str>) -> String {
+    let trimmed = raw.trim().to_ascii_lowercase();
+    if let Some(port) = default_port {
+        let suffix = format!(":{port}");
+        if let Some(stripped) = trimmed.strip_suffix(&suffix) {
+            return stripped.to_owned();
+        }
+    }
+    trimmed
+}
+
+/// Validates that a browser WebSocket upgrade request comes from the same host/authority
+/// (preventing Cross-Site WebSocket Hijacking). Requests without an `Origin` header (such as
+/// CLI tools or tests) are allowed.
+fn is_same_origin(origin: Option<&str>, host: Option<&str>, forwarded_host: Option<&str>) -> bool {
+    let Some(origin) = origin else { return true };
+    let origin = origin.trim();
+    if origin.is_empty() || origin.eq_ignore_ascii_case("null") {
+        return false;
+    }
+    let Some((scheme, rest)) = origin.split_once("://") else {
+        return false;
+    };
+    let default_port = match scheme.to_ascii_lowercase().as_str() {
+        "http" => Some("80"),
+        "https" => Some("443"),
+        _ => return false,
+    };
+    let origin_authority = rest.split('/').next().unwrap_or("");
+    if origin_authority.is_empty() {
+        return false;
+    }
+    let expected_origin = normalize_authority(origin_authority, default_port);
+    let matches_host = |candidate: &str| {
+        candidate.split(',').next().is_some_and(|first| normalize_authority(first, default_port) == expected_origin)
+    };
+    host.is_some_and(matches_host) || forwarded_host.is_some_and(matches_host)
+}
+
 fn text_response(status: StatusCode, content_type: &'static str, body: impl Into<Bytes>) -> Response<Full<Bytes>> {
-    Response::builder().status(status).header(header::CONTENT_TYPE, content_type).body(Full::new(body.into())).unwrap()
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+        .body(Full::new(body.into()))
+        .unwrap()
 }
 
 fn is_websocket_upgrade(req: &Request<Incoming>) -> bool {
@@ -549,11 +641,18 @@ async fn handle_http(req: Request<Incoming>, state: Arc<ServerState>) -> Respons
 
     // Token login POST endpoint when auth is enabled.
     if req.method() == Method::POST && is_endpoint(&effective_path, "/api/auth") {
-        return handle_auth_post(req, &state).await;
+        return handle_auth_post(req, &raw_path, &state).await;
     }
 
     // WebSocket RPC upgrade endpoint.
     if is_endpoint(&effective_path, "/api/ws") && is_websocket_upgrade(&req) {
+        let origin = req.headers().get(header::ORIGIN).and_then(|v| v.to_str().ok());
+        let host = req.headers().get(header::HOST).and_then(|v| v.to_str().ok());
+        let fwd_host = req.headers().get("x-forwarded-host").and_then(|v| v.to_str().ok());
+        if !is_same_origin(origin, host, fwd_host) {
+            tracing::warn!("rejected cross-origin WebSocket upgrade (origin={origin:?}, host={host:?})");
+            return text_response(StatusCode::FORBIDDEN, "application/json", r#"{"error":"cross-origin rejected"}"#);
+        }
         if matches!(check_auth(&req, state.auth_token.as_deref()), AuthStatus::Unauthorized) {
             return text_response(StatusCode::UNAUTHORIZED, "application/json", r#"{"error":"unauthorized"}"#);
         }
@@ -587,7 +686,8 @@ async fn handle_http(req: Request<Incoming>, state: Arc<ServerState>) -> Respons
                 return Response::builder()
                     .status(StatusCode::FOUND)
                     .header(header::LOCATION, target)
-                    .header(header::SET_COOKIE, auth_cookie_header(token))
+                    .header(header::SET_COOKIE, auth_cookie_header(&req, &raw_path, token))
+                    .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
                     .body(Full::new(Bytes::new()))
                     .unwrap();
             }
@@ -612,10 +712,11 @@ async fn handle_http(req: Request<Incoming>, state: Arc<ServerState>) -> Respons
     serve_index_html(&state.web_dir, head_only, gzip).await
 }
 
-async fn handle_auth_post(req: Request<Incoming>, state: &ServerState) -> Response<Full<Bytes>> {
+async fn handle_auth_post(req: Request<Incoming>, raw_path: &str, state: &ServerState) -> Response<Full<Bytes>> {
     let Some(expected) = state.auth_token.as_deref() else {
         return text_response(StatusCode::OK, "application/json", r#"{"ok":true}"#);
     };
+    let cookie_hdr = auth_cookie_header(&req, raw_path, expected);
     let body = match req.into_body().collect().await {
         Ok(b) => b.to_bytes(),
         Err(_) => return text_response(StatusCode::BAD_REQUEST, "text/plain; charset=utf-8", "Bad Request"),
@@ -633,7 +734,8 @@ async fn handle_auth_post(req: Request<Incoming>, state: &ServerState) -> Respon
         return Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "application/json")
-            .header(header::SET_COOKIE, auth_cookie_header(expected))
+            .header(header::SET_COOKIE, cookie_hdr)
+            .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
             .body(Full::new(Bytes::from_static(br#"{"ok":true}"#)))
             .unwrap();
     }
@@ -749,16 +851,19 @@ where
 {
     let (mut ws_tx, mut ws_rx) = ws.split();
     let (out_tx, mut out_rx) = mpsc::channel::<ServerMessage>(WS_OUTBOUND_CAPACITY);
+    let (superseded_tx, mut superseded_rx) = oneshot::channel::<()>();
     let active_requests: Arc<Mutex<HashSet<RequestId>>> = Arc::new(Mutex::new(HashSet::new()));
 
     // Writer task forwards queued server messages and emits periodic keepalive pings.
     let writer = tokio::spawn(async move {
         let mut ping = tokio::time::interval(WS_PING_INTERVAL);
         ping.tick().await;
+        let mut superseded_tx = Some(superseded_tx);
         loop {
             tokio::select! {
                 msg = out_rx.recv() => {
                     let Some(msg) = msg else { break };
+                    let is_superseded = matches!(msg, ServerMessage::Superseded);
                     match serde_json::to_string(&msg) {
                         Ok(text) => {
                             if ws_tx.send(WsMessage::Text(text.into())).await.is_err() {
@@ -766,6 +871,13 @@ where
                             }
                         }
                         Err(e) => tracing::warn!("failed to serialize WebSocket message: {e}"),
+                    }
+                    if is_superseded {
+                        let _ = ws_tx.send(WsMessage::Close(None)).await;
+                        if let Some(tx) = superseded_tx.take() {
+                            let _ = tx.send(());
+                        }
+                        break;
                     }
                 }
                 _ = ping.tick() => {
@@ -780,7 +892,14 @@ where
     let mut window_label: Option<String> = None;
     let mut sub_id: Option<u64> = None;
 
-    while let Some(frame) = ws_rx.next().await {
+    loop {
+        let frame = tokio::select! {
+            _ = &mut superseded_rx => break,
+            next = ws_rx.next() => match next {
+                Some(f) => f,
+                None => break,
+            },
+        };
         let msg = match frame {
             Ok(WsMessage::Text(text)) => text,
             Ok(WsMessage::Ping(_)) | Ok(WsMessage::Pong(_)) => continue,
@@ -1454,6 +1573,146 @@ mod tests {
         assert!(saw_end && saw_reply);
 
         ws.close(None).await.ok();
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn validates_same_origin_and_rejects_cross_origin_websocket() {
+        assert!(is_same_origin(None, Some("localhost:8080"), None));
+        assert!(is_same_origin(Some("http://localhost:8080"), Some("localhost:8080"), None));
+        assert!(is_same_origin(Some("https://ide.example.com"), Some("ide.example.com:443"), None));
+        assert!(is_same_origin(Some("https://proxy.example.com"), Some("127.0.0.1:8080"), Some("proxy.example.com")));
+        assert!(!is_same_origin(Some("https://evil.example"), Some("localhost:8080"), None));
+        assert!(!is_same_origin(Some("null"), Some("localhost:8080"), None));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let web_dir = tmp.path().join("dist");
+        let home_dir = tmp.path().join("home");
+        std::fs::create_dir_all(&web_dir).unwrap();
+        std::fs::write(web_dir.join("index.html"), "<!doctype html><html><head></head><body>ok</body></html>").unwrap();
+
+        let server = start(
+            WebServerConfig {
+                host: "127.0.0.1".into(),
+                port: 0,
+                base_path: None,
+                web_dir,
+                project: None,
+                trust_project: true,
+                auth_token: None,
+            },
+            home_dir,
+        )
+        .await
+        .unwrap();
+
+        let (status, _, _) = http_get(
+            server.addr,
+            "/api/ws",
+            &[
+                ("Connection", "Upgrade"),
+                ("Upgrade", "websocket"),
+                ("Sec-WebSocket-Version", "13"),
+                ("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ=="),
+                ("Origin", "https://evil.example"),
+            ],
+        )
+        .await;
+        assert_eq!(status, 403);
+
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn supersedes_previous_tab_on_same_window_without_affecting_other_windows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let web_dir = tmp.path().join("dist");
+        let home_dir = tmp.path().join("home");
+        std::fs::create_dir_all(&web_dir).unwrap();
+        std::fs::write(web_dir.join("index.html"), "<!doctype html><html><head></head><body>ok</body></html>").unwrap();
+
+        let server = start(
+            WebServerConfig {
+                host: "127.0.0.1".into(),
+                port: 0,
+                base_path: None,
+                web_dir,
+                project: None,
+                trust_project: true,
+                auth_token: None,
+            },
+            home_dir,
+        )
+        .await
+        .unwrap();
+
+        let url = format!("ws://{}/api/ws", server.addr);
+        let (mut ws1, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        ws1.send(WsMessage::Text(json!({ "type": "hello", "window": "main" }).to_string().into())).await.unwrap();
+        let ready1: Value = serde_json::from_str(&ws1.next().await.unwrap().unwrap().into_text().unwrap()).unwrap();
+        assert_eq!(ready1["type"], "ready");
+
+        // Opening a different window label on the same server does not displace "main".
+        let (mut ws_other, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        ws_other.send(WsMessage::Text(json!({ "type": "hello", "window": "web-2" }).to_string().into())).await.unwrap();
+        let ready_other: Value =
+            serde_json::from_str(&ws_other.next().await.unwrap().unwrap().into_text().unwrap()).unwrap();
+        assert_eq!(ready_other["type"], "ready");
+
+        // Opening a second tab on the SAME window ("main") displaces ws1 with "superseded".
+        let (mut ws2, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        ws2.send(WsMessage::Text(json!({ "type": "hello", "window": "main" }).to_string().into())).await.unwrap();
+        let ready2: Value = serde_json::from_str(&ws2.next().await.unwrap().unwrap().into_text().unwrap()).unwrap();
+        assert_eq!(ready2["type"], "ready");
+
+        let displaced: Value = serde_json::from_str(&ws1.next().await.unwrap().unwrap().into_text().unwrap()).unwrap();
+        assert_eq!(displaced["type"], "superseded");
+
+        // ws_other ("web-2") still answers pings normally.
+        ws_other.send(WsMessage::Text(json!({ "type": "ping" }).to_string().into())).await.unwrap();
+        let pong: Value = serde_json::from_str(&ws_other.next().await.unwrap().unwrap().into_text().unwrap()).unwrap();
+        assert_eq!(pong["type"], "pong");
+
+        ws2.close(None).await.ok();
+        ws_other.close(None).await.ok();
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn scopes_auth_cookie_path_and_sets_secure_behind_https_proxy() {
+        assert_eq!(cookie_scope_path("/"), "/");
+        assert_eq!(cookie_scope_path("/user/proj/r/session/1/"), "/user/proj/r/session/1/");
+        assert_eq!(cookie_scope_path("/user/proj/r/session/1/api/auth"), "/user/proj/r/session/1/");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let web_dir = tmp.path().join("dist");
+        let home_dir = tmp.path().join("home");
+        std::fs::create_dir_all(&web_dir).unwrap();
+        std::fs::write(web_dir.join("index.html"), "<!doctype html><html><head></head><body>ok</body></html>").unwrap();
+
+        let server = start(
+            WebServerConfig {
+                host: "127.0.0.1".into(),
+                port: 0,
+                base_path: None,
+                web_dir,
+                project: None,
+                trust_project: true,
+                auth_token: Some("tok-abc".into()),
+            },
+            home_dir,
+        )
+        .await
+        .unwrap();
+
+        let (status, headers, _) =
+            http_get(server.addr, "/user/proj/r/session/42/?token=tok-abc", &[("X-Forwarded-Proto", "https")]).await;
+        assert_eq!(status, 302);
+        let cookie = headers.get("set-cookie").unwrap();
+        assert!(cookie.contains("Path=/user/proj/r/session/42/"), "cookie={cookie}");
+        assert!(cookie.contains("; Secure"), "cookie={cookie}");
+        assert!(cookie.contains("HttpOnly"), "cookie={cookie}");
+
         server.shutdown().await;
     }
 }

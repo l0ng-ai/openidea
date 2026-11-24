@@ -9983,5 +9983,7 @@
   "Connection to OpenIDEA server lost. Reconnecting…": "与 OpenIDEA 服务器的连接已断开，正在重新连接…",
   "Save File": "保存文件",
   "Not connected to OpenIDEA server": "未连接到 OpenIDEA 服务器",
-  "Command failed": "命令执行失败"
+  "Command failed": "命令执行失败",
+  "This OpenIDEA session is open in another browser tab.": "此 OpenIDEA 会话已在另一个浏览器标签页中打开。",
+  "Take Over": "接管会话"
 }

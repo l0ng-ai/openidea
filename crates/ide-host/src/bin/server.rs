@@ -32,7 +32,8 @@ web mode options:
   --web-dir <dir>         Built frontend directory (default: $OPENIDEA_WEB_DIR or auto-detected dist/)
   --project <path>        Workspace directory to open on startup (default: $OPENIDEA_WORKSPACE_DIR)
   --home <dir>            Persistent config/data directory (default: $OPENIDEA_SERVER_HOME or ~/.openidea)
-  --token <secret|auto>   Require authentication token ($OPENIDEA_WEB_TOKEN; 'auto' generates one)
+  --token <secret|auto>   Access token ($OPENIDEA_WEB_TOKEN; default: auto-generated random token)
+  --no-auth               Disable token auth ($OPENIDEA_WEB_NO_AUTH=1; use only behind an authenticating proxy)
   --no-trust-project      Prompt before trusting --project instead of trusting it automatically"
     );
 }
@@ -40,6 +41,10 @@ web mode options:
 struct ParsedWebArgs {
     config: WebServerConfig,
     home_override: Option<PathBuf>,
+}
+
+fn env_truthy(name: &str) -> bool {
+    std::env::var(name).ok().is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
 }
 
 fn parse_web_args(args: &[String]) -> Result<ParsedWebArgs, String> {
@@ -57,6 +62,7 @@ fn parse_web_args(args: &[String]) -> Result<ParsedWebArgs, String> {
         .filter(|s| !s.is_empty())
         .map(PathBuf::from);
     let mut trust_project = true;
+    let mut no_auth = env_truthy("OPENIDEA_WEB_NO_AUTH");
     let mut auth_token = std::env::var("OPENIDEA_WEB_TOKEN").ok().filter(|s| !s.trim().is_empty());
     let mut home_override: Option<PathBuf> = None;
 
@@ -97,10 +103,13 @@ fn parse_web_args(args: &[String]) -> Result<ParsedWebArgs, String> {
             home_override = Some(PathBuf::from(v));
         } else if arg == "--token" {
             auth_token = Some(next_val(&mut i, "--token")?);
+            no_auth = false;
         } else if let Some(v) = arg.strip_prefix("--token=") {
             auth_token = Some(v.to_owned());
+            no_auth = false;
         } else if arg == "--no-auth" {
             auth_token = None;
+            no_auth = true;
         } else if arg == "--no-trust-project" {
             trust_project = false;
         } else if arg.starts_with('-') {
@@ -113,7 +122,9 @@ fn parse_web_args(args: &[String]) -> Result<ParsedWebArgs, String> {
         i += 1;
     }
 
-    if auth_token.as_deref() == Some("auto") {
+    if no_auth {
+        auth_token = None;
+    } else if auth_token.is_none() || auth_token.as_deref() == Some("auto") {
         auth_token = Some(web_server::generate_token());
     }
 

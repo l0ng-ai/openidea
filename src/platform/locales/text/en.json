@@ -3747,5 +3747,7 @@
   "Connection to OpenIDEA server lost. Reconnecting…": "Connection to OpenIDEA server lost. Reconnecting…",
   "Save File": "Save File",
   "Not connected to OpenIDEA server": "Not connected to OpenIDEA server",
-  "Command failed": "Command failed"
+  "Command failed": "Command failed",
+  "This OpenIDEA session is open in another browser tab.": "This OpenIDEA session is open in another browser tab.",
+  "Take Over": "Take Over"
 }

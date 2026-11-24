@@ -9,7 +9,7 @@
  */
 import { create } from "zustand";
 
-export type WebConnectionStatus = "idle" | "connecting" | "connected" | "reconnecting";
+export type WebConnectionStatus = "idle" | "connecting" | "connected" | "reconnecting" | "superseded";
 
 interface WebConnectionState {
   active: boolean;
@@ -30,6 +30,14 @@ export const useWebConnection = create<WebConnectionState>(() => ({
 /** True when this page is connected to `openidea-server --web` in a regular browser. */
 export function isWebMode(): boolean {
   return useWebConnection.getState().active;
+}
+
+let triggerTakeOver: (() => void) | null = null;
+
+/** Reconnects and reclaims this window session after another browser tab took over. */
+export function takeOverWebSession(): void {
+  if (!useWebConnection.getState().active || !triggerTakeOver) return;
+  triggerTakeOver();
 }
 
 const WINDOW_SESSION_KEY = "openidea.web.window";
@@ -77,13 +85,18 @@ interface PongMessage {
   type: "pong";
 }
 
+interface SupersededMessage {
+  type: "superseded";
+}
+
 type ServerMessage =
   | ReadyMessage
   | ResponseMessage
   | ChannelFrameMessage
   | ChannelEndFrameMessage
   | EventFrameMessage
-  | PongMessage;
+  | PongMessage
+  | SupersededMessage;
 
 /** Resolves the WebSocket endpoint relative to `pageHref` (preserving any reverse-proxy subpath). */
 export function resolveWebSocketUrl(pageHref: string): string {
@@ -377,6 +390,7 @@ export async function initWebRuntime(): Promise<boolean> {
   const connect = (isInitial: boolean): Promise<void> =>
     new Promise((resolveInitial, rejectInitial) => {
       let settled = false;
+      let superseded = false;
       const socket = new WebSocket(wsUrl);
       ws = socket;
 
@@ -448,11 +462,32 @@ export async function initWebRuntime(): Promise<boolean> {
           }
           case "pong":
             break;
+          case "superseded": {
+            superseded = true;
+            if (ws === socket) ws = null;
+            if (reconnectTimer !== null) {
+              window.clearTimeout(reconnectTimer);
+              reconnectTimer = null;
+            }
+            rejectAllPending("Session opened in another browser tab");
+            endAllActiveChannels();
+            useWebConnection.setState({ status: "superseded" });
+            socket.close();
+            break;
+          }
         }
       });
 
       socket.addEventListener("close", () => {
         if (ws === socket) ws = null;
+        if (superseded) {
+          if (!settled) {
+            settled = true;
+            if (initialTimer !== null) window.clearTimeout(initialTimer);
+            rejectInitial(new Error("Session opened in another browser tab"));
+          }
+          return;
+        }
         rejectAllPending("Connection to OpenIDEA server closed");
         endAllActiveChannels();
         if (!settled) {
@@ -479,6 +514,16 @@ export async function initWebRuntime(): Promise<boolean> {
         }
       });
     });
+
+  triggerTakeOver = () => {
+    if (reconnectTimer !== null) {
+      window.clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    reconnectAttempt = 0;
+    useWebConnection.setState({ status: "connecting" });
+    void connect(false).catch(() => {});
+  };
 
   await connect(true);
   return true;
