@@ -885,6 +885,7 @@ test("visible Markdown reflows during a tool window drag and distant blocks catc
   try {
     await page.mouse.move(x + 160, y, { steps: 4 });
     await expect.poll(() => width(near)).toBeLessThan(before - 30);
+    expect(await preview.evaluate((el) => el.scrollWidth - el.clientWidth)).toBe(0);
     expect(await width(far)).toBe(before);
   } finally {
     await page.mouse.up();

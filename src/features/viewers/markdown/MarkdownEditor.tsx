@@ -189,7 +189,7 @@ export function MarkdownEditor({
 }
 
 const blocksOf = (root: HTMLElement) =>
-  [...root.querySelectorAll<HTMLElement>(":scope > [data-line]")].map((el) => ({
+  [...root.querySelectorAll<HTMLElement>(":scope > [data-preview-blocks] > [data-line]")].map((el) => ({
     line: Number(el.dataset.line),
     get top() {
       return el.offsetTop;
@@ -363,7 +363,8 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       },
       { root, rootMargin: "100% 0px" },
     );
-    for (const block of root.children) visibility.observe(block);
+    for (const block of root.querySelectorAll(":scope > [data-preview-blocks] > [data-line]"))
+      visibility.observe(block);
 
     let width = 0;
     let settled = 0;
@@ -376,6 +377,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       const block = line >= 0 ? blocks.current.find((b) => b.line === line) : undefined;
       const within = block ? top - block.top : 0;
       settled = width;
+      root.removeAttribute("data-constrain-blocks");
       root.style.setProperty("--markdown-block-width", `${width}px`);
       if (atBottom) root.scrollTop = root.scrollHeight;
       else if (block) root.scrollTop = block.top + within;
@@ -390,6 +392,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     const sizes = new ResizeObserver(([entry]) => {
       if (!entry || width === entry.contentRect.width) return;
       width = entry.contentRect.width;
+      root.toggleAttribute("data-constrain-blocks", width < settled);
       if (!settled) apply();
       else schedule();
     });
@@ -405,6 +408,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       document.removeEventListener("pointercancel", schedule, true);
       window.removeEventListener("blur", schedule);
       root.style.removeProperty("--markdown-block-width");
+      root.removeAttribute("data-constrain-blocks");
     };
   }, [html]);
 
@@ -657,7 +661,8 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       aria-label={tx("Markdown preview")}
       onClick={onClick}
       onScroll={onScroll}
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
+    >
+      <div data-preview-blocks="" dangerouslySetInnerHTML={{ __html: html }} />
+    </div>
   );
 }
