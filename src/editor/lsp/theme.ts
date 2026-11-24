@@ -652,6 +652,12 @@ export const lspTheme = EditorView.theme({
       },
     ]),
   ),
+  // Java's unterminated string or char literal, over the spans the parser's error recovery left inside.
+  ".cm-sem-java-unterminated-string, .cm-sem-java-unterminated-string *": {
+    color: "var(--syn-string)",
+    fontWeight: "var(--syn-string-bold, normal)",
+    fontStyle: "var(--syn-string-italic, normal)",
+  },
   // After the semantic classes: the link wraps their (innermost) spans, and its colour must win.
   ".cm-lsp-link *": { color: "var(--link)" },
 

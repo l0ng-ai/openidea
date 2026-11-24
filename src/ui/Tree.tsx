@@ -822,6 +822,7 @@ export function Tree<T>(props: TreeProps<T>) {
                 key={v.key}
                 id={`${baseId}-${v.index}`}
                 data-row={v.index}
+                data-tree-key={row.key}
                 role="treeitem"
                 aria-level={row.depth + 1}
                 aria-posinset={positions[v.index]![0]}

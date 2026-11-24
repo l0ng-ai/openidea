@@ -586,7 +586,8 @@ describe("pinned result tabs", () => {
     expect(slot("Orders").queryByRole("button", { name: "Close Tab" })).not.toBeInTheDocument();
     const unpin = slot("Orders").getByRole("button", { name: "Unpin Tab" });
     expect(unpin.querySelector("svg")!.innerHTML).toBe(pinButton().querySelector("svg")!.innerHTML);
-    fireEvent.mouseDown(tab("Orders").parentElement!, { button: 1 });
+    fireEvent.mouseDown(tab("Orders"), { button: 1 });
+    fireEvent.mouseUp(tab("Orders"), { button: 1 });
     fireEvent.keyDown(tab("Orders"), { key: "Delete" });
     expect(useDatabase.getState().results.map((r) => r.id)).toEqual([11, 22, 33]);
     const menu = openMenu("Orders");

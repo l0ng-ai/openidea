@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
+import { codeFolding, foldEffect, unfoldEffect } from "@codemirror/language";
 import { javascript } from "@codemirror/lang-javascript";
 import { languages } from "@codemirror/language-data";
 import { completedSyntaxState } from "@/test/syntax";
@@ -95,7 +96,7 @@ describe("sticky rows and scrolling the caret into view", () => {
         EditorState.create({
           doc,
           selection: EditorSelection.cursor(head),
-          extensions: [javascript(), stickyScroll, stickyMaxLines.of(max)],
+          extensions: [javascript(), codeFolding(), stickyScroll, stickyMaxLines.of(max)],
         }),
       ),
     });
@@ -106,6 +107,16 @@ describe("sticky rows and scrolling the caret into view", () => {
     expect(v.state.facet(EditorView.scrollMargins).map((f) => f(v))).toContainEqual({
       top: 3 * v.defaultLineHeight,
     });
+    v.destroy();
+  });
+
+  it("reserves space only for visible enclosing scopes when the caret is inside a folded block", () => {
+    const v = view(doc.indexOf("target"));
+    const range = { from: v.state.doc.line(3).to, to: v.state.doc.line(5).to };
+    v.dispatch({ effects: foldEffect.of(range) });
+    expect(stickyTopMargin(v)).toBe(2 * v.defaultLineHeight);
+    v.dispatch({ effects: unfoldEffect.of(range) });
+    expect(stickyTopMargin(v)).toBe(3 * v.defaultLineHeight);
     v.destroy();
   });
 
