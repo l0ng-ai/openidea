@@ -1622,8 +1622,8 @@ pub struct AuxWindow {
     pub background: Option<String>,
 }
 
-/// Opens an auxiliary window of `caller`'s project window, centred over it. A kind with one window
-/// per parent reuses it: the new launch is handed over ([`LAUNCH_EVENT`]) and the window focused.
+/// Opens an auxiliary window of `caller`'s project window, centred over it. A matching window
+/// receives the new launch ([`LAUNCH_EVENT`]) and is focused.
 pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWindow) -> IdeResult<()> {
     // Asked from an auxiliary window itself: open it for that window's parent.
     let parent_label = auxiliary_parent(caller.label()).unwrap_or(caller.label()).to_owned();
@@ -1642,7 +1642,7 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
         format!("{}-{parent_label}", aux.kind.name())
     };
     if let Some(existing) = app.get_webview_window(&label) {
-        if aux.kind != AuxKind::Diff && aux.launch != Launch::default() {
+        if aux.launch != Launch::default() {
             windows.set_launch(&label, aux.launch);
             let _ = app.emit_to(label.as_str(), LAUNCH_EVENT, ());
         }
