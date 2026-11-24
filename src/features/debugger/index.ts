@@ -33,7 +33,7 @@ import { executionPoint } from "./editor/execution";
 import { runToCursorInlay } from "./editor/runToCursor";
 import { installSmartStepPicking, smartStepTargets } from "./editor/smartStep";
 import { exceptionBreakpointIntention } from "./editor/exceptionBreakpointIntention";
-import { hotSwapMenuItems, onHotCodeReplace } from "./hotswap";
+import { hotSwapMenuItems, installBuildHotSwap, onHotCodeReplace } from "./hotswap";
 import { installFlutterHotReloadOnSave } from "./flutterReload";
 import {
   activeSession,
@@ -162,6 +162,7 @@ export function activate(): () => void {
     }),
     installSmartStepPicking(),
     installFlutterHotReloadOnSave(),
+    installBuildHotSwap(),
     onIdeEvent("debug", (e) => {
       if (e.event.kind === "hotCodeReplace") onHotCodeReplace(e.session, e.event);
       else handleDebugEvent(e.session, e.event);

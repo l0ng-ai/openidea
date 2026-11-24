@@ -104,6 +104,7 @@
   "Clone Caret Below": "Klonuj kursor poniżej",
   "Join Lines": "Połącz wiersze",
   "Toggle Case": "Przełącz wielkość liter",
+  "Cycle Identifier Case": "Przełączaj wielkość liter identyfikatora",
   "Add Carets to Ends of Selected Lines": "Dodaj kursory na końcach zaznaczonych wierszy",
   "Unselect Occurrence": "Odznacz wystąpienie",
   "Paste from History…": "Wklej z historii…",

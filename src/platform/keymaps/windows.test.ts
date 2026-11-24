@@ -28,6 +28,11 @@ describe("Windows keymaps", () => {
     ["code.commentLine", "Ctrl+/"],
   ])("IDEA %s → %s", (id, key) => expect(intellijWindows[id]).toEqual([key]));
 
+  it("cycles the case of an identifier with ⇧⌥U in both IDEA presets", () => {
+    expect(intellijWindows["code.cycleCase"]).toEqual(["Alt+Shift+U"]);
+    expect(intellijMacos["code.cycleCase"]).toEqual(["Alt+Shift+U"]);
+  });
+
   it("VS Code reads ⌘ as Ctrl", () => {
     expect(vscodeWindows["navigate.gotoFile"]).toEqual(["Ctrl+P"]);
     expect(vscodeWindows["code.quickDocumentation"]).toEqual(["Ctrl+K Ctrl+I"]);

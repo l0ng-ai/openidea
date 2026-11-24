@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { commands, type Settings } from "@/platform/ipc";
+import { clearContext, setContext } from "@/platform/context";
 import { useProject } from "@/platform/project";
 import { getAction, registerActions } from "@/platform/actions";
 import { usePlatform } from "@/platform/platformInfo";
@@ -360,5 +361,43 @@ it.each(["windows", "linux"] as const)("renders toggle and widget checks in the 
   } finally {
     off();
     usePlatform.setState(platform);
+  }
+});
+
+it("shows Recompile '<file>.java' when a Java file is active and disabled Recompile otherwise", async () => {
+  const off = registerActions([
+    {
+      id: "build.compileFile",
+      title: "Recompile",
+      when: "projectOpen",
+      enabled: ({ ctx }) => typeof ctx.editorPath === "string" && ctx.editorPath.endsWith(".java"),
+      run: () => {},
+    },
+  ]);
+  vi.mocked(commands.menuModel).mockResolvedValue([
+    {
+      kind: "submenu",
+      id: "build",
+      label: "Build",
+      children: [{ kind: "action", id: "build.compileFile", label: "Recompile", hint: null, arg: null, checked: null }],
+    },
+  ]);
+  setContext("projectOpen", true);
+  setContext("editorPath", "/p/src/Main.java");
+  setStyle("merged");
+  try {
+    render(<MainMenu />);
+    await screen.findByRole("menubar");
+    fireEvent.click(titles().getByRole("menuitem", { name: "Build" }));
+    const activeItem = await screen.findByRole("menuitem", { name: /Recompile 'Main\.java'/ });
+    expect(activeItem).not.toHaveAttribute("aria-disabled", "true");
+
+    act(() => setContext("editorPath", "/p/pom.xml"));
+    const disabledItem = await screen.findByRole("menuitem", { name: /^Recompile/ });
+    expect(disabledItem).toHaveAttribute("aria-disabled", "true");
+  } finally {
+    off();
+    clearContext("projectOpen");
+    clearContext("editorPath");
   }
 });

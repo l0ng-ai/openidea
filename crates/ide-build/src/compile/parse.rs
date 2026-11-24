@@ -200,19 +200,22 @@ fn kotlin_line(line: &str) -> Option<RawMessage> {
     kotlin_location(rest, severity)
 }
 
-/// javac: `A.java:12: error: msg` / `A.java:12: warning: [deprecation] msg`.
+/// javac: `A.java:12: error: msg` / `A.java:12: warning: [deprecation] msg`
+/// (and localized javac prefixes such as Chinese/Japanese `错误:` / `錯誤:` / `エラー:` / `警告:`).
 fn javac_header(line: &str) -> Option<RawMessage> {
     let (path, ln, col, rest) = path_line_col(line)?;
     if !looks_like_source_path(path) {
         return None;
     }
     let rest = rest.trim_start_matches(':').trim_start();
-    let (severity, msg) = if let Some(m) = rest.strip_prefix("error:") {
-        (Severity::Error, m)
-    } else {
-        let m = rest.strip_prefix("warning:")?;
-        (Severity::Warning, m)
-    };
+    let (severity, msg) = ["error:", "错误:", "錯誤:", "エラー:"]
+        .into_iter()
+        .find_map(|prefix| rest.strip_prefix(prefix).map(|m| (Severity::Error, m)))
+        .or_else(|| {
+            ["warning:", "警告:"]
+                .into_iter()
+                .find_map(|prefix| rest.strip_prefix(prefix).map(|m| (Severity::Warning, m)))
+        })?;
     Some(RawMessage::new(severity, msg.trim(), ColUnit::Char).at(path, ln, col))
 }
 
@@ -553,6 +556,31 @@ mod tests {
         assert_eq!(out[0].text, "cannot find symbol\nsymbol:   class Foo\nlocation: class A");
         assert_eq!(pos(&out[1]), (Severity::Warning, "/p/src/main/java/a/A.java", 20, Some(20)));
         assert_eq!(out[1].text, "[removal] finalize() has been deprecated");
+    }
+
+    #[test]
+    fn localized_javac_errors_and_warnings() {
+        let out = parse(
+            Format::Gradle,
+            "/p/src/A.java:12: 错误: 找不到符号\n\
+             \x20       Foo foo = new Foo();\n\
+             \x20       ^\n\
+             \x20 符号:   类 Foo\n\
+             \x20 位置: 类 A\n\
+             /p/src/B.java:5: 錯誤: 需要 ';'\n\
+             \x20   int x = 1\n\
+             \x20            ^\n\
+             /p/src/C.java:8: 警告: [deprecation] old() 已过时\n\
+             \x20   old();\n\
+             \x20   ^\n",
+        );
+        assert_eq!(out.len(), 3, "{out:?}");
+        assert_eq!(pos(&out[0]), (Severity::Error, "/p/src/A.java", 12, Some(9)));
+        assert_eq!(out[0].text, "找不到符号\n符号:   类 Foo\n位置: 类 A");
+        assert_eq!(pos(&out[1]), (Severity::Error, "/p/src/B.java", 5, Some(14)));
+        assert_eq!(out[1].text, "需要 ';'");
+        assert_eq!(pos(&out[2]), (Severity::Warning, "/p/src/C.java", 8, Some(5)));
+        assert_eq!(out[2].text, "[deprecation] old() 已过时");
     }
 
     #[test]
