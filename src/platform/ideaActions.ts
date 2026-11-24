@@ -53,6 +53,8 @@ export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
   EditorUnSelectWord: "code.shrinkSelection",
   EditorDuplicateLines: "code.duplicateEntireLines",
   FillParagraph: "code.fillParagraph",
+  ConvertIndentsToSpaces: "code.convertIndentsToSpaces",
+  ConvertIndentsToTabs: "code.convertIndentsToTabs",
   CollapseRegion: "code.fold",
   ExpandRegion: "code.unfold",
   CollapseAllRegions: "code.foldAll",
