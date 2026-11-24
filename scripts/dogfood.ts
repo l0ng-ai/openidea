@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -16,16 +16,29 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  finishDogfoodRemoteRestart,
+  parseDogfoodRemoteArgs,
+  resolveDogfoodRemoteTarget,
+  type DogfoodRemoteArgs,
+} from "./dogfood-remote.ts";
 
 export const DEFAULT_DOGFOOD_APP_NAME = "openidea_dogfood";
 
 const LSREGISTER_PATH =
   "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
 
-export interface DogfoodCommand {
-  action: "build" | "install";
-  skipBuild: boolean;
-}
+export type DogfoodCommand =
+  | {
+      action: "local";
+      buildOnly: boolean;
+    }
+  | {
+      action: "all";
+      buildOnly: boolean;
+      remoteArgs: string[];
+      remote: DogfoodRemoteArgs;
+    };
 
 export interface DogfoodPaths {
   bundlePath: string;
@@ -35,18 +48,39 @@ export interface DogfoodPaths {
 export function parseDogfoodArgs(args: readonly string[]): DogfoodCommand {
   const filtered = args.filter((arg) => arg !== "--");
   const action = filtered[0];
-  if (action !== "build" && action !== "install") {
-    throw new Error(`Expected 'build' or 'install', got ${action ? `'${action}'` : "no command"}`);
+  if (action !== "local" && action !== "all") {
+    throw new Error(`Expected 'local' or 'all', got ${action ? `'${action}'` : "no command"}`);
   }
-  let skipBuild = false;
-  for (const flag of filtered.slice(1)) {
-    if (action === "install" && flag === "--no-build") {
-      skipBuild = true;
+  let buildOnly = false;
+  const rest: string[] = [];
+  for (const arg of filtered.slice(1)) {
+    if (arg === "--build-only") {
+      buildOnly = true;
+    } else if (action === "local") {
+      throw new Error(`Unexpected option '${arg}' for 'local'`);
     } else {
-      throw new Error(`Unexpected option '${flag}' for '${action}'`);
+      rest.push(arg);
     }
   }
-  return { action, skipBuild };
+  if (action === "local") {
+    return { action: "local", buildOnly };
+  }
+  if (rest.includes("--clean")) {
+    throw new Error("Unexpected option '--clean' for 'all'; use 'dogfood:remote <remote_name> --clean' instead");
+  }
+  let remote: DogfoodRemoteArgs;
+  try {
+    remote = parseDogfoodRemoteArgs(rest);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      message.startsWith("Usage:")
+        ? "Usage: dogfood:all <remote_name> [--build-only] [--install-rust] [--restart | --no-restart] [--ssh-opt key=value]"
+        : message,
+      { cause: error },
+    );
+  }
+  return { action: "all", buildOnly, remoteArgs: rest, remote };
 }
 
 /**
@@ -218,7 +252,7 @@ export function buildDogfood(root: string, appName: string) {
 const SHARED_DATA_NOTES = [
   "The dogfood app shares its single instance with OpenIDEA: quit one before opening the other.",
   "It writes OpenIDEA's settings and data; a setting only newer builds know can make an older OpenIDEA ignore your settings file.",
-  "It never updates itself: run 'pnpm dogfood:install' again to pick up new changes.",
+  "It never updates itself: run 'pnpm dogfood:local' again to pick up new changes.",
 ];
 
 export function installDogfood(
@@ -240,7 +274,7 @@ function installBundle(
   installPath: string,
 ) {
   if (!existsSync(bundlePath)) {
-    throw new Error(`Dogfood build output not found at ${bundlePath}; run 'mise run dogfood:build' first`);
+    throw new Error(`Dogfood build output not found at ${bundlePath}; run 'mise run dogfood:local --build-only' first`);
   }
 
   if (platform === "darwin") {
@@ -297,21 +331,164 @@ function installBundle(
   console.log(`Installed ${appName} to ${installPath}`);
 }
 
-function main() {
-  const root = realpathSync(fileURLToPath(new URL("..", import.meta.url)));
-  const { action, skipBuild } = parseDogfoodArgs(process.argv.slice(2));
-  const appName = process.env.DOGFOOD_APP_NAME?.trim() || DEFAULT_DOGFOOD_APP_NAME;
-  if (action === "build" || !skipBuild) {
-    buildDogfood(root, appName);
+export interface ParallelTaskSpec {
+  label: string;
+  command: string;
+  args: string[];
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+}
+
+function stopProcessTree(child: ChildProcess, signal: NodeJS.Signals) {
+  if (!child.pid) return;
+  if (process.platform === "win32") {
+    spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+  } else {
+    try {
+      process.kill(-child.pid, signal);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    }
   }
-  if (action === "install") {
+}
+
+function pipePrefixedLines(
+  stream: NodeJS.ReadableStream | null,
+  prefix: string,
+  writeLine: (line: string) => void,
+): Promise<void> {
+  if (!stream) return Promise.resolve();
+  return new Promise((resolve) => {
+    let remainder = "";
+    stream.setEncoding("utf8");
+    stream.on("data", (chunk: string) => {
+      remainder += chunk;
+      let newline = remainder.indexOf("\n");
+      while (newline !== -1) {
+        const line = remainder.slice(0, newline).replace(/\r$/, "");
+        writeLine(`[${prefix}] ${line}\n`);
+        remainder = remainder.slice(newline + 1);
+        newline = remainder.indexOf("\n");
+      }
+    });
+    stream.on("end", () => {
+      if (remainder.length > 0) {
+        writeLine(`[${prefix}] ${remainder.replace(/\r$/, "")}\n`);
+      }
+      resolve();
+    });
+    stream.on("error", () => resolve());
+  });
+}
+
+export async function runParallelTasks(
+  specs: readonly ParallelTaskSpec[],
+  writers: {
+    stdout?: (text: string) => void;
+    stderr?: (text: string) => void;
+  } = {},
+): Promise<void> {
+  const writeOut = writers.stdout ?? ((text: string) => process.stdout.write(text));
+  const writeErr = writers.stderr ?? ((text: string) => process.stderr.write(text));
+  const children: ChildProcess[] = [];
+  let firstError: Error | null = null;
+  let killTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const stopAll = (signal: NodeJS.Signals) => {
+    for (const child of children) stopProcessTree(child, signal);
+    if (signal === "SIGTERM") {
+      killTimer ??= setTimeout(() => {
+        for (const child of children) stopProcessTree(child, "SIGKILL");
+      }, 5000);
+      killTimer.unref();
+    }
+  };
+
+  const onSigint = () => stopAll("SIGTERM");
+  const onSigterm = () => stopAll("SIGTERM");
+  process.on("SIGINT", onSigint);
+  process.on("SIGTERM", onSigterm);
+
+  try {
+    await Promise.all(
+      specs.map(
+        (spec) =>
+          new Promise<void>((resolve) => {
+            const child = spawn(spec.command, spec.args, {
+              cwd: spec.cwd,
+              env: spec.env,
+              stdio: ["ignore", "pipe", "pipe"],
+              detached: process.platform !== "win32",
+            });
+            children.push(child);
+            const outDone = pipePrefixedLines(child.stdout, spec.label, writeOut);
+            const errDone = pipePrefixedLines(child.stderr, spec.label, writeErr);
+            child.once("error", (err) => {
+              if (!firstError) {
+                firstError = new Error(`[${spec.label}] ${err.message}`);
+                stopAll("SIGTERM");
+              }
+              void Promise.all([outDone, errDone]).then(() => resolve());
+            });
+            child.once("close", (code, signal) => {
+              if (code !== 0 && !firstError) {
+                firstError = new Error(
+                  `[${spec.label}] exited with ${code !== null ? `status ${code}` : `signal ${signal}`}`,
+                );
+                stopAll("SIGTERM");
+              }
+              void Promise.all([outDone, errDone]).then(() => resolve());
+            });
+          }),
+      ),
+    );
+  } finally {
+    if (killTimer) clearTimeout(killTimer);
+    process.off("SIGINT", onSigint);
+    process.off("SIGTERM", onSigterm);
+  }
+
+  if (firstError) throw firstError;
+}
+
+export function deferRestartArgs(remoteArgs: readonly string[]): string[] {
+  return [...remoteArgs.filter((arg) => arg !== "--restart" && arg !== "--no-restart"), "--no-restart"];
+}
+
+async function runDogfoodAll(root: string, command: Extract<DogfoodCommand, { action: "all" }>) {
+  // Validate the SSH remote exists in settings.toml before starting the local Cargo build.
+  resolveDogfoodRemoteTarget(root, command.remote);
+
+  const localArgs = [join(root, "scripts", "dogfood.ts"), "local"];
+  if (command.buildOnly) localArgs.push("--build-only");
+
+  const remoteScriptArgs = [join(root, "scripts", "dogfood-remote.ts"), ...deferRestartArgs(command.remoteArgs)];
+
+  await runParallelTasks([
+    { label: "local", command: process.execPath, args: localArgs, cwd: root, env: process.env },
+    { label: "remote", command: process.execPath, args: remoteScriptArgs, cwd: root, env: process.env },
+  ]);
+
+  await finishDogfoodRemoteRestart(root, command.remote);
+}
+
+async function main() {
+  const root = realpathSync(fileURLToPath(new URL("..", import.meta.url)));
+  const parsed = parseDogfoodArgs(process.argv.slice(2));
+  if (parsed.action === "all") {
+    await runDogfoodAll(root, parsed);
+    return;
+  }
+  const appName = process.env.DOGFOOD_APP_NAME?.trim() || DEFAULT_DOGFOOD_APP_NAME;
+  buildDogfood(root, appName);
+  if (!parsed.buildOnly) {
     installDogfood(root, appName);
   }
 }
 
 if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
-    main();
+    await main();
   } catch (error) {
     console.error(error instanceof Error ? error.message : error);
     process.exitCode = 1;
