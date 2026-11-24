@@ -741,8 +741,9 @@ function ValueView(props: {
 
 function AggregatesView({ range, value }: { range: GridRange; value: (row: number, col: number) => Cell }) {
   const cells: Cell[] = [];
-  for (let r = range.top; r <= range.bottom; r++)
-    for (let c = range.left; c <= range.right; c++) cells.push(value(r, c));
+  const rows = new Set(range.rows);
+  for (let r = range.top; r <= range.bottom; r++) rows.add(r);
+  for (const r of rows) for (let c = range.left; c <= range.right; c++) cells.push(value(r, c));
   const a = aggregates(cells);
   const show = (v: number | string | null) => (v === null ? "—" : typeof v === "number" ? formatNumber(v) : v);
   return (
