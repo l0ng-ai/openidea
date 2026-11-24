@@ -800,6 +800,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
                     onClick: (e: MouseEvent<HTMLButtonElement>) => setTaskMenu({ index: i, anchor: e.currentTarget }),
                   };
                   return (
+                    // oxlint-disable-next-line react/no-array-index-key -- tasks of one kind can repeat; position is the identity
                     <div key={i} role="listitem" className={styles.taskTag}>
                       {t.kind === "command" ? (
                         <>

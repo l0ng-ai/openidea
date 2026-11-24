@@ -567,24 +567,14 @@ const agentTabs: Scenario = {
     // The conversation shown: its requests end with its task's title.
     const SHOWN = "[data-editor-focus] [data-message]";
     const title = (n: number) => `(Sample task ${n})`;
-    // Both conversations get their earlier entries painted in background batches, also the
-    // first one, hidden behind the second as soon as it opened.
-    await h.page.waitForFunction(
-      () =>
-        [...document.querySelectorAll("[data-message]")]
-          .map((m) => m.parentElement!)
-          .filter((stream, i, all) => all.indexOf(stream) === i && stream.textContent!.includes("Turn 0:")).length ===
-        2,
-      undefined,
-      { timeout: 30_000, polling: 200 },
-    );
-    // Rows painted while hidden are laid out the first time their conversation shows.
+    // Visit each conversation to let it finish painting and laying out its history.
     for (const n of [1, 2]) {
       await h.page.getByRole("tab", { name: `Sample task ${n}` }).click();
       await h.page
         .locator(SHOWN, { hasText: title(n) })
+        .filter({ hasText: "Turn 0:" })
         .first()
-        .waitFor();
+        .waitFor({ state: "attached", timeout: 30_000 });
       await h.page.waitForTimeout(300);
     }
     // WebKit restyles a hidden conversation in full when it is shown again (Chromium keeps its

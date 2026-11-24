@@ -71,6 +71,7 @@ export function ConsoleView() {
             }}
           >
             {output.map((s, i) => (
+              // oxlint-disable-next-line react/no-array-index-key -- styled spans repeat; position is the identity
               <span key={i} style={spanStyle(s)}>
                 {s.text}
               </span>

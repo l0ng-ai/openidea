@@ -6,11 +6,13 @@ import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import styles from "./GitLog.module.css";
 
+const identityText = (text: string): ReactNode => text;
+
 export function CommitMessageContent({
   commit,
   message,
   compact = false,
-  renderText = (text) => text,
+  renderText = identityText,
   revision = commit.shortId,
 }: {
   commit: Commit;
