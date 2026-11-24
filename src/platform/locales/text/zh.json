@@ -2965,6 +2965,7 @@
   "Remove": "移除",
   "Remove All Bookmarks": "移除所有书签",
   "Remove All Breakpoints": "移除所有断点",
+  "Remove All Breakpoints In The Current File": "移除当前文件中的所有断点",
   "Remove Configuration": "移除配置",
   "Remove Data Source": "移除数据源",
   "Remove Data Source…": "移除数据源…",

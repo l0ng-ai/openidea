@@ -24,12 +24,13 @@ import { lineHasCode } from "./breakpoints/codeLines";
 import { canPlaceBreakpoint } from "./breakpoints/languages";
 import {
   removeAllBreakpoints,
+  removeFileBreakpoints,
   setMuted,
   toggleBreakpoint,
   toggleTemporaryBreakpoint,
   useBreakpoints,
 } from "./breakpoints/store";
-import { removeAllSpecial, specialAt, toggleFieldAt, toggleMethodAt } from "./breakpoints/special";
+import { removeAllSpecial, removeSpecialIn, specialAt, toggleFieldAt, toggleMethodAt } from "./breakpoints/special";
 import { removeAllExceptionClasses } from "./breakpoints/exceptionClasses";
 import { fieldAt, methodAt } from "./breakpoints/symbols";
 import { toggleBreakpointSmart } from "./breakpoints/toggle";
@@ -1139,6 +1140,17 @@ export function registerDebugActions(): () => void {
         removeAllBreakpoints();
         removeAllSpecial();
         removeAllExceptionClasses();
+      },
+    },
+    {
+      id: "debug.removeAllBreakpointsInFile",
+      title: "Remove All Breakpoints In The Current File",
+      category: "Debug",
+      run: () => {
+        const path = activeEditor()?.ctx.path;
+        if (!path) return;
+        removeFileBreakpoints(path);
+        removeSpecialIn(path);
       },
     },
     {
