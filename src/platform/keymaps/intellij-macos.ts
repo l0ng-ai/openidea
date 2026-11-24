@@ -287,6 +287,8 @@ export const intellijMacos: Record<string, string[]> = {
   "run.editConfigs": ["Ctrl+Alt+Shift+R"],
   "debug.toggleBreakpoint": ["Meta+F8"],
   "debug.viewBreakpoints": ["Meta+Shift+F8"],
+  "debug.removeAllBreakpoints": [],
+  "debug.removeAllBreakpointsInFile": [],
   "debug.resume": ["Meta+Alt+R", "F9"],
   "debug.stepOver": ["F8"],
   "debug.stepInto": ["F7"],
