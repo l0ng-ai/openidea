@@ -50,10 +50,12 @@ Content-Type: application/json
 
 Write `{{name}}` anywhere in the URL, headers or body. A name is looked up in this order:
 
-1. File variables: `@name = value` lines. They apply to the whole file; a later definition wins.
-2. The selected environment in `http-client.private.env.json`.
-3. The selected environment in `http-client.env.json`.
-4. `$shared` in the private file, then `$shared` in the public file.
+1. The selected environment in `http-client.private.env.json`.
+2. The selected environment in `http-client.env.json`.
+3. `$shared` in the private file, then `$shared` in the public file.
+4. File variables: `@name = value` lines. They apply to the whole file; a later definition wins.
+
+So a selected environment overrides a file variable of the same name, as in the JetBrains HTTP Client. With no environment selected, file variables come before `$shared`.
 
 Variables can refer to other variables. A request with an unresolved variable is not sent; the error lists the missing names. Variables inside a file inserted with `<` are not substituted.
 

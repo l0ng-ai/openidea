@@ -1316,6 +1316,15 @@ function finishSession(sessionId: string, code: number | null) {
         if (runtimes.get(sessionId) !== rt) return;
         rt.tests.finish(code);
         recordTestStates(rt.tests);
+        // The build's test task succeeded without running a test: say why instead of ending silently.
+        const ran = rt.tests.counts();
+        if (code === 0 && frameworkFor(session.config) === "jvm" && !(ran.passed + ran.failed + ran.skipped)) {
+          const why = tx(
+            "No tests ran. The build may skip them (skipTests, maven.test.skip, a disabled test task) or lack their engine: JUnit 4 tests on the JUnit Platform need junit-vintage-engine.",
+          );
+          rt.console.append({ kind: "system", text: `\n${why}\n` });
+          rt.console.flush();
+        }
       }
       patchSession(sessionId, { status: "finished", exitCode: code, endedAt: Date.now() });
       bump(sessionId);
