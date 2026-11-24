@@ -69,7 +69,12 @@ import { debugInContainer } from "./containerDebug";
 import { isDebugOnly, registerBuiltinTypes } from "./types";
 import { isZigBuildStep, zigDebugTarget } from "./zigDebug";
 import { junitType } from "./junitType";
-import { listenForApplicationDeactivation, showApplicationUpdate, updatableSessions } from "./applicationUpdate";
+import {
+  installBuildTomcatSync,
+  listenForApplicationDeactivation,
+  showApplicationUpdate,
+  updatableSessions,
+} from "./applicationUpdate";
 import { hotReload, hotReloadSession, hotRestart } from "./flutterHotReload";
 import { npmGutter } from "./npmGutter";
 import { launchSettingsGutter } from "./launchSettingsGutter";
@@ -480,6 +485,7 @@ export function activate(): () => void {
     registerExternalTools(),
     activateStackTrace(),
     listenForApplicationDeactivation(),
+    installBuildTomcatSync(),
     trackRecentConfigurations(),
     trackFailedTestSelection(),
     useDebugRunSessions.subscribe(() => setContext("run.updatableRunning", updatableSessions().length > 0)),

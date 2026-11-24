@@ -3823,5 +3823,10 @@
   "No stub or implementation found": "No stub or implementation found",
   "Implementation of {name} in {file}": "Implementation of {name} in {file}",
   "Stub of {name} in {file}": "Stub of {name} in {file}",
-  "This color can't be changed with the picker": "This color can't be changed with the picker"
+  "This color can't be changed with the picker": "This color can't be changed with the picker",
+  "HotSwap": "HotSwap",
+  "Reload classes after compilation": "Reload classes after compilation",
+  "Reload changed classes into running Java debug sessions after Build Project, Build Module, or Recompile succeeds.": "Reload changed classes into running Java debug sessions after Build Project, Build Module, or Recompile succeeds.",
+  "Reload '{fileName}' into the running debug session?": "Reload '{fileName}' into the running debug session?",
+  "Tomcat classes updated": "Tomcat classes updated"
 }
