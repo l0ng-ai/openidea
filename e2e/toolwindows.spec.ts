@@ -177,18 +177,18 @@ test("a tool window resize keeps its cursor over other controls until release", 
   const gap = page.locator('[data-gap="left"]');
   const box = (await gap.boundingBox())!;
   const hide = page.getByRole("region", { name: "Project" }).getByRole("button", { name: "Hide", exact: true });
-  const cursor = () => hide.evaluate((el) => getComputedStyle(el).cursor);
-
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
-  await page.mouse.move(box.x + 80, box.y + box.height / 2, { steps: 4 });
-  // The pointer is over the Project tree now; the button's own arrow cursor must not win.
-  await expect.poll(cursor).toBe("col-resize");
-  expect(await page.evaluate(() => document.documentElement.hasAttribute("data-drag-cursor"))).toBe(true);
-
+  const x = box.x + 80;
+  const y = box.y + box.height / 2;
+  await page.mouse.move(x, y, { steps: 4 });
+  const hitCursor = () =>
+    page.evaluate(({ x, y }) => getComputedStyle(document.elementFromPoint(x, y)!).cursor, { x, y });
+  await expect.poll(hitCursor).toBe("col-resize");
+  await expect(page.locator("[data-drag-cursor-surface]")).toHaveCount(1);
   await page.mouse.up();
-  await expect.poll(cursor).toBe("default");
-  expect(await page.evaluate(() => document.documentElement.hasAttribute("data-drag-cursor"))).toBe(false);
+  await expect(page.locator("[data-drag-cursor-surface]")).toHaveCount(0);
+  await expect(hide).toHaveCSS("cursor", "default");
 });
 
 test("the Terminal sends typed commands to the shell and shows its output", async ({ workbench: page }) => {
