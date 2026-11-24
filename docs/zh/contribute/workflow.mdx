@@ -76,12 +76,12 @@ description: "issue 如何分流、PR 需要包含什么、验证说明如何检
 
 `.github/workflows/ci.yml` 先按改动的文件分类，只改文档或只改前端的 PR 会跳过与之无关的任务：
 
-- **Rust**：在 macOS、Ubuntu 22.04、Windows 上运行 `cargo fmt --check`（仅 Linux）、带 `-D warnings` 的 clippy、`cargo nextest run --workspace`，并检查 `src/bindings.ts` 是否最新。
+- **Rust**：在 macOS、Ubuntu、Windows 上运行 `cargo fmt --check`（仅 Linux）、带 `-D warnings` 的 clippy、`cargo nextest run --workspace`，并检查 `src/bindings.ts` 是否最新。
 - **Remote server**：`openidea-server` 的静态 Linux（musl）构建。
 - **Plugins**：SDK、官方插件和测试夹具的格式、clippy（宿主与 `wasm32-wasip2`）和测试；插件 Web 页面的类型检查与测试；`plugins/build.sh --check`。
 - **Cargo deny**：`cargo deny check`（许可证、安全公告、依赖来源）。
 - **Frontend**：类型检查、lint、格式检查、knip、测试、构建。
-- **E2E**：在 Playwright 容器里运行 `pnpm e2e`。
+- **E2E**：在 Chromium 中运行 `pnpm e2e`。
 
 当 crates、`languages/`、`fixtures/`、运行/调试功能、`src/platform/` 或 `smoke/` 有改动时，`.github/workflows/language-smoke.yml` 会运行[语言冒烟测试](/zh/contribute/testing/smoke)。
 
