@@ -859,7 +859,11 @@ export const commands = {
 	lspCodeActionQuery: (request: RequestId, doc: DocId, range: Range, only: string[]) => typedError<CodeActionQuery, IdeError>(__TAURI_INVOKE("lsp_code_action_query", { request, doc, range, only })),
 	lspCodeActions: (doc: DocId, range: Range, only: string[]) => typedError<CodeAction[], IdeError>(__TAURI_INVOKE("lsp_code_actions", { doc, range, only })),
 	lspCodeLens: (doc: DocId) => typedError<CodeLens[], IdeError>(__TAURI_INVOKE("lsp_code_lens", { doc })),
+	/**  How the server that reported `color` writes it with new components. */
+	lspColorPresentations: (doc: DocId, color: DocumentColor) => typedError<ColorPresentation[], IdeError>(__TAURI_INVOKE("lsp_color_presentations", { doc, color })),
 	lspCompletion: (request: RequestId, doc: DocId, pos: Pos, trigger: string | null) => typedError<CompletionList, IdeError>(__TAURI_INVOKE("lsp_completion", { request, doc, pos, trigger })),
+	/**  Colors in a document from its language servers (Tailwind classes, CSS values…). */
+	lspDocumentColors: (doc: DocId) => typedError<DocumentColor[], IdeError>(__TAURI_INVOKE("lsp_document_colors", { doc })),
 	lspDocumentHighlights: (doc: DocId, pos: Pos) => typedError<Highlight[], IdeError>(__TAURI_INVOKE("lsp_document_highlights", { doc, pos })),
 	/**  Links in a document (`href`s, Markdown links, `#include`s…) from its language servers. */
 	lspDocumentLinks: (doc: DocId) => typedError<DocumentLink[], IdeError>(__TAURI_INVOKE("lsp_document_links", { doc })),
@@ -4231,6 +4235,15 @@ export type ColorInfo = {
 	alpha: number | null,
 };
 
+/**
+ *  One way to write a picked color (`textDocument/colorPresentation`): `edits` replace the
+ *  color's range (with `label` unless the server gave its own edit), then any extra edits.
+ */
+export type ColorPresentation = {
+	label: string,
+	edits: TextEdit[],
+};
+
 export type Command = {
 	title: string,
 	command: string,
@@ -6181,6 +6194,16 @@ export type DocumentChanged = {
 	baseVersion: number,
 	version: number,
 	changes: DocumentTextChange[],
+};
+
+/**  A color a server found in a document (`textDocument/documentColor`); components are 0–1. */
+export type DocumentColor = {
+	range: Range,
+	red: number | null,
+	green: number | null,
+	blue: number | null,
+	alpha: number | null,
+	server: ServerId,
 };
 
 /**  Encoding and BOM currently applied to an open document. */

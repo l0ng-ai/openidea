@@ -348,7 +348,9 @@ lsp_change_signature                         trusted            project_host bin
 lsp_code_action_query                        trusted            project_host bindings async
 lsp_code_actions                             trusted            project_host bindings async
 lsp_code_lens                                trusted            project_host bindings async
+lsp_color_presentations                      trusted            project_host bindings async
 lsp_completion                               trusted            project_host bindings async
+lsp_document_colors                          trusted            project_host bindings async
 lsp_document_highlights                      trusted            project_host bindings async
 lsp_document_links                           trusted            project_host bindings async
 lsp_exception_class_at                       trusted            project_host bindings async

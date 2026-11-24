@@ -10052,5 +10052,6 @@
   "Implementation": "实现",
   "No stub or implementation found": "未找到存根或实现",
   "Implementation of {name} in {file}": "{file} 中 {name} 的实现",
-  "Stub of {name} in {file}": "{file} 中 {name} 的存根"
+  "Stub of {name} in {file}": "{file} 中 {name} 的存根",
+  "This color can't be changed with the picker": "无法用颜色选择器修改此颜色"
 }
