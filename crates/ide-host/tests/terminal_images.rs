@@ -30,6 +30,7 @@ async fn storage_requires_a_registered_terminal() {
             "main".into(),
             Arc::new(NullSink),
             Box::new(|_| {}),
+            None,
         )
         .unwrap();
     for mime in ["image/png", "audio/mpeg", "video/mp4"] {

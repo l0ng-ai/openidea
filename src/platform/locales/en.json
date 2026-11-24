@@ -211,6 +211,7 @@
   "menu.file.openFile": "Open File…",
   "menu.remote.connect": "Remote Development…",
   "menu.remote.disconnect": "Disconnect from Remote Host",
+  "menu.remote.stopBackend": "Stop Remote Backend",
   "menu.navigationBar": "Navigation Bar",
   "menu.run.updateApplication": "Update Application",
   "menu.ssh.startSession": "Start SSH Session…",

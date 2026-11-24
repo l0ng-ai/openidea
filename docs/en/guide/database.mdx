@@ -150,7 +150,8 @@ With focus on a result tab or inside a result, use `⇧⌘]` / `⇧⌘[` in the 
 Closing a selected result activates its left neighbor, or its right neighbor if there is no result on the left. When no results remain, **Output** is selected. Closing an inactive result keeps the current selection.
 
 - **Table** or **Chart** view (bar or line, with X/Y columns and an aggregation).
-- Paging with page sizes 10 to 1,000; click the row count to count all rows.
+- Paging with page sizes 10 to 1,000; click the row count to count all rows. Paging forward continues the running query instead of reading the earlier rows again; a result you stop paging for 30 seconds, or close, releases it.
+- A cell longer than 8,192 characters of a read-only query shows its start with a **truncated** tag. Copying it, editing it, opening it in the side panel (**Load whole value**) or exporting the page reads the whole value first. Local filter, search and sort see only the start.
 - **Search in results** and a per-column local filter on the loaded rows.
 - A side panel with **Record**, **Value** and **Aggregates** (count, distinct, nulls, sum, average, median, min, max).
 - JSON values get a JSON editor with **Reformat** and **Open in Window**.

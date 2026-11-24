@@ -193,6 +193,8 @@ describe("remote paths", () => {
     expect(remoteParent("/var/www/app")).toBe("/var/www");
     expect(remoteParent("/var")).toBe("/");
     expect(remoteParent("/")).toBe("/");
+    expect(remoteParent("C:/file.txt")).toBe("C:/");
+    expect(remoteParent("C:/")).toBe("C:/");
     expect(remoteName("/var/www/app/")).toBe("app");
   });
 

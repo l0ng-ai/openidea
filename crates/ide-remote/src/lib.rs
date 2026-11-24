@@ -9,6 +9,7 @@ pub mod import;
 pub mod mapping;
 pub mod service;
 pub mod target;
+pub mod upload;
 
 pub use deploy::{
     Deployment, DeploymentCoverage, SyncAction, SyncEntry, SyncStatus, SyncStep, TransferReport, coverage,

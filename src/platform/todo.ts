@@ -87,6 +87,7 @@ export function buildTodoQuery(s: TodoSettings, scope: SearchScope = { kind: "pr
     exclude: [],
     scope,
     maxMatches: 0,
+    skipLargeFiles: true,
   };
 }
 

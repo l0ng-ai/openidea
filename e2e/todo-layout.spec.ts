@@ -5,8 +5,10 @@ test("keeps the file count visible beside a long directory in the TODO pane", as
   await page.evaluate(async () => {
     const projectModule = "/src/platform/project.ts";
     const todoModule = "/src/features/todo/store.ts";
+    const layoutModule = "/src/workbench/toolwindows/store.ts";
     const { useProject } = await import(/* @vite-ignore */ projectModule);
     const { useTodos } = await import(/* @vite-ignore */ todoModule);
+    const { showToolWindow } = await import(/* @vite-ignore */ layoutModule);
     const directory = "src/features/checkout/shared/services/with-a-long-directory-name/for-order-processing";
     const path = `${useProject.getState().project.root}/${directory}/orders.ts`;
     useTodos.setState({
@@ -14,9 +16,9 @@ test("keeps the file count visible beside a long directory in the TODO pane", as
       error: null,
       scanned: new Map([[path, [{ path, line: 8, col: 3, keyword: "TODO", text: "TODO: validate orders" }]]]),
     });
+    showToolWindow("todo", true);
   });
 
-  await page.getByRole("button", { name: "TODO" }).click();
   const pane = page.locator('[data-toolwindow="todo"]');
   const toolbar = pane.getByRole("toolbar", { name: "TODO actions" });
   await expect(toolbar).toHaveAttribute("aria-orientation", "vertical");

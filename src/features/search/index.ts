@@ -218,6 +218,7 @@ export function activate(): void | (() => void) {
       anchor: "left",
       secondary: true,
       order: 30,
+      stripe: "onUse",
       component: lazyComponent(() => import("./bookmarks/BookmarksView").then((m) => m.BookmarksView)),
       headerActions: lazyComponent(() => import("./bookmarks/BookmarksView").then((m) => m.BookmarksActions)),
       useBadge: () => null,

@@ -252,17 +252,10 @@ pub fn window_take_settings_init(
     let owner = AppState::owner_window(window.label());
     let launch = windows.take_launch(window.label());
     let (remote, project) = if let Some(c) = state.remote_dev.get(owner) {
-        let session = crate::remote_dev::RemoteSession {
-            target: c.target.clone(),
-            root: c.root.clone(),
-            host: c.host.clone(),
-            os: c.os.clone(),
-            commands: c.commands.clone(),
-        };
         // Leave `project` empty on remote sessions: the Settings page tree renders immediately
         // from local client settings, and `projectCurrent()` fills in project-scoped settings
         // right after first paint without keeping a shadow cache in sync.
-        (Some(session), None)
+        (Some(c.snapshot()), None)
     } else {
         let project = state.project(owner).ok().filter(|p| !p.light).map(|p| ide_host::ops::project::info(&p));
         (None, project)

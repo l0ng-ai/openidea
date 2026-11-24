@@ -5,6 +5,8 @@
 
 pub mod agent_secrets;
 pub mod catalogue;
+#[cfg(unix)]
+pub mod daemon;
 pub mod data_dirs;
 pub mod diagnostics_store;
 mod direnv;
@@ -104,6 +106,7 @@ pub struct Host {
     syntax: Arc<OnceLock<Arc<Syntax>>>,
     pub global_settings: SettingsStore,
     pub dependency_versions: Arc<ide_workspace::dependencies::VersionCache>,
+    pub pypi_names: Arc<ide_workspace::dependencies::pypi::NameCache>,
     pub terminals: TerminalManager,
     pub processes: ProcessManager,
     /// Debug sessions (adapters run on this machine, next to the project).
@@ -205,6 +208,7 @@ impl Host {
             dependency_versions: Arc::new(ide_workspace::dependencies::VersionCache::new(
                 data_dir.join("cache/dependency-versions"),
             )),
+            pypi_names: Arc::new(ide_workspace::dependencies::pypi::NameCache::new(data_dir.join("cache"))),
             // Sessions, runs and terminals report to the window that started them (`window_sink`).
             terminals: TerminalManager::new(),
             processes: ProcessManager::new(),
@@ -526,6 +530,25 @@ impl Host {
         }
     }
 
+    /// Cleans up per-connection client state when a remote window disconnects from a
+    /// persistent daemon, leaving the project, index, language servers, terminals,
+    /// runs and agent sessions running.
+    pub fn client_disconnected(&self) {
+        let windows: Vec<String> = self.projects.read().keys().cloned().collect();
+        for window in &windows {
+            self.mcp_reports.forget_window(window);
+            self.mcp_requests.forget_window(window);
+            for request in self.project_requests.write().remove(self.owner_window(window)).unwrap_or_default() {
+                self.cancel_request(request);
+            }
+        }
+        self.terminals.detach_output();
+        self.processes.detach_output();
+        for project in self.projects() {
+            project.documents.release_client_refs();
+        }
+    }
+
     /// Stops what this host started: heap snapshots, notebook kernels, language servers, agents,
     /// runs and terminals.
     /// For a process that exits without dropping the host (the remote server).
@@ -533,7 +556,6 @@ impl Host {
         // A capture's dump may hold secrets from the debuggee's memory: delete it before exiting.
         ops::heap::shutdown(self).await;
         self.environment.shutdown();
-        self.processes.kill_all();
         self.terminals.kill_all();
         let projects: Vec<_> = self.projects.write().drain().map(|(_, p)| p).collect();
         for project in &projects {
@@ -553,22 +575,33 @@ impl Host {
             project.notebooks.stop_admission();
             project.agents.shutdown();
         }
+        let stop_processes = async {
+            for project in &projects {
+                self.debugger.stop_under(&project.root).await;
+            }
+            self.processes.shutdown().await;
+        };
         // Kernel cleanup owns its interrupt/termination/reaping deadlines. An
         // outer LSP timeout must never abort it before owned children are reaped.
-        for project in &projects {
-            if let Some(bridge) = &project.kotlin_bridge {
-                bridge.shutdown().await;
+        let stop_kernels = async {
+            for project in &projects {
+                if let Some(bridge) = &project.kotlin_bridge {
+                    bridge.shutdown().await;
+                }
+                project.notebooks.shutdown().await;
             }
-            project.notebooks.shutdown().await;
-        }
+        };
         let stop_language_servers = async {
             for project in &projects {
                 project.lsp.shutdown_all().await;
             }
         };
-        if tokio::time::timeout(std::time::Duration::from_secs(10), stop_language_servers).await.is_err() {
-            tracing::warn!("language servers did not shut down in time");
-        }
+        let stop_lsp = async {
+            if tokio::time::timeout(std::time::Duration::from_secs(10), stop_language_servers).await.is_err() {
+                tracing::warn!("language servers did not shut down in time");
+            }
+        };
+        tokio::join!(stop_processes, stop_kernels, stop_lsp);
     }
 
     // ---- cancellable requests: the UI allocates ids, `cancel_request` cancels ----

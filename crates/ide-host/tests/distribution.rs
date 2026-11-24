@@ -209,6 +209,11 @@ fn write_index(
     path.to_string_lossy().into_owned()
 }
 
+/// The download sources setting with `mirror` as the GitHub proxy prefix (Tools › Download sources).
+fn download_sources(mirror: &str) -> ide_core::settings::ToolDownloadSettings {
+    ide_core::settings::ToolDownloadSettings { github_mirror: mirror.into() }
+}
+
 /// Security audit lead 5: an index entry's id and version name the download file,
 /// so an entry whose id or version would place it outside the downloads folder
 /// is not offered, and nothing is written for it.
@@ -437,6 +442,168 @@ fn serve(body: String) -> String {
             body.len()
         );
     })
+}
+
+/// A loopback HTTP server that logs every request path it is asked for and answers with
+/// `bytes` (a package file); the base URL to put in front of the GitHub one.
+fn serve_bytes(bytes: Vec<u8>, paths: Arc<Mutex<Vec<String>>>) -> String {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap_or(0) > 0 {
+                paths.lock().push(line.trim().to_owned());
+            }
+            while reader.read_line(&mut line).unwrap_or(0) > 0 && line != "\r\n" {
+                line.clear();
+            }
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                bytes.len()
+            );
+            let _ = stream.write_all(&bytes);
+        }
+    });
+    base
+}
+
+/// A configured mirror is tried before the official host, and its bytes must still pass the
+/// index's digest and the publisher's signature: a mirror only ever carries the download
+/// (Tools › Download sources), never the trust root.
+#[test]
+fn a_mirror_prefix_carries_plugin_packages_and_only_bytes_that_check() {
+    let f = fixture();
+    let market = f.work.join("market");
+    std::fs::create_dir_all(&market).unwrap();
+    let key = PublisherKey::from_seed([3; 32]);
+    let (package, mut entry) = signed_hello(&market, "1.0.0", &key, &f.host);
+    // The download is a GitHub one, which is the only kind a prefix may carry.
+    entry.download = format!(
+        "https://github.com/acme/openidea-hello/releases/download/v1.0.0/{}",
+        package.file_name().unwrap().to_string_lossy()
+    );
+    let url = write_index(&market, &key, vec![entry.clone()], vec![], false);
+    f.host.set_market_url(Some(url));
+    f.host.refresh_market().unwrap();
+
+    // The mirror answers with the real package.
+    let paths: Arc<Mutex<Vec<String>>> = Arc::default();
+    let base = serve_bytes(std::fs::read(&package).unwrap(), paths.clone());
+    f.host.set_downloads(download_sources(&base));
+    let dir = f.host.download_market_plugin("acme.hello").unwrap();
+    assert_eq!(f.host.preview_install(&dir).unwrap().version, "1.0.0");
+    let asked = paths.lock().clone();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert!(
+        asked[0].contains(entry.download.trim_start_matches("https://")),
+        "the official URL is appended to the prefix unchanged: {asked:?}"
+    );
+
+    // No mirror: the official URL is what is asked for, exactly as before.
+    f.host.set_downloads(download_sources(""));
+    assert_eq!(
+        ide_tools::mirror::candidates(&entry.download, &download_sources("")),
+        vec![ide_tools::mirror::Candidate { url: entry.download.clone(), mirror: None }]
+    );
+
+    // A download that is not on GitHub is not one a prefix may carry: it stays official.
+    let mut local = entry.clone();
+    local.download = package.to_string_lossy().into_owned();
+    assert_eq!(
+        ide_tools::mirror::candidates(&local.download, &download_sources(&base)),
+        vec![ide_tools::mirror::Candidate { url: local.download.clone(), mirror: None }]
+    );
+}
+
+/// A mirror serving a tampered package is a source that fails its checks — and the unpacked
+/// bytes it served must not be left behind where the install page reads from.
+///
+/// The index has no hash of the archive itself (only `package_digest` of the unpacked
+/// contents), so the bytes have to be unpacked before they can be checked; the test therefore
+/// watches the staging folders, not the archive.
+#[test]
+fn a_tampered_package_from_a_mirror_is_refused_and_leaves_nothing_behind() {
+    let f = fixture();
+    let market = f.work.join("market");
+    std::fs::create_dir_all(&market).unwrap();
+    let key = PublisherKey::from_seed([3; 32]);
+    let (package, mut entry) = signed_hello(&market, "1.0.0", &key, &f.host);
+    entry.download = format!(
+        "https://github.com/acme/openidea-hello/releases/download/v1.0.0/{}",
+        package.file_name().unwrap().to_string_lossy()
+    );
+    let url = write_index(&market, &key, vec![entry.clone()], vec![], false);
+    f.host.set_market_url(Some(url));
+    f.host.refresh_market().unwrap();
+
+    // A package whose manifest was changed after signing: its digest disagrees with the index,
+    // and it carries no signature at all.
+    let tampered = {
+        let dir = f.work.join("tampered-src");
+        std::fs::create_dir_all(&dir).unwrap();
+        let unpacked = f.host.unpack_package(&package).unwrap();
+        copy_dir(&unpacked, &dir.join("pkg"));
+        let manifest = std::fs::read_to_string(dir.join("pkg/plugin.toml")).unwrap();
+        std::fs::write(dir.join("pkg/plugin.toml"), manifest.replace("Sample plugin", "Totally safe plugin")).unwrap();
+        let files = f.host.package_files_of(&dir.join("pkg")).unwrap();
+        let out = dir.join("tampered.oiplugin");
+        package::pack(&dir.join("pkg"), &files, &out, None).unwrap();
+        out
+    };
+
+    let mirror_paths: Arc<Mutex<Vec<String>>> = Arc::default();
+    let mirror = serve_bytes(std::fs::read(&tampered).unwrap(), mirror_paths.clone());
+    let downloads = f.plugins_dir.join(".downloads");
+    // Browsing the package above went through `unpack_package`, which stages a folder of its
+    // own: clear what that left so the baseline is this attempt's alone.
+    for dir in staging_dirs(&downloads) {
+        let _ = std::fs::remove_dir_all(downloads.join(dir));
+    }
+    let staging_before = staging_dirs(&downloads);
+    assert!(staging_before.is_empty(), "{staging_before:?}");
+
+    // The mirror answers with the tampered package, and it is the only source configured: the
+    // download must fail rather than install what the mirror served.
+    f.host.set_downloads(download_sources(&mirror));
+    let err = f.host.download_market_plugin("acme.hello").unwrap_err();
+    assert!(err.message.contains("could not download"), "{}", err.message);
+    assert!(err.message.contains("does not match the marketplace's entry"), "{}", err.message);
+    assert_eq!(mirror_paths.lock().len(), 1, "the mirror was asked once");
+
+    // Nothing the mirror served stays where the install page reads from, and the staging folder
+    // of the refused attempt is gone.
+    assert_eq!(staging_dirs(&downloads), staging_before, "a refused package left its staging folder");
+    let leftovers: Vec<PathBuf> = std::fs::read_dir(&downloads)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.to_string_lossy().contains("acme.hello"))
+        .collect();
+    assert!(leftovers.is_empty(), "a refused package left files behind: {leftovers:?}");
+
+    // The official host, serving the real package, still installs.
+    let official_paths: Arc<Mutex<Vec<String>>> = Arc::default();
+    let official = serve_bytes(std::fs::read(&package).unwrap(), official_paths.clone());
+    f.host.set_downloads(download_sources(&official));
+    let dir = f.host.download_market_plugin("acme.hello").unwrap();
+    assert_eq!(f.host.preview_install(&dir).unwrap().version, "1.0.0");
+    assert_eq!(official_paths.lock().len(), 1);
+}
+
+/// The staging folders under `<plugins>/.downloads`: one per unpacked package, `<stem>-<pid>`.
+fn staging_dirs(downloads: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(downloads) else { return Vec::new() };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
 }
 
 /// An index is read up to the size an index may have, whatever its server says or sends:

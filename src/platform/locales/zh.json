@@ -211,6 +211,7 @@
   "menu.file.openFile": "打开文件…",
   "menu.remote.connect": "远程开发…",
   "menu.remote.disconnect": "断开与远程主机的连接",
+  "menu.remote.stopBackend": "停止远程后端",
   "menu.navigationBar": "导航栏",
   "menu.run.updateApplication": "更新应用",
   "menu.ssh.startSession": "启动 SSH 会话…",
