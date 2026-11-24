@@ -37,6 +37,8 @@ pub struct SingleFileTarget {
     pub pl: String,
     /// `maven.compiler.release` (or equivalent) of the module's project.
     pub java_version: Option<u32>,
+    /// `project.build.sourceEncoding` of the module's project, as the POM spells it.
+    pub source_encoding: Option<String>,
 }
 
 /// Locates the linked Maven module owning a `.java` source file.
@@ -73,7 +75,15 @@ pub fn single_file_target(root: &Path, model: &BuildModel, file: &Path) -> IdeRe
     let parts: Vec<&str> = rel.split('/').collect();
     let test = parts.windows(2).any(|w| w == ["src", "test"]);
     let out_dir = module.join("target").join(if test { "test-classes" } else { "classes" });
-    Ok(SingleFileTarget { module, test, out_dir, top: top.clone(), pl, java_version: project.java_version })
+    Ok(SingleFileTarget {
+        module,
+        test,
+        out_dir,
+        top: top.clone(),
+        pl,
+        java_version: project.java_version,
+        source_encoding: project.source_encoding.clone(),
+    })
 }
 
 /// The Maven reactor target for a launch module whose source file is not known yet.
@@ -95,7 +105,15 @@ fn module_target(root: &Path, model: &BuildModel, module: &Path, test: bool) -> 
     let top_dir = subdir(root, &top.dir);
     let pl = module.strip_prefix(&top_dir).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
     let out_dir = module.join("target").join(if test { "test-classes" } else { "classes" });
-    Ok(SingleFileTarget { module, test, out_dir, top: top.clone(), pl, java_version: project.java_version })
+    Ok(SingleFileTarget {
+        module,
+        test,
+        out_dir,
+        top: top.clone(),
+        pl,
+        java_version: project.java_version,
+        source_encoding: project.source_encoding.clone(),
+    })
 }
 
 /// `javac` for the module: its `JAVA_HOME`, else `PATH`.
@@ -336,7 +354,7 @@ pub fn javac_step(target: &SingleFileTarget, file: &Path, classpath: &str, javac
     let mut step = BuildStep::new(javac, &[], &target.module, Format::Gradle);
     // Raw `javac` prints `path:line: error: …`, the same form Gradle forwards.
     step.args.push("-encoding".into());
-    step.args.push("UTF-8".into());
+    step.args.push(target.source_encoding.clone().unwrap_or_else(|| "UTF-8".into()));
     step.args.push("-d".into());
     step.args.push(target.out_dir.to_string_lossy().into_owned());
     step.args.push("-cp".into());
@@ -490,6 +508,34 @@ mod tests {
         assert!(step.args.iter().any(|a| a == "-implicit:none"), "{args}");
         // No `JAVA_HOME`: plain `javac` from `PATH`.
         assert_eq!(find_javac(&BTreeMap::new()), exe);
+    }
+
+    #[test]
+    fn javac_reads_sources_in_the_encoding_of_the_module_pom() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fixture(root);
+        write(
+            root,
+            "app/pom.xml",
+            r#"<project><parent><groupId>demo</groupId><artifactId>parent</artifactId><version>1</version></parent>
+            <artifactId>app</artifactId>
+            <properties><project.build.sourceEncoding>ISO-8859-15</project.build.sourceEncoding></properties></project>"#,
+        );
+        let model = crate::load(root, &root.join("cache"), None);
+        let encoding_of = |file: &str| {
+            let file = root.join(file);
+            let target = single_file_target(root, &model, &file).unwrap();
+            let step = javac_step(&target, &file, "", "javac").unwrap();
+            let at = step.args.iter().position(|a| a == "-encoding").expect("an -encoding");
+            step.args[at + 1].clone()
+        };
+        assert_eq!(encoding_of("app/src/main/java/demo/Main.java"), "ISO-8859-15");
+        // A module whose POM says nothing keeps the UTF-8 default.
+        write(root, "lib/src/main/java/demo/Lib.java", "class Lib {}");
+        assert_eq!(encoding_of("lib/src/main/java/demo/Lib.java"), "UTF-8");
+        let launch = module_target(root, &model, &root.join("app"), false).unwrap();
+        assert_eq!(launch.source_encoding.as_deref(), Some("ISO-8859-15"));
     }
 
     /// The classpath probe runs the project's Maven command with `-pl … -am`

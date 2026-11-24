@@ -721,6 +721,12 @@ impl Host {
         for (key, text, dirty) in &carried {
             let _ = project.documents.restore_untitled_buffer(key, text, *dirty);
         }
+        // Before the window restores its editors: a module's sources open in the encoding of its POM.
+        if project.is_trusted()
+            && let Err(e) = crate::ops::build::load_source_encodings(&project, &self.config_dir)
+        {
+            tracing::warn!("build model of {}: {e}", project.root.display());
+        }
         project.lsp.prewarm_java_configuration();
         if let Some(bridge) = &project.kotlin_bridge {
             bridge.start(&self.runtime);

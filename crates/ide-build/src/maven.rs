@@ -73,6 +73,8 @@ pub struct MavenProject {
     pub profiles: Vec<String>,
     /// Java feature version the project compiles for (`maven.compiler.release`, `java.version`…).
     pub java_version: Option<u32>,
+    /// `project.build.sourceEncoding` as the POM spells it (a Java charset name such as `ISO-8859-15`).
+    pub source_encoding: Option<String>,
     /// Maven launcher: the nearest `mvnw` (absolute), else `mvn`. Inside the opened
     /// project the search stops at its root; outside it, the search stops before
     /// that root so a linked project keeps its own wrapper.
@@ -1488,6 +1490,10 @@ pub fn load_with_linked_jdk(
             .find_map(|k| props.get(*k).map(|v| i(v)))
             .or_else(|| ctx.compiler_release.as_deref().map(i))
             .and_then(|v| java_version(&v));
+        let source_encoding = props
+            .get("project.build.sourceEncoding")
+            .map(|v| i(v).trim().to_owned())
+            .filter(|v| !v.is_empty() && !v.contains("${"));
 
         // The project can activate the profiles of its own POM and its ancestors'.
         for (id, active) in &ctx.profiles {
@@ -1519,6 +1525,7 @@ pub fn load_with_linked_jdk(
             dependencies,
             profiles: ctx.profiles.iter().map(|(id, _)| id.clone()).collect(),
             java_version: jv,
+            source_encoding,
             command: wrapper(&canonical_root, &dir_canon),
             options: Vec::new(),
             env: BTreeMap::new(),
@@ -2737,6 +2744,56 @@ mod tests {
                 "{build}"
             );
         }
+    }
+
+    #[test]
+    fn source_encoding_comes_from_the_pom_properties_and_is_inherited() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "pom.xml",
+            r#"<project><groupId>demo</groupId><artifactId>parent</artifactId><version>1.0</version>
+              <packaging>pom</packaging><modules><module>legacy</module><module>modern</module></modules>
+              <properties><legacy.charset>ISO-8859-15</legacy.charset>
+                <project.build.sourceEncoding>${legacy.charset}</project.build.sourceEncoding></properties>
+            </project>"#,
+        );
+        write(
+            root,
+            "legacy/pom.xml",
+            r#"<project><parent><groupId>demo</groupId><artifactId>parent</artifactId><version>1.0</version></parent>
+              <artifactId>legacy</artifactId></project>"#,
+        );
+        write(
+            root,
+            "modern/pom.xml",
+            r#"<project><parent><groupId>demo</groupId><artifactId>parent</artifactId><version>1.0</version></parent>
+              <artifactId>modern</artifactId>
+              <properties><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties></project>"#,
+        );
+        write(
+            root,
+            "plain/pom.xml",
+            r#"<project><artifactId>plain</artifactId>
+              <properties><project.build.sourceEncoding>${undefined.charset}</project.build.sourceEncoding></properties></project>"#,
+        );
+        let encodings = |root: &Path| -> Vec<(String, Option<String>)> {
+            load_with_repo(root, None).projects.into_iter().map(|p| (p.dir, p.source_encoding)).collect()
+        };
+        assert_eq!(
+            encodings(root),
+            [
+                (String::new(), Some("ISO-8859-15".to_owned())),
+                ("legacy".to_owned(), Some("ISO-8859-15".to_owned())),
+                ("modern".to_owned(), Some("UTF-8".to_owned())),
+            ]
+        );
+        // No property, or one that does not resolve: no encoding.
+        assert_eq!(encodings(&root.join("plain")), [(String::new(), None)]);
+        assert_eq!(encodings(&root.join("legacy")), [(String::new(), Some("ISO-8859-15".to_owned()))]);
+        write(root, "bare/pom.xml", "<project><artifactId>bare</artifactId></project>");
+        assert_eq!(encodings(&root.join("bare")), [(String::new(), None)]);
     }
 
     #[test]

@@ -174,6 +174,37 @@ pub(crate) fn decode(bytes: &[u8]) -> (String, &'static Encoding, bool, bool) {
     (text.into_owned(), enc, false, false)
 }
 
+pub(crate) enum Resolution {
+    Keep,
+    /// Plain ASCII reads the same in the configured encoding: only the label changes.
+    Relabel(&'static Encoding),
+    Redecode(&'static Encoding),
+}
+
+/// How decoded text meets the configured encoding (`fallback`). BOM-marked, UTF-16 and
+/// non-ASCII UTF-8 text keep what was detected; plain ASCII takes the configured encoding
+/// so characters typed later are saved in it; other text is decoded as configured.
+pub(crate) fn resolve(
+    text: &str,
+    detected: &'static Encoding,
+    has_bom: bool,
+    binary: bool,
+    fallback: Option<&str>,
+) -> Resolution {
+    let Some(fallback) = fallback.and_then(|label| Encoding::for_label(label.trim().as_bytes())) else {
+        return Resolution::Keep;
+    };
+    if binary || has_bom || fallback == detected || detected == UTF_16LE || detected == UTF_16BE {
+        Resolution::Keep
+    } else if detected != UTF_8 {
+        Resolution::Redecode(fallback)
+    } else if fallback.is_ascii_compatible() && text.is_ascii() {
+        Resolution::Relabel(fallback)
+    } else {
+        Resolution::Keep
+    }
+}
+
 /// Bytes of a file inside an archive (size-checked) and the archive's mtime.
 fn archive_bytes(path: &Path) -> IdeResult<Option<(Vec<u8>, f64)>> {
     let Some((archive, entry)) = crate::split_archive_path(path) else { return Ok(None) };
@@ -246,15 +277,13 @@ pub(crate) fn load_text_bounded(path: &Path, fallback: Option<&str>, max_bytes: 
     }
     let len = bytes.len() as u64;
     let (mut text, mut enc, has_bom, binary) = decode(&bytes);
-    if !binary
-        && !has_bom
-        && enc != UTF_8
-        && enc != UTF_16LE
-        && enc != UTF_16BE
-        && let Some(fallback) = fallback.and_then(|label| Encoding::for_label(label.trim().as_bytes()))
-    {
-        text = fallback.decode_without_bom_handling(&bytes).0.into_owned();
-        enc = fallback;
+    match resolve(&text, enc, has_bom, binary, fallback) {
+        Resolution::Keep => {}
+        Resolution::Relabel(fallback) => enc = fallback,
+        Resolution::Redecode(fallback) => {
+            text = fallback.decode_without_bom_handling(&bytes).0.into_owned();
+            enc = fallback;
+        }
     }
     if text.len() > max_bytes {
         return Err(IdeError::invalid("decoded document is too large"));

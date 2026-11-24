@@ -58,6 +58,7 @@ function mavenModel(dirs: string[]): BuildModel {
         dependencies: [],
         profiles: [],
         javaVersion: null,
+        sourceEncoding: null,
         command: "mvn",
         options: [],
         env: {},

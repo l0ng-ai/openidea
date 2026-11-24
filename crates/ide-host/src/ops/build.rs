@@ -1,5 +1,6 @@
 //! Maven / Gradle tool windows (the build model and its background sync) and
 //! Build › Build Project (compiling with the project's build system).
+mod source_encoding;
 pub(super) mod workspace;
 
 use super::dependencies::{MavenCentralArtifacts, MavenCentralGroups, MavenCentralVersions};
@@ -200,7 +201,30 @@ pub async fn build_model(host: &Host, window: &str) -> IdeResult<BuildModel> {
     host.require_trust(window)?;
     let project = host.project(window)?;
     let config = host.config_dir.clone();
-    tokio::task::spawn_blocking(move || workspace::load_project(&project, &config)).await.map_err(join_err)?
+    tokio::task::spawn_blocking(move || load_project(&project, &config)).await.map_err(join_err)?
+}
+
+/// The project's build model. Each load hands the source encodings of its Maven modules
+/// to the document layer, so the editor follows the POMs as they are now.
+fn load_project(project: &Project, config: &Path) -> IdeResult<BuildModel> {
+    let model = workspace::load_project(project, config)?;
+    apply_source_encodings(project, &model);
+    Ok(model)
+}
+
+/// The source encodings for a project that is opening. A project without a Maven build
+/// has none, so its build model is not loaded for them.
+pub(crate) fn load_source_encodings(project: &Project, config: &Path) -> IdeResult<()> {
+    let scopes = workspace::scopes(project, config)?;
+    let maven = |s: &workspace::Scope| ide_build::maven::has_projects(&s.root, &s.settings.languages.java.maven);
+    if scopes.iter().any(maven) {
+        apply_source_encodings(project, &workspace::load_scopes(&project.root, &scopes));
+    }
+    Ok(())
+}
+
+fn apply_source_encodings(project: &Project, model: &BuildModel) {
+    project.documents.set_pom_encodings(source_encoding::pom_encodings(&project.root, model));
 }
 
 fn linked_gradle_paths(
@@ -409,6 +433,7 @@ pub async fn build_sync(
         let scopes = workspace::scopes(&p, &config)?;
         let model = workspace::load_scopes(&p.root, &scopes);
         let updates = workspace::update_files(&p.root, &scopes, &model, tool);
+        apply_source_encodings(&p, &model);
         let snapshots = if tool == BuildTool::Maven && !offline {
             cached_maven_sources(&model, scopes, &p.root, build_dir.as_deref())
         } else {

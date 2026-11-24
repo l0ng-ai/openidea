@@ -26,6 +26,7 @@ const maven: MavenModel = {
       dependencies: [],
       profiles: [],
       javaVersion: 21,
+      sourceEncoding: null,
       command: "mvn",
       options: [],
       env: {},

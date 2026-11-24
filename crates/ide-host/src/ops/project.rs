@@ -357,7 +357,7 @@ pub fn set_settings(
         None => host.global_settings.set(SettingsScope::Global, key, value)?,
     };
     if let Some(p) = &current {
-        p.documents.set_file_defaults(ide_workspace::FileDefaults::from_settings(&settings, Some(&p.root)));
+        p.documents.set_settings_defaults(ide_workspace::FileDefaults::from_settings(&settings, Some(&p.root)));
     }
     // A global value reaches every other open project too.
     if !project_scope {
@@ -368,7 +368,7 @@ pub fn set_settings(
             let effective = project.settings.reload();
             project
                 .documents
-                .set_file_defaults(ide_workspace::FileDefaults::from_settings(&effective, Some(&project.root)));
+                .set_settings_defaults(ide_workspace::FileDefaults::from_settings(&effective, Some(&project.root)));
         }
     }
     let affected = || if project_scope { current.iter().cloned().collect() } else { host.projects() };

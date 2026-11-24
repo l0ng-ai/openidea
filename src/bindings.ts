@@ -9432,6 +9432,8 @@ export type MavenProject = {
 	profiles: string[],
 	/**  Java feature version the project compiles for (`maven.compiler.release`, `java.version`…). */
 	javaVersion: number | null,
+	/**  `project.build.sourceEncoding` as the POM spells it (a Java charset name such as `ISO-8859-15`). */
+	sourceEncoding: string | null,
 	/**
 	 *  Maven launcher: the nearest `mvnw` (absolute), else `mvn`. Inside the opened
 	 *  project the search stops at its root; outside it, the search stops before

@@ -56,6 +56,7 @@ const model: BuildModel = {
       dependencies: [],
       profiles: ["local"],
       javaVersion: null,
+      sourceEncoding: null,
       command: `${projectRoot}/mvnw`,
       options: [],
       env: {},

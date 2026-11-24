@@ -306,7 +306,7 @@ pub async fn settings_import(window: Window, state: State<'_, AppState>, path: P
         let effective = project.settings.reload();
         project
             .documents
-            .set_file_defaults(ide_workspace::FileDefaults::from_settings(&effective, Some(&project.root)));
+            .set_settings_defaults(ide_workspace::FileDefaults::from_settings(&effective, Some(&project.root)));
         let lsp = project.lsp.clone();
         tauri::async_runtime::spawn(async move { lsp.reconfigure().await });
     }

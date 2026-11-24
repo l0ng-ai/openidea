@@ -89,6 +89,7 @@ const model: BuildModel = {
         dependencies: [],
         profiles: [],
         javaVersion: null,
+        sourceEncoding: null,
         command: "mvn",
         options: [],
         env: {},

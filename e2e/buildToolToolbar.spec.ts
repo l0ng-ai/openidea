@@ -38,6 +38,7 @@ const model: BuildModel = {
         ],
         profiles: [],
         javaVersion: 21,
+        sourceEncoding: null,
         command: "mvn",
         options: [],
         env: {},
