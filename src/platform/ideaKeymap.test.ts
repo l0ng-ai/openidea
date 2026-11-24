@@ -57,6 +57,15 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps Remove All Breakpoints and Remove All Breakpoints In The Current File", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="M" parent="Mac OS X 10.5+"><action id="Debugger.RemoveAllBreakpoints"><keyboard-shortcut first-keystroke="shift meta F9"/></action><action id="Debugger.RemoveAllBreakpointsInFile"><keyboard-shortcut first-keystroke="alt meta F9"/></action></keymap>`,
+    );
+    expect(k.overrides["debug.removeAllBreakpoints"]).toEqual([normalizeBinding("Shift+Meta+F9")]);
+    expect(k.overrides["debug.removeAllBreakpointsInFile"]).toEqual([normalizeBinding("Alt+Meta+F9")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("rejects other XML", () => {
     expect(() => parseIdeaKeymap("<scheme name='x'/>")).toThrow(/keymap/);
   });

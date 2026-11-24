@@ -85,7 +85,13 @@ import { useProject } from "@/platform/project";
 import { provideNotificationService } from "@/workbench/contributions";
 import { registerDebugActions } from "../actions";
 import { breakpointsOf, loadBreakpoints, toggleBreakpoint } from "../breakpoints/store";
-import { loadSpecialBreakpoints, removeAllSpecial, useSpecialBreakpoints } from "../breakpoints/special";
+import {
+  addFieldWatchpoint,
+  addMethodBreakpoint,
+  loadSpecialBreakpoints,
+  removeAllSpecial,
+  useSpecialBreakpoints,
+} from "../breakpoints/special";
 import { publishContext, updateExecutionPoint, useExecutionPoint, useDebug, type DebugSession } from "../state";
 import { useJsProfile, watchProfiledSessions } from "../js/profile";
 import { focusDebugView, blurDebugView } from "../ui/focusedView";
@@ -486,6 +492,31 @@ describe("debugger actions (IDEA parity)", () => {
     // ⌘F8 on a Java declaration toggles the watchpoint off again.
     await executeAction("debug.toggleBreakpoint");
     expect(useSpecialBreakpoints.getState().fields).toEqual([]);
+  });
+
+  it("Remove All Breakpoints In The Current File removes only the active file's breakpoints", async () => {
+    toggleBreakpoint("/p/a.py", 0);
+    toggleBreakpoint("/p/a.py", 2);
+    toggleBreakpoint("/p/b.py", 0);
+    addMethodBreakpoint("run", { path: "/p/a.py", line: 1 });
+    addMethodBreakpoint("main");
+    addFieldWatchpoint({ dataId: "a.A#count", label: "count" }, { path: "/p/A.java", line: 2 });
+    caret("/p/a.py", "python", "x = 1\ndef run():\n  pass", 2);
+
+    await executeAction("debug.removeAllBreakpointsInFile");
+    expect(breakpointsOf("/p/a.py")).toEqual([]);
+    expect(breakpointsOf("/p/b.py")).toHaveLength(1);
+    expect(useSpecialBreakpoints.getState().methods.map((m) => m.name)).toEqual(["main"]);
+    expect(useSpecialBreakpoints.getState().fields).toHaveLength(1);
+
+    // A watchpoint is removed with its file too; without an editor there is no file, so nothing goes.
+    caret("/p/A.java", "java", "package a;\nclass A {\n  private int count;\n}", 0);
+    await executeAction("debug.removeAllBreakpointsInFile");
+    expect(useSpecialBreakpoints.getState().fields).toEqual([]);
+    editor.current = null;
+    await executeAction("debug.removeAllBreakpointsInFile");
+    expect(breakpointsOf("/p/b.py")).toHaveLength(1);
+    expect(useSpecialBreakpoints.getState().methods).toHaveLength(1);
   });
 
   it("Attach to Process opens the popup and loads the process list", async () => {
