@@ -434,6 +434,22 @@ describe("language modes", () => {
     ]);
   });
 
+  it("colours Java primitive types as keywords", async () => {
+    const highlighter = tagHighlighter([
+      { tag: t.keyword, class: "keyword" },
+      { tag: t.standard(t.typeName), class: "builtin-type" },
+    ]);
+    const primitives = ["int", "long", "double", "float", "boolean", "char", "byte", "short"];
+    const doc = `class A { ${primitives.map((p, i) => `${p} f${i};`).join(" ")} void m() { int[] a = new int[1]; } }`;
+    const support = await loadSupport(findLanguageDescription("Java", "/p/A.java")!);
+    const styles = new Map<string, Set<string>>();
+    highlightTree(support!.language.parser.parse(doc), highlighter, (from, to, style) => {
+      const text = doc.slice(from, to);
+      styles.set(text, (styles.get(text) ?? new Set()).add(style));
+    });
+    for (const word of [...primitives, "void"]) expect([...(styles.get(word) ?? [])], word).toEqual(["keyword"]);
+  });
+
   it("recognizes go.mod and go.work files by mode and filename", async () => {
     for (const [mode, path] of [
       ["GoMod", "/project/go.mod"],
