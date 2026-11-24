@@ -147,6 +147,12 @@
         "prefer-rest-params": "error",
         "prefer-spread": "error"
       }
+    },
+    {
+      "files": ["evals/**/*.ts", "perf/**/*.ts", "smoke/**/*.ts"],
+      "rules": {
+        "no-await-in-loop": "error"
+      }
     }
   ]
 }
