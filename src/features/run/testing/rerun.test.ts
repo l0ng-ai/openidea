@@ -212,18 +212,38 @@ describe("rerunFailedConfig", () => {
         ["com.a.FooTest", "baz"],
         ["com.a.BarTest"],
       ]))!.args,
-    ).toEqual(["test", "-Dtest=com.a.FooTest#bar+baz,com.a.BarTest", "-Dsurefire.failIfNoSpecifiedTests=false"]);
+    ).toEqual([
+      "test",
+      "-Dtest=com.a.FooTest#bar+baz,com.a.BarTest",
+      "-Dsurefire.failIfNoSpecifiedTests=false",
+      "-DskipTests=false",
+      "-Dmaven.test.skip=false",
+    ]);
   });
 
   it("maven: a rerun replaces the previous selection and lets modules without the tests pass", async () => {
-    const narrowed = cfg("maven", "./mvnw", ["test", "-Dtest=Old", "-Dsurefire.failIfNoSpecifiedTests=false"]);
+    const narrowed = cfg("maven", "./mvnw", [
+      "test",
+      "-Dtest=Old",
+      "-Dsurefire.failIfNoSpecifiedTests=false",
+      "-DskipTests=false",
+      "-Dmaven.test.skip=false",
+    ]);
     expect((await rerunFailedConfig(narrowed, [["com.a.FooTest", "bar"]]))!.args).toEqual([
       "test",
       "-Dtest=com.a.FooTest#bar",
       "-Dsurefire.failIfNoSpecifiedTests=false",
+      "-DskipTests=false",
+      "-Dmaven.test.skip=false",
     ]);
     const [selected] = await testsConfigs(cfg("maven", "mvn", ["test"]), [["com.a.FooTest", "baz"]], "FooTest.baz");
-    expect(selected!.args).toEqual(["test", "-Dtest=com.a.FooTest#baz", "-Dsurefire.failIfNoSpecifiedTests=false"]);
+    expect(selected!.args).toEqual([
+      "test",
+      "-Dtest=com.a.FooTest#baz",
+      "-Dsurefire.failIfNoSpecifiedTests=false",
+      "-DskipTests=false",
+      "-Dmaven.test.skip=false",
+    ]);
   });
 
   it("zig: --test-filter per failed test for `zig test`, null for build-based runs", async () => {

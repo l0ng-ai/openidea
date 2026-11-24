@@ -264,12 +264,24 @@ describe("application configurations", () => {
     const file = cfg({
       id: "f",
       kind: "maven",
-      args: ["test", "-Dtest=OrderTest", "-Dsurefire.failIfNoSpecifiedTests=false"],
+      args: [
+        "test",
+        "-Dtest=OrderTest",
+        "-Dsurefire.failIfNoSpecifiedTests=false",
+        "-DskipTests=false",
+        "-Dmaven.test.skip=false",
+      ],
       isTest: true,
     });
     expect(jvmTestConfig(file, "a.OrderTest$Nested", "fails")).toMatchObject({
       name: "Nested.fails",
-      args: ["test", "-Dtest=a.OrderTest$Nested#fails", "-Dsurefire.failIfNoSpecifiedTests=false"],
+      args: [
+        "test",
+        "-Dtest=a.OrderTest$Nested#fails",
+        "-Dsurefire.failIfNoSpecifiedTests=false",
+        "-DskipTests=false",
+        "-Dmaven.test.skip=false",
+      ],
     });
     const gradle = cfg({ id: "g", kind: "gradle", args: ["test", "--tests", "*OrderTest"], isTest: true });
     expect(jvmTestConfig(gradle, "a.OrderTest", undefined)!.args).toEqual(["test", "--tests", "a.OrderTest"]);
