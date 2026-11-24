@@ -597,7 +597,7 @@ describe("LanguageServersPage", () => {
 });
 
 describe("tools.install action", () => {
-  it("installs installable tools and opens the page for the rest", async () => {
+  it("installs installable tools and opens the page on the rest", async () => {
     const { executeAction, registerAction } = await import("@/platform/actions");
     const { activate } = await import("../index");
     const opened: unknown[] = [];
@@ -614,7 +614,8 @@ describe("tools.install action", () => {
       expect(useTools.getState().tools.find((t) => t.name === "gopls")?.status).toBe("installed");
       expect(opened).toEqual([]);
       await executeAction("tools.install", "solargraph");
-      expect(opened).toEqual(["languages.servers"]);
+      // Opened on that tool, where its manual install hint is.
+      expect(opened).toEqual(["languages.servers#solargraph"]);
     } finally {
       disposers.reverse().forEach((d) => d());
     }
