@@ -230,20 +230,32 @@ impl PostgresOptions {
     }
 
     async fn verify_read_only(&self, conn: &mut PgConnection) -> Result<(), sqlx::Error> {
-        if self.read_only {
-            let row = sqlx::raw_sql("SHOW default_transaction_read_only").fetch_one(conn).await?;
-            if row.try_get::<&str, _>(0)? != "on" {
-                return Err(sqlx::Error::Configuration(
-                    format!(
-                        "PostgreSQL did not enable the requested default_transaction_read_only setting. \
-                        Check the Advanced properties and startup script. {PG_READ_ONLY_HINT}"
-                    )
-                    .into(),
-                ));
-            }
+        if self.read_only && !pg_setting_on(conn, "SHOW default_transaction_read_only").await? {
+            return Err(sqlx::Error::Configuration(
+                format!(
+                    "PostgreSQL did not enable the requested default_transaction_read_only setting. \
+                    Check the Advanced properties and startup script. {PG_READ_ONLY_HINT}"
+                )
+                .into(),
+            ));
         }
         Ok(())
     }
+
+    async fn verify_startup_script(&self, conn: &mut PgConnection) -> Result<(), sqlx::Error> {
+        self.verify_read_only(conn).await?;
+        if self.read_only && !pg_setting_on(conn, "SHOW transaction_read_only").await? {
+            return Err(sqlx::Error::Configuration(
+                "The startup script left a writable transaction open on a read-only PostgreSQL source.".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+async fn pg_setting_on(conn: &mut PgConnection, show: &'static str) -> Result<bool, sqlx::Error> {
+    let row = sqlx::raw_sql(show).fetch_one(conn).await?;
+    Ok(row.try_get::<&str, _>(0)? == "on")
 }
 
 fn postgres_read_only_hint(read_only: bool, code: Option<&str>, message: &str) -> Option<&'static str> {
@@ -280,7 +292,7 @@ sqlx_pool!(
     PgConnection,
     DbDriver::Postgres,
     "SHOW search_path",
-    verify_read_only
+    verify_startup_script
 );
 sqlx_pool!(MysqlManager, MysqlHandle, MySqlConnectOptions, MySqlConnection, DbDriver::Mysql, "SELECT DATABASE()");
 
@@ -1709,7 +1721,10 @@ mod tests {
     fn postgres_read_only_guidance_identifies_what_the_pooler_rejected() {
         let rejected = "unsupported startup parameter in options: default_transaction_read_only";
         assert_eq!(postgres_read_only_hint(true, Some("08P01"), rejected), Some(PG_READ_ONLY_HINT));
-        assert!(postgres_read_only_hint(true, Some("08P01"), "unsupported startup parameter: options").is_some());
+        let direct = "unsupported startup parameter: default_transaction_read_only";
+        assert_eq!(postgres_read_only_hint(true, Some("08P01"), direct), Some(PG_READ_ONLY_HINT));
+        let options = postgres_read_only_hint(true, Some("08P01"), "unsupported startup parameter: options").unwrap();
+        assert!(options.contains("rejects PostgreSQL startup options"));
         assert_eq!(postgres_read_only_hint(false, Some("08P01"), rejected), None);
         assert_eq!(postgres_read_only_hint(true, Some("28P01"), rejected), None);
         assert_eq!(

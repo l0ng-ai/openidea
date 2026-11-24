@@ -63,6 +63,11 @@ async fn postgres_read_only_is_checked_before_and_after_startup_sql() -> IdeResu
     source.options.startup_script = "SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE".into();
     let err = Pool::connect(&source, Some(&password), None).await.err().expect("startup script disabled read-only");
     assert!(err.message.contains("did not enable the requested default_transaction_read_only"), "{}", err.message);
+    source.options.startup_script = "BEGIN READ WRITE".into();
+    let err = Pool::connect(&source, Some(&password), None).await.err().expect("writable startup transaction");
+    assert!(err.message.contains("writable transaction"), "{}", err.message);
+    source.options.startup_script = "BEGIN READ ONLY".into();
+    Pool::connect(&source, Some(&password), None).await?.close().await;
     Ok(())
 }
 
